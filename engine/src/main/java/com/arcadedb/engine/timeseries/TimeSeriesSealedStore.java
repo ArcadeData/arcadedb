@@ -38,9 +38,11 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -148,10 +150,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     this.indexFile = new RandomAccessFile(f, "rw");
     this.indexChannel = indexFile.getChannel();
 
-    if (exists && indexFile.length() >= HEADER_SIZE)
-      loadDirectory();
-    else
-      writeEmptyHeader();
+    try {
+      if (exists && indexFile.length() >= HEADER_SIZE)
+        loadDirectory();
+      else
+        writeEmptyHeader();
+    } catch (final IOException e) {
+      // Close handles to avoid leaking them if initialization fails
+      try { indexChannel.close(); } catch (final IOException ignored) {}
+      try { indexFile.close(); } catch (final IOException ignored) {}
+      throw e;
+    }
   }
 
   /**
@@ -931,7 +940,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final String[][] chunkTagDV = new String[colCount][];
       for (int c = 0; c < colCount; c++) {
         if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG) {
-          final java.util.LinkedHashSet<String> distinctSet = new java.util.LinkedHashSet<>();
+          final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
           for (int i = chunkStart; i < chunkEnd; i++) {
             final Object val = newSamples.get(i)[c];
             distinctSet.add(val != null ? val.toString() : "");
@@ -1752,12 +1761,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private Object[][] decompressColumns(final BlockEntry entry, final int[] columnIndices, final int tsColIdx) throws IOException {
     final List<Object[]> result = new ArrayList<>();
 
+    // Build a BitSet for O(1) column-index lookup in the hot path (avoids O(n) linear scan per column)
+    final BitSet colIndexSet;
+    if (columnIndices != null) {
+      colIndexSet = new BitSet();
+      for (final int idx : columnIndices)
+        colIndexSet.set(idx);
+    } else {
+      colIndexSet = null;
+    }
+
     int nonTsIdx = 0;
     for (int c = 0; c < columns.size(); c++) {
       if (c == tsColIdx)
         continue;
 
-      if (columnIndices != null && !isInArray(nonTsIdx, columnIndices)) {
+      if (colIndexSet != null && !colIndexSet.get(nonTsIdx)) {
         nonTsIdx++;
         continue;
       }
@@ -1925,10 +1944,4 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
   }
 
-  private static boolean isInArray(final int value, final int[] array) {
-    for (final int v : array)
-      if (v == value)
-        return true;
-    return false;
-  }
 }

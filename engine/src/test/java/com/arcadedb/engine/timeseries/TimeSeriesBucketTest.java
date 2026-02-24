@@ -46,6 +46,7 @@ class TimeSeriesBucketTest extends TestHelper {
     final DatabaseInternal db = (DatabaseInternal) database;
     final TimeSeriesBucket bucket = new TimeSeriesBucket(db, name, db.getDatabasePath() + "/" + name, cols);
     ((LocalSchema) db.getSchema()).registerFile(bucket);
+    bucket.initHeaderPage();
     return bucket;
   }
 

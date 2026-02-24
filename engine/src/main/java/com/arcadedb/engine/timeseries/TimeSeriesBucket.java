@@ -50,11 +50,11 @@ import java.util.NoSuchElementException;
  * - [40..43] active data page count (int)
  * <p>
  * Data pages layout (offsets from PAGE_HEADER_SIZE):
- * - [0..1]   sample count in page (short)
+ * - [0..1]   sample count in page (short, read as unsigned with &amp; 0xFFFF)
  * - [2..9]   min timestamp in page (long)
  * - [10..17] max timestamp in page (long)
  * - [18..]   row data: fixed-size rows [timestamp(8)|col1|col2|...]
- *            For STRING columns: 2-byte dictionary index + dictionary at page end
+ *            For STRING columns: 2-byte length prefix + up to MAX_STRING_BYTES payload
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -78,6 +78,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
   private static final int HEADER_SIZE                    = 44;
 
   // Data page offsets (from PAGE_HEADER_SIZE)
+  // Sample count stored as short (2 bytes), read with & 0xFFFF to treat as unsigned (0..65535).
+  // A page can never hold more than (pageSize - overhead) / rowSize samples, which is well under 65535.
   private static final int DATA_SAMPLE_COUNT_OFFSET = 0;
   private static final int DATA_MIN_TS_OFFSET       = 2;
   private static final int DATA_MAX_TS_OFFSET       = 10;
@@ -107,7 +109,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
         database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
     this.columns = columns;
     this.rowSize = calculateRowSize(columns);
-    initHeaderPage();
+    // Note: initHeaderPage() is NOT called here.
+    // TimeSeriesShard calls it in a self-contained nested transaction after registering the
+    // bucket with the schema, so the nested TX commit can resolve the file by its ID.
   }
 
   /**
@@ -141,7 +145,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
     for (int i = 0; i < timestamps.length; i++) {
       final MutablePage dataPage = getOrCreateActiveDataPage(tx);
 
-      final int sampleCountInPage = dataPage.readShort(DATA_SAMPLE_COUNT_OFFSET);
+      final int sampleCountInPage = dataPage.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
       final int rowOffset = DATA_ROWS_OFFSET + sampleCountInPage * rowSize;
 
       // Write timestamp
@@ -191,7 +195,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
     for (int pageNum = 1; pageNum <= dataPageCount; pageNum++) {
       final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
 
-      final short sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET);
+      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
       if (sampleCount == 0)
         continue;
 
@@ -233,11 +237,11 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int dataPageCount = getDataPageCount();
 
     return new Iterator<>() {
-      private int      pageNum          = 1;
-      private int      rowIdx           = 0;
-      private BasePage currentPage      = null;
-      private short    currentSampleCount = 0;
-      private Object[] nextRow          = null;
+      private int      pageNum            = 1;
+      private int      rowIdx             = 0;
+      private BasePage currentPage        = null;
+      private int      currentSampleCount = 0;
+      private Object[] nextRow            = null;
 
       {
         advance();
@@ -249,7 +253,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
           while (pageNum <= dataPageCount) {
             if (currentPage == null) {
               currentPage = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
-              currentSampleCount = currentPage.readShort(DATA_SAMPLE_COUNT_OFFSET);
+              currentSampleCount = currentPage.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
               rowIdx = 0;
 
               if (currentSampleCount == 0) {
@@ -411,8 +415,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final List<Object[]> allRows = new ArrayList<>();
     for (int pageNum = fromPage; pageNum <= toPage; pageNum++) {
       final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
-      final short sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET);
-      if (sampleCount <= 0)
+      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      if (sampleCount == 0)
         continue;
       for (int row = 0; row < sampleCount; row++)
         allRows.add(readRow(page, DATA_ROWS_OFFSET + row * rowSize, null));
@@ -496,7 +500,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
   // --- Private helpers ---
 
-  private void initHeaderPage() throws IOException {
+  void initHeaderPage() throws IOException {
     final TransactionContext tx = database.getTransaction();
     final MutablePage headerPage = tx.addPage(new PageId(database, fileId, 0), pageSize);
     headerPage.writeInt(HEADER_MAGIC_OFFSET, MAGIC_VALUE);
@@ -522,7 +526,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
     if (dataPageCount > 0) {
       // Check if the last logical data page has room
       final MutablePage lastPage = tx.getPageToModify(new PageId(database, fileId, dataPageCount), pageSize, false);
-      final int sampleCount = lastPage.readShort(DATA_SAMPLE_COUNT_OFFSET);
+      final int sampleCount = lastPage.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
       if (sampleCount < getMaxSamplesPerPage())
         return lastPage;
     }

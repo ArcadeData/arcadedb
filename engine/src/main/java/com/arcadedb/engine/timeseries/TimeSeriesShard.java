@@ -22,8 +22,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.schema.LocalSchema;
-import com.arcadedb.schema.Type;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -55,19 +55,19 @@ public class TimeSeriesShard implements AutoCloseable {
   // Read lock: held by scan/iterate (concurrent reads allowed).
   // Write lock: held by compact() to prevent queries from seeing data twice
   // during the window where sealed blocks are written but mutable not yet cleared.
-  private final ReadWriteLock compactionLock  = new ReentrantReadWriteLock();
+  private final ReadWriteLock          compactionLock  = new ReentrantReadWriteLock();
   // Prevents concurrent compact() calls on this shard (e.g. maintenance scheduler + explicit call).
   // Both writeTempCompactionFile() and truncateToBlockCount() use the same .ts.sealed.tmp path;
   // concurrent execution would corrupt each other's temp files.
-  private final Lock          compactionMutex = new ReentrantLock();
+  private final Lock                   compactionMutex = new ReentrantLock();
 
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
-      final List<ColumnDefinition> columns) throws IOException {
+                         final List<ColumnDefinition> columns) throws IOException {
     this(database, baseName, shardIndex, columns, 0);
   }
 
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
-      final List<ColumnDefinition> columns, final long compactionBucketIntervalMs) throws IOException {
+                         final List<ColumnDefinition> columns, final long compactionBucketIntervalMs) throws IOException {
     this.shardIndex = shardIndex;
     this.database = database;
     this.columns = columns;
@@ -83,9 +83,25 @@ public class TimeSeriesShard implements AutoCloseable {
       this.mutableBucket = tsb;
       this.mutableBucket.setColumns(columns);
     } else {
-      // First-time creation
+      // First-time creation: register the file with the schema BEFORE initialising the header
+      // page, so that the nested-TX commit in initHeaderPage() can resolve the file by its ID.
       this.mutableBucket = new TimeSeriesBucket(database, shardName, shardPath, columns);
       schema.registerFile(mutableBucket);
+      // Initialise the header page in a self-contained nested transaction.  Using a nested TX
+      // here ensures that page 0 is committed immediately and is NOT placed in any enclosing
+      // transaction's dirty set.  This is required so that the nested TX used by appendSamples()
+      // can later commit page 0 without conflicting with an enclosing transaction that was open
+      // when this shard was created (a common test pattern).
+      database.begin();
+      try {
+        mutableBucket.initHeaderPage();
+        database.commit();
+      } catch (final Exception e) {
+        if (database.isTransactionActive())
+          database.rollback();
+        throw e instanceof IOException ? (IOException) e :
+            new IOException("Failed to initialise header for shard " + shardIndex, e);
+      }
     }
 
     this.sealedStore = new TimeSeriesSealedStore(shardPath, columns);
@@ -104,20 +120,55 @@ public class TimeSeriesShard implements AutoCloseable {
     } catch (final Exception e) {
       if (database.isTransactionActive())
         database.rollback();
-      throw e instanceof IOException ? (IOException) e : new IOException("Crash recovery failed for shard " + shardIndex, e);
+      throw e instanceof IOException ? (IOException) e :
+          new IOException("Crash recovery failed for shard " + shardIndex, e);
     }
   }
 
   /**
    * Appends samples to the mutable bucket.
-   * Holds the read lock so that compact()'s brief write lock (Phase 4) can safely clear the
-   * mutable bucket: while the write lock is held, no new samples can be appended, preventing
-   * data loss. Outside that brief window the read lock is uncontested and adds no overhead.
+   * <p>
+   * The read lock is held for the <em>entire</em> internal transaction lifecycle
+   * (begin → write → commit), not just during the page writes.  This is the key invariant
+   * that prevents MVCC conflicts with Phase 4:
+   * <ul>
+   *   <li>Phase 4 acquires the <em>write</em> lock to clear the mutable bucket.</li>
+   *   <li>The write lock can only be granted after all read-lock holders have released.</li>
+   *   <li>Because this method releases the read lock only <em>after</em> the commit, Phase 4
+   *       is guaranteed that every in-flight append has already persisted its page-0 modifications
+   *       before Phase 4 starts its own transaction.  Phase 4 always sees the latest page-0
+   *       version and commits without conflict; insert transactions are never affected.</li>
+   * </ul>
+   * <p>
+   * This method always manages its own transaction.  If the caller already has an active
+   * transaction, ArcadeDB creates a nested transaction (a new {@code TransactionContext} pushed
+   * onto the per-thread stack).  The nested transaction commits independently; the caller's outer
+   * transaction remains unaffected because it holds none of the modified pages in its dirty set.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
     compactionLock.readLock().lock();
     try {
-      mutableBucket.appendSamples(timestamps, columnValues);
+      database.begin();
+      try {
+        mutableBucket.appendSamples(timestamps, columnValues);
+        database.commit();
+      } catch (final ConcurrentModificationException cme) {
+        // Roll back the nested TX (which failed to commit).
+        if (database.isTransactionActive())
+          database.rollback();
+        // Also roll back the enclosing TX that was restored to the stack after the nested TX
+        // was popped: since appendSamples always uses nested transactions, the enclosing TX
+        // has no dirty pages of its own, so this rollback is a no-op from a data perspective.
+        // It does, however, leave the caller in a clean "no active transaction" state so that
+        // an outer retry loop can call database.begin() without creating unwanted nested TXs.
+        if (database.isTransactionActive())
+          database.rollback();
+        throw cme; // propagate as-is so callers can catch and retry
+      } catch (final Exception e) {
+        if (database.isTransactionActive())
+          database.rollback();
+        throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+      }
     } finally {
       compactionLock.readLock().unlock();
     }
@@ -129,7 +180,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * mutable bucket after sealing, which would cause double-counting.
    */
   public List<Object[]> scanRange(final long fromTs, final long toTs, final int[] columnIndices,
-      final TagFilter tagFilter) throws IOException {
+                                  final TagFilter tagFilter) throws IOException {
     compactionLock.readLock().lock();
     try {
       final List<Object[]> results = new ArrayList<>();
@@ -151,19 +202,22 @@ public class TimeSeriesShard implements AutoCloseable {
   /**
    * Returns an iterator over both sealed and mutable layers.
    * Sealed data is iterated first, then mutable. Tag filter is applied inline.
-   * The sealed iterator eagerly collects all matching rows under the read lock.
-   * The mutable iterator is lazy (pages loaded on demand) but the MVCC snapshot is
-   * established under the read lock, which prevents concurrent {@link #compact()} from
-   * clearing the mutable bucket while data collection is in progress.
+   * Both iterators are eagerly materialized under the read lock to prevent
+   * concurrent {@link #compact()} from clearing the mutable bucket and causing
+   * stale reads after the lock is released.
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
-      final TagFilter tagFilter) throws IOException {
+                                         final TagFilter tagFilter) throws IOException {
     final Iterator<Object[]> sealedIter;
     final Iterator<Object[]> mutableIter;
     compactionLock.readLock().lock();
     try {
       sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter);
-      mutableIter = mutableBucket.iterateRange(fromTs, toTs, columnIndices);
+      // Eagerly materialize the mutable iterator under the lock.
+      // A lazy iterator would risk reading stale (cleared) pages if compaction
+      // acquires the write lock and clears the bucket before next() is called.
+      final List<Object[]> mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices);
+      mutableIter = mutableRows.iterator();
     } finally {
       compactionLock.readLock().unlock();
     }
@@ -172,9 +226,9 @@ public class TimeSeriesShard implements AutoCloseable {
     // The sealed iterator is fully materialised; the mutable iterator is lazy but its
     // MVCC snapshot was already established under the read lock above.
     return new Iterator<>() {
-      private Iterator<Object[]> current = sealedIter;
+      private Iterator<Object[]> current           = sealedIter;
       private boolean            switchedToMutable = false;
-      private Object[]           nextRow = null;
+      private Object[]           nextRow           = null;
 
       {
         advance();
@@ -214,7 +268,9 @@ public class TimeSeriesShard implements AutoCloseable {
     };
   }
 
-  /** Maximum number of samples per sealed block. Keeps decompression cost bounded. */
+  /**
+   * Maximum number of samples per sealed block. Keeps decompression cost bounded.
+   */
   static final int SEALED_BLOCK_SIZE = 65_536;
 
   /**
@@ -235,8 +291,9 @@ public class TimeSeriesShard implements AutoCloseable {
    *   <li><b>Phase 2</b> (lock-free, no TX): sort and compress the snapshot data.</li>
    *   <li><b>Phase 3</b> (lock-free, no TX): write all sealed blocks to {@code .ts.sealed.tmp}.
    *       Concurrent queries still read from the live sealed file; no double-counting.</li>
-   *   <li><b>Phase 4</b> (brief write lock + brief TX): atomically swap the temp file,
-   *       clear the compacted pages (1..N-1), and reset the crash-recovery flag.  The write
+   *   <li><b>Phase 4</b> (brief write lock + brief TX): read any remaining partial pages,
+   *       merge with Phase-2 spill if present, compress, atomically swap the temp file,
+   *       clear the compacted mutable bucket, and reset the crash-recovery flag.  The write
    *       lock blocks concurrent {@link #appendSamples} so the TX commit cannot conflict.</li>
    * </ol>
    * <p>
@@ -298,11 +355,11 @@ public class TimeSeriesShard implements AutoCloseable {
 
     // Shared output lists for compressed blocks built in Phases 1+2.
     final List<byte[][]> allCompressedList = new ArrayList<>();
-    final List<long[]>   allMetaList       = new ArrayList<>();
-    final List<double[]> allMinsList       = new ArrayList<>();
-    final List<double[]> allMaxsList       = new ArrayList<>();
-    final List<double[]> allSumsList       = new ArrayList<>();
-    final List<String[][]> allTagDVList    = new ArrayList<>();
+    final List<long[]> allMetaList = new ArrayList<>();
+    final List<double[]> allMinsList = new ArrayList<>();
+    final List<double[]> allMaxsList = new ArrayList<>();
+    final List<double[]> allSumsList = new ArrayList<>();
+    final List<String[][]> allTagDVList = new ArrayList<>();
 
     // ── Phase 1 (no lock, read-only TX): read full/immutable pages ───────────────────────────
     // Full pages are never written to by concurrent appendSamples(); the read-only snapshot TX
@@ -341,36 +398,41 @@ public class TimeSeriesShard implements AutoCloseable {
       throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
     }
 
-    // ── Phase 4 (brief writeLock + brief TX): handle partial pages, swap, clear all ─────────
-    // Under the write lock the partial last page (and any new pages created between Phase 0
-    // and now) are stable.  We read, compress, and append their blocks to the temp file, then
-    // atomically swap and clear the entire mutable bucket in a single short transaction.
+    // ── Phase 4 (brief writeLock + brief TX): compress remaining pages + swap + clear all ──────
+    // All remaining partial pages (lastFullPage+1..current) are read here, merged with any
+    // Phase-2 spill, and compressed.  The write-lock ensures no concurrent appendSamples() can
+    // modify page-0 during this TX, so the commit is always MVCC-conflict-free.
     compactionLock.writeLock().lock();
     try {
       database.begin();
       try {
-        // Read pages that were NOT in the Phase 1 snapshot: the partial last page (page N from
-        // Phase 0) and any new pages (N+1..M) that arrived between Phase 0 and Phase 4.
-        // Prepend any Phase 2 spill so the last bucket/block is not split across phases.
         final int currentDataPageCount = mutableBucket.getDataPageCount();
+
+        // Read partial pages that were not included in Phase 1 (full pages 1..lastFullPage).
         Object[] remainingData = null;
         if (currentDataPageCount > lastFullPage)
           remainingData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, currentDataPageCount);
-        if (phase2Spill != null)
-          remainingData = remainingData != null ? mergeCompactionData(phase2Spill, remainingData) : phase2Spill;
-        if (remainingData != null) {
+
+        // Merge Phase-2 spill (tail of full-page data that didn't form a complete block) with
+        // any partial page data read above, then compress the combined result.
+        final Object[] toCompress;
+        if (phase2Spill != null && remainingData != null)
+          toCompress = mergeCompactionData(phase2Spill, remainingData);
+        else if (phase2Spill != null)
+          toCompress = phase2Spill;
+        else
+          toCompress = remainingData;
+
+        if (toCompress != null) {
           final List<byte[][]> remCompressed = new ArrayList<>();
-          final List<long[]>   remMeta       = new ArrayList<>();
-          final List<double[]> remMins       = new ArrayList<>();
-          final List<double[]> remMaxs       = new ArrayList<>();
-          final List<double[]> remSums       = new ArrayList<>();
-          final List<String[][]> remTagDV    = new ArrayList<>();
-          // returnSpill=false: Phase 4 processes ALL remaining data (including Phase 2 spill);
-          // the last partial chunk must become a block since there is no next phase.
-          buildCompressedBlocks(remainingData, remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV, false);
-          // Append these blocks to the already-written temp file (fast: small data).
-          sealedStore.appendBlocksToTempFile(
-              remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV, newBlockDirectory);
+          final List<long[]> remMeta = new ArrayList<>();
+          final List<double[]> remMins = new ArrayList<>();
+          final List<double[]> remMaxs = new ArrayList<>();
+          final List<double[]> remSums = new ArrayList<>();
+          final List<String[][]> remTagDV = new ArrayList<>();
+          buildCompressedBlocks(toCompress, remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV, false);
+          sealedStore.appendBlocksToTempFile(remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV,
+              newBlockDirectory);
         }
 
         // Atomically swap temp file into the sealed store; updates in-memory blockDirectory.
@@ -409,7 +471,7 @@ public class TimeSeriesShard implements AutoCloseable {
    *                    bucket/block boundary is never split across phases.  Pass {@code false}
    *                    in Phase 4 where all remaining data must become blocks.
    * @return the spill raw data array, or {@code null} when {@code returnSpill} is {@code false}
-   *         or there is no partial last chunk.
+   * or there is no partial last chunk.
    */
   private Object[] buildCompressedBlocks(
       final Object[] data,
@@ -518,7 +580,7 @@ public class TimeSeriesShard implements AutoCloseable {
       }
 
       compressedOut.add(compressedCols);
-      metaOut.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
+      metaOut.add(new long[]{chunkTs[0], chunkTs[chunkLen - 1], chunkLen});
       minsOut.add(mins);
       maxsOut.add(maxs);
       sumsOut.add(sums);
@@ -535,7 +597,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * elements are {@code Object[]} non-timestamp column arrays.
    */
   private Object[] extractSpillData(final long[] sortedTs, final Object[][] sortedColArrays,
-      final int from, final int to, final int colCount) {
+                                    final int from, final int to, final int colCount) {
     final Object[] spill = new Object[colCount];
     spill[0] = Arrays.copyOfRange(sortedTs, from, to);
     int spillIdx = 1;
@@ -549,7 +611,7 @@ public class TimeSeriesShard implements AutoCloseable {
 
   /**
    * Concatenates two compaction data arrays (same format as the {@code data} parameter of
-   * {@link #buildCompressedBlocks}).  Used to merge Phase 2 spill with Phase 4 partial-page
+   * {@link #buildCompressedBlocks}).  Used to merge Phase-2 spill with Phase-4 partial-page
    * data before compressing them together.
    */
   private static Object[] mergeCompactionData(final Object[] a, final Object[] b) {
@@ -571,7 +633,9 @@ public class TimeSeriesShard implements AutoCloseable {
     return result;
   }
 
-  /** Best-effort: clear the compaction-in-progress flag after a non-crash error. */
+  /**
+   * Best-effort: clear the compaction-in-progress flag after a non-crash error.
+   */
   private void clearCompactionFlagBestEffort() {
     compactionLock.writeLock().lock();
     try {
@@ -580,7 +644,9 @@ public class TimeSeriesShard implements AutoCloseable {
       database.commit();
     } catch (final Exception ignored) {
       if (database.isTransactionActive())
-        try { database.rollback(); } catch (final Exception re) { /* ignored */ }
+        try {
+          database.rollback();
+        } catch (final Exception re) { /* ignored */ }
     } finally {
       compactionLock.writeLock().unlock();
     }
@@ -617,7 +683,7 @@ public class TimeSeriesShard implements AutoCloseable {
   // --- Private helpers ---
 
   private static void addFiltered(final List<Object[]> results, final List<Object[]> source, final TagFilter filter,
-      final int[] columnIndices) {
+                                  final int[] columnIndices) {
     if (filter == null)
       results.addAll(source);
     else
@@ -677,7 +743,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * shrinks chunkEnd until all dictionary columns fit. Guarantees at least one row per chunk.
    */
   private int adjustChunkForDictionaryLimit(final int chunkStart, int chunkEnd,
-      final int colCount, final Object[][] sortedColArrays) {
+                                            final int colCount, final Object[][] sortedColArrays) {
     for (int c = 0; c < colCount; c++) {
       if (columns.get(c).getCompressionHint() != TimeSeriesCodec.DICTIONARY || sortedColArrays[c] == null)
         continue;

@@ -62,7 +62,11 @@ public class LineProtocolParser {
         case "us", "u" -> MICROSECONDS;
         case "ms" -> MILLISECONDS;
         case "s" -> SECONDS;
-        default -> NANOSECONDS;
+        default -> {
+          LogManager.instance().log(Precision.class, Level.WARNING,
+              "Unrecognized precision '%s'; defaulting to nanoseconds", null, s);
+          yield NANOSECONDS;
+        }
       };
     }
   }
@@ -110,7 +114,8 @@ public class LineProtocolParser {
     if (text == null || text.isEmpty())
       return samples;
 
-    final String[] lines = text.split("\n");
+    // Use \R (any line terminator) to handle Unix (\n), Windows (\r\n), and classic Mac (\r)
+    final String[] lines = text.split("\\R");
     for (final String rawLine : lines) {
       final String line = rawLine.trim();
       if (line.isEmpty() || line.startsWith("#"))
@@ -122,7 +127,7 @@ public class LineProtocolParser {
       else
         LogManager.instance().log(LineProtocolParser.class, Level.WARNING,
             "Skipping malformed line protocol line: '%s'", null,
-            line.length() > 120 ? line.substring(0, 120) + "..." : line);
+            sanitizeForLog(line.length() > 120 ? line.substring(0, 120) + "..." : line));
     }
     return samples;
   }
@@ -167,7 +172,9 @@ public class LineProtocolParser {
           pos += keyResult.length() + 1; // +1 for '='
           final ParsedString valResult = readTagValueWithLength(line, pos);
           pos += valResult.length();
-          tags.put(keyResult.value(), valResult.value());
+          // InfluxDB spec mandates non-empty tag keys; skip silently to avoid polluting the schema
+          if (!keyResult.value().isEmpty())
+            tags.put(keyResult.value(), valResult.value());
           if (pos < len && line.charAt(pos) == ',')
             pos++; // skip comma separator
         }
@@ -260,6 +267,24 @@ public class LineProtocolParser {
   }
 
   /**
+   * Strips control characters and newlines from user-controlled input before logging
+   * to prevent log injection attacks.
+   */
+  private static String sanitizeForLog(final String s) {
+    if (s == null)
+      return null;
+    final StringBuilder sb = new StringBuilder(s.length());
+    for (int i = 0; i < s.length(); i++) {
+      final char c = s.charAt(i);
+      if (c >= 0x20 && c != 0x7F)
+        sb.append(c);
+      else
+        sb.append('?');
+    }
+    return sb.toString();
+  }
+
+  /**
    * Reads a field value and returns the parsed value and the raw byte length consumed.
    */
   private static ParsedValue readFieldValue(final String line, final int start) {
@@ -268,7 +293,7 @@ public class LineProtocolParser {
 
     final char first = line.charAt(start);
 
-    // Quoted string
+    // Quoted string — enforce MAX_STRING_BYTES to prevent multi-megabyte allocations
     if (first == '"') {
       final StringBuilder sb = new StringBuilder();
       int pos = start + 1;
@@ -276,6 +301,9 @@ public class LineProtocolParser {
       while (pos < line.length()) {
         final char c = line.charAt(pos);
         if (c == '\\' && pos + 1 < line.length()) {
+          if (sb.length() >= TimeSeriesBucket.MAX_STRING_BYTES)
+            throw new IllegalArgumentException(
+                "Quoted field value exceeds maximum length of " + TimeSeriesBucket.MAX_STRING_BYTES + " bytes");
           sb.append(line.charAt(pos + 1));
           pos += 2;
           continue;
@@ -285,6 +313,9 @@ public class LineProtocolParser {
           closed = true;
           break;
         }
+        if (sb.length() >= TimeSeriesBucket.MAX_STRING_BYTES)
+          throw new IllegalArgumentException(
+              "Quoted field value exceeds maximum length of " + TimeSeriesBucket.MAX_STRING_BYTES + " bytes");
         sb.append(c);
         pos++;
       }

@@ -51,7 +51,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   private int                          mutableFormatVersion;
   private final List<ColumnDefinition>  tsColumns         = new ArrayList<>();
   private       List<DownsamplingTier> downsamplingTiers = new ArrayList<>();
-  private TimeSeriesEngine             engine;
+  private volatile TimeSeriesEngine    engine;
 
   public LocalTimeSeriesType(final LocalSchema schema, final String name) {
     super(schema, name);
@@ -59,8 +59,9 @@ public class LocalTimeSeriesType extends LocalDocumentType {
 
   /**
    * Initializes the TimeSeriesEngine. Called after all column definitions are set.
+   * Thread-safe: double-checked locking on the volatile {@code engine} field.
    */
-  public void initEngine() throws IOException {
+  public synchronized void initEngine() throws IOException {
     if (engine != null)
       return;
     engine = new TimeSeriesEngine((DatabaseInternal) schema.getDatabase(), name, tsColumns, shardCount > 0 ? shardCount : 1,

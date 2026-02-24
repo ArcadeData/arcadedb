@@ -45,8 +45,11 @@ public class TimeSeriesMaintenanceScheduler {
   private final ScheduledExecutorService executor;
   private final Map<String, ScheduledFuture<?>> tasks = new ConcurrentHashMap<>();
 
+  /** Maximum number of concurrent maintenance tasks (compaction + retention per type). */
+  private static final int MAX_THREADS = 4;
+
   public TimeSeriesMaintenanceScheduler() {
-    this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
+    this.executor = Executors.newScheduledThreadPool(MAX_THREADS, r -> {
       final Thread t = new Thread(r, "ArcadeDB-TS-Maintenance");
       t.setDaemon(true);
       return t;
@@ -98,7 +101,7 @@ public class TimeSeriesMaintenanceScheduler {
         if (!type.getDownsamplingTiers().isEmpty())
           engine.applyDownsampling(type.getDownsamplingTiers(), nowMs);
 
-      } catch (final Exception e) {
+      } catch (final Throwable e) {
         LogManager.instance().log(this, Level.WARNING,
             "Error in TimeSeries maintenance for type '%s'", e, typeName);
       }

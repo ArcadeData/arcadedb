@@ -75,14 +75,25 @@ public class PromQLEvaluator {
   private static final int              MAX_REGEX_LENGTH   = 1024;
   private static final int              MAX_PATTERN_CACHE  = 1024;
   // Detects patterns that cause catastrophic backtracking (ReDoS):
-  // 1. Nested quantifiers: (a+)+, (a*b)*
+  // 1. Nested quantifiers: (a+)+, (a*b)*, (a+){n,}
   // 2. Alternation groups with outer quantifier: (a|aa)+ — overlapping alternatives
   private static final Pattern          REDOS_CHECK        = Pattern.compile(
-      "\\((?:[^()\\\\]|\\\\.)*[+*](?:[^()\\\\]|\\\\.)*\\)[+*]"   // nested quantifier
-      + "|\\((?:[^()\\\\]|\\\\.)*\\|(?:[^()\\\\]|\\\\.)*\\)[+*]" // alternation with quantifier
+      "\\((?:[^()\\\\]|\\\\.)*[+*](?:[^()\\\\]|\\\\.)*\\)[+*{]"   // nested quantifier (including {n,})
+      + "|\\((?:[^()\\\\]|\\\\.)*\\|(?:[^()\\\\]|\\\\.)*\\)[+*{]" // alternation with quantifier
   );
   private final Set<String>             warnedMultiFieldTypes = Collections.newSetFromMap(new ConcurrentHashMap<>());
-  private final Map<String, Pattern>    patternCache          = new ConcurrentHashMap<>();
+  // LRU-evicting pattern cache: synchronized LinkedHashMap removes eldest entry when full
+  private final Map<String, Pattern>    patternCache;
+
+  {
+    // LinkedHashMap with access-order = true gives LRU eviction (oldest access evicted first)
+    patternCache = Collections.synchronizedMap(new java.util.LinkedHashMap<>(MAX_PATTERN_CACHE, 0.75f, true) {
+      @Override
+      protected boolean removeEldestEntry(final Map.Entry<String, Pattern> eldest) {
+        return size() > MAX_PATTERN_CACHE;
+      }
+    });
+  }
 
   public PromQLEvaluator(final DatabaseInternal database) {
     this(database, DEFAULT_LOOKBACK_MS);
@@ -437,20 +448,22 @@ public class PromQLEvaluator {
     if (regex.length() > MAX_REGEX_LENGTH)
       throw new IllegalArgumentException("Regex pattern exceeds maximum length of " + MAX_REGEX_LENGTH + " characters");
     // Reject patterns that cause catastrophic backtracking (ReDoS):
-    // nested quantifiers like (a+)+ and alternation groups like (a|aa)+
+    // covers nested quantifiers (a+)+, (a*b)*, (a+){n,} and alternation groups (a|aa)+
     if (REDOS_CHECK.matcher(regex).find())
       throw new IllegalArgumentException(
           "Regex pattern is not allowed (ReDoS risk): " + regex);
-    // Evict entire cache when full — simple but thread-safe with ConcurrentHashMap
-    if (patternCache.size() >= MAX_PATTERN_CACHE)
-      patternCache.clear();
-    return patternCache.computeIfAbsent(regex, r -> {
-      try {
-        return Pattern.compile(r);
-      } catch (final PatternSyntaxException e) {
-        throw new IllegalArgumentException("Invalid regex pattern: " + r, e);
-      }
-    });
+    // LRU-evicting cache: the synchronized LinkedHashMap automatically removes the
+    // eldest entry when size exceeds MAX_PATTERN_CACHE, avoiding thundering-herd
+    // re-compilation that bulk-clear caused.
+    synchronized (patternCache) {
+      return patternCache.computeIfAbsent(regex, r -> {
+        try {
+          return Pattern.compile(r);
+        } catch (final PatternSyntaxException e) {
+          throw new IllegalArgumentException("Invalid regex pattern: " + r, e);
+        }
+      });
+    }
   }
 
   private TagFilter buildTagFilter(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {

@@ -70,15 +70,16 @@ public final class DictionaryCodec {
       indices[i] = idx;
     }
 
-    // Calculate buffer size
+    // Pre-compute UTF-8 bytes once and reuse for both size calculation and writing
+    final byte[][] utf8Entries = new byte[nextIndex][];
     int size = 4 + 2; // count + dict size
     for (int i = 0; i < nextIndex; i++) {
-      final byte[] utf8 = dictEntries[i].getBytes(StandardCharsets.UTF_8);
-      if (utf8.length > 65535)
+      utf8Entries[i] = dictEntries[i].getBytes(StandardCharsets.UTF_8);
+      if (utf8Entries[i].length > 65535)
         throw new IllegalArgumentException(
             "Dictionary entry too long: UTF-8 encoding of '" + dictEntries[i].substring(0, Math.min(20, dictEntries[i].length()))
-                + "...' is " + utf8.length + " bytes (max 65535)");
-      size += 2 + utf8.length;
+                + "...' is " + utf8Entries[i].length + " bytes (max 65535)");
+      size += 2 + utf8Entries[i].length;
     }
     size += values.length * 2; // indices
 
@@ -87,9 +88,8 @@ public final class DictionaryCodec {
     buf.putShort((short) nextIndex);
 
     for (int i = 0; i < nextIndex; i++) {
-      final byte[] utf8 = dictEntries[i].getBytes(StandardCharsets.UTF_8);
-      buf.putShort((short) utf8.length);
-      buf.put(utf8);
+      buf.putShort((short) utf8Entries[i].length);
+      buf.put(utf8Entries[i]);
     }
 
     for (final int index : indices)
