@@ -274,6 +274,66 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
   }
 
   /**
+   * Regression test for issue #3514: creating an edge type whose name collides
+   * with a security group configuration key (like "access") must not fail
+   * with "Not a JSON Object: []".
+   * <p>
+   * The bug was in ServerSecurityDatabaseUser.updateFileAccess() which looked up
+   * the type name in the group config object instead of its "types" sub-object.
+   * When a type was named "access", it collided with the group's "access" key
+   * (a JSONArray), causing a ClassCastException/IllegalStateException.
+   */
+  @Test
+  void mergeEdgeTypeNamedAccessDoesNotCrashSecurity() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String query = "UNWIND $batch as row " +
+          "MATCH (a) WHERE ID(a) = row.source_id " +
+          "MATCH (b) WHERE ID(b) = row.target_id " +
+          "MERGE (a)-[r:`access`{chunk: row.features.chunk}]->(b) " +
+          "RETURN a, b, r";
+
+      final JSONObject featuresMap = new JSONObject().put("chunk", chunkId);
+      final JSONObject rowObj = new JSONObject()
+          .put("source_id", sourceId)
+          .put("target_id", targetId)
+          .put("features", featuresMap);
+      final JSONArray batchArray = new JSONArray().put(rowObj);
+      final JSONObject params = new JSONObject().put("batch", batchArray);
+
+      final JSONObject payload = new JSONObject()
+          .put("language", "opencypher")
+          .put("command", query)
+          .put("params", params);
+
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(
+              ("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.setRequestProperty("Content-Type", "application/json");
+
+      formatPayload(connection, payload);
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode())
+            .as("MERGE creating edge type 'access' must not crash with 'Not a JSON Object: []'")
+            .isEqualTo(200);
+
+        final String response = readResponse(connection);
+        final JSONObject json = new JSONObject(response);
+        assertThat(json.getJSONArray("result").length())
+            .as("Should return 1 result row")
+            .isEqualTo(1);
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  /**
    * Regression test for the security race condition in issue #3514:
    * Rapidly creating many new edge types via MERGE must all succeed without
    * "User 'root' is not allowed to create records" errors.

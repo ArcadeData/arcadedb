@@ -180,7 +180,8 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         configuredGroups.getJSONObject(SecurityManager.ANY) :
         NO_ACCESS_GROUP;
 
-    final JSONObject defaultType = defaultGroup.getJSONObject("types").getJSONObject(SecurityManager.ANY);
+    final JSONObject defaultGroupTypes = defaultGroup.getJSONObject("types");
+    final JSONObject defaultType = defaultGroupTypes.getJSONObject(SecurityManager.ANY);
 
     for (int i = 0; i < newFileAccessMap.length; ++i) {
       final DocumentType type = database.getSchema().getInvolvedTypeByBucketId(i);
@@ -222,9 +223,9 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         newFileAccessMap[i] = new boolean[] { false, false, false, false };
 
         final JSONObject t;
-        if (defaultGroup.has(typeName)) {
+        if (defaultGroupTypes.has(typeName)) {
           // APPLY THE FOUND TYPE FROM DEFAULT GROUP
-          t = defaultGroup.getJSONObject(typeName);
+          t = defaultGroupTypes.getJSONObject(typeName);
         } else
           // APPLY DEFAULT TYPE FROM DEFAULT GROUP
           t = defaultType;
