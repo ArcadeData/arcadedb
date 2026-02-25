@@ -89,7 +89,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        return (currentBatch < nRecords && (toIterator.hasNext() || (!toList.isEmpty() && fromIter.hasNext())));
+        return (currentBatch < nRecords && currentFrom != null && !toList.isEmpty()
+            && (toIterator.hasNext() || fromIter.hasNext()));
       }
 
       @Override
@@ -102,7 +103,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         if (currentTo == null) {
           loadNextFromTo();
           if (edgeToUpdate != null && !ifNotExists) {
-            System.out.println("edgeToUpdate = " + edgeToUpdate);
             currentTo = null;
             currentBatch++;
             return new UpdatableResult(edgeToUpdate);
