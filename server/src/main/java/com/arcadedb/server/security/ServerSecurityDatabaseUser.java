@@ -222,9 +222,10 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         newFileAccessMap[i] = new boolean[] { false, false, false, false };
 
         final JSONObject t;
-        if (defaultGroup.has(typeName)) {
+        final JSONObject defaultGroupTypes = defaultGroup.getJSONObject("types");
+        if (defaultGroupTypes.has(typeName)) {
           // APPLY THE FOUND TYPE FROM DEFAULT GROUP
-          t = defaultGroup.getJSONObject(typeName);
+          t = defaultGroupTypes.getJSONObject(typeName);
         } else
           // APPLY DEFAULT TYPE FROM DEFAULT GROUP
           t = defaultType;
