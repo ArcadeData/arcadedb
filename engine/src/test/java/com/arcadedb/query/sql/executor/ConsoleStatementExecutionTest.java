@@ -68,13 +68,32 @@ class ConsoleStatementExecutionTest extends TestHelper {
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
     final String msg = item.getProperty("message");
-    // The message should contain the document properties as JSON, not internal debug format
+    // The message should contain the document properties as JSON with metadata
     assertThat(msg).isNotNull();
     assertThat(msg).contains("\"name\"");
     assertThat(msg).contains("\"test\"");
-    // Should not contain internal debug format with @type separator
-    assertThat(msg).doesNotContain("@cat");
-    assertThat(msg).doesNotContain("@type");
+    assertThat(msg).contains("@rid");
+    assertThat(msg).contains("@type");
+  }
+
+  @Test
+  void logEmptyDocumentSerialization() {
+    // Issue #3520: CONSOLE.log should show metadata even for empty documents
+    database.command("sql", "CREATE DOCUMENT TYPE doc3520empty");
+    database.begin();
+    database.command("sql", "INSERT INTO doc3520empty");
+    database.commit();
+
+    final ResultSet result = database.command("sqlscript",
+        "LET $x = (SELECT FROM doc3520empty);\nCONSOLE.log $x");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    final String msg = item.getProperty("message");
+    // Even an empty document should show @rid and @type, not just {}
+    assertThat(msg).isNotNull();
+    assertThat(msg).contains("@rid");
+    assertThat(msg).contains("@type");
+    assertThat(msg).doesNotContain("[{}]");
   }
 
   @Test
