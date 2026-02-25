@@ -18,71 +18,83 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.ContextConfiguration;
-import com.arcadedb.GlobalConfiguration;
-import org.junit.jupiter.api.Disabled;
+import com.arcadedb.log.LogManager;
+import org.apache.ratis.protocol.RaftClientReply;
+import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.server.RaftServer;
 import org.junit.jupiter.api.Test;
+
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration test: 3-node cluster with majority quorum.
- * Tests split-brain scenario: network partition isolates the leader from the majority.
+ * Integration test: 3-node cluster via MiniRaftClusterWithGrpc.
+ * Tests leader loss and recovery: the 2-node majority elects a new leader after
+ * the leader is killed, accepts further writes, then the old leader restarts and converges.
+ * Verifies that all 3 state machines applied all 100 entries after convergence.
  * <p>
- * Expected behavior in a real split-brain scenario:
- * <ul>
- *   <li>The isolated leader loses its leadership because it cannot reach a quorum.</li>
- *   <li>The majority partition elects a new leader.</li>
- *   <li>Writes on the isolated (old) leader fail because it can no longer commit to a quorum.</li>
- *   <li>Writes on the new leader succeed because the majority partition has quorum.</li>
- *   <li>When the partition heals, the old leader discovers the new term and steps down.</li>
- *   <li>Any uncommitted entries on the old leader are discarded; Raft guarantees consistency.</li>
- * </ul>
- * <p>
- * This test is disabled because true network partition simulation requires Ratis test utilities
- * (e.g., MiniRaftCluster with simulated network partitions) that are not available in the
- * current test infrastructure. The in-JVM test setup shares the same network stack, so we
- * cannot selectively block messages between specific peers.
+ * Note: true split-brain (where both partitions continue accepting writes simultaneously)
+ * requires gRPC-level message interception. This test covers the key correctness property
+ * achievable in-process: majority continues after leader loss and the recovered node
+ * converges to the majority state.
  */
-@Disabled("Requires Ratis MiniRaftCluster or network simulation utilities for true partition testing")
-class RaftSplitBrain3NodesIT extends BaseRaftHATest {
+class RaftSplitBrain3NodesIT extends BaseMiniRaftTest {
+
+  private static final String DB_NAME = "mini-raft-test";
 
   @Override
-  protected void onServerConfiguration(final ContextConfiguration config) {
-    super.onServerConfiguration(config);
-    config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
-  }
-
-  @Override
-  protected int getServerCount() {
+  protected int getPeerCount() {
     return 3;
   }
 
   @Test
-  void splitBrainMajorityPartitionElectsNewLeader() {
-    // This test documents the expected behavior for a split-brain scenario.
-    // When network partition simulation utilities become available, this test should:
-    //
-    // 1. Write initial data on the leader
-    // 2. Partition the network: isolate the leader from the other 2 nodes
-    // 3. Verify: the isolated leader eventually loses leadership (cannot maintain quorum)
-    // 4. Verify: the majority partition (2 nodes) elects a new leader
-    // 5. Write data on the new leader (should succeed)
-    // 6. Attempt write on the isolated old leader (should fail/timeout)
-    // 7. Heal the partition
-    // 8. Verify: the old leader discovers the new term and steps down
-    // 9. Verify: all nodes converge to the same state (data from the new leader wins)
-
-    final int leaderIndex = findLeaderIndex();
-    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
-  }
-
-  private int findLeaderIndex() {
-    for (int i = 0; i < getServerCount(); i++) {
-      final RaftHAPlugin plugin = getRaftPlugin(i);
-      if (plugin != null && plugin.isLeader())
-        return i;
+  void majorityElectsNewLeaderAfterLeaderLoss() throws Exception {
+    // Phase 1: submit 50 entries with all 3 nodes up
+    for (int i = 0; i < 50; i++) {
+      final RaftClientReply reply = submitSchemaEntry(DB_NAME, null);
+      assertThat(reply.isSuccess()).as("Entry %d should succeed with 3 nodes up", i).isTrue();
     }
-    return -1;
+
+    assertAllPeersConverged(50);
+
+    // Phase 2: kill the leader
+    final int leaderPeerIndex = findLeaderPeerIndex();
+    assertThat(leaderPeerIndex).as("A leader must exist").isGreaterThanOrEqualTo(0);
+    final RaftPeerId leaderPeerId = getPeers().get(leaderPeerIndex).getId();
+
+    LogManager.instance().log(this, Level.INFO, "TEST: Killing leader peer %s", leaderPeerId);
+    killPeer(leaderPeerIndex);
+
+    // Phase 3: wait for new leader among surviving 2 nodes
+    final long electionDeadline = System.currentTimeMillis() + 30_000;
+    int newLeaderIndex = -1;
+    while (System.currentTimeMillis() < electionDeadline) {
+      newLeaderIndex = findLeaderPeerIndex();
+      if (newLeaderIndex >= 0 && newLeaderIndex != leaderPeerIndex)
+        break;
+      Thread.sleep(500);
+    }
+    assertThat(newLeaderIndex).as("A new leader must be elected").isGreaterThanOrEqualTo(0);
+    assertThat(newLeaderIndex).as("New leader must differ from old leader").isNotEqualTo(leaderPeerIndex);
+    LogManager.instance().log(this, Level.INFO, "TEST: New leader elected: peer index %d", newLeaderIndex);
+
+    // Phase 4: submit 50 more entries on the new 2-node majority
+    for (int i = 0; i < 50; i++) {
+      final RaftClientReply reply = submitSchemaEntry(DB_NAME, null);
+      assertThat(reply.isSuccess()).as("Entry %d after failover should succeed", i).isTrue();
+    }
+
+    // Phase 5: restart the old leader — it rejoins and converges to the majority log
+    LogManager.instance().log(this, Level.INFO, "TEST: Restarting old leader peer index %d", leaderPeerIndex);
+    restartPeer(leaderPeerIndex);
+
+    // All 3 nodes must have applied all 100 entries
+    assertAllPeersConverged(100);
+
+    // Verify old leader is no longer the leader
+    final RaftServer.Division restarted = getCluster().getDivision(leaderPeerId);
+    assertThat(restarted).isNotNull();
+    assertThat(restarted.getInfo().isLeader()).as("Old leader should be a follower after restart").isFalse();
   }
 }
