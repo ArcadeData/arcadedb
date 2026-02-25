@@ -5049,7 +5049,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           parenExpr.setStatement(fromItem.statement);
           leftExpr.mathExpression = parenExpr;
         } else if (fromItem.identifier != null) {
-          leftExpr.mathExpression = new BaseExpression(fromItem.identifier);
+          leftExpr.mathExpression = new BaseExpression(fromItem.identifier, fromItem.modifier);
         } else if (fromItem.rids != null) {
           // Handle RID, array of RIDs, or empty array
           if (fromItem.rids.isEmpty()) {
@@ -5103,7 +5103,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           parenExpr.setStatement(toItem.statement);
           rightExpr.mathExpression = parenExpr;
         } else if (toItem.identifier != null) {
-          rightExpr.mathExpression = new BaseExpression(toItem.identifier);
+          rightExpr.mathExpression = new BaseExpression(toItem.identifier, toItem.modifier);
         } else if (toItem.rids != null) {
           // Handle RID, array of RIDs, or empty array
           if (toItem.rids.isEmpty()) {

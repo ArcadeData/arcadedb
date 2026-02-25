@@ -290,4 +290,56 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
       assertThat((Object) result.getProperty("created_timestamp")).isNotNull();
     });
   }
+
+  @Test
+  @DisplayName("createEdgeWithVariableModifiers - batch $var[0].rid pattern")
+  void createEdgeWithVariableModifiers() {
+    database.getSchema().createVertexType("VarModV", 1);
+    database.getSchema().createEdgeType("VarModE", 1);
+
+    database.transaction(() -> {
+      // Create a source vertex
+      final MutableVertex v1 = database.newVertex("VarModV").save();
+
+      // Use batch script with LET variable + array index + property accessor
+      final ResultSet rs = database.command("sqlscript", """
+          LET $t0 = INSERT INTO VarModV CONTENT {} RETURN @rid AS rid;
+          CREATE EDGE VarModE FROM %s TO $t0[0].rid;
+          """.formatted(v1.getIdentity()));
+
+      // Verify edge was created
+      final ResultSet edges = database.query("sql", "SELECT FROM VarModE");
+      assertThat(edges.hasNext()).isTrue();
+      final Result edge = edges.next();
+      assertThat(edge.isEdge()).isTrue();
+      assertThat(edges.hasNext()).isFalse();
+      edges.close();
+    });
+  }
+
+  @Test
+  @DisplayName("createEdgeWithVariableArrayIndex - batch $var[0] pattern")
+  void createEdgeWithVariableArrayIndex() {
+    database.getSchema().createVertexType("VarIdxV", 1);
+    database.getSchema().createEdgeType("VarIdxE", 1);
+
+    database.transaction(() -> {
+      // Create a source vertex
+      final MutableVertex v1 = database.newVertex("VarIdxV").save();
+
+      // Use batch script with LET variable + array index (Result contains @rid)
+      final ResultSet rs = database.command("sqlscript", """
+          LET $t0 = INSERT INTO VarIdxV CONTENT {};
+          CREATE EDGE VarIdxE FROM %s TO $t0[0];
+          """.formatted(v1.getIdentity()));
+
+      // Verify edge was created
+      final ResultSet edges = database.query("sql", "SELECT FROM VarIdxE");
+      assertThat(edges.hasNext()).isTrue();
+      final Result edge = edges.next();
+      assertThat(edge.isEdge()).isTrue();
+      assertThat(edges.hasNext()).isFalse();
+      edges.close();
+    });
+  }
 }
