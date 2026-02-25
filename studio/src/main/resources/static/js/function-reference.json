@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-24",
+  "generated": "2026-02-25",
   "categories": {
     "SQL Functions": {
       "Collection": [
@@ -60,39 +60,165 @@
       ],
       "Geo": [
         {
+          "name": "geo.dwithin",
+          "syntax": "geo.dWithin(<geometry>, <shape>, <distanceDegrees>)",
+          "description": "geo.dWithin(<geometry>, <shape>, <distanceDegrees>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.within",
+          "syntax": "geo.within(<geometry>, <shape>)",
+          "description": "geo.within(<geometry>, <shape>)",
+          "since": "sql"
+        },
+        {
           "name": "circle",
-          "syntax": "circle(<center-x>,<center-y>,<distance>)",
-          "description": "circle(<center-x>,<center-y>,<distance>)",
+          "syntax": "circle(<center-x>,<center-y>,<distance>) [deprecated: use geo.buffer(geo.point(x,y), radius)]",
+          "description": "circle(<center-x>,<center-y>,<distance>) [deprecated: use geo.buffer(geo.point(x,y), radius)]",
+          "since": "sql"
+        },
+        {
+          "name": "geo.crosses",
+          "syntax": "geo.crosses(<geometry1>, <geometry2>)",
+          "description": "geo.crosses(<geometry1>, <geometry2>)",
           "since": "sql"
         },
         {
           "name": "linestring",
-          "syntax": "lineString([ <point>* ])",
-          "description": "lineString([ <point>* ])",
+          "syntax": "geo.lineString([[x1,y1],[x2,y2],...])",
+          "description": "geo.lineString([[x1,y1],[x2,y2],...])",
+          "since": "sql"
+        },
+        {
+          "name": "geo.point",
+          "syntax": "geo.point(<x>, <y>)",
+          "description": "geo.point(<x>, <y>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.x",
+          "syntax": "geo.x(<point>)",
+          "description": "geo.x(<point>)",
           "since": "sql"
         },
         {
           "name": "distance",
-          "syntax": "distance(<point1>,<point2>[,<unit>]) or distance(<x1>,<y1>,<x2>,<y2>[,<unit>])",
-          "description": "distance(<point1>,<point2>[,<unit>]) or distance(<x1>,<y1>,<x2>,<y2>[,<unit>])",
+          "syntax": "geo.distance(<point1>, <point2>[, <unit>])",
+          "description": "geo.distance(<point1>, <point2>[, <unit>])",
+          "since": "sql"
+        },
+        {
+          "name": "geo.y",
+          "syntax": "geo.y(<point>)",
+          "description": "geo.y(<point>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.polygon",
+          "syntax": "geo.polygon([[x1,y1],[x2,y2],...])",
+          "description": "geo.polygon([[x1,y1],[x2,y2],...])",
+          "since": "sql"
+        },
+        {
+          "name": "geo.astext",
+          "syntax": "geo.asText(<geometry>)",
+          "description": "geo.asText(<geometry>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.geomfromtext",
+          "syntax": "geo.geomFromText(<wkt>)",
+          "description": "geo.geomFromText(<wkt>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.buffer",
+          "syntax": "geo.buffer(<geometry>, <distance>)",
+          "description": "geo.buffer(<geometry>, <distance>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.contains",
+          "syntax": "geo.contains(<geometry>, <shape>)",
+          "description": "geo.contains(<geometry>, <shape>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.disjoint",
+          "syntax": "geo.disjoint(<geometry1>, <geometry2>)",
+          "description": "geo.disjoint(<geometry1>, <geometry2>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.linestring",
+          "syntax": "geo.lineString([[x1,y1],[x2,y2],...])",
+          "description": "geo.lineString([[x1,y1],[x2,y2],...])",
+          "since": "sql"
+        },
+        {
+          "name": "geo.asgeojson",
+          "syntax": "geo.asGeoJson(<geometry>)",
+          "description": "geo.asGeoJson(<geometry>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.overlaps",
+          "syntax": "geo.overlaps(<geometry1>, <geometry2>)",
+          "description": "geo.overlaps(<geometry1>, <geometry2>)",
           "since": "sql"
         },
         {
           "name": "polygon",
-          "syntax": "polygon([ <point>* ])",
-          "description": "polygon([ <point>* ])",
+          "syntax": "geo.polygon([[x1,y1],[x2,y2],...])",
+          "description": "geo.polygon([[x1,y1],[x2,y2],...])",
+          "since": "sql"
+        },
+        {
+          "name": "geo.envelope",
+          "syntax": "geo.envelope(<geometry>)",
+          "description": "geo.envelope(<geometry>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.area",
+          "syntax": "geo.area(<geometry>)",
+          "description": "geo.area(<geometry>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.intersects",
+          "syntax": "geo.intersects(<geometry1>, <geometry2>)",
+          "description": "geo.intersects(<geometry1>, <geometry2>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.equals",
+          "syntax": "geo.equals(<geometry1>, <geometry2>)",
+          "description": "geo.equals(<geometry1>, <geometry2>)",
           "since": "sql"
         },
         {
           "name": "rectangle",
-          "syntax": "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>)",
-          "description": "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>)",
+          "syntax": "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>) [deprecated: use geo.geomFromText with POLYGON WKT]",
+          "description": "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>) [deprecated: use geo.geomFromText with POLYGON WKT]",
           "since": "sql"
         },
         {
           "name": "point",
-          "syntax": "point(<x>,<y>)",
-          "description": "point(<x>,<y>)",
+          "syntax": "geo.point(<x>, <y>)",
+          "description": "geo.point(<x>, <y>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.touches",
+          "syntax": "geo.touches(<geometry1>, <geometry2>)",
+          "description": "geo.touches(<geometry1>, <geometry2>)",
+          "since": "sql"
+        },
+        {
+          "name": "geo.distance",
+          "syntax": "geo.distance(<point1>, <point2>[, <unit>])",
+          "description": "geo.distance(<point1>, <point2>[, <unit>])",
           "since": "sql"
         }
       ],
@@ -149,12 +275,6 @@
           "name": "in",
           "syntax": "Syntax error: in([<labels>])",
           "description": "Syntax error: in([<labels>])",
-          "since": "sql"
-        },
-        {
-          "name": "ciao",
-          "syntax": "just return 'ciao'",
-          "description": "just return 'ciao'",
           "since": "sql"
         },
         {
@@ -660,12 +780,6 @@
       ],
       "Misc": [
         {
-          "name": "test_dropdatabase",
-          "syntax": "test_dropDatabase",
-          "description": "test_dropDatabase",
-          "since": "sql"
-        },
-        {
           "name": "coalesce",
           "syntax": "Returns the first not-null parameter or null if all parameters are null. Syntax: coalesce(<field|value> [,<field|value>]*)",
           "description": "Returns the first not-null parameter or null if all parameters are null. Syntax: coalesce(<field|value> [,<field|value>]*)",
@@ -681,18 +795,6 @@
           "name": "ifempty",
           "syntax": "Syntax error: ifempty(<field|value>, <return_value_if_empty> [,<return_value_if_not_empty>])",
           "description": "Syntax error: ifempty(<field|value>, <return_value_if_empty> [,<return_value_if_not_empty>])",
-          "since": "sql"
-        },
-        {
-          "name": "test_executeinnewdatabase",
-          "syntax": "test_executeInNewDatabase",
-          "description": "test_executeInNewDatabase",
-          "since": "sql"
-        },
-        {
-          "name": "test_testreflectionmethod",
-          "syntax": "test_testReflectionMethod",
-          "description": "test_testReflectionMethod",
           "since": "sql"
         },
         {
@@ -714,18 +816,6 @@
           "since": "sql"
         },
         {
-          "name": "test_createdatabase",
-          "syntax": "test_createDatabase",
-          "description": "test_createDatabase",
-          "since": "sql"
-        },
-        {
-          "name": "test_checkactivedatabases",
-          "syntax": "test_checkActiveDatabases",
-          "description": "test_checkActiveDatabases",
-          "since": "sql"
-        },
-        {
           "name": "ifnull",
           "syntax": "Syntax error: ifnull(<field|value>, <return_value_if_null> [,<return_value_if_not_null>])",
           "description": "Syntax error: ifnull(<field|value>, <return_value_if_null> [,<return_value_if_not_null>])",
@@ -738,18 +828,6 @@
           "since": "sql"
         },
         {
-          "name": "test_expectexception",
-          "syntax": "test_expectException",
-          "description": "test_expectException",
-          "since": "sql"
-        },
-        {
-          "name": "test_createrandomtype",
-          "syntax": "test_createRandomType",
-          "description": "test_createRandomType",
-          "since": "sql"
-        },
-        {
           "name": "decode",
           "syntax": "decode(<value>, <format>)",
           "description": "decode(<value>, <format>)",
@@ -759,12 +837,6 @@
           "name": "uuid",
           "syntax": "uuid()",
           "description": "uuid()",
-          "since": "sql"
-        },
-        {
-          "name": "test_endalltests",
-          "syntax": "test_endAllTests",
-          "description": "test_endAllTests",
           "since": "sql"
         }
       ],
@@ -2411,7 +2483,6 @@
     "bothv",
     "capitalize",
     "charat",
-    "ciao",
     "circle",
     "coalesce",
     "coll.distinct",
@@ -2461,6 +2532,27 @@
     "field",
     "first",
     "format",
+    "geo.area",
+    "geo.asgeojson",
+    "geo.astext",
+    "geo.buffer",
+    "geo.contains",
+    "geo.crosses",
+    "geo.disjoint",
+    "geo.distance",
+    "geo.dwithin",
+    "geo.envelope",
+    "geo.equals",
+    "geo.geomfromtext",
+    "geo.intersects",
+    "geo.linestring",
+    "geo.overlaps",
+    "geo.point",
+    "geo.polygon",
+    "geo.touches",
+    "geo.within",
+    "geo.x",
+    "geo.y",
     "hash",
     "if",
     "ifempty",
@@ -2619,14 +2711,6 @@
     "sum",
     "symmetricdifference",
     "sysdate",
-    "test_checkactivedatabases",
-    "test_createdatabase",
-    "test_createrandomtype",
-    "test_dropdatabase",
-    "test_endalltests",
-    "test_executeinnewdatabase",
-    "test_expectexception",
-    "test_testreflectionmethod",
     "text.byteCount",
     "text.camelCase",
     "text.capitalize",
