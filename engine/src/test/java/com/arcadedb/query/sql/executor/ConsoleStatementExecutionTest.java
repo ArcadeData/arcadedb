@@ -91,6 +91,23 @@ class ConsoleStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void letWithAndWithoutParenthesesProduceSameConsoleOutput() {
+    // Issue #3519: LET $x = SELECT 1 vs LET $x = (SELECT 1) produce different CONSOLE.log output
+    final ResultSet resultWithParens = database.command("sqlscript",
+        "LET $x = (SELECT 1);\nCONSOLE.log $x");
+    assertThat(resultWithParens.hasNext()).isTrue();
+    final String msgWithParens = resultWithParens.next().getProperty("message");
+
+    final ResultSet resultWithoutParens = database.command("sqlscript",
+        "LET $x = SELECT 1;\nCONSOLE.log $x");
+    assertThat(resultWithoutParens.hasNext()).isTrue();
+    final String msgWithoutParens = resultWithoutParens.next().getProperty("message");
+
+    // Both should produce the same output (the actual query result, not execution plan)
+    assertThat(msgWithoutParens).isEqualTo(msgWithParens);
+  }
+
+  @Test
   void invalidLevel() {
     try {
       database.command("sqlscript", "console.bla 'foo bar'");
