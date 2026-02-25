@@ -112,6 +112,6 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
 
   @Override
   public String toString() {
-    return getExecutionPlan().get().prettyPrint(0, 2);
+    return content.toString();
   }
 }
