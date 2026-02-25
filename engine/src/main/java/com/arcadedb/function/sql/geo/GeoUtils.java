@@ -42,6 +42,10 @@ public class GeoUtils {
   static final JtsSpatialContextFactory FACTORY         = new JtsSpatialContextFactory();
   static final JtsSpatialContext        SPATIAL_CONTEXT = new JtsSpatialContext(FACTORY);
 
+  // WKTReader/WKTWriter are not thread-safe; use ThreadLocal to avoid per-call allocation
+  private static final ThreadLocal<WKTReader> WKT_READER = ThreadLocal.withInitial(WKTReader::new);
+  private static final ThreadLocal<WKTWriter> WKT_WRITER = ThreadLocal.withInitial(WKTWriter::new);
+
   public static SpatialContextFactory getFactory() {
     return FACTORY;
   }
@@ -51,6 +55,8 @@ public class GeoUtils {
   }
 
   public static double getDoubleValue(final Object param) {
+    if (!(param instanceof Number))
+      throw new IllegalArgumentException("Expected a numeric value, got: " + (param == null ? "null" : param.getClass().getSimpleName()));
     return ((Number) param).doubleValue();
   }
 
@@ -112,7 +118,7 @@ public class GeoUtils {
     if (wkt.startsWith("ENVELOPE"))
       return parseEnvelopeWkt(wkt);
     try {
-      return new WKTReader().read(wkt);
+      return WKT_READER.get().read(wkt);
     } catch (ParseException e) {
       throw new IllegalArgumentException("Cannot parse JTS geometry from WKT: " + wkt, e);
     }
@@ -126,11 +132,14 @@ public class GeoUtils {
     final double maxX = rect.getMaxX();
     final double minY = rect.getMinY();
     final double maxY = rect.getMaxY();
-    final String wkt = String.format(Locale.US,
-        "POLYGON ((%s %s, %s %s, %s %s, %s %s, %s %s))",
-        minX, minY, maxX, minY, maxX, maxY, minX, maxY, minX, minY);
+    final String wkt = "POLYGON ((" +
+        formatCoord(minX) + " " + formatCoord(minY) + ", " +
+        formatCoord(maxX) + " " + formatCoord(minY) + ", " +
+        formatCoord(maxX) + " " + formatCoord(maxY) + ", " +
+        formatCoord(minX) + " " + formatCoord(maxY) + ", " +
+        formatCoord(minX) + " " + formatCoord(minY) + "))";
     try {
-      return new WKTReader().read(wkt);
+      return WKT_READER.get().read(wkt);
     } catch (ParseException e) {
       throw new IllegalArgumentException("Cannot build polygon from rectangle: " + rect, e);
     }
@@ -152,11 +161,14 @@ public class GeoUtils {
     final double maxX = Double.parseDouble(parts[1].trim());
     final double maxY = Double.parseDouble(parts[2].trim());
     final double minY = Double.parseDouble(parts[3].trim());
-    final String wkt = String.format(Locale.US,
-        "POLYGON ((%s %s, %s %s, %s %s, %s %s, %s %s))",
-        minX, minY, maxX, minY, maxX, maxY, minX, maxY, minX, minY);
+    final String wkt = "POLYGON ((" +
+        formatCoord(minX) + " " + formatCoord(minY) + ", " +
+        formatCoord(maxX) + " " + formatCoord(minY) + ", " +
+        formatCoord(maxX) + " " + formatCoord(maxY) + ", " +
+        formatCoord(minX) + " " + formatCoord(maxY) + ", " +
+        formatCoord(minX) + " " + formatCoord(minY) + "))";
     try {
-      return new WKTReader().read(wkt);
+      return WKT_READER.get().read(wkt);
     } catch (ParseException e) {
       throw new IllegalArgumentException("Cannot parse ENVELOPE as polygon: " + envelopeWkt, e);
     }
@@ -168,7 +180,7 @@ public class GeoUtils {
   public static String jtsToWKT(final Geometry geometry) {
     if (geometry == null)
       return null;
-    return new WKTWriter().write(geometry);
+    return WKT_WRITER.get().write(geometry);
   }
 
   /**

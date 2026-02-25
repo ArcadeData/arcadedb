@@ -74,9 +74,6 @@ import java.util.logging.Level;
  */
 public class LSMTreeGeoIndex implements Index, IndexInternal {
 
-  /** Default geohash precision level (same as GeoIndexMetadata default, ~2.4 m cell resolution). */
-  public static final int DEFAULT_PRECISION = GeoIndexMetadata.DEFAULT_PRECISION;
-
   private final LSMTreeIndex               underlyingIndex;
   private final int                        precision;
   private final GeohashPrefixTree          grid;
@@ -110,7 +107,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
    * Called at load time. Uses the default precision.
    */
   public LSMTreeGeoIndex(final LSMTreeIndex index) {
-    this(index, DEFAULT_PRECISION);
+    this(index, GeoIndexMetadata.DEFAULT_PRECISION);
   }
 
   /**
@@ -140,7 +137,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
    */
   public LSMTreeGeoIndex(final DatabaseInternal database, final String name, final String filePath, final int fileId,
       final ComponentFile.MODE mode, final int pageSize, final int version) {
-    this.precision = DEFAULT_PRECISION;
+    this.precision = GeoIndexMetadata.DEFAULT_PRECISION;
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
     try {

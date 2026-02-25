@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.function.sql.geo.GeoUtils;
+import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -57,7 +58,7 @@ class LSMTreeGeoIndexTest extends TestHelper {
         ComponentFile.MODE.READ_WRITE,
         LSMTreeIndexAbstract.DEF_PAGE_SIZE,
         LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
-        LSMTreeGeoIndex.DEFAULT_PRECISION
+        GeoIndexMetadata.DEFAULT_PRECISION
     );
 
     // Register the paginated component so commit2ndPhase can look it up by file ID

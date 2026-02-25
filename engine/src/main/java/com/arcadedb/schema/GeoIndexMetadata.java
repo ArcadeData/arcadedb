@@ -83,6 +83,8 @@ public class GeoIndexMetadata extends IndexMetadata {
    * @param precision the precision level (1–12)
    */
   public void setPrecision(final int precision) {
+    if (precision < 1 || precision > 12)
+      throw new IllegalArgumentException("Geospatial index precision must be between 1 and 12, got: " + precision);
     this.precision = precision;
   }
 }
