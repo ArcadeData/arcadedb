@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class FullTextNestedListByItemTest extends TestHelper {
+class FullTextNestedListByItemTest extends TestHelper {
 
   @Test
   void containsTextOnNestedPathUsesIndex() {

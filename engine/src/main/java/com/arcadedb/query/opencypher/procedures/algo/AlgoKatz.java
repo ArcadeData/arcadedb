@@ -30,6 +30,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -143,7 +144,7 @@ public class AlgoKatz extends AbstractAlgoProcedure {
     final double[] finalScores = scores;
     final double finalMax = maxScore > 0 ? maxScore : 1.0;
 
-    return java.util.stream.IntStream.range(0, n).mapToObj(i -> {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", vertices.get(i).getIdentity());
       r.setProperty("score", finalScores[i] / finalMax);

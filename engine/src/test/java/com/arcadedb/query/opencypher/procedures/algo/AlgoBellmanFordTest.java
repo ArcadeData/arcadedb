@@ -28,6 +28,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -100,7 +101,7 @@ class AlgoBellmanFordTest {
 
     final Map<String, Object> path = result.getProperty("path");
     assertThat(path).isNotNull();
-    assertThat(((java.util.List<?>) path.get("nodes"))).hasSize(4);
+    assertThat(((List<?>) path.get("nodes"))).hasSize(4);
   }
 
   @Test

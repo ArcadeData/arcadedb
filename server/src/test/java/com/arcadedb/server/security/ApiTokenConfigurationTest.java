@@ -29,6 +29,7 @@ import java.io.File;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
 class ApiTokenConfigurationTest {
   private static final String TEST_CONFIG_PATH = "target/test-api-tokens";
@@ -49,7 +50,7 @@ class ApiTokenConfigurationTest {
   }
 
   @Test
-  void testCreateToken() {
+  void createToken() {
     final JSONObject permissions = new JSONObject()
         .put("types", new JSONObject()
             .put("*", new JSONObject().put("access", new JSONArray().put("readRecord"))))
@@ -65,7 +66,7 @@ class ApiTokenConfigurationTest {
   }
 
   @Test
-  void testGetToken() {
+  void getToken() {
     final JSONObject permissions = new JSONObject();
     final JSONObject created = config.createToken("Token1", "db1", 0, permissions);
     final String tokenValue = created.getString("token");
@@ -76,12 +77,12 @@ class ApiTokenConfigurationTest {
   }
 
   @Test
-  void testGetTokenNotFound() {
+  void getTokenNotFound() {
     assertThat(config.getToken("at-nonexistent")).isNull();
   }
 
   @Test
-  void testDeleteToken() {
+  void deleteToken() {
     final JSONObject created = config.createToken("Token1", "db1", 0, new JSONObject());
     final String tokenValue = created.getString("token");
     final String tokenHash = ApiTokenConfiguration.hashToken(tokenValue);
@@ -91,21 +92,20 @@ class ApiTokenConfigurationTest {
   }
 
   @Test
-  void testDeleteTokenRejectsPlaintext() {
+  void deleteTokenRejectsPlaintext() {
     final JSONObject created = config.createToken("Token1", "db1", 0, new JSONObject());
     final String tokenValue = created.getString("token");
 
-    org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-        () -> config.deleteToken(tokenValue));
+    assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() -> config.deleteToken(tokenValue));
   }
 
   @Test
-  void testDeleteTokenNotFound() {
+  void deleteTokenNotFound() {
     assertThat(config.deleteToken("nonexistent-hash-that-does-not-start-with-prefix")).isFalse();
   }
 
   @Test
-  void testListTokens() {
+  void listTokens() {
     config.createToken("Token1", "db1", 0, new JSONObject());
     config.createToken("Token2", "db2", 0, new JSONObject());
 
@@ -114,7 +114,7 @@ class ApiTokenConfigurationTest {
   }
 
   @Test
-  void testExpiredTokenReturnsNull() {
+  void expiredTokenReturnsNull() {
     final long pastTime = System.currentTimeMillis() - 10000;
     final JSONObject created = config.createToken("Expired", "db1", pastTime, new JSONObject());
     final String tokenValue = created.getString("token");
@@ -123,7 +123,7 @@ class ApiTokenConfigurationTest {
   }
 
   @Test
-  void testLoadSaveRoundTrip() {
+  void loadSaveRoundTrip() {
     config.createToken("Persistent", "db1", 0, new JSONObject()
         .put("types", new JSONObject()
             .put("*", new JSONObject().put("access", new JSONArray().put("readRecord")))));
@@ -138,7 +138,7 @@ class ApiTokenConfigurationTest {
   }
 
   @Test
-  void testLoadRemovesExpiredTokens() {
+  void loadRemovesExpiredTokens() {
     // Create a token that will expire immediately
     final long pastTime = System.currentTimeMillis() - 1000;
     config.createToken("WillExpire", "db1", pastTime, new JSONObject());
@@ -154,18 +154,17 @@ class ApiTokenConfigurationTest {
   }
 
   @Test
-  void testDuplicateNameThrows() {
+  void duplicateNameThrows() {
     config.createToken("SameName", "db1", 0, new JSONObject());
 
-    org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-        () -> config.createToken("SameName", "db2", 0, new JSONObject()));
+    assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() -> config.createToken("SameName", "db2", 0, new JSONObject()));
 
     // Only one token should exist
     assertThat(config.listTokens()).hasSize(1);
   }
 
   @Test
-  void testIsApiToken() {
+  void isApiToken() {
     assertThat(ApiTokenConfiguration.isApiToken("at-550e8400-e29b-41d4-a716-446655440000")).isTrue();
     assertThat(ApiTokenConfiguration.isApiToken("AU-some-session-token")).isFalse();
     assertThat(ApiTokenConfiguration.isApiToken(null)).isFalse();

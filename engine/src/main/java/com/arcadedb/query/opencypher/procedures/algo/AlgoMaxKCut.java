@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -205,11 +206,11 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
 
     // Fill weights from edge properties
     for (int i = 0; i < n; i++) {
-      final Iterable<com.arcadedb.graph.Edge> edges = relTypes != null && relTypes.length > 0 ?
+      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
           vertices.get(i).getEdges(dir, relTypes) :
           vertices.get(i).getEdges(dir);
       int pos = 0;
-      for (final com.arcadedb.graph.Edge e : edges) {
+      for (final Edge e : edges) {
         final RID nbRid = neighborRid(e, vertices.get(i).getIdentity(), dir);
         if (nbRid == null || !ridToIdx.containsKey(nbRid))
           continue;

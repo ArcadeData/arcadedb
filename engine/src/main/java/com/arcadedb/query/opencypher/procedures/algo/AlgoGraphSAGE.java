@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -152,7 +153,7 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
       for (int i = 0; i < n; i++) {
         // Mean aggregation over neighbours
         final int deg = degree[i];
-        java.util.Arrays.fill(agg, 0.0);
+        Arrays.fill(agg, 0.0);
         if (deg > 0) {
           for (final int j : adj[i])
             for (int d = 0; d < curDim; d++)

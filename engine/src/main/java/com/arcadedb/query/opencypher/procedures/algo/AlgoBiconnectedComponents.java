@@ -29,9 +29,11 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -180,7 +182,7 @@ public class AlgoBiconnectedComponents extends AbstractAlgoProcedure {
           // If p is an articulation point w.r.t. edge (p, u), pop a biconnected component
           if (low[u] >= disc[p]) {
             final int cid = compId[0]++;
-            final java.util.Set<Integer> componentNodes = new java.util.HashSet<>();
+            final Set<Integer> componentNodes = new HashSet<>();
             while (true) {
               final int[] edge = edgeStack.pop();
               componentNodes.add(edge[0]);
@@ -195,7 +197,7 @@ public class AlgoBiconnectedComponents extends AbstractAlgoProcedure {
           // Root — pop remaining edges as one component
           if (!edgeStack.isEmpty()) {
             final int cid = compId[0]++;
-            final java.util.Set<Integer> componentNodes = new java.util.HashSet<>();
+            final Set<Integer> componentNodes = new HashSet<>();
             while (!edgeStack.isEmpty()) {
               final int[] edge = edgeStack.pop();
               componentNodes.add(edge[0]);

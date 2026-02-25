@@ -113,6 +113,7 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | org.apache.lucene | lucene-queries | 10.3.2 | Apache 2.0 | https://lucene.apache.org/ |
 | org.apache.lucene | lucene-sandbox | 10.3.2 | Apache 2.0 | https://lucene.apache.org/ |
 | org.apache.lucene | lucene-facet | 10.3.2 | Apache 2.0 | https://lucene.apache.org/ |
+| org.apache.lucene | lucene-spatial-extras | 10.3.2 | Apache 2.0 | https://lucene.apache.org/ |
 
 **Apache Lucene Notice:** Lucene is a registered trademark of The Apache Software Foundation. See the NOTICE file for Lucene's own third-party attributions.
 

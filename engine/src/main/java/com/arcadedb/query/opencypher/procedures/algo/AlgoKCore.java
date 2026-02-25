@@ -30,6 +30,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -150,7 +151,7 @@ public class AlgoKCore extends AbstractAlgoProcedure {
       }
     }
 
-    return java.util.stream.IntStream.range(0, n).mapToObj(i -> {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", vertices.get(i));
       r.setProperty("coreNumber", core[i]);

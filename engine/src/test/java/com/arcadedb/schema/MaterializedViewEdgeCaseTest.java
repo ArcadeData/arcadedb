@@ -233,7 +233,7 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
   }
 
   @Test
-  void periodicRefreshUpdatesView() throws InterruptedException {
+  void periodicRefreshUpdatesView() throws Exception {
     database.transaction(() -> {
       database.getSchema().createDocumentType("PeriodicSrc");
       database.getSchema().getType("PeriodicSrc").createProperty("val", Type.INTEGER);

@@ -33,7 +33,7 @@ import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class MCPServerPluginTest extends BaseGraphServerTest {
+class MCPServerPluginTest extends BaseGraphServerTest {
 
   private String getMcpUrl() {
     return "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/mcp";
@@ -44,7 +44,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @BeforeEach
-  public void enableMCP() throws Exception {
+  void enableMCP() throws Exception {
     // MCP is disabled by default, enable it for tests
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
@@ -53,7 +53,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testInitialize() throws Exception {
+  void initialize() throws Exception {
     final JSONObject response = mcpRequest(new JSONObject()
         .put("jsonrpc", "2.0")
         .put("id", 1)
@@ -68,7 +68,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testToolsList() throws Exception {
+  void toolsList() throws Exception {
     final JSONObject response = mcpRequest(new JSONObject()
         .put("jsonrpc", "2.0")
         .put("id", 2)
@@ -104,7 +104,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testListDatabases() throws Exception {
+  void listDatabases() throws Exception {
     final JSONObject response = callTool("list_databases", new JSONObject());
 
     assertThat(response.getBoolean("isError", true)).isFalse();
@@ -121,7 +121,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testGetSchema() throws Exception {
+  void getSchema() throws Exception {
     final JSONObject response = callTool("get_schema", new JSONObject().put("database", "graph"));
 
     assertThat(response.getBoolean("isError", true)).isFalse();
@@ -149,7 +149,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testQuery() throws Exception {
+  void query() throws Exception {
     final JSONObject response = callTool("query", new JSONObject()
         .put("database", "graph")
         .put("language", "sql")
@@ -163,7 +163,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testExecuteCommand() throws Exception {
+  void executeCommand() throws Exception {
     // Enable insert permission
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
@@ -183,7 +183,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testExecuteCommandDeniedByPermission() throws Exception {
+  void executeCommandDeniedByPermission() throws Exception {
     // Ensure insert is disabled
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
@@ -202,7 +202,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testServerStatus() throws Exception {
+  void serverStatus() throws Exception {
     final JSONObject response = callTool("server_status", new JSONObject());
 
     assertThat(response.getBoolean("isError", true)).isFalse();
@@ -214,7 +214,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testPing() throws Exception {
+  void ping() throws Exception {
     final JSONObject response = mcpRequest(new JSONObject()
         .put("jsonrpc", "2.0")
         .put("id", 99)
@@ -225,7 +225,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testMethodNotFound() throws Exception {
+  void methodNotFound() throws Exception {
     final JSONObject response = mcpRequest(new JSONObject()
         .put("jsonrpc", "2.0")
         .put("id", 100)
@@ -237,7 +237,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testDisabledMCP() throws Exception {
+  void disabledMCP() throws Exception {
     saveMCPConfig(new JSONObject()
         .put("enabled", false)
         .put("allowedUsers", new JSONArray().put("root")));
@@ -272,7 +272,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testGetConfig() throws Exception {
+  void getConfig() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpConfigUrl()).toURL().openConnection();
     connection.setRequestMethod("GET");
     connection.setRequestProperty("Authorization", getBasicAuth());
@@ -291,13 +291,13 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testUnknownTool() throws Exception {
+  void unknownTool() throws Exception {
     final JSONObject response = callTool("nonexistent_tool", new JSONObject());
     assertThat(response.getBoolean("isError")).isTrue();
   }
 
   @Test
-  void testNotificationReturns204() throws Exception {
+  void notificationReturns204() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", getBasicAuth());
@@ -321,7 +321,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testQueryToolRejectsWriteQuery() throws Exception {
+  void queryToolRejectsWriteQuery() throws Exception {
     final JSONObject response = callTool("query", new JSONObject()
         .put("database", "graph")
         .put("language", "sql")
@@ -333,7 +333,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testUnauthorizedUserDenied() throws Exception {
+  void unauthorizedUserDenied() throws Exception {
     // Configure only "root" as allowed user
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
@@ -371,7 +371,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testQueryWithLimit() throws Exception {
+  void queryWithLimit() throws Exception {
     final JSONObject response = callTool("query", new JSONObject()
         .put("database", "graph")
         .put("language", "sql")
@@ -385,7 +385,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testDatabaseAuthorizationDenied() throws Exception {
+  void databaseAuthorizationDenied() throws Exception {
     // Configure MCP to allow "restricteduser"
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
@@ -394,10 +394,10 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
 
     // Create a user with access only to a non-existent database "otherdb"
     if (!getServer(0).getSecurity().existsUser("restricteduser"))
-      getServer(0).getSecurity().createUser(new com.arcadedb.serializer.json.JSONObject()
+      getServer(0).getSecurity().createUser(new JSONObject()
           .put("name", "restricteduser")
           .put("password", getServer(0).getSecurity().encodePassword("restrictedpass"))
-          .put("databases", new com.arcadedb.serializer.json.JSONObject()
+          .put("databases", new JSONObject()
               .put("otherdb", new JSONArray().put("admin"))));
 
     final String restrictedAuth = "Basic " + Base64.getEncoder()

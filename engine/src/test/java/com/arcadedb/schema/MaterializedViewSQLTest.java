@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class MaterializedViewSQLTest extends TestHelper {
 
   @BeforeEach
-  public void setupTypes() {
+  void setupTypes() {
     if (!database.getSchema().existsType("Account"))
       database.transaction(() -> {
         database.getSchema().createDocumentType("Account");
@@ -126,7 +127,7 @@ class MaterializedViewSQLTest extends TestHelper {
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM schema:materializedViews")) {
       assertThat(rs.hasNext()).isTrue();
-      final com.arcadedb.query.sql.executor.Result result = rs.next();
+      final Result result = rs.next();
       assertThat((String) result.getProperty("name")).isEqualTo("MetaView");
       assertThat((String) result.getProperty("query")).isNotNull();
       assertThat((String) result.getProperty("backingType")).isNotNull();

@@ -30,6 +30,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -124,7 +125,7 @@ public class AlgoBipartiteCheck extends AbstractAlgoProcedure {
 
     final boolean finalBipartite = bipartite;
 
-    return java.util.stream.IntStream.range(0, n).mapToObj(i -> {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", vertices.get(i));
       r.setProperty("partition", color[i] == -1 ? 0 : color[i]);

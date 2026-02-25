@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -171,7 +172,7 @@ public class AlgoMST extends AbstractAlgoProcedure {
 
     final double finalTotal = totalWeight;
     final int finalSize = mstSize;
-    return java.util.stream.IntStream.range(0, finalSize).mapToObj(i -> {
+    return IntStream.range(0, finalSize).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("source", vertices.get(mstU[i]));
       r.setProperty("target", vertices.get(mstV[i]));

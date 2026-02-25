@@ -39,128 +39,128 @@ class OperationTypeTest {
   }
 
   @Test
-  void testSelectIsRead() {
+  void selectIsRead() {
     final Statement stmt = parse("SELECT FROM Person");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.READ);
     assertThat(stmt.isIdempotent()).isTrue();
   }
 
   @Test
-  void testMatchIsRead() {
+  void matchIsRead() {
     final Statement stmt = parse("MATCH {type: Person, as: p} RETURN p");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.READ);
   }
 
   @Test
-  void testTraverseIsRead() {
+  void traverseIsRead() {
     final Statement stmt = parse("TRAVERSE out() FROM #1:0");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.READ);
   }
 
   @Test
-  void testInsertIsCreate() {
+  void insertIsCreate() {
     final Statement stmt = parse("INSERT INTO Person SET name = 'John'");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.CREATE);
   }
 
   @Test
-  void testInsertCaseInsensitive() {
+  void insertCaseInsensitive() {
     final Statement stmt = parse("insert into Person set name = 'John'");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.CREATE);
   }
 
   @Test
-  void testCreateVertexIsCreate() {
+  void createVertexIsCreate() {
     final Statement stmt = parse("CREATE VERTEX Person SET name = 'John'");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.CREATE);
   }
 
   @Test
-  void testCreateEdgeIsCreate() {
+  void createEdgeIsCreate() {
     final Statement stmt = parse("CREATE EDGE Knows FROM #1:0 TO #2:0");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.CREATE);
   }
 
   @Test
-  void testUpdateIsUpdate() {
+  void updateIsUpdate() {
     final Statement stmt = parse("UPDATE Person SET name = 'Jane' WHERE name = 'John'");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.UPDATE);
   }
 
   @Test
-  void testUpsertIsCreateAndUpdate() {
+  void upsertIsCreateAndUpdate() {
     final Statement stmt = parse("UPDATE Person SET name = 'John' UPSERT WHERE name = 'John'");
     assertThat(stmt.getOperationTypes()).containsExactlyInAnyOrder(OperationType.CREATE, OperationType.UPDATE);
   }
 
   @Test
-  void testDeleteIsDelete() {
+  void deleteIsDelete() {
     final Statement stmt = parse("DELETE FROM Person WHERE name = 'John'");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.DELETE);
   }
 
   @Test
-  void testCreateVertexTypeIsSchema() {
+  void createVertexTypeIsSchema() {
     final Statement stmt = parse("CREATE VERTEX TYPE MyVertex");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
   @Test
-  void testCreateEdgeTypeIsSchema() {
+  void createEdgeTypeIsSchema() {
     final Statement stmt = parse("CREATE EDGE TYPE MyEdge");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
   @Test
-  void testCreateDocumentTypeIsSchema() {
+  void createDocumentTypeIsSchema() {
     final Statement stmt = parse("CREATE DOCUMENT TYPE MyDoc");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
   @Test
-  void testAlterTypeIsSchema() {
+  void alterTypeIsSchema() {
     final Statement stmt = parse("ALTER TYPE Person CUSTOM myAttr = 'test'");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
   @Test
-  void testDropTypeIsSchema() {
+  void dropTypeIsSchema() {
     final Statement stmt = parse("DROP TYPE Person IF EXISTS");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
   @Test
-  void testCreateIndexIsSchema() {
+  void createIndexIsSchema() {
     final Statement stmt = parse("CREATE INDEX ON Person (name) UNIQUE");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
   @Test
-  void testDropIndexIsSchema() {
+  void dropIndexIsSchema() {
     final Statement stmt = parse("DROP INDEX `Person[name]`");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
   @Test
-  void testCreatePropertyIsSchema() {
+  void createPropertyIsSchema() {
     final Statement stmt = parse("CREATE PROPERTY Person.age INTEGER");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
   @Test
-  void testExplainIsRead() {
+  void explainIsRead() {
     final Statement stmt = parse("EXPLAIN SELECT FROM Person");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.READ);
   }
 
   @Test
-  void testProfileIsRead() {
+  void profileIsRead() {
     final Statement stmt = parse("PROFILE SELECT FROM Person");
     assertThat(stmt.getOperationTypes()).containsExactly(OperationType.READ);
   }
 
   @Test
-  void testMoveVertexIsCreateUpdateAndDelete() {
+  void moveVertexIsCreateUpdateAndDelete() {
     final Statement stmt = parse("MOVE VERTEX (SELECT FROM V LIMIT 1) TO TYPE:Person");
     assertThat(stmt.getOperationTypes()).containsExactlyInAnyOrder(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }

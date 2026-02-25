@@ -1475,4 +1475,10 @@ identifier
     | IDENTIFIED
     | SYSTEM
     | UNIDIRECTIONAL
+    // CONTAINS is allowed as an identifier so that dot-path function calls like geo.contains(...)
+    // parse correctly (the parser sees "contains" as the second segment of the identifier chain).
+    // Note: this means CONTAINS cannot be used as a reserved infix operator in future SQL extensions
+    // (e.g. "WHERE tags CONTAINS 'value'") without introducing a grammar conflict. Any such operator
+    // would need a distinct keyword or a separate production rule.
+    | CONTAINS
     ;

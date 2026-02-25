@@ -20,10 +20,13 @@ package com.arcadedb.server;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.security.ApiTokenConfiguration;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.net.*;
+import java.nio.file.Files;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
   @Test
-  void testCreateTokenViaApi() throws Exception {
+  void createTokenViaApi() throws Exception {
     testEachServer((serverIndex) -> {
       final String tokenValue = createApiToken(serverIndex, "Test Token", "graph", 0,
           new JSONObject()
@@ -44,7 +47,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testListTokensViaApi() throws Exception {
+  void listTokensViaApi() throws Exception {
     testEachServer((serverIndex) -> {
       createApiToken(serverIndex, "Token1", "graph", 0, new JSONObject());
       createApiToken(serverIndex, "Token2", "graph", 0, new JSONObject());
@@ -75,7 +78,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testUseApiTokenForQuery() throws Exception {
+  void useApiTokenForQuery() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject permissions = new JSONObject()
           .put("types", new JSONObject()
@@ -103,7 +106,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testExpiredTokenReturns401() throws Exception {
+  void expiredTokenReturns401() throws Exception {
     testEachServer((serverIndex) -> {
       final long pastTime = System.currentTimeMillis() - 10000;
       final String tokenValue = createApiToken(serverIndex, "Expired", "graph", pastTime, new JSONObject());
@@ -123,7 +126,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testReadOnlyTokenCannotInsert() throws Exception {
+  void readOnlyTokenCannotInsert() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject permissions = new JSONObject()
           .put("types", new JSONObject()
@@ -155,10 +158,10 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDeleteTokenViaApi() throws Exception {
+  void deleteTokenViaApi() throws Exception {
     testEachServer((serverIndex) -> {
       final String tokenValue = createApiToken(serverIndex, "ToDelete", "graph", 0, new JSONObject());
-      final String tokenHash = com.arcadedb.server.security.ApiTokenConfiguration.hashToken(tokenValue);
+      final String tokenHash = ApiTokenConfiguration.hashToken(tokenValue);
 
       // Delete using token hash (not plaintext)
       final HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -190,7 +193,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDeleteTokenRejectsPlaintext() throws Exception {
+  void deleteTokenRejectsPlaintext() throws Exception {
     testEachServer((serverIndex) -> {
       final String tokenValue = createApiToken(serverIndex, "NoPlaintext", "graph", 0, new JSONObject());
 
@@ -211,10 +214,10 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDeleteTokenByHash() throws Exception {
+  void deleteTokenByHash() throws Exception {
     testEachServer((serverIndex) -> {
       final String tokenValue = createApiToken(serverIndex, "ToDeleteByHash", "graph", 0, new JSONObject());
-      final String tokenHash = com.arcadedb.server.security.ApiTokenConfiguration.hashToken(tokenValue);
+      final String tokenHash = ApiTokenConfiguration.hashToken(tokenValue);
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens?token=" +
@@ -245,16 +248,16 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testPlaintextNotPersistedOnDisk() throws Exception {
+  void plaintextNotPersistedOnDisk() throws Exception {
     testEachServer((serverIndex) -> {
       final String tokenValue = createApiToken(serverIndex, "PersistTest", "graph", 0, new JSONObject());
 
       // Read the token file and verify no plaintext token is stored
       final String configPath = getServer(serverIndex).getRootPath() + "/config";
-      final java.io.File tokenFile = new java.io.File(configPath, "server-api-tokens.json");
+      final File tokenFile = new File(configPath, "server-api-tokens.json");
       assertThat(tokenFile.exists()).isTrue();
 
-      final String content = new String(java.nio.file.Files.readAllBytes(tokenFile.toPath()));
+      final String content = new String(Files.readAllBytes(tokenFile.toPath()));
       assertThat(content).doesNotContain(tokenValue);
       assertThat(content).contains("tokenHash");
       assertThat(content).contains("tokenSuffix");
@@ -263,7 +266,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testNonRootCannotManageTokens() throws Exception {
+  void nonRootCannotManageTokens() throws Exception {
     testEachServer((serverIndex) -> {
       // Create a non-root user first (if not already existing)
       if (!getServer(serverIndex).getSecurity().existsUser("testuser"))
@@ -287,7 +290,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testWildcardTypePermissions() throws Exception {
+  void wildcardTypePermissions() throws Exception {
     testEachServer((serverIndex) -> {
       // Token with * type having readRecord only, but Account having full CRUD
       final JSONObject permissions = new JSONObject()
@@ -315,7 +318,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDuplicateTokenNameReturns409() throws Exception {
+  void duplicateTokenNameReturns409() throws Exception {
     testEachServer((serverIndex) -> {
       createApiToken(serverIndex, "Unique Name", "graph", 0, new JSONObject());
 
@@ -345,7 +348,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testApiTokenInvalidReturns401() throws Exception {
+  void apiTokenInvalidReturns401() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201").openConnection();
@@ -364,7 +367,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   private String createApiToken(final int serverIndex, final String name, final String database, final long expiresAt,
       final JSONObject permissions) throws Exception {
     // Delete any pre-existing token with the same name (e.g., left over from a previous test run)
-    final com.arcadedb.server.security.ApiTokenConfiguration tokenConfig =
+    final ApiTokenConfiguration tokenConfig =
         getServer(serverIndex).getSecurity().getApiTokenConfiguration();
     tokenConfig.listTokens().stream()
         .filter(t -> name.equals(t.getString("name", "")))

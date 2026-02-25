@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
@@ -266,7 +267,7 @@ class MaterializedViewTest extends TestHelper {
     assertThat(view.getChangeListener()).isNull();
 
     final MaterializedViewChangeListener listener = new MaterializedViewChangeListener(
-        (com.arcadedb.database.DatabaseInternal) database, view);
+        (DatabaseInternal) database, view);
     view.setChangeListener(listener);
     assertThat(view.getChangeListener()).isSameAs(listener);
     assertThat(view.getChangeListener().getView()).isSameAs(view);

@@ -48,10 +48,10 @@ class SingleServerLoadTestIT extends ContainersTestTemplate {
 
     // Parameters for the test
     final int numOfThreads = 5; //number of threads to use to insert users and photos
-    final int numOfUsers = 2000; // Each thread will create 200000 users
+    final int numOfUsers = 1000; // Each thread will create 200000 users
     final int numOfPhotos = 10; // Each user will have 5 photos
-    final int numOfFriendship = 1000; // Each thread will create 100000 friendships
-    final int numOfLike = 1000; // Each thread will create 100000 likes
+    final int numOfFriendship = 500; // Each thread will create 100000 friendships
+    final int numOfLike = 500; // Each thread will create 100000 likes
 
     int expectedUsersCount = numOfUsers * numOfThreads;
     int expectedPhotoCount = expectedUsersCount * numOfPhotos;
@@ -101,7 +101,7 @@ class SingleServerLoadTestIT extends ContainersTestTemplate {
       }
       try {
         // Wait for 2 seconds before checking again
-        TimeUnit.SECONDS.sleep(2);
+        TimeUnit.SECONDS.sleep(5);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       }

@@ -19,15 +19,18 @@
 package com.arcadedb.function.sql.geo;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
 import org.locationtech.spatial4j.context.SpatialContext;
 
 /**
- * Returns a circle shape with the 3 coordinates received as parameters.
+ * Deprecated alias for {@code circle()}: returns a circle shape centered at (x, y) with the given radius.
  *
- * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * <p><b>Deprecated</b>: Use {@code geo.buffer(geo.point(x, y), radius)} instead.</p>
+ *
+ * @deprecated since 25.x — use {@code geo.buffer(geo.point(x, y), radius)}
  */
+@Deprecated
 public class SQLFunctionCircle extends SQLFunctionAbstract {
   public static final String NAME = "circle";
 
@@ -35,17 +38,19 @@ public class SQLFunctionCircle extends SQLFunctionAbstract {
     super(NAME);
   }
 
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length != 3)
-      throw new IllegalArgumentException("circle() requires 3 parameters");
+      throw new IllegalArgumentException("circle() requires 3 parameters: circle(<center-x>, <center-y>, <distance>)");
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
     return spatialContext.getShapeFactory()
         .circle(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]), GeoUtils.getDoubleValue(params[2]));
   }
 
+  @Override
   public String getSyntax() {
-    return "circle(<center-x>,<center-y>,<distance>)";
+    return "circle(<center-x>,<center-y>,<distance>) [deprecated: use geo.buffer(geo.point(x,y), radius)]";
   }
 }

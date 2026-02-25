@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class UserManagementIT extends BaseGraphServerTest {
 
   @Test
-  void testUpdateUserDatabases() throws Exception {
+  void updateUserDatabases() throws Exception {
     testEachServer((serverIndex) -> {
       // Create user via POST
       createUser(serverIndex, "dbuser", "password1234",
@@ -88,7 +88,7 @@ class UserManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testUpdateUserPassword() throws Exception {
+  void updateUserPassword() throws Exception {
     testEachServer((serverIndex) -> {
       createUser(serverIndex, "pwduser", "oldpassword1",
           new JSONObject().put("*", new JSONArray().put("admin")));
@@ -148,7 +148,7 @@ class UserManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateUserWithApitokenPrefixReturns400() throws Exception {
+  void createUserWithApitokenPrefixReturns400() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject payload = new JSONObject();
       payload.put("name", "apitoken:hack");
@@ -172,7 +172,7 @@ class UserManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testUpdateUserWithShortPasswordReturns400() throws Exception {
+  void updateUserWithShortPasswordReturns400() throws Exception {
     testEachServer((serverIndex) -> {
       createUser(serverIndex, "shortpwduser", "validpassword1",
           new JSONObject().put("*", new JSONArray().put("admin")));
@@ -200,7 +200,7 @@ class UserManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testUpdateUserWithTooLongPasswordReturns400() throws Exception {
+  void updateUserWithTooLongPasswordReturns400() throws Exception {
     testEachServer((serverIndex) -> {
       createUser(serverIndex, "longpwduser", "validpassword1",
           new JSONObject().put("*", new JSONArray().put("admin")));
@@ -229,7 +229,7 @@ class UserManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testUpdateNonExistentUserReturns404() throws Exception {
+  void updateNonExistentUserReturns404() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject updatePayload = new JSONObject();
       updatePayload.put("password", "doesntmatter");

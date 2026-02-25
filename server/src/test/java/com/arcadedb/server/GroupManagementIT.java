@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GroupManagementIT extends BaseGraphServerTest {
 
   @Test
-  void testListDefaultGroups() throws Exception {
+  void listDefaultGroups() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
@@ -63,7 +63,7 @@ class GroupManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateGroup() throws Exception {
+  void createGroup() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject payload = new JSONObject();
       payload.put("database", "*");
@@ -113,7 +113,7 @@ class GroupManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testUpdateGroup() throws Exception {
+  void updateGroup() throws Exception {
     testEachServer((serverIndex) -> {
       // First create the group
       final JSONObject createPayload = new JSONObject();
@@ -165,7 +165,7 @@ class GroupManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDeleteGroup() throws Exception {
+  void deleteGroup() throws Exception {
     testEachServer((serverIndex) -> {
       // Create group first
       final JSONObject payload = new JSONObject();
@@ -211,7 +211,7 @@ class GroupManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCannotDeleteAdminFromWildcard() throws Exception {
+  void cannotDeleteAdminFromWildcard() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups?database=*&name=admin").openConnection();
@@ -228,7 +228,7 @@ class GroupManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testNonRootCannotManageGroups() throws Exception {
+  void nonRootCannotManageGroups() throws Exception {
     testEachServer((serverIndex) -> {
       if (!getServer(serverIndex).getSecurity().existsUser("testuser"))
         getServer(serverIndex).getSecurity().createUser("testuser", "testpass");
@@ -268,7 +268,7 @@ class GroupManagementIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDatabaseSpecificGroupDoesNotBreakWildcardGroups() throws Exception {
+  void databaseSpecificGroupDoesNotBreakWildcardGroups() throws Exception {
     testEachServer((serverIndex) -> {
       // Create a test database
       final HttpURLConnection createDb = (HttpURLConnection) new URL(
