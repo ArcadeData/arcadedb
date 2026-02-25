@@ -373,7 +373,7 @@ public class ResultInternal implements Result {
       return value.toString();
     else if (element != null) {
       try {
-        return element.toJSON(false).toString();
+        return element.toJSON(true).toString();
       } catch (final Exception e) {
         return element.toString();
       }
