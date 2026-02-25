@@ -151,6 +151,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       }
     }
     LogManager.instance().log(this, Level.WARNING, "Timeout waiting for Raft leader election");
+    // Set true to unblock test setup; individual tests will fail if no leader is actually present.
     serversSynchronized = true;
   }
 
@@ -188,8 +189,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * storage is deleted on restart and the peer cannot rejoin the same group.
    */
   protected void restartServer(final int serverIndex) {
-    LogManager.instance().log(this, Level.INFO, "TEST: Stopping server %d for restart", serverIndex);
-    getServer(serverIndex).stop();
+    if (getServer(serverIndex).isStarted()) {
+      LogManager.instance().log(this, Level.INFO, "TEST: Stopping server %d for restart", serverIndex);
+      getServer(serverIndex).stop();
+    }
 
     // Brief pause to allow the OS to release the gRPC port
     try {
