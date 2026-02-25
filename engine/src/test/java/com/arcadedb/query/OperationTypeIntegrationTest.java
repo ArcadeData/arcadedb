@@ -34,28 +34,28 @@ class OperationTypeIntegrationTest extends TestHelper {
   // --- SQL via engine.analyze() ---
 
   @Test
-  void testSqlSelectViaEngine() {
+  void sqlSelectViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("SELECT FROM V");
     assertThat(analyzed.isIdempotent()).isTrue();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.READ);
   }
 
   @Test
-  void testSqlInsertViaEngine() {
+  void sqlInsertViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("INSERT INTO V SET name = 'test'");
     assertThat(analyzed.isIdempotent()).isFalse();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.CREATE);
   }
 
   @Test
-  void testSqlUpdateViaEngine() {
+  void sqlUpdateViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("UPDATE V SET name = 'test'");
     assertThat(analyzed.isIdempotent()).isFalse();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.UPDATE);
   }
 
   @Test
-  void testSqlUpsertViaEngine() {
+  void sqlUpsertViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze(
         "UPDATE V SET name = 'test' UPSERT WHERE name = 'test'");
     assertThat(analyzed.isIdempotent()).isFalse();
@@ -63,21 +63,21 @@ class OperationTypeIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testSqlDeleteViaEngine() {
+  void sqlDeleteViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("DELETE FROM V");
     assertThat(analyzed.isIdempotent()).isFalse();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.DELETE);
   }
 
   @Test
-  void testSqlCreateTypeViaEngine() {
+  void sqlCreateTypeViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("CREATE VERTEX TYPE NewType");
     assertThat(analyzed.isDDL()).isTrue();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.SCHEMA);
   }
 
   @Test
-  void testSqlCreateIndexViaEngine() {
+  void sqlCreateIndexViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("CREATE INDEX ON V (name) UNIQUE");
     assertThat(analyzed.isDDL()).isTrue();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.SCHEMA);
@@ -86,14 +86,14 @@ class OperationTypeIntegrationTest extends TestHelper {
   // --- OpenCypher via engine.analyze() ---
 
   @Test
-  void testOpenCypherMatchViaEngine() {
+  void openCypherMatchViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze("MATCH (n) RETURN n");
     assertThat(analyzed.isIdempotent()).isTrue();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.READ);
   }
 
   @Test
-  void testOpenCypherCreateViaEngine() {
+  void openCypherCreateViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze(
         "CREATE (n:V {name: 'test'}) RETURN n");
     assertThat(analyzed.isIdempotent()).isFalse();
@@ -101,7 +101,7 @@ class OperationTypeIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testOpenCypherSetViaEngine() {
+  void openCypherSetViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze(
         "MATCH (n:V) SET n.name = 'test' RETURN n");
     assertThat(analyzed.isIdempotent()).isFalse();
@@ -109,7 +109,7 @@ class OperationTypeIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testOpenCypherDeleteViaEngine() {
+  void openCypherDeleteViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze(
         "MATCH (n:V) DELETE n");
     assertThat(analyzed.isIdempotent()).isFalse();
@@ -117,7 +117,7 @@ class OperationTypeIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testOpenCypherMergeViaEngine() {
+  void openCypherMergeViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze(
         "MERGE (n:V {name: 'test'}) RETURN n");
     assertThat(analyzed.isIdempotent()).isFalse();
@@ -125,7 +125,7 @@ class OperationTypeIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testOpenCypherCreateConstraintViaEngine() {
+  void openCypherCreateConstraintViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze(
         "CREATE CONSTRAINT myConstraint FOR (n:V) REQUIRE n.name IS UNIQUE");
     assertThat(analyzed.isDDL()).isTrue();
@@ -133,14 +133,14 @@ class OperationTypeIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testOpenCypherAdminViaEngine() {
+  void openCypherAdminViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze("SHOW USERS");
     assertThat(analyzed.isDDL()).isFalse();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.ADMIN);
   }
 
   @Test
-  void testOpenCypherRemoveViaEngine() {
+  void openCypherRemoveViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze(
         "MATCH (n:V) REMOVE n.name RETURN n");
     assertThat(analyzed.isIdempotent()).isFalse();
@@ -150,25 +150,25 @@ class OperationTypeIntegrationTest extends TestHelper {
   // --- QueryTool semantic check: write queries must be detected as non-idempotent ---
 
   @Test
-  void testSqlInsertIsNotIdempotent() {
+  void sqlInsertIsNotIdempotent() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("INSERT INTO V SET name = 'test'");
     assertThat(analyzed.isIdempotent()).isFalse();
   }
 
   @Test
-  void testSqlUpdateIsNotIdempotent() {
+  void sqlUpdateIsNotIdempotent() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("UPDATE V SET name = 'test'");
     assertThat(analyzed.isIdempotent()).isFalse();
   }
 
   @Test
-  void testSqlDeleteIsNotIdempotent() {
+  void sqlDeleteIsNotIdempotent() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("DELETE FROM V");
     assertThat(analyzed.isIdempotent()).isFalse();
   }
 
   @Test
-  void testOpenCypherCreateIsNotIdempotent() {
+  void openCypherCreateIsNotIdempotent() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze(
         "CREATE (n:V {name: 'test'}) RETURN n");
     assertThat(analyzed.isIdempotent()).isFalse();

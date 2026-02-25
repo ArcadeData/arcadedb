@@ -19,32 +19,31 @@
 package com.arcadedb.function.sql.geo;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * Returns a point in space with X and Y as parameters.
+ * SQL function geo.geomFromText: parses a WKT string and returns a Shape object.
  *
- * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * <p>Usage: {@code geo.geomFromText(<wkt>)}</p>
  */
-public class SQLFunctionPoint extends SQLFunctionAbstract {
-  public static final String NAME = "point";
+public class SQLFunctionGeoGeomFromText extends SQLFunctionAbstract {
+  public static final String NAME = "geo.geomFromText";
 
-  public SQLFunctionPoint() {
+  public SQLFunctionGeoGeomFromText() {
     super(NAME);
   }
 
-  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
-      final CommandContext context) {
-    if (params.length != 2)
-      throw new IllegalArgumentException("point() requires X and Y as parameters");
-
-    // Use lightweight Point for fast serialization (optimized for bulk inserts)
-    return new LightweightPoint(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]));
+  @Override
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+      final Object[] iParams, final CommandContext iContext) {
+    if (iParams == null || iParams.length < 1 || iParams[0] == null)
+      return null;
+    return GeoUtils.parseGeometry(iParams[0]);
   }
 
+  @Override
   public String getSyntax() {
-    return "point(<x>,<y>)";
+    return "geo.geomFromText(<wkt>)";
   }
-
 }

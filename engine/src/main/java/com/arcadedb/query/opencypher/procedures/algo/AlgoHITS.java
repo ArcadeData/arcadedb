@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -163,7 +164,7 @@ public class AlgoHITS extends AbstractAlgoProcedure {
 
     final double[] finalHub  = hub;
     final double[] finalAuth = auth;
-    return java.util.stream.IntStream.range(0, n).mapToObj(i -> {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", vertices.get(i));
       r.setProperty("hubScore", finalHub[i]);

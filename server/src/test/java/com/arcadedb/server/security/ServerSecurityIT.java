@@ -33,8 +33,10 @@ import java.io.File;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.util.concurrent.TimeUnit.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -165,8 +167,8 @@ class ServerSecurityIT {
     final int threadCount = 10;
     final int operationsPerThread = 20;
     final ExecutorService executor = Executors.newFixedThreadPool(threadCount);
-    final List<Future<?>> futures = new java.util.ArrayList<>();
-    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+    final List<Future<?>> futures = new ArrayList<>();
+    final AtomicInteger errors = new AtomicInteger(0);
 
     for (int t = 0; t < threadCount; t++) {
       final int threadId = t;

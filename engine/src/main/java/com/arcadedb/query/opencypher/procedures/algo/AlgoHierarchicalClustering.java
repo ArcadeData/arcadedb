@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -155,7 +156,7 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     }
 
     // Remap cluster IDs (find roots) to sequential IDs
-    final java.util.Map<Integer, Integer> clusterRemap = new java.util.HashMap<>();
+    final Map<Integer, Integer> clusterRemap = new HashMap<>();
     int nextId = 0;
     for (int i = 0; i < n; i++) {
       final int root = find(parent, i);

@@ -51,6 +51,11 @@ public class DatabaseWrapper {
   private final        Timer             friendshipTimer;
   private final        Timer             likeTimer;
 
+  private static final double GEO_LON_MIN   = -180.0;
+  private static final double GEO_LON_RANGE = 360.0;
+  private static final double GEO_LAT_MIN   = -90.0;
+  private static final double GEO_LAT_RANGE = 180.0;
+
   public enum Protocol {HTTP, GRPC}
 
   public DatabaseWrapper(ServerWrapper server, Supplier<Integer> idSupplier, Supplier<String> wordSupplier, Protocol protocol) {
@@ -131,12 +136,14 @@ public class DatabaseWrapper {
             CREATE PROPERTY Photo.id INTEGER;
             CREATE PROPERTY Photo.description STRING;
             CREATE PROPERTY Photo.tags LIST OF STRING;
+            CREATE PROPERTY Photo.location STRING;
 
             CREATE INDEX ON Photo (id) UNIQUE;
             CREATE INDEX ON Photo (tags BY ITEM) NOTUNIQUE;
             CREATE INDEX ON Photo (description) FULL_TEXT METADATA {
               "analyzer": "org.apache.lucene.analysis.en.EnglishAnalyzer"
               };
+            CREATE INDEX ON Photo (location) GEOSPATIAL;
 
             CREATE EDGE TYPE HasUploaded;
 
@@ -214,17 +221,20 @@ public class DatabaseWrapper {
       String tag1 = "tag" + i % numberOfPhotos;
       String tag2 = "tag" + (i % numberOfPhotos + 1);
       String description = IntStream.range(0, 100).mapToObj(j -> wordSupplier.get()).reduce((a, b) -> a + " " + b).orElse("");
+      double lon = Math.round((GEO_LON_MIN + Math.random() * GEO_LON_RANGE) * 1e6) / 1e6;
+      double lat = Math.round((GEO_LAT_MIN + Math.random() * GEO_LAT_RANGE) * 1e6) / 1e6;
+      String location = String.format("POINT (%s %s)", lon, lat);
       String sqlScript = """
           BEGIN;
           LOCK TYPE User, Photo, HasUploaded;
           LET user = SELECT FROM User WHERE id = ?;
-          LET photo = CREATE VERTEX Photo SET id = ?, name = ?, description = '?', tags = ['?', '?'];
+          LET photo = CREATE VERTEX Photo SET id = ?, name = ?, description = '?', tags = ['?', '?'], location = ?;
           CREATE EDGE HasUploaded FROM $user TO $photo;
           COMMIT RETRY 30;
           """;
       try {
         photosTimer.record(() -> {
-              db.command("sqlscript", sqlScript, userId, photoId, photoName, description, tag1, tag2);
+              db.command("sqlscript", sqlScript, userId, photoId, photoName, description, tag1, tag2, location);
             }
         );
 

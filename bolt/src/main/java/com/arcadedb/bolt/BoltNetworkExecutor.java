@@ -66,6 +66,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.logging.Level;
 
 import static com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep.PROJECTION_NAME_METADATA;
@@ -1012,7 +1013,7 @@ public class BoltNetworkExecutor extends Thread {
         syntheticResults.add(List.of((Object) relTypes));
 
         // Property keys (from all non-composite types)
-        final Set<String> allKeys = new java.util.TreeSet<>();
+        final Set<String> allKeys = new TreeSet<>();
         for (final DocumentType type : database.getSchema().getTypes())
           if (!type.getName().contains("~"))
             allKeys.addAll(type.getPropertyNames());
@@ -1047,7 +1048,7 @@ public class BoltNetworkExecutor extends Thread {
       currentFields = List.of("propertyKey");
       syntheticResults = new ArrayList<>();
       if (database != null) {
-        final Set<String> allKeys = new java.util.TreeSet<>();
+        final Set<String> allKeys = new TreeSet<>();
         for (final DocumentType type : database.getSchema().getTypes()) {
           if (!type.getName().contains("~"))
             allKeys.addAll(type.getPropertyNames());
