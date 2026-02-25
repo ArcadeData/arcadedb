@@ -26,7 +26,11 @@ import org.locationtech.spatial4j.shape.Shape;
 
 /**
  * SQL function geo.dWithin: returns true if geometry g is within the given distance of shape.
- * Distance is specified in degrees (consistent with Spatial4j's coordinate system).
+ *
+ * <p><b>Distance unit: degrees of great-circle arc</b> (Spatial4j native unit).
+ * This is different from {@code geo.distance()}, which returns metres by default.
+ * Approximate conversion: 1 degree ≈ 111.32 km at the equator.
+ * Example: to test "within 10 km", pass {@code 10.0 / 111.32 ≈ 0.0898}.</p>
  *
  * <p>Usage: {@code geo.dWithin(g, shape, distanceDegrees)}</p>
  * <p>Returns: Boolean</p>
