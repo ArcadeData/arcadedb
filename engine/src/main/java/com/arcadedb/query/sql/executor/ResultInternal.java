@@ -371,11 +371,16 @@ public class ResultInternal implements Result {
   public String toString() {
     if (value != null)
       return value.toString();
-    else if (element != null)
-      return element.toString();
+    else if (element != null) {
+      try {
+        return element.toJSON(false).toString();
+      } catch (final Exception e) {
+        return element.toString();
+      }
+    }
     else if (content != null)
-      return "{" + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b)
-              + "}";
+      return "{" + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue())
+              .collect(Collectors.joining(", ")) + "}";
     return "{}";
   }
 

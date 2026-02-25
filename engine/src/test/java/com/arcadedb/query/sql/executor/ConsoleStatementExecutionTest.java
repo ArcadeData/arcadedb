@@ -56,6 +56,41 @@ class ConsoleStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void logDocumentSerialization() {
+    // Issue #3520: CONSOLE.log produces faulty serializations for documents
+    database.command("sql", "CREATE DOCUMENT TYPE doc3520");
+    database.begin();
+    database.command("sql", "INSERT INTO doc3520 SET name = 'test'");
+    database.commit();
+
+    final ResultSet result = database.command("sqlscript",
+        "LET $x = (SELECT FROM doc3520);\nCONSOLE.log $x");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    final String msg = item.getProperty("message");
+    // The message should contain the document properties as JSON, not internal debug format
+    assertThat(msg).isNotNull();
+    assertThat(msg).contains("\"name\"");
+    assertThat(msg).contains("\"test\"");
+    // Should not contain internal debug format with @type separator
+    assertThat(msg).doesNotContain("@cat");
+    assertThat(msg).doesNotContain("@type");
+  }
+
+  @Test
+  void logMultiplePropertiesSerialization() {
+    // Issue #3520: CONSOLE.log omits commas between multiple properties
+    final ResultSet result = database.command("sqlscript",
+        "LET $y = (SELECT 1, 'test');\nCONSOLE.log $y");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    final String msg = item.getProperty("message");
+    // The message should contain commas between properties
+    assertThat(msg).isNotNull();
+    assertThat(msg).contains(", ");
+  }
+
+  @Test
   void invalidLevel() {
     try {
       database.command("sqlscript", "console.bla 'foo bar'");
