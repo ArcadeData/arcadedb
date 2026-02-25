@@ -32,6 +32,7 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.server.storage.RaftStorage;
 
 import org.apache.ratis.util.TimeDuration;
 
@@ -210,12 +211,23 @@ public class RaftHAServer {
 
     initClusterToken(configuration, storageDir);
 
+    // When persistent storage is requested and the storage directory already has data,
+    // use RECOVER mode so Ratis loads the existing Raft log instead of trying to format
+    // (which would fail if the group directory already exists).
+    final boolean hasExistingStorage = persistStorage && storageDir.exists()
+        && storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found")) != null
+        && storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found")).length > 0;
+    final RaftStorage.StartupOption startupOption = hasExistingStorage
+        ? RaftStorage.StartupOption.RECOVER
+        : RaftStorage.StartupOption.FORMAT;
+
     raftServer = RaftServer.newBuilder()
         .setServerId(localPeerId)
         .setGroup(raftGroup)
         .setStateMachine(stateMachine)
         .setProperties(properties)
         .setParameters(new Parameters())
+        .setOption(startupOption)
         .build();
 
     raftServer.start();

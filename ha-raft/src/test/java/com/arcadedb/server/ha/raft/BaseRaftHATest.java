@@ -24,7 +24,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.utility.FileUtils;
 
+import java.io.File;
 import java.util.logging.Level;
 
 /**
@@ -50,6 +52,21 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     config.setValue(GlobalConfiguration.HA_IMPLEMENTATION, "raft");
     if (persistentRaftStorage())
       config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, true);
+  }
+
+  /**
+   * Extends the base cleanup to also remove Raft storage directories.
+   * This ensures that stale Raft state from a previous test run (e.g. after a crash
+   * or forced JVM kill) does not prevent the server from starting up correctly.
+   * Within the same test run, {@link #restartServer(int)} preserves the Raft storage
+   * because {@link GlobalConfiguration#HA_RAFT_PERSIST_STORAGE} is set to true.
+   */
+  @Override
+  protected void deleteDatabaseFolders() {
+    super.deleteDatabaseFolders();
+    final String rootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    for (int i = 0; i < getServerCount(); i++)
+      FileUtils.deleteRecursively(new File(rootPath + File.separator + "raft-storage-peer-" + i));
   }
 
   @Override
