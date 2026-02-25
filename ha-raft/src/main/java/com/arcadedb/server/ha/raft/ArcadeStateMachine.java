@@ -33,6 +33,7 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
+import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.File;
@@ -125,6 +126,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.SEVERE, "Error applying raft log entry at index %d", e, termIndex.getIndex());
       return CompletableFuture.failedFuture(e);
     }
+  }
+
+  /**
+   * Records a snapshot checkpoint so Ratis can compact the log up to the last-applied index.
+   * <p>
+   * The ArcadeDB database files on disk are inherently the snapshot state — every committed
+   * transaction is already durably flushed by the {@link com.arcadedb.engine.TransactionManager}.
+   * Returning the last-applied index here tells Ratis it may purge log entries up to that index,
+   * reducing log disk usage over time.
+   * <p>
+   * Note: snapshot-based resync (install_snapshot) for replicas that fall behind the compacted
+   * log is not yet implemented. Until {@code installSnapshot()} is provided, lagging replicas
+   * that miss purged entries cannot catch up via snapshot transfer.
+   */
+  @Override
+  public long takeSnapshot() {
+    final TermIndex last = getLastAppliedTermIndex();
+    if (last == null)
+      return RaftLog.INVALID_LOG_INDEX;
+    LogManager.instance().log(this, Level.FINE, "ArcadeStateMachine: snapshot checkpoint at index %d", last.getIndex());
+    return last.getIndex();
   }
 
   @Override
