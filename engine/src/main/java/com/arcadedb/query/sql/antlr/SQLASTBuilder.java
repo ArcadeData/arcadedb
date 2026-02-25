@@ -1596,6 +1596,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * FROM empty array visitor (e.g., FROM [] or TO []).
+   * Returns a FromItem with an empty rids list, which produces zero results.
+   */
+  @Override
+  public FromItem visitFromEmptyArray(final SQLParser.FromEmptyArrayContext ctx) {
+    final FromItem fromItem = new FromItem(-1);
+    fromItem.rids = new ArrayList<>();
+    return fromItem;
+  }
+
+  /**
    * FROM parameter array visitor (e.g., FROM [:param1, :param2]).
    */
   @Override
@@ -5039,9 +5050,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           leftExpr.mathExpression = parenExpr;
         } else if (fromItem.identifier != null) {
           leftExpr.mathExpression = new BaseExpression(fromItem.identifier);
-        } else if (CollectionUtils.isNotEmpty(fromItem.rids)) {
-          // Handle RID or array of RIDs
-          if (fromItem.rids.size() == 1) {
+        } else if (fromItem.rids != null) {
+          // Handle RID, array of RIDs, or empty array
+          if (fromItem.rids.isEmpty()) {
+            final ArrayLiteralExpression arrayLit = new ArrayLiteralExpression(-1);
+            arrayLit.items = new ArrayList<>();
+            leftExpr.mathExpression = arrayLit;
+          } else if (fromItem.rids.size() == 1) {
             leftExpr.rid = fromItem.rids.get(0);
           } else {
             // Multiple RIDs - create array literal
@@ -5089,9 +5104,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           rightExpr.mathExpression = parenExpr;
         } else if (toItem.identifier != null) {
           rightExpr.mathExpression = new BaseExpression(toItem.identifier);
-        } else if (CollectionUtils.isNotEmpty(toItem.rids)) {
-          // Handle RID or array of RIDs
-          if (toItem.rids.size() == 1) {
+        } else if (toItem.rids != null) {
+          // Handle RID, array of RIDs, or empty array
+          if (toItem.rids.isEmpty()) {
+            final ArrayLiteralExpression arrayLit = new ArrayLiteralExpression(-1);
+            arrayLit.items = new ArrayList<>();
+            rightExpr.mathExpression = arrayLit;
+          } else if (toItem.rids.size() == 1) {
             rightExpr.rid = toItem.rids.get(0);
           } else {
             // Multiple RIDs - create array literal

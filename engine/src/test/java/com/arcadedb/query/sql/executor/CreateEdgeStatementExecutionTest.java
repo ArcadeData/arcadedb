@@ -226,6 +226,42 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  @DisplayName("createEdgeEmptyArrayDestination - test Issue #3518")
+  void createEdgeEmptyArrayDestination() {
+    database.getSchema().createVertexType("V3518", 1);
+    database.getSchema().createEdgeType("E3518", 1);
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO V3518");
+
+      // Empty array as TO destination should create no edges
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE E3518 FROM (SELECT FROM V3518 LIMIT 1) TO []");
+      assertThat(rs.hasNext()).isFalse();
+      rs.close();
+    });
+
+    database.transaction(() -> {
+      // Empty array as FROM source should also create no edges
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE E3518 FROM [] TO (SELECT FROM V3518 LIMIT 1)");
+      assertThat(rs.hasNext()).isFalse();
+      rs.close();
+    });
+
+    database.transaction(() -> {
+      // Using LET with empty array should also work (already works per issue)
+      database.command("sqlscript",
+          "LET $x = []; CREATE EDGE E3518 FROM (SELECT FROM V3518 LIMIT 1) TO $x;");
+    });
+
+    // Verify no edges were created
+    final ResultSet check = database.query("sql", "SELECT FROM E3518");
+    assertThat(check.hasNext()).isFalse();
+    check.close();
+  }
+
+  @Test
   @DisplayName("createEdgeWithDefaultNoContent - test defaults without CONTENT")
   void createEdgeWithDefaultNoContent() {
     database.transaction(() -> {
