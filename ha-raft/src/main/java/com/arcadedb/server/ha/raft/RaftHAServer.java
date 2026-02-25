@@ -214,9 +214,9 @@ public class RaftHAServer {
     // When persistent storage is requested and the storage directory already has data,
     // use RECOVER mode so Ratis loads the existing Raft log instead of trying to format
     // (which would fail if the group directory already exists).
+    final File[] storageDirs = storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found"));
     final boolean hasExistingStorage = persistStorage && storageDir.exists()
-        && storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found")) != null
-        && storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found")).length > 0;
+        && storageDirs != null && storageDirs.length > 0;
     final RaftStorage.StartupOption startupOption = hasExistingStorage
         ? RaftStorage.StartupOption.RECOVER
         : RaftStorage.StartupOption.FORMAT;
