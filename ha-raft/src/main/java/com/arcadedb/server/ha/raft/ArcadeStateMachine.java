@@ -27,7 +27,10 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.protocol.Message;
+import org.apache.ratis.protocol.RaftGroupId;
+import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
+import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -35,6 +38,10 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -47,9 +54,13 @@ import java.util.logging.Level;
  */
 public class ArcadeStateMachine extends BaseStateMachine {
 
+  /** File name used to persist the last-applied term and index across restarts. */
+  private static final String LAST_APPLIED_FILE = "arcade-last-applied.txt";
+
   private volatile ArcadeDBServer  server;
   private volatile RaftHAServer   raftHAServer;
   private volatile TermIndex      lastAppliedTermIndex;
+  private volatile Path           lastAppliedFile;
 
   public void setServer(final ArcadeDBServer server) {
     this.server = server;
@@ -57,6 +68,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   public void setRaftHAServer(final RaftHAServer raftHAServer) {
     this.raftHAServer = raftHAServer;
+  }
+
+  /**
+   * Initialises the state machine. Loads the persisted last-applied index from disk so that Ratis
+   * knows not to re-replay log entries that have already been durably applied to the ArcadeDB files.
+   */
+  @Override
+  public void initialize(final RaftServer raftServer, final RaftGroupId groupId, final RaftStorage storage) throws IOException {
+    super.initialize(raftServer, groupId, storage);
+
+    // Locate the state-machine subdirectory inside the Raft storage directory
+    final File smDir = storage.getStorageDir().getStateMachineDir();
+    if (smDir != null) {
+      smDir.mkdirs();
+      lastAppliedFile = smDir.toPath().resolve(LAST_APPLIED_FILE);
+      if (Files.exists(lastAppliedFile)) {
+        try {
+          final String content = Files.readString(lastAppliedFile, StandardCharsets.UTF_8).trim();
+          final String[] parts = content.split(":");
+          if (parts.length == 2) {
+            final long term  = Long.parseLong(parts[0]);
+            final long index = Long.parseLong(parts[1]);
+            lastAppliedTermIndex = TermIndex.valueOf(term, index);
+            LogManager.instance().log(this, Level.INFO,
+                "ArcadeStateMachine: restored lastApplied term=%d index=%d from disk", term, index);
+          }
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "ArcadeStateMachine: failed to parse last-applied file, starting fresh", e);
+          lastAppliedTermIndex = null;
+        }
+      }
+    }
   }
 
   @Override
@@ -75,6 +118,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
 
       lastAppliedTermIndex = termIndex;
+      persistLastApplied(termIndex);
       return CompletableFuture.completedFuture(Message.valueOf("OK"));
 
     } catch (final Exception e) {
@@ -86,6 +130,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
   @Override
   public TermIndex getLastAppliedTermIndex() {
     return lastAppliedTermIndex;
+  }
+
+  /**
+   * Writes the last-applied term:index to a small file so the state machine can restore
+   * its position on restart and avoid re-replaying already-applied log entries.
+   */
+  private void persistLastApplied(final TermIndex termIndex) {
+    if (lastAppliedFile == null)
+      return;
+    try {
+      final String content = termIndex.getTerm() + ":" + termIndex.getIndex();
+      Files.writeString(lastAppliedFile, content, StandardCharsets.UTF_8,
+          StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.SYNC);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING, "ArcadeStateMachine: failed to persist last-applied index", e);
+    }
   }
 
   private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
@@ -102,7 +162,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     LogManager.instance().log(this, Level.FINE, "Applying tx %d to database '%s' (pages=%d)",
         walTx.txId, decoded.databaseName(), walTx.pages.length);
 
-    db.getTransactionManager().applyChanges(walTx, decoded.bucketRecordDelta(), false);
+    // ignoreErrors=true: during Raft log replay on restart, log entries may already be applied to the
+    // database files (Ratis last-applied tracking can lag behind durable page writes). Skipping
+    // already-applied pages (page version >= log version) is safe; version-gap warnings are still logged.
+    db.getTransactionManager().applyChanges(walTx, decoded.bucketRecordDelta(), true);
   }
 
   private void applySchemaEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
@@ -155,7 +218,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
             ? bucketDeltas.get(i)
             : Collections.emptyMap();
         final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
-        db.getTransactionManager().applyChanges(walTx, bucketDelta, false);
+        // ignoreErrors=true: same rationale as applyTxEntry - replay safety during node restart
+        db.getTransactionManager().applyChanges(walTx, bucketDelta, true);
       }
       LogManager.instance().log(this, Level.FINE,
           "Applied %d buffered WAL entries from schema entry to database '%s'",

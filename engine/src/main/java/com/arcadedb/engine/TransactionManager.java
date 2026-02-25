@@ -329,9 +329,12 @@ public class TransactionManager {
                 page.getVersion());
 
         if (txPage.currentPageVersion <= page.getVersion()) {
-          if (ignoreErrors)
-            // SKIP IT
+          if (ignoreErrors) {
+            LogManager.instance().log(this, Level.FINE,
+                "Skipping already-applied page %s (log v.%d <= db v.%d)", null,
+                pageId, txPage.currentPageVersion, page.getVersion());
             continue;
+          }
           throw new ConcurrentModificationException(
               "Concurrent modification on page " + pageId + " in file '" + database.getFileManager().getFile(pageId.getFileId())
                   .getFileName() + "' (current v." + txPage.currentPageVersion + " <= database v." + page.getVersion()
@@ -408,11 +411,13 @@ public class TransactionManager {
       }
     }
 
-    for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
-      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
-      if (bucket.getCachedRecordCount() > -1)
-        // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
-        bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
+    if (changed) {
+      for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
+        final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
+        if (bucket.getCachedRecordCount() > -1)
+          // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
+          bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
+      }
     }
 
     if (involveDictionary) {
