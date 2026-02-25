@@ -299,7 +299,9 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         currentFrom = vertexOpt.get();
       } else {
         // If no vertex, try to extract @rid property (for projection results) - issue #3315
-        final Object rid = result.getProperty("@rid");
+        Object rid = result.getProperty("@rid");
+        if (rid == null)
+          rid = result.getProperty("rid");
         if (rid != null)
           currentFrom = rid;
         else

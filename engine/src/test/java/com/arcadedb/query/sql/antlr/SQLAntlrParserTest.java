@@ -95,4 +95,64 @@ class SQLAntlrParserTest {
 
     //System.out.println("✓ Multiple statements parsed successfully");
   }
+
+  @Test
+  void selectWithMultiLetSubqueries() {
+    final SQLAntlrParser parser = new SQLAntlrParser(null);
+
+    // Basic multi-LET with subqueries and LIMIT -1
+    assertThat(parser.parse("SELECT $c LET $a = (SELECT FROM V LIMIT -1), $b = (SELECT FROM V LIMIT -1)"))
+        .isInstanceOf(SelectStatement.class);
+
+    // SELECT ($c) with multiple LET and UNIONALL
+    assertThat(parser.parse(
+        "SELECT ( $c ) LET $a = (SELECT count(ID) FROM V LIMIT -1), "
+            + "$b = (SELECT * FROM V ORDER BY name LIMIT -1), "
+            + "$c = UNIONALL( $a, $b ) limit -1"))
+        .isInstanceOf(SelectStatement.class);
+  }
+
+  @Test
+  void orderByParenthesizedDirection() {
+    final SQLAntlrParser parser = new SQLAntlrParser(null);
+
+    // OrientDB-style parenthesized ORDER BY: (expr ASC), (expr DESC)
+    assertThat(parser.parse(
+        "SELECT FROM V ORDER BY (Name.toLowerCase() asc), (CreatedOn desc) LIMIT -1"))
+        .isInstanceOf(SelectStatement.class);
+
+    // Parenthesized ORDER BY inside LET subquery
+    assertThat(parser.parse(
+        "SELECT $c LET $a = (SELECT FROM V LIMIT -1), "
+            + "$b = (SELECT FROM V ORDER BY (Name.toLowerCase() asc), (CreatedOn desc) LIMIT -1)"))
+        .isInstanceOf(SelectStatement.class);
+  }
+
+  @Test
+  void complexSelectWithLetSubqueriesAndOrderBy() {
+    final SQLAntlrParser parser = new SQLAntlrParser(null);
+
+    // Full complex query with multiple LET subqueries, edge traversals,
+    // nested projections, parenthesized ORDER BY, and UNIONALL
+    assertThat(parser.parse(
+        "SELECT ( $c ) LET $a = (SELECT count(ID) FROM Product WHERE "
+            + "inE('HasChild')[_isDeleted <> true].size() = 0 AND "
+            + "(inE('Branch')[_isDeleted <> true] is NULL or inE('Branch')[_isDeleted <> true].size() = 0) AND "
+            + "@type = \"Product\" AND _isDeleted <> true AND _isDisabled <> true LIMIT -1), "
+            + "$b = (SELECT *,@rid, @type, State.Color as _State_Color, State.ID as _State_ID, "
+            + "State.StateType as _State_StateType, CompoundID, GenericName, TherapeuticArea, TradeName, "
+            + "!_scheme, CreatedBy.Email as _CreatedBy_Email, ModifiedBy.Email as _ModifiedBy_Email, "
+            + " out('HasChild')[_isDeleted <> true].size() as CSize , "
+            + "_documentType.ID as _documentType_ID, Owner.Email as _Owner_Email, "
+            + "in('HasFavoriteObject').ID as _favoritedBy, "
+            + "out('IsVariantOf')[_isDeleted <> true].ID as _variantsID, "
+            + "inE('Branch')[_isDeleted <> true].Name[0] as BranchName ,"
+            + "_lastApprovedRecord:{*} as _lastApproved FROM Product WHERE "
+            + "inE('HasChild')[_isDeleted <> true].size() = 0 AND "
+            + "(inE('Branch')[_isDeleted <> true] is NULL or inE('Branch')[_isDeleted <> true].size() = 0) AND "
+            + "@type = \"Product\" AND _isDeleted <> true AND _isDisabled <> true "
+            + "ORDER BY (Name.toLowerCase() asc), (CreatedOn desc) LIMIT -1), "
+            + "$c = UNIONALL( $a, $b ) limit -1"))
+        .isInstanceOf(SelectStatement.class);
+  }
 }

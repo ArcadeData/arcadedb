@@ -1063,7 +1063,8 @@ orderBy
     ;
 
 orderByItem
-    : expression orderDirection?
+    : LPAREN expression orderDirection? RPAREN    // OrientDB-style: (expr ASC/DESC)
+    | expression orderDirection?
     ;
 
 /**
