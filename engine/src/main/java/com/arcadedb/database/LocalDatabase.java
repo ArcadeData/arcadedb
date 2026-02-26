@@ -57,6 +57,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -139,7 +140,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
       LSMVectorIndex.FILE_EXT,
       LSMVectorIndexGraphFile.FILE_EXT,
-      TimeSeriesBucket.BUCKET_EXT);
+      TimeSeriesBucket.BUCKET_EXT,
+      HashIndexBucket.UNIQUE_INDEX_EXT,
+      HashIndexBucket.NOTUNIQUE_INDEX_EXT);
   public final         AtomicLong                                indexCompactions                     =
       new AtomicLong();
   protected final      String                                    name;
