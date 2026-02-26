@@ -67,17 +67,17 @@ jobs:
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
 
-      - name: Tag and commit release version
-        if: success()
-        run: |
-          git config user.email "actions@github.com"
-          git config user.name "GitHub Actions"
-          git commit -am "Set release version to ${{ github.event.inputs.releaseversion }}"
-          git tag ${{ github.event.inputs.releaseversion }}
-          git push origin ${{ github.event.inputs.releaseversion }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set next development version
-        if: success()
-        run: mvn versions:set "-DnewVersion=${{ github.event.inputs.nextversion }}" --no-transfer-progress
+#      - name: Tag and commit release version
+#        if: success()
+#        run: |
+#          git config user.email "actions@github.com"
+#          git config user.name "GitHub Actions"
+#          git commit -am "Set release version to ${{ github.event.inputs.releaseversion }}"
+#          git tag ${{ github.event.inputs.releaseversion }}
+#          git push origin ${{ github.event.inputs.releaseversion }}
+#        env:
+#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#
+#      - name: Set next development version
+#        if: success()
+#        run: mvn versions:set "-DnewVersion=${{ github.event.inputs.nextversion }}" --no-transfer-progress
