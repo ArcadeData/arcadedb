@@ -436,7 +436,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } catch (Exception e) {
         final Throwable cause = (e instanceof ExecutionException && e.getCause() != null) ? e.getCause() : e;
         LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord (external tx)", cause);
-        resp.onError(Status.INTERNAL.withDescription("CreateRecord: " + cause.getMessage()).asException());
+        if (cause instanceof IllegalArgumentException)
+          resp.onError(Status.INVALID_ARGUMENT.withDescription("CreateRecord: " + cause.getMessage()).asException());
+        else
+          resp.onError(Status.INTERNAL.withDescription("CreateRecord: " + cause.getMessage()).asException());
       }
       return;
     }
@@ -446,9 +449,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final Database db = getDatabase(req.getDatabase(), req.getCredentials());
       resp.onNext(createRecordInternal(req, db));
       resp.onCompleted();
+    } catch (IllegalArgumentException e) {
+      resp.onError(Status.INVALID_ARGUMENT.withDescription("CreateRecord: " + e.getMessage()).asException());
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord", e);
-      resp.onError(Status.INVALID_ARGUMENT.withDescription("CreateRecord: " + e.getMessage()).asException());
+      resp.onError(Status.INTERNAL.withDescription("CreateRecord: " + e.getMessage()).asException());
     }
   }
 
@@ -465,59 +470,74 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // All properties from the request (proto map) — nested under "record"
     final Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();
 
-    // --- Vertex ---
-    if (dt instanceof VertexType) {
-      final MutableVertex v = db.newVertex(cls);
-      props.forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
-      v.save();
-      return CreateRecordResponse.newBuilder().setRid(v.getIdentity().toString()).build();
-    }
+    final boolean beganHere = !db.isTransactionActive();
+    if (beganHere)
+      db.begin();
 
-    // --- Edge ---
-    if (dt instanceof EdgeType) {
-      String outStr = null, inStr = null;
+    try {
+      // --- Vertex ---
+      if (dt instanceof VertexType) {
+        final MutableVertex v = db.newVertex(cls);
+        props.forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
+        v.save();
 
-      if (props.containsKey("out")) {
-        GrpcValue pv = props.get("out");
-        outStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
-            String.valueOf(fromGrpcValue(pv));
+        if (beganHere)
+          db.commit();
+
+        return CreateRecordResponse.newBuilder().setRid(v.getIdentity().toString()).build();
       }
 
-      if (props.containsKey("in")) {
-        GrpcValue pv = props.get("in");
-        inStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
-            String.valueOf(fromGrpcValue(pv));
+      // --- Edge ---
+      if (dt instanceof EdgeType) {
+        String outStr = null, inStr = null;
+
+        if (props.containsKey("out")) {
+          GrpcValue pv = props.get("out");
+          outStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
+              String.valueOf(fromGrpcValue(pv));
+        }
+
+        if (props.containsKey("in")) {
+          GrpcValue pv = props.get("in");
+          inStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
+              String.valueOf(fromGrpcValue(pv));
+        }
+
+        if (outStr == null || inStr == null)
+          throw new IllegalArgumentException("Edge requires 'out' and 'in' RIDs");
+
+        final var outEl = db.lookupByRID(new RID(outStr), false);
+        final var inEl = db.lookupByRID(new RID(inStr), false);
+        final Vertex outV = outEl.asVertex(false);
+
+        final MutableEdge e = outV.newEdge(cls, inEl);
+        props.forEach((k, val) -> {
+          if (!"out".equals(k) && !"in".equals(k))
+            e.set(k, toJavaForProperty(db, e, dt, k, val));
+        });
+        e.save();
+
+        if (beganHere)
+          db.commit();
+
+        return CreateRecordResponse.newBuilder().setRid(e.getIdentity().toString()).build();
       }
 
-      if (outStr == null || inStr == null)
-        throw new IllegalArgumentException("Edge requires 'out' and 'in' RIDs");
-
-      final var outEl = db.lookupByRID(new RID(outStr), false);
-      final var inEl = db.lookupByRID(new RID(inStr), false);
-      final Vertex outV = outEl.asVertex(false);
-
-      final boolean beganHere = !db.isTransactionActive();
-      if (beganHere)
-        db.begin();
-
-      final MutableEdge e = outV.newEdge(cls, inEl);
-      props.forEach((k, val) -> {
-        if (!"out".equals(k) && !"in".equals(k))
-          e.set(k, toJavaForProperty(db, e, dt, k, val));
-      });
-      e.save();
+      // --- Document ---
+      final MutableDocument d = db.newDocument(cls);
+      props.forEach((k, val) -> d.set(k, toJavaForProperty(db, d, dt, k, val)));
+      d.save();
 
       if (beganHere)
         db.commit();
 
-      return CreateRecordResponse.newBuilder().setRid(e.getIdentity().toString()).build();
+      return CreateRecordResponse.newBuilder().setRid(d.getIdentity().toString()).build();
+    } catch (Exception e) {
+      if (beganHere) {
+        try { db.rollback(); } catch (Exception ignore) { }
+      }
+      throw e;
     }
-
-    // --- Document ---
-    final MutableDocument d = db.newDocument(cls);
-    props.forEach((k, val) -> d.set(k, toJavaForProperty(db, d, dt, k, val)));
-    d.save();
-    return CreateRecordResponse.newBuilder().setRid(d.getIdentity().toString()).build();
   }
 
   @Override
