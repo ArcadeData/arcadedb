@@ -20,10 +20,12 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 
@@ -37,10 +39,6 @@ import java.util.stream.*;
  * Created by luigidellaquila on 08/07/16.
  */
 public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
-  private static final ForkJoinPool SCAN_POOL = new ForkJoinPool(
-      Math.max(2, Runtime.getRuntime().availableProcessors() - 1),
-      ForkJoinPool.defaultForkJoinWorkerThreadFactory, null, true);
-
   private              String                             typeName;
   private              boolean                            orderByRidAsc  = false;
   private              boolean                            orderByRidDesc = false;
@@ -143,12 +141,14 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       }
     }
 
-    // Enable parallel scanning when: no ordering required, multiple buckets, and config enabled
+    // Enable parallel scanning when: no ordering required, multiple buckets, config enabled,
+    // and not already running inside async executor threads (avoids redundant parallelism)
     final DatabaseInternal db = context.getDatabase();
     final int minBuckets = db.getConfiguration().getValueAsInteger(GlobalConfiguration.QUERY_PARALLEL_SCAN_MIN_BUCKETS);
     this.parallelScan = !orderByRidAsc && !orderByRidDesc
         && getSubSteps().size() >= minBuckets
-        && db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN);
+        && db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN)
+        && !(Thread.currentThread() instanceof DatabaseAsyncExecutorImpl.AsyncThread);
   }
 
   private void sortBuckets(final int[] bucketIds) {
@@ -240,9 +240,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       scanFutures = new ArrayList<>(getSubSteps().size());
 
       final DatabaseInternal db = context.getDatabase();
+      final ExecutorService scanExecutor = QueryEngineManager.getInstance().getExecutorService();
 
       for (final ExecutionStep step : getSubSteps()) {
-        final Future<?> future = SCAN_POOL.submit(() -> {
+        final Future<?> future = scanExecutor.submit(() -> {
           try {
             // Each thread gets its own database context for thread safety
             db.executeInReadLock(() -> {
@@ -269,7 +270,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       }
 
       // Background thread to signal completion
-      SCAN_POOL.submit(() -> {
+      scanExecutor.submit(() -> {
         for (final Future<?> f : scanFutures) {
           try {
             f.get();
