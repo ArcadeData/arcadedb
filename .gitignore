@@ -557,3 +557,4 @@ dist
 # Test database files
 *.lsmvecidx
 *.metadata.json
+/.claude/worktrees
