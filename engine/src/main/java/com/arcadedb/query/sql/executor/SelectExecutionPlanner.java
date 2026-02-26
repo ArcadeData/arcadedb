@@ -136,6 +136,66 @@ public class SelectExecutionPlanner {
       info.timeout = new Timeout(-1);
       info.timeout.setValue(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
     }
+
+    info.projectedProperties = computeProjectedProperties(info);
+  }
+
+  /**
+   * Computes the set of property names required by this query for column projection pushdown.
+   * Analyzes SELECT projections, WHERE clause, GROUP BY, and ORDER BY to determine the minimal
+   * set of properties that need to be deserialized from storage.
+   *
+   * @return the set of required property names, or null if all properties are needed (e.g., SELECT *)
+   */
+  private static Set<String> computeProjectedProperties(final QueryPlanningInfo info) {
+    // If there's no projection or it contains *, we need all properties
+    if (info.projection == null)
+      return null;
+
+    for (final ProjectionItem item : info.projection.getItems())
+      if (item.isAll())
+        return null;
+
+    final Set<String> result = new HashSet<>();
+
+    // Extract from SELECT projections
+    for (final ProjectionItem item : info.projection.getItems()) {
+      if (item.getExpression() != null && item.getExpression().isBaseIdentifier())
+        result.add(item.getExpression().getDefaultAlias().getStringValue());
+      else if (item.getExpression() != null)
+        // Complex expression: we can't determine the exact fields needed, need all
+        return null;
+    }
+
+    // Extract from WHERE clause
+    if (info.whereClause != null) {
+      // WHERE can reference arbitrary fields, so we need all properties if we can't analyze it
+      // For safety, return null to indicate all properties needed
+      return null;
+    }
+
+    // Extract from GROUP BY
+    if (info.groupBy != null) {
+      for (final Expression expr : info.groupBy.getItems()) {
+        if (expr.isBaseIdentifier())
+          result.add(expr.getDefaultAlias().getStringValue());
+        else
+          return null;
+      }
+    }
+
+    // Extract from ORDER BY
+    if (info.orderBy != null) {
+      for (final OrderByItem item : info.orderBy.getItems()) {
+        final String alias = item.getAlias();
+        if (alias != null)
+          result.add(alias);
+        else
+          return null;
+      }
+    }
+
+    return result.isEmpty() ? null : result;
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean useCache) {
@@ -1686,6 +1746,21 @@ public class SelectExecutionPlanner {
       orderByRidAsc = true;
     else if (isOrderByRidDesc(info))
       orderByRidAsc = false;
+
+    // Predicate pushdown: if there's a WHERE clause and no index was used, integrate the filter
+    // directly into the scan step to avoid separate FilterStep overhead.
+    // Also passes projectedProperties so that only SELECT-listed fields are deserialized
+    // for matching records (two-phase deserialization optimization).
+    if (info.whereClause != null && info.whereClause.baseExpression != null) {
+      final FetchFromTypeWithFilterStep fetcher = new FetchFromTypeWithFilterStep(identifier.getStringValue(), filterClusters,
+          info.whereClause, info.projectedProperties, context, orderByRidAsc);
+      if (orderByRidAsc != null)
+        info.orderApplied = true;
+      plan.chain(fetcher);
+      // Mark WHERE as consumed so handleWhere() doesn't add a separate FilterStep
+      info.whereClause = null;
+      return;
+    }
 
     final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), filterClusters, info,
         context, orderByRidAsc);

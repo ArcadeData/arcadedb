@@ -25,8 +25,10 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -54,12 +56,16 @@ import java.util.NoSuchElementException;
  * Example: MATCH (n:Person)
  * - Iterates all vertices of type "Person"
  * - Binds each vertex to variable 'n'
+ * <p>
+ * Supports optional inline WHERE filter (predicate pushdown) to evaluate
+ * predicates during scanning rather than in a separate FilterPropertiesStep.
  */
 public class MatchNodeStep extends AbstractExecutionStep {
-  private final String      variable;
-  private final NodePattern pattern;
-  private final String      idFilter; // Optional ID filter to apply (e.g., "#1:0")
-  private       String      usedIndexName; // Track which index was used (if any)
+  private final String            variable;
+  private final NodePattern       pattern;
+  private final String            idFilter;    // Optional ID filter to apply (e.g., "#1:0")
+  private final BooleanExpression whereFilter; // Optional inline WHERE predicate (pushdown)
+  private       String            usedIndexName; // Track which index was used (if any)
 
   /**
    * Creates a match node step.
@@ -69,7 +75,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @param context  command context
    */
   public MatchNodeStep(final String variable, final NodePattern pattern, final CommandContext context) {
-    this(variable, pattern, context, null);
+    this(variable, pattern, context, null, null);
   }
 
   /**
@@ -82,10 +88,25 @@ public class MatchNodeStep extends AbstractExecutionStep {
    */
   public MatchNodeStep(final String variable, final NodePattern pattern, final CommandContext context,
                        final String idFilter) {
+    this(variable, pattern, context, idFilter, null);
+  }
+
+  /**
+   * Creates a match node step with ID filter and inline WHERE predicate pushdown.
+   *
+   * @param variable    variable name to bind vertices to
+   * @param pattern     node pattern to match
+   * @param context     command context
+   * @param idFilter    optional ID filter to apply (e.g., "#1:0")
+   * @param whereFilter optional inline WHERE predicate for pushdown filtering
+   */
+  public MatchNodeStep(final String variable, final NodePattern pattern, final CommandContext context,
+                       final String idFilter, final BooleanExpression whereFilter) {
     super(context);
     this.variable = variable;
     this.pattern = pattern;
     this.idFilter = idFilter;
+    this.whereFilter = whereFilter;
   }
 
   @Override
@@ -188,6 +209,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
                     }
                   }
                   result.setProperty(variable, vertex);
+
+                  // Apply inline WHERE filter (predicate pushdown)
+                  if (whereFilter != null && !whereFilter.evaluate(result, context))
+                    continue;
+
                   buffer.add(result);
                 }
               } finally {
@@ -224,6 +250,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 // Create result with vertex bound to variable
                 final ResultInternal result = new ResultInternal();
                 result.setProperty(variable, vertex);
+
+                // Apply inline WHERE filter (predicate pushdown)
+                if (whereFilter != null && !whereFilter.evaluate(result, context))
+                  continue;
+
                 buffer.add(result);
               }
             } finally {
@@ -563,9 +594,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
       builder.append(":").append(String.join("|", pattern.getLabels()));
     }
     builder.append(")");
-    if (usedIndexName != null) {
+    if (usedIndexName != null)
       builder.append(" [index: ").append(usedIndexName).append("]");
-    }
+    if (whereFilter != null)
+      builder.append(" [filter: ").append(whereFilter.getText()).append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)

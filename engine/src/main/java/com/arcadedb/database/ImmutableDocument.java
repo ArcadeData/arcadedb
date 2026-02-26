@@ -121,6 +121,23 @@ public class ImmutableDocument extends BaseDocument {
     return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
   }
 
+  /**
+   * Returns only the specified properties as a map, using selective deserialization.
+   * This avoids deserializing all properties when only a few are needed (OLAP optimization).
+   *
+   * @param fieldNames the property names to deserialize
+   *
+   * @return map of property name to value for the requested fields only
+   */
+  public Map<String, Object> propertiesAsMap(final String... fieldNames) {
+    if (database == null || buffer == null)
+      return Collections.emptyMap();
+    if (fieldNames == null || fieldNames.length == 0)
+      return propertiesAsMap();
+    buffer.position(propertiesStartingPosition);
+    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid, fieldNames);
+  }
+
   @Override
   public Map<String, Object> toMap() {
     return toMap(true);

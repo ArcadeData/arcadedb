@@ -32,6 +32,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   public static final Object            ORDER_DESC   = "DESC";
   private final       QueryPlanningInfo queryPlanning;
   private final       int               bucketId;
+  private final       Set<String>       projectedProperties;
   private             Object            order;
   private             long              totalFetched = 0L;
 
@@ -46,6 +47,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
     super(context);
     this.bucketId = bucketId;
     this.queryPlanning = queryPlanning;
+    this.projectedProperties = queryPlanning != null ? queryPlanning.projectedProperties : null;
     this.order = order;
   }
 

@@ -318,6 +318,16 @@ public enum GlobalConfiguration {
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory)""",
       Long.class, 500_000),
 
+  QUERY_PARALLEL_SCAN("arcadedb.queryParallelScan", SCOPE.DATABASE,
+      "Enable parallel scanning of multiple buckets during full table scans. " +
+          "When true, each bucket is scanned in a separate thread for improved throughput on multi-core systems",
+      Boolean.class, true),
+
+  QUERY_PARALLEL_SCAN_MIN_BUCKETS("arcadedb.queryParallelScanMinBuckets", SCOPE.DATABASE,
+      "Minimum number of buckets required to trigger parallel scanning. " +
+          "If the type has fewer buckets than this threshold, sequential scanning is used",
+      Integer.class, 2),
+
   // CYPHER
   CYPHER_STATEMENT_CACHE("arcadedb.cypher.statementCache", SCOPE.DATABASE,
       "Max number of entries in the cypher statement cache. Use 0 to disable. Caching statements speeds up execution of the same cypher queries",

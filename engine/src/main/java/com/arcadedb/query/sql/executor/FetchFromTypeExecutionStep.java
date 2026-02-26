@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
@@ -36,15 +37,25 @@ import java.util.stream.*;
  * Created by luigidellaquila on 08/07/16.
  */
 public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
+  private static final ForkJoinPool SCAN_POOL = new ForkJoinPool(
+      Math.max(2, Runtime.getRuntime().availableProcessors() - 1),
+      ForkJoinPool.defaultForkJoinWorkerThreadFactory, null, true);
+
   private              String                             typeName;
   private              boolean                            orderByRidAsc  = false;
   private              boolean                            orderByRidDesc = false;
+  private              boolean                            parallelScan   = false;
   private              List<ExecutionStep>                subSteps = new ArrayList<>();
   private static final ConcurrentHashMap<String, Integer> WARNINGS = new ConcurrentHashMap<>();
   private static final int                                WARNINGS_EVERY;
 
   ResultSet currentResultSet;
   int       currentStep = 0;
+
+  // Parallel scanning state
+  private BlockingQueue<Result> parallelQueue;
+  private volatile boolean     parallelScanComplete = false;
+  private List<Future<?>>      scanFutures;
 
   static {
     WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
@@ -131,6 +142,13 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         getSubSteps().add(step);
       }
     }
+
+    // Enable parallel scanning when: no ordering required, multiple buckets, and config enabled
+    final DatabaseInternal db = context.getDatabase();
+    final int minBuckets = db.getConfiguration().getValueAsInteger(GlobalConfiguration.QUERY_PARALLEL_SCAN_MIN_BUCKETS);
+    this.parallelScan = !orderByRidAsc && !orderByRidDesc
+        && getSubSteps().size() >= minBuckets
+        && db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN);
   }
 
   private void sortBuckets(final int[] bucketIds) {
@@ -151,11 +169,16 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
 
+    if (parallelScan)
+      return syncPullParallel(context, nRecords);
+
+    return syncPullSequential(context, nRecords);
+  }
+
+  private ResultSet syncPullSequential(final CommandContext context, final int nRecords) {
     return new ResultSet() {
       int totDispatched = 0;
 
-      // TODO: MAKE THIS PARALLEL
-      // ISSUE https://github.com/ArcadeData/arcadedb/issues/1296
       @Override
       public boolean hasNext() {
         while (true) {
@@ -178,9 +201,9 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         while (true) {
-          if (totDispatched >= nRecords) {
+          if (totDispatched >= nRecords)
             throw new NoSuchElementException();
-          }
+
           if (currentResultSet != null && currentResultSet.hasNext()) {
             totDispatched++;
             final Result result = currentResultSet.next();
@@ -205,6 +228,106 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     };
   }
 
+  /**
+   * Scans buckets in parallel using a ForkJoinPool. Each bucket is scanned in a separate thread
+   * and results are fed into a shared bounded queue that the calling thread drains.
+   */
+  private ResultSet syncPullParallel(final CommandContext context, final int nRecords) {
+    if (parallelQueue == null) {
+      // Bounded queue: prevents memory explosion while allowing parallelism
+      parallelQueue = new LinkedBlockingQueue<>(4096);
+      parallelScanComplete = false;
+      scanFutures = new ArrayList<>(getSubSteps().size());
+
+      final DatabaseInternal db = context.getDatabase();
+
+      for (final ExecutionStep step : getSubSteps()) {
+        final Future<?> future = SCAN_POOL.submit(() -> {
+          try {
+            // Each thread gets its own database context for thread safety
+            db.executeInReadLock(() -> {
+              final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
+              ResultSet rs = execStep.syncPull(context, nRecords);
+              while (rs.hasNext()) {
+                final Result r = rs.next();
+                try {
+                  parallelQueue.put(r);
+                } catch (final InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                  return null;
+                }
+                if (!rs.hasNext())
+                  rs = execStep.syncPull(context, nRecords);
+              }
+              return null;
+            });
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.WARNING, "Error during parallel bucket scan", e);
+          }
+        });
+        scanFutures.add(future);
+      }
+
+      // Background thread to signal completion
+      SCAN_POOL.submit(() -> {
+        for (final Future<?> f : scanFutures) {
+          try {
+            f.get();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.WARNING, "Error waiting for parallel scan", e);
+          }
+        }
+        parallelScanComplete = true;
+      });
+    }
+
+    return new ResultSet() {
+      int totDispatched = 0;
+      Result nextItem = null;
+
+      @Override
+      public boolean hasNext() {
+        if (totDispatched >= nRecords)
+          return false;
+        if (nextItem != null)
+          return true;
+
+        // Poll from the queue, waiting briefly for results
+        while (nextItem == null) {
+          try {
+            nextItem = parallelQueue.poll(10, TimeUnit.MILLISECONDS);
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+          }
+          if (nextItem == null && parallelScanComplete && parallelQueue.isEmpty())
+            return false;
+        }
+        return true;
+      }
+
+      @Override
+      public Result next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Result result = nextItem;
+        nextItem = null;
+        totDispatched++;
+        context.setVariable("current", result);
+        return result;
+      }
+
+      @Override
+      public void close() {
+        if (scanFutures != null)
+          for (final Future<?> f : scanFutures)
+            f.cancel(true);
+        for (final ExecutionStep step : getSubSteps())
+          ((AbstractExecutionStep) step).close();
+      }
+    };
+  }
+
   @Override
   public void sendTimeout() {
     for (final ExecutionStep step : getSubSteps())
@@ -216,6 +339,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
+    if (scanFutures != null)
+      for (final Future<?> f : scanFutures)
+        f.cancel(true);
+
     for (final ExecutionStep step : getSubSteps())
       ((AbstractExecutionStep) step).close();
 
@@ -229,6 +356,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ FETCH FROM TYPE ").append(typeName);
+    if (parallelScan)
+      builder.append(" (parallel)");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
     }
