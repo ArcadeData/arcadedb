@@ -422,110 +422,102 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void createRecord(CreateRecordRequest req, StreamObserver<CreateRecordResponse> resp) {
+    // Check for external transaction
+    final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
+    final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank())
+        ? activeTransactions.get(incomingTxId) : null;
 
+    if (txCtx != null) {
+      // External transaction — execute on its dedicated thread to maintain thread-local state
+      try {
+        final Future<CreateRecordResponse> future = txCtx.executor.submit(() -> createRecordInternal(req, txCtx.db));
+        resp.onNext(future.get());
+        resp.onCompleted();
+      } catch (Exception e) {
+        final Throwable cause = (e instanceof ExecutionException && e.getCause() != null) ? e.getCause() : e;
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord (external tx)", cause);
+        resp.onError(Status.INTERNAL.withDescription("CreateRecord: " + cause.getMessage()).asException());
+      }
+      return;
+    }
+
+    // No external transaction — inline per-call handling
     try {
-
-      Database db = getDatabase(req.getDatabase(), req.getCredentials());
-
-      final String cls = req.getType(); // or req.getTargetClass() if that's your proto
-      if (cls == null || cls.isEmpty())
-        throw new IllegalArgumentException("targetClass is required");
-
-      Schema schema = db.getSchema();
-      DocumentType dt = schema.getType(cls);
-      if (dt == null)
-        throw new IllegalArgumentException("Class not found: " + cls);
-
-      // All properties from the request (proto map) — nested under "record"
-      final Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();
-
-      // --- Vertex ---
-      if (dt instanceof VertexType) {
-        MutableVertex v = db.newVertex(cls);
-
-        // apply properties with proper coercion
-        props.forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
-
-        v.save();
-
-        // Build response: proto has setRid(String)
-        CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder().setRid(v.getIdentity().toString());
-
-        resp.onNext(b.build());
-        resp.onCompleted();
-        return;
-      }
-
-      // --- Edge ---
-      if (dt instanceof EdgeType) {
-
-        // Expect 'out' and 'in' as string RIDs in the properties map
-        String outStr = null, inStr = null;
-
-        if (props.containsKey("out")) {
-
-          GrpcValue pv = props.get("out");
-          outStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
-              String.valueOf(fromGrpcValue(pv));
-        }
-
-        if (props.containsKey("in")) {
-
-          GrpcValue pv = props.get("in");
-          inStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
-              String.valueOf(fromGrpcValue(pv));
-        }
-
-        if (outStr == null || inStr == null)
-          throw new IllegalArgumentException("Edge requires 'out' and 'in' RIDs");
-
-        var outEl = db.lookupByRID(new RID(outStr), false);
-        var inEl = db.lookupByRID(new RID(inStr), false);
-
-        final Vertex outV = outEl.asVertex(false);
-
-        if (!db.isTransactionActive())
-          db.begin();
-
-        MutableEdge e = outV.newEdge(cls, inEl);
-
-        // apply remaining properties (skip endpoints)
-
-        props.forEach((k, val) -> {
-          if (!"out".equals(k) && !"in".equals(k)) {
-            e.set(k, toJavaForProperty(db, e, dt, k, val));
-          }
-        });
-
-        e.save();
-        db.commit();
-
-        CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder();
-
-        b.setRid(e.getIdentity().toString());
-
-        resp.onNext(b.build());
-        resp.onCompleted();
-
-        return;
-      }
-
-      // --- Document ---
-      MutableDocument d = db.newDocument(cls);
-      props.forEach((k, val) -> d.set(k, toJavaForProperty(db, d, dt, k, val)));
-      d.save();
-
-      CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder();
-
-      b.setRid(d.getIdentity().toString());
-
-      resp.onNext(b.build());
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      resp.onNext(createRecordInternal(req, db));
       resp.onCompleted();
-
     } catch (Exception e) {
-
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord", e);
       resp.onError(Status.INVALID_ARGUMENT.withDescription("CreateRecord: " + e.getMessage()).asException());
     }
+  }
+
+  private CreateRecordResponse createRecordInternal(final CreateRecordRequest req, final Database db) {
+    final String cls = req.getType();
+    if (cls == null || cls.isEmpty())
+      throw new IllegalArgumentException("targetClass is required");
+
+    final Schema schema = db.getSchema();
+    final DocumentType dt = schema.getType(cls);
+    if (dt == null)
+      throw new IllegalArgumentException("Class not found: " + cls);
+
+    // All properties from the request (proto map) — nested under "record"
+    final Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();
+
+    // --- Vertex ---
+    if (dt instanceof VertexType) {
+      final MutableVertex v = db.newVertex(cls);
+      props.forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
+      v.save();
+      return CreateRecordResponse.newBuilder().setRid(v.getIdentity().toString()).build();
+    }
+
+    // --- Edge ---
+    if (dt instanceof EdgeType) {
+      String outStr = null, inStr = null;
+
+      if (props.containsKey("out")) {
+        GrpcValue pv = props.get("out");
+        outStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
+            String.valueOf(fromGrpcValue(pv));
+      }
+
+      if (props.containsKey("in")) {
+        GrpcValue pv = props.get("in");
+        inStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
+            String.valueOf(fromGrpcValue(pv));
+      }
+
+      if (outStr == null || inStr == null)
+        throw new IllegalArgumentException("Edge requires 'out' and 'in' RIDs");
+
+      final var outEl = db.lookupByRID(new RID(outStr), false);
+      final var inEl = db.lookupByRID(new RID(inStr), false);
+      final Vertex outV = outEl.asVertex(false);
+
+      final boolean beganHere = !db.isTransactionActive();
+      if (beganHere)
+        db.begin();
+
+      final MutableEdge e = outV.newEdge(cls, inEl);
+      props.forEach((k, val) -> {
+        if (!"out".equals(k) && !"in".equals(k))
+          e.set(k, toJavaForProperty(db, e, dt, k, val));
+      });
+      e.save();
+
+      if (beganHere)
+        db.commit();
+
+      return CreateRecordResponse.newBuilder().setRid(e.getIdentity().toString()).build();
+    }
+
+    // --- Document ---
+    final MutableDocument d = db.newDocument(cls);
+    props.forEach((k, val) -> d.set(k, toJavaForProperty(db, d, dt, k, val)));
+    d.save();
+    return CreateRecordResponse.newBuilder().setRid(d.getIdentity().toString()).build();
   }
 
   @Override
@@ -552,24 +544,59 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void updateRecord(final UpdateRecordRequest req, final StreamObserver<UpdateRecordResponse> resp) {
-    Database db = null;
+    // Check for external transaction
+    final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
+    final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank())
+        ? activeTransactions.get(incomingTxId) : null;
+
+    if (txCtx != null) {
+      // External transaction — execute on its dedicated thread to maintain thread-local state
+      try {
+        final Future<UpdateRecordResponse> future = txCtx.executor.submit(() -> updateRecordInternal(req, txCtx.db));
+        resp.onNext(future.get());
+        resp.onCompleted();
+      } catch (Exception e) {
+        final Throwable cause = (e instanceof ExecutionException && e.getCause() != null) ? e.getCause() : e;
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", cause);
+        if (cause instanceof RecordNotFoundException)
+          resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+        else
+          resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + cause.getMessage()).asException());
+      }
+      return;
+    }
+
+    // No external transaction — inline per-call handling
+    try {
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      resp.onNext(updateRecordInternal(req, db));
+      resp.onCompleted();
+    } catch (RecordNotFoundException e) {
+      resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
+      resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + e.getMessage()).asException());
+    }
+  }
+
+  private UpdateRecordResponse updateRecordInternal(final UpdateRecordRequest req, final Database db) {
     boolean beganHere = false;
 
     String ridStr = null;
     try {
-      db = getDatabase(req.getDatabase(), req.getCredentials());
-
       ridStr = req.getRid();
 
       if (ridStr == null || ridStr.isEmpty())
         throw new IllegalArgumentException("rid is required");
 
-      // Begin transaction if requested
+      // Begin transaction if requested by inline tx flags (not external transaction)
       final boolean hasTx = req.hasTransaction();
-
       final var tx = hasTx ? req.getTransaction() : null;
 
       if (hasTx && tx.getBegin()) {
+        db.begin();
+        beganHere = true;
+      } else if (!db.isTransactionActive()) {
         db.begin();
         beganHere = true;
       }
@@ -638,97 +665,103 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         mdoc.save();
       }
 
-      // Commit/rollback with proper precedence
-      if (hasTx) {
-
-        if (tx.getRollback()) {
+      // Commit/rollback with proper precedence (only for per-call transactions, not external)
+      if (beganHere) {
+        if (hasTx && tx.getRollback())
           db.rollback();
-        } else if (tx.getCommit()) {
+        else
           db.commit();
-        } else if (beganHere) {
-          db.commit();
-        }
       }
 
-      resp.onNext(UpdateRecordResponse.newBuilder().setUpdated(true).setSuccess(true).build());
-
-      resp.onCompleted();
+      return UpdateRecordResponse.newBuilder().setUpdated(true).setSuccess(true).build();
     } catch (RecordNotFoundException e) {
-      resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + ridStr).asException());
+      if (beganHere) {
+        try { db.rollback(); } catch (Exception ignore) { }
+      }
+      throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
-
-      try {
-        if (beganHere && db != null)
-          db.rollback();
-      } catch (Exception ignore) {
-        // ignore rollback errors
+      if (beganHere) {
+        try { db.rollback(); } catch (Exception ignore) { }
       }
-
-      resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + e.getMessage()).asException());
+      throw e;
     }
   }
 
   @Override
   public void deleteRecord(DeleteRecordRequest req, StreamObserver<DeleteRecordResponse> resp) {
-    Database db = null;
-    boolean beganHere = false;
+    // Check for external transaction
+    final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
+    final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank())
+        ? activeTransactions.get(incomingTxId) : null;
 
-    String ridStr = null;
-    try {
-      db = getDatabase(req.getDatabase(), req.getCredentials());
-
-      ridStr = req.getRid();
-      if (ridStr == null || ridStr.isBlank())
-        throw new IllegalArgumentException("rid is required");
-
-      // Optional tx begin
-      if (req.hasTransaction() && req.getTransaction().getBegin()) {
-        db.begin();
-        beganHere = true;
-      }
-
-      var el = db.lookupByRID(new RID(ridStr), false);
-
-      el.delete(); // deletes document/vertex/edge
-
-      // Optional tx end controls
-      if (req.hasTransaction()) {
-        var tx = req.getTransaction();
-        if (tx.getCommit())
-          db.commit();
-        else if (tx.getRollback())
-          db.rollback();
-        else if (beganHere)
-          db.commit(); // began here with no explicit end → commit by default
-      } else if (beganHere) {
-        db.commit();
-      }
-
-      resp.onNext(DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build());
-      resp.onCompleted();
-
-// CURRENT IMPL EXPECTS AN EXCEPTION INSTEAD
-//    } catch (RecordNotFoundException e) {
-//      // Soft "not found"
-//      resp.onNext(DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(false).setMessage("Record not found: "
-//          + ridStr).build());
-//      resp.onCompleted();
-//      // If we began here and no explicit rollback flag, default to commit (or
-//      // rollback—your policy)
-//      if (beganHere && req.hasTransaction() && !req.getTransaction().getRollback())
-//        db.commit();
-    } catch (Exception e) {
-      // Best-effort rollback if we started the tx
+    if (txCtx != null) {
+      // External transaction — execute on its dedicated thread to maintain thread-local state
       try {
-        if (beganHere && db != null)
-          db.rollback();
-      } catch (Exception ignore) {
+        final Future<DeleteRecordResponse> future = txCtx.executor.submit(() -> deleteRecordInternal(req, txCtx.db));
+        resp.onNext(future.get());
+        resp.onCompleted();
+      } catch (Exception e) {
+        final Throwable cause = (e instanceof ExecutionException && e.getCause() != null) ? e.getCause() : e;
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", cause);
+        if (cause instanceof RecordNotFoundException)
+          resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+        else
+          resp.onError(Status.INTERNAL.withDescription("DeleteRecord: " + cause.getMessage()).asException());
       }
+      return;
+    }
 
+    // No external transaction — inline per-call handling
+    try {
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      resp.onNext(deleteRecordInternal(req, db));
+      resp.onCompleted();
+    } catch (RecordNotFoundException e) {
+      resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord", e);
       resp.onError(
           Status.INTERNAL.withDescription("DeleteRecord: " + (e.getMessage() == null ? e.toString() : e.getMessage()))
               .asException());
+    }
+  }
+
+  private DeleteRecordResponse deleteRecordInternal(final DeleteRecordRequest req, final Database db) {
+    final String ridStr = req.getRid();
+    if (ridStr == null || ridStr.isBlank())
+      throw new IllegalArgumentException("rid is required");
+
+    final boolean hasTx = req.hasTransaction();
+    final boolean beganHere;
+
+    if (hasTx && req.getTransaction().getBegin()) {
+      db.begin();
+      beganHere = true;
+    } else if (!db.isTransactionActive()) {
+      db.begin();
+      beganHere = true;
+    } else {
+      beganHere = false;
+    }
+
+    try {
+      final var el = db.lookupByRID(new RID(ridStr), false);
+      el.delete();
+
+      if (beganHere) {
+        if (hasTx && req.getTransaction().getRollback())
+          db.rollback();
+        else
+          db.commit();
+      }
+
+      return DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build();
+    } catch (Exception e) {
+      if (beganHere) {
+        try { db.rollback(); } catch (Exception ignore) { }
+      }
+      throw e;
     }
   }
 

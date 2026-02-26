@@ -372,9 +372,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-    final DeleteRecordRequest req =
+    final DeleteRecordRequest.Builder deleteBuilder =
         DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(record.getIdentity().toString())
-            .setCredentials(buildCredentials()).build();
+            .setCredentials(buildCredentials());
+
+    if (transactionId != null)
+      deleteBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
+
+    final DeleteRecordRequest req = deleteBuilder.build();
 
     try {
       if (LogManager.instance().isDebugEnabled()) {
@@ -402,9 +407,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     checkDatabaseIsOpen();
     stats.deleteRecord.incrementAndGet();
 
-    final DeleteRecordRequest req = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid)
-        .setCredentials(buildCredentials())
-        .build();
+    final DeleteRecordRequest.Builder deleteBuilder = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid)
+        .setCredentials(buildCredentials());
+
+    if (transactionId != null)
+      deleteBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
+
+    final DeleteRecordRequest req = deleteBuilder.build();
 
     try {
       if (LogManager.instance().isDebugEnabled()) {
@@ -654,15 +663,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           PropertiesUpdate.newBuilder().putAllProperties(convertParamsToGrpcValue(record.toMap(false)))
               .build();
 
-      UpdateRecordRequest request = UpdateRecordRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
-          .setPartial(partial)
-          .setDatabase(databaseName).setCredentials(buildCredentials()).build();
+      UpdateRecordRequest.Builder updateBuilder = UpdateRecordRequest.newBuilder().setDatabase(getName())
+          .setRid(rid.toString()).setPartial(partial).setDatabase(databaseName).setCredentials(buildCredentials());
+
+      if (transactionId != null)
+        updateBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
 
       try {
 
         @SuppressWarnings("unused")
         UpdateRecordResponse response =
-            blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).updateRecord(request);
+            blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).updateRecord(updateBuilder.build());
 
         // If your proto has flags, you can check response.getSuccess()/getUpdated()
         // Otherwise, treat non-exception as success.
@@ -679,12 +690,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       GrpcRecord recMsg =
           GrpcRecord.newBuilder().putAllProperties(convertParamsToGrpcValue(record.toMap(false))).build();
 
-      CreateRecordRequest request =
+      CreateRecordRequest.Builder createBuilder =
           CreateRecordRequest.newBuilder().setDatabase(getName()).setType(record.getTypeName())
-              .setRecord(recMsg) // nested
-              // GrpcRecord
-              // payload
-              .setCredentials(buildCredentials()).build();
+              .setRecord(recMsg).setCredentials(buildCredentials());
+
+      if (transactionId != null)
+        createBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
+
+      final CreateRecordRequest request = createBuilder.build();
 
       try {
         CreateRecordResponse response =
