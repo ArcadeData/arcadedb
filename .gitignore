@@ -558,3 +558,4 @@ dist
 *.lsmvecidx
 *.metadata.json
 /.claude/worktrees
+/server/profiler

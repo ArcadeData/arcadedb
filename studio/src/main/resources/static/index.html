@@ -142,6 +142,7 @@
     <script src="js/studio-utils.js"></script>
     <script src="js/studio-database.js"></script>
     <script src="js/studio-server.js"></script>
+    <script src="js/studio-profiler.js"></script>
     <script src="js/studio-security.js"></script>
     <script src="js/studio-cluster.js"></script>
     <script src="js/studio-table.js"></script>
@@ -189,6 +190,14 @@
                   <center>
                     <i class="fa fa-server" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Server</div>
+                  </center>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-bs-toggle="tab" href="#tab-profiler" class="vertical-tab nav-link" id="tab-profiler-sel">
+                  <center>
+                    <i class="fa fa-tachometer-alt" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">Profiler</div>
                   </center>
                 </a>
               </li>
@@ -253,7 +262,7 @@
 
           <div class="col-11">
             <div class="tab-content">
-              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:server.html} ${include:security.html} ${include:cluster.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
+              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:server.html} ${include:profiler.html} ${include:security.html} ${include:cluster.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
             </div>
           </div>
         </div>
@@ -312,6 +321,9 @@
           } else if (activeTab == "tab-server-sel") {
             studioCurrentTab = "server";
             updateServer();
+          } else if (activeTab == "tab-profiler-sel") {
+            studioCurrentTab = "profiler";
+            initProfiler();
           } else if (activeTab == "tab-security-sel") {
             studioCurrentTab = "security";
             initSecurity();

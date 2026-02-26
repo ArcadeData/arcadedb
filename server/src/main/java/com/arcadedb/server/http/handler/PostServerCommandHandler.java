@@ -30,6 +30,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
@@ -74,6 +75,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String SET_BACKUP_CONFIG    = "set backup config";
   private static final String LIST_BACKUPS         = "list backups";
   private static final String TRIGGER_BACKUP       = "trigger backup";
+  private static final String PROFILER             = "profiler";
 
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -136,6 +138,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return listBackups(extractTarget(command, LIST_BACKUPS));
     else if (command_lc.startsWith(TRIGGER_BACKUP))
       return triggerBackup(extractTarget(command, TRIGGER_BACKUP));
+    else if (command_lc.startsWith(PROFILER))
+      return handleProfilerCommand(extractTarget(command, PROFILER));
     else {
       Metrics.counter("http.server-command.invalid").increment();
 
@@ -598,6 +602,48 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(200, response.toString());
     } catch (final Exception e) {
       throw new RuntimeException("Error triggering backup for database '" + databaseName + "': " + e.getMessage(), e);
+    }
+  }
+
+  private ExecutionResponse handleProfilerCommand(final String subCommand) {
+    final ServerQueryProfiler profiler = httpServer.getServer().getQueryProfiler();
+    final String sub = subCommand.toLowerCase(Locale.ENGLISH).trim();
+
+    if (sub.equals("start") || sub.startsWith("start ")) {
+      final String timeoutStr = sub.substring(5).trim();
+      if (!timeoutStr.isEmpty()) {
+        try {
+          profiler.start(Integer.parseInt(timeoutStr));
+        } catch (final NumberFormatException e) {
+          return new ExecutionResponse(400, "{ \"error\" : \"Invalid timeout value: " + timeoutStr + "\"}");
+        }
+      } else
+        profiler.start();
+      return new ExecutionResponse(200, new JSONObject().put("result", "ok").put("recording", true).toString());
+
+    } else if (sub.equals("stop")) {
+      final JSONObject results = profiler.stop();
+      return new ExecutionResponse(200, results != null ? results.toString() : new JSONObject().put("result", "ok").toString());
+
+    } else if (sub.equals("reset")) {
+      profiler.reset();
+      return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
+
+    } else if (sub.equals("results")) {
+      final JSONObject results = profiler.getResults();
+      return new ExecutionResponse(200, results != null ? results.toString() : new JSONObject().put("result", "ok").toString());
+
+    } else if (sub.equals("list")) {
+      final JSONArray files = profiler.listSavedRuns();
+      return new ExecutionResponse(200, new JSONObject().put("result", files).toString());
+
+    } else if (sub.startsWith("load ")) {
+      final String fileName = sub.substring(5).trim();
+      final JSONObject run = profiler.loadSavedRun(fileName);
+      return new ExecutionResponse(200, run.toString());
+
+    } else {
+      return new ExecutionResponse(400, "{ \"error\" : \"Unknown profiler command: " + subCommand + "\"}");
     }
   }
 
