@@ -915,7 +915,8 @@ function createIndex(typeName) {
 
   html += "<label for='inputCreateIdxAlgorithm'>Index Algorithm <span style='color:#dc3545'>*</span></label>";
   html += "<select class='form-select mt-1 mb-3' id='inputCreateIdxAlgorithm'>";
-  html += "<option value='LSM_TREE' selected>LSM_TREE — default</option>";
+  html += "<option value='LSM_TREE' selected>LSM_TREE — default, supports range queries</option>";
+  html += "<option value='HASH'>HASH — O(1) equality lookups, no range queries</option>";
   html += "<option value='FULL_TEXT'>FULL_TEXT — full-text search index</option>";
   html += "<option value='LSM_VECTOR'>LSM_VECTOR — vector/embedding similarity index</option>";
   html += "</select>";
@@ -973,14 +974,20 @@ function createIndex(typeName) {
     let nullStrategy = $("#inputCreateIdxNullStrategy").val();
     let ifNotExists = $("#inputCreateIdxIfNotExists").prop("checked");
 
-    let indexTypeSql = algorithm == "LSM_TREE" ? (unique ? "UNIQUE" : "NOTUNIQUE") : algorithm;
+    let indexTypeSql;
+    if (algorithm == "LSM_TREE")
+      indexTypeSql = unique ? "UNIQUE" : "NOTUNIQUE";
+    else if (algorithm == "HASH")
+      indexTypeSql = unique ? "UNIQUE_HASH" : "NOTUNIQUE_HASH";
+    else
+      indexTypeSql = algorithm;
 
     let command = "CREATE INDEX";
     if (ifNotExists) command += " IF NOT EXISTS";
     command += " ON `" + typeName + "` (";
     command += selectedProps.map(function (p) { return "`" + p + "`"; }).join(", ");
     command += ") " + indexTypeSql;
-    if (algorithm == "LSM_TREE" && nullStrategy != "") command += " NULL_STRATEGY " + nullStrategy;
+    if ((algorithm == "LSM_TREE" || algorithm == "HASH") && nullStrategy != "") command += " NULL_STRATEGY " + nullStrategy;
 
     jQuery.ajax({
       type: "POST",
@@ -1005,7 +1012,7 @@ function createIndex(typeName) {
       } else {
         $("#createIdxPropsNormal").show();
         $("#createIdxPropsVector").hide();
-        $("#createIdxLsmOptions").toggle(alg == "LSM_TREE");
+        $("#createIdxLsmOptions").toggle(alg == "LSM_TREE" || alg == "HASH");
       }
     }
     $("#inputCreateIdxAlgorithm").on("change", updateIdxVisibility);
