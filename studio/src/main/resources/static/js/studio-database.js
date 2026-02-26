@@ -7,6 +7,123 @@ var globalBasicAuth = null;
 var globalUsername = null;
 var globalSchemaTypes = null;
 var globalFunctionReference = null;
+var globalDatabaseList = [];
+
+// ===== Searchable Database Selector Widget =====
+
+function initSearchableDbSelect(containerId) {
+  var $container = $("#" + containerId);
+  if ($container.length === 0) return;
+  $container.html(
+    '<button type="button" class="db-select-toggle" aria-haspopup="true" aria-expanded="false">' +
+      '<span class="db-name">—</span>' +
+      '<span class="db-count"></span>' +
+      '<i class="fa fa-caret-down"></i>' +
+    '</button>' +
+    '<div class="db-select-menu">' +
+      '<input type="text" class="db-search-input" placeholder="Search databases..." autocomplete="off" />' +
+      '<ul class="db-select-list"></ul>' +
+    '</div>'
+  );
+
+  var $toggle = $container.find(".db-select-toggle");
+  var $menu = $container.find(".db-select-menu");
+  var $input = $container.find(".db-search-input");
+  var $list = $container.find(".db-select-list");
+
+  $toggle.on("click", function (e) {
+    e.stopPropagation();
+    var isOpen = $menu.hasClass("show");
+    // Close all other open menus first
+    $(".searchable-db-select .db-select-menu.show").removeClass("show");
+    if (!isOpen) {
+      $menu.addClass("show");
+      $input.val("").trigger("input");
+      $input.focus();
+    }
+  });
+
+  $input.on("input", function () {
+    var filter = $(this).val().toLowerCase();
+    $list.find("li").each(function () {
+      var $li = $(this);
+      if ($li.hasClass("db-no-match")) {
+        $li.remove();
+        return;
+      }
+      var name = $li.attr("data-db") || "";
+      $li.toggle(name.toLowerCase().indexOf(filter) !== -1);
+    });
+    var visible = $list.find("li:visible").length;
+    $list.find(".db-no-match").remove();
+    if (visible === 0)
+      $list.append('<li class="db-no-match">No match</li>');
+  });
+
+  $input.on("click", function (e) {
+    e.stopPropagation();
+  });
+
+  $input.on("keydown", function (e) {
+    if (e.key === "Escape") {
+      $menu.removeClass("show");
+    } else if (e.key === "Enter") {
+      var $visible = $list.find("li:visible").not(".db-no-match");
+      if ($visible.length === 1)
+        $visible.first().trigger("click");
+    }
+  });
+
+  $list.on("click", "li", function (e) {
+    e.stopPropagation();
+    var $li = $(this);
+    if ($li.hasClass("db-no-match")) return;
+    var dbName = $li.attr("data-db");
+    selectDbInWidget(dbName);
+    $menu.removeClass("show");
+    // Trigger database change event
+    $(document).trigger("databaseChanged", [dbName]);
+  });
+
+  // Close menu on outside click
+  $(document).on("click.dbselect_" + containerId, function () {
+    $menu.removeClass("show");
+  });
+}
+
+function selectDbInWidget(dbName) {
+  $(".searchable-db-select").each(function () {
+    var $w = $(this);
+    $w.find(".db-name").text(dbName || "—");
+    $w.attr("data-selected", dbName || "");
+    $w.find(".db-select-list li").removeClass("active");
+    $w.find('.db-select-list li[data-db="' + dbName + '"]').addClass("active");
+  });
+}
+
+function updateSearchableDbSelects(databases, selected) {
+  globalDatabaseList = databases || [];
+  var countLabel = databases.length > 0 ? "(" + databases.length + ")" : "";
+
+  $(".searchable-db-select").each(function () {
+    var $w = $(this);
+    var $list = $w.find(".db-select-list");
+    $list.empty();
+    for (var i = 0; i < databases.length; i++) {
+      var db = escapeHtml(databases[i]);
+      $list.append('<li data-db="' + db + '">' + db + '</li>');
+    }
+    $w.find(".db-count").text(countLabel);
+    $w.find(".db-search-input").val("");
+  });
+
+  if (selected && databases.indexOf(selected) !== -1)
+    selectDbInWidget(selected);
+  else if (databases.length > 0)
+    selectDbInWidget(databases[0]);
+  else
+    selectDbInWidget("");
+}
 
 // Register arcadedb-sql MIME type eagerly so the editor can use it before JSON loads
 (function() {
@@ -207,8 +324,8 @@ function editorFocus() {
   editor.focus();
 }
 
-function updateDatabases(callback) {
-  let selected = getCurrentDatabase();
+function updateDatabases(callback, preferSelected) {
+  let selected = preferSelected || getCurrentDatabase();
   if (selected == null || selected == "") selected = globalStorageLoad("database.current");
 
   console.log("Making AJAX request to api/v1/databases");
@@ -246,34 +363,21 @@ function updateDatabases(callback) {
       $("#version").html(version);
       console.log("Set version to:", version);
 
-      let databases = "";
+      var databases = [];
       if (data.result && Array.isArray(data.result)) {
-        for (let i in data.result) {
-          let dbName = data.result[i];
-          databases += "<option value='" + dbName + "'>" + dbName + "</option>";
-        }
+        databases = data.result;
         console.log("Populated database options:", data.result);
       } else {
         console.warn("No databases found in response:", data);
-        databases = "<option value=''>No databases available</option>";
       }
-      $(".inputDatabase").html(databases);
-      $("#schemaInputDatabase").html(databases);
 
-      if (selected != null && selected != "" && data.result && Array.isArray(data.result) && data.result.length > 0) {
-        //check if selected database exists
-        if (data.result.includes(selected)) {
-          $(".inputDatabase").val(selected);
-          $("#schemaInputDatabase").val(selected);
-        } else {
-          $(".inputDatabase").val(data.result[0]);
-          $("#schemaInputDatabase").val(data.result[0]);
-        }
-      } else if (data.result && Array.isArray(data.result) && data.result.length > 0) {
-        // Default to first database if no selection
-        $(".inputDatabase").val(data.result[0]);
-        $("#schemaInputDatabase").val(data.result[0]);
+      var effectiveSelected = null;
+      if (selected != null && selected != "" && databases.length > 0) {
+        effectiveSelected = databases.includes(selected) ? selected : databases[0];
+      } else if (databases.length > 0) {
+        effectiveSelected = databases[0];
       }
+      updateSearchableDbSelects(databases, effectiveSelected);
 
       // Update current database display
       try {
@@ -391,9 +495,7 @@ function createDatabase() {
         },
       })
       .done(function (data) {
-        $(".inputDatabase").val(database);
-        $("#schemaInputDatabase").val(database);
-        updateDatabases();
+        updateDatabases(null, database);
       })
       .fail(function (jqXHR, textStatus, errorThrown) {
         globalNotifyError(jqXHR.responseText);
@@ -464,9 +566,7 @@ function resetDatabase() {
               },
             })
             .done(function (data) {
-              $(".inputDatabase").val(database);
-              $("#schemaInputDatabase").val(database);
-              updateDatabases();
+              updateDatabases(null, database);
             })
             .fail(function (jqXHR, textStatus, errorThrown) {
               globalNotifyError(jqXHR.responseText);
@@ -1276,14 +1376,12 @@ function formatTsTimestamp(ms) {
 }
 
 function getCurrentDatabase() {
-  let db = $(".inputDatabase").val();
-  return db != null ? db.trim() : null;
+  let db = $(".searchable-db-select").first().attr("data-selected");
+  return db != null && db !== "" ? db.trim() : null;
 }
 
 function setCurrentDatabase(dbName) {
-  $(".inputDatabase").val(dbName);
-  $("#schemaInputDatabase").val(dbName);
-
+  selectDbInWidget(dbName);
   globalStorageSave("database.current", dbName);
 }
 

@@ -329,6 +329,11 @@
           }
         });
 
+        // Initialize searchable database selectors
+        initSearchableDbSelect("queryDbSelectContainer");
+        initSearchableDbSelect("schemaDbSelectContainer");
+        initSearchableDbSelect("tsDbSelectContainer");
+
         // Check for existing session in localStorage
         if (initSessionFromStorage()) {
           console.log("Found stored session, attempting auto-login");

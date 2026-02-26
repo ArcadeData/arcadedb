@@ -343,7 +343,7 @@ function saveRecordEditor() {
   }
 
   var sql = "UPDATE " + rid + " SET " + setParts.join(", ");
-  var database = escapeHtml($(".inputDatabase").val());
+  var database = escapeHtml(getCurrentDatabase());
 
   $.ajax({
     type: "POST",
@@ -364,7 +364,7 @@ function saveRecordEditor() {
 
 function refreshRecordAfterSave() {
   var rid = globalRecordEditorState.rid;
-  var database = escapeHtml($(".inputDatabase").val());
+  var database = escapeHtml(getCurrentDatabase());
 
   $.ajax({
     type: "POST",
@@ -414,7 +414,7 @@ function deleteRecord() {
 
   globalConfirm("Delete Record", "Are you sure you want to delete record " + rid + "? This action cannot be undone.", "warning",
     function () {
-      var database = escapeHtml($(".inputDatabase").val());
+      var database = escapeHtml(getCurrentDatabase());
 
       $.ajax({
         type: "POST",
@@ -456,7 +456,7 @@ function showRecordInGraph() {
 }
 
 function openRecordEditorFromTable(rid) {
-  var database = escapeHtml($(".inputDatabase").val());
+  var database = escapeHtml(getCurrentDatabase());
 
   $.ajax({
     type: "POST",
