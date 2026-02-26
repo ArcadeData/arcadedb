@@ -3481,3 +3481,117 @@ div.dt-search {
 #dbStorageIndexes tbody tr {
   cursor: pointer;
 }
+
+/* ===== Searchable Database Selector ===== */
+
+.searchable-db-select {
+  display: inline-block;
+  position: relative;
+}
+
+.searchable-db-select .db-select-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  border: 1px solid var(--border-ddd);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+.searchable-db-select .db-select-toggle:hover {
+  border-color: var(--color-brand);
+}
+
+.searchable-db-select .db-select-toggle .db-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.searchable-db-select .db-select-toggle .db-count {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.searchable-db-select .db-select-toggle .fa-caret-down {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.searchable-db-select .db-select-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1050;
+  min-width: 220px;
+  max-width: 340px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-ddd);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px var(--shadow-dropdown);
+  margin-top: 2px;
+}
+
+.searchable-db-select .db-select-menu.show {
+  display: block;
+}
+
+.searchable-db-select .db-search-input {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  border: none;
+  border-bottom: 1px solid var(--border-light);
+  border-radius: 6px 6px 0 0;
+  outline: none;
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.searchable-db-select .db-search-input::placeholder {
+  color: var(--text-placeholder);
+}
+
+.searchable-db-select .db-select-list {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px 0;
+  margin: 0;
+  list-style: none;
+}
+
+.searchable-db-select .db-select-list li {
+  padding: 5px 12px;
+  font-size: 0.84rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.searchable-db-select .db-select-list li:hover {
+  background: var(--bg-hover);
+}
+
+.searchable-db-select .db-select-list li.active {
+  background: var(--color-brand);
+  color: #fff;
+}
+
+.searchable-db-select .db-select-list li.db-no-match {
+  color: var(--text-muted);
+  font-style: italic;
+  cursor: default;
+}
+
+.searchable-db-select .db-select-list li.db-no-match:hover {
+  background: none;
+}

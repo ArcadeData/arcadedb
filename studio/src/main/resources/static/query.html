@@ -2,8 +2,8 @@
   <div class="d-flex align-items-center flex-shrink-0" style="padding: 10px 12px 6px;" id="queryPanel">
     <div class="d-flex align-items-center gap-2">
       <i class="fa fa-terminal" style="font-size: 1.2rem; color: #00aeee;"></i>
-      <label>Connected as&nbsp;</label><label for="queryInputDatabase" id="queryUser"></label>@
-      <select id="queryInputDatabase" class="inputDatabase form-select form-select-sm" style="width: auto; display: inline-block;"></select>
+      <label>Connected as&nbsp;</label><label id="queryUser"></label>@
+      <div id="queryDbSelectContainer" class="searchable-db-select"></div>
     </div>
   </div>
 
@@ -450,16 +450,18 @@
       $("#inputLimit").val(escapeHtml(limitPar));
     }
 
-    $(".inputDatabase").change(function () {
-      setCurrentDatabase(this.value);
-      resetHistoryNavigation();
-      displaySchema();
-      displayDatabaseSettings();
-      // Refresh active sidebar panel on database change
-      refreshActiveSidebarPanel();
-      // Reload timeseries types if on that tab
-      if (typeof tsLoadTypes === "function")
-        tsLoadTypes();
+    $(document).on("databaseChanged", function (e, dbName) {
+      if (dbName) {
+        globalStorageSave("database.current", dbName);
+        resetHistoryNavigation();
+        displaySchema();
+        displayDatabaseSettings();
+        // Refresh active sidebar panel on database change
+        refreshActiveSidebarPanel();
+        // Reload timeseries types if on that tab
+        if (typeof tsLoadTypes === "function")
+          tsLoadTypes();
+      }
     });
   }
 
