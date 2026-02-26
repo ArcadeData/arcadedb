@@ -249,6 +249,60 @@ class HashIndexTest extends TestHelper {
   }
 
   @Test
+  void persistenceWriteAfterReopen() {
+    database.close();
+    database = factory.open();
+
+    // Insert new entries after reopen
+    database.transaction(() -> {
+      for (int i = TOT; i < TOT + 100; ++i) {
+        final MutableDocument doc = database.newDocument(TYPE_NAME);
+        doc.set("id", i);
+        doc.set("name", "AfterReopen_" + i);
+        doc.save();
+      }
+    });
+
+    // Verify old and new entries coexist
+    database.transaction(() -> {
+      final Index index = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
+
+      // Old entries still accessible
+      for (int i = 0; i < 100; ++i) {
+        final IndexCursor cursor = index.get(new Object[] { i });
+        assertThat(cursor.hasNext()).withFailMessage("Old key " + i + " not found after reopen+write").isTrue();
+      }
+
+      // New entries accessible
+      for (int i = TOT; i < TOT + 100; ++i) {
+        final IndexCursor cursor = index.get(new Object[] { i });
+        assertThat(cursor.hasNext()).withFailMessage("New key " + i + " not found after reopen+write").isTrue();
+        final Document doc = cursor.next().asDocument();
+        assertThat(doc.getString("name")).isEqualTo("AfterReopen_" + i);
+      }
+
+      // Missing key still returns empty
+      assertThat(index.get(new Object[] { -1 }).hasNext()).isFalse();
+
+      // SQL query works after reopen
+      try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE id = " + (TOT + 50))) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result result = rs.next();
+        assertThat(result.<Integer>getProperty("id")).isEqualTo(TOT + 50);
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+
+    // Duplicate rejection still works after reopen
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument doc = database.newDocument(TYPE_NAME);
+      doc.set("id", 0);
+      doc.set("name", "Duplicate");
+      doc.save();
+    })).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
   void compositeKey() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("CompositeDoc");
