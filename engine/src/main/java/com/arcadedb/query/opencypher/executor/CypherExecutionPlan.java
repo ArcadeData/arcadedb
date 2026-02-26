@@ -1296,7 +1296,11 @@ public class CypherExecutionPlan {
 
         // OPTIMIZATION: Extract ID filter for this variable to avoid Cartesian product
         final String idFilter = extractIdFilter(whereClause, variable);
-        final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter);
+        // OPTIMIZATION: Extract WHERE predicates referencing only available variables for pushdown
+        final BooleanExpression pushdownFilter = extractPushdownFilter(whereClause, variable,
+            boundVariables, matchVariables);
+        final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter,
+            pushdownFilter);
 
         if (isOptional) {
           if (matchChainStart == null) {
@@ -1346,7 +1350,10 @@ public class CypherExecutionPlan {
         // Source node matching (if not already bound)
         if (!boundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
           final String sourceIdFilter = extractIdFilter(whereClause, sourceVar);
-          final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+          final BooleanExpression sourcePushdown = extractPushdownFilter(whereClause, sourceVar,
+              boundVariables, matchVariables);
+          final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+              sourcePushdown);
           if (currentStep != null) {
             sourceStep.setPrevious(currentStep);
           }
@@ -1357,7 +1364,10 @@ public class CypherExecutionPlan {
         // Target node matching (if not already bound)
         if (!boundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
           final String targetIdFilter = extractIdFilter(whereClause, targetVar);
-          final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter);
+          final BooleanExpression targetPushdown = extractPushdownFilter(whereClause, targetVar,
+              boundVariables, matchVariables);
+          final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
+              targetPushdown);
           if (currentStep != null) {
             targetStep.setPrevious(currentStep);
           }
@@ -1415,7 +1425,10 @@ public class CypherExecutionPlan {
         // Always create MatchNodeStep even for bound variables - it handles them
         // correctly (uses bound vertex and validates labels/properties)
         final String sourceIdFilter = sourceAlreadyBound ? null : extractIdFilter(whereClause, sourceVar);
-        final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+        final BooleanExpression sourcePushdown = sourceAlreadyBound ? null :
+            extractPushdownFilter(whereClause, sourceVar, boundVariables, matchVariables);
+        final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+            sourcePushdown);
 
         if (isOptional) {
           if (matchChainStart == null) {
@@ -1643,7 +1656,10 @@ public class CypherExecutionPlan {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
                 final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
-                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+                final BooleanExpression sourcePushdown = extractPushdownFilter(matchWhere, sourceVar,
+                    legacyBoundVariables, matchVariables);
+                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+                    sourcePushdown);
                 if (currentStep != null) {
                   sourceStep.setPrevious(currentStep);
                 }
@@ -1656,7 +1672,10 @@ public class CypherExecutionPlan {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
                 final String targetIdFilter = extractIdFilter(matchWhere, targetVar);
-                final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter);
+                final BooleanExpression targetPushdown = extractPushdownFilter(matchWhere, targetVar,
+                    legacyBoundVariables, matchVariables);
+                final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
+                    targetPushdown);
                 if (currentStep != null) {
                   targetStep.setPrevious(currentStep);
                 }
@@ -1692,7 +1711,11 @@ public class CypherExecutionPlan {
               final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                   statement.getWhereClause();
               final String idFilter = extractIdFilter(matchWhere, variable);
-              final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter);
+              // OPTIMIZATION: Extract WHERE predicates for inline pushdown
+              final BooleanExpression pushdownFilter = extractPushdownFilter(matchWhere, variable,
+                  legacyBoundVariables, matchVariables);
+              final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter,
+                  pushdownFilter);
 
               if (isOptional) {
                 // For optional match, chain within the match steps only
@@ -1728,9 +1751,13 @@ public class CypherExecutionPlan {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
                 final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
+                // OPTIMIZATION: Extract WHERE predicates for inline pushdown
+                final BooleanExpression sourcePushdown = extractPushdownFilter(matchWhere, sourceVar,
+                    legacyBoundVariables, matchVariables);
 
                 // Start with source node (or chain if we have previous patterns)
-                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+                    sourcePushdown);
 
                 if (isOptional) {
                   // For optional match, chain within the match steps only
@@ -2785,6 +2812,32 @@ public class CypherExecutionPlan {
    *
    * @return the ID value to filter by, or null if no ID filter found
    */
+
+  /**
+   * Extracts WHERE predicates that can be pushed down into a MatchNodeStep.
+   * Only predicates referencing the current variable (and already-bound variables) are eligible.
+   * The pushed-down predicates are evaluated inline during scanning, reducing pipeline overhead.
+   *
+   * @param whereClause    the WHERE clause to analyze
+   * @param currentVar     the variable being scanned by the MatchNodeStep
+   * @param boundVariables variables bound in previous MATCH clauses
+   * @param matchVariables variables bound earlier in the current MATCH clause
+   * @return the extractable predicate, or null if none qualifies
+   */
+  private static BooleanExpression extractPushdownFilter(final WhereClause whereClause, final String currentVar,
+      final Set<String> boundVariables, final Set<String> matchVariables) {
+    if (whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+
+    // Available variables = already bound + already matched in this clause + the current variable
+    final Set<String> available = new HashSet<>();
+    available.addAll(boundVariables);
+    available.addAll(matchVariables);
+    available.add(currentVar);
+
+    return WhereClause.extractForVariables(whereClause.getConditionExpression(), available);
+  }
+
   private String extractIdFilter(final WhereClause whereClause, final String variable) {
     if (whereClause == null || whereClause.getConditionExpression() == null)
       return null;
