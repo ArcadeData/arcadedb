@@ -3623,3 +3623,19 @@ div.dt-search {
 .searchable-db-select .db-select-list li.db-no-match:hover {
   background: none;
 }
+
+/* ===== Profiler ===== */
+.profiler-pulse-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  margin-right: 4px;
+  animation: profilerPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes profilerPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}

@@ -41,6 +41,7 @@ import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
+import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -94,6 +95,7 @@ public class ArcadeDBServer {
   private             ServerSecurity                        security;
   private             HttpServer                            httpServer;
   private             MCPConfiguration                      mcpConfiguration;
+  private             ServerQueryProfiler                   queryProfiler;
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
@@ -482,7 +484,7 @@ public class ArcadeDBServer {
       if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
         embeddedDatabase = new ReplicatedDatabase(this, (LocalDatabase) embeddedDatabase);
 
-      serverDatabase = new ServerDatabase(embeddedDatabase);
+      serverDatabase = new ServerDatabase(this, embeddedDatabase);
 
       // FORCE LOADING INTO THE SERVER
       databases.put(databaseName, serverDatabase);
@@ -495,7 +497,7 @@ public class ArcadeDBServer {
   }
 
   public ServerDatabase registerDatabase(final String databaseName, final DatabaseInternal database) {
-    final ServerDatabase serverDatabase = new ServerDatabase(database);
+    final ServerDatabase serverDatabase = new ServerDatabase(this, database);
     final ServerDatabase existing = databases.putIfAbsent(databaseName, serverDatabase);
     if (existing != null)
       throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
@@ -524,6 +526,10 @@ public class ArcadeDBServer {
 
   public MCPConfiguration getMCPConfiguration() {
     return mcpConfiguration;
+  }
+
+  public ServerQueryProfiler getQueryProfiler() {
+    return queryProfiler;
   }
 
   public void registerTestEventListener(final ReplicationCallback callback) {
@@ -601,7 +607,7 @@ public class ArcadeDBServer {
         if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
           embDatabase = new ReplicatedDatabase(this, (LocalDatabase) embDatabase);
 
-        db = new ServerDatabase(embDatabase);
+        db = new ServerDatabase(this, embDatabase);
 
         databases.put(databaseName, db);
       }
@@ -795,6 +801,7 @@ public class ArcadeDBServer {
 
   private void init() {
     eventLog = new FileServerEventLog(this);
+    queryProfiler = new ServerQueryProfiler(this);
     pluginManager = new PluginManager(this, configuration);
 
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
