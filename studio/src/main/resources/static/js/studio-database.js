@@ -1584,7 +1584,21 @@ function populateHistoryPanel() {
       filtered.push({ index: i, q: q });
   }
 
-  let html = "<div class='history-toolbar'>";
+  // Quick-select with latest 10 queries
+  let html = "<div class='history-quick-select'>";
+  html += "<select class='form-select form-select-sm history-quick-dropdown' onchange='executeQuickHistoryEntry(this)' title='Recent queries'>";
+  html += "<option value='' selected disabled>Recent queries...</option>";
+  let quickCount = Math.min(filtered.length, 10);
+  for (let i = 0; i < quickCount; i++) {
+    let q = filtered[i].q;
+    let idx = filtered[i].index;
+    let lang = (q.l || "sql").toUpperCase();
+    let cmd = q.c || "";
+    html += "<option value='" + idx + "'>[" + escapeHtml(lang) + "] " + escapeHtml(cmd) + "</option>";
+  }
+  html += "</select></div>";
+
+  html += "<div class='history-toolbar'>";
   html += "<div class='form-check'><input class='form-check-input history-checkbox' type='checkbox' id='historySelectAll' onchange='toggleSelectAllHistory()'>";
   html += "<label class='form-check-label' for='historySelectAll' style='font-size:0.72rem;'>All</label></div>";
   html += "<button class='sidebar-action-btn' onclick='deleteSelectedHistory()' title='Delete selected'><i class='fa fa-trash'></i></button>";
@@ -1665,6 +1679,14 @@ function executeHistoryEntry(index) {
   let queryHistory = getQueryHistory();
   let q = queryHistory[index];
   if (q) executeCommand(q.l, q.c);
+}
+
+function executeQuickHistoryEntry(selectEl) {
+  let index = parseInt(selectEl.value);
+  if (!isNaN(index)) {
+    executeHistoryEntry(index);
+    selectEl.selectedIndex = 0;
+  }
 }
 
 function filterHistoryEntries() {
