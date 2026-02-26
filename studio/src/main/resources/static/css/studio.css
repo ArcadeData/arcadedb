@@ -776,6 +776,34 @@ div.dt-search {
 }
 
 /* History Panel */
+.history-quick-select {
+  padding: 8px 10px 4px;
+  border-bottom: 1px solid var(--border-main);
+  background-color: var(--bg-sidebar);
+}
+
+.history-quick-dropdown {
+  width: 100%;
+  font-size: 0.75rem;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  padding: 4px 24px 4px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+  border-color: var(--border-ddd);
+}
+
+.history-quick-dropdown option {
+  font-size: 0.8rem;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  padding: 4px 8px;
+  max-width: none;
+  white-space: normal;
+  word-break: break-all;
+}
+
 .history-date-group {
   font-size: 0.7rem;
   font-weight: 600;
