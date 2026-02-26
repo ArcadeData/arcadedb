@@ -385,6 +385,71 @@ class HashIndexTest extends TestHelper {
     });
   }
 
+  @Test
+  void sqlCreateUniqueHash() {
+    database.command("sql", "CREATE DOCUMENT TYPE SqlHashDoc");
+    database.command("sql", "CREATE PROPERTY SqlHashDoc.code INTEGER");
+    database.command("sql", "CREATE INDEX ON SqlHashDoc (code) UNIQUE_HASH");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; ++i) {
+        final MutableDocument doc = database.newDocument("SqlHashDoc");
+        doc.set("code", i);
+        doc.save();
+      }
+    });
+
+    database.transaction(() -> {
+      final Index index = database.getSchema().getIndexByName("SqlHashDoc[code]");
+      assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.HASH);
+      assertThat(index.isUnique()).isTrue();
+
+      for (int i = 0; i < 100; ++i) {
+        final IndexCursor cursor = index.get(new Object[] { i });
+        assertThat(cursor.hasNext()).isTrue();
+      }
+    });
+
+    // Duplicate rejection
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("SqlHashDoc");
+      doc.set("code", 0);
+      doc.save();
+    })).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void sqlCreateNotUniqueHash() {
+    database.command("sql", "CREATE DOCUMENT TYPE SqlHashNUDoc");
+    database.command("sql", "CREATE PROPERTY SqlHashNUDoc.tag STRING");
+    database.command("sql", "CREATE INDEX ON SqlHashNUDoc (tag) NOTUNIQUE_HASH");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 50; ++i) {
+        final MutableDocument doc = database.newDocument("SqlHashNUDoc");
+        doc.set("tag", "group_" + (i % 5));
+        doc.save();
+      }
+    });
+
+    database.transaction(() -> {
+      final Index index = database.getSchema().getIndexByName("SqlHashNUDoc[tag]");
+      assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.HASH);
+      assertThat(index.isUnique()).isFalse();
+
+      // Each group should have 10 entries
+      for (int g = 0; g < 5; ++g) {
+        final IndexCursor cursor = index.get(new Object[] { "group_" + g });
+        int count = 0;
+        while (cursor.hasNext()) {
+          cursor.next();
+          count++;
+        }
+        assertThat(count).isEqualTo(10);
+      }
+    });
+  }
+
   @Override
   protected void beginTest() {
     database.transaction(() -> {

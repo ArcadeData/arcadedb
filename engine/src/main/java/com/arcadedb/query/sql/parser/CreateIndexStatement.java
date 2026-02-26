@@ -72,6 +72,10 @@ public class CreateIndexStatement extends DDLStatement {
     }
     case "GEOSPATIAL" -> {
     }
+    case "UNIQUE_HASH" -> {
+    }
+    case "NOTUNIQUE_HASH" -> {
+    }
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
   }
@@ -109,6 +113,12 @@ public class CreateIndexStatement extends DDLStatement {
       unique = false;
     } else if (typeAsString.equalsIgnoreCase("GEOSPATIAL")) {
       indexType = Schema.INDEX_TYPE.GEOSPATIAL;
+      unique = false;
+    } else if (typeAsString.equalsIgnoreCase("UNIQUE_HASH")) {
+      indexType = Schema.INDEX_TYPE.HASH;
+      unique = true;
+    } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE_HASH")) {
+      indexType = Schema.INDEX_TYPE.HASH;
       unique = false;
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
