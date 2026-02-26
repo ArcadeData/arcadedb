@@ -146,6 +146,12 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 
 **License Note:** UPL = Universal Permissive License 1.0
 
+### Studio Frontend Libraries
+
+| Package | Version | License | Homepage |
+|---------|---------|---------|----------|
+| marked | 15.x | MIT | https://github.com/markedjs/marked |
+
 ### Compression
 
 | Group ID | Artifact ID | Version | License | Homepage |

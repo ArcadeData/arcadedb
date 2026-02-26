@@ -150,6 +150,8 @@
     <script src="js/studio-graph-functions.js"></script>
     <script src="js/studio-record-editor.js"></script>
     <script src="js/studio-timeseries.js"></script>
+    <script src="dist/js/marked.min.js"></script>
+    <script src="js/studio-ai.js"></script>
   </head>
   <body>
     <div id="welcomePanel" style="display: none;"></div>
@@ -224,6 +226,14 @@
                   </center>
                 </a>
               </li>
+              <li class="nav-item">
+                <a data-bs-toggle="tab" href="#tab-ai" class="vertical-tab nav-link" id="tab-ai-sel">
+                  <center>
+                    <i class="fa fa-robot" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">AI</div>
+                  </center>
+                </a>
+              </li>
               <!-- Spacer pushes Settings + Logout to bottom -->
               <li style="flex: 1;"></li>
               <!-- Settings -->
@@ -253,7 +263,7 @@
 
           <div class="col-11">
             <div class="tab-content">
-              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:server.html} ${include:security.html} ${include:cluster.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
+              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:server.html} ${include:security.html} ${include:cluster.html} ${include:api.html} ${include:resources.html} ${include:ai.html} ${include:settings.html}
             </div>
           </div>
         </div>
@@ -324,6 +334,9 @@
             studioCurrentTab = "api";
           } else if (activeTab == "tab-resources-sel") {
             studioCurrentTab = "resources";
+          } else if (activeTab == "tab-ai-sel") {
+            studioCurrentTab = "ai";
+            initAi();
           } else if (activeTab == "tab-settings-sel") {
             studioCurrentTab = "settings";
           }

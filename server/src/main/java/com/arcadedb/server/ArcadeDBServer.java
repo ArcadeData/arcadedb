@@ -40,6 +40,7 @@ import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.plugin.PluginManager;
 import com.arcadedb.server.security.ServerSecurity;
@@ -94,6 +95,7 @@ public class ArcadeDBServer {
   private             ServerSecurity                        security;
   private             HttpServer                            httpServer;
   private             MCPConfiguration                      mcpConfiguration;
+  private             AiConfiguration                       aiConfiguration;
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
@@ -184,6 +186,10 @@ public class ArcadeDBServer {
     // INITIALIZE MCP CONFIGURATION (always available, disabled by default)
     mcpConfiguration = new MCPConfiguration(serverRootPath);
     mcpConfiguration.load();
+
+    // INITIALIZE AI CONFIGURATION (always available, inactive until subscription token is set)
+    aiConfiguration = new AiConfiguration(serverRootPath);
+    aiConfiguration.load();
 
     // START HTTP SERVER IMMEDIATELY. THE HTTP ADDRESS WILL BE USED BY HA
     httpServer = new HttpServer(this);
@@ -524,6 +530,10 @@ public class ArcadeDBServer {
 
   public MCPConfiguration getMCPConfiguration() {
     return mcpConfiguration;
+  }
+
+  public AiConfiguration getAiConfiguration() {
+    return aiConfiguration;
   }
 
   public void registerTestEventListener(final ReplicationCallback callback) {
