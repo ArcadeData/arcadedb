@@ -435,39 +435,61 @@ function aiRenderAssistantMessage(msg, msgIndex) {
   // Render command blocks if present
   if (msg.commands && msg.commands.length > 0) {
     for (var j = 0; j < msg.commands.length; j++)
-      html += aiRenderCommandBlock(msg.commands[j], j);
+      html += aiRenderCommandBlock(msg.commands[j], j, msgIndex);
 
     // "Execute All" button when multiple commands
     if (msg.commands.length > 1)
       html += '<div class="mt-2"><button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none;" ' +
         'onclick="aiExecuteAll(this, ' + msgBlockStart + ', ' + aiCommandBlockCounter + ')">' +
         '<i class="fa fa-forward me-1"></i>Execute All</button></div>';
+  } else {
+    // No command blocks: show standalone delete button
+    html += '<div class="mt-1 ms-1"><button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.7rem;" ' +
+      'onclick="aiDeleteMessage(' + msgIndex + ')" title="Delete message"><i class="fa fa-trash-can"></i></button></div>';
   }
-
-  // Action bar with delete button
-  html += '<div class="mt-1 ms-1"><button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.7rem;" ' +
-    'onclick="aiDeleteMessage(' + msgIndex + ')" title="Delete message"><i class="fa fa-trash-can"></i></button></div>';
 
   html += '</div></div></div>';
   return html;
 }
 
-function aiRenderCommandBlock(cmd, index) {
+function aiRenderCommandBlock(cmd, index, msgIndex) {
   var blockId = "aiCmd_" + (aiCommandBlockCounter++);
   var lang = escapeHtml((cmd.language || "sql").toUpperCase());
   var purpose = cmd.purpose ? '<div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px;">' + escapeHtml(cmd.purpose) + '</div>' : '';
 
   return '<div class="ai-command-block" style="margin-top: 8px; border: 1px solid var(--border-main); border-radius: 8px; overflow: hidden; background: var(--bg-card);">' +
-    '<div style="padding: 8px 12px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main); display: flex; align-items: center; justify-content: space-between;">' +
-    '<div>' + purpose +
+    '<div style="padding: 8px 12px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main);">' +
+    purpose +
     '<span class="badge" style="background: var(--color-brand); color: white; font-size: 0.7rem;">' + lang + '</span></div>' +
-    '<button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none; font-size: 0.8rem;" onclick="aiExecuteCommand(this, \'' + blockId + '\')">' +
-    '<i class="fa fa-play me-1"></i>Execute</button></div>' +
     '<pre id="' + blockId + '" style="margin: 0; padding: 12px; background: var(--bg-code); color: var(--text-code); font-size: 0.85rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;" ' +
     'data-language="' + escapeHtml(cmd.language || "sql") + '" data-command="' + escapeHtml(cmd.command) + '">' +
     escapeHtml(cmd.command) + '</pre>' +
     '<div id="' + blockId + '_result" style="display: none; padding: 8px 12px; border-top: 1px solid var(--border-main); font-size: 0.85rem;"></div>' +
+    '<div style="padding: 6px 8px; border-top: 1px solid var(--border-main); display: flex; align-items: center; justify-content: space-between;">' +
+    '<div style="display: flex; align-items: center; gap: 8px;">' +
+    '<button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.75rem;" onclick="aiCopyCode(this, \'' + blockId + '\')" title="Copy to clipboard">' +
+    '<i class="fa fa-copy"></i></button>' +
+    '<button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.75rem;" onclick="aiDeleteMessage(' + msgIndex + ')" title="Delete message">' +
+    '<i class="fa fa-trash-can"></i></button></div>' +
+    '<button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none; font-size: 0.8rem;" onclick="aiExecuteCommand(this, \'' + blockId + '\')">' +
+    '<i class="fa fa-play me-1"></i>Execute</button></div>' +
     '</div>';
+}
+
+// ===== Copy Code =====
+
+function aiCopyCode(button, blockId) {
+  var pre = document.getElementById(blockId);
+  if (!pre) return;
+
+  var text = pre.getAttribute("data-command") || pre.textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    var icon = button.querySelector("i");
+    if (icon) {
+      icon.className = "fa fa-check";
+      setTimeout(function() { icon.className = "fa fa-copy"; }, 1500);
+    }
+  });
 }
 
 // ===== Command Execution =====
@@ -599,13 +621,29 @@ function aiRunSequential(commands, index, allBtn) {
 
 // ===== Markdown Rendering =====
 
+var aiMarkdownBlockId = 0;
+
 function aiRenderMarkdown(text) {
   if (!text) return "";
 
   // Use marked.js if available, otherwise basic rendering
   if (typeof marked !== "undefined") {
     try {
-      return marked.parse(text);
+      var renderer = new marked.Renderer();
+      renderer.code = function(obj) {
+        var code = (typeof obj === "object") ? obj.text : obj;
+        var lang = (typeof obj === "object") ? (obj.lang || "") : "";
+        var id = "aiMdCode_" + (aiMarkdownBlockId++);
+        var langBadge = lang ? '<span class="badge" style="background: var(--color-brand); color: white; font-size: 0.65rem;">' + escapeHtml(lang.toUpperCase()) + '</span>' : '';
+        return '<div style="position: relative; margin: 8px 0; border: 1px solid var(--border-main); border-radius: 6px; overflow: hidden;">' +
+          (langBadge ? '<div style="padding: 4px 8px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main);">' + langBadge + '</div>' : '') +
+          '<pre id="' + id + '" style="margin: 0; padding: 12px; background: var(--bg-code); color: var(--text-code); font-size: 0.85rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;">' +
+          escapeHtml(code) + '</pre>' +
+          '<div style="padding: 4px 8px; border-top: 1px solid var(--border-main); background: var(--bg-sidebar);">' +
+          '<button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.75rem;" onclick="aiCopyCode(this, \'' + id + '\')" title="Copy to clipboard">' +
+          '<i class="fa fa-copy"></i></button></div></div>';
+      };
+      return marked.parse(text, { renderer: renderer });
     } catch (e) {
       // Fallback to basic rendering
     }
@@ -619,7 +657,15 @@ function aiBasicMarkdown(text) {
 
   // Code blocks with language: ```lang\ncode\n```
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(match, lang, code) {
-    return '<pre style="background: var(--bg-code); color: var(--text-code); padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0;"><code>' + code.trim() + '</code></pre>';
+    var id = "aiMdCode_" + (aiMarkdownBlockId++);
+    var langBadge = lang ? '<span class="badge" style="background: var(--color-brand); color: white; font-size: 0.65rem;">' + lang.toUpperCase() + '</span>' : '';
+    return '<div style="position: relative; margin: 8px 0; border: 1px solid var(--border-main); border-radius: 6px; overflow: hidden;">' +
+      (langBadge ? '<div style="padding: 4px 8px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main);">' + langBadge + '</div>' : '') +
+      '<pre id="' + id + '" style="margin: 0; padding: 12px; background: var(--bg-code); color: var(--text-code); font-size: 0.85rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;">' +
+      code.trim() + '</pre>' +
+      '<div style="padding: 4px 8px; border-top: 1px solid var(--border-main); background: var(--bg-sidebar);">' +
+      '<button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.75rem;" onclick="aiCopyCode(this, \'' + id + '\')" title="Copy to clipboard">' +
+      '<i class="fa fa-copy"></i></button></div></div>';
   });
 
   // Inline code
