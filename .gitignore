@@ -559,3 +559,4 @@ dist
 *.metadata.json
 /.claude/worktrees
 /server/profiler
+/server/chats
