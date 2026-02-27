@@ -192,6 +192,9 @@ function profilerRenderResults() {
   profilerRenderDbBreakdown();
   jQuery("#profilerSummary").show();
 
+  // Show AI button if configured
+  profilerCheckAiAvailable();
+
   // Query table
   profilerRenderQueryTable();
   jQuery("#profilerQueryListContainer").show();
@@ -408,4 +411,223 @@ function profilerFormatNum(val) {
     return val.toFixed(1);
   }
   return String(val);
+}
+
+// ===== AI Analysis =====
+
+function profilerCheckAiAvailable() {
+  jQuery.ajax({
+    type: "GET",
+    url: "api/v1/ai/config",
+    headers: { Authorization: globalCredentials },
+    success: function(data) {
+      if (data.configured)
+        jQuery("#profilerAiBtn").show();
+      else
+        jQuery("#profilerAiBtn").hide();
+    },
+    error: function() { jQuery("#profilerAiBtn").hide(); }
+  });
+}
+
+var profilerAiCommandCounter = 0;
+
+function profilerAnalyzeWithAi() {
+  if (!profilerData) {
+    globalNotify("Profiler", "No profiler data to analyze", "warning");
+    return;
+  }
+
+  var btn = jQuery("#profilerAiBtn");
+  btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin me-1"></i>Analyzing...');
+
+  jQuery("#profilerAiPanel").show();
+  jQuery("#profilerAiContent").html(
+    '<div class="text-center py-3" style="color: var(--text-muted);">' +
+    '<i class="fa fa-spinner fa-spin me-1"></i> Analyzing profiler data...</div>'
+  );
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/ai/analyze-profiler",
+    data: JSON.stringify({ profilerData: profilerData }),
+    contentType: "application/json",
+    headers: { Authorization: globalCredentials },
+    timeout: 120000
+  })
+  .done(function(data) {
+    btn.prop("disabled", false).html('<i class="fa fa-robot"></i> Analyze with AI');
+    profilerRenderAiResponse(data);
+  })
+  .fail(function(jqXHR) {
+    btn.prop("disabled", false).html('<i class="fa fa-robot"></i> Analyze with AI');
+    var errorMsg = "Failed to analyze profiler data.";
+    try {
+      var errData = JSON.parse(jqXHR.responseText);
+      if (errData.error) errorMsg = errData.error;
+    } catch (e) { /* ignore */ }
+    jQuery("#profilerAiContent").html(
+      '<div style="color: #dc3545;"><i class="fa fa-circle-exclamation me-1"></i>' + escapeHtml(errorMsg) + '</div>'
+    );
+  });
+}
+
+function profilerRenderAiResponse(data) {
+  profilerAiCommandCounter = 0;
+  var contentHtml = '';
+
+  // Render markdown content
+  if (data.response) {
+    if (typeof marked !== "undefined") {
+      try { contentHtml = marked.parse(data.response); }
+      catch (e) { contentHtml = '<pre>' + escapeHtml(data.response) + '</pre>'; }
+    } else
+      contentHtml = '<pre style="white-space: pre-wrap;">' + escapeHtml(data.response) + '</pre>';
+  }
+
+  var html = '<div class="ai-message-content" style="color: var(--text-primary); line-height: 1.6; font-size: 0.9rem;">' + contentHtml + '</div>';
+
+  // Render command blocks
+  if (data.commands && data.commands.length > 0) {
+    if (data.commands.length > 1)
+      html += '<div class="mt-2 mb-2"><button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none;" onclick="profilerAiExecuteAll(this)">' +
+        '<i class="fa fa-forward me-1"></i>Execute All</button></div>';
+
+    for (var j = 0; j < data.commands.length; j++)
+      html += profilerRenderAiCommandBlock(data.commands[j]);
+  }
+
+  jQuery("#profilerAiContent").html(html);
+}
+
+function profilerRenderAiCommandBlock(cmd) {
+  var blockId = "profilerAiCmd_" + (profilerAiCommandCounter++);
+  var lang = escapeHtml((cmd.language || "sql").toUpperCase());
+  var purpose = cmd.purpose ? '<div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px;">' + escapeHtml(cmd.purpose) + '</div>' : '';
+
+  return '<div class="profiler-ai-command-block" style="margin-top: 8px; border: 1px solid var(--border-main); border-radius: 8px; overflow: hidden; background: var(--bg-card);">' +
+    '<div style="padding: 8px 12px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main); display: flex; align-items: center; justify-content: space-between;">' +
+    '<div>' + purpose +
+    '<span class="badge" style="background: var(--color-brand); color: white; font-size: 0.7rem;">' + lang + '</span></div>' +
+    '<button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none; font-size: 0.8rem;" onclick="profilerAiExecuteCommand(this, \'' + blockId + '\')">' +
+    '<i class="fa fa-play me-1"></i>Execute</button></div>' +
+    '<pre id="' + blockId + '" style="margin: 0; padding: 12px; background: var(--bg-code); color: var(--text-code); font-size: 0.85rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;" ' +
+    'data-language="' + escapeHtml(cmd.language || "sql") + '" data-command="' + escapeHtml(cmd.command) + '">' +
+    escapeHtml(cmd.command) + '</pre>' +
+    '<div id="' + blockId + '_result" style="display: none; padding: 8px 12px; border-top: 1px solid var(--border-main); font-size: 0.85rem;"></div>' +
+    '</div>';
+}
+
+function profilerAiExecuteCommand(button, blockId) {
+  var pre = document.getElementById(blockId);
+  if (!pre) return;
+
+  var command = pre.getAttribute("data-command");
+  var language = pre.getAttribute("data-language") || "sql";
+  var db = getCurrentDatabase();
+
+  if (!db) {
+    globalNotify("Warning", "Please select a database first", "warning");
+    return;
+  }
+
+  var btn = jQuery(button);
+  btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin me-1"></i>Running...');
+  var resultDiv = jQuery("#" + blockId + "_result");
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/command/" + encodeURIComponent(db),
+    data: JSON.stringify({ language: language, command: command }),
+    contentType: "application/json",
+    headers: { Authorization: globalCredentials }
+  })
+  .done(function(data) {
+    btn.prop("disabled", false).html('<i class="fa fa-play me-1"></i>Execute');
+    var resultCount = data.result ? data.result.length : 0;
+    resultDiv.show().html('<i class="fa fa-check-circle me-1" style="color: #28a745;"></i> <span style="color: var(--text-primary);">Success' +
+      (resultCount > 0 ? ' (' + resultCount + ' results)' : '') + '</span>');
+    setTimeout(function() { resultDiv.fadeOut(300); }, 8000);
+  })
+  .fail(function(jqXHR) {
+    btn.prop("disabled", false).html('<i class="fa fa-play me-1"></i>Execute');
+    var errorMsg = "Command failed";
+    try {
+      var errData = JSON.parse(jqXHR.responseText);
+      if (errData.detail) errorMsg = errData.detail;
+      else if (errData.error) errorMsg = errData.error;
+    } catch (e) { /* ignore */ }
+    resultDiv.show().html('<i class="fa fa-circle-exclamation me-1" style="color: #dc3545;"></i> <span style="color: #dc3545;">' + escapeHtml(errorMsg) + '</span>');
+  });
+}
+
+function profilerAiExecuteAll(button) {
+  var blocks = jQuery("#profilerAiContent .profiler-ai-command-block");
+  if (blocks.length === 0) return;
+
+  var btn = jQuery(button);
+  btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin me-1"></i>Running all...');
+
+  var commands = [];
+  blocks.each(function() {
+    var pre = jQuery(this).find("pre");
+    var execBtn = jQuery(this).find("button[onclick*='profilerAiExecuteCommand']");
+    commands.push({ pre: pre, btn: execBtn, blockId: pre.attr("id") });
+  });
+
+  profilerAiRunSequential(commands, 0, btn);
+}
+
+function profilerAiRunSequential(commands, index, allBtn) {
+  if (index >= commands.length) {
+    allBtn.prop("disabled", false).html('<i class="fa fa-forward me-1"></i>Execute All');
+    return;
+  }
+
+  var item = commands[index];
+  var pre = item.pre[0];
+  if (!pre) {
+    profilerAiRunSequential(commands, index + 1, allBtn);
+    return;
+  }
+
+  var command = pre.getAttribute("data-command");
+  var language = pre.getAttribute("data-language") || "sql";
+  var db = getCurrentDatabase();
+
+  if (!db) {
+    globalNotify("Warning", "Please select a database first", "warning");
+    allBtn.prop("disabled", false).html('<i class="fa fa-forward me-1"></i>Execute All');
+    return;
+  }
+
+  item.btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin me-1"></i>Running...');
+  var resultDiv = jQuery("#" + item.blockId + "_result");
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/command/" + encodeURIComponent(db),
+    data: JSON.stringify({ language: language, command: command }),
+    contentType: "application/json",
+    headers: { Authorization: globalCredentials }
+  })
+  .done(function(data) {
+    item.btn.prop("disabled", false).html('<i class="fa fa-play me-1"></i>Execute');
+    var resultCount = data.result ? data.result.length : 0;
+    resultDiv.show().html('<i class="fa fa-check-circle me-1" style="color: #28a745;"></i> <span style="color: var(--text-primary);">Success' +
+      (resultCount > 0 ? ' (' + resultCount + ' results)' : '') + '</span>');
+    profilerAiRunSequential(commands, index + 1, allBtn);
+  })
+  .fail(function(jqXHR) {
+    item.btn.prop("disabled", false).html('<i class="fa fa-play me-1"></i>Execute');
+    var errorMsg = "Command failed";
+    try {
+      var errData = JSON.parse(jqXHR.responseText);
+      if (errData.detail) errorMsg = errData.detail;
+      else if (errData.error) errorMsg = errData.error;
+    } catch (e) { /* ignore */ }
+    resultDiv.show().html('<i class="fa fa-circle-exclamation me-1" style="color: #dc3545;"></i> <span style="color: #dc3545;">' + escapeHtml(errorMsg) + '</span>');
+    // Stop on error
+    allBtn.prop("disabled", false).html('<i class="fa fa-forward me-1"></i>Execute All');
+  });
 }

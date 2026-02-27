@@ -70,6 +70,7 @@ import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import com.arcadedb.server.ai.AiActivateHandler;
+import com.arcadedb.server.ai.AiAnalyzeProfilerHandler;
 import com.arcadedb.server.ai.AiChatHandler;
 import com.arcadedb.server.ai.AiChatsHandler;
 import com.arcadedb.server.ai.AiConfigHandler;
@@ -240,6 +241,7 @@ public class HttpServer implements ServerPlugin {
         .get("/config", new AiConfigHandler(this, aiConfig))//
         .post("/activate", new AiActivateHandler(this, aiConfig))//
         .post("/chat", new AiChatHandler(this, server, aiConfig, chatStorage))//
+        .post("/analyze-profiler", new AiAnalyzeProfilerHandler(this, aiConfig))//
         .get("/chats", aiChatsHandler)//
         .get("/chats/{id}", aiChatsHandler)//
         .put("/chats/{id}", aiChatsHandler)//

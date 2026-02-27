@@ -31,6 +31,9 @@
       <button class="btn btn-sm db-action-btn" onclick="profilerReset()" title="Reset">
         <i class="fa fa-trash"></i> Reset
       </button>
+      <button id="profilerAiBtn" class="btn btn-sm" style="background: var(--color-brand); color: white; border: none; display: none;" onclick="profilerAnalyzeWithAi()" title="Analyze with AI">
+        <i class="fa fa-robot"></i> Analyze with AI
+      </button>
       <div class="dropdown d-inline-block">
         <button class="btn btn-sm db-action-btn dropdown-toggle" data-bs-toggle="dropdown" title="Load saved run">
           <i class="fa fa-folder-open"></i> Saved Runs
@@ -123,6 +126,22 @@
       <i class="fa fa-tachometer-alt" style="font-size: 3rem; margin-bottom: 12px; display: block;"></i>
       <p>Click <strong>Start</strong> to begin recording queries from all protocols.</p>
       <p style="font-size: 0.82rem;">All SQL, Cypher, Gremlin, and other queries will be captured with execution plans and timing data.</p>
+    </div>
+
+    <!-- AI Analysis Panel -->
+    <div id="profilerAiPanel" style="display: none;">
+      <div class="card" style="background: var(--bg-card); border: 1px solid var(--border-ddd);">
+        <div class="card-header d-flex align-items-center justify-content-between" style="background: var(--bg-sidebar); border-bottom: 1px solid var(--border-ddd); padding: 8px 12px;">
+          <span style="font-weight: 600; color: var(--text-primary); font-size: 0.9rem;">
+            <i class="fa fa-robot" style="color: var(--color-brand); margin-right: 6px;"></i>AI Analysis
+          </span>
+          <button class="btn btn-sm btn-link p-0" style="color: var(--text-muted);" onclick="jQuery('#profilerAiPanel').hide()">
+            <i class="fa fa-times"></i>
+          </button>
+        </div>
+        <div id="profilerAiContent" class="card-body" style="padding: 12px; max-height: 500px; overflow-y: auto;">
+        </div>
+      </div>
     </div>
   </div>
 </div>

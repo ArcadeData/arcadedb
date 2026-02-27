@@ -403,6 +403,7 @@ function aiRenderUserMessage(msg, msgIndex) {
 
 function aiRenderAssistantMessage(msg, msgIndex) {
   var contentHtml = aiRenderMarkdown(msg.content);
+  var msgBlockStart = aiCommandBlockCounter;
 
   var html = '<div class="mb-3">' +
     '<div class="d-flex align-items-start">' +
@@ -413,9 +414,14 @@ function aiRenderAssistantMessage(msg, msgIndex) {
 
   // Render command blocks if present
   if (msg.commands && msg.commands.length > 0) {
-    for (var j = 0; j < msg.commands.length; j++) {
+    for (var j = 0; j < msg.commands.length; j++)
       html += aiRenderCommandBlock(msg.commands[j], j);
-    }
+
+    // "Execute All" button when multiple commands
+    if (msg.commands.length > 1)
+      html += '<div class="mt-2"><button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none;" ' +
+        'onclick="aiExecuteAll(this, ' + msgBlockStart + ', ' + aiCommandBlockCounter + ')">' +
+        '<i class="fa fa-forward me-1"></i>Execute All</button></div>';
   }
 
   // Action bar with delete button
@@ -496,6 +502,78 @@ function aiExecuteCommand(button, blockId) {
       else if (errData.error) errorMsg = errData.error;
     } catch (e) { /* ignore */ }
     resultDiv.show().html('<i class="fa fa-circle-exclamation me-1" style="color: #dc3545;"></i> <span style="color: #dc3545;">' + escapeHtml(errorMsg) + '</span>');
+  });
+}
+
+// ===== Execute All =====
+
+function aiExecuteAll(button, startId, endId) {
+  var commands = [];
+  for (var i = startId; i < endId; i++) {
+    var blockId = "aiCmd_" + i;
+    var pre = document.getElementById(blockId);
+    if (pre) {
+      var execBtn = $(pre).closest('.ai-command-block').find("button[onclick*='aiExecuteCommand']");
+      commands.push({ blockId: blockId, pre: pre, btn: execBtn });
+    }
+  }
+  if (commands.length === 0) return;
+
+  var allBtn = $(button);
+  allBtn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin me-1"></i>Running all...');
+  aiRunSequential(commands, 0, allBtn);
+}
+
+function aiRunSequential(commands, index, allBtn) {
+  if (index >= commands.length) {
+    allBtn.prop("disabled", false).html('<i class="fa fa-forward me-1"></i>Execute All');
+    return;
+  }
+
+  var item = commands[index];
+  var command = item.pre.getAttribute("data-command");
+  var language = item.pre.getAttribute("data-language") || "sql";
+
+  if (language === "sql" && aiIsMultiStatementSql(command))
+    language = "sqlscript";
+
+  var db = aiGetCurrentDatabase();
+  if (!db) {
+    globalNotify("Warning", "Please select a database first", "warning");
+    allBtn.prop("disabled", false).html('<i class="fa fa-forward me-1"></i>Execute All');
+    return;
+  }
+
+  item.btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin me-1"></i>Running...');
+  var resultDiv = $("#" + item.blockId + "_result");
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/command/" + encodeURIComponent(db),
+    data: JSON.stringify({ language: language, command: command }),
+    contentType: "application/json",
+    beforeSend: function(xhr) {
+      xhr.setRequestHeader("Authorization", globalCredentials);
+    }
+  })
+  .done(function(data) {
+    item.btn.prop("disabled", false).html('<i class="fa fa-play me-1"></i>Execute');
+    var resultCount = data.result ? data.result.length : 0;
+    resultDiv.show().html('<i class="fa fa-check-circle me-1" style="color: #28a745;"></i> <span style="color: var(--text-primary);">Success' +
+      (resultCount > 0 ? ' (' + resultCount + ' results)' : '') + '</span>');
+    aiRunSequential(commands, index + 1, allBtn);
+  })
+  .fail(function(jqXHR) {
+    item.btn.prop("disabled", false).html('<i class="fa fa-play me-1"></i>Execute');
+    var errorMsg = "Command failed";
+    try {
+      var errData = JSON.parse(jqXHR.responseText);
+      if (errData.detail) errorMsg = errData.detail;
+      else if (errData.error) errorMsg = errData.error;
+    } catch (e) { /* ignore */ }
+    resultDiv.show().html('<i class="fa fa-circle-exclamation me-1" style="color: #dc3545;"></i> <span style="color: #dc3545;">' + escapeHtml(errorMsg) + '</span>');
+    // Stop on error
+    allBtn.prop("disabled", false).html('<i class="fa fa-forward me-1"></i>Execute All');
   });
 }
 
