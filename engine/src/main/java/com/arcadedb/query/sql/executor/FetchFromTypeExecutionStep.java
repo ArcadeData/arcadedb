@@ -142,13 +142,16 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     }
 
     // Enable parallel scanning when: no ordering required, multiple buckets, config enabled,
-    // and not already running inside async executor threads (avoids redundant parallelism)
+    // not inside async executor threads (avoids redundant parallelism), and no active transaction
+    // (scan tasks run in pool threads without the caller's TX context, and holding locks while
+    // waiting for pool results increases contention)
     final DatabaseInternal db = context.getDatabase();
     final int minBuckets = db.getConfiguration().getValueAsInteger(GlobalConfiguration.QUERY_PARALLEL_SCAN_MIN_BUCKETS);
     this.parallelScan = !orderByRidAsc && !orderByRidDesc
         && getSubSteps().size() >= minBuckets
         && db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN)
-        && !(Thread.currentThread() instanceof DatabaseAsyncExecutorImpl.AsyncThread);
+        && !(Thread.currentThread() instanceof DatabaseAsyncExecutorImpl.AsyncThread)
+        && !db.isTransactionActive();
   }
 
   private void sortBuckets(final int[] bucketIds) {
