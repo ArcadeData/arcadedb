@@ -22,6 +22,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -37,6 +39,10 @@ public class AiConfiguration {
 
   private volatile String subscriptionToken = "";
   private volatile String gatewayUrl        = DEFAULT_GATEWAY_URL;
+  private volatile String activatedAt       = "";
+  private volatile String activationIp      = "";
+  private volatile String hardwareId        = "";
+  private volatile String serverVersion     = "";
 
   public AiConfiguration(final String rootPath) {
     this.rootPath = rootPath;
@@ -53,9 +59,34 @@ public class AiConfiguration {
 
       subscriptionToken = json.getString("subscriptionToken", "");
       gatewayUrl = json.getString("gatewayUrl", DEFAULT_GATEWAY_URL);
+      activatedAt = json.getString("activatedAt", "");
+      activationIp = json.getString("activationIp", "");
+      hardwareId = json.getString("hardwareId", "");
+      serverVersion = json.getString("serverVersion", "");
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error loading AI configuration: %s", e.getMessage());
     }
+  }
+
+  public synchronized void save() {
+    final File configDir = Paths.get(rootPath, "config").toFile();
+    if (!configDir.exists())
+      configDir.mkdirs();
+
+    try (final OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(getConfigFile()), StandardCharsets.UTF_8)) {
+      writer.write(toFullJSON().toString(2));
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error saving AI configuration: %s", e.getMessage());
+    }
+  }
+
+  public synchronized void activate(final String token, final String ip, final String hwId, final String version) {
+    this.subscriptionToken = token;
+    this.activatedAt = java.time.Instant.now().toString();
+    this.activationIp = ip;
+    this.hardwareId = hwId;
+    this.serverVersion = version;
+    save();
   }
 
   public boolean isConfigured() {
@@ -70,10 +101,27 @@ public class AiConfiguration {
     return gatewayUrl;
   }
 
+  /**
+   * Returns public config (no token exposed to the browser).
+   */
   public synchronized JSONObject toJSON() {
     final JSONObject json = new JSONObject();
     json.put("configured", isConfigured());
     json.put("gatewayUrl", gatewayUrl);
+    return json;
+  }
+
+  /**
+   * Returns full config for persistence.
+   */
+  private JSONObject toFullJSON() {
+    final JSONObject json = new JSONObject();
+    json.put("subscriptionToken", subscriptionToken);
+    json.put("gatewayUrl", gatewayUrl);
+    json.put("activatedAt", activatedAt);
+    json.put("activationIp", activationIp);
+    json.put("hardwareId", hardwareId);
+    json.put("serverVersion", serverVersion);
     return json;
   }
 

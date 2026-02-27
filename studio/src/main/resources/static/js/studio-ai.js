@@ -24,6 +24,7 @@ var aiMessages = [];
 var aiChatList = [];
 var aiConfigured = false;
 var aiSending = false;
+var aiCommandBlockCounter = 0;
 
 function initAi() {
   // Check if AI is configured
@@ -49,6 +50,47 @@ function initAi() {
   .fail(function() {
     $("#aiInactivePanel").show();
     $("#aiActivePanel").hide();
+  });
+}
+
+// ===== Activation =====
+
+function aiActivate() {
+  var key = $("#aiSubscriptionKey").val().trim();
+  if (!key) {
+    $("#aiActivateError").text("Please enter a subscription key.").show();
+    return;
+  }
+
+  var btn = $("#aiActivateBtn");
+  btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin me-1"></i>Activating...');
+  $("#aiActivateError").hide();
+  $("#aiActivateSuccess").hide();
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/ai/activate",
+    data: JSON.stringify({ subscriptionKey: key }),
+    contentType: "application/json",
+    beforeSend: function(xhr) {
+      xhr.setRequestHeader("Authorization", globalCredentials);
+    },
+    timeout: 30000
+  })
+  .done(function() {
+    btn.prop("disabled", false).html("Activate");
+    $("#aiActivateSuccess").text("Subscription activated successfully!").show();
+    // Reload the AI panel after a brief delay
+    setTimeout(function() { initAi(); }, 1000);
+  })
+  .fail(function(jqXHR) {
+    btn.prop("disabled", false).html("Activate");
+    var errorMsg = "Activation failed. Please check your key and try again.";
+    try {
+      var errData = JSON.parse(jqXHR.responseText);
+      if (errData.error) errorMsg = errData.error;
+    } catch (e) { /* ignore */ }
+    $("#aiActivateError").text(errorMsg).show();
   });
 }
 
@@ -192,6 +234,35 @@ function aiDeleteChat(chatId) {
   });
 }
 
+function aiDeleteMessage(msgIndex) {
+  if (msgIndex < 0 || msgIndex >= aiMessages.length) return;
+
+  // If deleting a user message, also delete the assistant response that follows it
+  if (aiMessages[msgIndex].role === "user" && msgIndex + 1 < aiMessages.length && aiMessages[msgIndex + 1].role === "assistant")
+    aiMessages.splice(msgIndex, 2);
+  else
+    aiMessages.splice(msgIndex, 1);
+
+  aiRenderMessages();
+
+  // Persist the updated chat
+  if (aiCurrentChatId)
+    aiSaveCurrentChat();
+}
+
+function aiSaveCurrentChat() {
+  if (!aiCurrentChatId) return;
+  jQuery.ajax({
+    type: "PUT",
+    url: "api/v1/ai/chats/" + encodeURIComponent(aiCurrentChatId),
+    data: JSON.stringify({ messages: aiMessages }),
+    contentType: "application/json",
+    beforeSend: function(xhr) {
+      xhr.setRequestHeader("Authorization", globalCredentials);
+    }
+  });
+}
+
 // ===== Sending Messages =====
 
 function aiHandleInputKeydown(event) {
@@ -250,12 +321,22 @@ function aiSendMessage() {
   .fail(function(jqXHR) {
     aiSetSending(false);
     var errorMsg = "Failed to get a response from the AI assistant.";
+    var errorCode = "";
     try {
       var errData = JSON.parse(jqXHR.responseText);
       if (errData.detail) errorMsg = errData.detail;
       else if (errData.error) errorMsg = errData.error;
+      if (errData.code) errorCode = errData.code;
     } catch (e) { /* ignore parse errors */ }
-    globalNotify("Error", errorMsg, "danger");
+
+    // If token is invalid or expired, reset to inactive state
+    if (errorCode === "token_invalid" || errorCode === "token_expired" || errorCode === "token_disabled") {
+      aiConfigured = false;
+      $("#aiActivePanel").hide();
+      $("#aiInactivePanel").show();
+      globalNotify("Subscription", errorMsg, "warning");
+    } else
+      globalNotify("Error", errorMsg, "danger");
   });
 }
 
@@ -283,6 +364,7 @@ function aiSetSending(sending) {
 function aiRenderMessages() {
   var container = $("#aiMessages");
   container.empty();
+  aiCommandBlockCounter = 0;
 
   if (aiMessages.length === 0) {
     container.append($("#aiWelcome").length ? '' : '');
@@ -299,26 +381,31 @@ function aiRenderMessages() {
   for (var i = 0; i < aiMessages.length; i++) {
     var msg = aiMessages[i];
     if (msg.role === "user")
-      container.append(aiRenderUserMessage(msg));
+      container.append(aiRenderUserMessage(msg, i));
     else if (msg.role === "assistant")
-      container.append(aiRenderAssistantMessage(msg));
+      container.append(aiRenderAssistantMessage(msg, i));
   }
 
   aiScrollToBottom();
 }
 
-function aiRenderUserMessage(msg) {
-  return '<div class="d-flex mb-3 justify-content-end">' +
+function aiRenderUserMessage(msg, msgIndex) {
+  return '<div class="mb-3">' +
+    '<div class="d-flex justify-content-end">' +
     '<div class="px-3 py-2" style="background: var(--color-brand); color: white; border-radius: 12px; max-width: 70%; white-space: pre-wrap; word-break: break-word;">' +
     escapeHtml(msg.content) + '</div>' +
     '<div class="ms-2" style="width: 32px; height: 32px; border-radius: 50%; background: var(--bg-sidebar); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">' +
-    '<i class="fa fa-user" style="color: var(--text-muted); font-size: 0.85rem;"></i></div></div>';
+    '<i class="fa fa-user" style="color: var(--text-muted); font-size: 0.85rem;"></i></div></div>' +
+    '<div class="d-flex justify-content-end me-5 mt-1">' +
+    '<button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.7rem;" ' +
+    'onclick="aiDeleteMessage(' + msgIndex + ')" title="Delete message"><i class="fa fa-trash-can"></i></button></div></div>';
 }
 
-function aiRenderAssistantMessage(msg) {
+function aiRenderAssistantMessage(msg, msgIndex) {
   var contentHtml = aiRenderMarkdown(msg.content);
 
-  var html = '<div class="d-flex mb-3 align-items-start">' +
+  var html = '<div class="mb-3">' +
+    '<div class="d-flex align-items-start">' +
     '<div style="width: 32px; height: 32px; border-radius: 50%; background: var(--color-brand); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">' +
     '<i class="fa fa-robot" style="color: white; font-size: 0.85rem;"></i></div>' +
     '<div class="ms-2" style="max-width: 80%; min-width: 0;">' +
@@ -331,12 +418,16 @@ function aiRenderAssistantMessage(msg) {
     }
   }
 
-  html += '</div></div>';
+  // Action bar with delete button
+  html += '<div class="mt-1 ms-1"><button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.7rem;" ' +
+    'onclick="aiDeleteMessage(' + msgIndex + ')" title="Delete message"><i class="fa fa-trash-can"></i></button></div>';
+
+  html += '</div></div></div>';
   return html;
 }
 
 function aiRenderCommandBlock(cmd, index) {
-  var blockId = "aiCmd_" + Date.now() + "_" + index;
+  var blockId = "aiCmd_" + (aiCommandBlockCounter++);
   var lang = escapeHtml((cmd.language || "sql").toUpperCase());
   var purpose = cmd.purpose ? '<div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px;">' + escapeHtml(cmd.purpose) + '</div>' : '';
 
@@ -361,6 +452,11 @@ function aiExecuteCommand(button, blockId) {
 
   var command = pre.getAttribute("data-command");
   var language = pre.getAttribute("data-language") || "sql";
+
+  // Auto-switch to sqlscript for multi-statement SQL blocks
+  if (language === "sql" && aiIsMultiStatementSql(command))
+    language = "sqlscript";
+
   var db = aiGetCurrentDatabase();
 
   if (!db) {
@@ -441,6 +537,16 @@ function aiBasicMarkdown(text) {
   html = html.replace(/\n/g, '<br>');
 
   return html;
+}
+
+// ===== SQL Helpers =====
+
+function aiIsMultiStatementSql(command) {
+  // Strip comments, strings, and whitespace to count real semicolons
+  var stripped = command.replace(/'[^']*'/g, "").replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "").trim();
+  // Remove trailing semicolon, then check if there are still semicolons left
+  stripped = stripped.replace(/;\s*$/, "");
+  return stripped.indexOf(";") >= 0;
 }
 
 // ===== Utilities =====

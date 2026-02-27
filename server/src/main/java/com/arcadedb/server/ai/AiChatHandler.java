@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ai;
 
+import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -31,10 +32,14 @@ import com.arcadedb.server.mcp.tools.ServerStatusTool;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+import java.io.IOException;
+import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.logging.Level;
 
@@ -125,6 +130,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       gatewayRequest.put("message", message);
       gatewayRequest.put("history", history);
       gatewayRequest.put("database", database);
+      gatewayRequest.put("hardwareId", AiActivateHandler.getHardwareId());
+      gatewayRequest.put("serverVersion", Constants.getVersion());
 
       final JSONObject gatewayResponse = callGateway(gatewayRequest);
 
@@ -156,9 +163,27 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     } catch (final SecurityException e) {
       throw e; // Let AbstractServerHttpHandler handle security exceptions
+    } catch (final AiTokenException e) {
+      return new ExecutionResponse(e.getHttpStatus(), e.getJsonResponse());
+    } catch (final ConnectException | HttpConnectTimeoutException e) {
+      LogManager.instance().log(this, Level.WARNING, "AI gateway unreachable: %s", e.getMessage());
+      return new ExecutionResponse(503, new JSONObject()//
+          .put("error", "AI service is temporarily unreachable. Please try again later.")//
+          .put("code", "gateway_unreachable").toString());
+    } catch (final HttpTimeoutException e) {
+      LogManager.instance().log(this, Level.WARNING, "AI gateway timeout: %s", e.getMessage());
+      return new ExecutionResponse(504, new JSONObject()//
+          .put("error", "AI service took too long to respond. Please try again later.")//
+          .put("code", "gateway_timeout").toString());
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING, "AI gateway I/O error: %s", e.getMessage());
+      return new ExecutionResponse(503, new JSONObject()//
+          .put("error", "AI service is temporarily unavailable. Please try again later.")//
+          .put("code", "gateway_unreachable").toString());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error processing AI chat request: %s", e.getMessage());
-      return new ExecutionResponse(500, new JSONObject().put("error", "Failed to process AI request: " + e.getMessage()).toString());
+      return new ExecutionResponse(500, new JSONObject()//
+          .put("error", "An unexpected error occurred. Please try again later.").toString());
     }
   }
 
@@ -173,8 +198,16 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-    if (response.statusCode() == 401 || response.statusCode() == 403)
-      throw new SecurityException("Invalid or expired subscription token");
+    if (response.statusCode() == 401 || response.statusCode() == 403) {
+      // Parse the gateway error to get the specific code (token_invalid, token_expired, etc.)
+      final JSONObject errBody = new JSONObject(response.body());
+      final String code = errBody.getString("code", "token_invalid");
+      final String errorMsg = errBody.getString("error", "Invalid or expired subscription token");
+      final JSONObject errorResponse = new JSONObject();
+      errorResponse.put("error", errorMsg);
+      errorResponse.put("code", code);
+      throw new AiTokenException(response.statusCode(), errorResponse.toString());
+    }
 
     if (response.statusCode() != 200)
       throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + response.body());

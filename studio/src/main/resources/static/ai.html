@@ -4,24 +4,41 @@
   <!-- Inactive state (no subscription) -->
   <div id="aiInactivePanel" style="display: none;">
     <div class="d-flex align-items-center justify-content-center" style="height: 70vh;">
-      <div class="text-center" style="max-width: 480px;">
+      <div class="text-center" style="max-width: 520px;">
         <i class="fa fa-robot" style="font-size: 3rem; color: var(--color-brand); margin-bottom: 1rem;"></i>
         <h4 style="color: var(--text-primary);">AI Assistant</h4>
         <p style="color: var(--text-secondary); margin-top: 1rem;">
-          This feature requires an ArcadeAI subscription.
-        </p>
-        <p style="color: var(--text-muted); font-size: 0.9rem;">
           Get AI-powered database assistance:
         </p>
         <ul class="text-start" style="color: var(--text-muted); font-size: 0.9rem; display: inline-block;">
           <li>Schema review and optimization</li>
-          <li>Query optimization</li>
+          <li>Query optimization and troubleshooting</li>
           <li>Data modeling recommendations</li>
           <li>Synthetic data generation</li>
           <li>And more...</li>
         </ul>
-        <p style="color: var(--text-secondary); margin-top: 1rem;">
-          Contact <a href="mailto:info@arcadedb.com" style="color: var(--color-brand-link);">info@arcadedb.com</a> for more information.
+
+        <!-- Activation Form -->
+        <div style="margin-top: 1.5rem; padding: 1.5rem; border: 1px solid var(--border-main); border-radius: 10px; background: var(--bg-card);">
+          <h6 style="color: var(--text-primary); margin-bottom: 0.75rem;">Activate your subscription</h6>
+          <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+            Enter your subscription key to enable the AI assistant.
+          </p>
+          <div class="d-flex gap-2">
+            <input type="text" id="aiSubscriptionKey" class="form-control"
+              placeholder="Enter your subscription key"
+              style="background: var(--bg-input); color: var(--text-primary); border-color: var(--border-main);"
+              onkeydown="if(event.key==='Enter') aiActivate()">
+            <button id="aiActivateBtn" class="btn" style="background: var(--color-brand); color: white; border: none; min-width: 100px;" onclick="aiActivate()">
+              Activate
+            </button>
+          </div>
+          <div id="aiActivateError" style="display: none; margin-top: 0.5rem; color: #dc3545; font-size: 0.85rem;"></div>
+          <div id="aiActivateSuccess" style="display: none; margin-top: 0.5rem; color: #28a745; font-size: 0.85rem;"></div>
+        </div>
+
+        <p style="color: var(--text-muted); margin-top: 1rem; font-size: 0.85rem;">
+          Don't have a key? Contact <a href="mailto:info@arcadedb.com" style="color: var(--color-brand-link);">info@arcadedb.com</a> for more information.
         </p>
       </div>
     </div>

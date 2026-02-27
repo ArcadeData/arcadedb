@@ -33,6 +33,7 @@ import java.util.List;
  * Handles chat CRUD operations:
  * - GET /api/v1/ai/chats - list all chats for the current user
  * - GET /api/v1/ai/chats/{id} - get a specific chat
+ * - PUT /api/v1/ai/chats/{id} - update chat messages (e.g., after deleting a message)
  * - DELETE /api/v1/ai/chats/{id} - delete a specific chat
  */
 public class AiChatsHandler extends AbstractServerHttpHandler {
@@ -56,6 +57,11 @@ public class AiChatsHandler extends AbstractServerHttpHandler {
         return getChat(username, chatId);
       else
         return listChats(username);
+    } else if ("PUT".equals(method)) {
+      if (chatId != null)
+        return updateChat(username, chatId, payload);
+      else
+        return new ExecutionResponse(400, errorJson("Chat ID is required for PUT"));
     } else if ("DELETE".equals(method)) {
       if (chatId != null)
         return deleteChat(username, chatId);
@@ -77,6 +83,24 @@ public class AiChatsHandler extends AbstractServerHttpHandler {
     final JSONObject chat = chatStorage.getChat(username, chatId);
     if (chat == null)
       return new ExecutionResponse(404, errorJson("Chat not found"));
+    return new ExecutionResponse(200, chat.toString());
+  }
+
+  private ExecutionResponse updateChat(final String username, final String chatId, final JSONObject payload) {
+    if (payload == null)
+      return new ExecutionResponse(400, errorJson("Request body is required"));
+
+    final JSONObject chat = chatStorage.getChat(username, chatId);
+    if (chat == null)
+      return new ExecutionResponse(404, errorJson("Chat not found"));
+
+    final JSONArray messages = payload.getJSONArray("messages", null);
+    if (messages != null) {
+      chat.put("messages", messages);
+      chat.put("updated", java.time.Instant.now().toString());
+      chatStorage.saveChat(username, chat);
+    }
+
     return new ExecutionResponse(200, chat.toString());
   }
 
