@@ -1,0 +1,128 @@
+<div class="tab-pane fade" id="tab-profiler" role="tabpanel">
+  <div class="d-flex align-items-center px-3 py-2" style="border-bottom: 1px solid var(--border-light);">
+    <div class="flex-grow-1 d-flex align-items-center gap-3">
+      <span style="font-size: 0.95rem; font-weight: 600; color: var(--text-primary);">
+        <i class="fa fa-tachometer-alt" style="color: var(--color-brand); margin-right: 6px;"></i>
+        Query Profiler
+      </span>
+      <span id="profilerRecordingBadge" style="display: none;" class="badge bg-danger">
+        <span class="profiler-pulse-dot"></span> Recording <span id="profilerElapsed"></span>
+      </span>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <div id="profilerStartGroup" class="d-inline-flex align-items-center gap-1">
+        <button class="btn btn-sm btn-success" onclick="profilerStart()" title="Start Recording">
+          <i class="fa fa-play"></i> Start
+        </button>
+        <select id="profilerTimeout" class="form-select form-select-sm" style="width: auto; font-size: 0.8rem;">
+          <option value="30">30s</option>
+          <option value="60" selected>60s</option>
+          <option value="120">2 min</option>
+          <option value="300">5 min</option>
+          <option value="600">10 min</option>
+        </select>
+      </div>
+      <button id="profilerStopBtn" class="btn btn-sm btn-danger" onclick="profilerStop()" style="display:none;" title="Stop Recording">
+        <i class="fa fa-stop"></i> Stop
+      </button>
+      <button class="btn btn-sm db-action-btn" onclick="profilerRefresh()" title="Refresh Results">
+        <i class="fa fa-sync"></i>
+      </button>
+      <button class="btn btn-sm db-action-btn" onclick="profilerReset()" title="Reset">
+        <i class="fa fa-trash"></i> Reset
+      </button>
+      <div class="dropdown d-inline-block">
+        <button class="btn btn-sm db-action-btn dropdown-toggle" data-bs-toggle="dropdown" title="Load saved run">
+          <i class="fa fa-folder-open"></i> Saved Runs
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end" id="profilerSavedRunsMenu" style="max-height: 300px; overflow-y: auto;">
+          <li><span class="dropdown-item text-muted">Loading...</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary Section -->
+  <div id="profilerSummary" class="px-3 py-2" style="display: none;">
+    <div class="d-flex align-items-center gap-2 mb-2">
+      <h6 class="mb-0" style="color: var(--text-primary);">Summary</h6>
+      <span id="profilerDuration" class="badge" style="background: var(--bg-badge-muted); color: var(--text-secondary);"></span>
+      <span id="profilerTotalQueries" class="badge" style="background: var(--color-brand); color: #fff;"></span>
+    </div>
+
+    <!-- Metric Delta Cards -->
+    <div class="row g-2 mb-3" id="profilerDeltaCards"></div>
+
+    <!-- Per-database breakdown (collapsible) -->
+    <div id="profilerDbBreakdown" style="display: none;">
+      <a class="text-decoration-none" style="font-size: 0.85rem; cursor: pointer; color: var(--color-brand);" data-bs-toggle="collapse" href="#profilerDbDetails">
+        <i class="fa fa-database"></i> Per-database breakdown <i class="fa fa-chevron-down" style="font-size: 0.6rem;"></i>
+      </a>
+      <div class="collapse mt-1" id="profilerDbDetails">
+        <div id="profilerDbTable" style="font-size: 0.82rem;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Query List -->
+  <div class="px-3 py-2">
+    <div id="profilerQueryListContainer" style="display: none;">
+      <table id="profilerQueryTable" class="table table-sm table-hover" style="width: 100%; font-size: 0.85rem;">
+        <thead>
+          <tr>
+            <th>Query</th>
+            <th>Language</th>
+            <th>Database</th>
+            <th>Count</th>
+            <th>Total (ms)</th>
+            <th>Avg (ms)</th>
+            <th>Max (ms)</th>
+            <th>P99 (ms)</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Query Detail View -->
+    <div id="profilerQueryDetail" style="display: none;">
+      <button class="btn btn-sm db-action-btn mb-2" onclick="profilerBackToList()">
+        <i class="fa fa-arrow-left"></i> Back to list
+      </button>
+      <div class="card mb-3" style="background: var(--bg-card); border: 1px solid var(--border-ddd);">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-start mb-2">
+            <span class="badge" id="profilerDetailLang" style="background: var(--color-brand); color: #fff;"></span>
+            <span class="text-muted" id="profilerDetailDb" style="font-size: 0.82rem;"></span>
+          </div>
+          <pre id="profilerDetailQuery" style="background: var(--bg-code); color: #e2e8f0; padding: 10px; border-radius: 6px; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all; border: 1px solid var(--border-light);"></pre>
+          <div class="row g-3 mt-1" id="profilerDetailStats"></div>
+        </div>
+      </div>
+      <!-- Step chart -->
+      <div id="profilerStepChart" style="min-height: 200px;"></div>
+      <!-- Step table -->
+      <table id="profilerStepTable" class="table table-sm" style="width: 100%; font-size: 0.85rem;">
+        <thead>
+          <tr>
+            <th>Step</th>
+            <th>Count</th>
+            <th>Total (ms)</th>
+            <th>Min (ms)</th>
+            <th>Avg (ms)</th>
+            <th>Max (ms)</th>
+            <th>P99 (ms)</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Empty state -->
+    <div id="profilerEmpty" class="text-center py-5" style="color: var(--text-lightest);">
+      <i class="fa fa-tachometer-alt" style="font-size: 3rem; margin-bottom: 12px; display: block;"></i>
+      <p>Click <strong>Start</strong> to begin recording queries from all protocols.</p>
+      <p style="font-size: 0.82rem;">All SQL, Cypher, Gremlin, and other queries will be captured with execution plans and timing data.</p>
+    </div>
+  </div>
+</div>

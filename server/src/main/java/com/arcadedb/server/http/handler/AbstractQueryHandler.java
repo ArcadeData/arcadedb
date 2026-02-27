@@ -56,6 +56,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     if (qResult == null)
       return;
 
+    try {
     switch (serializer) {
     case "graph": {
       // SERIALIZES THE GRAPH ELEMENTS IN VERTICES AND EDGES
@@ -202,6 +203,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           qResult.stream().map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()));
       response.put("result", result);
     }
+    }
+    } finally {
+      qResult.close();
     }
   }
 
