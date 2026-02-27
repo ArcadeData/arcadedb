@@ -24,6 +24,7 @@ var aiMessages = [];
 var aiChatList = [];
 var aiConfigured = false;
 var aiSending = false;
+var aiCurrentXhr = null;
 var aiCommandBlockCounter = 0;
 
 function initAi() {
@@ -291,7 +292,7 @@ function aiSendMessage() {
   // Show thinking indicator
   aiSetSending(true);
 
-  jQuery.ajax({
+  aiCurrentXhr = jQuery.ajax({
     type: "POST",
     url: "api/v1/ai/chat",
     data: JSON.stringify({ database: db, message: message, chatId: aiCurrentChatId }),
@@ -302,6 +303,7 @@ function aiSendMessage() {
     timeout: 120000
   })
   .done(function(data) {
+    aiCurrentXhr = null;
     aiSetSending(false);
 
     // Update chat ID if new chat was created
@@ -318,8 +320,14 @@ function aiSendMessage() {
     // Refresh chat list
     aiLoadChatList();
   })
-  .fail(function(jqXHR) {
+  .fail(function(jqXHR, textStatus) {
+    aiCurrentXhr = null;
     aiSetSending(false);
+
+    // User cancelled the request
+    if (textStatus === "abort")
+      return;
+
     var errorMsg = "Failed to get a response from the AI assistant.";
     var errorCode = "";
     try {
@@ -340,11 +348,21 @@ function aiSendMessage() {
   });
 }
 
+function aiStopResponse() {
+  if (aiCurrentXhr) {
+    aiCurrentXhr.abort();
+    aiCurrentXhr = null;
+  }
+  aiSetSending(false);
+}
+
 function aiSetSending(sending) {
   aiSending = sending;
   var btn = $("#aiSendBtn");
   if (sending) {
-    btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin"></i>');
+    btn.attr("onclick", "aiStopResponse()")
+      .css("background", "#dc3545")
+      .html('<i class="fa fa-stop me-1"></i>Stop');
     // Add thinking indicator to messages
     var thinkingHtml = '<div id="aiThinking" class="d-flex mb-3">' +
       '<div style="width: 32px; height: 32px; border-radius: 50%; background: var(--color-brand); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">' +
@@ -354,7 +372,9 @@ function aiSetSending(sending) {
     $("#aiMessages").append(thinkingHtml);
     aiScrollToBottom();
   } else {
-    btn.prop("disabled", false).html("Send");
+    btn.attr("onclick", "aiSendMessage()")
+      .css("background", "var(--color-brand)")
+      .html("Send");
     $("#aiThinking").remove();
   }
 }
