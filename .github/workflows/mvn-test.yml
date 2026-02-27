@@ -103,8 +103,8 @@ jobs:
         with:
           name: Unit Tests Report
           path: "**/surefire-reports/TEST*.xml"
-          list-tests: "failed"
-          list-suites: "failed"
+          list-tests: 'failed'
+          list-suites: 'failed'
           reporter: java-junit
 
       - name: Upload unit test coverage reports
