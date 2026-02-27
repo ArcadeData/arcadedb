@@ -20,16 +20,22 @@ package com.arcadedb.server.ai;
 
 import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
+import com.arcadedb.server.mcp.MCPConfiguration;
+import com.arcadedb.server.mcp.tools.GetSchemaTool;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.URI;
+import java.util.HashSet;
+import java.util.Set;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
@@ -42,11 +48,13 @@ import java.util.logging.Level;
  * POST /api/v1/ai/analyze-profiler - Sends profiler data to the AI gateway for analysis.
  */
 public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
+  private final ArcadeDBServer server;
   private final AiConfiguration config;
   private final HttpClient      httpClient;
 
-  public AiAnalyzeProfilerHandler(final HttpServer httpServer, final AiConfiguration config) {
+  public AiAnalyzeProfilerHandler(final HttpServer httpServer, final ArcadeDBServer server, final AiConfiguration config) {
     super(httpServer);
+    this.server = server;
     this.config = config;
     this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
   }
@@ -70,8 +78,13 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", "Profiler data is required").toString());
 
     try {
+      // Collect schemas for all databases referenced in profiler data
+      final JSONObject schemas = collectDatabaseSchemas(profilerData, user);
+
       final JSONObject gatewayRequest = new JSONObject();
       gatewayRequest.put("profilerData", profilerData);
+      if (schemas.length() > 0)
+        gatewayRequest.put("schemas", schemas);
       gatewayRequest.put("hardwareId", AiActivateHandler.getHardwareId());
       gatewayRequest.put("serverVersion", Constants.getVersion());
 
@@ -108,6 +121,55 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(500, new JSONObject()//
           .put("error", "An unexpected error occurred. Please try again later.").toString());
     }
+  }
+
+  /**
+   * Extracts unique database names from the profiler data (from queries and summary)
+   * and fetches the schema for each one the user has access to.
+   */
+  private JSONObject collectDatabaseSchemas(final JSONObject profilerData, final ServerSecurityUser user) {
+    final JSONObject schemas = new JSONObject();
+    final Set<String> dbNames = new HashSet<>();
+
+    // Extract database names from captured queries
+    final JSONArray queries = profilerData.getJSONArray("queries", null);
+    if (queries != null) {
+      for (int i = 0; i < queries.length(); i++) {
+        final String db = queries.getJSONObject(i).getString("database", null);
+        if (db != null && !db.isEmpty())
+          dbNames.add(db);
+      }
+    }
+
+    // Extract database names from summary snapshots
+    final JSONObject summary = profilerData.getJSONObject("summary", null);
+    if (summary != null) {
+      for (final String snapshotKey : new String[] { "snapshotStart", "snapshotStop" }) {
+        final JSONObject snapshot = summary.getJSONObject(snapshotKey, null);
+        if (snapshot != null) {
+          final JSONObject databases = snapshot.getJSONObject("databases", null);
+          if (databases != null) {
+            for (final String name : databases.keySet())
+              dbNames.add(name);
+          }
+        }
+      }
+    }
+
+    // Fetch schema for each database the user can access
+    final MCPConfiguration mcpConfig = server.getMCPConfiguration();
+    for (final String dbName : dbNames) {
+      if (!user.canAccessToDatabase(dbName))
+        continue;
+      try {
+        final JSONObject schemaArgs = new JSONObject().put("database", dbName);
+        schemas.put(dbName, GetSchemaTool.execute(server, user, schemaArgs, mcpConfig));
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Could not fetch schema for database '%s': %s", dbName, e.getMessage());
+      }
+    }
+
+    return schemas;
   }
 
   private JSONObject callGateway(final JSONObject requestBody) throws Exception {

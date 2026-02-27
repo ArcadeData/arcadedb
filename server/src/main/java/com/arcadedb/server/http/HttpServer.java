@@ -241,7 +241,7 @@ public class HttpServer implements ServerPlugin {
         .get("/config", new AiConfigHandler(this, aiConfig))//
         .post("/activate", new AiActivateHandler(this, aiConfig))//
         .post("/chat", new AiChatHandler(this, server, aiConfig, chatStorage))//
-        .post("/analyze-profiler", new AiAnalyzeProfilerHandler(this, aiConfig))//
+        .post("/analyze-profiler", new AiAnalyzeProfilerHandler(this, server, aiConfig))//
         .get("/chats", aiChatsHandler)//
         .get("/chats/{id}", aiChatsHandler)//
         .put("/chats/{id}", aiChatsHandler)//

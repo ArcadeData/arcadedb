@@ -164,7 +164,7 @@
             <ul class="nav nav-tabs flex-column" id="tabs" style="height: 100%">
               <li class="nav-item text-center" style="padding: 8px 6px"><img src="images/arcadedb-logo-mini.png" style="width: 80%" /></li>
               <li class="nav-item pt-3">
-                <a data-bs-toggle="tab" href="#tab-query" class="vertical-tab nav-link active show" id="tab-query-sel">
+                <a data-bs-toggle="tab" href="#tab-query" class="vertical-tab nav-link active show" id="tab-query-sel" title="Query">
                   <center>
                     <i class="fa fa-terminal" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Query</div>
@@ -172,7 +172,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-database" class="vertical-tab nav-link" id="tab-database-sel">
+                <a data-bs-toggle="tab" href="#tab-database" class="vertical-tab nav-link" id="tab-database-sel" title="Database">
                   <center>
                     <i class="fa fa-database" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Database</div>
@@ -180,7 +180,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-timeseries" class="vertical-tab nav-link" id="tab-timeseries-sel">
+                <a data-bs-toggle="tab" href="#tab-timeseries" class="vertical-tab nav-link" id="tab-timeseries-sel" title="TimeSeries">
                   <center>
                     <i class="fa fa-chart-line" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">TimeSeries</div>
@@ -188,7 +188,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-server" class="vertical-tab nav-link" id="tab-server-sel">
+                <a data-bs-toggle="tab" href="#tab-server" class="vertical-tab nav-link" id="tab-server-sel" title="Server">
                   <center>
                     <i class="fa fa-server" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Server</div>
@@ -196,7 +196,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-profiler" class="vertical-tab nav-link" id="tab-profiler-sel">
+                <a data-bs-toggle="tab" href="#tab-profiler" class="vertical-tab nav-link" id="tab-profiler-sel" title="Profiler">
                   <center>
                     <i class="fa fa-tachometer-alt" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Profiler</div>
@@ -204,7 +204,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-security" class="vertical-tab nav-link" id="tab-security-sel">
+                <a data-bs-toggle="tab" href="#tab-security" class="vertical-tab nav-link" id="tab-security-sel" title="Security">
                   <center>
                     <i class="fa fa-shield-alt" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Security</div>
@@ -212,7 +212,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-cluster" class="vertical-tab nav-link" id="tab-cluster-sel">
+                <a data-bs-toggle="tab" href="#tab-cluster" class="vertical-tab nav-link" id="tab-cluster-sel" title="Cluster">
                   <center>
                     <i class="fa fa-network-wired" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Cluster</div>
@@ -220,7 +220,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-api" class="vertical-tab nav-link" id="tab-api-sel">
+                <a data-bs-toggle="tab" href="#tab-api" class="vertical-tab nav-link" id="tab-api-sel" title="API">
                   <center>
                     <i class="fa fa-plug" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">API</div>
@@ -228,7 +228,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-resources" class="vertical-tab nav-link" id="tab-resources-sel">
+                <a data-bs-toggle="tab" href="#tab-resources" class="vertical-tab nav-link" id="tab-resources-sel" title="Info">
                   <center>
                     <i class="fa fa-info-circle" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Info</div>
@@ -236,7 +236,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-ai" class="vertical-tab nav-link" id="tab-ai-sel">
+                <a data-bs-toggle="tab" href="#tab-ai" class="vertical-tab nav-link" id="tab-ai-sel" title="AI">
                   <center>
                     <i class="fa fa-robot" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">AI</div>
@@ -247,7 +247,7 @@
               <li style="flex: 1;"></li>
               <!-- Settings -->
               <li class="nav-item" style="border-top: 1px solid var(--border-main);">
-                <a data-bs-toggle="tab" href="#tab-settings" class="vertical-tab nav-link" id="tab-settings-sel">
+                <a data-bs-toggle="tab" href="#tab-settings" class="vertical-tab nav-link" id="tab-settings-sel" title="Settings">
                   <center>
                     <i class="fa fa-gear" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Settings</div>
@@ -260,6 +260,7 @@
                   href="javascript:logout()"
                   class="vertical-tab nav-link"
                   id="logout-sel"
+                  title="Logout"
                 >
                   <center>
                     <i class="fa fa-power-off" style="font-size: 1.5rem;"></i>
