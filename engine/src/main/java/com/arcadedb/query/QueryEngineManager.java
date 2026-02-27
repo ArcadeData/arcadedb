@@ -52,12 +52,19 @@ public class QueryEngineManager {
     register(new SQLScriptQueryEngine.SQLScriptQueryEngineFactory());
 
     // REGISTER QUERY ENGINES IF AVAILABLE ON CLASSPATH AT RUN-TIME
-    register("com.arcadedb.gremlin.query.GremlinQueryEngineFactory");
-    register("com.arcadedb.cypher.query.CypherQueryEngineFactory");
     register("com.arcadedb.query.opencypher.query.OpenCypherQueryEngineFactory");
     register("com.arcadedb.mongo.query.MongoQueryEngineFactory");
     register("com.arcadedb.graphql.query.GraphQLQueryEngineFactory");
     register("com.arcadedb.redis.query.RedisQueryEngineFactory");
+
+    // REGISTER OPENCYPHER AS DEFAULT "cypher" ENGINE, SO CYPHER WORKS EVEN WITHOUT GREMLIN MODULE
+    final QueryEngine.QueryEngineFactory openCypherFactory = implementations.get("opencypher");
+    if (openCypherFactory != null)
+      implementations.put("cypher", openCypherFactory);
+
+    // REGISTER GREMLIN AND ITS CYPHER ENGINE (OVERRIDES "cypher" WITH GREMLIN-BASED IMPLEMENTATION IF AVAILABLE)
+    register("com.arcadedb.gremlin.query.GremlinQueryEngineFactory");
+    register("com.arcadedb.cypher.query.CypherQueryEngineFactory");
   }
 
   public static QueryEngineManager getInstance() {

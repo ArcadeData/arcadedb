@@ -359,4 +359,14 @@ class OpenCypherAdvancedFunctionTest {
     assertThat((String) row.getProperty("ageString")).isEqualTo("25");
     assertThat(((Number) row.getProperty("ageInt")).longValue()).isEqualTo(25L);
   }
+
+  // ==================== "cypher" Language Alias ====================
+
+  @Test
+  void cypherLanguageAlias() {
+    // Verify that "cypher" language maps to the OpenCypher engine when Gremlin module is not present
+    final ResultSet result = database.command("cypher", "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.name AS name");
+    assertThat(result.hasNext()).isTrue();
+    assertThat((String) result.next().getProperty("name")).isEqualTo("Alice");
+  }
 }
