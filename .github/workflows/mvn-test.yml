@@ -103,7 +103,6 @@ jobs:
         with:
           name: Unit Tests Report
           path: "**/surefire-reports/TEST*.xml"
-          only-summary: 'true'
           list-tests: 'failed'
           list-suites: 'failed'
           reporter: java-junit
