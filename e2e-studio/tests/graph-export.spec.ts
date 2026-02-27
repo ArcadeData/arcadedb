@@ -171,7 +171,7 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     // Test image export functionality
     const imageExportSupported = await page.evaluate(() => {
       // Check if canvas-based image export is possible
-      const canvas = document.querySelector('canvas:last-child');
+      const canvas = document.querySelector('#graph canvas');
       return canvas && typeof canvas.toBlob === 'function';
     });
 
@@ -180,7 +180,7 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     if (imageExportSupported) {
       // Test canvas image export
       const imageExport = await page.evaluate(async () => {
-        const canvas = document.querySelector('canvas:last-child');
+        const canvas = document.querySelector('#graph canvas');
         if (!canvas) return null;
 
         try {
