@@ -63,35 +63,83 @@ function aiActivate() {
     return;
   }
 
-  var btn = $("#aiActivateBtn");
-  btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin me-1"></i>Activating...');
   $("#aiActivateError").hide();
   $("#aiActivateSuccess").hide();
 
-  jQuery.ajax({
-    type: "POST",
-    url: "api/v1/ai/activate",
-    data: JSON.stringify({ subscriptionKey: key }),
-    contentType: "application/json",
-    beforeSend: function(xhr) {
-      xhr.setRequestHeader("Authorization", globalCredentials);
-    },
-    timeout: 30000
-  })
-  .done(function() {
-    btn.prop("disabled", false).html("Activate");
-    $("#aiActivateSuccess").text("Subscription activated successfully!").show();
-    // Reload the AI panel after a brief delay
-    setTimeout(function() { initAi(); }, 1000);
-  })
-  .fail(function(jqXHR) {
-    btn.prop("disabled", false).html("Activate");
-    var errorMsg = "Activation failed. Please check your key and try again.";
-    try {
-      var errData = JSON.parse(jqXHR.responseText);
-      if (errData.error) errorMsg = errData.error;
-    } catch (e) { /* ignore */ }
-    $("#aiActivateError").text(errorMsg).show();
+  // Show disclaimer before activating
+  var modal = document.getElementById("aiDisclaimerModal");
+  if (!modal) {
+    var div = document.createElement("div");
+    div.innerHTML =
+      '<div class="modal fade" id="aiDisclaimerModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">' +
+      '<div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content" style="background: var(--bg-card); color: var(--text-primary);">' +
+      '<div class="modal-header"><h5 class="modal-title">AI Assistant - Terms of Use</h5></div>' +
+      '<div class="modal-body" style="font-size: 0.9rem; line-height: 1.6;">' +
+      '<p>By activating and using the ArcadeDB AI Assistant (the "<b>Service</b>"), you acknowledge and agree to the following terms:</p>' +
+      '<p><b>1. Data Transmission.</b> To provide AI-powered assistance, certain information from your database — including but not limited to ' +
+      'schema definitions, metadata, query structures, and data excerpts — may be transmitted to third-party Large Language Model (LLM) ' +
+      'providers for processing. You understand and consent to such transmission as a necessary condition of using the Service.</p>' +
+      '<p><b>2. No Training on Your Data.</b> Your data is <b>never</b> used for training any AI or machine learning model. ' +
+      'Your data is <b>never</b> stored by the LLM provider beyond the duration of the request processing.</p>' +
+      '<p><b>3. Use of Test Data Recommended.</b> For maximum privacy protection, Arcade Data Ltd strongly recommends ' +
+      'using the AI Assistant exclusively with non-production, test, or anonymized datasets. You are solely responsible for ' +
+      'determining the suitability of any data you expose to the Service.</p>' +
+      '<p><b>4. Limitation of Liability.</b> TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, ARCADE DATA LTD AND ITS AFFILIATES, ' +
+      'OFFICERS, DIRECTORS, EMPLOYEES, AND AGENTS SHALL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, ' +
+      'OR EXEMPLARY DAMAGES ARISING FROM OR RELATED TO: (A) ANY UNAUTHORIZED ACCESS TO, DISCLOSURE OF, OR LOSS OF YOUR DATABASE DATA ' +
+      'OR PERSONAL INFORMATION TRANSMITTED THROUGH THE SERVICE; (B) ANY BREACH OF CONFIDENTIALITY OCCURRING DURING DATA TRANSMISSION ' +
+      'TO OR PROCESSING BY THIRD-PARTY LLM PROVIDERS; OR (C) ANY RELIANCE ON AI-GENERATED RESPONSES, QUERIES, OR RECOMMENDATIONS.</p>' +
+      '<p><b>5. User Responsibility.</b> You are solely responsible for ensuring compliance with all applicable data protection ' +
+      'regulations (including but not limited to GDPR, CCPA, and equivalent legislation) with respect to any data you submit to the Service. ' +
+      'You represent and warrant that you have all necessary rights and authorizations to transmit such data.</p>' +
+      '<p><b>6. Acceptance.</b> By clicking "<b>I Agree</b>" below, you confirm that you have read, understood, and agree to be bound by these terms.</p>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+      '<button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="aiDisclaimerDecline">Decline</button>' +
+      '<button type="button" class="btn btn-primary" id="aiDisclaimerAgree" style="background: var(--color-brand); border-color: var(--color-brand);">I Agree</button>' +
+      '</div></div></div></div>';
+    document.body.appendChild(div.firstChild);
+    modal = document.getElementById("aiDisclaimerModal");
+  }
+
+  var bsModal = new bootstrap.Modal(modal);
+  bsModal.show();
+
+  // Remove previous listeners
+  var agreeBtn = document.getElementById("aiDisclaimerAgree");
+  var newAgreeBtn = agreeBtn.cloneNode(true);
+  agreeBtn.parentNode.replaceChild(newAgreeBtn, agreeBtn);
+
+  newAgreeBtn.addEventListener("click", function() {
+    bsModal.hide();
+
+    var btn = $("#aiActivateBtn");
+    btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin me-1"></i>Activating...');
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/ai/activate",
+      data: JSON.stringify({ subscriptionKey: key }),
+      contentType: "application/json",
+      beforeSend: function(xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+      timeout: 30000
+    })
+    .done(function() {
+      btn.prop("disabled", false).html("Activate");
+      $("#aiActivateSuccess").text("Subscription activated successfully!").show();
+      setTimeout(function() { initAi(); }, 1000);
+    })
+    .fail(function(jqXHR) {
+      btn.prop("disabled", false).html("Activate");
+      var errorMsg = "Activation failed. Please check your key and try again.";
+      try {
+        var errData = JSON.parse(jqXHR.responseText);
+        if (errData.error) errorMsg = errData.error;
+      } catch (e) { /* ignore */ }
+      $("#aiActivateError").text(errorMsg).show();
+    });
   });
 }
 
