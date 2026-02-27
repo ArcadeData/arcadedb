@@ -36,32 +36,32 @@ test.describe('ArcadeDB Studio Notification System', () => {
     // Navigate to ArcadeDB Studio using dynamic baseURL
     await page.goto('/');
 
-    // Wait for login dialog to appear
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
+    // Wait for login page to appear
+    await expect(page.locator('#loginPage')).toBeVisible();
 
     // Fill in login credentials
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
+    await page.fill('#inputUserName', 'root');
+    await page.fill('#inputUserPassword', 'playwithdata');
 
     // Click sign in button
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.click('.login-submit-btn');
 
     // Wait for the main interface to load
     await expect(page.getByText('Connected as').first()).toBeVisible();
 
-    // Select the Beer database from the dropdown - use specific query tab selector
-    await page.locator('#queryInputDatabase').selectOption('Beer');
+    // Select the Beer database from the searchable dropdown
+    const dbSelect = page.locator('#queryDbSelectContainer');
+    await dbSelect.locator('.db-select-toggle').click();
+    await expect(dbSelect.locator('.db-select-menu')).toBeVisible();
+    await dbSelect.locator('.db-select-list li[data-db="Beer"]').click();
 
     // Verify Beer database is selected
-    await expect(page.locator('#queryInputDatabase')).toHaveValue('Beer');
+    await expect(dbSelect.locator('.db-name')).toHaveText('Beer');
 
-    // Make sure we're on the Query tab
-    await expect(page.getByText('Auto Limit')).toBeVisible();
-
-    // Enter an invalid SQL query to trigger an error
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill('SELECT SELECT FROM Beer');
+    // Enter an invalid SQL query via CodeMirror API
+    await page.evaluate(() => {
+      (window as any).editor.setValue('SELECT SELECT FROM Beer');
+    });
 
     // Execute the query by clicking the execute button (using test ID for reliability)
     const executeButton = page.getByTestId('execute-query-button');
@@ -69,13 +69,14 @@ test.describe('ArcadeDB Studio Notification System', () => {
 
     // Wait for either notification or error state to appear
     await Promise.race([
-      page.waitForSelector('.swal2-toast', { timeout: 5000 }),
-      page.waitForFunction(() => document.querySelector('.btn-primary')?.classList.contains('loading'), { timeout: 5000 }),
+      page.waitForSelector('.studio-toast', { timeout: 5000 }),
+      page.waitForSelector('#toastContainer .toast', { timeout: 5000 }),
       page.waitForTimeout(3000) // fallback timeout
     ]);
 
     // Check if notification system is working properly
-    const notificationExists = await page.locator('.swal2-toast').count() > 0;
+    const notificationExists = await page.locator('.studio-toast').count() > 0 ||
+      await page.locator('#toastContainer .toast').count() > 0;
 
     // Verify no critical JavaScript errors occurred
     const hasCriticalErrors = jsErrors.some(error =>
@@ -112,15 +113,14 @@ test.describe('ArcadeDB Studio Notification System', () => {
 
     // Test that early notifications are queued
     await page.evaluate(() => {
-      // Try to trigger notification before DOM is fully ready
       globalNotify('Test', 'Early notification', 'success');
     });
 
     // Complete login process
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page.locator('#loginPage')).toBeVisible();
+    await page.fill('#inputUserName', 'root');
+    await page.fill('#inputUserPassword', 'playwithdata');
+    await page.click('.login-submit-btn');
 
     // Wait for interface to load and check if queued notification appears
     await expect(page.getByText('Connected as').first()).toBeVisible();
@@ -129,7 +129,8 @@ test.describe('ArcadeDB Studio Notification System', () => {
     await page.waitForTimeout(1000);
 
     // Check if notification system is working
-    const queuedNotificationExists = await page.locator('.swal2-toast').count() > 0;
+    const queuedNotificationExists = await page.locator('.studio-toast').count() > 0 ||
+      await page.locator('#toastContainer .toast').count() > 0;
 
     // The notification may have already disappeared, so we just ensure no errors occurred
     const errors = await page.evaluate(() => {

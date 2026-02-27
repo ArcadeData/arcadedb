@@ -105,16 +105,22 @@ test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
     const helper = authenticatedHelper;
     const page = helper.page;
 
-    // Execute query that returns multiple vertex types
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Brewery LIMIT 3');
-    await page.getByRole('button', { name: '' }).first().click();
+    // Execute query that returns multiple vertex types via CodeMirror API
+    await page.evaluate(() => {
+      (window as any).editor.setValue('SELECT FROM Brewery LIMIT 3');
+    });
+    await page.locator('[data-testid="execute-query-button"]').click();
 
     await expect(page.getByText('Returned')).toBeVisible();
     await page.waitForLoadState('networkidle');
+
+    // Switch to Graph tab - results default to Table view
+    await page.locator('a[href="#tab-graph"]').click();
+    await page.waitForTimeout(500);
+
     await page.waitForFunction(() => {
       return typeof globalCy !== 'undefined' && globalCy !== null;
-    }, { timeout: 5000 }).catch(() => {});
+    }, { timeout: 10000 }).catch(() => {});
 
     // Check vertex type styling differentiation
     const typeStyles = await page.evaluate(() => {

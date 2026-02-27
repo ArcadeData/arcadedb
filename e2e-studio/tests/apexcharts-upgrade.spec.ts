@@ -22,28 +22,27 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     // Navigate to ArcadeDB Studio
     await page.goto('/');
 
-    // Wait for login dialog to appear
-    await expect(page.locator('#loginPopup')).toBeVisible();
+    // Wait for login page to appear
+    await expect(page.locator('#loginPage')).toBeVisible();
 
     // Fill in login credentials using actual HTML IDs
     await page.fill('#inputUserName', 'root');
     await page.fill('#inputUserPassword', 'playwithdata');
 
     // Click sign in button
-    await page.getByRole('button', { name: 'Sign In' }).click();
+    await page.click('.login-submit-btn');
 
     // Wait for login to complete
     await Promise.all([
       expect(page.locator('#loginSpinner')).toBeHidden({ timeout: 30000 }),
       expect(page.locator('#studioPanel')).toBeVisible({ timeout: 30000 }),
-      expect(page.locator('#loginPopup')).toBeHidden({ timeout: 30000 })
+      expect(page.locator('#loginPage')).toBeHidden({ timeout: 30000 })
     ]);
   });
 
   test('should load ApexCharts v5 library', async ({ page }) => {
-    // Navigate to Server tab to ensure ApexCharts is loaded
-    // Server tab is usually tab index 2 (Query=0, Database=1, Server=2)
-    await page.getByRole('tab').nth(2).click();
+    // Navigate to Server tab using its ID selector
+    await page.locator('#tab-server-sel').click();
 
     // Check that ApexCharts is loaded and can create charts
     const apexChartsLoaded = await page.evaluate(() => {
@@ -56,60 +55,60 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     // Verify ApexCharts is loaded
     expect(apexChartsLoaded).toBeTruthy();
 
-    // Verify charts are actually rendered (best way to confirm v5 is working)
-    const chartSvg = page.locator('svg.apexcharts-svg').first();
+    // Verify the Transaction Operations chart is actually rendered
+    const chartSvg = page.locator('#serverChartCommands svg.apexcharts-svg');
     await expect(chartSvg).toBeVisible({ timeout: 10000 });
 
-    console.log('✅ ApexCharts v5 is loaded and rendering charts successfully');
+    console.log('ApexCharts v5 is loaded and rendering charts successfully');
   });
 
-  test('should render server monitoring charts on Server tab', async ({ page }) => {
-    // Navigate to Server tab (index 2)
-    await page.getByRole('tab').nth(2).click();
+  test('should render server summary cards and chart on Server tab', async ({ page }) => {
+    // Navigate to Server tab
+    await page.locator('#tab-server-sel').click();
 
-    // Check that ApexCharts SVG elements are present for the charts
-    // ApexCharts renders SVG elements inside divs with specific IDs
+    // Verify server summary cards are present
+    // CPU card
+    await expect(page.locator('#summCpu')).toBeVisible({ timeout: 10000 });
 
-    // CPU Chart
-    const cpuChartSvg = page.locator('#serverChartOSCPU svg.apexcharts-svg');
-    await expect(cpuChartSvg).toBeVisible({ timeout: 10000 });
+    // Heap RAM card
+    await expect(page.locator('#summHeapUsed')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#summHeapMax')).toBeVisible({ timeout: 10000 });
 
-    // RAM Chart
-    const ramChartSvg = page.locator('#serverChartOSRAM svg.apexcharts-svg');
-    await expect(ramChartSvg).toBeVisible({ timeout: 10000 });
+    // OS RAM card
+    await expect(page.locator('#summRamUsed')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#summRamTotal')).toBeVisible({ timeout: 10000 });
 
-    // Disk Chart
-    const diskChartSvg = page.locator('#serverChartOSDisk svg.apexcharts-svg');
-    await expect(diskChartSvg).toBeVisible({ timeout: 10000 });
+    // OS Disk card
+    await expect(page.locator('#summDiskUsed')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#summDiskTotal')).toBeVisible({ timeout: 10000 });
 
-    // Server RAM Chart
-    const serverRamChartSvg = page.locator('#serverChartServerRAM svg.apexcharts-svg');
-    await expect(serverRamChartSvg).toBeVisible({ timeout: 10000 });
+    // Read Cache card
+    await expect(page.locator('#summCacheUsed')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#summCacheMax')).toBeVisible({ timeout: 10000 });
 
-    // Cache Chart
-    const cacheChartSvg = page.locator('#serverChartCache svg.apexcharts-svg');
-    await expect(cacheChartSvg).toBeVisible({ timeout: 10000 });
+    // Tx Ops card
+    await expect(page.locator('#summOpsPerSec')).toBeVisible({ timeout: 10000 });
 
-    // Commands Chart
+    // Transaction Operations chart (the only ApexCharts chart)
     const commandsChartSvg = page.locator('#serverChartCommands svg.apexcharts-svg');
     await expect(commandsChartSvg).toBeVisible({ timeout: 10000 });
   });
 
   test('should verify chart SVG structure and rendering', async ({ page }) => {
     // Navigate to Server tab
-    await page.getByRole('tab').nth(2).click();
+    await page.locator('#tab-server-sel').click();
 
-    // Verify CPU chart has proper SVG structure
-    const cpuChartSvg = page.locator('#serverChartOSCPU svg.apexcharts-svg');
-    await expect(cpuChartSvg).toBeVisible();
+    // Verify Transaction Operations chart has proper SVG structure
+    const chartSvg = page.locator('#serverChartCommands svg.apexcharts-svg');
+    await expect(chartSvg).toBeVisible({ timeout: 10000 });
 
     // Check that the SVG has child elements (paths, circles, etc.)
-    const cpuChartPaths = page.locator('#serverChartOSCPU svg.apexcharts-svg path');
-    const pathCount = await cpuChartPaths.count();
+    const chartPaths = page.locator('#serverChartCommands svg.apexcharts-svg path');
+    const pathCount = await chartPaths.count();
     expect(pathCount).toBeGreaterThan(0);
 
     // Verify the chart has proper dimensions
-    const svgBox = await cpuChartSvg.boundingBox();
+    const svgBox = await chartSvg.boundingBox();
     expect(svgBox?.width).toBeGreaterThan(100);
     expect(svgBox?.height).toBeGreaterThan(50);
   });
@@ -121,17 +120,17 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     );
 
     // Navigate to Server tab
-    await page.getByRole('tab').nth(2).click();
+    await page.locator('#tab-server-sel').click();
 
     // Wait for the API response that populates the charts
     await responsePromise;
 
     // Verify chart is rendered with data
-    const cpuChartSvg = page.locator('#serverChartOSCPU svg.apexcharts-svg');
-    await expect(cpuChartSvg).toBeVisible();
+    const chartSvg = page.locator('#serverChartCommands svg.apexcharts-svg');
+    await expect(chartSvg).toBeVisible({ timeout: 10000 });
 
-    // Charts should have markers/data points (may be 0 if donut/pie chart)
-    const dataPoints = await page.locator('#serverChartOSCPU svg.apexcharts-svg circle.apexcharts-marker').count();
+    // Charts should have markers/data points (may be 0 if just started)
+    const dataPoints = await page.locator('#serverChartCommands svg.apexcharts-svg circle.apexcharts-marker').count();
 
     // The important thing is the SVG is rendering properly
     expect(dataPoints).toBeGreaterThanOrEqual(0);
@@ -153,9 +152,9 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     });
 
     // Navigate to Server tab
-    await page.getByRole('tab').nth(2).click();
+    await page.locator('#tab-server-sel').click();
 
-    // Wait for charts to render by checking for a chart element
+    // Wait for chart to render
     await expect(page.locator('#serverChartCommands svg.apexcharts-svg')).toBeVisible({ timeout: 10000 });
 
     // Filter out expected/known errors if any
@@ -172,35 +171,32 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
 
   test('should verify chart tooltips work (ApexCharts v5 feature)', async ({ page }) => {
     // Navigate to Server tab
-    await page.getByRole('tab').nth(2).click();
+    await page.locator('#tab-server-sel').click();
 
     // Wait for chart to be fully rendered
-    const cpuChart = page.locator('#serverChartOSCPU');
-    await expect(cpuChart.locator('svg.apexcharts-svg')).toBeVisible();
+    const chart = page.locator('#serverChartCommands');
+    await expect(chart.locator('svg.apexcharts-svg')).toBeVisible({ timeout: 10000 });
 
-    // Hover over a chart to trigger tooltip
-    await cpuChart.hover();
+    // Hover over the chart to trigger tooltip
+    await chart.hover();
 
     // Verify ApexCharts tooltip appears
     await expect(page.locator('.apexcharts-tooltip')).toBeVisible({ timeout: 2000 });
   });
 
-  test('should verify charts use new @svgdotjs dependencies (v5 migration)', async ({ page }) => {
-    // Check that the new SVG.js dependencies are loaded
-    // ApexCharts v5 migrated from svg.*.js to @svgdotjs/*
-
+  test('should verify chart uses @svgdotjs dependencies (v5 migration)', async ({ page }) => {
     // Navigate to Server tab to trigger chart rendering
-    await page.getByRole('tab').nth(2).click();
+    await page.locator('#tab-server-sel').click();
 
-    // Wait for at least one chart to be visible before counting
+    // Wait for the chart to be visible
     await expect(page.locator('svg.apexcharts-svg').first()).toBeVisible({ timeout: 10000 });
 
-    // Verify charts rendered successfully with new dependencies
+    // Verify chart rendered successfully with new dependencies
     const chartSvgs = page.locator('svg.apexcharts-svg');
     const chartCount = await chartSvgs.count();
 
-    // Should have at least 6 charts (CPU, RAM, Disk, Server RAM, Cache, Commands)
-    expect(chartCount).toBeGreaterThanOrEqual(6);
+    // Should have at least 1 chart (Transaction Operations)
+    expect(chartCount).toBeGreaterThanOrEqual(1);
 
     // Verify SVG elements have proper structure from new @svgdotjs library
     const firstChart = chartSvgs.first();
