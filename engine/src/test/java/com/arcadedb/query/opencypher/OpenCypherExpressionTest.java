@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -319,7 +320,9 @@ class OpenCypherExpressionTest {
         "MATCH (n)-->(b) WHERE n.name IN [x IN labels(b) | toLower(x)] RETURN b");
 
     assertThat(resultSet.hasNext()).as("Should match b=(:C) since toLower('C')='c'=n.name").isTrue();
-    resultSet.next();
+    final Result result = resultSet.next();
+    final Object b = result.getProperty("b");
+    assertThat(((Vertex) b).getTypeName()).isEqualTo("C");
     assertThat(resultSet.hasNext()).isFalse();
   }
 

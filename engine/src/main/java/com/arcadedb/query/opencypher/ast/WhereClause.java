@@ -143,12 +143,14 @@ public class WhereClause {
       collectExpressionVariables(inExpr.getExpression(), vars);
       for (final Expression listItem : inExpr.getList())
         collectExpressionVariables(listItem, vars);
-    } else if (expr instanceof StringMatchExpression) {
-      collectFromText(expr.getText(), vars);
-    } else if (expr instanceof RegexExpression) {
-      collectFromText(expr.getText(), vars);
-    } else if (expr instanceof LabelCheckExpression) {
-      collectFromText(expr.getText(), vars);
+    } else if (expr instanceof StringMatchExpression strMatch) {
+      collectExpressionVariables(strMatch.getExpression(), vars);
+      collectExpressionVariables(strMatch.getPattern(), vars);
+    } else if (expr instanceof RegexExpression regexExpr) {
+      collectExpressionVariables(regexExpr.getExpression(), vars);
+      collectExpressionVariables(regexExpr.getPattern(), vars);
+    } else if (expr instanceof LabelCheckExpression labelCheck) {
+      collectExpressionVariables(labelCheck.getVariableExpression(), vars);
     } else if (expr instanceof PatternPredicateExpression) {
       // Pattern predicates reference multiple variables, collect from text
       collectFromText(expr.getText(), vars);
