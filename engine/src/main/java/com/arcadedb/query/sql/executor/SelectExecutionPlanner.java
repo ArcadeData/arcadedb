@@ -1751,7 +1751,10 @@ public class SelectExecutionPlanner {
     // directly into the scan step to avoid separate FilterStep overhead.
     // Also passes projectedProperties so that only SELECT-listed fields are deserialized
     // for matching records (two-phase deserialization optimization).
-    if (info.whereClause != null && info.whereClause.baseExpression != null) {
+    // Skip pushdown when WHERE references LET variables ($), since LET is evaluated after fetch.
+    final boolean whereRefersToLet = info.perRecordLetClause != null && info.whereClause != null
+        && info.whereClause.toString().contains("$");
+    if (info.whereClause != null && info.whereClause.baseExpression != null && !whereRefersToLet) {
       final FetchFromTypeWithFilterStep fetcher = new FetchFromTypeWithFilterStep(identifier.getStringValue(), filterClusters,
           info.whereClause, info.projectedProperties, context, orderByRidAsc);
       if (orderByRidAsc != null)

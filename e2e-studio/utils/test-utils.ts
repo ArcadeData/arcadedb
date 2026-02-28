@@ -53,7 +53,7 @@ export interface ContextMenuInfo {
  * Main test helper class for ArcadeDB Studio operations
  */
 export class ArcadeStudioTestHelper {
-  constructor(private page: Page) {}
+  constructor(public page: Page) {}
 
   /**
    * Login to ArcadeDB Studio with environment-aware credentials
@@ -64,16 +64,16 @@ export class ArcadeStudioTestHelper {
 
     await this.page.goto('/');
 
-    // Wait for login dialog to appear using correct selector
-    await expect(this.page.locator('#loginPopup'))
+    // Wait for login page to appear
+    await expect(this.page.locator('#loginPage'))
       .toBeVisible({ timeout: TEST_CONFIG.timeouts.login });
 
     // Fill in login credentials using actual HTML IDs
     await this.page.fill('#inputUserName', username);
     await this.page.fill('#inputUserPassword', password);
 
-    // Click sign in button using actual onclick handler
-    await this.page.click('button[onclick="login()"]');
+    // Click sign in button
+    await this.page.click('.login-submit-btn');
 
     // Wait for login spinner to appear (indicates login started) - with short timeout for fast logins
     await expect(this.page.locator('#loginSpinner')).toBeVisible({ timeout: 2000 }).catch(() => {
@@ -84,21 +84,27 @@ export class ArcadeStudioTestHelper {
     await Promise.all([
       expect(this.page.locator('#loginSpinner')).toBeHidden({ timeout: 30000 }),
       expect(this.page.locator('#studioPanel')).toBeVisible({ timeout: 30000 }),
-      expect(this.page.locator('#loginPopup')).toBeHidden({ timeout: 30000 })
+      expect(this.page.locator('#loginPage')).toBeHidden({ timeout: 30000 })
     ]);
 
     // Verify username is populated in the query tab
     await expect(this.page.locator('#queryUser')).not.toBeEmpty();
 
-    // Select database if not empty list
-    const databaseSelect = this.page.locator('#queryInputDatabase');
-    await expect(databaseSelect).toBeVisible();
+    // Select database using the searchable database selector widget
+    const dbSelectContainer = this.page.locator('#queryDbSelectContainer');
+    await expect(dbSelectContainer).toBeVisible();
 
-    // Only select database if it exists in the dropdown
-    const hasDatabase = await databaseSelect.locator(`option:has-text("${database}")`).count() > 0;
+    // Open the dropdown
+    await dbSelectContainer.locator('.db-select-toggle').click();
+    await expect(dbSelectContainer.locator('.db-select-menu')).toBeVisible();
+
+    // Click the database item
+    const dbItem = dbSelectContainer.locator(`.db-select-list li[data-db="${database}"]`);
+    const hasDatabase = await dbItem.count() > 0;
     if (hasDatabase) {
-      await databaseSelect.selectOption(database);
-      await expect(databaseSelect).toHaveValue(database);
+      await dbItem.click();
+      // Verify database is selected (toggle text shows the db name)
+      await expect(dbSelectContainer.locator('.db-name')).toHaveText(database);
     }
   }
 
@@ -115,12 +121,12 @@ export class ArcadeStudioTestHelper {
 
     // Dismiss any existing error toasts that could block the execute button
     await this.page.evaluate(() => {
-      const toasts = document.querySelectorAll('.swal2-container');
+      const toasts = document.querySelectorAll('#toastContainer .studio-toast');
       toasts.forEach(t => t.remove());
     });
 
-    // Execute query
-    await this.page.getByRole('button', { name: '' }).first().click();
+    // Execute query using the data-testid selector
+    await this.page.locator('[data-testid="execute-query-button"]').click();
 
     // Wait for results with network stability
     await expect(this.page.getByText('Returned')).toBeVisible({
@@ -137,14 +143,23 @@ export class ArcadeStudioTestHelper {
    * Wait for Cytoscape graph to be ready and initialized
    */
   async waitForGraphReady(): Promise<void> {
-    // Wait for Cytoscape global object to be available
+    // Switch to Graph tab first - results default to Table view
+    const graphTab = this.page.locator('a[href="#tab-graph"]');
+    if (await graphTab.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await graphTab.click();
+      // Wait for tab panel to become active
+      await expect(this.page.locator('#tab-graph')).toBeVisible({ timeout: 3000 });
+      await this.page.waitForTimeout(500);
+    }
+
+    // Wait for Cytoscape global object to be available with generous timeout
     await this.page.waitForFunction(() => {
       return typeof (globalThis as any).globalCy !== 'undefined' && (globalThis as any).globalCy !== null && (globalThis as any).globalCy.nodes().length > 0;
-    }, { timeout: TEST_CONFIG.timeouts.graphReady });
+    }, { timeout: 15000 });
 
-    // Ensure canvas is visible
-    const cytoscapeCanvas = this.page.locator('canvas').last();
-    await expect(cytoscapeCanvas).toBeVisible();
+    // Ensure the Cytoscape graph container is visible
+    const graphContainer = this.page.locator('#graph');
+    await expect(graphContainer).toBeVisible();
 
     // Additional stability wait for rendering
     await this.page.waitForTimeout(500);
@@ -153,21 +168,21 @@ export class ArcadeStudioTestHelper {
   /**
    * Setup graph with test data - complete login and query execution
    * @param nodeLimit - Number of nodes to load (default: 5)
-   * @returns Locator for the graph canvas
+   * @returns Locator for the graph container
    */
   async setupGraphWithData(nodeLimit = 5): Promise<Locator> {
     await this.login(TEST_CONFIG.database);
     await this.executeQuery(`SELECT FROM Beer LIMIT ${nodeLimit}`);
     await this.waitForGraphReady();
-    return this.page.locator('canvas').last();
+    return this.page.locator('#graph');
   }
 
   /**
    * Get graph canvas element with verification
-   * @returns Locator for the Cytoscape canvas
+   * @returns Locator for the graph container
    */
   async getGraphCanvas(): Promise<Locator> {
-    const canvas = this.page.locator('canvas').last();
+    const canvas = this.page.locator('#graph');
     await expect(canvas).toBeVisible();
     return canvas;
   }

@@ -22,52 +22,52 @@ test.describe('ArcadeDB Studio Database Creation', () => {
     // Navigate to ArcadeDB Studio using dynamic baseURL
     await page.goto('/');
 
-    // Wait for login dialog to appear
-    await expect(page.locator('#loginPopup')).toBeVisible();
+    // Wait for login page to appear
+    await expect(page.locator('#loginPage')).toBeVisible();
 
     // Fill in login credentials using actual HTML IDs
     await page.fill('#inputUserName', 'root');
     await page.fill('#inputUserPassword', 'playwithdata');
 
-    // Click sign in button using actual onclick handler
-    await page.click('button[onclick="login()"]');
+    // Click sign in button
+    await page.click('.login-submit-btn');
 
     // Wait for login to complete - check multiple conditions
-    // Note: Removed flaky spinner visibility check that fails when login is fast
     await Promise.all([
       expect(page.locator('#loginSpinner')).toBeHidden({ timeout: 30000 }),
       expect(page.locator('#studioPanel')).toBeVisible({ timeout: 30000 }),
-      expect(page.locator('#loginPopup')).toBeHidden({ timeout: 30000 })
+      expect(page.locator('#loginPage')).toBeHidden({ timeout: 30000 })
     ]);
 
     // Verify username is populated in the query tab
     await expect(page.locator('#queryUser')).not.toBeEmpty();
 
-    // Navigate to Database tab (second tab with database icon)
-    await page.getByRole('tab').nth(1).click();
+    // Navigate to Database tab
+    await page.locator('#tab-database-sel').click();
 
-    // Verify we're on the Database tab
-    await expect(page.getByRole('heading', { name: 'Database' })).toBeVisible();
+    // Wait for the database tab to load
+    await page.waitForTimeout(1000);
 
     // Click the Create button to open database creation dialog
-    await page.getByRole('button', { name: 'Create' }).click();
+    await page.locator('button[onclick="createDatabase()"]').click();
 
-    // Wait for the creation dialog to appear
-    await expect(page.getByRole('dialog', { name: 'Create a new database' })).toBeVisible();
+    // Wait for the global modal to appear with the creation prompt
+    await expect(page.locator('#globalModal')).toBeVisible();
+    await expect(page.locator('#globalModalLabel')).toHaveText('Create a new database');
 
     // Enter the database name
-    await page.getByRole('textbox', { name: 'Enter the database name:' }).fill('e2e-studio');
+    await page.fill('#inputCreateDatabaseName', 'e2e-studio');
 
-    // Click Send to create the database
-    await page.getByRole('button', { name: 'Send' }).click();
+    // Click Create to create the database
+    await page.locator('#globalModalConfirmBtn').click();
 
-    // Wait for the dialog to close
-    await expect(page.getByRole('dialog', { name: 'Create a new database' })).not.toBeVisible();
+    // Wait for the modal to close
+    await expect(page.locator('#globalModal')).not.toBeVisible({ timeout: 10000 });
 
-    // Verify the new database is selected in the dropdown
-    await expect(page.locator('select').first()).toContainText('e2e-studio');
+    // Verify the new database is selected in the searchable dropdown
+    await expect(page.locator('#schemaDbSelectContainer .db-name')).toHaveText('e2e-studio');
 
-    // Verify we can see the database schema section
-    await expect(page.getByText('Database Schema')).toBeVisible();
+    // Verify we can see the schema tab (default subtab in Database)
+    await expect(page.locator('#tab-schema-sel')).toBeVisible();
   });
 });

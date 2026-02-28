@@ -180,7 +180,7 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     // Test export functionality via canvas API
     const exportTest = await page.evaluate(() => {
       try {
-        const canvas = document.querySelector('canvas:last-child');
+        const canvas = document.querySelector('#graph canvas');
         if (!canvas) return { error: 'Canvas not found' };
 
         // Test that canvas can generate image data

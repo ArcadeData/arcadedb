@@ -28,7 +28,7 @@ import java.util.*;
 /**
  * Basic GraphRAG Example.
  *
- * @author NASA (l.garulli@arcadedata.com)
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class GraphRAGTest extends TestHelper {
 
@@ -66,13 +66,13 @@ class GraphRAGTest extends TestHelper {
     // Insert documents with their semantic embeddings and link entities:
     database.transaction(() -> {
       // Insert a document with vector embedding (from LLM)
-      database.command("sql", String.format("""
+      database.command("sql", """
           INSERT INTO Publication SET
           title = 'ArcadeDB: Multi-Model Database Architecture',
               content = 'ArcadeDB is a multi-model database supporting...',
-              embedding = %s,
+              embedding = ?,
           timestamp = sysdate();
-          """, Arrays.toString(sampleVector)));
+          """, sampleVector);
 
       // Create entities mentioned in the document
       database.command("sql", "CREATE VERTEX User SET name = 'NASA', role = 'Creator'");
@@ -101,14 +101,14 @@ class GraphRAGTest extends TestHelper {
     // Find semantically similar publications and enrich results with entity context:
     database.transaction(() -> {
       // Hybrid retrieval: vector similarity + graph context
-      ResultSet result = database.query("sql", String.format("""
+      ResultSet result = database.query("sql", """
               SELECT title, content, $distance AS relevance
               FROM Publication
-              LET $distance = (1 - `vector.cosineSimilarity`(embedding, %s))
+              LET $distance = (1 - `vector.cosineSimilarity`(embedding, ?))
               WHERE $distance < 0.4
               ORDER BY $distance
               LIMIT 10;
-          """, Arrays.toString(sampleVector))
+          """, sampleVector
       );
 
       Assertions.assertThat(result.hasNext()).isTrue();
