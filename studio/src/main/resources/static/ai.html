@@ -1,4 +1,10 @@
 <!-- AI Assistant Tab -->
+<style>
+  .ai-message-content h1 { font-size: 1.3rem; }
+  .ai-message-content h2 { font-size: 1.15rem; }
+  .ai-message-content h3 { font-size: 1.05rem; }
+  .ai-message-content h4, .ai-message-content h5, .ai-message-content h6 { font-size: 0.95rem; }
+</style>
 <div class="tab-pane fade" id="tab-ai" role="tabpanel">
 
   <!-- Inactive state (no subscription) -->
@@ -47,7 +53,7 @@
 
   <!-- Active state (with subscription) -->
   <div id="aiActivePanel" style="display: none;">
-    <div class="d-flex" style="height: calc(100vh - 60px);">
+    <div class="d-flex" style="height: calc(100vh - 20px);">
 
       <!-- Left sidebar: Chat History -->
       <div id="aiSidebar" style="width: 260px; min-width: 260px; border-right: 1px solid var(--border-main); background: var(--bg-sidebar); display: flex; flex-direction: column;">
@@ -75,7 +81,7 @@
             <div class="btn-group btn-group-sm" id="aiModeToggle">
               <button type="button" class="btn btn-sm" data-mode="auto" onclick="aiSetMode('auto')"
                 title="AI runs read-only queries and gives you answers directly">
-                <i class="fa fa-bolt me-1"></i>Auto Run</button>
+                <i class="fa fa-bolt me-1"></i>Auto Run Read Only Queries</button>
               <button type="button" class="btn btn-sm" data-mode="review" onclick="aiSetMode('review')"
                 title="AI suggests queries for you to review and execute">
                 <i class="fa fa-eye me-1"></i>Review First</button>
@@ -96,7 +102,7 @@
         </div>
 
         <!-- Input area -->
-        <div style="border-top: 1px solid var(--border-main); padding: 12px 24px; background: var(--bg-nav);">
+        <div style="border-top: 1px solid var(--border-main); padding: 8px 24px; background: var(--bg-nav);">
           <div class="d-flex gap-2">
             <textarea id="aiInput" class="form-control" rows="2"
               placeholder="Ask about your database..."

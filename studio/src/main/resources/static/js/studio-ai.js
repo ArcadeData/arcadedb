@@ -363,6 +363,140 @@ function aiSendMessage() {
   // Show thinking indicator
   aiSetSending(true);
 
+  if (aiMode === "auto") {
+    aiSendMessageStreaming(db, message);
+  } else {
+    aiSendMessageLegacy(db, message);
+  }
+}
+
+function aiSendMessageStreaming(db, message) {
+  var controller = new AbortController();
+  aiCurrentXhr = { abort: function() { controller.abort(); } };
+
+  // Show live tool call area below thinking indicator
+  var liveId = "aiLiveTools_" + Date.now();
+  var thinkingEl = document.getElementById("aiThinking");
+  if (thinkingEl) {
+    var liveDiv = document.createElement("div");
+    liveDiv.id = liveId;
+    liveDiv.style.cssText = "font-size: 0.8rem; color: var(--text-muted); margin-left: 40px; margin-bottom: 8px;";
+    thinkingEl.parentNode.insertBefore(liveDiv, thinkingEl.nextSibling);
+  }
+
+  var toolCalls = [];
+
+  fetch("api/v1/ai/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": globalCredentials
+    },
+    body: JSON.stringify({ database: db, message: message, chatId: aiCurrentChatId, mode: aiMode }),
+    signal: controller.signal
+  })
+  .then(function(response) {
+    if (!response.ok) {
+      return response.text().then(function(text) {
+        var err = new Error("HTTP " + response.status);
+        err.responseText = text;
+        err.status = response.status;
+        throw err;
+      });
+    }
+
+    var contentType = response.headers.get("content-type") || "";
+    if (contentType.indexOf("text/event-stream") === -1) {
+      // Non-streaming response (fallback)
+      return response.json().then(function(data) {
+        aiHandleResponse(data);
+      });
+    }
+
+    // SSE streaming
+    var reader = response.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = "";
+    var gotDone = false;
+
+    function read() {
+      return reader.read().then(function(result) {
+        if (result.done) {
+          // Stream ended — if we never got a done event, clean up
+          if (!gotDone) {
+            aiCurrentXhr = null;
+            aiSetSending(false);
+            if (toolCalls.length === 0)
+              globalNotify("Error", "Connection to AI service was interrupted", "danger");
+          }
+          return;
+        }
+
+        buffer += decoder.decode(result.value, { stream: true });
+        var lines = buffer.split("\n");
+        buffer = lines.pop(); // Keep incomplete line in buffer
+
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i];
+          if (line.indexOf("data: ") !== 0) continue;
+          try {
+            var event = JSON.parse(line.substring(6));
+            if (event.type === "tool_start") {
+              toolCalls.push(event);
+              aiUpdateLiveTools(liveId, toolCalls);
+            } else if (event.type === "tool_end") {
+              // Update last matching tool call with error status
+              for (var j = toolCalls.length - 1; j >= 0; j--) {
+                if (toolCalls[j].tool === event.tool && !toolCalls[j]._done) {
+                  toolCalls[j].error = event.error;
+                  toolCalls[j]._done = true;
+                  break;
+                }
+              }
+              aiUpdateLiveTools(liveId, toolCalls);
+            } else if (event.type === "done") {
+              gotDone = true;
+              // Inject accumulated tool calls into the done data
+              event.toolCalls = toolCalls.length > 0 ? toolCalls : undefined;
+              aiHandleResponse(event);
+            }
+          } catch (e) { /* ignore malformed events */ }
+        }
+
+        return read();
+      });
+    }
+
+    return read();
+  })
+  .catch(function(err) {
+    aiCurrentXhr = null;
+    aiSetSending(false);
+
+    if (err.name === "AbortError") return;
+
+    var errorMsg = "Failed to get a response from the AI assistant.";
+    var errorCode = "";
+    try {
+      if (err.responseText) {
+        var errData = JSON.parse(err.responseText);
+        if (errData.detail) errorMsg = errData.detail;
+        else if (errData.error) errorMsg = errData.error;
+        if (errData.code) errorCode = errData.code;
+      }
+    } catch (e) { /* ignore */ }
+
+    if (errorCode === "token_invalid" || errorCode === "token_expired" || errorCode === "token_disabled") {
+      aiConfigured = false;
+      $("#aiActivePanel").hide();
+      $("#aiInactivePanel").show();
+      globalNotify("Subscription", errorMsg, "warning");
+    } else
+      globalNotify("Error", errorMsg, "danger");
+  });
+}
+
+function aiSendMessageLegacy(db, message) {
   aiCurrentXhr = jQuery.ajax({
     type: "POST",
     url: "api/v1/ai/chat",
@@ -374,22 +508,7 @@ function aiSendMessage() {
     timeout: 120000
   })
   .done(function(data) {
-    aiCurrentXhr = null;
-    aiSetSending(false);
-
-    // Update chat ID if new chat was created
-    if (data.chatId)
-      aiCurrentChatId = data.chatId;
-
-    // Add assistant message
-    var assistantMsg = { role: "assistant", content: data.response, timestamp: new Date().toISOString() };
-    if (data.commands && data.commands.length > 0)
-      assistantMsg.commands = data.commands;
-    aiMessages.push(assistantMsg);
-    aiRenderMessages();
-
-    // Refresh chat list
-    aiLoadChatList();
+    aiHandleResponse(data);
   })
   .fail(function(jqXHR, textStatus) {
     aiCurrentXhr = null;
@@ -417,6 +536,61 @@ function aiSendMessage() {
     } else
       globalNotify("Error", errorMsg, "danger");
   });
+}
+
+function aiHandleResponse(data) {
+  aiCurrentXhr = null;
+  aiSetSending(false);
+
+  // Update chat ID if new chat was created
+  if (data.chatId)
+    aiCurrentChatId = data.chatId;
+
+  // Add assistant message
+  var assistantMsg = { role: "assistant", content: data.response, timestamp: new Date().toISOString() };
+  if (data.commands && data.commands.length > 0)
+    assistantMsg.commands = data.commands;
+  if (data.toolCalls && data.toolCalls.length > 0)
+    assistantMsg.toolCalls = data.toolCalls;
+  aiMessages.push(assistantMsg);
+  aiRenderMessages();
+
+  // Refresh chat list
+  aiLoadChatList();
+}
+
+function aiUpdateLiveTools(liveId, toolCalls) {
+  var el = document.getElementById(liveId);
+  if (!el) return;
+
+  var html = "";
+  for (var i = 0; i < toolCalls.length; i++) {
+    var tc = toolCalls[i];
+    var icon, label;
+    if (tc.tool === "query_database") {
+      icon = "fa-database";
+      label = '<code style="background: var(--bg-reference); padding: 1px 4px; border-radius: 3px; font-size: 0.8em; color: var(--text-muted);">' +
+        escapeHtml(tc.args.command) + '</code>';
+    } else if (tc.tool === "get_schema") {
+      icon = "fa-sitemap";
+      label = "Fetching schema";
+    } else if (tc.tool === "get_server_info") {
+      icon = "fa-server";
+      label = "Fetching server info";
+    } else {
+      icon = "fa-wrench";
+      label = escapeHtml(tc.tool);
+    }
+    var statusIcon = tc._done
+      ? (tc.error
+        ? '<i class="fa fa-circle-exclamation ms-1" style="color: #dc3545; font-size: 0.7rem;" title="' + escapeHtml(tc.error) + '"></i>'
+        : '<i class="fa fa-check ms-1" style="color: #28a745; font-size: 0.7rem;"></i>')
+      : '<i class="fa fa-spinner fa-spin ms-1" style="font-size: 0.7rem;"></i>';
+    html += '<div style="padding: 2px 0;"><i class="fa ' + icon + ' me-1" style="width: 14px; text-align: center;"></i>' + label + statusIcon + '</div>';
+  }
+  el.innerHTML = html;
+
+  aiScrollToBottom();
 }
 
 function aiStopResponse() {
@@ -500,8 +674,13 @@ function aiRenderAssistantMessage(msg, msgIndex) {
     '<div class="d-flex align-items-start">' +
     '<div style="width: 32px; height: 32px; border-radius: 50%; background: var(--color-brand); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">' +
     '<i class="fa fa-robot" style="color: white; font-size: 0.85rem;"></i></div>' +
-    '<div class="ms-2" style="max-width: 80%; min-width: 0;">' +
-    '<div class="ai-message-content" style="color: var(--text-primary); line-height: 1.6;">' + contentHtml + '</div>';
+    '<div class="ms-2" style="max-width: 80%; min-width: 0;">';
+
+  // Render tool calls log (Auto Run mode transparency)
+  if (msg.toolCalls && msg.toolCalls.length > 0)
+    html += aiRenderToolCallLog(msg.toolCalls);
+
+  html += '<div class="ai-message-content" style="color: var(--text-primary); line-height: 1.6;">' + contentHtml + '</div>';
 
   // Render command blocks if present
   if (msg.commands && msg.commands.length > 0) {
@@ -520,6 +699,34 @@ function aiRenderAssistantMessage(msg, msgIndex) {
   }
 
   html += '</div></div></div>';
+  return html;
+}
+
+function aiRenderToolCallLog(toolCalls) {
+  var html = '<div style="margin-bottom: 8px; font-size: 0.8rem; color: var(--text-muted);">';
+  for (var i = 0; i < toolCalls.length; i++) {
+    var tc = toolCalls[i];
+    var icon, label;
+    if (tc.tool === "query_database") {
+      icon = "fa-database";
+      label = '<code style="background: var(--bg-reference); padding: 1px 4px; border-radius: 3px; font-size: 0.8em; color: var(--text-muted);">' +
+        escapeHtml(tc.args.command) + '</code>';
+    } else if (tc.tool === "get_schema") {
+      icon = "fa-sitemap";
+      label = "Fetched schema";
+    } else if (tc.tool === "get_server_info") {
+      icon = "fa-server";
+      label = "Fetched server info";
+    } else {
+      icon = "fa-wrench";
+      label = escapeHtml(tc.tool);
+    }
+    var statusIcon = tc.error
+      ? '<i class="fa fa-circle-exclamation ms-1" style="color: #dc3545; font-size: 0.7rem;" title="' + escapeHtml(tc.error) + '"></i>'
+      : '<i class="fa fa-check ms-1" style="color: #28a745; font-size: 0.7rem;"></i>';
+    html += '<div style="padding: 2px 0;"><i class="fa ' + icon + ' me-1" style="width: 14px; text-align: center;"></i>' + label + statusIcon + '</div>';
+  }
+  html += '</div>';
   return html;
 }
 
@@ -542,8 +749,11 @@ function aiRenderCommandBlock(cmd, index, msgIndex) {
     '<i class="fa fa-copy"></i></button>' +
     '<button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.75rem;" onclick="aiDeleteMessage(' + msgIndex + ')" title="Delete message">' +
     '<i class="fa fa-trash-can"></i></button></div>' +
+    '<div style="display: flex; align-items: center; gap: 8px;">' +
+    '<button class="btn btn-sm" style="background: transparent; color: var(--text-muted); border: 1px solid var(--border-main); font-size: 0.8rem;" onclick="aiOpenInQuery(\'' + blockId + '\')">' +
+    '<i class="fa fa-terminal me-1"></i>Open in Query</button>' +
     '<button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none; font-size: 0.8rem;" onclick="aiExecuteCommand(this, \'' + blockId + '\')">' +
-    '<i class="fa fa-play me-1"></i>Execute</button></div>' +
+    '<i class="fa fa-play me-1"></i>Execute</button></div></div>' +
     '</div>';
 }
 
@@ -561,6 +771,28 @@ function aiCopyCode(button, blockId) {
       setTimeout(function() { icon.className = "fa fa-copy"; }, 1500);
     }
   });
+}
+
+// ===== Open in Query Panel =====
+
+function aiOpenInQuery(blockId) {
+  var pre = document.getElementById(blockId);
+  if (!pre) return;
+
+  var command = pre.getAttribute("data-command");
+  var language = pre.getAttribute("data-language") || "sql";
+
+  // Switch to Query tab
+  var queryTab = document.getElementById("tab-query-sel");
+  if (queryTab) queryTab.click();
+
+  // Set language and command in Query panel
+  setTimeout(function() {
+    $("#inputLanguage").val(language);
+    if (typeof editor !== "undefined" && editor) {
+      editor.setValue(command);
+    }
+  }, 100);
 }
 
 // ===== Command Execution =====

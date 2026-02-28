@@ -33,8 +33,13 @@ import com.arcadedb.server.mcp.tools.GetSchemaTool;
 import com.arcadedb.server.mcp.tools.ServerStatusTool;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HttpString;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -42,12 +47,14 @@ import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.logging.Level;
 
 /**
  * POST /api/v1/ai/chat - Main AI chat endpoint.
  * Collects schema context, loads chat history, and forwards to the central gateway.
+ * Supports SSE streaming in auto mode for real-time tool call updates.
  */
 public class AiChatHandler extends AbstractServerHttpHandler {
   private final ArcadeDBServer server;
@@ -137,6 +144,10 @@ public class AiChatHandler extends AbstractServerHttpHandler {
             .put("url", serverUrl)
             .put("sessionId", authSession.token));
         gatewayRequest.put("schema", new JSONObject()); // minimal, required by gateway validation
+        gatewayRequest.put("stream", true);
+
+        // Stream SSE from gateway to Studio
+        return handleStreamingRequest(exchange, gatewayRequest, chat, messages, username);
       } else {
         // Review-first path: embed schema/serverInfo in prompt
         final MCPConfiguration mcpConfig = server.getMCPConfiguration();
@@ -149,32 +160,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       }
 
       final JSONObject gatewayResponse = callGateway(gatewayRequest);
-
-      // Add assistant response to chat
-      final JSONObject assistantMsg = new JSONObject();
-      assistantMsg.put("role", "assistant");
-      assistantMsg.put("content", gatewayResponse.getString("response", ""));
-      assistantMsg.put("timestamp", java.time.Instant.now().toString());
-
-      final JSONArray commands = gatewayResponse.getJSONArray("commands", null);
-      if (commands != null && commands.length() > 0)
-        assistantMsg.put("commands", commands);
-
-      messages.put(assistantMsg);
-
-      // Update and save chat
-      chat.put("messages", messages);
-      chat.put("updated", java.time.Instant.now().toString());
-      chatStorage.saveChat(username, chat);
-
-      // Return response to Studio
-      final JSONObject result = new JSONObject();
-      result.put("chatId", chat.getString("id"));
-      result.put("response", gatewayResponse.getString("response", ""));
-      if (commands != null && commands.length() > 0)
-        result.put("commands", commands);
-
-      return new ExecutionResponse(200, result.toString());
+      return buildResponse(gatewayResponse, chat, messages, username);
 
     } catch (final SecurityException e) {
       throw e; // Let AbstractServerHttpHandler handle security exceptions
@@ -200,6 +186,145 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(500, new JSONObject()//
           .put("error", "An unexpected error occurred. Please try again later.").toString());
     }
+  }
+
+  /**
+   * Handles SSE streaming: reads gateway SSE stream and forwards events to Studio.
+   * Returns null to signal that the response was already sent via the exchange.
+   */
+  private ExecutionResponse handleStreamingRequest(final HttpServerExchange exchange, final JSONObject gatewayRequest,
+      final JSONObject chat, final JSONArray messages, final String username) throws Exception {
+
+    final HttpRequest request = HttpRequest.newBuilder()//
+        .uri(URI.create(config.getGatewayUrl() + "/api/chat"))//
+        .header("Content-Type", "application/json")//
+        .header("Authorization", "Bearer " + config.getSubscriptionToken())//
+        .POST(HttpRequest.BodyPublishers.ofString(gatewayRequest.toString()))//
+        .timeout(Duration.ofMinutes(5))//
+        .build();
+
+    final HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+
+    if (response.statusCode() == 401 || response.statusCode() == 403) {
+      try (InputStream body = response.body()) {
+        final String bodyStr = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+        final JSONObject errBody = new JSONObject(bodyStr);
+        final String code = errBody.getString("code", "token_invalid");
+        final String errorMsg = errBody.getString("error", "Invalid or expired subscription token");
+        final JSONObject errorResponse = new JSONObject();
+        errorResponse.put("error", errorMsg);
+        errorResponse.put("code", code);
+        throw new AiTokenException(response.statusCode(), errorResponse.toString());
+      }
+    }
+
+    if (response.statusCode() != 200) {
+      try (InputStream body = response.body()) {
+        final String bodyStr = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+        throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + bodyStr);
+      }
+    }
+
+    // Set SSE headers and start streaming
+    exchange.getResponseHeaders().put(new HttpString("Content-Type"), "text/event-stream");
+    exchange.getResponseHeaders().put(new HttpString("Cache-Control"), "no-cache");
+    exchange.getResponseHeaders().put(new HttpString("X-Accel-Buffering"), "no");
+    exchange.setStatusCode(200);
+
+    // Ensure we're in blocking mode for OutputStream access
+    if (!exchange.isBlocking())
+      exchange.startBlocking();
+
+    final OutputStream output = exchange.getOutputStream();
+    JSONObject doneData = null;
+
+    try (InputStream body = response.body();
+         BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
+      String line;
+      while ((line = reader.readLine()) != null) {
+        if (!line.startsWith("data: "))
+          continue;
+
+        final String data = line.substring(6);
+        final byte[] sseBytes = ("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8);
+
+        // Check if this is the final 'done' event
+        try {
+          final JSONObject event = new JSONObject(data);
+          if ("done".equals(event.getString("type", ""))) {
+            // Inject chatId before forwarding the done event
+            event.put("chatId", chat.getString("id"));
+            doneData = event;
+            output.write(("data: " + event + "\n\n").getBytes(StandardCharsets.UTF_8));
+            output.flush();
+            continue;
+          }
+        } catch (final Exception ignored) {
+          // Not valid JSON or missing type, forward as-is
+        }
+
+        // Forward intermediate events (tool_start, tool_end)
+        output.write(sseBytes);
+        output.flush();
+      }
+    } finally {
+      try { output.close(); } catch (final Exception ignored) {}
+    }
+
+    // Save chat history from the done event
+    if (doneData != null) {
+      final JSONObject assistantMsg = new JSONObject();
+      assistantMsg.put("role", "assistant");
+      assistantMsg.put("content", doneData.getString("response", ""));
+      assistantMsg.put("timestamp", java.time.Instant.now().toString());
+
+      final JSONArray commands = doneData.getJSONArray("commands", null);
+      if (commands != null && commands.length() > 0)
+        assistantMsg.put("commands", commands);
+
+      messages.put(assistantMsg);
+      chat.put("messages", messages);
+      chat.put("updated", java.time.Instant.now().toString());
+      chatStorage.saveChat(username, chat);
+    }
+
+    return null; // response already sent
+  }
+
+  /**
+   * Builds a standard (non-streaming) response and saves chat history.
+   */
+  private ExecutionResponse buildResponse(final JSONObject gatewayResponse, final JSONObject chat,
+      final JSONArray messages, final String username) {
+    // Add assistant response to chat
+    final JSONObject assistantMsg = new JSONObject();
+    assistantMsg.put("role", "assistant");
+    assistantMsg.put("content", gatewayResponse.getString("response", ""));
+    assistantMsg.put("timestamp", java.time.Instant.now().toString());
+
+    final JSONArray commands = gatewayResponse.getJSONArray("commands", null);
+    if (commands != null && commands.length() > 0)
+      assistantMsg.put("commands", commands);
+
+    messages.put(assistantMsg);
+
+    // Update and save chat
+    chat.put("messages", messages);
+    chat.put("updated", java.time.Instant.now().toString());
+    chatStorage.saveChat(username, chat);
+
+    // Return response to Studio
+    final JSONObject result = new JSONObject();
+    result.put("chatId", chat.getString("id"));
+    result.put("response", gatewayResponse.getString("response", ""));
+    if (commands != null && commands.length() > 0)
+      result.put("commands", commands);
+
+    final JSONArray toolCalls = gatewayResponse.getJSONArray("toolCalls", null);
+    if (toolCalls != null && toolCalls.length() > 0)
+      result.put("toolCalls", toolCalls);
+
+    return new ExecutionResponse(200, result.toString());
   }
 
   private String getServerUrl(final HttpServerExchange exchange) {
