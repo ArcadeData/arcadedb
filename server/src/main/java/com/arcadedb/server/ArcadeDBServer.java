@@ -481,7 +481,7 @@ public class ArcadeDBServer {
       // Only re-wrap if the underlying database is a plain LocalDatabase (not already wrapped)
       if (wrapped instanceof LocalDatabase localDb) {
         final DatabaseInternal newWrapped = databaseWrapper.apply(localDb);
-        final ServerDatabase newServerDb = new ServerDatabase(newWrapped);
+        final ServerDatabase newServerDb = new ServerDatabase(this, newWrapped);
         databases.put(entry.getKey(), newServerDb);
         LogManager.instance().log(this, Level.INFO, "Re-wrapped database '%s' with HA wrapper", entry.getKey());
       }
