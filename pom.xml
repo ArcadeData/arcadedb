@@ -532,6 +532,10 @@
                         <version>${maven-javadoc-plugin.version}</version>
                         <configuration>
                             <doclint>none</doclint>  <!-- Turnoff all checks -->
+                            <additionalOptions>
+                                <!-- TimeSeries SIMD: requires jdk.incubator.vector module (JEP 448) -->
+                                <additionalOption>--add-modules jdk.incubator.vector</additionalOption>
+                            </additionalOptions>
                         </configuration>
                         <executions>
                             <execution>
