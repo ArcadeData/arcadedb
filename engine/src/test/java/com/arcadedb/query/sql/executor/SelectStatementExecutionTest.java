@@ -2278,6 +2278,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     assertThat(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep).isTrue(); // no index used
+    final ExecutionStep firstStep = plan.getSteps().get(0);
+    assertThat(firstStep instanceof FetchFromTypeExecutionStep || firstStep instanceof FetchFromTypeWithFilterStep).isTrue(); // no index used
     for (int i = 0; i < 2; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
@@ -2326,8 +2328,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
+    final ExecutionStep firstStep4 = plan.getSteps().get(0);
     assertThat(
-        plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep).isTrue(); // no index, because the superclass is not empty
+        firstStep4 instanceof FetchFromTypeExecutionStep || firstStep4 instanceof FetchFromTypeWithFilterStep).isTrue(); // no index, because the superclass is not empty
     for (int i = 0; i < 2; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
@@ -2449,6 +2452,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
     assertThat(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep).isTrue();
+    final ExecutionStep firstStepDiamond = plan.getSteps().get(0);
+    assertThat(firstStepDiamond instanceof FetchFromTypeExecutionStep || firstStepDiamond instanceof FetchFromTypeWithFilterStep).isTrue();
     for (int i = 0; i < 3; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
