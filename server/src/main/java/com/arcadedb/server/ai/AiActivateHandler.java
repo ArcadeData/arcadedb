@@ -105,7 +105,8 @@ public class AiActivateHandler extends AbstractServerHttpHandler {
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "AI activation error: %s", e.getMessage());
-      return new ExecutionResponse(500, errorJson("Activation failed: " + e.getMessage()));
+      final String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+      return new ExecutionResponse(500, errorJson("Activation failed: " + msg));
     }
   }
 

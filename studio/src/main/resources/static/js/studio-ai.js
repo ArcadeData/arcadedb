@@ -102,10 +102,10 @@ function aiActivate() {
     modal = document.getElementById("aiDisclaimerModal");
   }
 
-  var bsModal = new bootstrap.Modal(modal);
+  var bsModal = bootstrap.Modal.getOrCreateInstance(modal);
   bsModal.show();
 
-  // Remove previous listeners
+  // Remove previous listeners by cloning the button
   var agreeBtn = document.getElementById("aiDisclaimerAgree");
   var newAgreeBtn = agreeBtn.cloneNode(true);
   agreeBtn.parentNode.replaceChild(newAgreeBtn, agreeBtn);
@@ -135,8 +135,10 @@ function aiActivate() {
       btn.prop("disabled", false).html("Activate");
       var errorMsg = "Activation failed. Please check your key and try again.";
       try {
-        var errData = JSON.parse(jqXHR.responseText);
-        if (errData.error) errorMsg = errData.error;
+        if (jqXHR.responseText) {
+          var errData = JSON.parse(jqXHR.responseText);
+          if (errData.error) errorMsg = errData.error;
+        }
       } catch (e) { /* ignore */ }
       $("#aiActivateError").text(errorMsg).show();
     });
