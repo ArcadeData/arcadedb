@@ -71,6 +71,16 @@
           <div class="ms-3">
             <div id="aiDbSelectContainer" class="searchable-db-select"></div>
           </div>
+          <div class="ms-auto d-flex align-items-center gap-2">
+            <div class="btn-group btn-group-sm" id="aiModeToggle">
+              <button type="button" class="btn btn-sm" data-mode="auto" onclick="aiSetMode('auto')"
+                title="AI runs read-only queries and gives you answers directly">
+                <i class="fa fa-bolt me-1"></i>Auto Run</button>
+              <button type="button" class="btn btn-sm" data-mode="review" onclick="aiSetMode('review')"
+                title="AI suggests queries for you to review and execute">
+                <i class="fa fa-eye me-1"></i>Review First</button>
+            </div>
+          </div>
         </div>
 
         <!-- Messages area -->

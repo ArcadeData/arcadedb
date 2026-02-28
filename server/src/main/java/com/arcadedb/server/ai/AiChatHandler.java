@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -92,14 +93,9 @@ public class AiChatHandler extends AbstractServerHttpHandler {
           new JSONObject().put("error", "User '" + user.getName() + "' is not authorized to access database '" + database + "'")
               .toString());
 
-    try {
-      // Collect schema context in-process
-      final MCPConfiguration mcpConfig = server.getMCPConfiguration();
-      final JSONObject schemaArgs = new JSONObject().put("database", database);
-      final JSONObject schema = GetSchemaTool.execute(server, user, schemaArgs, mcpConfig);
-      final JSONObject serverInfo = ServerStatusTool.execute(server, user, new JSONObject(), mcpConfig);
-      serverInfo.put("metrics", Profiler.INSTANCE.toJSON());
+    final String mode = payload.getString("mode", "auto");
 
+    try {
       // Load or create chat
       final String username = user.getName();
       JSONObject chat;
@@ -127,13 +123,30 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
       // Forward to gateway
       final JSONObject gatewayRequest = new JSONObject();
-      gatewayRequest.put("schema", schema);
-      gatewayRequest.put("serverInfo", serverInfo);
       gatewayRequest.put("message", message);
       gatewayRequest.put("history", history);
       gatewayRequest.put("database", database);
       gatewayRequest.put("hardwareId", AiActivateHandler.getHardwareId());
       gatewayRequest.put("serverVersion", Constants.getVersion());
+
+      if ("auto".equals(mode)) {
+        // Tool-calling path: create session for gateway to call back
+        final HttpAuthSession authSession = httpServer.getAuthSessionManager().createSession(user);
+        final String serverUrl = getServerUrl(exchange);
+        gatewayRequest.put("arcadedb", new JSONObject()
+            .put("url", serverUrl)
+            .put("sessionId", authSession.token));
+        gatewayRequest.put("schema", new JSONObject()); // minimal, required by gateway validation
+      } else {
+        // Review-first path: embed schema/serverInfo in prompt
+        final MCPConfiguration mcpConfig = server.getMCPConfiguration();
+        final JSONObject schemaArgs = new JSONObject().put("database", database);
+        final JSONObject schema = GetSchemaTool.execute(server, user, schemaArgs, mcpConfig);
+        final JSONObject serverInfo = ServerStatusTool.execute(server, user, new JSONObject(), mcpConfig);
+        serverInfo.put("metrics", Profiler.INSTANCE.toJSON());
+        gatewayRequest.put("schema", schema);
+        gatewayRequest.put("serverInfo", serverInfo);
+      }
 
       final JSONObject gatewayResponse = callGateway(gatewayRequest);
 
@@ -187,6 +200,12 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(500, new JSONObject()//
           .put("error", "An unexpected error occurred. Please try again later.").toString());
     }
+  }
+
+  private String getServerUrl(final HttpServerExchange exchange) {
+    final String scheme = exchange.getRequestScheme();
+    final String host = exchange.getHostAndPort();
+    return scheme + "://" + host;
   }
 
   private JSONObject callGateway(final JSONObject requestBody) throws Exception {

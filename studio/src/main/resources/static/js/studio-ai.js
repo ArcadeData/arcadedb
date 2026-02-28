@@ -26,6 +26,7 @@ var aiConfigured = false;
 var aiSending = false;
 var aiCurrentXhr = null;
 var aiCommandBlockCounter = 0;
+var aiMode = globalStorageLoad("ai-mode", "auto");
 
 function initAi() {
   // Check if AI is configured
@@ -42,6 +43,7 @@ function initAi() {
       $("#aiInactivePanel").hide();
       $("#aiActivePanel").show();
       initSearchableDbSelect("aiDbSelectContainer");
+      aiApplyMode();
       aiLoadChatList();
     } else {
       $("#aiInactivePanel").show();
@@ -51,6 +53,25 @@ function initAi() {
   .fail(function() {
     $("#aiInactivePanel").show();
     $("#aiActivePanel").hide();
+  });
+}
+
+// ===== Mode Toggle =====
+
+function aiSetMode(mode) {
+  aiMode = mode;
+  globalStorageSave("ai-mode", mode);
+  aiApplyMode();
+}
+
+function aiApplyMode() {
+  $("#aiModeToggle button").each(function() {
+    var btn = $(this);
+    if (btn.data("mode") === aiMode) {
+      btn.css({ "background": "var(--color-brand)", "color": "white", "border-color": "var(--color-brand)" });
+    } else {
+      btn.css({ "background": "transparent", "color": "var(--text-muted)", "border-color": "var(--border-main)" });
+    }
   });
 }
 
@@ -345,7 +366,7 @@ function aiSendMessage() {
   aiCurrentXhr = jQuery.ajax({
     type: "POST",
     url: "api/v1/ai/chat",
-    data: JSON.stringify({ database: db, message: message, chatId: aiCurrentChatId }),
+    data: JSON.stringify({ database: db, message: message, chatId: aiCurrentChatId, mode: aiMode }),
     contentType: "application/json",
     beforeSend: function(xhr) {
       xhr.setRequestHeader("Authorization", globalCredentials);
