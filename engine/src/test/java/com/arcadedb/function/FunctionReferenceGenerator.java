@@ -22,11 +22,9 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
+import com.arcadedb.query.sql.parser.SqlParserConstants;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Test;
-
-import com.arcadedb.query.sql.parser.SqlParserConstants;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -48,9 +46,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class FunctionReferenceGeneratorTest {
+class FunctionReferenceGenerator {
 
-  @Test
+  public static void main(String[] args) {
+    final FunctionReferenceGenerator generator = new FunctionReferenceGenerator();
+    try {
+      generator.generateFunctionReference();
+      System.out.println("Function reference generated successfully.");
+    } catch (IOException e) {
+      e.printStackTrace();
+      System.err.println("Failed to generate function reference: " + e.getMessage());
+    }
+  }
+
   void generateFunctionReference() throws IOException {
     final JSONObject root = new JSONObject();
     root.put("generated", LocalDate.now().toString());
@@ -190,7 +198,8 @@ class FunctionReferenceGeneratorTest {
     root.put("cypherGrammar", buildCypherGrammarTree());
 
     // Write to Studio resources
-    final String outputPath = System.getProperty("user.dir") + "/../studio/src/main/resources/static/js/function-reference.json";
+    final String outputPath = System.getProperty("user.dir") + "/../studio/src/main/resources/static/js/function" +
+        "-reference.json";
     final File outputFile = new File(outputPath).getCanonicalFile();
     outputFile.getParentFile().mkdirs();
 
@@ -316,101 +325,116 @@ class FunctionReferenceGeneratorTest {
   private static JSONObject buildSqlGrammarTree() {
     final JSONObject tree = new JSONObject();
 
-    tree.put("_start", grammarNode(new String[] { "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
+    tree.put("_start", grammarNode(new String[]{"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
         "TRUNCATE", "MATCH", "TRAVERSE", "BEGIN", "COMMIT", "ROLLBACK",
         "LET", "RETURN", "IF", "EXPLAIN", "PROFILE", "REBUILD",
         "IMPORT", "EXPORT", "BACKUP", "CHECK", "ALIGN", "DEFINE",
-        "MOVE", "LOCK", "SLEEP", "REFRESH" }, null));
+        "MOVE", "LOCK", "SLEEP", "REFRESH"}, null));
 
-    tree.put("SELECT", grammarNode(new String[] { "DISTINCT", "*", "FROM" }, new String[] { "expression", "function" }));
-    tree.put("SELECT._projection", grammarNode(new String[] { "FROM", "AS", "," }, new String[] { "expression", "function" }));
-    tree.put("SELECT.FROM", grammarNode(new String[] { "BUCKET" }, new String[] { "type", "subquery" }));
-    tree.put("SELECT.FROM._target", grammarNode(new String[] { "WHERE", "LET", "GROUP BY", "ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT", "AS" }, new String[] { "expression" }));
-    tree.put("SELECT.WHERE", grammarNode(new String[] { "AND", "OR", "NOT", "IS", "IN", "BETWEEN", "LIKE", "ILIKE",
+    tree.put("SELECT", grammarNode(new String[]{"DISTINCT", "*", "FROM"}, new String[]{"expression", "function"}));
+    tree.put("SELECT._projection", grammarNode(new String[]{"FROM", "AS", ","}, new String[]{"expression",
+        "function"}));
+    tree.put("SELECT.FROM", grammarNode(new String[]{"BUCKET"}, new String[]{"type", "subquery"}));
+    tree.put("SELECT.FROM._target", grammarNode(new String[]{"WHERE", "LET", "GROUP BY", "ORDER BY", "UNWIND", "SKIP"
+        , "LIMIT", "TIMEOUT", "AS"}, new String[]{"expression"}));
+    tree.put("SELECT.WHERE", grammarNode(new String[]{"AND", "OR", "NOT", "IS", "IN", "BETWEEN", "LIKE", "ILIKE",
         "CONTAINS", "CONTAINSALL", "CONTAINSANY", "CONTAINSKEY",
         "CONTAINSVALUE", "CONTAINSTEXT", "MATCHES", "INSTANCEOF",
-        "NULL", "TRUE", "FALSE", "DEFINED" }, new String[] { "expression", "property", "function" }));
-    tree.put("SELECT.WHERE._after", grammarNode(new String[] { "AND", "OR", "GROUP BY", "ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT" }, null));
-    tree.put("SELECT.GROUP_BY", grammarNode(new String[] { "ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT" }, new String[] { "expression" }));
-    tree.put("SELECT.ORDER_BY", grammarNode(new String[] { "ASC", "DESC", "UNWIND", "SKIP", "LIMIT", "TIMEOUT", "," }, new String[] { "expression" }));
-    tree.put("SELECT.UNWIND", grammarNode(new String[] { "AS", "SKIP", "LIMIT", "TIMEOUT" }, new String[] { "expression" }));
-    tree.put("SELECT.LIMIT", grammarNode(new String[] { "SKIP", "TIMEOUT" }, null));
-    tree.put("SELECT.SKIP", grammarNode(new String[] { "LIMIT", "TIMEOUT" }, null));
+        "NULL", "TRUE", "FALSE", "DEFINED"}, new String[]{"expression", "property", "function"}));
+    tree.put("SELECT.WHERE._after", grammarNode(new String[]{"AND", "OR", "GROUP BY", "ORDER BY", "UNWIND", "SKIP",
+        "LIMIT", "TIMEOUT"}, null));
+    tree.put("SELECT.GROUP_BY", grammarNode(new String[]{"ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT"},
+        new String[]{"expression"}));
+    tree.put("SELECT.ORDER_BY", grammarNode(new String[]{"ASC", "DESC", "UNWIND", "SKIP", "LIMIT", "TIMEOUT", ","},
+        new String[]{"expression"}));
+    tree.put("SELECT.UNWIND", grammarNode(new String[]{"AS", "SKIP", "LIMIT", "TIMEOUT"}, new String[]{"expression"}));
+    tree.put("SELECT.LIMIT", grammarNode(new String[]{"SKIP", "TIMEOUT"}, null));
+    tree.put("SELECT.SKIP", grammarNode(new String[]{"LIMIT", "TIMEOUT"}, null));
 
-    tree.put("INSERT", grammarNode(new String[] { "INTO" }, null));
-    tree.put("INSERT.INTO", grammarNode(new String[] { "BUCKET" }, new String[] { "type" }));
-    tree.put("INSERT.INTO._target", grammarNode(new String[] { "SET", "VALUES", "CONTENT", "RETURN", "FROM", "UNSAFE", "(" }, null));
-    tree.put("INSERT.SET", grammarNode(new String[] { ",", "RETURN", "FROM", "UNSAFE" }, new String[] { "property" }));
-    tree.put("INSERT.CONTENT", grammarNode(new String[] { "RETURN", "FROM", "UNSAFE" }, null));
-    tree.put("INSERT.VALUES", grammarNode(new String[] { ",", "RETURN", "FROM", "UNSAFE" }, null));
+    tree.put("INSERT", grammarNode(new String[]{"INTO"}, null));
+    tree.put("INSERT.INTO", grammarNode(new String[]{"BUCKET"}, new String[]{"type"}));
+    tree.put("INSERT.INTO._target", grammarNode(new String[]{"SET", "VALUES", "CONTENT", "RETURN", "FROM", "UNSAFE",
+        "("}, null));
+    tree.put("INSERT.SET", grammarNode(new String[]{",", "RETURN", "FROM", "UNSAFE"}, new String[]{"property"}));
+    tree.put("INSERT.CONTENT", grammarNode(new String[]{"RETURN", "FROM", "UNSAFE"}, null));
+    tree.put("INSERT.VALUES", grammarNode(new String[]{",", "RETURN", "FROM", "UNSAFE"}, null));
 
-    tree.put("UPDATE", grammarNode(null, new String[] { "type" }));
-    tree.put("UPDATE._target", grammarNode(new String[] { "SET", "ADD", "PUT", "REMOVE", "INCREMENT", "MERGE", "CONTENT", "UPSERT", "RETURN", "WHERE", "LIMIT", "TIMEOUT" }, null));
-    tree.put("UPDATE.SET", grammarNode(new String[] { ",", "ADD", "PUT", "REMOVE", "INCREMENT", "MERGE", "CONTENT", "UPSERT", "RETURN", "WHERE", "LIMIT", "TIMEOUT" }, new String[] { "property" }));
-    tree.put("UPDATE.WHERE", grammarNode(new String[] { "AND", "OR", "NOT", "LIMIT", "TIMEOUT" }, null));
+    tree.put("UPDATE", grammarNode(null, new String[]{"type"}));
+    tree.put("UPDATE._target", grammarNode(new String[]{"SET", "ADD", "PUT", "REMOVE", "INCREMENT", "MERGE", "CONTENT"
+        , "UPSERT", "RETURN", "WHERE", "LIMIT", "TIMEOUT"}, null));
+    tree.put("UPDATE.SET", grammarNode(new String[]{",", "ADD", "PUT", "REMOVE", "INCREMENT", "MERGE", "CONTENT",
+        "UPSERT", "RETURN", "WHERE", "LIMIT", "TIMEOUT"}, new String[]{"property"}));
+    tree.put("UPDATE.WHERE", grammarNode(new String[]{"AND", "OR", "NOT", "LIMIT", "TIMEOUT"}, null));
 
-    tree.put("DELETE", grammarNode(new String[] { "VERTEX", "FROM" }, null));
-    tree.put("DELETE.FROM", grammarNode(new String[] { "RETURN", "WHERE", "LIMIT", "UNSAFE" }, new String[] { "type" }));
-    tree.put("DELETE.WHERE", grammarNode(new String[] { "AND", "OR", "NOT", "LIMIT", "UNSAFE" }, null));
+    tree.put("DELETE", grammarNode(new String[]{"VERTEX", "FROM"}, null));
+    tree.put("DELETE.FROM", grammarNode(new String[]{"RETURN", "WHERE", "LIMIT", "UNSAFE"}, new String[]{"type"}));
+    tree.put("DELETE.WHERE", grammarNode(new String[]{"AND", "OR", "NOT", "LIMIT", "UNSAFE"}, null));
 
-    tree.put("CREATE", grammarNode(new String[] { "VERTEX", "EDGE", "DOCUMENT", "PROPERTY", "INDEX", "BUCKET", "TRIGGER", "MATERIALIZED" }, null));
-    tree.put("CREATE.DOCUMENT", grammarNode(new String[] { "TYPE" }, null));
-    tree.put("CREATE.VERTEX", grammarNode(new String[] { "TYPE" }, null));
-    tree.put("CREATE.EDGE", grammarNode(new String[] { "TYPE" }, null));
-    tree.put("CREATE.VERTEX_TYPE", grammarNode(new String[] { "IF" }, new String[] { "identifier" }));
-    tree.put("CREATE.VERTEX_TYPE._name", grammarNode(new String[] { "IF", "EXTENDS", "BUCKET", "BUCKETS", "PAGESIZE" }, null));
-    tree.put("CREATE.EDGE_TYPE", grammarNode(new String[] { "IF" }, new String[] { "identifier" }));
-    tree.put("CREATE.EDGE_TYPE._name", grammarNode(new String[] { "IF", "EXTENDS", "UNIDIRECTIONAL", "BUCKET", "BUCKETS", "PAGESIZE" }, null));
-    tree.put("CREATE.DOCUMENT_TYPE", grammarNode(new String[] { "IF" }, new String[] { "identifier" }));
-    tree.put("CREATE.DOCUMENT_TYPE._name", grammarNode(new String[] { "IF", "EXTENDS", "BUCKET", "BUCKETS", "PAGESIZE" }, null));
-    tree.put("CREATE.PROPERTY", grammarNode(null, new String[] { "type" }));
-    tree.put("CREATE.INDEX", grammarNode(new String[] { "ON", "IF" }, null));
-    tree.put("CREATE.INDEX.ON", grammarNode(new String[] { "TYPE" }, new String[] { "type" }));
-    tree.put("CREATE.MATERIALIZED", grammarNode(new String[] { "VIEW" }, null));
-    tree.put("CREATE.MATERIALIZED_VIEW", grammarNode(new String[] { "IF" }, new String[] { "identifier" }));
-    tree.put("CREATE.MATERIALIZED_VIEW._name", grammarNode(new String[] { "AS" }, null));
+    tree.put("CREATE", grammarNode(new String[]{"VERTEX", "EDGE", "DOCUMENT", "PROPERTY", "INDEX", "BUCKET", "TRIGGER"
+        , "MATERIALIZED"}, null));
+    tree.put("CREATE.DOCUMENT", grammarNode(new String[]{"TYPE"}, null));
+    tree.put("CREATE.VERTEX", grammarNode(new String[]{"TYPE"}, null));
+    tree.put("CREATE.EDGE", grammarNode(new String[]{"TYPE"}, null));
+    tree.put("CREATE.VERTEX_TYPE", grammarNode(new String[]{"IF"}, new String[]{"identifier"}));
+    tree.put("CREATE.VERTEX_TYPE._name", grammarNode(new String[]{"IF", "EXTENDS", "BUCKET", "BUCKETS", "PAGESIZE"},
+        null));
+    tree.put("CREATE.EDGE_TYPE", grammarNode(new String[]{"IF"}, new String[]{"identifier"}));
+    tree.put("CREATE.EDGE_TYPE._name", grammarNode(new String[]{"IF", "EXTENDS", "UNIDIRECTIONAL", "BUCKET", "BUCKETS"
+        , "PAGESIZE"}, null));
+    tree.put("CREATE.DOCUMENT_TYPE", grammarNode(new String[]{"IF"}, new String[]{"identifier"}));
+    tree.put("CREATE.DOCUMENT_TYPE._name", grammarNode(new String[]{"IF", "EXTENDS", "BUCKET", "BUCKETS", "PAGESIZE"}
+        , null));
+    tree.put("CREATE.PROPERTY", grammarNode(null, new String[]{"type"}));
+    tree.put("CREATE.INDEX", grammarNode(new String[]{"ON", "IF"}, null));
+    tree.put("CREATE.INDEX.ON", grammarNode(new String[]{"TYPE"}, new String[]{"type"}));
+    tree.put("CREATE.MATERIALIZED", grammarNode(new String[]{"VIEW"}, null));
+    tree.put("CREATE.MATERIALIZED_VIEW", grammarNode(new String[]{"IF"}, new String[]{"identifier"}));
+    tree.put("CREATE.MATERIALIZED_VIEW._name", grammarNode(new String[]{"AS"}, null));
 
-    tree.put("ALTER", grammarNode(new String[] { "TYPE", "PROPERTY", "BUCKET", "DATABASE", "MATERIALIZED" }, null));
-    tree.put("ALTER.TYPE", grammarNode(null, new String[] { "type" }));
-    tree.put("ALTER.TYPE._name", grammarNode(new String[] { "NAME", "SUPERTYPE", "BUCKETSELECTIONSTRATEGY", "BUCKET", "CUSTOM", "ALIASES" }, null));
-    tree.put("ALTER.PROPERTY", grammarNode(null, new String[] { "type" }));
-    tree.put("ALTER.BUCKET", grammarNode(null, new String[] { "identifier" }));
-    tree.put("ALTER.DATABASE", grammarNode(null, new String[] { "identifier" }));
-    tree.put("ALTER.MATERIALIZED", grammarNode(new String[] { "VIEW" }, null));
+    tree.put("ALTER", grammarNode(new String[]{"TYPE", "PROPERTY", "BUCKET", "DATABASE", "MATERIALIZED"}, null));
+    tree.put("ALTER.TYPE", grammarNode(null, new String[]{"type"}));
+    tree.put("ALTER.TYPE._name", grammarNode(new String[]{"NAME", "SUPERTYPE", "BUCKETSELECTIONSTRATEGY", "BUCKET",
+        "CUSTOM", "ALIASES"}, null));
+    tree.put("ALTER.PROPERTY", grammarNode(null, new String[]{"type"}));
+    tree.put("ALTER.BUCKET", grammarNode(null, new String[]{"identifier"}));
+    tree.put("ALTER.DATABASE", grammarNode(null, new String[]{"identifier"}));
+    tree.put("ALTER.MATERIALIZED", grammarNode(new String[]{"VIEW"}, null));
 
-    tree.put("DROP", grammarNode(new String[] { "TYPE", "PROPERTY", "INDEX", "BUCKET", "TRIGGER", "MATERIALIZED" }, null));
-    tree.put("DROP.TYPE", grammarNode(new String[] { "IF" }, new String[] { "type" }));
-    tree.put("DROP.PROPERTY", grammarNode(new String[] { "IF" }, new String[] { "type" }));
-    tree.put("DROP.INDEX", grammarNode(new String[] { "IF" }, new String[] { "identifier" }));
-    tree.put("DROP.MATERIALIZED", grammarNode(new String[] { "VIEW" }, null));
+    tree.put("DROP", grammarNode(new String[]{"TYPE", "PROPERTY", "INDEX", "BUCKET", "TRIGGER", "MATERIALIZED"}, null));
+    tree.put("DROP.TYPE", grammarNode(new String[]{"IF"}, new String[]{"type"}));
+    tree.put("DROP.PROPERTY", grammarNode(new String[]{"IF"}, new String[]{"type"}));
+    tree.put("DROP.INDEX", grammarNode(new String[]{"IF"}, new String[]{"identifier"}));
+    tree.put("DROP.MATERIALIZED", grammarNode(new String[]{"VIEW"}, null));
 
-    tree.put("TRUNCATE", grammarNode(new String[] { "TYPE", "BUCKET", "RECORD" }, null));
-    tree.put("TRUNCATE.TYPE", grammarNode(new String[] { "POLYMORPHIC", "UNSAFE" }, new String[] { "type" }));
-    tree.put("TRUNCATE.BUCKET", grammarNode(new String[] { "UNSAFE" }, new String[] { "identifier" }));
+    tree.put("TRUNCATE", grammarNode(new String[]{"TYPE", "BUCKET", "RECORD"}, null));
+    tree.put("TRUNCATE.TYPE", grammarNode(new String[]{"POLYMORPHIC", "UNSAFE"}, new String[]{"type"}));
+    tree.put("TRUNCATE.BUCKET", grammarNode(new String[]{"UNSAFE"}, new String[]{"identifier"}));
 
-    tree.put("MATCH", grammarNode(new String[] { "{" }, new String[] { "function" }));
-    tree.put("MATCH._pattern", grammarNode(new String[] { "RETURN", ",", "-->", "<--", "--", "-" }, null));
-    tree.put("MATCH.RETURN", grammarNode(new String[] { "DISTINCT", "GROUP BY", "ORDER BY", "SKIP", "LIMIT", "AS", "," }, new String[] { "expression" }));
+    tree.put("MATCH", grammarNode(new String[]{"{"}, new String[]{"function"}));
+    tree.put("MATCH._pattern", grammarNode(new String[]{"RETURN", ",", "-->", "<--", "--", "-"}, null));
+    tree.put("MATCH.RETURN", grammarNode(new String[]{"DISTINCT", "GROUP BY", "ORDER BY", "SKIP", "LIMIT", "AS", ","}
+        , new String[]{"expression"}));
 
-    tree.put("TRAVERSE", grammarNode(new String[] { "FROM" }, new String[] { "expression", "function" }));
-    tree.put("TRAVERSE.FROM", grammarNode(new String[] { "MAXDEPTH", "WHILE", "LIMIT", "STRATEGY" }, new String[] { "type" }));
-    tree.put("TRAVERSE.WHILE", grammarNode(new String[] { "LIMIT", "STRATEGY" }, new String[] { "expression" }));
-    tree.put("TRAVERSE.STRATEGY", grammarNode(new String[] { "DEPTH_FIRST", "BREADTH_FIRST" }, null));
+    tree.put("TRAVERSE", grammarNode(new String[]{"FROM"}, new String[]{"expression", "function"}));
+    tree.put("TRAVERSE.FROM", grammarNode(new String[]{"MAXDEPTH", "WHILE", "LIMIT", "STRATEGY"},
+        new String[]{"type"}));
+    tree.put("TRAVERSE.WHILE", grammarNode(new String[]{"LIMIT", "STRATEGY"}, new String[]{"expression"}));
+    tree.put("TRAVERSE.STRATEGY", grammarNode(new String[]{"DEPTH_FIRST", "BREADTH_FIRST"}, null));
 
-    tree.put("BEGIN", grammarNode(new String[] { "ISOLATION" }, null));
-    tree.put("COMMIT", grammarNode(new String[] { "RETRY" }, null));
-    tree.put("REBUILD", grammarNode(new String[] { "INDEX" }, null));
-    tree.put("EXPLAIN", grammarNode(new String[] { "SELECT", "INSERT", "UPDATE", "DELETE", "MATCH", "TRAVERSE" }, null));
-    tree.put("PROFILE", grammarNode(new String[] { "SELECT", "INSERT", "UPDATE", "DELETE", "MATCH", "TRAVERSE" }, null));
-    tree.put("IMPORT", grammarNode(new String[] { "DATABASE" }, null));
-    tree.put("EXPORT", grammarNode(new String[] { "DATABASE" }, null));
-    tree.put("BACKUP", grammarNode(new String[] { "DATABASE" }, null));
-    tree.put("CHECK", grammarNode(new String[] { "DATABASE" }, null));
-    tree.put("CHECK.DATABASE", grammarNode(new String[] { "TYPE", "BUCKET", "FIX", "COMPRESS" }, null));
-    tree.put("LOCK", grammarNode(new String[] { "TYPE", "BUCKET" }, null));
-    tree.put("DEFINE", grammarNode(new String[] { "FUNCTION" }, null));
-    tree.put("REFRESH", grammarNode(new String[] { "MATERIALIZED" }, null));
-    tree.put("REFRESH.MATERIALIZED", grammarNode(new String[] { "VIEW" }, null));
+    tree.put("BEGIN", grammarNode(new String[]{"ISOLATION"}, null));
+    tree.put("COMMIT", grammarNode(new String[]{"RETRY"}, null));
+    tree.put("REBUILD", grammarNode(new String[]{"INDEX"}, null));
+    tree.put("EXPLAIN", grammarNode(new String[]{"SELECT", "INSERT", "UPDATE", "DELETE", "MATCH", "TRAVERSE"}, null));
+    tree.put("PROFILE", grammarNode(new String[]{"SELECT", "INSERT", "UPDATE", "DELETE", "MATCH", "TRAVERSE"}, null));
+    tree.put("IMPORT", grammarNode(new String[]{"DATABASE"}, null));
+    tree.put("EXPORT", grammarNode(new String[]{"DATABASE"}, null));
+    tree.put("BACKUP", grammarNode(new String[]{"DATABASE"}, null));
+    tree.put("CHECK", grammarNode(new String[]{"DATABASE"}, null));
+    tree.put("CHECK.DATABASE", grammarNode(new String[]{"TYPE", "BUCKET", "FIX", "COMPRESS"}, null));
+    tree.put("LOCK", grammarNode(new String[]{"TYPE", "BUCKET"}, null));
+    tree.put("DEFINE", grammarNode(new String[]{"FUNCTION"}, null));
+    tree.put("REFRESH", grammarNode(new String[]{"MATERIALIZED"}, null));
+    tree.put("REFRESH.MATERIALIZED", grammarNode(new String[]{"VIEW"}, null));
 
     return tree;
   }
@@ -418,21 +442,27 @@ class FunctionReferenceGeneratorTest {
   private static JSONObject buildCypherGrammarTree() {
     final JSONObject tree = new JSONObject();
 
-    tree.put("_start", grammarNode(new String[] { "MATCH", "CREATE", "MERGE", "DELETE", "DETACH", "REMOVE", "SET",
-        "WITH", "UNWIND", "RETURN", "OPTIONAL", "CALL", "UNION", "FOREACH" }, null));
-    tree.put("MATCH", grammarNode(new String[] { "(", "WHERE", "RETURN", "WITH", "CREATE", "DELETE", "SET", "REMOVE", "MERGE", "OPTIONAL", "UNWIND" }, null));
-    tree.put("MATCH._pattern", grammarNode(new String[] { "WHERE", "RETURN", "WITH", ",", "CREATE", "DELETE", "SET", "REMOVE" }, null));
-    tree.put("WHERE", grammarNode(new String[] { "AND", "OR", "NOT", "XOR", "IS", "IN", "CONTAINS", "STARTS", "ENDS",
-        "RETURN", "WITH", "CREATE", "DELETE", "SET", "REMOVE" }, null));
-    tree.put("RETURN", grammarNode(new String[] { "DISTINCT", "AS", "ORDER BY", "SKIP", "LIMIT", ",", "UNION" }, new String[] { "expression" }));
-    tree.put("WITH", grammarNode(new String[] { "DISTINCT", "AS", "WHERE", "ORDER BY", "SKIP", "LIMIT", ",",
-        "MATCH", "CREATE", "DELETE", "SET", "REMOVE", "MERGE", "UNWIND", "RETURN" }, null));
-    tree.put("CREATE", grammarNode(new String[] { "(", "RETURN", "WITH", "SET", "DELETE", "REMOVE", "MERGE" }, null));
-    tree.put("SET", grammarNode(new String[] { ",", "RETURN", "WITH", "DELETE", "REMOVE", "CREATE" }, new String[] { "property" }));
-    tree.put("DELETE", grammarNode(new String[] { "RETURN", "WITH", "CREATE", "SET", "REMOVE" }, null));
-    tree.put("UNWIND", grammarNode(new String[] { "AS" }, new String[] { "expression" }));
-    tree.put("UNWIND.AS", grammarNode(new String[] { "MATCH", "CREATE", "DELETE", "SET", "REMOVE", "MERGE", "RETURN", "WITH", "UNWIND" }, null));
-    tree.put("ORDER_BY", grammarNode(new String[] { "ASC", "DESC", "ASCENDING", "DESCENDING", "SKIP", "LIMIT", "," }, null));
+    tree.put("_start", grammarNode(new String[]{"MATCH", "CREATE", "MERGE", "DELETE", "DETACH", "REMOVE", "SET",
+        "WITH", "UNWIND", "RETURN", "OPTIONAL", "CALL", "UNION", "FOREACH"}, null));
+    tree.put("MATCH", grammarNode(new String[]{"(", "WHERE", "RETURN", "WITH", "CREATE", "DELETE", "SET", "REMOVE",
+        "MERGE", "OPTIONAL", "UNWIND"}, null));
+    tree.put("MATCH._pattern", grammarNode(new String[]{"WHERE", "RETURN", "WITH", ",", "CREATE", "DELETE", "SET",
+        "REMOVE"}, null));
+    tree.put("WHERE", grammarNode(new String[]{"AND", "OR", "NOT", "XOR", "IS", "IN", "CONTAINS", "STARTS", "ENDS",
+        "RETURN", "WITH", "CREATE", "DELETE", "SET", "REMOVE"}, null));
+    tree.put("RETURN", grammarNode(new String[]{"DISTINCT", "AS", "ORDER BY", "SKIP", "LIMIT", ",", "UNION"},
+        new String[]{"expression"}));
+    tree.put("WITH", grammarNode(new String[]{"DISTINCT", "AS", "WHERE", "ORDER BY", "SKIP", "LIMIT", ",",
+        "MATCH", "CREATE", "DELETE", "SET", "REMOVE", "MERGE", "UNWIND", "RETURN"}, null));
+    tree.put("CREATE", grammarNode(new String[]{"(", "RETURN", "WITH", "SET", "DELETE", "REMOVE", "MERGE"}, null));
+    tree.put("SET", grammarNode(new String[]{",", "RETURN", "WITH", "DELETE", "REMOVE", "CREATE"}, new String[]{
+        "property"}));
+    tree.put("DELETE", grammarNode(new String[]{"RETURN", "WITH", "CREATE", "SET", "REMOVE"}, null));
+    tree.put("UNWIND", grammarNode(new String[]{"AS"}, new String[]{"expression"}));
+    tree.put("UNWIND.AS", grammarNode(new String[]{"MATCH", "CREATE", "DELETE", "SET", "REMOVE", "MERGE", "RETURN",
+        "WITH", "UNWIND"}, null));
+    tree.put("ORDER_BY", grammarNode(new String[]{"ASC", "DESC", "ASCENDING", "DESCENDING", "SKIP", "LIMIT", ","},
+        null));
 
     return tree;
   }
