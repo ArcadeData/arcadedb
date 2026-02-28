@@ -23,8 +23,7 @@ General design principles:
   - ✅ ALLOWED: Apache 2.0, MIT, BSD (2/3-Clause), EPL 1.0/2.0, UPL 1.0, EDL 1.0, LGPL 2.1+ (for libraries only), CC0/Public Domain
   - ❌ FORBIDDEN: GPL, AGPL, proprietary licenses without explicit permission, SSPL, Commons Clause
   - When adding a dependency, you MUST update ATTRIBUTIONS.md and, if Apache-licensed with a NOTICE file, incorporate required notices into the main NOTICE file
-- for Studio (webapp), limit to jquery and bootsptrap 5. If necessary use 3rd party libs, but they must be Apache 2.0 compatible (see allowed licenses above)
-- remember to reuse when possible. If a function/method is used multiple times, write it once in an existent helper/util class or create one if needed
+- for Studio (webapp), limit to jquery and bootstrap 5. If necessary use 3rd party libs, but they must be Apache 2.0 compatible (see allowed licenses above)
 - always bear in mind PERFORMANCE. It must be always your mantra: performance and lightweight on garbage collector. If you can, prefer using arrays of primitives to List of Objects
 - if you need to use JSON, use the class com.arcadedb.serializer.json.JSONObject. Leverage the getter methods that accept the default value as 2nd argument, so you don't need to check if they present or not null = less boilerplate code
 - same thing for JSON arrays: use com.arcadedb.serializer.json.JSONArray class
@@ -99,20 +98,32 @@ cd package
 ## Architecture Overview
 
 ### Core Modules
-- **engine/**: Core database engine, storage, indexing, query execution
-- **server/**: HTTP/REST API, WebSocket support, clustering/HA functionality
+- **engine/**: Core database engine, storage, indexing, query execution (SQL, OpenCypher, Polyglot)
+- **server/**: HTTP/REST API, WebSocket support, clustering/HA, MCP server
+- **network/**: Network communication layer
+- **console/**: CLI console for interactive database operations
 - **studio/**: Web-based administration interface (JavaScript/Node.js)
+- **metrics/**: Server metrics collection and reporting
+- **integration/**: Integration utilities
+- **test-utils/**: Shared test utilities
+
+#### Wire Protocol Modules
 - **gremlin/**: Apache Tinkerpop Gremlin support
+- **graphql/**: GraphQL API support
 - **mongodbw/**: MongoDB wire protocol compatibility
 - **redisw/**: Redis wire protocol compatibility
-- **graphql/**: GraphQL API support
 - **postgresw/**: PostgreSQL wire protocol compatibility
-- **network/**: Network communication layer
+- **bolt/**: Neo4j Bolt wire protocol compatibility
+- **grpc/**: gRPC protocol definitions
+- **grpcw/**: gRPC wire protocol module
+- **grpc-client/**: gRPC client library
 
 ### Key Engine Components
 - **Database Management**: `com.arcadedb.database.*` - Database lifecycle, transactions, ACID compliance
 - **Storage Engine**: `com.arcadedb.engine.*` - Low-level storage, page management, WAL
-- **Query Processing**: `com.arcadedb.query.sql.*` - SQL query parsing, execution planning
+- **SQL Query Engine**: `com.arcadedb.query.sql.*` - SQL query parsing, execution planning
+- **OpenCypher Engine**: `com.arcadedb.query.opencypher.*` - Native Cypher implementation with ANTLR parser, AST, optimizer (filter pushdown, index selection, expand-into, join ordering), and step-based execution. Has both optimizer and legacy execution paths — changes to clause handling may need updates in multiple paths
+- **Polyglot Engine**: `com.arcadedb.query.polyglot.*` - GraalVM-based scripting support
 - **Schema Management**: `com.arcadedb.schema.*` - Type definitions, property management
 - **Index System**: `com.arcadedb.index.*` - LSM-Tree indexes, full-text, vector indexes
 - **Graph Engine**: `com.arcadedb.graph.*` - Vertex/Edge management, graph traversals
@@ -122,7 +133,8 @@ cd package
 - **HTTP API**: `com.arcadedb.server.http.*` - REST endpoints, request handling
 - **High Availability**: `com.arcadedb.server.ha.*` - Clustering, replication, leader election
 - **Security**: `com.arcadedb.server.security.*` - Authentication, authorization
-- **Monitoring**: `com.arcadedb.server.monitor.*` - Metrics, health checks
+- **Monitoring**: `com.arcadedb.server.monitor.*` - Metrics, query profiling, health checks
+- **MCP**: `com.arcadedb.server.mcp.*` - Model Context Protocol server support
 
 ## Development Guidelines
 
@@ -137,10 +149,11 @@ cd package
 - Thread-safe implementations throughout
 
 ### Testing Approach
+- **Framework**: JUnit 5 (Jupiter) with AssertJ assertions
 - Unit tests in each module's `src/test/java`
 - Integration tests with `IT` suffix
 - Performance tests in `performance/` packages
-- Use TestContainers for external service testing
+- TestContainers used in `e2e/` and `load-tests/` modules for containerized testing
 - Separate test databases in `databases/` for isolation
 
 ### Database Features to Consider
@@ -149,7 +162,7 @@ cd package
 - **Query Languages**: SQL (OrientDB-compatible), Cypher, Gremlin, MongoDB queries
 - **Indexing**: LSM-Tree indexes, full-text (Lucene), vector embeddings
 - **High Availability**: Leader-follower replication, automatic failover
-- **Wire Protocols**: HTTP/JSON, PostgreSQL, MongoDB, Redis compatibility
+- **Wire Protocols**: HTTP/JSON, PostgreSQL, MongoDB, Redis, Neo4j Bolt, gRPC compatibility
 
 ### Common Development Tasks
 
@@ -167,7 +180,9 @@ cd package
 
 #### Query Development
 - SQL parsing in `com.arcadedb.query.sql.*`
-- Execution plans in `com.arcadedb.query.sql.executor.*`
+- SQL execution plans in `com.arcadedb.query.sql.executor.*`
+- OpenCypher engine in `com.arcadedb.query.opencypher.*` — has `ast/`, `parser/`, `executor/`, `optimizer/`, `planner/`, `rewriter/` sub-packages
+- OpenCypher tests in `engine/src/test/java/com/arcadedb/query/opencypher/`
 - Test with various query patterns and data sizes
 
 #### Server Development
@@ -176,7 +191,7 @@ cd package
 - WebSocket support for real-time features
 
 #### Wire Protocol Module Dependencies
-- **Standard**: All wire protocol modules (gremlin, graphql, mongodbw, redisw, postgresw, grpcw) must use `provided` scope for `arcadedb-server` dependency
+- **Standard**: All wire protocol modules (gremlin, graphql, mongodbw, redisw, postgresw, bolt, grpcw) must use `provided` scope for `arcadedb-server` dependency
 - **Rationale**: Server remains the assembly point; prevents dependency duplication in distributions
 - **Pattern**:
   - Main server dependency → scope: `provided`
@@ -205,7 +220,8 @@ cd package
 
 ## Important Notes
 
-- **Pre-commit hooks**: This project uses pre-commit for code quality checks
+- **Pre-commit hooks**: This project uses pre-commit for code quality checks (trailing whitespace, Prettier for Java/XML formatting, etc.)
+- **Code formatting**: Prettier with `requirePragma: true` and `printWidth: 160` — only formats files with a `@format` pragma
 - **Security**: Never log or expose sensitive data (passwords, tokens, etc.)
 - **Performance**: Always consider memory and CPU impact of changes
 - **Compatibility**: Maintain backward compatibility for API changes
