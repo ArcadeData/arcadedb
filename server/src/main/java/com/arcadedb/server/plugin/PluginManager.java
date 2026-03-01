@@ -82,15 +82,12 @@ public class PluginManager {
     final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, getClass().getClassLoader());
 
     for (ServerPlugin pluginInstance : serviceLoader) {
-      String name = pluginInstance.getClass().getSimpleName();
-      if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getName())) {
-        // Register the plugin
-        final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
-        descriptor.setPluginInstance(pluginInstance);
-        plugins.put(name, descriptor);
+      final String name = pluginInstance.getClass().getSimpleName();
+      final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
+      descriptor.setPluginInstance(pluginInstance);
+      plugins.put(name, descriptor);
 
-        LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s", name);
-      }
+      LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s", name);
     }
   }
 
@@ -139,24 +136,19 @@ public class PluginManager {
       // Use ServiceLoader to discover plugin implementations
       final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, classLoader);
 
-      // Load the first plugin implementation (typically only one per JAR)
-      for (ServerPlugin pluginInstance : serviceLoader) {
-        // Create plugin descriptor
-        final PluginDescriptor descriptor = new PluginDescriptor(pluginInstance.getName(), classLoader);
-        descriptor.setPluginInstance(pluginInstance);
-
-        String name = pluginInstance.getName();
+      // Load the first new plugin implementation from this JAR
+      for (final ServerPlugin pluginInstance : serviceLoader) {
+        final String name = pluginInstance.getName();
         LogManager.instance().log(this, Level.FINE, "Discovered plugin class: %s", name);
 
-        if (plugins.containsKey(name)) {
-          LogManager.instance().log(this, Level.WARNING, "Plugin with name '%s' is already loaded, skipping duplicate from %s",
-              name, pluginJar.getName());
-          break; // Exit loop - classloader will be closed in finally block
-        }
+        // Skip plugins already registered (e.g., from main classpath discovery)
+        if (plugins.containsKey(name))
+          continue;
 
         if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginName) || configuredPlugins.contains(
             pluginInstance.getClass().getName())) {
-          // Register the plugin
+          final PluginDescriptor descriptor = new PluginDescriptor(name, classLoader);
+          descriptor.setPluginInstance(pluginInstance);
           plugins.put(name, descriptor);
           classLoaderMap.put(classLoader, descriptor);
           registered = true;
@@ -165,7 +157,7 @@ public class PluginManager {
         } else {
           LogManager.instance().log(this, Level.INFO, "Skipping plugin: %s as not registered in configuration", name);
         }
-        break; // Only load the first plugin from each JAR
+        break; // Only load the first new plugin from each JAR
       }
     } finally {
       if (!registered) {
@@ -202,8 +194,11 @@ public class PluginManager {
           plugin.configure(server, configuration);
           plugin.startService();
 
-          descriptor.setStarted(true);
-          LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
+          if (plugin.isActive()) {
+            descriptor.setStarted(true);
+            LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
+          } else
+            LogManager.instance().log(this, Level.INFO, "- %s plugin configured but not active", pluginName);
 
         } finally {
           currentThread.setContextClassLoader(originalClassLoader);
@@ -293,5 +288,11 @@ public class PluginManager {
    */
   public PluginDescriptor getPluginDescriptor(final String pluginName) {
     return plugins.get(pluginName);
+  }
+
+  public void registerPlugin(final String pluginName, final ServerPlugin pluginInstance) {
+    final PluginDescriptor descriptor = new PluginDescriptor(pluginName, pluginInstance.getClass().getClassLoader());
+    descriptor.setPluginInstance(pluginInstance);
+    plugins.put(pluginName, descriptor);
   }
 }

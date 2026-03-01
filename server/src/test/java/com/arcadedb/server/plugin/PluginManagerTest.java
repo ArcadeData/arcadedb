@@ -95,9 +95,11 @@ class PluginManagerTest {
 
   @Test
   void discoverPluginsWithNoDirectory() {
-    // Should handle missing plugins directory gracefully
+    // Should handle missing plugins directory gracefully and still discover main classpath plugins
     pluginManager.discoverPlugins();
-    assertThat(pluginManager.getPluginCount()).isEqualTo(0);
+    // AutoBackupSchedulerPlugin is registered via META-INF/services on the main classpath
+    assertThat(pluginManager.getPluginCount()).isGreaterThanOrEqualTo(1);
+    assertThat(pluginManager.getPluginNames()).contains("AutoBackupSchedulerPlugin");
   }
 
   @Test
@@ -127,7 +129,8 @@ class PluginManagerTest {
     Files.createDirectories(pluginsDir);
 
     pluginManager.discoverPlugins();
-    assertThat(pluginManager.getPluginCount()).isEqualTo(0);
+    // Only main classpath plugins (AutoBackupSchedulerPlugin) should be found
+    assertThat(pluginManager.getPluginCount()).isGreaterThanOrEqualTo(1);
   }
 
   @Test
@@ -140,11 +143,12 @@ class PluginManagerTest {
 
     pluginManager.discoverPlugins();
 
-    assertThat(pluginManager.getPluginCount()).isEqualTo(1);
-    assertThat(pluginManager.getPluginNames().contains(TestPlugin1.class.getSimpleName())).isTrue();
+    // +1 for AutoBackupSchedulerPlugin discovered on main classpath
+    assertThat(pluginManager.getPluginCount()).isEqualTo(2);
+    assertThat(pluginManager.getPluginNames()).contains(TestPlugin1.class.getSimpleName());
 
     final Collection<ServerPlugin> plugins = pluginManager.getPlugins();
-    assertThat(plugins.size()).isEqualTo(1);
+    assertThat(plugins.size()).isEqualTo(2);
   }
 
   @Test
@@ -157,10 +161,11 @@ class PluginManagerTest {
 
     pluginManager.discoverPlugins();
 
-    assertThat(pluginManager.getPluginCount()).isEqualTo(2);
+    // +1 for AutoBackupSchedulerPlugin discovered on main classpath
+    assertThat(pluginManager.getPluginCount()).isEqualTo(3);
     final Set<String> names = pluginManager.getPluginNames();
-    assertThat(names.contains(TestPlugin1.class.getSimpleName())).isTrue();
-    assertThat(names.contains(TestPlugin2.class.getSimpleName())).isTrue();
+    assertThat(names).contains(TestPlugin1.class.getSimpleName());
+    assertThat(names).contains(TestPlugin2.class.getSimpleName());
   }
 
   @Test
@@ -171,7 +176,8 @@ class PluginManagerTest {
     createTestPluginJar(pluginsDir, "lifecycle-plugin", LifecycleTestPlugin.class);
 
     pluginManager.discoverPlugins();
-    assertThat(pluginManager.getPluginCount()).isEqualTo(1);
+    // +1 for AutoBackupSchedulerPlugin discovered on main classpath
+    assertThat(pluginManager.getPluginCount()).isEqualTo(2);
 
     // Start the plugin
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
@@ -202,7 +208,8 @@ class PluginManagerTest {
     createTestPluginJar(pluginsDir, "after-plugin", AfterHttpPlugin.class);
 
     pluginManager.discoverPlugins();
-    assertThat(pluginManager.getPluginCount()).isEqualTo(2);
+    // +1 for AutoBackupSchedulerPlugin discovered on main classpath
+    assertThat(pluginManager.getPluginCount()).isEqualTo(3);
 
     // Start BEFORE_HTTP_ON plugins
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
@@ -236,8 +243,8 @@ class PluginManagerTest {
 
     pluginManager.discoverPlugins();
 
-    // Plugin should not be loaded due to missing META-INF/services
-    assertThat(pluginManager.getPluginCount()).isEqualTo(0);
+    // JAR has no META-INF/services, but AutoBackupSchedulerPlugin is on main classpath
+    assertThat(pluginManager.getPluginCount()).isEqualTo(1);
   }
 
   @Test
@@ -248,7 +255,8 @@ class PluginManagerTest {
     createTestPluginJar(pluginsDir, "failing-plugin", FailingPlugin.class);
 
     pluginManager.discoverPlugins();
-    assertThat(pluginManager.getPluginCount()).isEqualTo(1);
+    // +1 for AutoBackupSchedulerPlugin discovered on main classpath
+    assertThat(pluginManager.getPluginCount()).isEqualTo(2);
 
     // Starting the plugin should throw exception
     assertThatExceptionOfType(ServerException.class).isThrownBy(() ->
@@ -270,6 +278,23 @@ class PluginManagerTest {
     assertThat(descriptor.getClassLoader()).isNotNull();
     assertThat(descriptor.getPluginInstance()).isNotNull();
     assertThat(descriptor.isStarted()).isFalse();
+  }
+
+  @Test
+  void registerPluginStoresInstance() {
+    final TestPlugin1 plugin = new TestPlugin1();
+    pluginManager.registerPlugin("manual-plugin", plugin);
+
+    assertThat(pluginManager.getPluginCount()).isEqualTo(1);
+    assertThat(pluginManager.getPluginNames()).contains("manual-plugin");
+
+    final PluginDescriptor descriptor = pluginManager.getPluginDescriptor("manual-plugin");
+    assertThat(descriptor).isNotNull();
+    assertThat(descriptor.getPluginInstance()).isSameAs(plugin);
+
+    final Collection<ServerPlugin> plugins = pluginManager.getPlugins();
+    assertThat(plugins).hasSize(1);
+    assertThat(plugins).contains(plugin);
   }
 
   @Test
