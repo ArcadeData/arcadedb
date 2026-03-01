@@ -67,8 +67,7 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
 
     // Check if backup.json exists
     if (!configLoader.configExists()) {
-      LogManager.instance().log(this, Level.INFO,
-          "Auto-backup scheduler disabled: config/backup.json not found");
+      LogManager.instance().log(this, Level.INFO, "Auto-backup scheduler disabled: config/backup.json not found");
       this.enabled = false;
       return;
     }
@@ -76,8 +75,7 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     // Load configuration
     this.backupConfig = configLoader.loadConfig();
     if (backupConfig == null || !backupConfig.isEnabled()) {
-      LogManager.instance().log(this, Level.INFO,
-          "Auto-backup scheduler disabled by configuration");
+      LogManager.instance().log(this, Level.INFO, "Auto-backup scheduler disabled by configuration");
       this.enabled = false;
       return;
     }
@@ -117,8 +115,7 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     // Schedule backups for all existing databases
     scheduleAllDatabases();
 
-    LogManager.instance().log(this, Level.INFO,
-        "Auto-backup scheduler started. Backup directory: %s", backupDirectory);
+    LogManager.instance().log(this, Level.INFO, "Auto-backup scheduler started. Backup directory: %s", backupDirectory);
 
     server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Auto-Backup", null,
         "Auto-backup scheduler started with " + scheduler.getScheduledCount() + " database(s)");
@@ -156,8 +153,7 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     // Schedule the backup
     scheduler.scheduleBackup(databaseName, dbConfig);
 
-    LogManager.instance().log(this, Level.INFO,
-        "Scheduled automatic backup for database '%s'", databaseName);
+    LogManager.instance().log(this, Level.INFO, "Scheduled automatic backup for database '%s'", databaseName);
   }
 
   /**
@@ -175,8 +171,7 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
    */
   public void triggerBackup(final String databaseName) {
     if (!enabled || scheduler == null) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Cannot trigger backup - auto-backup scheduler is not enabled");
+      LogManager.instance().log(this, Level.WARNING, "Cannot trigger backup - auto-backup scheduler is not enabled");
       return;
     }
 
@@ -231,8 +226,7 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
    */
   public void reloadConfiguration() {
     if (!configLoader.configExists()) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Cannot reload configuration: config/backup.json not found");
+      LogManager.instance().log(this, Level.WARNING, "Cannot reload configuration: config/backup.json not found");
       return;
     }
 
@@ -266,7 +260,9 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
    *
    * @param backupDir  The backup directory path from configuration
    * @param serverRoot The server root directory (absolute, normalized)
+   *
    * @return The validated, resolved absolute path
+   *
    * @throws IllegalArgumentException if the path fails security validation
    */
   public static Path validateAndResolveBackupPath(final String backupDir, final Path serverRoot) {
@@ -277,30 +273,26 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
 
     // 1. Reject absolute paths
     if (inputPath.isAbsolute())
-      throw new IllegalArgumentException(
-          "Backup directory must be a relative path, not absolute: " + backupDir);
+      throw new IllegalArgumentException("Backup directory must be a relative path, not absolute: " + backupDir);
 
     // 2. Normalize and check for path traversal
     final Path normalizedInput = inputPath.normalize();
     if (normalizedInput.startsWith(".."))
-      throw new IllegalArgumentException(
-          "Backup directory cannot escape server root via path traversal: " + backupDir);
+      throw new IllegalArgumentException("Backup directory cannot escape server root via path traversal: " + backupDir);
 
     // 3. Resolve against server root
     final Path resolvedPath = serverRoot.resolve(normalizedInput).normalize();
 
     // 4. Verify resolved path is within server root
     if (!resolvedPath.startsWith(serverRoot))
-      throw new IllegalArgumentException(
-          "Backup directory must be within server root path: " + backupDir);
+      throw new IllegalArgumentException("Backup directory must be within server root path: " + backupDir);
 
     // 5. If path exists, check for symlinks that could escape the root
     if (Files.exists(resolvedPath)) {
       try {
         final Path realPath = resolvedPath.toRealPath();
         if (!realPath.startsWith(serverRoot))
-          throw new IllegalArgumentException(
-              "Backup directory symlink resolves outside server root: " + backupDir);
+          throw new IllegalArgumentException("Backup directory symlink resolves outside server root: " + backupDir);
       } catch (final IOException e) {
         throw new IllegalArgumentException(
             "Cannot resolve backup directory path: " + backupDir, e);

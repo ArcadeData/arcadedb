@@ -294,4 +294,8 @@ public class PluginManager {
   public PluginDescriptor getPluginDescriptor(final String pluginName) {
     return plugins.get(pluginName);
   }
+
+  public void registerPlugin(String pluginName, ServerPlugin pluginInstance) {
+    plugins.put(pluginName, new PluginDescriptor(pluginName, pluginInstance.getClass().getClassLoader()));
+  }
 }
