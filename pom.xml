@@ -96,7 +96,7 @@
         <protobuf-maven-plugin.version>4.1.3</protobuf-maven-plugin.version>
         <grpc.version>1.79.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
-        <protobuf-java.version>4.33.5</protobuf-java.version>
+        <protobuf-java.version>4.34.0</protobuf-java.version>
         <com.google.api.grpc.version>2.66.0</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 
