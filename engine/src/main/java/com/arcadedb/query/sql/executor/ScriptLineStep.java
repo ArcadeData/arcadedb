@@ -99,6 +99,12 @@ public class ScriptLineStep extends AbstractExecutionStep {
     return false;
   }
 
+  @Override
+  public void close() {
+    plan.close();
+    super.close();
+  }
+
   public ExecutionStepInternal executeUntilReturn(final CommandContext context) {
     if (plan instanceof ScriptExecutionPlan executionPlan)
       return executionPlan.executeUntilReturn();
