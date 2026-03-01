@@ -36,7 +36,7 @@
     <properties>
         <gremlin.version>3.7.5</gremlin.version>
         <translation.version>1.0.4</translation.version>
-        <snakeyaml.version>2.5</snakeyaml.version>
+        <snakeyaml.version>2.6</snakeyaml.version>
         <netty.version>4.2.10.Final</netty.version>
         <commons-configuration2.version>2.13.0</commons-configuration2.version>
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
