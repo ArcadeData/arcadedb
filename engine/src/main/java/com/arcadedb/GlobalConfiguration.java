@@ -535,6 +535,95 @@ public enum GlobalConfiguration {
   HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", SCOPE.SERVER,
       "TCP/IP port number used for incoming replication connections", String.class, "2424-2433"),
 
+  HA_HTTP_STARTUP_TIMEOUT("arcadedb.ha.httpStartupTimeout", SCOPE.SERVER,
+      "Maximum time to wait for HTTP server to start before HA service fails (in milliseconds). Default is 60000 (60 seconds)",
+      Long.class, 60000L),
+
+  HA_LEADER_LEASE_TIMEOUT("arcadedb.ha.leaderLeaseTimeout", SCOPE.SERVER,
+      "Leader lease renewal interval in milliseconds. Used for leader fencing. Default is 30000 (30 seconds)", Long.class, 30000L),
+
+  HA_ELECTION_COOLDOWN("arcadedb.ha.electionCooldown", SCOPE.SERVER,
+      "Minimum time between elections in milliseconds to prevent election storms. Default is 5000 (5 seconds)", Long.class, 5000L),
+
+  HA_ELECTION_MAX_RETRIES("arcadedb.ha.electionMaxRetries", SCOPE.SERVER,
+      "Maximum number of election retry attempts before giving up. Default is 100", Integer.class, 100),
+
+  HA_THREAD_JOIN_TIMEOUT("arcadedb.ha.threadJoinTimeout", SCOPE.SERVER,
+      "Timeout for waiting for threads to terminate during shutdown in milliseconds. Default is 5000 (5 seconds)", Long.class,
+      5000L),
+
+  HA_BACKPRESSURE_MAX_WAIT("arcadedb.ha.backpressureMaxWait", SCOPE.SERVER,
+      "Maximum wait time for backpressure when replica queue is full in milliseconds. Default is 10000 (10 seconds)", Long.class,
+      10000L),
+
+  HA_QUORUM_MESSAGE_TTL("arcadedb.ha.quorumMessageTTL", SCOPE.SERVER,
+      "Time-to-live for messages waiting for quorum in milliseconds. Messages older than this are cleaned up. Default is 300000 (5 minutes)",
+      Long.class, 300000L),
+
+  HA_REPLICATION_LOG_FLUSH("arcadedb.ha.replicationLogFlush", SCOPE.SERVER,
+      "Flush policy for replication log. Options: 'no', 'yes_full', 'yes_nometadata'. Default is 'yes_nometadata'", String.class,
+      "yes_nometadata", Set.of(new String[] { "no", "yes_full", "yes_nometadata" })),
+
+  HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS("arcadedb.ha.replicaConnectRetryMaxAttempts", SCOPE.SERVER,
+      "Maximum number of connection retry attempts when replica connects to leader. Default is 10", Integer.class, 10),
+
+  HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS("arcadedb.ha.replicaConnectRetryBaseDelayMs", SCOPE.SERVER,
+      "Base delay in milliseconds between connection retry attempts (uses exponential backoff). Default is 200ms", Long.class, 200L),
+
+  HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS("arcadedb.ha.replicaConnectRetryMaxDelayMs", SCOPE.SERVER,
+      "Maximum delay in milliseconds between connection retry attempts. Default is 10000ms (10 seconds)", Long.class, 10000L),
+
+  HA_CONNECTION_HEALTH_CHECK_ENABLED("arcadedb.ha.connectionHealthCheckEnabled", SCOPE.SERVER,
+      "Enable periodic health check for replica connections. Default is true", Boolean.class, true),
+
+  HA_CONNECTION_HEALTH_CHECK_INTERVAL_MS("arcadedb.ha.connectionHealthCheckIntervalMs", SCOPE.SERVER,
+      "Interval in milliseconds between connection health checks (heartbeat). Default is 5000ms (5 seconds)", Long.class, 5000L),
+
+  HA_CONNECTION_HEALTH_CHECK_TIMEOUT_MS("arcadedb.ha.connectionHealthCheckTimeoutMs", SCOPE.SERVER,
+      "Timeout in milliseconds for health check responses. Default is 15000ms (15 seconds)", Long.class, 15000L),
+
+  HA_ENHANCED_RECONNECTION("arcadedb.ha.enhancedReconnection", SCOPE.SERVER,
+      "Enable enhanced reconnection logic with exception classification. When true uses new state machine and intelligent recovery strategies, when false uses legacy reconnection logic. EXPERIMENTAL: Recovery strategies still being refined. Default is false", Boolean.class, false),
+
+  HA_TRANSIENT_FAILURE_MAX_ATTEMPTS("arcadedb.ha.transientFailure.maxAttempts", SCOPE.SERVER,
+      "Maximum number of retry attempts for transient network failures (temporary connectivity issues). Uses exponential backoff: 1s, 2s, 4s for ~7s total. Default is 3", Integer.class, 3),
+
+  HA_TRANSIENT_FAILURE_BASE_DELAY_MS("arcadedb.ha.transientFailure.baseDelayMs", SCOPE.SERVER,
+      "Base delay in milliseconds for exponential backoff when retrying transient network failures. Default is 1000ms (1 second)", Long.class, 1000L),
+
+  HA_UNKNOWN_ERROR_MAX_ATTEMPTS("arcadedb.ha.unknownError.maxAttempts", SCOPE.SERVER,
+      "Maximum number of retry attempts for unknown/unclassified errors. Uses exponential backoff: 2s, 4s, 8s, 16s, 30s for ~60s total. Default is 5", Integer.class, 5),
+
+  HA_UNKNOWN_ERROR_BASE_DELAY_MS("arcadedb.ha.unknownError.baseDelayMs", SCOPE.SERVER,
+      "Base delay in milliseconds for exponential backoff when retrying unknown errors. Default is 2000ms (2 seconds)", Long.class, 2000L),
+
+  HA_CIRCUIT_BREAKER_ENABLED("arcadedb.ha.circuitBreaker.enabled", SCOPE.SERVER,
+      "Enable circuit breaker for replica connections to prevent cascading failures. When enabled, replicas with consecutive failures are temporarily excluded. Default is false", Boolean.class, true),
+
+  HA_CIRCUIT_BREAKER_FAILURE_THRESHOLD("arcadedb.ha.circuitBreaker.failureThreshold", SCOPE.SERVER,
+      "Number of consecutive failures before opening the circuit breaker. Default is 5", Integer.class, 5),
+
+  HA_CIRCUIT_BREAKER_SUCCESS_THRESHOLD("arcadedb.ha.circuitBreaker.successThreshold", SCOPE.SERVER,
+      "Number of consecutive successes in HALF_OPEN state before closing the circuit breaker. Default is 3", Integer.class, 3),
+
+  HA_CIRCUIT_BREAKER_RETRY_TIMEOUT_MS("arcadedb.ha.circuitBreaker.retryTimeoutMs", SCOPE.SERVER,
+      "Timeout in milliseconds before transitioning from OPEN to HALF_OPEN state to test replica recovery. Default is 30000ms (30 seconds)", Long.class, 30000L),
+
+  HA_CONSISTENCY_CHECK_ENABLED("arcadedb.ha.consistencyCheck.enabled", SCOPE.SERVER,
+      "Enable background consistency monitoring to detect data drift across replicas. EXPERIMENTAL: Currently only compares leader checksum, replica checksum collection not yet implemented. Default is false", Boolean.class, false),
+
+  HA_CONSISTENCY_CHECK_INTERVAL_MS("arcadedb.ha.consistencyCheck.intervalMs", SCOPE.SERVER,
+      "Interval in milliseconds between consistency checks. Default is 3600000ms (1 hour)", Long.class, 3600000L),
+
+  HA_CONSISTENCY_SAMPLE_SIZE("arcadedb.ha.consistencyCheck.sampleSize", SCOPE.SERVER,
+      "Number of records to sample per database during consistency checks. Default is 1000", Integer.class, 1000),
+
+  HA_CONSISTENCY_DRIFT_THRESHOLD("arcadedb.ha.consistencyCheck.driftThreshold", SCOPE.SERVER,
+      "Number of inconsistent records that triggers automatic alignment (if enabled). Default is 10", Integer.class, 10),
+
+  HA_CONSISTENCY_AUTO_ALIGN("arcadedb.ha.consistencyCheck.autoAlign", SCOPE.SERVER,
+      "Automatically trigger ALIGN DATABASE when drift exceeds threshold. Default is false", Boolean.class, false),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 

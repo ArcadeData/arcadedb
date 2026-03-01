@@ -58,6 +58,8 @@ public class HAMessageFactory {
     registerCommand(ErrorResponse.class);
     registerCommand(ServerShutdownRequest.class);
     registerCommand(InstallDatabaseRequest.class);
+    registerCommand(ResyncRequest.class);
+    registerCommand(ResyncResponse.class);
   }
 
   public void serializeCommand(final HACommand command, final Binary buffer, final long messageNumber) {

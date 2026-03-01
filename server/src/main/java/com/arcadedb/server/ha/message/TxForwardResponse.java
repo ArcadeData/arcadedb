@@ -25,7 +25,7 @@ import com.arcadedb.server.ha.HAServer;
  */
 public class TxForwardResponse extends HAAbstractCommand {
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     server.receivedResponseFromForward(messageNumber, null, null);
     return null;
   }

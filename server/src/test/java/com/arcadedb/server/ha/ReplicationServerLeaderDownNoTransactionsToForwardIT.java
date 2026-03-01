@@ -28,15 +28,20 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
-import com.arcadedb.utility.CodeUtils;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Timeout(value = 15, unit = TimeUnit.MINUTES)
+@Tag("ha")
 public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 
@@ -47,8 +52,8 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Test
@@ -87,10 +92,14 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
             assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
             break;
           } catch (final RemoteException e) {
-            // IGNORE IT
+            // Retry with backoff - intentional delay before retrying transaction
             LogManager.instance()
                 .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d)...", e, counter, retry, maxRetry);
-            CodeUtils.sleep(500);
+            // Intentional delay for retry backoff (500ms) before next retry attempt
+            Awaitility.await("retry backoff delay")
+                .pollDelay(500, TimeUnit.MILLISECONDS)
+                .atMost(550, TimeUnit.MILLISECONDS)
+                .until(() -> true);
           }
         }
       }
@@ -104,7 +113,16 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
 
     LogManager.instance().log(this, Level.FINE, "Done");
 
-    CodeUtils.sleep(1000);
+    // Wait for replication to complete before checking entries
+    // Ensure all servers have processed and replicated the data
+    for (final int s : getServerToCheck()) {
+      if (getServer(s) != null && getServer(s).getHA() != null) {
+        Awaitility.await("replication queue drain on server " + s)
+            .atMost(30, TimeUnit.SECONDS)
+            .pollInterval(500, TimeUnit.MILLISECONDS)
+            .until(() -> getServer(s).getHA().getMessagesInQueue() == 0);
+      }
+    }
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     for (final int s : getServerToCheck())
@@ -117,7 +135,7 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_2"))
       server.registerTestEventListener((type, object, server1) -> {
-        if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
+        if (type == ReplicationCallback.Type.REPLICA_MSG_RECEIVED) {
           if (messages.incrementAndGet() > 10 && getServer(0).isStarted()) {
             testLog("TEST: Stopping the Leader...");
 

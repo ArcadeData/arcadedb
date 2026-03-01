@@ -34,7 +34,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.arcadedb.graph.Vertex.DIRECTION.IN;
 import static com.arcadedb.graph.Vertex.DIRECTION.OUT;
@@ -161,12 +161,10 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
           try {
             db.transaction(() -> {
               db.acquireLock().type("Node").lock();
-
               final MutableVertex v = db.lookupByRID(rid[0]).asVertex().modify();
               v.set("id", v.getInteger("id") + 1);
               v.save();
             });
-
             committed.incrementAndGet();
 
           } catch (Exception e) {

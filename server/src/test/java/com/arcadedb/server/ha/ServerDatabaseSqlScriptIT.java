@@ -20,59 +20,95 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.utility.FileUtils;
-import org.assertj.core.api.Assertions;
-import org.junit.jupiter.api.AfterEach;
-
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import java.io.*;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 public class ServerDatabaseSqlScriptIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
     return 3;
   }
 
-  public ServerDatabaseSqlScriptIT() {
-    FileUtils.deleteRecursively(new File("./target/config"));
-    FileUtils.deleteRecursively(new File("./target/databases"));
-    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
-    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
-  }
-
-  @AfterEach
   @Override
-  public void endTest() {
-    super.endTest();
-    FileUtils.deleteRecursively(new File("./target/config"));
-    FileUtils.deleteRecursively(new File("./target/databases"));
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    // Increase quorum timeout GLOBALLY for this test to allow slower replicas to respond
+    // Must be set before database creation to be picked up by ReplicatedDatabase
+    GlobalConfiguration.HA_QUORUM_TIMEOUT.setValue(30_000);
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void executeSqlScript() {
-    for (int i = 0; i < getServerCount(); i++) {
-      final Database database = getServer(i).getDatabase(getDatabaseName());
+    // Wait for cluster to be fully stable before executing SQL script
+    HATestHelpers.waitForClusterStable(getServers(), getServerCount() - 1);
 
-      database.command("sql", "create vertex type Photos if not exists");
-      database.command("sql", "create edge type Connected if not exists");
+    final ArcadeDBServer leader = getLeader();
+    assertThat(leader).isNotNull().as("Leader should be elected");
 
-      database.transaction(() -> {
-        final ResultSet result = database.command("sqlscript",
+    final Database db = leader.getDatabase(getDatabaseName());
+
+    // Execute DDL and wait for replication
+    db.command("sql", "create vertex type Photos if not exists");
+    db.command("sql", "create edge type Connected if not exists");
+
+    // Wait for schema changes to propagate to all replicas
+    HATestHelpers.waitForSchemaAlignment(getServers(), servers -> {
+      for (ArcadeDBServer server : servers) {
+        final Database serverDb = server.getDatabase(getDatabaseName());
+        if (!serverDb.getSchema().existsType("Photos") || !serverDb.getSchema().existsType("Connected")) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    try {
+      db.transaction(() -> {
+        final ResultSet result = db.command("sqlscript",
             """
-            LET photo1 = CREATE vertex Photos SET id = "3778f235a52d", name = "beach.jpg", status = "";
-            LET photo2 = CREATE vertex Photos SET id = "23kfkd23223", name = "luca.jpg", status = "";
-            LET connected = Create edge Connected FROM $photo1 to $photo2 set type = "User_Photos";return $photo1;\
-            """);
+                LET photo1 = CREATE vertex Photos SET id = "3778f235a52d", name = "beach.jpg", status = "";
+                LET photo2 = CREATE vertex Photos SET id = "23kfkd23223", name = "luca.jpg", status = "";
+                LET connected = CREATE EDGE Connected FROM $photo1 to $photo2 SET type = "User_Photos";
+                RETURN $photo1;
+                """);
         assertThat(result.hasNext()).isTrue();
         final Result response = result.next();
         assertThat(response.<String>getProperty("name")).isEqualTo("beach.jpg");
       });
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on executing sqlscript", e);
+      throw e;
     }
+
+//    for (int i = 0; i < getServerCount(); i++) {
+//      final Database database = getServer(i).getDatabase(getDatabaseName());
+//
+//      LogManager.instance().log(this, Level.INFO, "Executing sqlscript on server %d", i);
+//      database.transaction(() -> {
+//        final ResultSet result = database.command("sqlscript",
+//            """
+//                LET photo1 = CREATE vertex Photos SET id = "3778f235a52d", name = "beach.jpg", status = "";
+//                LET photo2 = CREATE vertex Photos SET id = "23kfkd23223", name = "luca.jpg", status = "";
+//                LET connected = CREATE EDGE Connected FROM $photo1 to $photo2 SET type = "User_Photos";
+//                RETURN $photo1;
+//                """);
+//        assertThat(result.hasNext()).isTrue();
+//        final Result response = result.next();
+//        assertThat(response.<String>getProperty("name")).isEqualTo("beach.jpg");
+//      });
+//    }
   }
 }

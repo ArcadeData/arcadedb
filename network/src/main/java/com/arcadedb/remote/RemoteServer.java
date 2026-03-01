@@ -44,7 +44,7 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   public void create(final String databaseName) {
-    serverCommand("POST", "create database " + databaseName, true, true, null);
+    serverCommand("POST", "create database " + databaseName, false, true, null);
   }
 
   public List<String> databases() {

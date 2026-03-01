@@ -3882,6 +3882,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final boolean deleted = page.readByte(currentOffset) == 1;
         currentOffset += 1;
 
+        // CRITICAL FIX: Read and skip quantization type byte (ALWAYS present in page format)
+        final byte quantOrdinal = page.readByte(currentOffset);
+        currentOffset += 1;
+        final VectorQuantizationType quantType = VectorQuantizationType.values()[quantOrdinal];
+
+        // Skip quantized vector data based on quantization type
+        if (quantType == VectorQuantizationType.INT8) {
+          // INT8: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
+          final int vectorLength = page.readInt(currentOffset);
+          currentOffset += 4;
+          currentOffset += vectorLength; // Skip quantized bytes
+          currentOffset += 8; // Skip min + max (2 floats)
+        } else if (quantType == VectorQuantizationType.BINARY) {
+          // BINARY: original length (4 bytes) + packed bytes + median (4 bytes)
+          final int originalLength = page.readInt(currentOffset);
+          currentOffset += 4;
+          // Packed bytes = ceil(originalLength / 8)
+          final int packedLength = (originalLength + 7) / 8;
+          currentOffset += packedLength;
+          currentOffset += 4; // Skip median (float)
+        }
+        // NONE and PRODUCT: no additional data to skip
+
         // Update VectorLocationIndex with this entry's absolute file offset
         // LSM semantics: later entries override earlier ones
         vectorIndex.addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);

@@ -24,7 +24,9 @@ import com.arcadedb.server.BaseGraphServerTest;
 
 import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -33,6 +35,7 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.*;
 
+@Tag("ha")
 class HTTPGraphConcurrentIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
@@ -40,6 +43,7 @@ class HTTPGraphConcurrentIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   void oneEdgePerTxMultiThreads() throws Exception {
     testEachServer((serverIndex) -> {
       executeCommand(serverIndex, "sqlscript",
@@ -47,12 +51,12 @@ class HTTPGraphConcurrentIT extends BaseGraphServerTest {
               + serverIndex + ";");
 
       // Wait for schema propagation using replication completion
-      waitForReplicationIsCompleted(serverIndex);
+      waitForClusterStable(getServerCount());
 
       executeCommand(serverIndex, "sql", "create vertex Users" + serverIndex + " set id = 'u1111'");
 
       // Wait for vertex creation to propagate
-      waitForReplicationIsCompleted(serverIndex);
+      waitForClusterStable(getServerCount());
 
       final int THREADS = 4;
       final int SCRIPTS = 100;
@@ -102,6 +106,9 @@ class HTTPGraphConcurrentIT extends BaseGraphServerTest {
       if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
         executorService.shutdownNow();
       }
+
+      // Wait for cluster to stabilize after concurrent operations
+      waitForClusterStable(getServerCount());
 
       assertThat(atomic.get()).isEqualTo(THREADS * SCRIPTS);
 

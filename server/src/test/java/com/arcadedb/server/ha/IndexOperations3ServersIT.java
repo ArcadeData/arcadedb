@@ -29,13 +29,18 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestServerHelper;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import java.util.*;
 import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 class IndexOperations3ServersIT extends BaseGraphServerTest {
 
   private static final int TOTAL_RECORDS = 10_000;
@@ -51,6 +56,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   void rebuildIndex() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
@@ -63,6 +69,9 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
     database.transaction(() -> insertRecords(database));
 
+    // Wait for cluster stabilization after data insertion
+    waitForClusterStable(getServerCount());
+
     testEachServer((serverIndex) -> {
       LogManager.instance()
           .log(this, Level.FINE, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
@@ -82,6 +91,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   void createIndexLater() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
@@ -90,10 +100,16 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
     // CREATE 100K RECORD IN 1K TX CHUNKS
     database.transaction(() -> insertRecords(database));
 
+    // Wait for cluster stabilization after data insertion
+    waitForClusterStable(getServerCount());
+
     v.createProperty("id", Long.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
     v.createProperty("uuid", String.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
+
+    // Wait for cluster stabilization after schema changes
+    waitForClusterStable(getServerCount());
 
     testEachServer((serverIndex) -> {
       LogManager.instance()
@@ -114,6 +130,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   void createIndexLaterDistributed() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
@@ -123,10 +140,16 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
       // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
       database.transaction(() -> insertRecords(database));
 
+      // Wait for cluster stabilization after data insertion
+      waitForClusterStable(getServerCount());
+
       v.createProperty("id", Long.class);
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
       v.createProperty("uuid", String.class);
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
+
+      // Wait for cluster stabilization after schema changes
+      waitForClusterStable(getServerCount());
 
       // TRY CREATING A DUPLICATE
       TestServerHelper.expectException(() -> database.newVertex("Person").set("id", 0, "uuid", UUID.randomUUID().toString()).save(),
@@ -149,6 +172,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   void createIndexErrorDistributed() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
@@ -160,6 +184,9 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
         insertRecords(database);
         insertRecords(database);
       });
+
+      // Wait for cluster stabilization after data insertion
+      waitForClusterStable(getServerCount());
 
       v.createProperty("id", Long.class);
 

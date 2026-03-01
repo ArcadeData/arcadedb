@@ -19,11 +19,13 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 
-import java.io.*;
+import java.io.IOException;
+import java.util.logging.Level;
 
 public class InstallDatabaseRequest extends HAAbstractCommand {
   private String databaseName;
@@ -36,12 +38,14 @@ public class InstallDatabaseRequest extends HAAbstractCommand {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     try {
       server.getLeader().requestInstallDatabase(new Binary(), databaseName);
       return new OkResponse();
     } catch (IOException e) {
-      throw new ReplicationException("Error on installing database '" + databaseName + "' on replica '" + server.getServerName() + "'", e);
+      LogManager.instance().log(this, Level.SEVERE, "Error on installing database '%s'", databaseName);
+      throw new ReplicationException(
+          "Error on installing database '" + databaseName + "' on replica '" + server.getServerName() + "'", e);
     }
   }
 

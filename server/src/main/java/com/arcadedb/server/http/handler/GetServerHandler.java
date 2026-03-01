@@ -37,11 +37,19 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Scanner;
+import java.util.Set;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class GetServerHandler extends AbstractServerHttpHandler {
   private static final DefaultServerMetrics           profilerRateMetrics = new DefaultServerMetrics();
@@ -144,7 +152,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       haJSON.put("replicaAddresses", replicaServers);
 
       LogManager.instance()
-          .log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
+          .log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, ha.getCluster());
     }
   }
 

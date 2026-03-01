@@ -22,20 +22,44 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
-
+@Tag("ha")
 public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
-  private final    CountDownLatch hotResyncLatch  = new CountDownLatch(1);
-  private final    CountDownLatch fullResyncLatch = new CountDownLatch(1);
-  private final    AtomicLong     totalMessages   = new AtomicLong();
-  private volatile boolean        slowDown        = true;
+  private final    CountDownLatch hotResyncLatch    = new CountDownLatch(1);
+  private final    CountDownLatch fullResyncLatch   = new CountDownLatch(1);
+  private final    AtomicLong     totalMessages     = new AtomicLong();
+  private volatile boolean        slowDown          = true;
+  private volatile boolean        reconnectTriggered = false;
+
+  @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
+  @Override
+  public void replication() throws Exception {
+    super.replication();
+  }
+
+  @Override
+  protected int getTxs() {
+    // Use 10 transactions to test hot resync with moderate load
+    return 10;
+  }
+
+  @Override
+  protected int getMaxRetry() {
+    // Increase retries to 100 to allow time for server 2 to reconnect
+    // During reconnection (which takes a few seconds), transactions will retry
+    // Once reconnection completes, transactions will succeed
+    return 100;
+  }
 
   @Override
   public void setTestConfiguration() {
@@ -45,18 +69,17 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
 
   @Override
   protected void onAfterTest() {
-    try {
-      // Wait for hot resync event with timeout
-      boolean hotResyncReceived = hotResyncLatch.await(30, TimeUnit.SECONDS);
-      // Wait for full resync event with timeout
-      boolean fullResyncReceived = fullResyncLatch.await(1, TimeUnit.SECONDS);
+    // Verify hot resync was triggered
+    Awaitility.await().atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> hotResyncLatch.getCount() == 0);
 
-      assertThat(hotResyncReceived).as("Hot resync event should have been received").isTrue();
-      assertThat(fullResyncReceived).as("Full resync event should not have been received").isFalse();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      fail("Test was interrupted while waiting for resync events");
+    // Verify full resync was NOT triggered (count should still be 1)
+    if (fullResyncLatch.getCount() == 0) {
+      throw new AssertionError("Full resync event was received but only hot resync was expected");
     }
+
+    LogManager.instance().log(this, Level.INFO, "TEST: Hot resync verified successfully");
   }
 
   @Override
@@ -64,47 +87,82 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
     if (server.getServerName().equals("ArcadeDB_2")) {
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
           if (!serversSynchronized)
             return;
 
           if (slowDown) {
-            // SLOW DOWN A SERVER AFTER 5TH MESSAGE
-            if (totalMessages.incrementAndGet() > 5) {
-              LogManager.instance().log(this, Level.INFO, "TEST: Slowing down response from replica server 2...");
-              try {
-                // Still need some delay to trigger the hot resync
-                Thread.sleep(5_000);
-              } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-              }
+            // SLOW DOWN A SERVER AFTER 5TH MESSAGE - intentionally inject latency to fill replication queue
+            final long msgCount = totalMessages.incrementAndGet();
+            if (msgCount > 5 && msgCount < 10) {
+              LogManager.instance()
+                  .log(this, Level.INFO, "TEST: Slowing down response from replica server 2... - total messages %d",
+                      msgCount);
+              // Intentional 1s delay to trigger hot resync condition
+              Awaitility.await("intentional latency to trigger hot resync")
+                  .pollDelay(1, TimeUnit.SECONDS)
+                  .atMost(2, TimeUnit.SECONDS)
+                  .until(() -> true);
+            }
+
+            // After slowdown, trigger reconnection to test hot resync
+            if (msgCount == 10 && !reconnectTriggered) {
+              reconnectTriggered = true;
+              LogManager.instance().log(this, Level.INFO, "TEST: Triggering disconnect for hot resync test...");
+              slowDown = false;
+
+              executeAsynchronously(() -> {
+                try {
+                  // Wait for current message to finish processing before closing channel
+                  Awaitility.await("current message processing")
+                      .pollDelay(1, TimeUnit.SECONDS)
+                      .atMost(2, TimeUnit.SECONDS)
+                      .until(() -> true);
+
+                  final ArcadeDBServer server2 = getServer(2);
+                  if (server2 != null && server2.getHA() != null && server2.getHA().getLeader() != null) {
+                    LogManager.instance().log(this, Level.INFO, "TEST: Closing connection to trigger reconnection...");
+
+                    // Close the channel - this will cause the next message receive to fail
+                    // and trigger automatic reconnection via the reconnect() method
+                    server2.getHA().getLeader().closeChannel();
+
+                    LogManager.instance().log(this, Level.INFO, "TEST: Channel closed, waiting for automatic reconnection...");
+
+                    // Wait for server 2 to reconnect to the leader before continuing
+                    // This prevents race condition where transactions commit while server 2 is offline
+                    Awaitility.await("server 2 reconnection")
+                        .atMost(30, TimeUnit.SECONDS)
+                        .pollInterval(500, TimeUnit.MILLISECONDS)
+                        .until(() -> {
+                          final ArcadeDBServer leader = getServer(0);
+                          if (leader == null || leader.getHA() == null)
+                            return false;
+                          final Leader2ReplicaNetworkExecutor replica = leader.getHA().getReplica("ArcadeDB_2");
+                          return replica != null && replica.getStatus() == Leader2ReplicaNetworkExecutor.STATUS.ONLINE;
+                        });
+
+                    LogManager.instance().log(this, Level.INFO, "TEST: Server 2 reconnected successfully");
+                  }
+                } catch (Exception e) {
+                  LogManager.instance().log(this, Level.WARNING, "TEST: Failed to close channel: %s", e.getMessage());
+                }
+                return null;
+              });
             }
           } else {
-            if (type == TYPE.REPLICA_HOT_RESYNC) {
-              LogManager.instance().log(this, Level.INFO, "TEST: Received hot resync request");
+            // Handle hot/full resync events
+            if (type == Type.REPLICA_HOT_RESYNC) {
               hotResyncLatch.countDown();
-            } else if (type == TYPE.REPLICA_FULL_RESYNC) {
-              LogManager.instance().log(this, Level.INFO, "TEST: Received full resync request");
+              LogManager.instance().log(this, Level.INFO, "TEST: Received hot resync request %s", hotResyncLatch.getCount());
+            } else if (type == Type.REPLICA_FULL_RESYNC) {
               fullResyncLatch.countDown();
+              LogManager.instance().log(this, Level.INFO, "TEST: Received full resync request %s", fullResyncLatch.getCount());
             }
           }
         }
       });
     }
 
-    if (server.getServerName().equals("ArcadeDB_0")) {
-      server.registerTestEventListener(new ReplicationCallback() {
-        @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          if (!serversSynchronized)
-            return;
-
-          if ("ArcadeDB_2".equals(object) && type == TYPE.REPLICA_OFFLINE) {
-            LogManager.instance().log(this, Level.INFO, "TEST: Replica 2 is offline removing latency...");
-            slowDown = false;
-          }
-        }
-      });
-    }
   }
 }

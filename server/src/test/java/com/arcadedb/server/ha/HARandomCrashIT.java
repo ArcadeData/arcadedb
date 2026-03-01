@@ -25,27 +25,79 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
+import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.utility.CodeUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.time.Duration;
 import java.util.Random;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
+/**
+ * Integration test for High Availability random crash scenarios (chaos engineering).
+ *
+ * <p>This test simulates random server crashes during continuous operation to verify cluster
+ * resilience and automatic recovery. Uses bounded randomness and exponential backoff to ensure
+ * reliable testing without infinite loops or test hangs.
+ *
+ * <p><b>Test Strategy:</b>
+ * <ul>
+ *   <li>Continuously inserts vertices while randomly crashing servers
+ *   <li>Each server crash triggers immediate restart with validation
+ *   <li>Tests continue until all servers have been restarted at least once
+ *   <li>Validates cluster consistency at end of test
+ * </ul>
+ *
+ * <p><b>Key Patterns Demonstrated:</b>
+ * <ul>
+ *   <li><b>Bounded Waits:</b> Awaitility with explicit timeouts (no infinite loops)
+ *   <li><b>Exponential Backoff:</b> Adaptive delays: min(1000 * (retry + 1), 5000) ms
+ *   <li><b>Daemon Timer:</b> Timer thread runs as daemon to prevent JVM hangs
+ *   <li><b>Restart Verification:</b> Server status checked before operations
+ *   <li><b>Resource Management:</b> ResultSet wrapped in try-with-resources
+ * </ul>
+ *
+ * <p><b>Timeout Rationale:</b>
+ * <ul>
+ *   <li>Server shutdown: {@link HATestTimeouts#SERVER_SHUTDOWN_TIMEOUT} - Graceful shutdown with cleanup
+ *   <li>Server startup: {@link HATestTimeouts#SERVER_STARTUP_TIMEOUT} - HA cluster joining and sync
+ *   <li>Replica reconnection: {@link HATestTimeouts#REPLICA_RECONNECTION_TIMEOUT} - Network availability detection
+ *   <li>Transaction execution: {@link HATestTimeouts#CHAOS_TRANSACTION_TIMEOUT} - Extended for recovery
+ * </ul>
+ *
+ * <p><b>Expected Behavior:</b>
+ * <ul>
+ *   <li>All {link getTxs()} transactions eventually succeed
+ *   <li>No data loss despite random crashes
+ *   <li>Cluster automatically recovers without manual intervention
+ *   <li>No test hangs or timeouts under normal conditions
+ * </ul>
+ *
+ * @see HATestTimeouts for timeout rationale
+ * @see ReplicationServerIT for base replication test functionality
+ */
+@Tag("ha")
 public class HARandomCrashIT extends ReplicationServerIT {
-  private          int  restarts = 0;
-  private volatile long delay    = 0;
+  private          int   restarts                = 0;
+  private volatile long  delay                   = 0;
+  private          Timer timer                   = null;
+  private volatile int   consecutiveFailures     = 0;  // Track failures for exponential backoff
 
   @Override
   public void setTestConfiguration() {
@@ -53,16 +105,17 @@ public class HARandomCrashIT extends ReplicationServerIT {
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Test
   @Override
+  @Timeout(value = 20, unit = TimeUnit.MINUTES)
   public void replication() {
     checkDatabases();
 
-    final Timer timer = new Timer();
+    timer = new Timer("HARandomCrashIT-Timer", true);  // daemon=true to prevent JVM hangs
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
@@ -70,6 +123,13 @@ public class HARandomCrashIT extends ReplicationServerIT {
           return;
 
         final int serverId = ThreadLocalRandom.current().nextInt(getServerCount());
+
+        // Validate that the selected server is actually running before attempting operations
+        if (getServer(serverId).getStatus() != ArcadeDBServer.Status.ONLINE) {
+          LogManager.instance().log(this, getLogLevel(), "TEST: Skip stop of server %d because it's not ONLINE (status=%s)", null,
+              serverId, getServer(serverId).getStatus());
+          return;
+        }
 
         if (restarts >= getServerCount()) {
           delay = 0;
@@ -96,13 +156,17 @@ public class HARandomCrashIT extends ReplicationServerIT {
               db.rollback();
             }
 
-            delay = 100;
-            LogManager.instance().log(this, getLogLevel(), "TEST: Stopping the Server %s (delay=%d)...", null, serverId, delay);
+            // Exponential backoff for client operations based on consecutive failures
+            delay = Math.min(1_000 * (consecutiveFailures + 1), 5_000);
+            LogManager.instance().log(this, getLogLevel(), "TEST: Stopping the Server %s (delay=%d, failures=%d)...", null, serverId, delay, consecutiveFailures);
 
             getServer(serverId).stop();
 
-            while (getServer(serverId).getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN)
-              CodeUtils.sleep(300);
+            // Wait for server to finish shutting down using Awaitility with extended timeout
+            await("server shutdown")
+                .atMost(HATestTimeouts.SERVER_SHUTDOWN_TIMEOUT)
+                .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
+                .until(() -> getServer(serverId).getStatus() != ArcadeDBServer.Status.SHUTTING_DOWN);
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Restarting the Server %s (delay=%d)...", null, serverId, delay);
 
@@ -120,11 +184,31 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Server %s restarted (delay=%d)...", null, serverId, delay);
 
-            new Timer().schedule(new TimerTask() {
+            // Wait for cluster to be fully connected after restart
+            // This prevents cascading failures where multiple servers are offline simultaneously
+            try {
+              await("cluster reconnected after restart").atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
+                     .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
+                     .until(() -> {
+                       try {
+                         // Check if all replicas are connected (includes the restarted server)
+                         return areAllReplicasAreConnected();
+                       } catch (Exception e) {
+                         return false;
+                       }
+                     });
+              LogManager.instance().log(this, getLogLevel(), "TEST: Cluster fully connected after server %d restart", null, serverId);
+            } catch (Exception e) {
+              LogManager.instance()
+                  .log(this, Level.WARNING, "TEST: Timeout waiting for cluster to reconnect after server %d restart", e, serverId);
+            }
+
+            new Timer("HARandomCrashIT-DelayReset", true).schedule(new TimerTask() {
               @Override
               public void run() {
                 delay = 0;
-                LogManager.instance().log(this, getLogLevel(), "TEST: Resetting delay (delay=%d)...", null, delay);
+                consecutiveFailures = 0;  // Reset failures when delay expires
+                LogManager.instance().log(this, getLogLevel(), "TEST: Resetting delay and failures (delay=%d, failures=%d)...", null, delay, consecutiveFailures);
               }
             }, 10_000);
 
@@ -150,43 +234,56 @@ public class HARandomCrashIT extends ReplicationServerIT {
     for (int tx = 0; tx < getTxs(); ++tx) {
       final long lastGoodCounter = counter;
 
-      for (int retry = 0; retry < getMaxRetry(); ++retry) {
+      try {
+        // Use Awaitility to handle retry logic with adaptive delay based on failures
+        long adaptiveDelay = Math.min(100 + (consecutiveFailures * 50), 500);  // Adaptive delay for polling
+        await("transaction execution during chaos").atMost(HATestTimeouts.CHAOS_TRANSACTION_TIMEOUT)
+               .pollInterval(Duration.ofSeconds(1))
+               .pollDelay(Duration.ofMillis(adaptiveDelay))
+               .ignoreExceptionsMatching(e ->
+                   e instanceof TransactionException ||
+                   e instanceof NeedRetryException ||
+                   e instanceof RemoteException ||
+                   e instanceof TimeoutException ||
+                   e instanceof QuorumNotReachedException ||
+                   e instanceof AssertionError)  // Include AssertionError from assertions
+               .untilAsserted(() -> {
+                 for (int i = 0; i < getVerticesPerTx(); ++i) {
+                   final long currentId = lastGoodCounter + i + 1;
+
+                   try (final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?",
+                       currentId, "distributed-test")) {
+                     final Result result = resultSet.next();
+                     final Set<String> props = result.getPropertyNames();
+                     assertThat(props).as("Found the following properties " + props).hasSize(2);
+                     assertThat(result.<Long>getProperty("id")).isEqualTo(currentId);
+                     assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
+                   }
+                 }
+               });
+
+        counter = lastGoodCounter + getVerticesPerTx();
+        consecutiveFailures = 0;  // Reset on success
+
+        // Intentional pacing delay in hot loop - using TimeUnit.sleep for performance
+        // Awaitility adds too much overhead when called thousands of times in succession
+        long pacingDelay = Math.min(100 + delay / 10, 500);  // Adapt pacing to current conditions
         try {
-
-          for (int i = 0; i < getVerticesPerTx(); ++i) {
-
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
-                "distributed-test");
-
-            final Result result = resultSet.next();
-            final Set<String> props = result.getPropertyNames();
-            assertThat(props).as("Found the following properties " + props).hasSize(2);
-            assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
-            assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
-          }
-
-          CodeUtils.sleep(100);
-
-          break;
-
-        } catch (final TransactionException | NeedRetryException | RemoteException | TimeoutException e) {
-          LogManager.instance()
-              .log(this, getLogLevel(), "TEST: - RECEIVED ERROR: %s %s (RETRY %d/%d)", null, e.getClass().getName(), e.toString(),
-                  retry, getMaxRetry());
-          if (retry >= getMaxRetry() - 1)
-            throw e;
-          counter = lastGoodCounter;
-
-          CodeUtils.sleep(1_000);
-
-        } catch (final DuplicatedKeyException e) {
-          // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
-          LogManager.instance().log(this, getLogLevel(), "TEST: - RECEIVED ERROR: %s (IGNORE IT)", null, e.toString());
-          break;
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "TEST: - RECEIVED UNKNOWN ERROR: %s", e, e.toString());
-          throw e;
+          TimeUnit.MILLISECONDS.sleep(pacingDelay);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new RuntimeException("Interrupted during pacing delay", ie);
         }
+
+      } catch (final DuplicatedKeyException e) {
+        // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
+        LogManager.instance().log(this, getLogLevel(), "TEST: - RECEIVED ERROR: %s (IGNORE IT)", null, e.toString());
+        counter = lastGoodCounter + getVerticesPerTx();
+        consecutiveFailures = Math.max(0, consecutiveFailures - 1);  // Reduce failure count for duplicates
+      } catch (final Exception e) {
+        consecutiveFailures++;  // Track consecutive failures for exponential backoff
+        LogManager.instance().log(this, Level.SEVERE, "TEST: - RECEIVED UNKNOWN ERROR (failures=%d): %s", e, consecutiveFailures, e.toString());
+        throw e;
       }
 
       if (counter % 1000 == 0) {
@@ -216,16 +313,62 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
     LogManager.instance().log(this, getLogLevel(), "Done, restarted %d times", null, restarts);
 
-    for (int i = 0; i < getServerCount(); i++)
-      waitForReplicationIsCompleted(i);
+    // Wait for cluster to fully stabilize after chaos
+    // This prevents verification from running while servers are still recovering
+    LogManager.instance().log(this, getLogLevel(), "TEST: Waiting for cluster to stabilize...");
+
+    // Use centralized stabilization helper - performs 3-phase check:
+    // Phase 1: All servers ONLINE
+    // Phase 2: All replication queues empty
+    // Phase 3: All replicas connected to leader
+    waitForClusterStable(getServerCount());
+
+    LogManager.instance().log(this, getLogLevel(), "TEST: Cluster fully stable");
+
+    // Wait for all servers to report consistent record counts
+    // This replaces the fixed 5-second sleep with condition-based waiting
+    LogManager.instance().log(this, getLogLevel(), "TEST: Waiting for final data persistence...");
+    await("final data persistence")
+        .atMost(Duration.ofSeconds(30))
+        .pollInterval(Duration.ofSeconds(1))
+        .until(() -> {
+          // Check if all servers have consistent record counts
+          long expectedCount = 1 + (long) getTxs() * getVerticesPerTx();
+          for (int i = 0; i < getServerCount(); i++) {
+            Database serverDb = getServerDatabase(i, getDatabaseName());
+            serverDb.begin();
+            try {
+              long count = serverDb.countType(VERTEX1_TYPE_NAME, true);
+              if (count != expectedCount) {
+                LogManager.instance().log(this, getLogLevel(),
+                    "TEST: Server %d has %d vertices, expected %d", i, count, expectedCount);
+                return false;  // Not yet consistent
+              }
+            } finally {
+              serverDb.rollback();
+            }
+          }
+          return true;  // All servers have correct count
+        });
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
+    LogManager.instance().log(this, getLogLevel(), "TEST: Starting verification...");
     for (final int s : getServerToCheck())
       checkEntriesOnServer(s);
 
     onAfterTest();
 
     assertThat(restarts >= getServerCount()).as("Restarts " + restarts + " times").isTrue();
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    if (timer != null) {
+      timer.cancel();
+      timer = null;
+    }
+    super.endTest();
   }
 
   private static Level getLogLevel() {

@@ -28,8 +28,8 @@ import java.util.*;
  * Response for a request. This is needed to check the quorum by the leader.
  */
 public class DatabaseAlignResponse extends HAAbstractCommand {
-  private List<int[]> alignedPages;
-  private String      remoteServerName;
+  private List<int[]>         alignedPages;
+  private HAServer.ServerInfo remoteServerName;
 
   public DatabaseAlignResponse() {
   }
@@ -42,7 +42,7 @@ public class DatabaseAlignResponse extends HAAbstractCommand {
     return alignedPages;
   }
 
-  public String getRemoteServerName() {
+  public HAServer.ServerInfo getRemoteServerName() {
     return remoteServerName;
   }
 
@@ -79,7 +79,7 @@ public class DatabaseAlignResponse extends HAAbstractCommand {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     this.remoteServerName = remoteServerName;
     server.receivedResponse(remoteServerName, messageNumber, this);
     return null;

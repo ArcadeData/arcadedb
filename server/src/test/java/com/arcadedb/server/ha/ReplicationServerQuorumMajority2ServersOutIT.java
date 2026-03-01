@@ -24,8 +24,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -33,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
+@Tag("ha")
 public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 
@@ -45,8 +49,8 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     if (server.getServerName().equals("ArcadeDB_1"))
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          if (type == TYPE.REPLICA_MSG_RECEIVED) {
+        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
+          if (type == Type.REPLICA_MSG_RECEIVED) {
             if (messages.incrementAndGet() > 100) {
               LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 1...");
               getServer(1).stop();
@@ -58,8 +62,8 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     if (server.getServerName().equals("ArcadeDB_2"))
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          if (type == TYPE.REPLICA_MSG_RECEIVED) {
+        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
+          if (type == Type.REPLICA_MSG_RECEIVED) {
             if (messages.incrementAndGet() > 200) {
               LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 2...");
               getServer(2).stop();
@@ -69,8 +73,10 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
       });
   }
 
+  @Override
   @Test
-  void testReplication() throws Exception {
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
+  public void replication() throws Exception {
     assertThatThrownBy(super::replication)
         .isInstanceOf(QuorumNotReachedException.class);
   }
@@ -88,7 +94,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
           .isTrue();
 
     } catch (final Exception e) {
-      fail("Error on checking on server" + server  , e);
+      fail("Error on checking on server" + server, e);
     }
   }
 

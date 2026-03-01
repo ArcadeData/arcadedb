@@ -26,10 +26,13 @@ import com.arcadedb.server.BaseGraphServerTest;
 
 import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.*;
 import java.net.*;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.*;
@@ -38,6 +41,7 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 class HTTP2ServersIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
@@ -45,6 +49,7 @@ class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void serverInfo() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -66,6 +71,7 @@ class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void propagationOfSchema() throws Exception {
     testEachServer((serverIndex) -> {
       // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
@@ -95,6 +101,7 @@ class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void checkQuery() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -119,12 +126,11 @@ class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void checkDeleteGraphElements() throws Exception {
 
     // Wait for initial synchronization of all servers
-    for (int i = 0; i < getServerCount(); i++) {
-      waitForReplicationIsCompleted(i);
-    }
+    waitForClusterStable(getServerCount());
 
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "TESTS SERVER " + serverIndex);
@@ -219,11 +225,7 @@ class HTTP2ServersIT extends BaseGraphServerTest {
       waitForReplicationIsCompleted(serverIndex);
 
       // Also wait for all other servers to process the delete
-      for (int i = 0; i < getServerCount(); i++) {
-        if (i != serverIndex) {
-          waitForReplicationIsCompleted(i);
-        }
-      }
+      waitForClusterStable(getServerCount());
 
       testEachServer((checkServer) -> {
         try {
@@ -254,6 +256,7 @@ class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void hAConfiguration() {
     for (ArcadeDBServer server : getServers()) {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",

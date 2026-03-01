@@ -20,13 +20,17 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerException;
-
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
+@Timeout(value = 5, unit = TimeUnit.MINUTES)
+@Tag("ha")
 class HAConfigurationIT extends BaseGraphServerTest {
   protected int getServerCount() {
     return 3;
@@ -37,6 +41,10 @@ class HAConfigurationIT extends BaseGraphServerTest {
     return "192.168.0.1:2424,192.168.0.1:2425,localhost:2424";
   }
 
+  @Override
+  public void beginTest() {
+    //noop
+  }
 
   @Test
   void replication() {

@@ -18,12 +18,20 @@ package com.arcadedb.network;/*
  */
 
 /**
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * Utility class for parsing host addresses.
  */
 public class HostUtil {
   public static final String CLIENT_DEFAULT_PORT = "2480";
   public static final String HA_DEFAULT_PORT     = "2424";
 
+  /**
+   * Parses the host address and returns the host and port. If the port is not specified, it returns the default port.
+   *
+   * @param host        The host address to parse.
+   * @param defaultPort The default port to use if no port is specified in the host address.
+   *
+   * @return An array containing the host and port.
+   */
   public static String[] parseHostAddress(String host, final String defaultPort) {
     if (host == null)
       throw new IllegalArgumentException("Host null");
@@ -33,14 +41,25 @@ public class HostUtil {
     if (host.isEmpty())
       throw new IllegalArgumentException("Host is empty");
 
+    String alias = "";
+    if (host.startsWith("{")) {
+      alias = host.substring(host.indexOf("{") + 1, host.indexOf("}"));
+      // REMOVE ALIAS
+      host = host.substring(host.indexOf("}") + 1);
+    }
+
     final String[] parts = host.split(":");
-    if (parts.length == 1 || parts.length == 8)
+    if (parts.length == 1 || parts.length == 8) {
       // ( IPV4 OR IPV6 ) NO PORT
-      return new String[] { host, defaultPort };
-    else if (parts.length == 2 || parts.length == 9) {
+      if (alias.isEmpty())
+        alias = host;
+      return new String[] { host, defaultPort, alias };
+    } else if (parts.length == 2 || parts.length == 9) {
       // ( IPV4 OR IPV6 ) + PORT
       final int pos = host.lastIndexOf(":");
-      return new String[] { host.substring(0, pos), host.substring(pos + 1) };
+      if (alias.isEmpty())
+        alias = host.substring(0, pos);
+      return new String[] { host.substring(0, pos), host.substring(pos + 1), alias };
     }
 
     throw new IllegalArgumentException("Invalid host " + host);

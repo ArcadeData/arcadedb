@@ -50,74 +50,62 @@ public class DateUtils {
       final Class dateTimeImplementation, final ChronoUnit destinationPrecision) {
     final long convertedTimestamp = convertTimestamp(timestamp, sourcePrecision, destinationPrecision);
 
-    final Object value;
-    if (dateTimeImplementation.equals(Date.class)) {
-      if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
-        throw new IllegalArgumentException(
-            "java.util.Date implementation cannot handle datetime with precision " + destinationPrecision);
-      value = new Date(convertedTimestamp);
-    } else if (dateTimeImplementation.equals(Calendar.class)) {
-      if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
-        throw new IllegalArgumentException(
-            "java.util.Calendar implementation cannot handle datetime with precision " + destinationPrecision);
-      value = Calendar.getInstance(database.getSchema().getTimeZone());
-      ((Calendar) value).setTimeInMillis(convertedTimestamp);
-    } else if (dateTimeImplementation.equals(LocalDateTime.class)) {
-      if (destinationPrecision.equals(ChronoUnit.SECONDS))
-        value = LocalDateTime.ofInstant(Instant.ofEpochSecond(convertedTimestamp), UTC_ZONE_ID);
-      else if (destinationPrecision.equals(ChronoUnit.MILLIS))
-        value = LocalDateTime.ofInstant(Instant.ofEpochMilli(convertedTimestamp), UTC_ZONE_ID);
-      else if (destinationPrecision.equals(ChronoUnit.MICROS))
-        value = LocalDateTime.ofInstant(Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(convertedTimestamp),
+    return switch (dateTimeImplementation.getSimpleName()) {
+      case "Date" -> {
+        if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
+          throw new IllegalArgumentException(
+              "java.util.Date implementation cannot handle datetime with precision " + destinationPrecision);
+        yield new Date(convertedTimestamp);
+      }
+      case "Calendar" -> {
+        if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
+          throw new IllegalArgumentException(
+              "java.util.Calendar implementation cannot handle datetime with precision " + destinationPrecision);
+        final Calendar calendar = Calendar.getInstance(database.getSchema().getTimeZone());
+        calendar.setTimeInMillis(convertedTimestamp);
+        yield calendar;
+      }
+      case "LocalDateTime" -> switch (destinationPrecision) {
+        case SECONDS -> LocalDateTime.ofInstant(Instant.ofEpochSecond(convertedTimestamp), UTC_ZONE_ID);
+        case MILLIS -> LocalDateTime.ofInstant(Instant.ofEpochMilli(convertedTimestamp), UTC_ZONE_ID);
+        case MICROS -> LocalDateTime.ofInstant(Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(convertedTimestamp),
             TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)))), UTC_ZONE_ID);
-      else if (destinationPrecision.equals(ChronoUnit.NANOS))
-        value = LocalDateTime.ofInstant(Instant.ofEpochSecond(0L, convertedTimestamp), UTC_ZONE_ID);
-      else
-        value = 0;
-    } else if (dateTimeImplementation.equals(ZonedDateTime.class)) {
-      if (destinationPrecision.equals(ChronoUnit.SECONDS))
-        value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(convertedTimestamp), UTC_ZONE_ID);
-      else if (destinationPrecision.equals(ChronoUnit.MILLIS))
-        value = ZonedDateTime.ofInstant(Instant.ofEpochMilli(convertedTimestamp), UTC_ZONE_ID);
-      else if (destinationPrecision.equals(ChronoUnit.MICROS))
-        value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(convertedTimestamp),
+        case NANOS -> LocalDateTime.ofInstant(Instant.ofEpochSecond(0L, convertedTimestamp), UTC_ZONE_ID);
+        default -> throw new IllegalArgumentException("Unsupported precision: " + destinationPrecision);
+      };
+      case "ZonedDateTime" -> switch (destinationPrecision) {
+        case SECONDS -> ZonedDateTime.ofInstant(Instant.ofEpochSecond(convertedTimestamp), UTC_ZONE_ID);
+        case MILLIS -> ZonedDateTime.ofInstant(Instant.ofEpochMilli(convertedTimestamp), UTC_ZONE_ID);
+        case MICROS -> ZonedDateTime.ofInstant(Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(convertedTimestamp),
             TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)))), UTC_ZONE_ID);
-      else if (destinationPrecision.equals(ChronoUnit.NANOS))
-        value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(0L, convertedTimestamp), UTC_ZONE_ID);
-      else
-        value = 0;
-    } else if (dateTimeImplementation.equals(Instant.class)) {
-      if (destinationPrecision.equals(ChronoUnit.SECONDS))
-        value = Instant.ofEpochSecond(convertedTimestamp);
-      else if (destinationPrecision.equals(ChronoUnit.MILLIS))
-        value = Instant.ofEpochMilli(convertedTimestamp);
-      else if (destinationPrecision.equals(ChronoUnit.MICROS))
-        value = Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(convertedTimestamp),
+        case NANOS -> ZonedDateTime.ofInstant(Instant.ofEpochSecond(0L, convertedTimestamp), UTC_ZONE_ID);
+        default -> throw new IllegalArgumentException("Unsupported precision: " + destinationPrecision);
+      };
+      case "Instant" -> switch (destinationPrecision) {
+        case SECONDS -> Instant.ofEpochSecond(convertedTimestamp);
+        case MILLIS -> Instant.ofEpochMilli(convertedTimestamp);
+        case MICROS -> Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(convertedTimestamp),
             TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, TimeUnit.SECONDS.toMicros(1))));
-      else if (destinationPrecision.equals(ChronoUnit.NANOS))
-        value = Instant.ofEpochSecond(0L, convertedTimestamp);
-      else
-        value = 0;
-    } else
-      throw new SerializationException(
+        case NANOS -> Instant.ofEpochSecond(0L, convertedTimestamp);
+        default -> throw new IllegalArgumentException("Unsupported precision: " + destinationPrecision);
+      };
+      default -> throw new SerializationException(
           "Error on deserialize datetime. Configured class '" + dateTimeImplementation + "' is not supported");
-    return value;
+    };
   }
 
   public static Object date(final Database database, final long timestamp, final Class dateImplementation) {
-    final Object value;
-    if (dateImplementation.equals(Date.class))
-      value = new Date(timestamp * MS_IN_A_DAY);
-    else if (dateImplementation.equals(Calendar.class)) {
-      value = Calendar.getInstance(database.getSchema().getTimeZone());
-      ((Calendar) value).setTimeInMillis(timestamp * MS_IN_A_DAY);
-    } else if (dateImplementation.equals(LocalDate.class)) {
-      value = LocalDate.ofEpochDay(timestamp);
-    } else if (dateImplementation.equals(LocalDateTime.class)) {
-      value = LocalDateTime.ofEpochSecond(timestamp / 1_000, (int) ((timestamp % 1_000) * 1_000_000), ZoneOffset.UTC);
-    } else
-      throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
-    return value;
+    return switch (dateImplementation.getSimpleName()) {
+      case "Date" -> new Date(timestamp * MS_IN_A_DAY);
+      case "Calendar" -> {
+        final Calendar calendar = Calendar.getInstance(database.getSchema().getTimeZone());
+        calendar.setTimeInMillis(timestamp * MS_IN_A_DAY);
+        yield calendar;
+      }
+      case "LocalDate" -> LocalDate.ofEpochDay(timestamp);
+      case "LocalDateTime" -> LocalDateTime.ofEpochSecond(timestamp / 1_000, (int) ((timestamp % 1_000) * 1_000_000), ZoneOffset.UTC);
+      default -> throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
+    };
   }
 
   public static Long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
@@ -383,18 +371,17 @@ public class DateUtils {
 
     final long timestamp = DateUtils.dateTimeToTimestamp(date, ChronoUnit.MILLIS);
 
-    if (dateImplementation.equals(Date.class))
-      return new Date(timestamp);
-    else if (dateImplementation.equals(Calendar.class)) {
-      final Calendar cal = Calendar.getInstance();
-      cal.setTimeInMillis(timestamp);
-      return cal;
-    } else if (dateImplementation.equals(LocalDate.class))
-      return LocalDate.ofEpochDay(timestamp / DateUtils.MS_IN_A_DAY);
-    else if (dateImplementation.equals(LocalDateTime.class))
-      return LocalDateTime.ofEpochSecond(timestamp / 1_000, (int) ((timestamp % 1_000) * 1_000_000), ZoneOffset.UTC);
-    else
-      return date;
+    return switch (dateImplementation.getSimpleName()) {
+      case "Date" -> new Date(timestamp);
+      case "Calendar" -> {
+        final Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(timestamp);
+        yield cal;
+      }
+      case "LocalDate" -> LocalDate.ofEpochDay(timestamp / DateUtils.MS_IN_A_DAY);
+      case "LocalDateTime" -> LocalDateTime.ofEpochSecond(timestamp / 1_000, (int) ((timestamp % 1_000) * 1_000_000), ZoneOffset.UTC);
+      default -> date;
+    };
   }
 
   public static String formatElapsed(final long ms) {
