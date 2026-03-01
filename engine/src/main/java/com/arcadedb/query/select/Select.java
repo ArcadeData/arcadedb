@@ -58,6 +58,12 @@ public class Select {
   ArrayList<Pair<String, Boolean>> orderBy;
   boolean                          parallel    = false;
 
+  // Vector k-NN search fields
+  String                           vectorProperty;
+  float[]                          vectorQuery;
+  int                              vectorK;
+  boolean                          vectorApproximate;
+
   STATE state = STATE.DEFAULT;
   private SelectTreeNode lastTreeElement;
 
@@ -254,6 +260,30 @@ public class Select {
 
   public SelectIterator<Document> documents() {
     return run();
+  }
+
+  public long count() {
+    compile();
+    return new SelectExecutor(this).executeCount();
+  }
+
+  public boolean exists() {
+    compile();
+    return new SelectExecutor(this).executeExists();
+  }
+
+  public java.util.stream.Stream<Document> stream() {
+    return documents().stream();
+  }
+
+  public SelectVectorBuilder nearestTo(final String property, final float[] queryVector, final int k) {
+    checkNotCompiled();
+    if (fromType == null)
+      throw new IllegalArgumentException("FromType must be set before calling nearestTo()");
+    this.vectorProperty = property;
+    this.vectorQuery = queryVector;
+    this.vectorK = k;
+    return new SelectVectorBuilder(this);
   }
 
   <T extends Document> SelectIterator<T> run() {

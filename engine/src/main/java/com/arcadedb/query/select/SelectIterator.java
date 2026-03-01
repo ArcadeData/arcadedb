@@ -20,11 +20,13 @@ package com.arcadedb.query.select;/*
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.*;
 
 /**
  * Query iterator returned from queries. Extends the base Java iterator with convenient methods.
@@ -136,6 +138,25 @@ public class SelectIterator<T extends Document> implements Iterator<T> {
     while (hasNext())
       result.add(next());
     return result;
+  }
+
+  public Stream<T> stream() {
+    return StreamSupport.stream(Spliterators.spliteratorUnknownSize(this, Spliterator.ORDERED | Spliterator.NONNULL), false);
+  }
+
+  @SuppressWarnings("unchecked")
+  public SelectTraversal traverseOut(final String... edgeTypes) {
+    return new SelectTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.OUT, edgeTypes);
+  }
+
+  @SuppressWarnings("unchecked")
+  public SelectTraversal traverseIn(final String... edgeTypes) {
+    return new SelectTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.IN, edgeTypes);
+  }
+
+  @SuppressWarnings("unchecked")
+  public SelectTraversal traverseBoth(final String... edgeTypes) {
+    return new SelectTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.BOTH, edgeTypes);
   }
 
   public Map<String, Object> getMetrics() {
