@@ -194,8 +194,11 @@ public class PluginManager {
           plugin.configure(server, configuration);
           plugin.startService();
 
-          descriptor.setStarted(true);
-          LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
+          if (plugin.isActive()) {
+            descriptor.setStarted(true);
+            LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
+          } else
+            LogManager.instance().log(this, Level.INFO, "- %s plugin configured but not active", pluginName);
 
         } finally {
           currentThread.setContextClassLoader(originalClassLoader);

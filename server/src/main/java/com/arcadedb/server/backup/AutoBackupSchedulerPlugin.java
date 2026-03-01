@@ -221,6 +221,11 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     return enabled;
   }
 
+  @Override
+  public boolean isActive() {
+    return enabled;
+  }
+
   /**
    * Reloads the backup configuration from disk.
    */
