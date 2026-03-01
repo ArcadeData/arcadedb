@@ -19,6 +19,7 @@
 package com.arcadedb.query.select;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -67,11 +68,11 @@ public class SelectTraversalTest extends TestHelper {
   }
 
   @Test
-  void okTraverseOut() {
+  void okOutVertices() {
     final List<Vertex> friends = database.select().fromType("Person")//
         .where().property("name").eq().value("Alice")//
         .vertices()//
-        .traverseOut("FRIENDS")//
+        .outVertices("FRIENDS")//
         .toList();
 
     assertThat(friends).hasSize(2);
@@ -80,11 +81,11 @@ public class SelectTraversalTest extends TestHelper {
   }
 
   @Test
-  void okTraverseIn() {
+  void okInVertices() {
     final List<Vertex> result = database.select().fromType("Person")//
         .where().property("name").eq().value("Bob")//
         .vertices()//
-        .traverseIn("FRIENDS")//
+        .inVertices("FRIENDS")//
         .toList();
 
     assertThat(result).hasSize(1);
@@ -92,11 +93,11 @@ public class SelectTraversalTest extends TestHelper {
   }
 
   @Test
-  void okTraverseBoth() {
+  void okBothVertices() {
     final List<Vertex> result = database.select().fromType("Person")//
         .where().property("name").eq().value("Bob")//
         .vertices()//
-        .traverseBoth("FRIENDS")//
+        .bothVertices("FRIENDS")//
         .toList();
 
     assertThat(result).hasSize(2);
@@ -105,13 +106,13 @@ public class SelectTraversalTest extends TestHelper {
   }
 
   @Test
-  void okMultiHopChaining() {
-    // Alice -> (Bob, Diana) -> (Charlie, Eve via FRIENDS only = Charlie)
+  void okMultiHopVertexChaining() {
+    // Alice -> (Bob, Diana) -> (Charlie via FRIENDS only)
     final Set<String> names = database.select().fromType("Person")//
         .where().property("name").eq().value("Alice")//
         .vertices()//
-        .traverseOut("FRIENDS")//
-        .thenOut("FRIENDS")//
+        .outVertices("FRIENDS")//
+        .thenOutVertices("FRIENDS")//
         .stream()//
         .map(v -> v.getString("name"))//
         .collect(Collectors.toSet());
@@ -122,20 +123,20 @@ public class SelectTraversalTest extends TestHelper {
   @Test
   void okEdgeTypeFilter() {
     // Bob has FRIENDS (Alice in, Charlie out) and WORKS_WITH (Eve out)
-    // Traverse OUT without filter => Charlie + Eve
+    // outVertices without filter => Charlie + Eve
     final List<Vertex> allOut = database.select().fromType("Person")//
         .where().property("name").eq().value("Bob")//
         .vertices()//
-        .traverseOut()//
+        .outVertices()//
         .toList();
 
     assertThat(allOut).hasSize(2);
 
-    // Traverse OUT with WORKS_WITH only
+    // outVertices with WORKS_WITH only
     final List<Vertex> worksWithOnly = database.select().fromType("Person")//
         .where().property("name").eq().value("Bob")//
         .vertices()//
-        .traverseOut("WORKS_WITH")//
+        .outVertices("WORKS_WITH")//
         .toList();
 
     assertThat(worksWithOnly).hasSize(1);
@@ -143,11 +144,11 @@ public class SelectTraversalTest extends TestHelper {
   }
 
   @Test
-  void okTraverseStream() {
+  void okVertexTraversalStream() {
     final long count = database.select().fromType("Person")//
         .where().property("name").eq().value("Alice")//
         .vertices()//
-        .traverseOut("FRIENDS")//
+        .outVertices("FRIENDS")//
         .stream()//
         .count();
 
@@ -159,9 +160,86 @@ public class SelectTraversalTest extends TestHelper {
     final List<Vertex> result = database.select().fromType("Person")//
         .where().property("name").eq().value("NonExistent")//
         .vertices()//
-        .traverseOut("FRIENDS")//
+        .outVertices("FRIENDS")//
         .toList();
 
     assertThat(result).isEmpty();
+  }
+
+  @Test
+  void okOutEdges() {
+    final List<Edge> edges = database.select().fromType("Person")//
+        .where().property("name").eq().value("Alice")//
+        .vertices()//
+        .outEdges("FRIENDS")//
+        .toList();
+
+    assertThat(edges).hasSize(2);
+    for (final Edge edge : edges)
+      assertThat(edge.getTypeName()).isEqualTo("FRIENDS");
+  }
+
+  @Test
+  void okInEdges() {
+    final List<Edge> edges = database.select().fromType("Person")//
+        .where().property("name").eq().value("Bob")//
+        .vertices()//
+        .inEdges("FRIENDS")//
+        .toList();
+
+    assertThat(edges).hasSize(1);
+    assertThat(edges.getFirst().getTypeName()).isEqualTo("FRIENDS");
+  }
+
+  @Test
+  void okBothEdges() {
+    // Bob: in FRIENDS from Alice, out FRIENDS to Charlie => 2 FRIENDS edges
+    final List<Edge> edges = database.select().fromType("Person")//
+        .where().property("name").eq().value("Bob")//
+        .vertices()//
+        .bothEdges("FRIENDS")//
+        .toList();
+
+    assertThat(edges).hasSize(2);
+  }
+
+  @Test
+  void okOutEdgesAllTypes() {
+    // Bob has 2 outgoing edges: FRIENDS->Charlie, WORKS_WITH->Eve
+    final List<Edge> edges = database.select().fromType("Person")//
+        .where().property("name").eq().value("Bob")//
+        .vertices()//
+        .outEdges()//
+        .toList();
+
+    assertThat(edges).hasSize(2);
+    final Set<String> types = edges.stream().map(Edge::getTypeName).collect(Collectors.toSet());
+    assertThat(types).containsExactlyInAnyOrder("FRIENDS", "WORKS_WITH");
+  }
+
+  @Test
+  void okEdgeTraversalStream() {
+    final long count = database.select().fromType("Person")//
+        .where().property("name").eq().value("Alice")//
+        .vertices()//
+        .outEdges("FRIENDS")//
+        .stream()//
+        .count();
+
+    assertThat(count).isEqualTo(2);
+  }
+
+  @Test
+  void okVertexToEdgeChaining() {
+    // Alice -> outVertices(FRIENDS) -> [Bob, Diana] -> outEdges(WORKS_WITH) -> [Bob-WORKS_WITH->Eve]
+    final List<Edge> edges = database.select().fromType("Person")//
+        .where().property("name").eq().value("Alice")//
+        .vertices()//
+        .outVertices("FRIENDS")//
+        .thenOutEdges("WORKS_WITH")//
+        .toList();
+
+    assertThat(edges).hasSize(1);
+    assertThat(edges.getFirst().getTypeName()).isEqualTo("WORKS_WITH");
   }
 }

@@ -18,22 +18,22 @@
  */
 package com.arcadedb.query.select;
 
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
 import java.util.*;
 import java.util.stream.*;
 
 /**
- * Iterator that expands source vertices to neighbors in a given direction, with optional edge type filter.
- * Supports chaining via {@code thenOut()}, {@code thenIn()}, {@code thenBoth()}.
+ * Iterator that lazily expands source vertices to adjacent edges in a given direction.
  */
-public class SelectTraversal implements Iterator<Vertex> {
-  private final Iterator<Vertex>  source;
-  private final Vertex.DIRECTION  direction;
-  private final String[]          edgeTypes;
-  private       Iterator<Vertex>  currentNeighbors;
+public class SelectEdgeTraversal implements Iterator<Edge> {
+  private final Iterator<Vertex> source;
+  private final Vertex.DIRECTION direction;
+  private final String[]         edgeTypes;
+  private       Iterator<Edge>   currentEdges;
 
-  public SelectTraversal(final Iterator<Vertex> source, final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public SelectEdgeTraversal(final Iterator<Vertex> source, final Vertex.DIRECTION direction, final String... edgeTypes) {
     this.source = source;
     this.direction = direction;
     this.edgeTypes = edgeTypes;
@@ -41,41 +41,29 @@ public class SelectTraversal implements Iterator<Vertex> {
 
   @Override
   public boolean hasNext() {
-    while (currentNeighbors == null || !currentNeighbors.hasNext()) {
+    while (currentEdges == null || !currentEdges.hasNext()) {
       if (!source.hasNext())
         return false;
-      currentNeighbors = source.next().getVertices(direction, edgeTypes).iterator();
+      currentEdges = source.next().getEdges(direction, edgeTypes).iterator();
     }
     return true;
   }
 
   @Override
-  public Vertex next() {
+  public Edge next() {
     if (!hasNext())
       throw new NoSuchElementException();
-    return currentNeighbors.next();
+    return currentEdges.next();
   }
 
-  public SelectTraversal thenOut(final String... edgeTypes) {
-    return new SelectTraversal(this, Vertex.DIRECTION.OUT, edgeTypes);
-  }
-
-  public SelectTraversal thenIn(final String... edgeTypes) {
-    return new SelectTraversal(this, Vertex.DIRECTION.IN, edgeTypes);
-  }
-
-  public SelectTraversal thenBoth(final String... edgeTypes) {
-    return new SelectTraversal(this, Vertex.DIRECTION.BOTH, edgeTypes);
-  }
-
-  public List<Vertex> toList() {
-    final List<Vertex> result = new ArrayList<>();
+  public List<Edge> toList() {
+    final List<Edge> result = new ArrayList<>();
     while (hasNext())
       result.add(next());
     return result;
   }
 
-  public Stream<Vertex> stream() {
+  public Stream<Edge> stream() {
     return StreamSupport.stream(Spliterators.spliteratorUnknownSize(this, Spliterator.ORDERED | Spliterator.NONNULL), false);
   }
 }

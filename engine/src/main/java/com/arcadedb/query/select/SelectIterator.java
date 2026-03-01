@@ -145,18 +145,33 @@ public class SelectIterator<T extends Document> implements Iterator<T> {
   }
 
   @SuppressWarnings("unchecked")
-  public SelectTraversal traverseOut(final String... edgeTypes) {
-    return new SelectTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.OUT, edgeTypes);
+  public SelectVertexTraversal outVertices(final String... edgeTypes) {
+    return new SelectVertexTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.OUT, edgeTypes);
   }
 
   @SuppressWarnings("unchecked")
-  public SelectTraversal traverseIn(final String... edgeTypes) {
-    return new SelectTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.IN, edgeTypes);
+  public SelectVertexTraversal inVertices(final String... edgeTypes) {
+    return new SelectVertexTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.IN, edgeTypes);
   }
 
   @SuppressWarnings("unchecked")
-  public SelectTraversal traverseBoth(final String... edgeTypes) {
-    return new SelectTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.BOTH, edgeTypes);
+  public SelectVertexTraversal bothVertices(final String... edgeTypes) {
+    return new SelectVertexTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.BOTH, edgeTypes);
+  }
+
+  @SuppressWarnings("unchecked")
+  public SelectEdgeTraversal outEdges(final String... edgeTypes) {
+    return new SelectEdgeTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.OUT, edgeTypes);
+  }
+
+  @SuppressWarnings("unchecked")
+  public SelectEdgeTraversal inEdges(final String... edgeTypes) {
+    return new SelectEdgeTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.IN, edgeTypes);
+  }
+
+  @SuppressWarnings("unchecked")
+  public SelectEdgeTraversal bothEdges(final String... edgeTypes) {
+    return new SelectEdgeTraversal((Iterator<Vertex>) this, Vertex.DIRECTION.BOTH, edgeTypes);
   }
 
   public Map<String, Object> getMetrics() {
