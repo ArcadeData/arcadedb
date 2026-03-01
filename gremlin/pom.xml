@@ -41,7 +41,7 @@
         <commons-configuration2.version>2.13.0</commons-configuration2.version>
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
         <commons-lang3.version>3.20.0</commons-lang3.version>
-        <groovy.version>4.0.28</groovy.version>
+        <groovy.version>5.0.4</groovy.version>
         <antlr4.version>4.9.1</antlr4.version>
     </properties>
 
