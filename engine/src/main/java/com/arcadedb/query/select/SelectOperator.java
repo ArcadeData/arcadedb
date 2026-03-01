@@ -121,6 +121,46 @@ public enum SelectOperator {
     }
   },
 
+  in_op("in", false, 1) {
+    @Override
+    Object eval(final Document record, final Object left, final Object right) {
+      final Object leftValue = SelectExecutor.evaluateValue(record, left);
+      final Object rightValue = SelectExecutor.evaluateValue(record, right);
+      if (rightValue instanceof Collection<?> collection) {
+        for (final Object item : collection)
+          if (BinaryComparator.equals(leftValue, item))
+            return true;
+        return false;
+      }
+      return BinaryComparator.equals(leftValue, rightValue);
+    }
+  },
+
+  between("between", false, 1) {
+    @Override
+    Object eval(final Document record, final Object left, final Object right) {
+      final Object leftValue = SelectExecutor.evaluateValue(record, left);
+      final Object rightValue = SelectExecutor.evaluateValue(record, right);
+      if (rightValue instanceof Object[] range && range.length == 2)
+        return BinaryComparator.compareTo(leftValue, range[0]) >= 0 && BinaryComparator.compareTo(leftValue, range[1]) <= 0;
+      throw new IllegalArgumentException("BETWEEN requires a range of two values");
+    }
+  },
+
+  is_null("is null", false, 1) {
+    @Override
+    Object eval(final Document record, final Object left, final Object right) {
+      return SelectExecutor.evaluateValue(record, left) == null;
+    }
+  },
+
+  is_not_null("is not null", false, 1) {
+    @Override
+    Object eval(final Document record, final Object left, final Object right) {
+      return SelectExecutor.evaluateValue(record, left) != null;
+    }
+  },
+
   run("!", true, -1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {

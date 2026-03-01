@@ -19,15 +19,19 @@ package com.arcadedb.query.select;/*
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -59,7 +63,105 @@ public class SelectExecutor {
 
   <T extends Document> SelectIterator<T> execute() {
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
+    final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
 
+    if (select.parallel)
+      return new SelectParallelIterator<>(this, iterator, iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1);
+
+    return new SelectIterator<>(this, iterator, iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1);
+  }
+
+  long executeCount() {
+    final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
+    final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
+    final Set<RID> filterOutRecords = (iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1)
+        ? ConcurrentHashMap.newKeySet() : null;
+
+    long count = 0;
+    int skipped = 0;
+    while (iterator.hasNext()) {
+      final Document record = iterator.next().asDocument();
+      if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
+        continue;
+      if (select.rootTreeElement == null || evaluateWhere(record)) {
+        if (skipped < select.skip) {
+          skipped++;
+          continue;
+        }
+        if (filterOutRecords != null)
+          filterOutRecords.add(record.getIdentity());
+        count++;
+        if (select.limit > -1 && count >= select.limit)
+          break;
+      }
+    }
+    return count;
+  }
+
+  boolean executeExists() {
+    final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
+    final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
+
+    while (iterator.hasNext()) {
+      final Document record = iterator.next().asDocument();
+      if (select.rootTreeElement == null || evaluateWhere(record))
+        return true;
+    }
+    return false;
+  }
+
+  @SuppressWarnings("unchecked")
+  <T extends Document> List<SelectVectorResult<T>> executeVector() {
+    if (select.fromType == null)
+      throw new IllegalArgumentException("FromType must be set for vector search");
+    if (select.vectorProperty == null)
+      throw new IllegalArgumentException("Vector property must be set (call nearestTo())");
+
+    final TypeIndex typeIndex = select.fromType.getPolymorphicIndexByProperties(select.vectorProperty);
+    if (typeIndex == null)
+      throw new IllegalArgumentException("No index found on property '" + select.vectorProperty + "' for type '" + select.fromType.getName() + "'");
+
+    final IndexInternal[] bucketIndexes = typeIndex.getIndexesOnBuckets();
+    if (bucketIndexes == null || bucketIndexes.length == 0)
+      throw new IllegalArgumentException("Index '" + typeIndex.getName() + "' has no bucket indexes");
+
+    final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
+    for (final IndexInternal bucketIndex : bucketIndexes)
+      if (bucketIndex instanceof LSMVectorIndex lsmIndex)
+        vectorIndexes.add(lsmIndex);
+
+    if (vectorIndexes.isEmpty())
+      throw new IllegalArgumentException("Index '" + typeIndex.getName() + "' is not a vector index");
+
+    final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
+    for (final LSMVectorIndex lsmIndex : vectorIndexes) {
+      final List<Pair<RID, Float>> neighbors;
+      if (select.vectorApproximate)
+        neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, select.vectorK);
+      else
+        neighbors = lsmIndex.findNeighborsFromVector(select.vectorQuery, select.vectorK);
+      allNeighbors.addAll(neighbors);
+    }
+
+    allNeighbors.sort(Comparator.comparing(Pair::getSecond));
+
+    final int resultCount = Math.min(select.vectorK, allNeighbors.size());
+    final List<SelectVectorResult<T>> results = new ArrayList<>(resultCount);
+
+    for (int i = 0; i < resultCount; i++) {
+      final Pair<RID, Float> neighbor = allNeighbors.get(i);
+      final T record = (T) neighbor.getFirst().asDocument();
+
+      if (select.rootTreeElement != null && !evaluateWhere(record))
+        continue;
+
+      results.add(new SelectVectorResult<>(record, neighbor.getSecond()));
+    }
+
+    return results;
+  }
+
+  private Iterator<? extends Identifiable> buildIterator(final MultiIndexCursor iteratorFromIndexes) {
     final Iterator<? extends Identifiable> iterator;
 
     if (iteratorFromIndexes != null)
@@ -78,10 +180,7 @@ public class SelectExecutor {
     if (select.timeoutInMs > 0 && iterator instanceof MultiIterator<? extends Identifiable> multiIterator)
       multiIterator.setTimeout(select.timeoutInMs, select.exceptionOnTimeout);
 
-    if (select.parallel)
-      return new SelectParallelIterator<>(this, iterator, iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1);
-
-    return new SelectIterator<>(this, iterator, iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1);
+    return iterator;
   }
 
   private MultiIndexCursor lookForIndexes() {
@@ -113,10 +212,14 @@ public class SelectExecutor {
       return;
 
     if (node.getParent().operator == SelectOperator.or) {
-      if (node != node.getParent().right &&//
-          !isTheNodeFullyIndexed((SelectTreeNode) node.getParent().right))
-        // UNDER AN 'OR' OPERATOR BUT THE OTHER RIGHT VALUE IS NOT INDEXED: CANNOT USE THE CURRENT INDEX
-        return;
+      // UNDER AN 'OR' OPERATOR: BOTH SIDES MUST BE INDEXED, OTHERWISE CANNOT USE INDEXES
+      if (node != node.getParent().right) {
+        if (!isTheNodeFullyIndexed((SelectTreeNode) node.getParent().right))
+          return;
+      } else {
+        if (node.getParent().left instanceof SelectTreeNode leftNode && !isTheNodeFullyIndexed(leftNode))
+          return;
+      }
     }
 
     final Object rightValue;
@@ -129,31 +232,46 @@ public class SelectExecutor {
 
     boolean ascendingOrder = true; // DEFAULT
 
+    if (select.orderBy != null)
+      for (Pair<String, Boolean> entry : select.orderBy) {
+        if (propertyName.equals(entry.getFirst())) {
+          if (!entry.getSecond())
+            ascendingOrder = false;
+          break;
+        }
+      }
+
     final IndexCursor cursor;
     if (node.operator == SelectOperator.eq)
       cursor = node.index.get(new Object[] { rightValue });
-    else {
-      // RANGE
-      if (select.orderBy != null)
-        for (Pair<String, Boolean> entry : select.orderBy) {
-          if (propertyName.equals(entry.getFirst())) {
-            if (!entry.getSecond())
-              ascendingOrder = false;
-            break;
-          }
-        }
-
-      if (node.operator == SelectOperator.gt)
-        cursor = node.index.range(ascendingOrder, new Object[] { rightValue }, false, null, false);
-      else if (node.operator == SelectOperator.ge)
-        cursor = node.index.range(ascendingOrder, new Object[] { rightValue }, true, null, false);
-      else if (node.operator == SelectOperator.lt)
-        cursor = node.index.range(ascendingOrder, null, false, new Object[] { rightValue }, false);
-      else if (node.operator == SelectOperator.le)
-        cursor = node.index.range(ascendingOrder, null, false, new Object[] { rightValue }, true);
+    else if (node.operator == SelectOperator.in_op) {
+      // IN: multi-point index lookup
+      if (rightValue instanceof Collection<?> collection) {
+        final List<IndexCursor> inCursors = new ArrayList<>();
+        for (final Object item : collection)
+          inCursors.add(node.index.get(new Object[] { item }));
+        cursor = inCursors.isEmpty() ? null : new MultiIndexCursor(inCursors, select.limit, ascendingOrder);
+      } else
+        cursor = node.index.get(new Object[] { rightValue });
+    } else if (node.operator == SelectOperator.between) {
+      // BETWEEN: range scan
+      if (rightValue instanceof Object[] range && range.length == 2)
+        cursor = node.index.range(ascendingOrder, new Object[] { range[0] }, true, new Object[] { range[1] }, true);
       else
         return;
-    }
+    } else if (node.operator == SelectOperator.gt)
+      cursor = node.index.range(ascendingOrder, new Object[] { rightValue }, false, null, false);
+    else if (node.operator == SelectOperator.ge)
+      cursor = node.index.range(ascendingOrder, new Object[] { rightValue }, true, null, false);
+    else if (node.operator == SelectOperator.lt)
+      cursor = node.index.range(ascendingOrder, null, false, new Object[] { rightValue }, false);
+    else if (node.operator == SelectOperator.le)
+      cursor = node.index.range(ascendingOrder, null, false, new Object[] { rightValue }, true);
+    else
+      return;
+
+    if (cursor == null)
+      return;
 
     final SelectTreeNode parentNode = node.getParent();
     if (parentNode.operator == SelectOperator.and && parentNode.left == node) {
@@ -187,6 +305,9 @@ public class SelectExecutor {
       return true;
 
     if (!(node.left instanceof SelectTreeNode)) {
+      if (node.operator == SelectOperator.is_null || node.operator == SelectOperator.is_not_null)
+        return false;
+
       if (!(node.right instanceof SelectPropertyValue)) {
         final TypeIndex propertyIndex = select.fromType.getPolymorphicIndexByProperties(
             ((SelectPropertyValue) node.left).propertyName);
