@@ -85,7 +85,7 @@
         <assertj-core.version>3.27.7</assertj-core.version>
         <junit.jupiter.version>6.0.3</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
-        <json-path.version>2.10.0</json-path.version>
+        <json-path.version>3.0.0</json-path.version>
         <slf4j.version>2.0.17</slf4j.version>
         <undertow-core.version>2.3.23.Final</undertow-core.version>
         <mockito-core.version>5.21.0</mockito-core.version>
