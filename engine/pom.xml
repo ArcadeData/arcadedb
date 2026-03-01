@@ -37,7 +37,7 @@
         <disruptor.version>1.2.21</disruptor.version>
         <gson.version>2.13.2</gson.version>
         <lz4-java.version>1.10.3</lz4-java.version>
-        <lucene.version>10.3.2</lucene.version>
+        <lucene.version>10.4.0</lucene.version>
         <graalvm.version>25.0.2</graalvm.version>
         <jvector.version>4.0.0-rc.7</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
