@@ -88,7 +88,6 @@ public class ArcadeDBServer {
   private             String                                hostAddress;
   private final       boolean                               replicationLifecycleEventsEnabled;
   private             FileServerEventLog                    eventLog;
-  private final       Map<String, ServerPlugin>             plugins                              = new LinkedHashMap<>();
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
   private             HAServer                              haServer;
@@ -99,7 +98,6 @@ public class ArcadeDBServer {
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
-//  private             ServerMonitor                         serverMonitor;
 
   static {
     // must be called before any Logger method is used.
@@ -190,7 +188,6 @@ public class ArcadeDBServer {
     // START HTTP SERVER IMMEDIATELY. THE HTTP ADDRESS WILL BE USED BY HA
     httpServer = new HttpServer(this);
 
-//    registerPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
 
     httpServer.startService();
@@ -235,8 +232,6 @@ public class ArcadeDBServer {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
-
-//    serverMonitor.start();
   }
 
   private void createDirectories() {
@@ -306,70 +301,6 @@ public class ArcadeDBServer {
     return result;
   }
 
-  private void registerPlugins(final ServerPlugin.PluginInstallationPriority installationPriority) {
-    final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
-    if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
-      final String[] pluginEntries = registeredPlugins.split(",");
-      for (final String p : pluginEntries) {
-        try {
-          final String[] pluginPair = p.split(":");
-
-          final String pluginName = pluginPair[0];
-          final String pluginClass = pluginPair.length > 1 ? pluginPair[1] : pluginPair[0];
-
-          final Class<ServerPlugin> c = (Class<ServerPlugin>) Class.forName(pluginClass);
-          final ServerPlugin pluginInstance = c.getConstructor().newInstance();
-
-          if (pluginInstance.getInstallationPriority() != installationPriority)
-            continue;
-
-          pluginInstance.configure(this, configuration);
-
-          pluginInstance.startService();
-
-          plugins.put(pluginName, pluginInstance);
-
-          LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
-
-        } catch (final Exception e) {
-          throw new ServerException("Error on loading plugin from class '" + p + ";", e);
-        }
-      }
-    }
-
-    // Auto-register backup scheduler plugin if backup.json exists and not already registered
-    if (installationPriority == ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN
-        && !plugins.containsKey("auto-backup")) {
-      registerAutoBackupPluginIfConfigured();
-    }
-  }
-
-  private void registerAutoBackupPluginIfConfigured() {
-    final File backupConfigFile = Paths.get(serverRootPath, "config", "backup.json").toFile();
-    if (backupConfigFile.exists()) {
-      try {
-        final Class<ServerPlugin> c = (Class<ServerPlugin>) Class.forName(
-            "com.arcadedb.server.backup.AutoBackupSchedulerPlugin");
-        final ServerPlugin pluginInstance = c.getConstructor().newInstance();
-
-        pluginInstance.configure(this, configuration);
-        pluginInstance.startService();
-
-        plugins.put("auto-backup", pluginInstance);
-
-        LogManager.instance().log(this, Level.INFO, "- auto-backup plugin started (auto-detected config/backup.json)");
-
-      } catch (final ClassNotFoundException e) {
-        // Plugin class not available, skip silently
-        LogManager.instance().log(this, Level.FINE,
-            "Auto-backup plugin class not found, skipping auto-registration");
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Error auto-registering backup plugin", e);
-      }
-    }
-  }
-
   public synchronized void stop() {
     if (status == STATUS.OFFLINE || status == STATUS.SHUTTING_DOWN)
       return;
@@ -387,13 +318,6 @@ public class ArcadeDBServer {
     // Stop plugins managed by PluginManager first
     if (pluginManager != null)
       pluginManager.stopPlugins();
-
-    // Stop legacy plugins
-    for (final Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
-      LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
-      CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(),
-          "Error on halting '" + pEntry.getKey() + "' plugin", false);
-    }
 
     if (haServer != null)
       CodeUtils.executeIgnoringExceptions(haServer::stopService, "Error on stopping HA service", false);
@@ -430,10 +354,7 @@ public class ArcadeDBServer {
   }
 
   public Collection<ServerPlugin> getPlugins() {
-    final List<ServerPlugin> allPlugins = new ArrayList<>(plugins.values());
-    if (pluginManager != null)
-      allPlugins.addAll(pluginManager.getPlugins());
-    return Collections.unmodifiableCollection(allPlugins);
+    return Collections.unmodifiableCollection(pluginManager.getPlugins());
   }
 
   public ServerDatabase getDatabase(final String databaseName) {
