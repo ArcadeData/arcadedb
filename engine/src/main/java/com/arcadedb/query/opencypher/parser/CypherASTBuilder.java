@@ -355,6 +355,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   @Override
   public MatchClause visitMatchClause(final Cypher25Parser.MatchClauseContext ctx) {
     final List<PathPattern> pathPatterns = visitPatternList(ctx.patternList());
+    validateNoParameterProperties(pathPatterns, "MATCH");
     final boolean optional = ctx.OPTIONAL() != null;
 
     // Extract WHERE clause if present and scoped to this MATCH
@@ -489,6 +490,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   @Override
   public MergeClause visitMergeClause(final Cypher25Parser.MergeClauseContext ctx) {
     final PathPattern pathPattern = visitPattern(ctx.pattern());
+    validateNoParameterProperties(List.of(pathPattern), "MERGE");
 
     // Parse ON CREATE SET and ON MATCH SET actions
     SetClause onCreateSet = null;
@@ -1307,6 +1309,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     String variable = null;
     List<String> labels = null;
     Map<String, Object> properties = null;
+    String propertiesParameterName = null;
 
     // Variable
     if (ctx.variable() != null) {
@@ -1320,10 +1323,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Properties
     if (ctx.properties() != null) {
-      properties = visitProperties(ctx.properties());
+      final Cypher25Parser.PropertiesContext propsCtx = ctx.properties();
+      if (propsCtx.parameter() != null)
+        propertiesParameterName = stripBackticks(propsCtx.parameter().parameterName().getText());
+      else
+        properties = visitProperties(propsCtx);
     }
 
-    return new NodePattern(variable, labels, properties);
+    return new NodePattern(variable, labels, properties, propertiesParameterName);
   }
 
   public RelationshipPattern visitRelationshipPattern(final Cypher25Parser.RelationshipPatternContext ctx) {
@@ -1344,8 +1351,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     // Properties
+    String propertiesParameterName = null;
     if (ctx.properties() != null) {
-      properties = visitProperties(ctx.properties());
+      final Cypher25Parser.PropertiesContext propsCtx = ctx.properties();
+      if (propsCtx.parameter() != null)
+        propertiesParameterName = stripBackticks(propsCtx.parameter().parameterName().getText());
+      else
+        properties = visitProperties(propsCtx);
     }
 
     // Path length (variable-length relationships)
@@ -1377,7 +1389,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       direction = Direction.BOTH;
     }
 
-    return new RelationshipPattern(variable, types, direction, properties, minHops, maxHops);
+    return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops);
   }
 
   public Map<String, Object> visitProperties(final Cypher25Parser.PropertiesContext ctx) {
@@ -1524,6 +1536,26 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     } catch (final NumberFormatException e) {
       // Keep as string
       return text;
+    }
+  }
+
+  /**
+   * Validates that no bare parameter properties are used in patterns.
+   * Per the OpenCypher specification, bare parameter properties (e.g., $props) are only valid
+   * in CREATE patterns, not in MATCH or MERGE.
+   */
+  private static void validateNoParameterProperties(final List<PathPattern> patterns, final String clause) {
+    for (final PathPattern path : patterns) {
+      for (int i = 0; i < path.getNodeCount(); i++) {
+        final NodePattern node = path.getNode(i);
+        if (node.getPropertiesParameterName() != null)
+          throw new CommandParsingException("InvalidParameterUse: Parameters cannot be used as predicates in " + clause + " patterns");
+      }
+      for (int i = 0; i < path.getRelationshipCount(); i++) {
+        final RelationshipPattern rel = path.getRelationship(i);
+        if (rel.getPropertiesParameterName() != null)
+          throw new CommandParsingException("InvalidParameterUse: Parameters cannot be used as predicates in " + clause + " patterns");
+      }
     }
   }
 

@@ -36,15 +36,23 @@ public class RelationshipPattern implements PatternElement {
   private final List<String> types;
   private final Direction direction;
   private final Map<String, Object> properties;
+  private final String propertiesParameterName;
   private final Integer minHops;
   private final Integer maxHops;
 
   public RelationshipPattern(final String variable, final List<String> types, final Direction direction,
       final Map<String, Object> properties, final Integer minHops, final Integer maxHops) {
+    this(variable, types, direction, properties, null, minHops, maxHops);
+  }
+
+  public RelationshipPattern(final String variable, final List<String> types, final Direction direction,
+      final Map<String, Object> properties, final String propertiesParameterName, final Integer minHops,
+      final Integer maxHops) {
     this.variable = variable;
     this.types = types != null ? types : Collections.emptyList();
     this.direction = direction != null ? direction : Direction.BOTH;
     this.properties = properties != null ? properties : Collections.emptyMap();
+    this.propertiesParameterName = propertiesParameterName;
     this.minHops = minHops;
     this.maxHops = maxHops;
   }
@@ -123,7 +131,16 @@ public class RelationshipPattern implements PatternElement {
    * @return true if has properties
    */
   public boolean hasProperties() {
-    return !properties.isEmpty();
+    return !properties.isEmpty() || propertiesParameterName != null;
+  }
+
+  /**
+   * Returns the parameter name when properties are provided as a bare parameter (e.g., $props).
+   *
+   * @return parameter name or null if properties are specified inline
+   */
+  public String getPropertiesParameterName() {
+    return propertiesParameterName;
   }
 
   /**

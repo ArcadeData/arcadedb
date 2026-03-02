@@ -375,7 +375,10 @@ public class CreateStep extends AbstractExecutionStep {
     // Set properties from pattern
     if (nodePattern.hasProperties()) {
       final long startProps = context.isProfiling() ? System.nanoTime() : 0;
-      setProperties(vertex, nodePattern.getProperties(), currentResult);
+      if (nodePattern.getPropertiesParameterName() != null)
+        setPropertiesFromParameter(vertex, nodePattern.getPropertiesParameterName());
+      else
+        setProperties(vertex, nodePattern.getProperties(), currentResult);
       if (context.isProfiling())
         propertyEvaluationTime += (System.nanoTime() - startProps);
     }
@@ -407,7 +410,10 @@ public class CreateStep extends AbstractExecutionStep {
     // Set properties from pattern
     if (relPattern.hasProperties()) {
       final long startProps = context.isProfiling() ? System.nanoTime() : 0;
-      setPropertiesOnEdge(edge, relPattern.getProperties(), currentResult);
+      if (relPattern.getPropertiesParameterName() != null)
+        setPropertiesFromParameter(edge, relPattern.getPropertiesParameterName());
+      else
+        setPropertiesOnEdge(edge, relPattern.getProperties(), currentResult);
       if (context.isProfiling())
         propertyEvaluationTime += (System.nanoTime() - startProps);
     }
@@ -453,6 +459,22 @@ public class CreateStep extends AbstractExecutionStep {
       // In Cypher, null property values are not stored
       if (value != null)
         document.set(key, convertTemporalForStorage(value));
+    }
+  }
+
+  /**
+   * Sets properties on a document from a parameter that resolves to a map at runtime.
+   * Used for bare parameter properties syntax (e.g., CREATE (n:User $props)).
+   */
+  @SuppressWarnings("unchecked")
+  private void setPropertiesFromParameter(final MutableDocument document, final String parameterName) {
+    final Object paramValue = context.getInputParameters().get(parameterName);
+    if (paramValue instanceof Map) {
+      for (final Map.Entry<String, Object> entry : ((Map<String, Object>) paramValue).entrySet()) {
+        final Object value = entry.getValue();
+        if (value != null)
+          document.set(entry.getKey(), convertTemporalForStorage(value));
+      }
     }
   }
 

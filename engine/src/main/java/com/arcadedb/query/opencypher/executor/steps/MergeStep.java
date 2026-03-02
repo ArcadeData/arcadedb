@@ -662,7 +662,6 @@ public class MergeStep extends AbstractExecutionStep {
     final MutableVertex vertex = context.getDatabase().newVertex(typeName);
 
     if (nodePattern.hasProperties()) {
-      // Evaluate property expressions against current result context
       final Map<String, Object> evaluatedProperties = evaluateProperties(nodePattern.getProperties(), result);
       setProperties(vertex, evaluatedProperties);
     }
@@ -690,7 +689,6 @@ public class MergeStep extends AbstractExecutionStep {
     final MutableEdge edge = fromVertex.newEdge(type, toVertex);
 
     if (relPattern.hasProperties()) {
-      // Evaluate property expressions against current result context
       final Map<String, Object> evaluatedProperties = evaluateProperties(relPattern.getProperties(), result);
       setProperties(edge, evaluatedProperties);
     }
