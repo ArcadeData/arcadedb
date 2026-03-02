@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
@@ -62,11 +63,9 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     final List<Statement> statements = parseScript(query, database);
-    statements.stream().map((statement) -> {
-      if (statement.isIdempotent())
-        throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
-      return null;
-    });
+    for (final Statement statement : statements)
+      if (!statement.isIdempotent())
+        throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());
@@ -77,11 +76,9 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
     final List<Statement> statements = parseScript(query, database);
-    statements.stream().map((statement) -> {
-      if (statement.isIdempotent())
-        throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
-      return null;
-    });
+    for (final Statement statement : statements)
+      if (!statement.isIdempotent())
+        throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());

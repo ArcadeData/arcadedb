@@ -58,7 +58,29 @@ public class SelectWhereOperatorBlock {
   public SelectWhereRightBlock like() {
     return select.setOperator(SelectOperator.like);
   }
+
   public SelectWhereRightBlock ilike() {
     return select.setOperator(SelectOperator.ilike);
+  }
+
+  public SelectWhereRightBlock in() {
+    return select.setOperator(SelectOperator.in_op);
+  }
+
+  public SelectWhereBetweenBlock between() {
+    select.setOperator(SelectOperator.between);
+    return new SelectWhereBetweenBlock(select);
+  }
+
+  public SelectWhereAfterBlock isNull() {
+    select.setOperator(SelectOperator.is_null);
+    select.propertyValue = Boolean.TRUE;
+    return new SelectWhereAfterBlock(select);
+  }
+
+  public SelectWhereAfterBlock isNotNull() {
+    select.setOperator(SelectOperator.is_not_null);
+    select.propertyValue = Boolean.TRUE;
+    return new SelectWhereAfterBlock(select);
   }
 }

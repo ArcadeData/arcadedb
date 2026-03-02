@@ -159,7 +159,17 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       final RID rid = neighbor.getFirst();
       final Document record = rid.asDocument();
       final float distance = neighbor.getSecond();
-      result.add(Map.of("record", record, "distance", distance));
+
+      // Flatten document properties into the result map so they are accessible
+      // in outer queries after expand() (e.g., SELECT name, distance FROM (SELECT expand(...)))
+      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+      entry.put("record", record); // backward compatibility
+      for (final String prop : record.getPropertyNames())
+        entry.put(prop, record.get(prop));
+      entry.put("@rid", record.getIdentity());
+      entry.put("@type", record.getTypeName());
+      entry.put("distance", distance);
+      result.add(entry);
     }
 
     return result;

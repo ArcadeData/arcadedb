@@ -71,7 +71,7 @@ class ExplainStatementExecutionTest extends TestHelper {
     // It should show steps like "FETCH FROM TYPE" for the SELECT queries
     // and not just "(SELECT FROM vec WHERE x = 1)"
     assertThat(executionPlanAsString).contains("FETCH FROM TYPE vec");
-    assertThat(executionPlanAsString).contains("FILTER ITEMS WHERE");
+    assertThat(executionPlanAsString).contains("SCAN WITH FILTER BUCKET");
 
     // Should NOT contain the raw SQL subquery text
     assertThat(executionPlanAsString).doesNotContain("(SELECT FROM vec WHERE x = 1)");

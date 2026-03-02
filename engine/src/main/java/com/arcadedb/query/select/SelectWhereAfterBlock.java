@@ -21,7 +21,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
+import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.*;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -55,6 +57,30 @@ public class SelectWhereAfterBlock {
 
   public SelectIterator<Document> documents() {
     return select.run();
+  }
+
+  public long count() {
+    return select.count();
+  }
+
+  public boolean exists() {
+    return select.exists();
+  }
+
+  public Stream<Document> stream() {
+    return select.stream();
+  }
+
+  @SuppressWarnings("unchecked")
+  public <T extends Document> List<SelectVectorResult<T>> vectorDocuments() {
+    select.compile();
+    return new SelectExecutor(select).executeVector();
+  }
+
+  @SuppressWarnings("unchecked")
+  public <T extends Document> List<SelectVectorResult<T>> vectorVertices() {
+    select.compile();
+    return new SelectExecutor(select).executeVector();
   }
 
   public SelectCompiled compile() {

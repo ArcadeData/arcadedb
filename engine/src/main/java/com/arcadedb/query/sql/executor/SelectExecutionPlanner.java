@@ -539,6 +539,7 @@ public class SelectExecutionPlanner {
 
   /**
    * Extracts MAX/MIN function info from the query if it's a simple MAX(field) or MIN(field).
+   * Returns null if the projection contains additional operations (e.g., max(field)+1).
    */
   private MaxMinInfo getMaxMinInfo(final QueryPlanningInfo info) {
     if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1
@@ -547,6 +548,14 @@ public class SelectExecutionPlanner {
 
     // preAggregateProjection contains the field expression (e.g., "value AS _$$$OALIAS$$$_1")
     if (info.preAggregateProjection == null || info.preAggregateProjection.getItems().size() != 1)
+      return null;
+
+    // Ensure the projection expression is purely a function call (e.g., max(id)), not a compound
+    // expression like max(id)+1. If the projection has additional arithmetic, the index-optimized
+    // path would skip those operations and return wrong results.
+    final ProjectionItem projItem = info.projection.getItems().getFirst();
+    final Expression projExp = projItem.getExpression();
+    if (projExp.getMathExpression() == null || !(projExp.getMathExpression() instanceof BaseExpression))
       return null;
 
     final ProjectionItem aggregateItem = info.aggregateProjection.getItems().getFirst();

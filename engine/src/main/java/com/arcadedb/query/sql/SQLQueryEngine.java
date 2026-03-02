@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.query.QueryEngine;
@@ -84,7 +85,7 @@ public class SQLQueryEngine implements QueryEngine {
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
-      throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
     return statement.execute(database, parameters);
@@ -94,7 +95,7 @@ public class SQLQueryEngine implements QueryEngine {
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
     final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
-      throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
     return statement.execute(database, parameters);

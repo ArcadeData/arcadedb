@@ -139,15 +139,18 @@ public class WhereClause {
       collectVariablesRecursive(logical.getRight(), vars);
     } else if (expr instanceof IsNullExpression isNull) {
       collectExpressionVariables(isNull.getExpression(), vars);
-    } else if (expr instanceof InExpression) {
-      // InExpression has an expression field - collect from its text as fallback
-      collectFromText(expr.getText(), vars);
-    } else if (expr instanceof StringMatchExpression) {
-      collectFromText(expr.getText(), vars);
-    } else if (expr instanceof RegexExpression) {
-      collectFromText(expr.getText(), vars);
-    } else if (expr instanceof LabelCheckExpression) {
-      collectFromText(expr.getText(), vars);
+    } else if (expr instanceof InExpression inExpr) {
+      collectExpressionVariables(inExpr.getExpression(), vars);
+      for (final Expression listItem : inExpr.getList())
+        collectExpressionVariables(listItem, vars);
+    } else if (expr instanceof StringMatchExpression strMatch) {
+      collectExpressionVariables(strMatch.getExpression(), vars);
+      collectExpressionVariables(strMatch.getPattern(), vars);
+    } else if (expr instanceof RegexExpression regexExpr) {
+      collectExpressionVariables(regexExpr.getExpression(), vars);
+      collectExpressionVariables(regexExpr.getPattern(), vars);
+    } else if (expr instanceof LabelCheckExpression labelCheck) {
+      collectExpressionVariables(labelCheck.getVariableExpression(), vars);
     } else if (expr instanceof PatternPredicateExpression) {
       // Pattern predicates reference multiple variables, collect from text
       collectFromText(expr.getText(), vars);
@@ -159,9 +162,23 @@ public class WhereClause {
       vars.add(propAccess.getVariableName());
     else if (expr instanceof VariableExpression varExpr)
       vars.add(varExpr.getVariableName());
-    else if (expr instanceof FunctionCallExpression) {
-      // Function calls may reference variables in their arguments - collect from text
-      collectFromText(expr.getText(), vars);
+    else if (expr instanceof FunctionCallExpression funcExpr) {
+      for (final Expression arg : funcExpr.getArguments())
+        collectExpressionVariables(arg, vars);
+    } else if (expr instanceof ListComprehensionExpression listComp) {
+      collectExpressionVariables(listComp.getListExpression(), vars);
+      if (listComp.getWhereExpression() != null)
+        collectExpressionVariables(listComp.getWhereExpression(), vars);
+      if (listComp.getMapExpression() != null)
+        collectExpressionVariables(listComp.getMapExpression(), vars);
+    } else if (expr instanceof ArithmeticExpression arith) {
+      collectExpressionVariables(arith.getLeft(), vars);
+      collectExpressionVariables(arith.getRight(), vars);
+    } else if (expr instanceof ListExpression listExpr) {
+      for (final Expression element : listExpr.getElements())
+        collectExpressionVariables(element, vars);
+    } else if (expr instanceof BooleanWrapperExpression bwe) {
+      collectVariablesRecursive(bwe.getBooleanExpression(), vars);
     }
   }
 

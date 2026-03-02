@@ -68,6 +68,9 @@ public class ArcadeDbGrpcServiceExtendedTest extends BaseGraphServerTest {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue(
         "GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
+    // Disable parallel scan to avoid thread-local DatabaseContext contamination
+    // across tests when gRPC thread pool threads retain stale context
+    GlobalConfiguration.QUERY_PARALLEL_SCAN.setValue(false);
   }
 
   @BeforeEach

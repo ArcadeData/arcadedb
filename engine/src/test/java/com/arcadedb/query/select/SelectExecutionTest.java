@@ -419,6 +419,83 @@ public class SelectExecutionTest extends TestHelper {
     }
   }
 
+  @Test
+  void okCount() {
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("name").eq().value("John").count()).isEqualTo(100);
+
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("name").eq().value("NonExistent").count()).isEqualTo(0);
+
+    assertThat(database.select().fromType("Vertex").count()).isEqualTo(100);
+  }
+
+  @Test
+  void okCountWithLimit() {
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("name").eq().value("John").limit(10).count()).isEqualTo(10);
+  }
+
+  @Test
+  void okCountCompiled() {
+    final SelectCompiled compiled = database.select().fromType("Vertex")//
+        .where().property("id").lt().parameter("max").compile();
+
+    assertThat(compiled.parameter("max", 10).count()).isEqualTo(10);
+    assertThat(compiled.parameter("max", 50).count()).isEqualTo(50);
+  }
+
+  @Test
+  void okExists() {
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("name").eq().value("John").exists()).isTrue();
+
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("name").eq().value("NonExistent").exists()).isFalse();
+
+    assertThat(database.select().fromType("Vertex").exists()).isTrue();
+  }
+
+  @Test
+  void okStream() {
+    final List<String> names = database.select().fromType("Vertex")//
+        .where().property("id").lt().value(10)//
+        .stream()//
+        .map(d -> d.getString("name"))//
+        .collect(Collectors.toList());
+
+    assertThat(names).hasSize(10);
+    names.forEach(n -> assertThat(n).isEqualTo("John"));
+  }
+
+  @Test
+  void okStreamFindFirst() {
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("id").eq().value(5)//
+        .vertices().stream().findFirst()).isPresent();
+
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("id").eq().value(999)//
+        .vertices().stream().findFirst()).isEmpty();
+  }
+
+  @Test
+  void okStreamCount() {
+    final long count = database.select().fromType("Vertex")//
+        .where().property("name").eq().value("John")//
+        .vertices().stream().count();
+    assertThat(count).isEqualTo(100);
+  }
+
+  @Test
+  void okExistsCompiled() {
+    final SelectCompiled compiled = database.select().fromType("Vertex")//
+        .where().property("id").eq().parameter("value").compile();
+
+    assertThat(compiled.parameter("value", 0).exists()).isTrue();
+    assertThat(compiled.parameter("value", 999).exists()).isFalse();
+  }
+
   private void expectingException(final Runnable callback, final Class<? extends Throwable> expectedException,
       final String mustContains) {
     boolean failed = true;

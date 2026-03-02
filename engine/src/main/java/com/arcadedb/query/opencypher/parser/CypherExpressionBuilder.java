@@ -2248,11 +2248,15 @@ class CypherExpressionBuilder {
       labels = extractLabels(ctx.labelExpression());
     }
 
-    if (ctx.properties() != null && ctx.properties().map() != null) {
-      properties = parseMapProperties(ctx.properties().map());
+    String propertiesParameterName = null;
+    if (ctx.properties() != null) {
+      if (ctx.properties().parameter() != null)
+        propertiesParameterName = ctx.properties().parameter().parameterName().getText();
+      else if (ctx.properties().map() != null)
+        properties = parseMapProperties(ctx.properties().map());
     }
 
-    return new NodePattern(variable, labels, properties);
+    return new NodePattern(variable, labels, properties, propertiesParameterName);
   }
 
   /**
@@ -2273,8 +2277,12 @@ class CypherExpressionBuilder {
       types = extractLabels(ctx.labelExpression());
     }
 
-    if (ctx.properties() != null && ctx.properties().map() != null) {
-      properties = parseMapProperties(ctx.properties().map());
+    String propertiesParameterName = null;
+    if (ctx.properties() != null) {
+      if (ctx.properties().parameter() != null)
+        propertiesParameterName = ctx.properties().parameter().parameterName().getText();
+      else if (ctx.properties().map() != null)
+        properties = parseMapProperties(ctx.properties().map());
     }
 
     // Path length (variable-length relationships)
@@ -2303,7 +2311,7 @@ class CypherExpressionBuilder {
       direction = Direction.BOTH;
     }
 
-    return new RelationshipPattern(variable, types, direction, properties, minHops, maxHops);
+    return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops);
   }
 
   /**

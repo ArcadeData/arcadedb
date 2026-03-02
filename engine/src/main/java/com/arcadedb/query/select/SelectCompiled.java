@@ -23,7 +23,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -86,5 +87,17 @@ public class SelectCompiled {
 
   public SelectIterator<Document> documents() {
     return select.documents();
+  }
+
+  public long count() {
+    return select.count();
+  }
+
+  public boolean exists() {
+    return select.exists();
+  }
+
+  public Stream<Document> stream() {
+    return select.stream();
   }
 }
