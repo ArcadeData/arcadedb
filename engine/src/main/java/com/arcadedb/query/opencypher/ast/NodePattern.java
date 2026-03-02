@@ -35,12 +35,19 @@ public class NodePattern implements PatternElement {
   private final List<String> labels;
   private final Map<String, Object> properties;
   private final boolean explicitProperties;
+  private final String propertiesParameterName;
 
   public NodePattern(final String variable, final List<String> labels, final Map<String, Object> properties) {
+    this(variable, labels, properties, null);
+  }
+
+  public NodePattern(final String variable, final List<String> labels, final Map<String, Object> properties,
+      final String propertiesParameterName) {
     this.variable = variable;
     this.labels = labels != null ? labels : Collections.emptyList();
     this.properties = properties != null ? properties : Collections.emptyMap();
-    this.explicitProperties = properties != null;
+    this.explicitProperties = properties != null || propertiesParameterName != null;
+    this.propertiesParameterName = propertiesParameterName;
   }
 
   @Override
@@ -81,7 +88,7 @@ public class NodePattern implements PatternElement {
    * @return true if has properties
    */
   public boolean hasProperties() {
-    return !properties.isEmpty();
+    return !properties.isEmpty() || propertiesParameterName != null;
   }
 
   /**
@@ -89,6 +96,15 @@ public class NodePattern implements PatternElement {
    */
   public boolean hasExplicitProperties() {
     return explicitProperties;
+  }
+
+  /**
+   * Returns the parameter name when properties are provided as a bare parameter (e.g., $props).
+   *
+   * @return parameter name or null if properties are specified inline
+   */
+  public String getPropertiesParameterName() {
+    return propertiesParameterName;
   }
 
   /**
