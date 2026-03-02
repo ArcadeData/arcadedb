@@ -221,9 +221,11 @@ public class ArcadeDBServer {
 
     if (!"production".equals(mode)) {
       final InputStream file = getClass().getClassLoader().getResourceAsStream("static/index.html");
-      if (file != null)
+      if (file != null) {
+        final String studioHost = getStudioDisplayHost();
         LogManager.instance()
-            .log(this, Level.INFO, "Studio web tool available at http://%s:%d ", hostAddress, httpServer.getPort());
+            .log(this, Level.INFO, "Studio web tool available at http://%s:%d ", studioHost, httpServer.getPort());
+      }
     }
 
     try {
@@ -737,6 +739,13 @@ public class ArcadeDBServer {
     }));
 
     hostAddress = assignHostAddress();
+  }
+
+  private String getStudioDisplayHost() {
+    final String httpHost = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
+    if ("0.0.0.0".equals(httpHost))
+      return "localhost";
+    return httpHost;
   }
 
   private String assignHostAddress() {
