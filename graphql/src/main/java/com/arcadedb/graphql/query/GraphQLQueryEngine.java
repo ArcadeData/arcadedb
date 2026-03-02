@@ -20,6 +20,7 @@ package com.arcadedb.graphql.query;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.graphql.parser.Definition;
 import com.arcadedb.graphql.parser.Document;
 import com.arcadedb.graphql.parser.GraphQLParser;
@@ -82,11 +83,15 @@ public class GraphQLQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
+    if (!analyze(query).isIdempotent())
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
     return command(query, null, parameters);
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
+    if (!analyze(query).isIdempotent())
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
     return command(query, null, parameters);
   }
 

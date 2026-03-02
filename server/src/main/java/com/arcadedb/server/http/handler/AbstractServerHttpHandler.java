@@ -194,6 +194,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                       e.getMessage());
       sendErrorResponse(exchange, 404, "Record not found", e, null);
+    } catch (final QueryNotIdempotentException e) {
+      LogManager.instance()
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
+      sendErrorResponse(exchange, 400, "Query is not idempotent", e, null);
     } catch (final IllegalArgumentException e) {
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
@@ -204,8 +209,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (e.getCause() != null)
         realException = e.getCause();
 
-      // If the root cause is a SecurityException, return 403 instead of 500
-      if (realException instanceof SecurityException) {
+      if (realException instanceof QueryNotIdempotentException) {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 400, "Query is not idempotent", realException, null);
+      } else if (realException instanceof SecurityException) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
                 SecurityException.class.getSimpleName(), realException.getMessage());
         sendErrorResponse(exchange, 403, "Security error", realException, null);
@@ -224,6 +233,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on transaction execution (%s): %s",
                 SecurityException.class.getSimpleName(), realException.getMessage());
         sendErrorResponse(exchange, 403, "Security error", realException, null);
+      } else if (realException instanceof QueryNotIdempotentException) {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 400, "Query is not idempotent", realException, null);
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),

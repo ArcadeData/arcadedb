@@ -21,6 +21,7 @@ package com.arcadedb.cypher.query;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.cypher.ArcadeCypher;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -56,11 +57,15 @@ public class CypherQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
+    if (!analyze(query).isIdempotent())
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
     return command(query, configuration, parameters);
   }
 
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Object... parameters) {
+    if (!analyze(query).isIdempotent())
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
     return command(query, null, parameters);
   }
 
