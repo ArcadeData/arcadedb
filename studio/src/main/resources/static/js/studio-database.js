@@ -684,6 +684,42 @@ function dropIndex(indexName) {
   );
 }
 
+function dropType(typeName) {
+  let database = getCurrentDatabase();
+  if (database == "") {
+    globalNotify("Error", "Database not selected", "danger");
+    return;
+  }
+
+  globalConfirm(
+    "Drop type",
+    "Are you sure you want to drop the type '" + escapeHtml(typeName) + "'?<br>WARNING: The operation cannot be undone.",
+    "warning",
+    function () {
+      jQuery
+        .ajax({
+          type: "POST",
+          url: "api/v1/command/" + database,
+          data: JSON.stringify({
+            language: "sql",
+            command: "drop type `" + typeName + "` unsafe",
+            serializer: "record",
+          }),
+          beforeSend: function (xhr) {
+            xhr.setRequestHeader("Authorization", globalCredentials);
+          },
+        })
+        .done(function (data) {
+          $("#dbTypeDetail").html("");
+          updateDatabases();
+        })
+        .fail(function (jqXHR, textStatus, errorThrown) {
+          globalNotifyError(jqXHR.responseText);
+        });
+    },
+  );
+}
+
 function collectTypeProperties(typeName) {
   let props = [];
   let visited = {};
@@ -2826,6 +2862,7 @@ function showTypeDetail(typeName) {
   if (row.type == "vertex")
     html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select *, bothE() as \\`@edges\\` from \\`" + row.name + "\\`\")'><i class='fa fa-project-diagram'></i> With connections</button>";
   html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select count(*) from \\`" + row.name + "\\`\")'><i class='fa fa-calculator'></i> Count records</button>";
+  html += "<button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropType(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-trash'></i> Drop Type</button>";
   html += "</div>";
   html += "</div>";
 
