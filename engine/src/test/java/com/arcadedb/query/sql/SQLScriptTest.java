@@ -509,4 +509,61 @@ public class SQLScriptTest extends TestHelper {
     message = consoleResult.getProperty("message");
     assertThat(message).isEqualTo("null");
   }
+
+  /**
+   * Test for issue #3558: max()+1 arithmetic not working when field has an index.
+   * The index-optimized max/min path was returning the raw max/min value without applying
+   * arithmetic operations in the projection (e.g., +1, +2, *2).
+   */
+  @Test
+  void maxPlusArithmeticWithIndex() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("TestMaxArith");
+      database.command("sql", "CREATE PROPERTY TestMaxArith.id INTEGER");
+      database.command("sql", "CREATE INDEX ON TestMaxArith (id) UNIQUE");
+      database.command("sql", "INSERT INTO TestMaxArith SET id = 100");
+      database.command("sql", "INSERT INTO TestMaxArith SET id = 200");
+      database.command("sql", "INSERT INTO TestMaxArith SET id = 300");
+
+      // Verify plain max() still uses index optimization correctly
+      ResultSet rs = database.query("sql", "SELECT max(id) AS maxid FROM TestMaxArith");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("maxid")).intValue()).isEqualTo(300);
+      rs.close();
+
+      // Verify min() still uses index optimization correctly
+      rs = database.query("sql", "SELECT min(id) AS minid FROM TestMaxArith");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("minid")).intValue()).isEqualTo(100);
+      rs.close();
+
+      // This is the bug: max(id)+1 returned 300 instead of 301 when index existed
+      rs = database.query("sql", "SELECT max(id)+1 AS id FROM TestMaxArith");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("id")).intValue()).isEqualTo(301);
+      rs.close();
+
+      // Also test max(id)+2
+      rs = database.query("sql", "SELECT max(id)+2 AS id FROM TestMaxArith");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("id")).intValue()).isEqualTo(302);
+      rs.close();
+
+      // Test min(id)-1
+      rs = database.query("sql", "SELECT min(id)-1 AS id FROM TestMaxArith");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("id")).intValue()).isEqualTo(99);
+      rs.close();
+
+      // Test in SQLSCRIPT context (the original bug report)
+      String script = """
+          LET $id = SELECT max(id)+1 AS id FROM TestMaxArith;
+          RETURN $id;
+          """;
+      ResultSet result = database.command("SQLScript", script);
+      assertThat(result.hasNext()).isTrue();
+      assertThat(((Number) result.next().getProperty("id")).intValue()).isEqualTo(301);
+      result.close();
+    });
+  }
 }
