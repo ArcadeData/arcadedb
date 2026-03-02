@@ -1281,4 +1281,61 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       }
     }
   }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3560
+   * Bolt: Parameterized queries fail to match in MATCH property maps.
+   */
+  @Test
+  void parameterInMatchPropertyMap() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Create a test vertex with a string property
+        session.run("CREATE (t:TestParamMap {id: 'ABC123', name: 'test'}) RETURN t");
+
+        // Step 1: Simple parameter — should work
+        final Result r1 = session.run("RETURN $x AS val", Map.of("x", "hello"));
+        assertThat(r1.hasNext()).isTrue();
+        assertThat(r1.next().get("val").asString()).isEqualTo("hello");
+
+        // Step 2: MATCH with property map parameter — this is the reported bug
+        final Result r2 = session.run(
+            "MATCH (t:TestParamMap {id: $id}) RETURN t.name AS name",
+            Map.of("id", "ABC123"));
+        assertThat(r2.hasNext()).as("MATCH with property map parameter should find the vertex").isTrue();
+        assertThat(r2.next().get("name").asString()).isEqualTo("test");
+
+        // Step 3: WHERE clause parameter — should work (workaround)
+        final Result r3 = session.run(
+            "MATCH (t:TestParamMap) WHERE t.id = $id RETURN t.name AS name",
+            Map.of("id", "ABC123"));
+        assertThat(r3.hasNext()).isTrue();
+        assertThat(r3.next().get("name").asString()).isEqualTo("test");
+
+        // Step 4: Literal in query — should work
+        final Result r4 = session.run(
+            "MATCH (t:TestParamMap {id: 'ABC123'}) RETURN t.name AS name");
+        assertThat(r4.hasNext()).isTrue();
+        assertThat(r4.next().get("name").asString()).isEqualTo("test");
+
+        // Step 5: Integer parameter in property map
+        session.run("CREATE (t:TestParamMap {seq: 42, label: 'intTest'}) RETURN t");
+        final Result r5 = session.run(
+            "MATCH (t:TestParamMap {seq: $seq}) RETURN t.label AS label",
+            Map.of("seq", 42));
+        assertThat(r5.hasNext()).as("MATCH with integer property map parameter should find the vertex").isTrue();
+        assertThat(r5.next().get("label").asString()).isEqualTo("intTest");
+
+        // Step 6: Multiple parameters in property map
+        final Result r6 = session.run(
+            "MATCH (t:TestParamMap {id: $id, name: $name}) RETURN t.id AS id",
+            Map.of("id", "ABC123", "name", "test"));
+        assertThat(r6.hasNext()).as("MATCH with multiple property map parameters should find the vertex").isTrue();
+        assertThat(r6.next().get("id").asString()).isEqualTo("ABC123");
+
+        // Clean up
+        session.run("MATCH (t:TestParamMap) DELETE t");
+      }
+    }
+  }
 }
