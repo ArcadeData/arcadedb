@@ -262,6 +262,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               }
             }
 
+            // Filter by target node properties if specified in the pattern
+            if (targetNodePattern != null && targetNodePattern.hasProperties()) {
+              if (!matchesTargetProperties(targetVertex))
+                continue;
+            }
+
             // If the target variable is already bound from a previous step,
             // verify the traversed vertex matches the bound value (identity check)
             if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
@@ -328,6 +334,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               if (!matchesTargetLabel(targetVertex)) {
                 continue;
               }
+            }
+
+            // Filter by target node properties if specified in the pattern
+            if (targetNodePattern != null && targetNodePattern.hasProperties()) {
+              if (!matchesTargetProperties(targetVertex))
+                continue;
             }
 
             // If the relationship variable is already bound from a previous step,
@@ -540,6 +552,28 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     for (final String label : targetNodePattern.getLabels())
       if (!vertex.getType().instanceOf(label))
         return false;
+    return true;
+  }
+
+  /**
+   * Checks if a target vertex matches the inline property constraints from the target node pattern.
+   */
+  private boolean matchesTargetProperties(final Vertex vertex) {
+    if (targetNodePattern == null || !targetNodePattern.hasProperties())
+      return true;
+
+    for (final Map.Entry<String, Object> entry : targetNodePattern.getProperties().entrySet()) {
+      final Object actual = vertex.get(entry.getKey());
+      Object expected = entry.getValue();
+      // Handle string literals: remove quotes
+      if (expected instanceof String) {
+        final String s = (String) expected;
+        if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\"")))
+          expected = s.substring(1, s.length() - 1);
+      }
+      if (actual == null || !actual.equals(expected))
+        return false;
+    }
     return true;
   }
 
