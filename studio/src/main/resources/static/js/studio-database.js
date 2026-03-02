@@ -512,24 +512,37 @@ function dropDatabase() {
 
   globalConfirm(
     "Drop database",
-    "Are you sure you want to drop the database '" + database + "'?<br>WARNING: The operation cannot be undone.",
+    "Are you sure you want to drop the database<br><b>" + database + "</b>?<br>WARNING: The operation cannot be undone.",
     "warning",
     function () {
-      jQuery
-        .ajax({
-          type: "POST",
-          url: "api/v1/server",
-          data: "{ 'command': 'drop database " + database + "' }",
-          beforeSend: function (xhr) {
-            xhr.setRequestHeader("Authorization", globalCredentials);
-          },
-        })
-        .done(function (data) {
-          updateDatabases();
-        })
-        .fail(function (jqXHR, textStatus, errorThrown) {
-          globalNotifyError(jqXHR.responseText);
-        });
+      globalPrompt(
+        "Confirm drop database",
+        "Type the database name to confirm:<br><b>" + database + "</b>" +
+        "<input type='text' id='dropDatabaseConfirmInput' class='form-control mt-2' placeholder='Database name'>",
+        "Drop",
+        function (values) {
+          var typed = values["dropDatabaseConfirmInput"] || "";
+          if (typed !== database) {
+            globalNotify("Drop cancelled", "Database name does not match.", "warning");
+            return;
+          }
+          jQuery
+            .ajax({
+              type: "POST",
+              url: "api/v1/server",
+              data: "{ 'command': 'drop database " + database + "' }",
+              beforeSend: function (xhr) {
+                xhr.setRequestHeader("Authorization", globalCredentials);
+              },
+            })
+            .done(function (data) {
+              updateDatabases();
+            })
+            .fail(function (jqXHR, textStatus, errorThrown) {
+              globalNotifyError(jqXHR.responseText);
+            });
+        },
+      );
     },
   );
 }
@@ -693,29 +706,42 @@ function dropType(typeName) {
 
   globalConfirm(
     "Drop type",
-    "Are you sure you want to drop the type '" + escapeHtml(typeName) + "'?<br>WARNING: The operation cannot be undone.",
+    "Are you sure you want to drop the type<br><b>" + escapeHtml(typeName) + "</b>?<br>WARNING: The operation cannot be undone.",
     "warning",
     function () {
-      jQuery
-        .ajax({
-          type: "POST",
-          url: "api/v1/command/" + database,
-          data: JSON.stringify({
-            language: "sql",
-            command: "drop type `" + typeName + "` unsafe",
-            serializer: "record",
-          }),
-          beforeSend: function (xhr) {
-            xhr.setRequestHeader("Authorization", globalCredentials);
-          },
-        })
-        .done(function (data) {
-          $("#dbTypeDetail").html("");
-          updateDatabases();
-        })
-        .fail(function (jqXHR, textStatus, errorThrown) {
-          globalNotifyError(jqXHR.responseText);
-        });
+      globalPrompt(
+        "Confirm drop type",
+        "Type the type name to confirm:<br><b>" + escapeHtml(typeName) + "</b>" +
+        "<input type='text' id='dropTypeConfirmInput' class='form-control mt-2' placeholder='Type name'>",
+        "Drop",
+        function (values) {
+          var typed = values["dropTypeConfirmInput"] || "";
+          if (typed !== typeName) {
+            globalNotify("Drop cancelled", "Type name does not match.", "warning");
+            return;
+          }
+          jQuery
+            .ajax({
+              type: "POST",
+              url: "api/v1/command/" + database,
+              data: JSON.stringify({
+                language: "sql",
+                command: "drop type `" + typeName + "` unsafe",
+                serializer: "record",
+              }),
+              beforeSend: function (xhr) {
+                xhr.setRequestHeader("Authorization", globalCredentials);
+              },
+            })
+            .done(function (data) {
+              $("#dbTypeDetail").html("");
+              updateDatabases();
+            })
+            .fail(function (jqXHR, textStatus, errorThrown) {
+              globalNotifyError(jqXHR.responseText);
+            });
+        },
+      );
     },
   );
 }
