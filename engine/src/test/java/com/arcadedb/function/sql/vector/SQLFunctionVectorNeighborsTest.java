@@ -2,6 +2,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -176,5 +177,66 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
     assertThat(resultsLimit5).as("Should respect limit of 5").hasSizeLessThanOrEqualTo(5);
     assertThat(resultsLimit5).as("Larger limit should return more or equal results")
         .hasSizeGreaterThanOrEqualTo(resultsLimit2.size());
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb-docs/issues/375
+   * Verifies that document properties are accessible in outer queries after expand() on vectorNeighbors results.
+   */
+  @Test
+  void expandVectorNeighborsSubqueryProjection() {
+
+    final String query = """
+        SELECT name, distance FROM (
+          SELECT expand(`vector.neighbors`('Doc[embedding]', [0.0, 0.0, 1.0], 3))
+        )
+        """;
+
+    try (ResultSet results = database.query("sql", query)) {
+      assertThat(results.hasNext()).as("Query should return results").isTrue();
+
+      int count = 0;
+      while (results.hasNext()) {
+        final Result row = results.next();
+        // 'distance' should be accessible
+        final Object distance = row.getProperty("distance");
+        assertThat(distance).as("distance should not be null for row " + count).isNotNull();
+        assertThat(distance).isInstanceOf(Number.class);
+
+        // 'name' from the document should also be accessible (this was the bug)
+        final Object name = row.getProperty("name");
+        assertThat(name).as("name should not be null for row " + count).isNotNull();
+        assertThat(name).isInstanceOf(String.class);
+
+        count++;
+      }
+      assertThat(count > 0).as("Should have found some neighbors").isTrue();
+      assertThat(count <= 3).as("Should return at most 3 results").isTrue();
+    }
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb-docs/issues/375
+   * Verifies that expand() on vectorNeighbors results still includes @rid and @type.
+   */
+  @Test
+  void expandVectorNeighborsIncludesRidAndType() {
+
+    final String query = """
+        SELECT expand(`vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 3))
+        """;
+
+    try (ResultSet results = database.query("sql", query)) {
+      assertThat(results.hasNext()).as("Query should return results").isTrue();
+
+      while (results.hasNext()) {
+        final Result row = results.next();
+        // Document properties should be directly accessible
+        assertThat((Object) row.getProperty("name")).as("name should be accessible").isNotNull();
+        assertThat((Object) row.getProperty("distance")).as("distance should be accessible").isNotNull();
+        // 'record' should still be available for backward compatibility
+        assertThat((Object) row.getProperty("record")).as("record should be available for backward compat").isNotNull();
+      }
+    }
   }
 }
