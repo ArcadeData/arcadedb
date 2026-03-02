@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
@@ -144,10 +145,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
 
       if (!statement.isReadOnly())
-        throw new CommandExecutionException("Query contains write operations. Use command() instead of query()");
+        throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
-    } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
+    } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException e) {
       throw e;
     } catch (final Exception e) {
       throw new CommandExecutionException("Error executing Cypher query: " + query, e);

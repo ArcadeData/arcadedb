@@ -20,6 +20,7 @@ package com.arcadedb.mongo.query;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.mongo.MongoDBDatabaseWrapper;
 import com.arcadedb.query.OperationType;
@@ -90,6 +91,8 @@ public class MongoQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
+    if (!analyze(query).isIdempotent())
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
     try {
       return mongoDBWrapper.query(query);
     } catch (final Exception e) {
@@ -100,6 +103,8 @@ public class MongoQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
+    if (!analyze(query).isIdempotent())
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
     return query(query, null, (Map) null);
   }
 
