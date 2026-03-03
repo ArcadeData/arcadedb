@@ -79,7 +79,8 @@ public class MongoQueryEngine implements QueryEngine {
         || upper.contains("\"REMOVE\""))
       return CollectionUtils.singletonSet(OperationType.DELETE);
     if (upper.contains("\"FIND\"") || upper.contains("\"AGGREGATE\"") || upper.contains("\"COUNT\"")
-        || upper.contains("\"DISTINCT\""))
+        || upper.contains("\"DISTINCT\"")
+        || upper.contains("COLLECTION"))
       return CollectionUtils.singletonSet(OperationType.READ);
     if (upper.contains("\"CREATEINDEX\"") || upper.contains("\"CREATECOLLECTION\"") || upper.contains("\"DROP\"")
         || upper.contains("\"DROPCOLLECTION\"") || upper.contains("\"DROPINDEX\""))
