@@ -3102,22 +3102,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
       }
 
-      // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this)
-      if (firstIdCtx.RID_ATTR() != null || firstIdCtx.TYPE_ATTR() != null ||
-          firstIdCtx.IN_ATTR() != null || firstIdCtx.OUT_ATTR() != null ||
-          firstIdCtx.THIS() != null) {
-        // Handle record attributes specially
-        final RecordAttribute attr = new RecordAttribute(-1);
-        attr.setName(firstIdCtx.getText());
-        final BaseIdentifier baseId = new BaseIdentifier(attr);
-        baseExpr.identifier = baseId;
-      } else {
-        // Regular identifier
-        final Identifier firstId = (Identifier) visit(firstIdCtx);
-        // Use BaseIdentifier constructor that automatically creates SuffixIdentifier
-        final BaseIdentifier baseId = new BaseIdentifier(firstId);
-        baseExpr.identifier = baseId;
-      }
+      // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this),
+      // including backtick-quoted variants like `@rid`
+      final SuffixIdentifier firstSuffix = buildSuffixForIdentifier(firstIdCtx);
+      final BaseIdentifier baseId = new BaseIdentifier(-1);
+      baseId.suffix = firstSuffix;
+      baseExpr.identifier = baseId;
 
       // Check for namespaced function call pattern: namespace.method(args)
       // e.g., ts.first(value, ts) → builds FunctionCall with name "ts.first"

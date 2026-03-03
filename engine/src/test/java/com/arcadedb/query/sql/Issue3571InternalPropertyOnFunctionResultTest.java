@@ -42,10 +42,10 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571a IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571a IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571a");
       database.command("sql", "INSERT INTO V3571a");
       database.command("sql", "CREATE EDGE E3571a FROM (SELECT FROM V3571a) TO (SELECT FROM V3571a)");
 
-      // SELECT inE().@rid FROM V — should return an array of RIDs
       final ResultSet rs = database.query("sql", "SELECT inE().@rid FROM V3571a");
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -53,7 +53,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
       assertThat(ridList).isNotNull();
       assertThat(ridList).isInstanceOf(List.class);
       final List<?> rids = (List<?>) ridList;
-      assertThat(rids).isNotEmpty();
+      assertThat(rids).hasSize(1);
       assertThat(rids.getFirst()).isInstanceOf(RID.class);
       rs.close();
     });
@@ -64,11 +64,11 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571b IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571b IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571b");
       database.command("sql", "INSERT INTO V3571b");
       database.command("sql", "CREATE EDGE E3571b FROM (SELECT FROM V3571b) TO (SELECT FROM V3571b)");
 
-      // SELECT inE().`@rid` FROM V — backtick-quoted variant, should also return an array of RIDs.
-      // The backtick-quoted `@rid` is treated as a record attribute, so the projection key is "inE().@rid".
+      // Backtick-quoted `@rid` is treated as a record attribute, so the projection key is "inE().@rid"
       final ResultSet rs = database.query("sql", "SELECT inE().`@rid` FROM V3571b");
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -76,7 +76,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
       assertThat(ridList).isNotNull();
       assertThat(ridList).isInstanceOf(List.class);
       final List<?> rids = (List<?>) ridList;
-      assertThat(rids).isNotEmpty();
+      assertThat(rids).hasSize(1);
       assertThat(rids.getFirst()).isInstanceOf(RID.class);
       rs.close();
     });
@@ -87,10 +87,10 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571c IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571c IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571c");
       database.command("sql", "INSERT INTO V3571c");
       database.command("sql", "CREATE EDGE E3571c FROM (SELECT FROM V3571c) TO (SELECT FROM V3571c)");
 
-      // SELECT inE()[0].@rid FROM V — should return an RID (not a list)
       final ResultSet rs = database.query("sql", "SELECT inE()[0].@rid FROM V3571c");
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -106,17 +106,58 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571d IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571d IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571d");
       database.command("sql", "INSERT INTO V3571d");
       database.command("sql", "CREATE EDGE E3571d FROM (SELECT FROM V3571d) TO (SELECT FROM V3571d)");
 
-      // SELECT inE()[0].`@rid` FROM V — backtick-quoted, should return an RID.
-      // The backtick-quoted `@rid` is treated as a record attribute, so the projection key is "inE()[0].@rid".
+      // Backtick-quoted `@rid` is treated as a record attribute, so the projection key is "inE()[0].@rid"
       final ResultSet rs = database.query("sql", "SELECT inE()[0].`@rid` FROM V3571d");
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
       final Object rid = row.getProperty("inE()[0].@rid");
       assertThat(rid).isNotNull();
       assertThat(rid).isInstanceOf(RID.class);
+      rs.close();
+    });
+  }
+
+  @Test
+  void testInEAtType() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE V3571e IF NOT EXISTS");
+      database.command("sql", "CREATE EDGE TYPE E3571e IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571e");
+      database.command("sql", "INSERT INTO V3571e");
+      database.command("sql", "CREATE EDGE E3571e FROM (SELECT FROM V3571e) TO (SELECT FROM V3571e)");
+
+      // @type on function result should return the edge type name
+      final ResultSet rs = database.query("sql", "SELECT inE()[0].@type FROM V3571e");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      final Object type = row.getProperty("inE()[0].@type");
+      assertThat(type).isNotNull();
+      assertThat(type).isEqualTo("E3571e");
+      rs.close();
+    });
+  }
+
+  @Test
+  void testInEAtCat() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE V3571f IF NOT EXISTS");
+      database.command("sql", "CREATE EDGE TYPE E3571f IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571f");
+      database.command("sql", "INSERT INTO V3571f");
+      database.command("sql", "CREATE EDGE E3571f FROM (SELECT FROM V3571f) TO (SELECT FROM V3571f)");
+
+      // @cat on an edge should return "e" — uses isRecordAttributeName string-matching fallback
+      // since @cat has no dedicated grammar token
+      final ResultSet rs = database.query("sql", "SELECT inE()[0].`@cat` FROM V3571f");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      final Object cat = row.getProperty("inE()[0].@cat");
+      assertThat(cat).isNotNull();
+      assertThat(cat).isEqualTo("e");
       rs.close();
     });
   }
