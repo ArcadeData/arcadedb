@@ -61,7 +61,7 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  protected String parseRequestPayload(final io.undertow.server.HttpServerExchange e) {
+  protected String parseRequestPayload(final HttpServerExchange e) {
     // Store the raw payload for Line Protocol parsing
     rawPayload = super.parseRequestPayload(e);
     return rawPayload;

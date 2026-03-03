@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CodeUtils;
 
 import java.util.*;
+import java.util.regex.Pattern;
 import java.util.stream.*;
 
 public class InCondition extends BooleanExpression {
@@ -43,8 +44,8 @@ public class InCondition extends BooleanExpression {
   public boolean               not;
 
   private static final Object  UNSET                    = new Object();
-  private static final java.util.regex.Pattern FIELD_IDENTIFIER_PATTERN =
-      java.util.regex.Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*");
+  private static final Pattern FIELD_IDENTIFIER_PATTERN =
+      Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*");
   private final        Object inputFinalValue = UNSET;
 
   public InCondition(final int id) {

@@ -87,7 +87,7 @@ public class PromQLEvaluator {
 
   {
     // LinkedHashMap with access-order = true gives LRU eviction (oldest access evicted first)
-    patternCache = Collections.synchronizedMap(new java.util.LinkedHashMap<>(MAX_PATTERN_CACHE, 0.75f, true) {
+    patternCache = Collections.synchronizedMap(new LinkedHashMap<>(MAX_PATTERN_CACHE, 0.75f, true) {
       @Override
       protected boolean removeEldestEntry(final Map.Entry<String, Pattern> eldest) {
         return size() > MAX_PATTERN_CACHE;

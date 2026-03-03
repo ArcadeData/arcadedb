@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -117,7 +119,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
       assertThat((long) result.get(0)[0]).isEqualTo(0L); // bucket timestamp
       assertThat((String) result.get(0)[1]).isEqualTo("sensor_A");
       // AVG of 1..60 = 30.5
-      assertThat((double) result.get(0)[2]).isCloseTo(30.5, org.assertj.core.data.Offset.offset(0.001));
+      assertThat((double) result.get(0)[2]).isCloseTo(30.5, Offset.offset(0.001));
     } finally {
       engine.close();
     }
@@ -234,7 +236,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
       for (int i = 0; i < firstResult.size(); i++) {
         assertThat((long) secondResult.get(i)[0]).isEqualTo((long) firstResult.get(i)[0]);
         assertThat((double) secondResult.get(i)[2]).isCloseTo((double) firstResult.get(i)[2],
-            org.assertj.core.data.Offset.offset(0.001));
+            Offset.offset(0.001));
       }
     } finally {
       engine.close();
@@ -293,8 +295,8 @@ class TimeSeriesDownsamplingTest extends TestHelper {
         else if ("sensor_B".equals(row[1]))
           avgB = (double) row[2];
       }
-      assertThat(avgA).isCloseTo(20.0, org.assertj.core.data.Offset.offset(0.001));
-      assertThat(avgB).isCloseTo(200.0, org.assertj.core.data.Offset.offset(0.001));
+      assertThat(avgA).isCloseTo(20.0, Offset.offset(0.001));
+      assertThat(avgB).isCloseTo(200.0, Offset.offset(0.001));
     } finally {
       engine.close();
     }

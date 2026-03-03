@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
@@ -237,8 +238,8 @@ class TimeSeriesSealedStoreTest {
           new double[] { Double.NaN, Double.NaN, 60.0 }, tagDV);
 
       final TagFilter filterX = TagFilter.eq(0, "X");
-      final java.util.Iterator<Object[]> iter = store.iterateRange(1000L, 3000L, null, filterX);
-      final List<Object[]> results = new java.util.ArrayList<>();
+      final Iterator<Object[]> iter = store.iterateRange(1000L, 3000L, null, filterX);
+      final List<Object[]> results = new ArrayList<>();
       while (iter.hasNext())
         results.add(iter.next());
 
@@ -335,7 +336,7 @@ class TimeSeriesSealedStoreTest {
       // iterateRange uses binary search — requires ascending on-disk block order.
       // Downsampled block lands at bucket t=5000; query 5000..9000 to find it.
       final Iterator<Object[]> iter = store.iterateRange(5_000L, 9_000L, null, null);
-      final List<Object[]> old = new java.util.ArrayList<>();
+      final List<Object[]> old = new ArrayList<>();
       while (iter.hasNext())
         old.add(iter.next());
 
