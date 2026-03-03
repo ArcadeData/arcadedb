@@ -31,8 +31,8 @@
     <name>ArcadeDB Studio</name>
 
     <properties>
-        <node.version>v20.20.0</node.version>
-        <npm.version>10.2.3</npm.version>
+        <node.version>v25.7.0</node.version>
+        <npm.version>11.10.1</npm.version>
         <frontend-maven-plugin.version>2.0.0</frontend-maven-plugin.version>
     </properties>
 
