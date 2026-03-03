@@ -244,14 +244,13 @@ public class HttpServer implements ServerPlugin {
 
   private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
       int httpsPortListening) throws Exception {
-    final long maxEntitySize = configuration.getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
     final Undertow.Builder builder = Undertow.builder()//
         .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
         // Set to Long.MAX_VALUE so Undertow does not reject oversized requests before routing;
         // the actual limit is enforced in the handler chain to return a proper 413 with JSON body
         .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, Long.MAX_VALUE)
         .addHttpListener(httpPortListening, host)//
-        .setHandler(createBodySizeLimitHandler(routes, maxEntitySize))//
+        .setHandler(createBodySizeLimitHandler(routes, configuration))//
         .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
         .setIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS))//
         .setWorkerThreads(500)//
@@ -266,19 +265,20 @@ public class HttpServer implements ServerPlugin {
     return builder.build();
   }
 
-  private HttpHandler createBodySizeLimitHandler(final HttpHandler next, final long maxEntitySize) {
-    if (maxEntitySize <= 0)
-      return next;
+  private HttpHandler createBodySizeLimitHandler(final HttpHandler next, final ContextConfiguration configuration) {
     return exchange -> {
-      final long contentLength = exchange.getRequestContentLength();
-      if (contentLength > maxEntitySize) {
-        exchange.setStatusCode(StatusCodes.REQUEST_ENTITY_TOO_LARGE);
-        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-        exchange.getResponseSender().send(
-            "{\"error\":\"Request body too large\",\"detail\":\"Request body size (" + contentLength
-                + " bytes) exceeds the maximum allowed size of " + maxEntitySize
-                + " bytes. Configure 'arcadedb.server.httpBodyContentMaxSize' to increase the limit.\"}");
-        return;
+      final long maxEntitySize = configuration.getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
+      if (maxEntitySize > 0) {
+        final long contentLength = exchange.getRequestContentLength();
+        if (contentLength > maxEntitySize) {
+          exchange.setStatusCode(StatusCodes.REQUEST_ENTITY_TOO_LARGE);
+          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+          exchange.getResponseSender().send(
+              "{\"error\":\"Request body too large\",\"detail\":\"Request body size (" + contentLength
+                  + " bytes) exceeds the maximum allowed size of " + maxEntitySize
+                  + " bytes. Configure 'arcadedb.server.httpBodyContentMaxSize' to increase the limit.\"}");
+          return;
+        }
       }
       next.handleRequest(exchange);
     };
