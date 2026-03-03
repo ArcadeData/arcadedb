@@ -19,8 +19,11 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -422,12 +425,23 @@ class TextStatelessFunctionsTest {
   // ============ FormatFunction tests ============
 
   @Test
-  void formatFunctionNoPattern() {
+  void formatFunctionTemporalNoPattern() {
     final FormatFunction fn = new FormatFunction();
     assertThat(fn.getName()).isEqualTo("format");
 
+    final CypherDate date = new CypherDate(LocalDate.of(2026, 3, 3));
     // Without pattern, returns toString()
-    assertThat(fn.execute(new Object[]{"hello"}, null)).isEqualTo("hello");
+    final String result = (String) fn.execute(new Object[]{date}, null);
+    assertThat(result).isEqualTo("2026-03-03");
+  }
+
+  @Test
+  void formatFunctionTemporalWithPattern() {
+    final FormatFunction fn = new FormatFunction();
+
+    final CypherDate date = new CypherDate(LocalDate.of(2026, 3, 3));
+    final String result = (String) fn.execute(new Object[]{date, "dd/MM/yyyy"}, null);
+    assertThat(result).isEqualTo("03/03/2026");
   }
 
   @Test
@@ -440,8 +454,29 @@ class TextStatelessFunctionsTest {
   void formatFunctionNullPattern() {
     final FormatFunction fn = new FormatFunction();
 
+    final CypherDate date = new CypherDate(LocalDate.of(2026, 1, 15));
     // Null pattern returns toString()
-    assertThat(fn.execute(new Object[]{"hello", null}, null)).isEqualTo("hello");
+    final String result = (String) fn.execute(new Object[]{date, null}, null);
+    assertThat(result).isEqualTo("2026-01-15");
+  }
+
+  @Test
+  void formatFunctionDurationWithPatternThrows() {
+    final FormatFunction fn = new FormatFunction();
+
+    final CypherDuration duration = CypherDuration.parse("P1Y2M3D");
+    assertThatThrownBy(() -> fn.execute(new Object[]{duration, "yyyy"}, null))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("Duration");
+  }
+
+  @Test
+  void formatFunctionNonTemporalWithPatternThrows() {
+    final FormatFunction fn = new FormatFunction();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"not-a-temporal", "yyyy"}, null))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("temporal");
   }
 
   @Test

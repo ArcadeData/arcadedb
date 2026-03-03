@@ -476,6 +476,7 @@ class OpenCypherTextFunctionsTest {
     assertThat(fn.execute(new Object[]{"helloWorld"}, null)).isEqualTo("hello_world");
     assertThat(fn.execute(new Object[]{"HelloWorld"}, null)).isEqualTo("hello_world");
     assertThat(fn.execute(new Object[]{"hello-world"}, null)).isEqualTo("hello_world");
+    // Each uppercase letter is treated as a word boundary, so consecutive uppercase letters each get an underscore prefix
     assertThat(fn.execute(new Object[]{"HELLO_WORLD"}, null)).isEqualTo("h_e_l_l_o_w_o_r_l_d");
   }
 
@@ -625,6 +626,7 @@ class OpenCypherTextFunctionsTest {
 
     assertThat(fn.execute(new Object[]{"test", 8, "0"}, null)).isEqualTo("test0000");
     assertThat(fn.execute(new Object[]{"test", 4, "0"}, null)).isEqualTo("test");
+    // No truncation when string length >= target length
     assertThat(fn.execute(new Object[]{"test", 2, "0"}, null)).isEqualTo("test");
   }
 
@@ -791,5 +793,32 @@ class OpenCypherTextFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<String> result = (List<String>) fn.execute(new Object[]{"abc", null}, null);
     assertThat(result).containsExactly("a", "b", "c");
+  }
+
+  // ============ Security boundary tests ============
+
+  @Test
+  void textRegexReplacePatternTooLong() {
+    final TextRegexReplace fn = new TextRegexReplace();
+    final String longPattern = "a".repeat(501);
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"test", longPattern, "x"}, null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void textLpadExceedsMaxLength() {
+    final TextLpad fn = new TextLpad();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"", 10_485_761, "x"}, null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void textRpadExceedsMaxLength() {
+    final TextRpad fn = new TextRpad();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"", 10_485_761, "x"}, null))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }
