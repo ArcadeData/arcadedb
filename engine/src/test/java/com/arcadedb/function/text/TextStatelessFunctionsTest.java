@@ -319,6 +319,15 @@ class TextStatelessFunctionsTest {
   }
 
   @Test
+  void splitFunctionNullDelimiterThrowsNpe() {
+    final SplitFunction fn = new SplitFunction();
+
+    // SplitFunction has no null guard on args[1] — throws NPE unlike TextSplit which handles it gracefully
+    assertThatThrownBy(() -> fn.execute(new Object[]{"abc", null}, null))
+        .isInstanceOf(NullPointerException.class);
+  }
+
+  @Test
   void splitFunctionWrongArgCount() {
     final SplitFunction fn = new SplitFunction();
 
