@@ -42,7 +42,9 @@ public class InCondition extends BooleanExpression {
   public Object                right;
   public boolean               not;
 
-  private static final Object UNSET           = new Object();
+  private static final Object  UNSET                    = new Object();
+  private static final java.util.regex.Pattern FIELD_IDENTIFIER_PATTERN =
+      java.util.regex.Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*");
   private final        Object inputFinalValue = UNSET;
 
   public InCondition(final int id) {
@@ -387,11 +389,8 @@ public class InCondition extends BooleanExpression {
     final String rightStr = rightMathExpression.toString();
     final String normalizedRightStr = rightStr.replace("`", "");
     // A field identifier is a valid property path: letters/underscore, optional dot-separated segments
-    return !normalizedRightStr.contains("..") &&
-           !normalizedRightStr.startsWith(".") &&
-           !normalizedRightStr.endsWith(".") &&
-           !normalizedRightStr.isEmpty() &&
-           normalizedRightStr.matches("[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*");
+    return !normalizedRightStr.isEmpty() &&
+           FIELD_IDENTIFIER_PATTERN.matcher(normalizedRightStr).matches();
   }
 
   @Override

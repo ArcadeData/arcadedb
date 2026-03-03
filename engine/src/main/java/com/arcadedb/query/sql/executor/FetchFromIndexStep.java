@@ -447,7 +447,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    */
   private static Object unwrapSubQueryResult(final Object item) {
     if (item instanceof Result result && !result.isElement()) {
-      final java.util.Set<String> propertyNames = result.getPropertyNames();
+      final Set<String> propertyNames = result.getPropertyNames();
       if (propertyNames.size() == 1)
         return result.getProperty(propertyNames.iterator().next());
     }
