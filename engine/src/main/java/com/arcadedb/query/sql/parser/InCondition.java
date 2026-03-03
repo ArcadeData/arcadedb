@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CodeUtils;
 
 import java.util.*;
+import java.util.regex.Pattern;
 import java.util.stream.*;
 
 public class InCondition extends BooleanExpression {
@@ -42,7 +43,9 @@ public class InCondition extends BooleanExpression {
   public Object                right;
   public boolean               not;
 
-  private static final Object UNSET           = new Object();
+  private static final Object  UNSET                    = new Object();
+  private static final Pattern FIELD_IDENTIFIER_PATTERN =
+      Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*");
   private final        Object inputFinalValue = UNSET;
 
   public InCondition(final int id) {
@@ -372,24 +375,23 @@ public class InCondition extends BooleanExpression {
   /**
    * Checks if the right side of the IN condition looks like a field identifier
    * (either simple like "nums" or nested like "nums.a").
-   * This is used to detect inverted syntax: value IN list_field
+   * This is used to detect inverted syntax: value IN list_field.
+   * <p>
+   * NOTE: subquery aliases (e.g. _$$$SUBQUERY$$$_0) are base identifiers but must NOT be
+   * treated as field identifiers — they contain '$' which is excluded by the regex below.
    */
   private boolean isRightSideFieldIdentifier() {
-    if (rightMathExpression == null) {
+    if (rightMathExpression == null)
       return false;
-    }
-    if (rightMathExpression.isBaseIdentifier()) {
-      return true;
-    }
-    // Check for nested property path like "nums.a"
-    String rightStr = rightMathExpression.toString();
-    String normalizedRightStr = rightStr.replace("`", "");
-    // A field identifier should look like a property path (letters, dots, no operators)
-    return !normalizedRightStr.contains("..") &&
-           !normalizedRightStr.startsWith(".") &&
-           !normalizedRightStr.endsWith(".") &&
-           !normalizedRightStr.isEmpty() &&
-           normalizedRightStr.matches("[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*");
+
+    // Use the string representation to distinguish real field identifiers from subquery aliases
+    // and other non-field expressions. Subquery aliases like "_$$$SUBQUERY$$$_0" contain '$'
+    // which does not match the field-name pattern, so they are correctly excluded.
+    final String rightStr = rightMathExpression.toString();
+    final String normalizedRightStr = rightStr.replace("`", "");
+    // A field identifier is a valid property path: letters/underscore, optional dot-separated segments
+    return !normalizedRightStr.isEmpty() &&
+           FIELD_IDENTIFIER_PATTERN.matcher(normalizedRightStr).matches();
   }
 
   @Override

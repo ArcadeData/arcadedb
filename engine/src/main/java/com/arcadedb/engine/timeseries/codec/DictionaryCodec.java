@@ -18,6 +18,8 @@
  */
 package com.arcadedb.engine.timeseries.codec;
 
+import java.io.IOException;
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -98,7 +100,7 @@ public final class DictionaryCodec {
     return buf.array();
   }
 
-  public static String[] decode(final byte[] data) throws java.io.IOException {
+  public static String[] decode(final byte[] data) throws IOException {
     if (data == null || data.length == 0)
       return new String[0];
 
@@ -119,12 +121,12 @@ public final class DictionaryCodec {
       for (int i = 0; i < count; i++) {
         final int idx = buf.getShort() & 0xFFFF;
         if (idx >= dictSize)
-          throw new java.io.IOException("DictionaryCodec: invalid dictionary index " + idx + " (dict size=" + dictSize + ")");
+          throw new IOException("DictionaryCodec: invalid dictionary index " + idx + " (dict size=" + dictSize + ")");
         result[i] = dictEntries[idx];
       }
       return result;
-    } catch (final java.nio.BufferUnderflowException e) {
-      throw new java.io.IOException("DictionaryCodec: malformed data (truncated buffer, size=" + data.length + ")", e);
+    } catch (final BufferUnderflowException e) {
+      throw new IOException("DictionaryCodec: malformed data (truncated buffer, size=" + data.length + ")", e);
     }
   }
 }

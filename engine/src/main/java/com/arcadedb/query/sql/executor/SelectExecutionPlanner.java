@@ -84,10 +84,14 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -1843,17 +1847,17 @@ public class SelectExecutionPlanner {
   private static long toEpochMs(final Object value) {
     if (value instanceof Long l)
       return l;
-    if (value instanceof java.util.Date d)
+    if (value instanceof Date d)
       return d.getTime();
     if (value instanceof Number n)
       return n.longValue();
     if (value instanceof String s) {
       try {
-        return java.time.Instant.parse(s).toEpochMilli();
+        return Instant.parse(s).toEpochMilli();
       } catch (final Exception e) {
         // Try parsing as ISO date without time (assumes UTC)
         try {
-          return java.time.LocalDate.parse(s).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+          return LocalDate.parse(s).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
         } catch (final Exception e2) {
           throw new CommandExecutionException("Cannot parse timestamp: '" + s + "'", e);
         }

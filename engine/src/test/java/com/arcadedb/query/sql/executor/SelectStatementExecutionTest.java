@@ -4658,4 +4658,99 @@ public class SelectStatementExecutionTest extends TestHelper {
       assertThat(item.<String>getProperty("equals")).isEqualTo("=");
     }
   }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3565
+   * IN (SELECT ...) returns wrong results when the compared field has an index (UNIQUE or NOTUNIQUE).
+   * Root cause: index-based IN lookup used raw Result objects as index keys instead of their unwrapped values.
+   */
+  @Test
+  void inSubqueryWithUniqueIndex() {
+    final DocumentType typeA = database.getSchema().createDocumentType("InSubUniqueA");
+    typeA.createProperty("name", Type.STRING);
+    final DocumentType typeB = database.getSchema().createDocumentType("InSubUniqueB");
+    typeB.createProperty("ref", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+
+    database.begin();
+    database.command("sql", "INSERT INTO InSubUniqueA SET name = 'hello'");
+    database.command("sql", "INSERT INTO InSubUniqueB SET ref = 'hello'");
+    database.commit();
+
+    try (ResultSet rs = database.query("sql", "SELECT FROM InSubUniqueB WHERE ref IN (SELECT name FROM InSubUniqueA)")) {
+      assertThat(rs.hasNext()).as("IN (SELECT ...) must return results when TypeB.ref has a UNIQUE index").isTrue();
+      rs.next();
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Verify count is correct too
+    try (ResultSet rs = database.query("sql",
+        "SELECT count(*) AS cnt FROM InSubUniqueB WHERE ref IN (SELECT name FROM InSubUniqueA)")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(1L);
+    }
+  }
+
+  @Test
+  void inSubqueryWithNotUniqueIndex() {
+    final DocumentType typeA = database.getSchema().createDocumentType("InSubNotUniqueA");
+    typeA.createProperty("name", Type.STRING);
+    final DocumentType typeB = database.getSchema().createDocumentType("InSubNotUniqueB");
+    typeB.createProperty("ref", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+
+    database.begin();
+    database.command("sql", "INSERT INTO InSubNotUniqueA SET name = 'hello'");
+    database.command("sql", "INSERT INTO InSubNotUniqueB SET ref = 'hello'");
+    database.commit();
+
+    try (ResultSet rs = database.query("sql",
+        "SELECT FROM InSubNotUniqueB WHERE ref IN (SELECT name FROM InSubNotUniqueA)")) {
+      assertThat(rs.hasNext()).as("IN (SELECT ...) must return results when TypeB.ref has a NOTUNIQUE index").isTrue();
+      rs.next();
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void inSubqueryWithoutIndex() {
+    final DocumentType typeA = database.getSchema().createDocumentType("InSubNoIndexA");
+    typeA.createProperty("name", Type.STRING);
+    database.getSchema().createDocumentType("InSubNoIndexB").createProperty("ref", Type.STRING);
+
+    database.begin();
+    database.command("sql", "INSERT INTO InSubNoIndexA SET name = 'hello'");
+    database.command("sql", "INSERT INTO InSubNoIndexB SET ref = 'hello'");
+    database.commit();
+
+    try (ResultSet rs = database.query("sql",
+        "SELECT FROM InSubNoIndexB WHERE ref IN (SELECT name FROM InSubNoIndexA)")) {
+      assertThat(rs.hasNext()).as("IN (SELECT ...) must return results without any index").isTrue();
+      rs.next();
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void inSubqueryWithMultipleValuesAndIndex() {
+    final DocumentType typeA = database.getSchema().createDocumentType("InSubMultiA");
+    typeA.createProperty("name", Type.STRING);
+    final DocumentType typeB = database.getSchema().createDocumentType("InSubMultiB");
+    typeB.createProperty("ref", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+
+    database.begin();
+    database.command("sql", "INSERT INTO InSubMultiA SET name = 'hello'");
+    database.command("sql", "INSERT INTO InSubMultiA SET name = 'world'");
+    database.command("sql", "INSERT INTO InSubMultiB SET ref = 'hello'");
+    database.command("sql", "INSERT INTO InSubMultiB SET ref = 'world'");
+    database.command("sql", "INSERT INTO InSubMultiB SET ref = 'other'");
+    database.commit();
+
+    try (ResultSet rs = database.query("sql",
+        "SELECT FROM InSubMultiB WHERE ref IN (SELECT name FROM InSubMultiA) ORDER BY ref ASC")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("ref")).isEqualTo("hello");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("ref")).isEqualTo("world");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
 }

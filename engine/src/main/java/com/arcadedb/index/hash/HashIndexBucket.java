@@ -34,6 +34,7 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -154,7 +155,7 @@ public class HashIndexBucket extends PaginatedComponent {
       database.getFileManager().dropFile(file.getFileId());
       database.getSchema().getEmbedded().removeFile(file.getFileId());
     } else {
-      if (!new java.io.File(file.getFilePath()).delete())
+      if (!new File(file.getFilePath()).delete())
         LogManager.instance().log(this, Level.WARNING, "Error on deleting hash index file '%s'", null, file.getFilePath());
     }
   }

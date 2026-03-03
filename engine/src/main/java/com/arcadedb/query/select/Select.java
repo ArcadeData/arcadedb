@@ -272,7 +272,7 @@ public class Select {
     return new SelectExecutor(this).executeExists();
   }
 
-  public java.util.stream.Stream<Document> stream() {
+  public Stream<Document> stream() {
     return documents().stream();
   }
 

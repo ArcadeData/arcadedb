@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -242,7 +243,7 @@ public class TimeSeriesEmbeddedBenchmark {
         // Direct API test (bypasses SQL layer entirely)
         queryStart = System.nanoTime();
         int directCount = 0;
-        final java.util.Iterator<Object[]> iter = coldEngine.iterateQuery(midTs, midTs + 3_600_000L, null, null);
+        final Iterator<Object[]> iter = coldEngine.iterateQuery(midTs, midTs + 3_600_000L, null, null);
         while (iter.hasNext()) {
           iter.next();
           directCount++;
@@ -253,7 +254,7 @@ public class TimeSeriesEmbeddedBenchmark {
         // Full scan — measure how long it takes to iterate ALL 50M points from disk
         queryStart = System.nanoTime();
         long fullScanCount = 0;
-        final java.util.Iterator<Object[]> fullIter = coldEngine.iterateQuery(Long.MIN_VALUE, Long.MAX_VALUE, null,
+        final Iterator<Object[]> fullIter = coldEngine.iterateQuery(Long.MIN_VALUE, Long.MAX_VALUE, null,
             null);
         while (fullIter.hasNext()) {
           fullIter.next();

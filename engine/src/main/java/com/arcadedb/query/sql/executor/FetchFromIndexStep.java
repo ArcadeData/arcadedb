@@ -83,9 +83,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    init(context.getDatabase());
-
+    // Pull previous steps first so that GlobalLetQueryStep (if present) can populate
+    // context variables (e.g. subquery results) before init() evaluates the condition.
     pullPrevious(context, nRecords);
+
+    init(context.getDatabase());
 
     return new ResultSet() {
       int localCount = 0;
@@ -244,7 +246,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (MultiValue.isMultiValue(rightValue)) {
       customIterator = new MultiIterator<>();
       for (final Object item : MultiValue.getMultiValueIterable(rightValue)) {
-        final IndexCursor localCursor = createCursor(equals, item, context);
+        final IndexCursor localCursor = createCursor(equals, unwrapSubQueryResult(item), context);
 
         customIterator.addIterator(new Iterator<Map.Entry>() {
           @Override
@@ -280,7 +282,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
       customIterator.reset();
     } else {
-      cursor = createCursor(equals, rightValue, context);
+      cursor = createCursor(equals, unwrapSubQueryResult(rightValue), context);
     }
     fetchNextEntry();
   }
@@ -414,7 +416,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         for (final Expression exp : head.getExpressions())
           newHead.add(exp.copy());
 
-        newHead.add(toExpression(elemInKey));
+        newHead.add(toExpression(unwrapSubQueryResult(elemInKey)));
         final PCollection tail = key.copy();
         tail.getExpressions().remove(0);
         result.addAll(cartesianProduct(newHead, tail));
@@ -435,6 +437,21 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   private Expression toExpression(final Object value) {
     return new ValueExpression(value);
+  }
+
+  /**
+   * Unwraps a Result object from a subquery when it has exactly one property.
+   * This is needed when IN (SELECT ...) results are used as index keys: the index stores
+   * the raw property value (e.g. "hello"), but the subquery returns Result objects like
+   * {name: "hello"}. Without unwrapping, the index lookup would fail to find any match.
+   */
+  private static Object unwrapSubQueryResult(final Object item) {
+    if (item instanceof Result result && !result.isElement()) {
+      final Set<String> propertyNames = result.getPropertyNames();
+      if (propertyNames.size() == 1)
+        return result.getProperty(propertyNames.iterator().next());
+    }
+    return item;
   }
 
   private Object convertToIndexDefinitionTypes(final Object val/*, OType[] types*/) {

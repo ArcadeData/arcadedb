@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.http.handler.prometheus;
 
+import java.nio.charset.StandardCharsets;
+
 /**
  * Minimal protobuf wire format decoder. Supports only the wire types needed
  * by the Prometheus remote_write / remote_read protocol:
@@ -114,7 +116,7 @@ public final class ProtobufDecoder {
 
   public String readString() {
     final byte[] bytes = readLengthDelimited();
-    return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+    return new String(bytes, StandardCharsets.UTF_8);
   }
 
   public ProtobufDecoder readSubMessage() {

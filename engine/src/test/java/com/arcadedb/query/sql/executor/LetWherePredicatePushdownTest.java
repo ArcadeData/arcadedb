@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,12 +80,12 @@ class LetWherePredicatePushdownTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
       final Result first = result.next();
       assertThat((String) first.getProperty("name")).isEqualTo("A");
-      assertThat((float) first.getProperty("distance")).isCloseTo(0.1f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat((float) first.getProperty("distance")).isCloseTo(0.1f, Offset.offset(0.001f));
 
       assertThat(result.hasNext()).isTrue();
       final Result second = result.next();
       assertThat((String) second.getProperty("name")).isEqualTo("B");
-      assertThat((float) second.getProperty("distance")).isCloseTo(0.5f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat((float) second.getProperty("distance")).isCloseTo(0.5f, Offset.offset(0.001f));
 
       assertThat(result.hasNext()).isFalse();
     });
