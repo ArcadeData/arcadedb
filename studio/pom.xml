@@ -71,29 +71,6 @@
                         </configuration>
                     </execution>
 
-                    <!-- Run security audit -->
-<!--                    <execution>-->
-<!--                        <id>npm audit</id>-->
-<!--                        <goals>-->
-<!--                            <goal>npm</goal>-->
-<!--                        </goals>-->
-<!--                        <phase>compile</phase>-->
-<!--                        <configuration>-->
-<!--                            <arguments>audit &#45;&#45;audit-level=none</arguments>-->
-<!--                        </configuration>-->
-<!--                    </execution>-->
-
-<!--                    &lt;!&ndash; Build frontend assets &ndash;&gt;-->
-<!--                    <execution>-->
-<!--                        <id>prebuild</id>-->
-<!--                        <goals>-->
-<!--                            <goal>npm</goal>-->
-<!--                        </goals>-->
-<!--                        <phase>generate-resources</phase>-->
-<!--                        <configuration>-->
-<!--                            <arguments>run prebuild</arguments>-->
-<!--                        </configuration>-->
-<!--                    </execution>-->
                     <!-- Build frontend assets -->
                     <execution>
                         <id>webpack build</id>
