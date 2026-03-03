@@ -18,6 +18,8 @@
  */
 package com.arcadedb.engine.timeseries.codec;
 
+import java.io.IOException;
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 
 /**
@@ -132,7 +134,7 @@ public final class Simple8bCodec {
     return result;
   }
 
-  public static long[] decode(final byte[] data) throws java.io.IOException {
+  public static long[] decode(final byte[] data) throws IOException {
     if (data == null || data.length == 0)
       return new long[0];
 
@@ -140,7 +142,7 @@ public final class Simple8bCodec {
       final ByteBuffer buf = ByteBuffer.wrap(data);
       final int totalCount = buf.getInt();
       if (totalCount < 0)
-        throw new java.io.IOException("Simple8bCodec: negative count " + totalCount + " in header");
+        throw new IOException("Simple8bCodec: negative count " + totalCount + " in header");
       final long[] result = new long[totalCount];
 
       int pos = 0;
@@ -165,8 +167,8 @@ public final class Simple8bCodec {
       for (int i = 0; i < result.length; i++)
         result[i] = zigzagDecode(result[i]);
       return result;
-    } catch (final java.nio.BufferUnderflowException e) {
-      throw new java.io.IOException("Simple8bCodec: malformed data (truncated buffer, size=" + data.length + ")", e);
+    } catch (final BufferUnderflowException e) {
+      throw new IOException("Simple8bCodec: malformed data (truncated buffer, size=" + data.length + ")", e);
     }
   }
 

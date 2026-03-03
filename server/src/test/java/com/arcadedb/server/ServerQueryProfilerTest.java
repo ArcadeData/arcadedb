@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -56,7 +57,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
       server.stop();
 
     // Clean profiler files
-    FileUtils.deleteFile(new File("./target/profiler"));
+    FileUtils.deleteRecursively(new File("./target/profiler"));
 
     super.endTest();
   }
@@ -175,7 +176,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   @Test
   public void testProfilerWithRealQueries() {
     // Create a test database
-    server.createDatabase("profiler-test-db", com.arcadedb.engine.ComponentFile.MODE.READ_WRITE);
+    server.createDatabase("profiler-test-db", ComponentFile.MODE.READ_WRITE);
     final ServerDatabase db = server.getDatabase("profiler-test-db");
 
     // Create schema

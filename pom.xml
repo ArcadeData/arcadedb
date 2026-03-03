@@ -88,7 +88,7 @@
         <json-path.version>2.10.0</json-path.version>
         <slf4j.version>2.0.17</slf4j.version>
         <undertow-core.version>2.3.23.Final</undertow-core.version>
-        <mockito-core.version>5.21.0</mockito-core.version>
+        <mockito-core.version>5.22.0</mockito-core.version>
         <neo4j-driver.version>5.28.10</neo4j-driver.version>
         <byte-buddy.version>1.17.7</byte-buddy.version>
 
@@ -96,7 +96,7 @@
         <protobuf-maven-plugin.version>4.1.3</protobuf-maven-plugin.version>
         <grpc.version>1.79.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
-        <protobuf-java.version>4.33.5</protobuf-java.version>
+        <protobuf-java.version>4.34.0</protobuf-java.version>
         <com.google.api.grpc.version>2.66.0</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 

@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries.codec;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,7 +46,7 @@ class GorillaXORCodecTest {
   @Test
   void testConstantValues() {
     final double[] input = new double[100];
-    java.util.Arrays.fill(input, 42.0);
+    Arrays.fill(input, 42.0);
 
     final byte[] encoded = GorillaXORCodec.encode(input);
     assertThat(GorillaXORCodec.decode(encoded)).containsExactly(input);

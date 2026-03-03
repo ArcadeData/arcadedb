@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.List;
 
@@ -237,7 +238,7 @@ class TimeSeriesCrashRecoveryTest extends TestHelper {
     final File tmpFile = new File(shardPath + ".ts.sealed.tmp");
 
     // Copy the current sealed file to .tmp (simulating a temp file that was ready to be renamed)
-    java.nio.file.Files.copy(sealedFile.toPath(), tmpFile.toPath());
+    Files.copy(sealedFile.toPath(), tmpFile.toPath());
     // Delete the original sealed file (simulating delete() succeeded but renameTo() failed)
     assertThat(sealedFile.delete()).isTrue();
     assertThat(sealedFile.exists()).isFalse();

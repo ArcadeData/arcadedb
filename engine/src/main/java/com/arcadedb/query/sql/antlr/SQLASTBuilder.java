@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.schema.Property;
 import com.arcadedb.utility.CollectionUtils;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -3101,22 +3102,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
       }
 
-      // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this)
-      if (firstIdCtx.RID_ATTR() != null || firstIdCtx.TYPE_ATTR() != null ||
-          firstIdCtx.IN_ATTR() != null || firstIdCtx.OUT_ATTR() != null ||
-          firstIdCtx.THIS() != null) {
-        // Handle record attributes specially
-        final RecordAttribute attr = new RecordAttribute(-1);
-        attr.setName(firstIdCtx.getText());
-        final BaseIdentifier baseId = new BaseIdentifier(attr);
-        baseExpr.identifier = baseId;
-      } else {
-        // Regular identifier
-        final Identifier firstId = (Identifier) visit(firstIdCtx);
-        // Use BaseIdentifier constructor that automatically creates SuffixIdentifier
-        final BaseIdentifier baseId = new BaseIdentifier(firstId);
-        baseExpr.identifier = baseId;
-      }
+      // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this),
+      // including backtick-quoted variants like `@rid`
+      final SuffixIdentifier firstSuffix = buildSuffixForIdentifier(firstIdCtx);
+      final BaseIdentifier baseId = new BaseIdentifier(-1);
+      baseId.suffix = firstSuffix;
+      baseExpr.identifier = baseId;
 
       // Check for namespaced function call pattern: namespace.method(args)
       // e.g., ts.first(value, ts) → builds FunctionCall with name "ts.first"
@@ -3162,16 +3153,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             final SuffixIdentifier suffix;
 
             // Check if this identifier is a record attribute (@rid, @type, @in, @out, @this)
-            if (idCtx.RID_ATTR() != null || idCtx.TYPE_ATTR() != null ||
-                idCtx.IN_ATTR() != null || idCtx.OUT_ATTR() != null ||
-                idCtx.THIS() != null) {
-              final RecordAttribute attr = new RecordAttribute(-1);
-              attr.setName(idCtx.getText());
-              suffix = new SuffixIdentifier(attr);
-            } else {
-              final Identifier id = (Identifier) visit(idCtx);
-              suffix = new SuffixIdentifier(id);
-            }
+            suffix = buildSuffixForIdentifier(idCtx);
 
             modifier.suffix = suffix;
 
@@ -3397,6 +3379,47 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Builds a SuffixIdentifier for the given identifier context, recognising record attributes
+   * ({@code @rid}, {@code @type}, {@code @in}, {@code @out}, {@code @cat}, {@code @this}, etc.)
+   * whether they appear as unquoted tokens (e.g. {@code .@rid}) or as backtick-quoted identifiers
+   * (e.g. {@code .`@rid`}).
+   */
+  private SuffixIdentifier buildSuffixForIdentifier(final SQLParser.IdentifierContext idCtx) {
+    // Unquoted record attribute tokens (@rid, @type, @in, @out, @this)
+    if (idCtx.RID_ATTR() != null || idCtx.TYPE_ATTR() != null ||
+        idCtx.IN_ATTR() != null || idCtx.OUT_ATTR() != null ||
+        idCtx.THIS() != null) {
+      final RecordAttribute attr = new RecordAttribute(-1);
+      attr.setName(idCtx.getText());
+      return new SuffixIdentifier(attr);
+    }
+    // Quoted identifiers (e.g. `@rid`) or plain identifiers whose value matches a record attribute
+    final Identifier id = (Identifier) visit(idCtx);
+    if (isRecordAttributeName(id.getStringValue())) {
+      final RecordAttribute attr = new RecordAttribute(-1);
+      attr.setName(id.getStringValue());
+      return new SuffixIdentifier(attr);
+    }
+    return new SuffixIdentifier(id);
+  }
+
+  /**
+   * Returns true if the given name matches a known internal record attribute
+   * ({@code @rid}, {@code @type}, {@code @in}, {@code @out}, {@code @cat}, {@code @props}, {@code @this}).
+   */
+  private static boolean isRecordAttributeName(final String name) {
+    if (name == null)
+      return false;
+    return name.equalsIgnoreCase(Property.RID_PROPERTY) ||
+        name.equalsIgnoreCase(Property.TYPE_PROPERTY) ||
+        name.equalsIgnoreCase(Property.IN_PROPERTY) ||
+        name.equalsIgnoreCase(Property.OUT_PROPERTY) ||
+        name.equalsIgnoreCase(Property.CAT_PROPERTY) ||
+        name.equalsIgnoreCase(Property.PROPERTY_TYPES_PROPERTY) ||
+        name.equalsIgnoreCase(Property.THIS_PROPERTY);
+  }
+
+  /**
    * Visit modifier (DOT identifier with optional parentheses or array selector).
    * Grammar: modifier: DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)? | arraySelector
    * <p>
@@ -3423,10 +3446,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
           modifier.methodCall = methodCall;
         } else {
-          // Property access: .identifier
-          final Identifier id = (Identifier) visit(ctx.identifier());
-          final SuffixIdentifier suffix = new SuffixIdentifier(id);
-          modifier.suffix = suffix;
+          // Property access: .identifier — may be a record attribute like @rid
+          modifier.suffix = buildSuffixForIdentifier(ctx.identifier());
         }
       } else if (ctx.arraySelector() != null) {
         // Array selector modifier
@@ -5911,11 +5932,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // SHARDS count
     if (bodyCtx.SHARDS() != null) {
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
             && tn.getSymbol().getType() == SQLParser.SHARDS) {
           // Next INTEGER_LITERAL
           for (int j = i + 1; j < bodyCtx.children.size(); j++) {
-            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+            if (bodyCtx.children.get(j) instanceof TerminalNode tn2
                 && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
               stmt.shards = new PInteger(-1);
               stmt.shards.setValue(Integer.parseInt(tn2.getText()));
@@ -5931,10 +5952,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.RETENTION() != null) {
       long retentionValue = 0;
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
             && tn.getSymbol().getType() == SQLParser.RETENTION) {
           for (int j = i + 1; j < bodyCtx.children.size(); j++) {
-            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+            if (bodyCtx.children.get(j) instanceof TerminalNode tn2
                 && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
               retentionValue = Long.parseLong(tn2.getText());
               break;
@@ -5949,7 +5970,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       boolean foundRetention = false;
       boolean foundValue = false;
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn) {
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn) {
           if (tn.getSymbol().getType() == SQLParser.RETENTION)
             foundRetention = true;
           else if (foundRetention && tn.getSymbol().getType() == SQLParser.INTEGER_LITERAL)
@@ -5971,10 +5992,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.COMPACTION_INTERVAL() != null) {
       long compactionValue = 0;
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
             && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL) {
           for (int j = i + 1; j < bodyCtx.children.size(); j++) {
-            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+            if (bodyCtx.children.get(j) instanceof TerminalNode tn2
                 && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
               compactionValue = Long.parseLong(tn2.getText());
               break;
@@ -5990,10 +6011,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // We need to look at the remaining children after the integer literal
       boolean foundCompaction = false;
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
             && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL)
           foundCompaction = true;
-        else if (foundCompaction && bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn) {
+        else if (foundCompaction && bodyCtx.children.get(i) instanceof TerminalNode tn) {
           if (tn.getSymbol().getType() == SQLParser.DAYS) {
             multiplier = 86400000L;
             break;

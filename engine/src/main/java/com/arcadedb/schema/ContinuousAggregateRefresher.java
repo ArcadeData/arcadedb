@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.Date;
 import java.util.Locale;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 public class ContinuousAggregateRefresher {
 
@@ -116,7 +117,7 @@ public class ContinuousAggregateRefresher {
 
   // Allows letters, digits, and underscores only — consistent with ArcadeDB identifier rules.
   // Backtick, dot, hyphen, and other injection-enabling characters are excluded.
-  private static final java.util.regex.Pattern SAFE_COLUMN_NAME = java.util.regex.Pattern.compile("[A-Za-z0-9_]+");
+  private static final Pattern SAFE_COLUMN_NAME = Pattern.compile("[A-Za-z0-9_]+");
 
   static String buildFilteredQuery(final ContinuousAggregateImpl ca, final long watermark) {
     if (watermark <= 0)

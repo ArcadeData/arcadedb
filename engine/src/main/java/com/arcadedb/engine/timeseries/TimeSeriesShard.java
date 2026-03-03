@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Component;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
@@ -78,7 +79,7 @@ public class TimeSeriesShard implements AutoCloseable {
     final LocalSchema schema = (LocalSchema) database.getSchema();
 
     // Check if the bucket was already loaded by the component factory (cold open)
-    final com.arcadedb.engine.Component existing = schema.getFileByName(shardName);
+    final Component existing = schema.getFileByName(shardName);
     if (existing instanceof TimeSeriesBucket tsb) {
       this.mutableBucket = tsb;
       this.mutableBucket.setColumns(columns);
@@ -722,7 +723,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * entire duration to prevent compaction from completing between the two reads (which
    * would cause the compacted mutable data to be invisible to the caller).
    */
-  java.util.concurrent.locks.ReadWriteLock getCompactionLock() {
+  ReadWriteLock getCompactionLock() {
     return compactionLock;
   }
 

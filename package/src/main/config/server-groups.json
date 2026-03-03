@@ -3,7 +3,7 @@
     "*": {
       "groups": {
         "admin": {
-          "access": ["updateSecurity", "updateSchema"],
+          "access": ["updateSecurity", "updateSchema", "updateDatabaseSettings"],
           "resultSetLimit": -1,
           "readTimeout": -1,
           "types": {
@@ -35,5 +35,5 @@
       }
     }
   },
-  "version": 1
+  "version": 2
 }

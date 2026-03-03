@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Ensure SHA pinned actions
-        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@d5d20e15f2736816ee0e001ba8b24b54d9ffcff4 # v5.0.0
+        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@70c4af2ed5282c51ba40566d026d6647852ffa3e # v5.0.1
       - name: Run pre-commit
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -110,7 +110,7 @@ jobs:
 
       - name: Upload unit test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: unit-coverage-reports
           path: |
@@ -153,7 +153,7 @@ jobs:
 
       - name: Upload unit test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: slow-unit-coverage-reports
           path: |
@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload Benchmark unit test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: benchmark-unit-coverage-reports
           path: |
@@ -239,7 +239,7 @@ jobs:
 
       - name: Upload integration test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: integration-coverage-reports
           path: |
@@ -443,7 +443,7 @@ jobs:
 
       - name: Upload Studio E2E test artifacts
         if: success() || failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: studio-e2e-artifacts
           path: |
@@ -496,28 +496,28 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Download unit test coverage reports
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         continue-on-error: true
         with:
           name: unit-coverage-reports
           path: unit-coverage
 
       - name: Download slow unit test coverage reports
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         continue-on-error: true
         with:
           name: slow-unit-coverage-reports
           path: slow-unit-coverage
 
       - name: Download benchmark unit test coverage reports
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         continue-on-error: true
         with:
           name: benchmark-unit-coverage-reports
           path: benchmark-unit-coverage
 
       - name: Download integration test coverage reports
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         continue-on-error: true
         with:
           name: integration-coverage-reports
