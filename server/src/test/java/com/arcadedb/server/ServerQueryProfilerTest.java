@@ -57,7 +57,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
       server.stop();
 
     // Clean profiler files
-    FileUtils.deleteFile(new File("./target/profiler"));
+    FileUtils.deleteRecursively(new File("./target/profiler"));
 
     super.endTest();
   }
