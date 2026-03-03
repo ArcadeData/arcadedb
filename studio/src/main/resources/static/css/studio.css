@@ -254,7 +254,7 @@ a.vertical-tab.nav-link.active.show {
 
 .nav-label {
   font-size: 0.65rem;
-  margin-top: 2px;
+  margin-top: 0;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -3638,4 +3638,81 @@ div.dt-search {
 @keyframes profilerPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
+}
+
+/* ===== Responsive Sidebar ===== */
+
+/* Make sidebar scrollable as safety net */
+#tabs {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-main) transparent;
+}
+
+#tabs::-webkit-scrollbar {
+  width: 3px;
+}
+
+#tabs::-webkit-scrollbar-thumb {
+  background-color: var(--border-main);
+  border-radius: 3px;
+}
+
+/* Compact mode: hide labels, reduce padding when viewport is short */
+@media (max-height: 780px) {
+  #tabs .nav-label {
+    display: none;
+  }
+
+  #tabs .nav-item a.vertical-tab {
+    padding: 8px 4px;
+    position: relative;
+  }
+
+  #tabs .nav-item a.vertical-tab i {
+    font-size: 1.2rem;
+  }
+
+  /* Instant tooltip on hover */
+  #tabs .nav-item a.vertical-tab[title]:hover::after {
+    content: attr(title);
+    position: absolute;
+    left: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    margin-left: 6px;
+    background: var(--bg-code);
+    color: var(--text-code);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    z-index: 1100;
+    pointer-events: none;
+  }
+
+  /* Logo smaller */
+  #tabs .nav-item:first-child {
+    padding: 4px 6px !important;
+  }
+
+  #tabs .nav-item:first-child img {
+    width: 65% !important;
+  }
+}
+
+/* Ultra-compact: even smaller at very short heights */
+@media (max-height: 580px) {
+  #tabs .nav-item a.vertical-tab {
+    padding: 5px 4px;
+  }
+
+  #tabs .nav-item a.vertical-tab i {
+    font-size: 1rem;
+  }
+
+  #tabs .nav-item:first-child {
+    padding: 2px 6px !important;
+  }
 }

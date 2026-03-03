@@ -69,6 +69,12 @@ import com.arcadedb.server.http.ssl.SslUtils;
 import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
+import com.arcadedb.server.ai.AiActivateHandler;
+import com.arcadedb.server.ai.AiAnalyzeProfilerHandler;
+import com.arcadedb.server.ai.AiChatHandler;
+import com.arcadedb.server.ai.AiChatsHandler;
+import com.arcadedb.server.ai.AiConfigHandler;
+import com.arcadedb.server.ai.ChatStorage;
 import com.arcadedb.server.mcp.MCPConfigHandler;
 import com.arcadedb.server.mcp.MCPHttpHandler;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -226,6 +232,21 @@ public class HttpServer implements ServerPlugin {
     final var mcpConfig = server.getMCPConfiguration();
     routes.addExactPath("/api/v1/mcp", new MCPHttpHandler(this, server, mcpConfig));
     routes.addExactPath("/api/v1/mcp/config", new MCPConfigHandler(this, mcpConfig));
+
+    // AI routes are always registered; the chat handler checks isConfigured() at request time
+    final var aiConfig = server.getAiConfiguration();
+    final var chatStorage = new ChatStorage(server.getRootPath());
+    final var aiChatsHandler = new AiChatsHandler(this, chatStorage);
+    routes.addPrefixPath("/api/v1/ai", Handlers.routing()//
+        .get("/config", new AiConfigHandler(this, aiConfig))//
+        .post("/activate", new AiActivateHandler(this, aiConfig))//
+        .post("/chat", new AiChatHandler(this, server, aiConfig, chatStorage))//
+        .post("/analyze-profiler", new AiAnalyzeProfilerHandler(this, server, aiConfig))//
+        .get("/chats", aiChatsHandler)//
+        .get("/chats/{id}", aiChatsHandler)//
+        .put("/chats/{id}", aiChatsHandler)//
+        .delete("/chats/{id}", aiChatsHandler)//
+    );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
