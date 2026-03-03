@@ -56,7 +56,7 @@ import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
 
 public class ServerSecurity implements ServerPlugin, SecurityManager {
 
-  public static final  int                             LATEST_VERSION       = 1;
+  public static final  int                             LATEST_VERSION       = 2;
   private final        ArcadeDBServer                  server;
   private final        SecurityUserFileRepository      usersRepository;
   private final        SecurityGroupFileRepository     groupRepository;
