@@ -5911,11 +5911,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // SHARDS count
     if (bodyCtx.SHARDS() != null) {
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
             && tn.getSymbol().getType() == SQLParser.SHARDS) {
           // Next INTEGER_LITERAL
           for (int j = i + 1; j < bodyCtx.children.size(); j++) {
-            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+            if (bodyCtx.children.get(j) instanceof TerminalNode tn2
                 && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
               stmt.shards = new PInteger(-1);
               stmt.shards.setValue(Integer.parseInt(tn2.getText()));
@@ -5931,10 +5931,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.RETENTION() != null) {
       long retentionValue = 0;
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
             && tn.getSymbol().getType() == SQLParser.RETENTION) {
           for (int j = i + 1; j < bodyCtx.children.size(); j++) {
-            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+            if (bodyCtx.children.get(j) instanceof TerminalNode tn2
                 && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
               retentionValue = Long.parseLong(tn2.getText());
               break;
@@ -5949,7 +5949,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       boolean foundRetention = false;
       boolean foundValue = false;
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn) {
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn) {
           if (tn.getSymbol().getType() == SQLParser.RETENTION)
             foundRetention = true;
           else if (foundRetention && tn.getSymbol().getType() == SQLParser.INTEGER_LITERAL)
@@ -5971,10 +5971,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.COMPACTION_INTERVAL() != null) {
       long compactionValue = 0;
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
             && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL) {
           for (int j = i + 1; j < bodyCtx.children.size(); j++) {
-            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+            if (bodyCtx.children.get(j) instanceof TerminalNode tn2
                 && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
               compactionValue = Long.parseLong(tn2.getText());
               break;
@@ -5990,10 +5990,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // We need to look at the remaining children after the integer literal
       boolean foundCompaction = false;
       for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
             && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL)
           foundCompaction = true;
-        else if (foundCompaction && bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn) {
+        else if (foundCompaction && bodyCtx.children.get(i) instanceof TerminalNode tn) {
           if (tn.getSymbol().getType() == SQLParser.DAYS) {
             multiplier = 86400000L;
             break;

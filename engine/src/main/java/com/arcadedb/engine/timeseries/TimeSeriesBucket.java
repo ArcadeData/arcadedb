@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.BasePage;
@@ -26,10 +27,13 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.Type;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -106,7 +110,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
   public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath,
       final List<ColumnDefinition> columns) throws IOException {
     super(database, name, filePath, BUCKET_EXT, ComponentFile.MODE.READ_WRITE,
-        database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
     this.columns = columns;
     this.rowSize = calculateRowSize(columns);
     // Note: initHeaderPage() is NOT called here.
@@ -120,7 +124,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
   public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
       final List<ColumnDefinition> columns) throws IOException {
     super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE,
-        database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
     this.columns = columns;
     this.rowSize = calculateRowSize(columns);
   }
@@ -232,7 +236,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices) throws IOException {
     if (getSampleCount() == 0)
-      return java.util.Collections.emptyIterator();
+      return Collections.emptyIterator();
 
     final int dataPageCount = getDataPageCount();
 
@@ -286,7 +290,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
             pageNum++;
           }
         } catch (final IOException e) {
-          throw new com.arcadedb.exception.DatabaseOperationException("Error iterating TimeSeries bucket pages", e);
+          throw new DatabaseOperationException("Error iterating TimeSeries bucket pages", e);
         }
       }
 
@@ -592,7 +596,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
       }
       case STRING -> {
         // For strings in mutable layer, store length-prefixed UTF-8
-        final byte[] bytes = value != null ? ((String) value).getBytes(java.nio.charset.StandardCharsets.UTF_8) : new byte[0];
+        final byte[] bytes = value != null ? ((String) value).getBytes(StandardCharsets.UTF_8) : new byte[0];
         if (bytes.length > MAX_STRING_BYTES)
           throw new IllegalArgumentException(
               "String value exceeds max length of " + MAX_STRING_BYTES + " bytes for column '" + col.getName() + "'");
@@ -658,7 +662,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
         final byte[] bytes = new byte[len];
         for (int i = 0; i < len; i++)
           bytes[i] = (byte) page.readByte(offset + 2 + i);
-        yield new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        yield new String(bytes, StandardCharsets.UTF_8);
       }
       default -> null;
     };

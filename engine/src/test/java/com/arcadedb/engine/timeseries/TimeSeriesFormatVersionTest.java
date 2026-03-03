@@ -22,6 +22,7 @@ import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -200,7 +201,7 @@ class TimeSeriesFormatVersionTest {
     json.put("retentionMs", 0L);
     json.put("sealedFormatVersion", 0);
     json.put("mutableFormatVersion", 0);
-    json.put("tsColumns", new com.arcadedb.serializer.json.JSONArray());
+    json.put("tsColumns", new JSONArray());
 
     // Simulate fromJSON
     final int sealedVersion = json.getInt("sealedFormatVersion", 0);
@@ -214,7 +215,7 @@ class TimeSeriesFormatVersionTest {
     legacyJson.put("timestampColumn", "ts");
     legacyJson.put("shardCount", 1);
     legacyJson.put("retentionMs", 0L);
-    legacyJson.put("tsColumns", new com.arcadedb.serializer.json.JSONArray());
+    legacyJson.put("tsColumns", new JSONArray());
 
     assertThat(legacyJson.getInt("sealedFormatVersion", 0)).isEqualTo(0);
     assertThat(legacyJson.getInt("mutableFormatVersion", 0)).isEqualTo(0);

@@ -36,6 +36,8 @@ import com.arcadedb.schema.Type;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
 import java.util.List;
@@ -163,16 +165,16 @@ public class SaveElementStep extends AbstractExecutionStep {
       return i.toEpochMilli();
     if (value instanceof Number n)
       return n.longValue();
-    if (value instanceof java.time.LocalDateTime ldt)
+    if (value instanceof LocalDateTime ldt)
       return ldt.atZone(zoneId).toInstant().toEpochMilli();
-    if (value instanceof java.time.LocalDate ld)
+    if (value instanceof LocalDate ld)
       return ld.atStartOfDay(zoneId).toInstant().toEpochMilli();
     if (value instanceof String s) {
       try {
         return Instant.parse(s).toEpochMilli();
       } catch (final Exception e) {
         try {
-          return java.time.LocalDate.parse(s).atStartOfDay(zoneId).toInstant().toEpochMilli();
+          return LocalDate.parse(s).atStartOfDay(zoneId).toInstant().toEpochMilli();
         } catch (final Exception e2) {
           throw new CommandExecutionException("Cannot parse timestamp: '" + s + "'", e);
         }

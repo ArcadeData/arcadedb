@@ -19,8 +19,12 @@
 package com.arcadedb.engine.timeseries.promql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.TimeSeriesTypeBuilder;
+import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -184,11 +188,11 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     // Previously the code used row[schemaIndex] directly, so host would read the timestamp.
     final String typeName = "promql_tag_first";
     // Use the builder API to create a type with TAG before TIMESTAMP
-    new com.arcadedb.schema.TimeSeriesTypeBuilder(getDatabaseInternal())
+    new TimeSeriesTypeBuilder(getDatabaseInternal())
         .withName(typeName)
-        .withTag("host", com.arcadedb.schema.Type.STRING)
+        .withTag("host", Type.STRING)
         .withTimestamp("ts")
-        .withField("value", com.arcadedb.schema.Type.DOUBLE)
+        .withField("value", Type.DOUBLE)
         .withShards(1)
         .create();
 
@@ -254,8 +258,8 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
 
   // --- Helper methods ---
 
-  private com.arcadedb.database.DatabaseInternal getDatabaseInternal() {
-    return (com.arcadedb.database.DatabaseInternal) database;
+  private DatabaseInternal getDatabaseInternal() {
+    return (DatabaseInternal) database;
   }
 
   private void createTypeAndInsertData(final String typeName) {

@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries.codec;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -110,7 +111,7 @@ class Simple8bCodecTest {
   @Test
   void testAllSameNonZero() throws IOException {
     final long[] input = new long[100];
-    java.util.Arrays.fill(input, 7L);
+    Arrays.fill(input, 7L);
     assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
   }
 
