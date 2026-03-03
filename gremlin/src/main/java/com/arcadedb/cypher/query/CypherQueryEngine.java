@@ -57,16 +57,22 @@ public class CypherQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
-    if (!analyze(query).isIdempotent())
+    final ArcadeCypher arcadeCypher = arcadeGraph.cypher(query);
+    arcadeCypher.setParameters(parameters);
+    if (!arcadeCypher.parse().isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
     return command(query, configuration, parameters);
   }
 
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Object... parameters) {
-    if (!analyze(query).isIdempotent())
-      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
-    return command(query, null, parameters);
+    if (parameters.length % 2 != 0)
+      throw new IllegalArgumentException("Command parameters must be as pairs `<key>, <value>`");
+
+    final Map<String, Object> map = new LinkedHashMap<>(parameters.length / 2);
+    for (int i = 0; i < parameters.length; i += 2)
+      map.put((String) parameters[i], parameters[i + 1]);
+    return query(query, configuration, map);
   }
 
   @Override

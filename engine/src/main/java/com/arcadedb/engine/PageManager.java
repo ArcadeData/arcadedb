@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CallableNoReturn;
@@ -372,13 +373,19 @@ public class PageManager extends LockContext {
         totalPagesWrittenSize.addAndGet(written);
       });
 
-      final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
-      if (component != null)
-        component.updatePageCount(page.pageId.getPageNumber() + 1);
+      try {
+        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
+        if (component != null)
+          component.updatePageCount(page.pageId.getPageNumber() + 1);
 
-      totalPagesWritten.incrementAndGet();
+        totalPagesWritten.incrementAndGet();
 
-      database.getTransactionManager().notifyPageFlushed(page);
+        database.getTransactionManager().notifyPageFlushed(page);
+      } catch (final DatabaseIsClosedException e) {
+        // The database was closed concurrently after the isOpen() check above.
+        // The page data has already been written to disk, so we can safely skip
+        // the metadata updates.
+      }
 
     } else
       LogManager.instance()
