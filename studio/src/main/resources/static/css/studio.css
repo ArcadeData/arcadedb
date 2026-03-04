@@ -2644,7 +2644,8 @@ div.dt-search {
 
 .record-editor-fields {
   overflow-y: auto;
-  max-height: calc(100vh - 300px);
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 4px 0;
 }
 
@@ -2681,6 +2682,16 @@ div.dt-search {
   padding-top: 10px;
   border-top: 1px solid var(--border-light);
   flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+#tableRecordEditorContent,
+#graphRecordEditorContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .record-editor-overlay {
@@ -2692,7 +2703,9 @@ div.dt-search {
   background-color: var(--bg-card);
   border-left: 1px solid var(--border-main);
   box-shadow: -4px 0 12px var(--shadow-dropdown);
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 16px;
   transition: right 0.25s ease;
   z-index: 10050;
