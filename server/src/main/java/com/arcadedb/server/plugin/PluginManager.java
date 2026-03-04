@@ -151,11 +151,12 @@ public class PluginManager {
         if (plugins.containsKey(name)) {
           LogManager.instance().log(this, Level.WARNING, "Plugin with name '%s' is already loaded, skipping duplicate from %s",
               name, pluginJar.getName());
-//          break; // Exit loop - classloader will be closed in finally block
+          continue;
         }
 
-        if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginName) || configuredPlugins.contains(
-            pluginInstance.getClass().getName())) {
+        if (configuredPlugins.contains(name) ||
+            configuredPlugins.contains(pluginName) ||
+            configuredPlugins.contains(pluginInstance.getClass().getName())) {
           // Register the plugin
           plugins.put(name, descriptor);
           classLoaderMap.put(classLoader, descriptor);
@@ -165,7 +166,6 @@ public class PluginManager {
         } else {
           LogManager.instance().log(this, Level.INFO, "Skipping plugin: %s as not registered in configuration", name);
         }
-//        break; // Only load the first plugin from each JAR
       }
     } finally {
       if (!registered) {
