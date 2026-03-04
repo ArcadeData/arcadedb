@@ -158,6 +158,10 @@ public class CreateEdgeStatement extends Statement {
     return targetBucketName;
   }
 
+  public void setTargetBucketName(final Identifier targetBucketName) {
+    this.targetBucketName = targetBucketName;
+  }
+
   public Expression getLeftExpression() {
     return leftExpression;
   }

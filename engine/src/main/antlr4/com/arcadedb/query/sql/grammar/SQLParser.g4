@@ -573,7 +573,7 @@ createVertexBody
  * CREATE EDGE statement (instance creation)
  */
 createEdgeBody
-    : identifier?
+    : (identifier (BUCKET identifier)?)?
       FROM fromItem TO fromItem
       (IF NOT EXISTS)?
       (SET updateItem (COMMA updateItem)*)?

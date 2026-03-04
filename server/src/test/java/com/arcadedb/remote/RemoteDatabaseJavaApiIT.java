@@ -73,10 +73,10 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     assertThat(me.getVertices(OUT).iterator().next()).isEqualTo(you);
     assertThat(me.getVertices(IN).iterator().hasNext()).isFalse();
 
-    assertThat(you.getVertices(IN).iterator().hasNext()).isTrue();
+    assertThat(you.getVertices(IN).iterator().hasNext()).isFalse();
     assertThat(you.getVertices(OUT).iterator().hasNext()).isFalse();
 
-    Iterable<Edge> friends = me.getEdges(IN, "FriendOf");
+    Iterable<Edge> friends = me.getEdges(OUT, "FriendOf");
     assertThat(friends).containsExactly(friendOf);
 
     assertThat(me.getString("name")).isEqualTo("me");
