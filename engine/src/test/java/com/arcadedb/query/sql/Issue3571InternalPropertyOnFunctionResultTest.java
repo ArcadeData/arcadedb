@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -158,6 +159,97 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
       final Object cat = row.getProperty("inE()[0].@cat");
       assertThat(cat).isNotNull();
       assertThat(cat).isEqualTo("e");
+      rs.close();
+    });
+  }
+
+  @Test
+  void testInEIndexedAtIn() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE V3571g IF NOT EXISTS");
+      database.command("sql", "CREATE EDGE TYPE E3571g IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571g");
+      database.command("sql", "INSERT INTO V3571g");
+      database.command("sql", "CREATE EDGE E3571g FROM (SELECT FROM V3571g) TO (SELECT FROM V3571g)");
+
+      // @in on an edge should return the RID of the in-vertex
+      final ResultSet rs = database.query("sql", "SELECT inE()[0].@in FROM V3571g");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      final Object inRid = row.getProperty("inE()[0].@in");
+      assertThat(inRid).isNotNull();
+      assertThat(inRid).isInstanceOf(RID.class);
+      rs.close();
+    });
+  }
+
+  @Test
+  void testInEIndexedAtOut() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE V3571h IF NOT EXISTS");
+      database.command("sql", "CREATE EDGE TYPE E3571h IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571h");
+      database.command("sql", "INSERT INTO V3571h");
+      database.command("sql", "CREATE EDGE E3571h FROM (SELECT FROM V3571h) TO (SELECT FROM V3571h)");
+
+      // @out on an edge should return the RID of the out-vertex
+      final ResultSet rs = database.query("sql", "SELECT inE()[0].@out FROM V3571h");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      final Object outRid = row.getProperty("inE()[0].@out");
+      assertThat(outRid).isNotNull();
+      assertThat(outRid).isInstanceOf(RID.class);
+      rs.close();
+    });
+  }
+
+  @Test
+  void testInEAtInList() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE V3571i IF NOT EXISTS");
+      database.command("sql", "CREATE EDGE TYPE E3571i IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571i");
+      database.command("sql", "INSERT INTO V3571i");
+      database.command("sql", "CREATE EDGE E3571i FROM (SELECT FROM V3571i) TO (SELECT FROM V3571i)");
+
+      // @in on a list of edges should return a list of in-vertex RIDs
+      final ResultSet rs = database.query("sql", "SELECT inE().@in FROM V3571i");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      final Object inList = row.getProperty("inE().@in");
+      assertThat(inList).isNotNull();
+      assertThat(inList).isInstanceOf(List.class);
+      final List<?> rids = (List<?>) inList;
+      assertThat(rids).hasSize(1);
+      assertThat(rids.getFirst()).isInstanceOf(RID.class);
+      rs.close();
+    });
+  }
+
+  @Test
+  void testMapWithAtOut() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE V3571j IF NOT EXISTS");
+      database.command("sql", "CREATE EDGE TYPE E3571j IF NOT EXISTS");
+      database.command("sql", "DELETE FROM V3571j");
+      database.command("sql", "INSERT INTO V3571j");
+      database.command("sql", "CREATE EDGE E3571j FROM (SELECT FROM V3571j) TO (SELECT FROM V3571j)");
+
+      // map(ine.@rid.asString(), ine.@out) should return a map with the edge RID string as key
+      // and the out-vertex RID as value
+      final ResultSet rs = database.query("sql",
+          "SELECT map(ine.@rid.asString(), ine.@out) FROM (SELECT inE()[0] AS ine FROM V3571j)");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      // The result should have a map property
+      final Object mapResult = row.getProperty("map(ine.@rid.asString(), ine.@out)");
+      assertThat(mapResult).isNotNull();
+      assertThat(mapResult).isInstanceOf(Map.class);
+      final Map<?, ?> map = (Map<?, ?>) mapResult;
+      assertThat(map).hasSize(1);
+      // The value should be the out-vertex RID (not null)
+      assertThat(map.values().iterator().next()).isNotNull();
+      assertThat(map.values().iterator().next()).isInstanceOf(RID.class);
       rs.close();
     });
   }
