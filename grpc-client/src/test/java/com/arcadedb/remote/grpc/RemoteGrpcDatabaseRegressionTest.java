@@ -27,6 +27,7 @@ import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.InsertSummary;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -84,9 +85,14 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
 
   @BeforeAll
   void ensureDatabaseExists() {
-
     grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+  }
 
+  @AfterAll
+  void teardownServer() {
+    if (grpcServer != null) {
+      grpcServer.close();
+    }
   }
 
   @BeforeEach
