@@ -5054,9 +5054,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       // Set targetType (edge type identifier)
-      if (bodyCtx.identifier() != null) {
-        final Identifier targetType = (Identifier) visit(bodyCtx.identifier());
+      if (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty()) {
+        final Identifier targetType = (Identifier) visit(bodyCtx.identifier(0));
         stmt.targetType = targetType;
+
+        // Set targetBucketName if BUCKET clause is present
+        if (bodyCtx.BUCKET() != null && bodyCtx.identifier().size() > 1)
+          stmt.setTargetBucketName((Identifier) visit(bodyCtx.identifier(1)));
       }
 
       // Set leftExpression (FROM clause)
