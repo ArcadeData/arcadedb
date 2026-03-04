@@ -35,12 +35,12 @@ import com.arcadedb.network.binary.ChannelBinary;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
@@ -63,15 +63,12 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -735,6 +732,12 @@ public class ArcadeDBServer {
   private void init() {
     eventLog = new FileServerEventLog(this);
     queryProfiler = new ServerQueryProfiler(this);
+    String configuredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
+
+    configuredPlugins = "AutoBackupSchedulerPlugin," + configuredPlugins;
+
+    configuration.setValue(GlobalConfiguration.SERVER_PLUGINS, configuredPlugins);
+    configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     pluginManager = new PluginManager(this, configuration);
 
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {

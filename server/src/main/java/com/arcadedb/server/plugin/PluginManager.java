@@ -85,13 +85,13 @@ public class PluginManager {
       String name = pluginInstance.getClass().getSimpleName();
       if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getName())) {
         // Register the plugin
-      final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
-      descriptor.setPluginInstance(pluginInstance);
-      plugins.put(name, descriptor);
+        final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
+        descriptor.setPluginInstance(pluginInstance);
+        plugins.put(name, descriptor);
 
-      LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s", name);
+        LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s", name);
+      }
     }
-  }
   }
 
   /**
@@ -146,12 +146,12 @@ public class PluginManager {
         descriptor.setPluginInstance(pluginInstance);
 
         String name = pluginInstance.getName();
-        LogManager.instance().log(this, Level.FINE, "Discovered plugin class: %s", name);
+        LogManager.instance().log(this, Level.INFO, "Discovered plugin class: %s", name);
 
         if (plugins.containsKey(name)) {
           LogManager.instance().log(this, Level.WARNING, "Plugin with name '%s' is already loaded, skipping duplicate from %s",
               name, pluginJar.getName());
-          break; // Exit loop - classloader will be closed in finally block
+//          break; // Exit loop - classloader will be closed in finally block
         }
 
         if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginName) || configuredPlugins.contains(
@@ -165,7 +165,7 @@ public class PluginManager {
         } else {
           LogManager.instance().log(this, Level.INFO, "Skipping plugin: %s as not registered in configuration", name);
         }
-        break; // Only load the first plugin from each JAR
+//        break; // Only load the first plugin from each JAR
       }
     } finally {
       if (!registered) {

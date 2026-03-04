@@ -313,7 +313,7 @@ class PluginManagerTest {
     // Each plugin should have its own class loader
     assertThat(desc1.getClassLoader()).isNotNull();
     assertThat(desc2.getClassLoader()).isNotNull();
-    Assertions.assertThat(desc2.getClassLoader()).isNotSameAs(desc1.getClassLoader());
+    assertThat(desc2.getClassLoader()).isNotSameAs(desc1.getClassLoader());
 
     // Both should be PluginClassLoader instances
     assertThat(desc1.getClassLoader()).isInstanceOf(PluginClassLoader.class);
