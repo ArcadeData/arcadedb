@@ -151,7 +151,7 @@ public class AlterTypeStatement extends DDLStatement {
 
       case "supertype":
         doSetSuperType(context, type);
-        result.setProperty("supertype", type.getSuperTypes());
+        result.setProperty("supertype", type.getSuperTypes().stream().map(DocumentType::getName).collect(Collectors.toList()));
         break;
 
       case "aliases":

@@ -187,6 +187,7 @@ public class RemoteVertex {
       query.append(bucketName);
       query.append("`");
     }
+
     query.append(" from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
 
     if (properties != null && properties.length > 0) {

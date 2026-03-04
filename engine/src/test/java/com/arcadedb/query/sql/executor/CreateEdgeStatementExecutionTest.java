@@ -19,11 +19,15 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.schema.EdgeType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -340,6 +344,31 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
       assertThat(edge.isEdge()).isTrue();
       assertThat(edges.hasNext()).isFalse();
       edges.close();
+    });
+  }
+
+  @Test
+  @DisplayName("createEdgeWithBucketTarget - test BUCKET clause in CREATE EDGE")
+  void createEdgeWithBucketTarget() {
+    database.getSchema().createVertexType("BucketV", 1);
+    final EdgeType edgeType = database.getSchema().buildEdgeType().withName("BucketE").withTotalBuckets(3).create();
+
+    final List<Bucket> buckets = edgeType.getBuckets(false);
+    assertThat(buckets.size()).isEqualTo(3);
+    final String targetBucket = buckets.get(1).getName();
+
+    database.transaction(() -> {
+      final MutableVertex v1 = database.newVertex("BucketV").save();
+      final MutableVertex v2 = database.newVertex("BucketV").save();
+
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE BucketE BUCKET " + targetBucket + " FROM " + v1.getIdentity() + " TO " + v2.getIdentity());
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.isEdge()).isTrue();
+
+      final Edge edge = result.getEdge().get();
+      assertThat(edge.getIdentity().getBucketId()).isEqualTo(buckets.get(1).getFileId());
     });
   }
 }
