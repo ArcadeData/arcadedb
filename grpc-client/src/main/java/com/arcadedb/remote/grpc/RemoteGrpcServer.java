@@ -71,6 +71,7 @@ public class RemoteGrpcServer implements AutoCloseable {
   private final boolean                 plaintext;
 
   private ManagedChannel channel;
+  private EventLoopGroup eventLoopGroup;
 
   private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub;
 
@@ -109,10 +110,10 @@ public class RemoteGrpcServer implements AutoCloseable {
 //				.decompressorRegistry(DecompressorRegistry.getDefaultInstance())
 //				.compressorRegistry(CompressorRegistry.getDefaultInstance());
 
-    EventLoopGroup elg = new NioEventLoopGroup();
+    eventLoopGroup = new NioEventLoopGroup();
 
     NettyChannelBuilder chBuilder = NettyChannelBuilder.forAddress(host, port)
-        .eventLoopGroup(elg)                           // share across clients
+        .eventLoopGroup(eventLoopGroup)                // share across clients
         .channelType(NioSocketChannel.class)
         .maxInboundMessageSize(150 * 1024 * 1024)
         .maxInboundMetadataSize(32 * 1024 * 1024)
@@ -172,7 +173,7 @@ public class RemoteGrpcServer implements AutoCloseable {
 
   @PreDestroy
   @Override
-  public void close() {
+  public synchronized void close() {
     if (channel == null)
       return;
     try {
@@ -181,11 +182,16 @@ public class RemoteGrpcServer implements AutoCloseable {
         channel.shutdownNow();
         channel.awaitTermination(2, TimeUnit.SECONDS);
       }
-    } catch (InterruptedException ie) {
+    } catch (final InterruptedException ie) {
       Thread.currentThread().interrupt();
       channel.shutdownNow();
     } finally {
-      // log.info("gRPC channel to {}:{} closed.", host, port);
+      channel = null;
+      adminServiceBlockingV2Stub = null;
+      if (eventLoopGroup != null) {
+        eventLoopGroup.shutdownGracefully(0, 2, TimeUnit.SECONDS);
+        eventLoopGroup = null;
+      }
     }
   }
 

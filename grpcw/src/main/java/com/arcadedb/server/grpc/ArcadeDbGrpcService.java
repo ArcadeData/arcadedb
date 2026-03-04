@@ -506,8 +506,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (outStr == null || inStr == null)
           throw new IllegalArgumentException("Edge requires 'out' and 'in' RIDs");
 
-        final var outEl = db.lookupByRID(new RID(outStr), false);
-        final var inEl = db.lookupByRID(new RID(inStr), false);
+        final var outEl = db.lookupByRID(new RID(db, outStr), false);
+        final var inEl = db.lookupByRID(new RID(db, inStr), false);
         final Vertex outV = outEl.asVertex(false);
 
         final MutableEdge e = outV.newEdge(cls, inEl);
@@ -549,7 +549,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (ridStr == null || ridStr.isBlank())
         throw new IllegalArgumentException("rid is required");
 
-      var el = db.lookupByRID(new RID(ridStr), true);
+      var el = db.lookupByRID(new RID(db, ridStr), true);
 
       resp.onNext(LookupByRidResponse.newBuilder().setFound(true).setRecord(convertToGrpcRecord(el.getRecord(), db)).build());
       resp.onCompleted();
@@ -621,8 +621,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         beganHere = true;
       }
 
-      // Lookup the record by RID
-      var el = db.lookupByRID(new RID(ridStr), true);
+      // Lookup the record by RID (use database-aware constructor so the returned
+      // record's RID carries the database reference needed by modify()/getPageId())
+      var el = db.lookupByRID(new RID(db, ridStr), true);
 
       final var dbRef = db;
 
@@ -766,7 +767,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      final var el = db.lookupByRID(new RID(ridStr), false);
+      final var el = db.lookupByRID(new RID(db, ridStr), false);
       el.delete();
 
       if (beganHere) {
@@ -1928,10 +1929,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
                 .setMessage("Edge requires 'out' and 'in'").build());
           } else {
-            var outV = ctx.db.lookupByRID(new RID(outRid), false).asVertex(false);
+            var outV = ctx.db.lookupByRID(new RID(ctx.db, outRid), false).asVertex(false);
 
             // Create edge from the OUT vertex
-            MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), new RID(inRid));
+            MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), new RID(ctx.db, inRid));
             applyGrpcRecord(e, r); // sets edge properties
             e.save();
             c.inserted++;

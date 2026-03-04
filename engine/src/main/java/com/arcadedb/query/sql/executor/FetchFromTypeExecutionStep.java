@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.PaginatedComponentFile;
@@ -248,7 +249,11 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       for (final ExecutionStep step : getSubSteps()) {
         final Future<?> future = scanExecutor.submit(() -> {
           try {
-            // Each thread gets its own database context for thread safety
+            // Initialize DatabaseContext for this worker thread so that
+            // BucketIterator and other components find the correct database
+            // in the thread-local context (gRPC/executor threads may have
+            // a stale or missing context).
+            DatabaseContext.INSTANCE.init(db);
             db.executeInReadLock(() -> {
               final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
               ResultSet rs = execStep.syncPull(context, nRecords);

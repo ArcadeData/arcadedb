@@ -107,6 +107,9 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
       }
       grpc.close();
     }
+    if (grpcServer != null) {
+      grpcServer.close();
+    }
   }
 
   // Helper: insert a doc via SQL and return its RID string
@@ -384,7 +387,8 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
     // Close should auto-rollback the active transaction
     grpc.close();
 
-    // Re-open to verify the insert was rolled back (recreate server ref since close invalidates)
+    // Re-open to verify the insert was rolled back
+    grpcServer.close();
     grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
     grpc = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
     try (ResultSet rs = grpc.query("sql", "SELECT FROM `" + DOC_TYPE + "` WHERE name = 'autoRollback'", Map.of())) {
