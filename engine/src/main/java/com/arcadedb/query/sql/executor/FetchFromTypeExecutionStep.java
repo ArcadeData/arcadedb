@@ -248,12 +248,12 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
       for (final ExecutionStep step : getSubSteps()) {
         final Future<?> future = scanExecutor.submit(() -> {
+          // Initialize DatabaseContext for this worker thread so that
+          // BucketIterator and other components find the correct database
+          // in the thread-local context (gRPC/executor threads may have
+          // a stale or missing context).
+          DatabaseContext.INSTANCE.init(db);
           try {
-            // Initialize DatabaseContext for this worker thread so that
-            // BucketIterator and other components find the correct database
-            // in the thread-local context (gRPC/executor threads may have
-            // a stale or missing context).
-            DatabaseContext.INSTANCE.init(db);
             db.executeInReadLock(() -> {
               final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
               ResultSet rs = execStep.syncPull(context, nRecords);
@@ -272,6 +272,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
             });
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING, "Error during parallel bucket scan", e);
+          } finally {
+            DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
           }
         });
         scanFutures.add(future);
