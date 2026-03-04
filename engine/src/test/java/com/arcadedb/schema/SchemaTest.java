@@ -133,6 +133,10 @@ class SchemaTest extends TestHelper {
     assertThat(database.getSchema().existsType("V11")).isTrue();
     assertThat(database.getSchema().existsType("V111")).isTrue();
 
+    // Verify getTypes() does not return duplicates for aliased types
+    final long v1Count = database.getSchema().getTypes().stream().filter(t -> t.getName().equals("V1")).count();
+    assertThat(v1Count).isEqualTo(1L);
+
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
         database.newVertex("V1").set("id", "id-" + i, "total", i).save();
@@ -169,6 +173,10 @@ class SchemaTest extends TestHelper {
         300L);
     assertThat((Long) database.query("sql", "select count(*) as total from V111").nextIfAvailable().getProperty("total")).isEqualTo(
         300L);
+
+    // Verify getTypes() still does not return duplicates after reopen
+    final long v1CountAfterReopen = database.getSchema().getTypes().stream().filter(t -> t.getName().equals("V1")).count();
+    assertThat(v1CountAfterReopen).isEqualTo(1L);
   }
 
   @Test
