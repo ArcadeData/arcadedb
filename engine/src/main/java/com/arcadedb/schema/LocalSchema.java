@@ -1030,7 +1030,9 @@ public class LocalSchema implements Schema {
   }
 
   public Collection<DocumentType> getTypes() {
-    return new ArrayList<>(types.values());
+    // Use a LinkedHashSet to deduplicate: aliases map to the same DocumentType object in the types map,
+    // so values() can contain the same instance multiple times
+    return new ArrayList<>(new LinkedHashSet<>(types.values()));
   }
 
   public LocalDocumentType getType(final String typeName) {
