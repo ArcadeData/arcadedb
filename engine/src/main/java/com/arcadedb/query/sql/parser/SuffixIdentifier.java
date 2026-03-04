@@ -37,6 +37,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.IN_PROPERTY;
+import static com.arcadedb.schema.Property.OUT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
@@ -94,7 +96,10 @@ public class SuffixIdentifier extends SimpleNode {
         else if (doc instanceof Edge)
           return "e";
         return "d";
-      }
+      } else if (IN_PROPERTY.equalsIgnoreCase(recordAttribute.name) && currentRecord.getRecord() instanceof Edge edge)
+        return edge.getIn();
+      else if (OUT_PROPERTY.equalsIgnoreCase(recordAttribute.name) && currentRecord.getRecord() instanceof Edge edge)
+        return edge.getOut();
 
       return ((Document) currentRecord.getRecord()).get(recordAttribute.name);
     }
