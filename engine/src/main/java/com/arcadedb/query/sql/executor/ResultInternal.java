@@ -175,7 +175,8 @@ public class ResultInternal implements Result {
 
   public <T> T getProperty(final String name) {
     T result;
-    if (content != null && content.containsKey(name))
+    if (content != null && !content.isEmpty())
+      // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
       result = (T) content.get(name);
     else if (element != null)
       result = (T) element.get(name);

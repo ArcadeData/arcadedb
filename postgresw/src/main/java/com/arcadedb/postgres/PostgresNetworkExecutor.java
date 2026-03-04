@@ -868,7 +868,12 @@ public class PostgresNetworkExecutor extends Thread {
             yield row.getProperty(propertyName);
           }
           default -> {
-            yield row.getProperty(propertyName);
+            Object v = row.getProperty(propertyName);
+            // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
+            // sets content with variable name but element has the actual properties), fall back to element
+            if (v == null && row.isElement())
+              v = row.getElement().get().get(propertyName);
+            yield v;
           }
         };
 
