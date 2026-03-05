@@ -609,6 +609,39 @@ class SQLFunctionsTest {
   }
 
   @Test
+  void queryUnionAllWithLetAndStringMethods() {
+    database.getSchema().createDocumentType("NER");
+    database.getSchema().createDocumentType("THEME");
+    database.transaction(() -> {
+      database.newDocument("NER").set("identity", "Hello World").save();
+      database.newDocument("NER").set("identity", "Hello\nWorld").save();
+      database.newDocument("THEME").set("identity", "Hello World Theme").save();
+    });
+
+    final Map<String, Object> params = new HashMap<>();
+    params.put("keyWordIdentifier_0", "Hello");
+    params.put("keyWordIdentifier_1", "World");
+
+    final ResultSet result = database.query("sql",
+        "SELECT expand($c) LET "
+            + "$a = (SELECT identity, @rid as id FROM NER "
+            + "WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') "
+            + "AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), "
+            + "$b = (SELECT identity, @rid as id FROM THEME "
+            + "WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') "
+            + "AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), "
+            + "$c = UNIONALL($a, $b)",
+        params);
+
+    final List<Result> results = result.stream().collect(Collectors.toList());
+    assertThat(results).hasSize(3);
+    for (final Result r : results) {
+      assertThat(r.hasProperty("identity")).isTrue();
+      assertThat(r.hasProperty("id")).isTrue();
+    }
+  }
+
+  @Test
   void CheckAllFunctions() {
     final DefaultSQLFunctionFactory fFactory = ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory();
     for (String fName : fFactory.getFunctionNames()) {
