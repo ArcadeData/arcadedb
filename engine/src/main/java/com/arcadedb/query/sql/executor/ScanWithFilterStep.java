@@ -93,6 +93,9 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
             // Phase 1: Evaluate WHERE on the full document (uses lazy per-field deserialization)
             final ResultInternal candidate = new ResultInternal(record);
 
+            // Set $current before WHERE evaluation so method calls (e.g. split()) resolve correctly
+            context.setVariable("current", candidate);
+
             final long filterBegin = context.isProfiling() ? System.nanoTime() : 0;
             try {
               if (whereClause.matchesFilters(candidate, context)) {
