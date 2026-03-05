@@ -55,6 +55,8 @@ public class ContainsAnyCondition extends BooleanExpression {
 
     if (left instanceof Iterable<?> iterable)
       left = iterable.iterator();
+    else if (left != null && left.getClass().isArray())
+      left = MultiValue.getMultiValueIterator(left);
 
     if (left instanceof Iterator<?> leftIterator) {
       if (!(right instanceof Iterable))
