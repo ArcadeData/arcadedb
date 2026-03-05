@@ -92,7 +92,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     final PromQLResult.InstantVector iv = (PromQLResult.InstantVector) result;
     assertThat(iv.samples()).hasSize(1);
     // Sum of latest samples per label combination
-    assertThat(iv.samples().getFirst().value()).isGreaterThan(0.0);
+    assertThat(iv.samples().get(0).value()).isGreaterThan(0.0);
   }
 
   @Test
@@ -210,9 +210,9 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     final PromQLResult.InstantVector iv = (PromQLResult.InstantVector) result;
     assertThat(iv.samples()).isNotEmpty();
     // The label "host" must resolve to "srv1", not to a timestamp number
-    assertThat(iv.samples().getFirst().labels()).containsEntry("host", "srv1");
+    assertThat(iv.samples().get(0).labels()).containsEntry("host", "srv1");
     // The value must be a numeric double, not NaN
-    assertThat(iv.samples().getFirst().value()).isEqualTo(42.0);
+    assertThat(iv.samples().get(0).value()).isEqualTo(42.0);
   }
 
   @Test

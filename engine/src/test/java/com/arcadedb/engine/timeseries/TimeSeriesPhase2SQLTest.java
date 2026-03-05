@@ -132,7 +132,7 @@ public class TimeSeriesPhase2SQLTest extends TestHelper {
     // Position 2: avg(0,1,2) = 1.0
     assertThat(ma.get(2)).isCloseTo(1.0, within(0.001));
     // Position 9: avg(7,8,9) = 8.0
-    assertThat(ma.get(9)).isCloseTo(8.0, within(0.001));
+    assertThat(ma.get(0)).isCloseTo(8.0, within(0.001));
   }
 
   @Test

@@ -250,7 +250,7 @@ public class ServerQueryProfiler {
     final JSONArray queriesArray = new JSONArray();
     for (final Map.Entry<String, List<ProfiledQueryEntry>> group : groups.entrySet()) {
       final List<ProfiledQueryEntry> entries = group.getValue();
-      final ProfiledQueryEntry first = entries.getFirst();
+      final ProfiledQueryEntry first = entries.get(0);
 
       final JSONObject queryObj = new JSONObject();
       queryObj.put("queryText", first.queryText);

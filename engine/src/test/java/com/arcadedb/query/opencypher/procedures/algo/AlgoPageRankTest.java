@@ -125,7 +125,7 @@ class AlgoPageRankTest {
 
     assertThat(results).isNotEmpty();
     // C has most incoming links (from A and B), should have higher score
-    final String topNode = (String) results.getFirst().getProperty("name");
+    final String topNode = (String) results.get(0).getProperty("name");
     assertThat(topNode).isEqualTo("C");
   }
 

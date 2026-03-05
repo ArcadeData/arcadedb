@@ -41,7 +41,7 @@ class SingleServerLoadTestIT extends ContainersTestTemplate {
   void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws Exception {
 
     createArcadeContainer("arcade", "none", "none", "any", false, network);
-    ServerWrapper server = startContainers().getFirst();
+    ServerWrapper server = startContainers().get(0);
     DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, wordSupplier, protocol);
     db.createDatabase();
     db.createSchema();

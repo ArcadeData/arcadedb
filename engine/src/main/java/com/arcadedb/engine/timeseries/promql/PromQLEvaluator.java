@@ -54,6 +54,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -156,16 +157,27 @@ public class PromQLEvaluator {
     if (depth > MAX_RECURSION_DEPTH)
       throw new IllegalArgumentException("PromQL expression exceeds maximum nesting depth of " + MAX_RECURSION_DEPTH);
     final int next = depth + 1;
-    return switch (expr) {
-      case NumberLiteral nl -> new ScalarResult(nl.value(), evalTimeMs);
-      case StringLiteral ignored -> new ScalarResult(Double.NaN, evalTimeMs);
-      case VectorSelector vs -> evaluateVectorSelector(vs, evalTimeMs);
-      case MatrixSelector ms -> evaluateMatrixSelector(ms, evalTimeMs);
-      case AggregationExpr agg -> evaluateAggregation(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
-      case FunctionCallExpr fn -> evaluateFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
-      case BinaryExpr bin -> evaluateBinary(bin, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
-      case UnaryExpr un -> evaluateUnary(un, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
-    };
+    PromQLResult result;
+    if (Objects.requireNonNull(expr) instanceof NumberLiteral nl) {
+      result = new ScalarResult(nl.value(), evalTimeMs);
+    } else if (expr instanceof StringLiteral) {
+      result = new ScalarResult(Double.NaN, evalTimeMs);
+    } else if (expr instanceof VectorSelector vs) {
+      result = evaluateVectorSelector(vs, evalTimeMs);
+    } else if (expr instanceof MatrixSelector ms) {
+      result = evaluateMatrixSelector(ms, evalTimeMs);
+    } else if (expr instanceof AggregationExpr agg) {
+      result = evaluateAggregation(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+    } else if (expr instanceof FunctionCallExpr fn) {
+      result = evaluateFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+    } else if (expr instanceof BinaryExpr bin) {
+      result = evaluateBinary(bin, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+    } else if (expr instanceof UnaryExpr un) {
+      result = evaluateUnary(un, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+    } else {
+      throw new IllegalArgumentException();
+    }
+    return result;
   }
 
   private PromQLResult evaluateVectorSelector(final VectorSelector vs, final long evalTimeMs) {
@@ -278,8 +290,8 @@ public class PromQLEvaluator {
     final List<VectorSample> result = new ArrayList<>();
     for (final Map.Entry<String, List<VectorSample>> entry : groups.entrySet()) {
       final List<VectorSample> group = entry.getValue();
-      final Map<String, String> groupLabels = computeGroupLabels(group.getFirst().labels(), agg.groupLabels(), agg.without());
-      final long ts = group.getFirst().timestampMs();
+      final Map<String, String> groupLabels = computeGroupLabels(group.get(0).labels(), agg.groupLabels(), agg.without());
+      final long ts = group.get(0).timestampMs();
 
       final double value = switch (agg.op()) {
         case SUM -> {
@@ -334,7 +346,7 @@ public class PromQLEvaluator {
     if (isRangeFunction(name)) {
       if (fn.args().isEmpty())
         throw new IllegalArgumentException("Function '" + fn.name() + "' requires a range vector argument");
-      final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+      final PromQLResult argResult = evaluate(fn.args().get(0), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
       if (!(argResult instanceof RangeVector rv))
         throw new IllegalArgumentException("Function '" + fn.name() + "' requires a range vector argument");
 
@@ -366,7 +378,7 @@ public class PromQLEvaluator {
   private PromQLResult evaluateScalarFunction(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
       final long queryEndMs, final long stepMs, final int depth) {
     final String name = fn.name().toLowerCase();
-    final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    final PromQLResult argResult = evaluate(fn.args().get(0), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
     final double param = extractSecondParam(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
     if (argResult instanceof ScalarResult sr)

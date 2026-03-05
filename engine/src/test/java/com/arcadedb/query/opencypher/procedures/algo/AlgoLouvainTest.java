@@ -145,7 +145,7 @@ class AlgoLouvainTest {
       ids.add(((Number) rs.next().getProperty("communityId")).longValue());
 
     // Community IDs should start from 0 and be sequential
-    assertThat(ids.getFirst()).isEqualTo(0L);
+    assertThat(ids.get(0)).isEqualTo(0L);
     for (int i = 1; i < ids.size(); i++)
       assertThat(ids.get(i)).isEqualTo(ids.get(i - 1) + 1);
   }

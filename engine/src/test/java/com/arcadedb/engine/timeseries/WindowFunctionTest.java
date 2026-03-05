@@ -297,7 +297,7 @@ public class WindowFunctionTest extends TestHelper {
     assertThat(prev).hasSize(10);
     assertThat(prev.get(0)).isNull();
     assertThat(prev.get(1)).isEqualTo(10.0);
-    assertThat(prev.get(9)).isEqualTo(90.0);
+    assertThat(prev.get(0)).isEqualTo(90.0);
 
     // Verify lead
     final ResultSet leadRs = database.query("sql", "SELECT ts.lead(value, 1, ts) AS next FROM TsWinSensor");
@@ -307,6 +307,6 @@ public class WindowFunctionTest extends TestHelper {
     assertThat(next).hasSize(10);
     assertThat(next.get(0)).isEqualTo(20.0);
     assertThat(next.get(8)).isEqualTo(100.0);
-    assertThat(next.get(9)).isNull();
+    assertThat(next.get(0)).isNull();
   }
 }

@@ -70,15 +70,15 @@ class PromQLParserTest {
     assertThat(expr).isInstanceOf(VectorSelector.class);
     final VectorSelector vs = (VectorSelector) expr;
     assertThat(vs.matchers()).hasSize(1);
-    assertThat(vs.matchers().getFirst().op()).isEqualTo(MatchOp.RE);
-    assertThat(vs.matchers().getFirst().value()).isEqualTo("api.*");
+    assertThat(vs.matchers().get(0).op()).isEqualTo(MatchOp.RE);
+    assertThat(vs.matchers().get(0).value()).isEqualTo("api.*");
   }
 
   @Test
   void testNegativeRegexMatcher() {
     final PromQLExpr expr = new PromQLParser("http_requests{job!~\"test.*\"}").parse();
     final VectorSelector vs = (VectorSelector) expr;
-    assertThat(vs.matchers().getFirst().op()).isEqualTo(MatchOp.NRE);
+    assertThat(vs.matchers().get(0).op()).isEqualTo(MatchOp.NRE);
   }
 
   @Test
@@ -126,7 +126,7 @@ class PromQLParserTest {
     final FunctionCallExpr fn = (FunctionCallExpr) expr;
     assertThat(fn.name()).isEqualTo("rate");
     assertThat(fn.args()).hasSize(1);
-    assertThat(fn.args().getFirst()).isInstanceOf(MatrixSelector.class);
+    assertThat(fn.args().get(0)).isInstanceOf(MatrixSelector.class);
   }
 
   @Test

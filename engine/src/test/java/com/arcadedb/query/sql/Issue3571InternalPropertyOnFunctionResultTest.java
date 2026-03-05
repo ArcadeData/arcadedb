@@ -55,7 +55,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
       assertThat(ridList).isInstanceOf(List.class);
       final List<?> rids = (List<?>) ridList;
       assertThat(rids).hasSize(1);
-      assertThat(rids.getFirst()).isInstanceOf(RID.class);
+      assertThat(rids.get(0)).isInstanceOf(RID.class);
       rs.close();
     });
   }
@@ -78,7 +78,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
       assertThat(ridList).isInstanceOf(List.class);
       final List<?> rids = (List<?>) ridList;
       assertThat(rids).hasSize(1);
-      assertThat(rids.getFirst()).isInstanceOf(RID.class);
+      assertThat(rids.get(0)).isInstanceOf(RID.class);
       rs.close();
     });
   }
@@ -221,7 +221,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
       assertThat(inList).isInstanceOf(List.class);
       final List<?> rids = (List<?>) inList;
       assertThat(rids).hasSize(1);
-      assertThat(rids.getFirst()).isInstanceOf(RID.class);
+      assertThat(rids.get(0)).isInstanceOf(RID.class);
       rs.close();
     });
   }

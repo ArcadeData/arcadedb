@@ -88,7 +88,7 @@ class AlgoBipartiteMatchingTest {
 
     assertThat(results).isNotEmpty();
     // All rows should report the same matchingSize
-    final int matchingSize = ((Number) results.getFirst().getProperty("matchingSize")).intValue();
+    final int matchingSize = ((Number) results.get(0).getProperty("matchingSize")).intValue();
     assertThat(matchingSize).isGreaterThan(0);
     for (final Result r : results)
       assertThat(((Number) r.getProperty("matchingSize")).intValue()).isEqualTo(matchingSize);

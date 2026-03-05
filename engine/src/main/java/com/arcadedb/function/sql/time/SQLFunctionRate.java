@@ -80,15 +80,15 @@ public class SQLFunctionRate extends SQLAggregatedFunction {
     // Sort by timestamp
     samples.sort(Comparator.comparingLong(a -> a[0]));
 
-    final long firstTs = samples.getFirst()[0];
-    final long lastTs = samples.getLast()[0];
+    final long firstTs = samples.get(0)[0];
+    final long lastTs = samples.get(samples.size()-1)[0];
     if (lastTs == firstTs)
       return null;
 
     if (counterResetDetection) {
       // Compute total increase, accounting for counter resets
       double totalIncrease = 0.0;
-      double prevValue = Double.longBitsToDouble(samples.getFirst()[1]);
+      double prevValue = Double.longBitsToDouble(samples.get(0)[1]);
 
       for (int i = 1; i < samples.size(); i++) {
         final double currentValue = Double.longBitsToDouble(samples.get(i)[1]);
@@ -103,8 +103,8 @@ public class SQLFunctionRate extends SQLAggregatedFunction {
       return totalIncrease / ((lastTs - firstTs) / 1000.0);
     } else {
       // Simple rate: (last - first) / time_delta
-      final double firstValue = Double.longBitsToDouble(samples.getFirst()[1]);
-      final double lastValue = Double.longBitsToDouble(samples.getLast()[1]);
+      final double firstValue = Double.longBitsToDouble(samples.get(0)[1]);
+      final double lastValue = Double.longBitsToDouble(samples.get(samples.size()-1)[1]);
       return (lastValue - firstValue) / ((lastTs - firstTs) / 1000.0);
     }
   }

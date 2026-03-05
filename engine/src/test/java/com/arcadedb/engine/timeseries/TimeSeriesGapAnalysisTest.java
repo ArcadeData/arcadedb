@@ -476,8 +476,8 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
     while (rs.hasNext())
       results.add(rs.next());
     assertThat(results).hasSize(20);
-    assertThat(((Number) results.getFirst().getProperty("price")).doubleValue()).isCloseTo(100.0, within(0.01));
-    assertThat(((Number) results.getLast().getProperty("price")).doubleValue()).isCloseTo(119.0, within(0.01));
+    assertThat(((Number) results.get(0).getProperty("price")).doubleValue()).isCloseTo(100.0, within(0.01));
+    assertThat(((Number) results.get(results.size()-1).getProperty("price")).doubleValue()).isCloseTo(119.0, within(0.01));
   }
 
   @Test

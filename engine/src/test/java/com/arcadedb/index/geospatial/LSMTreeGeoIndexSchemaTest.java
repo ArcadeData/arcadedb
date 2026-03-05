@@ -54,7 +54,7 @@ class LSMTreeGeoIndexSchemaTest extends TestHelper {
     final Index index = database.getSchema().getIndexByName("Location[coords]");
     assertThat(index).isNotNull();
     assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
-    final LSMTreeGeoIndex geoIndex = (LSMTreeGeoIndex) ((TypeIndex) index).getSubIndexes().getFirst();
+    final LSMTreeGeoIndex geoIndex = (LSMTreeGeoIndex) ((TypeIndex) index).getSubIndexes().get(0);
     assertThat(geoIndex.getPrecision()).isEqualTo(GeoIndexMetadata.DEFAULT_PRECISION);
   }
 
@@ -75,7 +75,7 @@ class LSMTreeGeoIndexSchemaTest extends TestHelper {
     final Index index = database.getSchema().getIndexByName("Location2[coords]");
     assertThat(index).isNotNull();
     assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
-    final LSMTreeGeoIndex geoIndex = (LSMTreeGeoIndex) ((TypeIndex) index).getSubIndexes().getFirst();
+    final LSMTreeGeoIndex geoIndex = (LSMTreeGeoIndex) ((TypeIndex) index).getSubIndexes().get(0);
     assertThat(geoIndex.getPrecision()).isEqualTo(7);
   }
 }

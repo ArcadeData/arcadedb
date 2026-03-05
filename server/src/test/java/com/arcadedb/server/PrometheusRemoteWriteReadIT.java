@@ -171,10 +171,10 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
       assertThat(readResponse).isNotNull();
       assertThat(readResponse.getResults()).hasSize(1);
 
-      final QueryResult qr = readResponse.getResults().getFirst();
+      final QueryResult qr = readResponse.getResults().get(0);
       assertThat(qr.getTimeSeries()).hasSize(1);
 
-      final TimeSeries ts = qr.getTimeSeries().getFirst();
+      final TimeSeries ts = qr.getTimeSeries().get(0);
       assertThat(ts.getSamples()).hasSize(3);
       assertThat(ts.getSamples().get(0).value()).isEqualTo(1024.0);
       assertThat(ts.getSamples().get(1).value()).isEqualTo(2048.0);
@@ -208,10 +208,10 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
       final ReadResponse readResponse = postPromRead(serverIndex, readRequest);
       assertThat(readResponse.getResults()).hasSize(1);
-      final QueryResult qr = readResponse.getResults().getFirst();
+      final QueryResult qr = readResponse.getResults().get(0);
       assertThat(qr.getTimeSeries()).hasSize(1);
-      assertThat(qr.getTimeSeries().getFirst().getSamples()).hasSize(1);
-      assertThat(qr.getTimeSeries().getFirst().getSamples().getFirst().value()).isEqualTo(100.0);
+      assertThat(qr.getTimeSeries().get(0).getSamples()).hasSize(1);
+      assertThat(qr.getTimeSeries().get(0).getSamples().get(0).value()).isEqualTo(100.0);
     });
   }
 
@@ -226,7 +226,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
       final ReadResponse readResponse = postPromRead(serverIndex, readRequest);
       assertThat(readResponse.getResults()).hasSize(1);
-      assertThat(readResponse.getResults().getFirst().getTimeSeries()).isEmpty();
+      assertThat(readResponse.getResults().get(0).getTimeSeries()).isEmpty();
     });
   }
 
@@ -243,11 +243,11 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
     final byte[] encoded = writeReq.encode();
     final WriteRequest decoded = WriteRequest.decode(encoded);
     assertThat(decoded.getTimeSeries()).hasSize(1);
-    assertThat(decoded.getTimeSeries().getFirst().getLabels()).hasSize(2);
-    assertThat(decoded.getTimeSeries().getFirst().getSamples()).hasSize(2);
-    assertThat(decoded.getTimeSeries().getFirst().getSamples().getFirst().value()).isEqualTo(3.14);
-    assertThat(decoded.getTimeSeries().getFirst().getSamples().getFirst().timestampMs()).isEqualTo(12345);
-    assertThat(decoded.getTimeSeries().getFirst().getMetricName()).isEqualTo("test_metric");
+    assertThat(decoded.getTimeSeries().get(0).getLabels()).hasSize(2);
+    assertThat(decoded.getTimeSeries().get(0).getSamples()).hasSize(2);
+    assertThat(decoded.getTimeSeries().get(0).getSamples().get(0).value()).isEqualTo(3.14);
+    assertThat(decoded.getTimeSeries().get(0).getSamples().get(0).timestampMs()).isEqualTo(12345);
+    assertThat(decoded.getTimeSeries().get(0).getMetricName()).isEqualTo("test_metric");
 
     // Test ReadRequest encode/decode
     final ReadRequest readReq = new ReadRequest(List.of(
@@ -260,10 +260,10 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
     final byte[] readEncoded = readReq.encode();
     final ReadRequest readDecoded = ReadRequest.decode(readEncoded);
     assertThat(readDecoded.getQueries()).hasSize(1);
-    assertThat(readDecoded.getQueries().getFirst().getStartTimestampMs()).isEqualTo(100);
-    assertThat(readDecoded.getQueries().getFirst().getEndTimestampMs()).isEqualTo(200);
-    assertThat(readDecoded.getQueries().getFirst().getMatchers()).hasSize(2);
-    assertThat(readDecoded.getQueries().getFirst().getMatchers().get(1).type()).isEqualTo(MatchType.NEQ);
+    assertThat(readDecoded.getQueries().get(0).getStartTimestampMs()).isEqualTo(100);
+    assertThat(readDecoded.getQueries().get(0).getEndTimestampMs()).isEqualTo(200);
+    assertThat(readDecoded.getQueries().get(0).getMatchers()).hasSize(2);
+    assertThat(readDecoded.getQueries().get(0).getMatchers().get(1).type()).isEqualTo(MatchType.NEQ);
 
     // Test ReadResponse encode/decode
     final ReadResponse readResp = new ReadResponse(List.of(
@@ -278,8 +278,8 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
     final byte[] respEncoded = readResp.encode();
     final ReadResponse respDecoded = ReadResponse.decode(respEncoded);
     assertThat(respDecoded.getResults()).hasSize(1);
-    assertThat(respDecoded.getResults().getFirst().getTimeSeries()).hasSize(1);
-    assertThat(respDecoded.getResults().getFirst().getTimeSeries().getFirst().getSamples().getFirst().value())
+    assertThat(respDecoded.getResults().get(0).getTimeSeries()).hasSize(1);
+    assertThat(respDecoded.getResults().get(0).getTimeSeries().get(0).getSamples().get(0).value())
         .isEqualTo(99.9);
   }
 

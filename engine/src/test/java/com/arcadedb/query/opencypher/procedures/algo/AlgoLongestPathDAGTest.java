@@ -93,7 +93,7 @@ class AlgoLongestPathDAGTest {
       results.add(rs.next());
 
     // D has the longest path from A (distance = 2)
-    final Result maxNode = results.getFirst();
+    final Result maxNode = results.get(0);
     assertThat((Object) maxNode.getProperty("name")).isEqualTo("D");
     assertThat(((Number) maxNode.getProperty("distance")).doubleValue()).isEqualTo(2.0);
   }

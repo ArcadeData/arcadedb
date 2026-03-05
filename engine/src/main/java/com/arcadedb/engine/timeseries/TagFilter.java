@@ -93,7 +93,7 @@ public final class TagFilter {
    * Returns the column index of the first condition (for backward compatibility).
    */
   public int getColumnIndex() {
-    return conditions.isEmpty() ? -1 : conditions.getFirst().columnIndex;
+    return conditions.isEmpty() ? -1 : conditions.get(0).columnIndex;
   }
 
   /**

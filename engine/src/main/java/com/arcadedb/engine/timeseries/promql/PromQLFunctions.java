@@ -39,8 +39,8 @@ public final class PromQLFunctions {
     final List<double[]> values = series.values();
     if (values.size() < 2)
       return 0.0;
-    final double[] first = values.getFirst();
-    final double[] last = values.getLast();
+    final double[] first = values.get(0);
+    final double[] last = values.get(values.size() - 1);
     final double durationSec = (last[0] - first[0]) / 1000.0;
     if (durationSec <= 0)
       return 0.0;
@@ -66,7 +66,7 @@ public final class PromQLFunctions {
     if (values.size() < 2)
       return 0.0;
     final double[] prev = values.get(values.size() - 2);
-    final double[] last = values.getLast();
+    final double[] last = values.get(values.size() - 1);
     final double durationSec = (last[0] - prev[0]) / 1000.0;
     if (durationSec <= 0)
       return 0.0;
@@ -84,7 +84,7 @@ public final class PromQLFunctions {
     if (values.size() < 2)
       return 0.0;
     double totalIncrease = 0;
-    double prev = values.getFirst()[1];
+    double prev = values.get(0)[1];
     for (int i = 1; i < values.size(); i++) {
       final double current = values.get(i)[1];
       if (current < prev)

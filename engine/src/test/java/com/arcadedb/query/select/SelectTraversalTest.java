@@ -89,7 +89,7 @@ public class SelectTraversalTest extends TestHelper {
         .toList();
 
     assertThat(result).hasSize(1);
-    assertThat(result.getFirst().getString("name")).isEqualTo("Alice");
+    assertThat(result.get(0).getString("name")).isEqualTo("Alice");
   }
 
   @Test
@@ -140,7 +140,7 @@ public class SelectTraversalTest extends TestHelper {
         .toList();
 
     assertThat(worksWithOnly).hasSize(1);
-    assertThat(worksWithOnly.getFirst().getString("name")).isEqualTo("Eve");
+    assertThat(worksWithOnly.get(0).getString("name")).isEqualTo("Eve");
   }
 
   @Test
@@ -188,7 +188,7 @@ public class SelectTraversalTest extends TestHelper {
         .toList();
 
     assertThat(edges).hasSize(1);
-    assertThat(edges.getFirst().getTypeName()).isEqualTo("FRIENDS");
+    assertThat(edges.get(0).getTypeName()).isEqualTo("FRIENDS");
   }
 
   @Test
@@ -240,6 +240,6 @@ public class SelectTraversalTest extends TestHelper {
         .toList();
 
     assertThat(edges).hasSize(1);
-    assertThat(edges.getFirst().getTypeName()).isEqualTo("WORKS_WITH");
+    assertThat(edges.get(0).getTypeName()).isEqualTo("WORKS_WITH");
   }
 }

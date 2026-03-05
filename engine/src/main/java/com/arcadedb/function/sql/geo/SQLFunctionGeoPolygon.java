@@ -58,8 +58,8 @@ public class SQLFunctionGeoPolygon extends SQLFunctionAbstract {
     }
 
     // Close the ring if not already closed
-    final Object first = points.getFirst();
-    final Object last = points.getLast();
+    final Object first = points.get(0);
+    final Object last = points.get(points.size() - 1);
     if (!coordsEqual(first, last)) {
       sb.append(", ");
       appendCoord(sb, first);

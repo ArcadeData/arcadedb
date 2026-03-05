@@ -153,7 +153,7 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
       final List<TimeSeries> seriesList = new ArrayList<>();
       for (final Map.Entry<String, List<Object[]>> entry : grouped.entrySet()) {
         final List<Object[]> groupRows = entry.getValue();
-        final Object[] firstRow = groupRows.getFirst();
+        final Object[] firstRow = groupRows.get(0);
 
         // Build labels — row[i] corresponds to columns.get(i)
         final List<Label> labels = new ArrayList<>();
