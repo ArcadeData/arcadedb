@@ -97,6 +97,8 @@ public class MethodCall extends SimpleNode {
         paramValues.add(expr.execute(identifiable, context));
       } else if (targetObjects instanceof Result result) {
         paramValues.add(expr.execute(result, context));
+      } else if (val == null) {
+        paramValues.add(expr.execute((Identifiable) null, context));
       } else {
         throw new CommandExecutionException("Invalid value for $current: " + val);
       }
