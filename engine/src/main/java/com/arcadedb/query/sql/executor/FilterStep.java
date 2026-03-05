@@ -66,6 +66,10 @@ public class FilterStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
+
+          // Set $current before WHERE evaluation so method calls (e.g. replace()) resolve correctly
+          context.setVariable("current", nextItem);
+
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (whereClause.matchesFilters(nextItem, context)) {
