@@ -78,4 +78,36 @@ class Issue3581ContainsAnyMethodLhsTest extends TestHelper {
       assertThat(rs.hasNext()).isFalse();
     });
   }
+
+  @Test
+  void testContainsAnyWithSplitOnLhsNullField() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc3581d IF NOT EXISTS");
+      database.command("sql", "INSERT INTO doc3581d SET txt = 'te st'");
+      database.command("sql", "INSERT INTO doc3581d SET other = 'no txt field'");
+
+      final ResultSet rs = database.query("sql", "SELECT FROM doc3581d WHERE txt.split(' ') CONTAINSANY 'te'");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("txt")).isEqualTo("te st");
+      assertThat(rs.hasNext()).isFalse();
+    });
+  }
+
+  @Test
+  void testContainsAllWithSplitOnLhs() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc3581e IF NOT EXISTS");
+      database.command("sql", "INSERT INTO doc3581e SET txt = 'te st'");
+      database.command("sql", "INSERT INTO doc3581e SET txt = 'te other'");
+
+      final ResultSet rs = database.query("sql", "SELECT FROM doc3581e WHERE txt.split(' ') CONTAINSALL 'te'");
+      // CONTAINSALL with single value: both records have 'te' as a split token
+      int count = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    });
+  }
 }
