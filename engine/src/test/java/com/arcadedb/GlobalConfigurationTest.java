@@ -25,6 +25,46 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class GlobalConfigurationTest extends TestHelper {
   @Test
+  void maxPageRAMAutoTune() {
+    final long originalValue = GlobalConfiguration.MAX_PAGE_RAM.getValueAsLong();
+
+    try {
+      // When reset (no explicit value), maxPageRAM should be auto-tuned to ~25% of max heap
+      GlobalConfiguration.MAX_PAGE_RAM.reset();
+      final long autoTunedMB = GlobalConfiguration.MAX_PAGE_RAM.getValueAsLong();
+      final long maxHeapMB = Runtime.getRuntime().maxMemory() / 1024 / 1024;
+
+      // Auto-tuned value should be approximately 25% of max heap, in MB
+      assertThat(autoTunedMB).isLessThanOrEqualTo(maxHeapMB);
+      assertThat(autoTunedMB).isEqualTo(Runtime.getRuntime().maxMemory() / 4 / 1024 / 1024);
+    } finally {
+      GlobalConfiguration.MAX_PAGE_RAM.setValue(originalValue);
+    }
+  }
+
+  @Test
+  void maxPageRAMCorrectionReturnsMB() {
+    final long originalValue = GlobalConfiguration.MAX_PAGE_RAM.getValueAsLong();
+
+    try {
+      // Set maxPageRAM to a value exceeding 80% of heap to trigger correction
+      final long maxHeapMB = Runtime.getRuntime().maxMemory() / 1024 / 1024;
+      final long excessiveValueMB = maxHeapMB; // 100% of heap, definitely > 80%
+
+      GlobalConfiguration.MAX_PAGE_RAM.setValue(excessiveValueMB);
+      final long correctedValue = GlobalConfiguration.MAX_PAGE_RAM.getValueAsLong();
+
+      // The corrected value must be in MB (should be ~50% of heap in MB)
+      // Before the fix, this would return bytes instead of MB
+      final long expectedMB = Runtime.getRuntime().maxMemory() / 2 / 1024 / 1024;
+      assertThat(correctedValue).isEqualTo(expectedMB);
+      assertThat(correctedValue).isLessThanOrEqualTo(maxHeapMB);
+    } finally {
+      GlobalConfiguration.MAX_PAGE_RAM.setValue(originalValue);
+    }
+  }
+
+  @Test
   void serverMode() {
     final String original = GlobalConfiguration.SERVER_MODE.getValueAsString();
 
