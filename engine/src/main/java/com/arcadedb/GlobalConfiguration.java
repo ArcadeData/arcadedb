@@ -137,19 +137,20 @@ public enum GlobalConfiguration {
           final long maxRAM = ((long) value) * 1024 * 1024; // VALUE IN MB
 
           if (maxRAM > Runtime.getRuntime().maxMemory() * 80 / 100) {
-            final long newValue = Runtime.getRuntime().maxMemory() / 2;
+            final long newValueBytes = Runtime.getRuntime().maxMemory() / 2;
+            final long newValueMB = newValueBytes / 1024 / 1024;
             if (LogManager.instance() != null)
               LogManager.instance()
                   .log(this, Level.WARNING, "Setting '%s=%s' is > than 80%% of maximum heap (%s). Decreasing it to %s",
                       MAX_PAGE_RAM.key, FileUtils.getSizeAsString(maxRAM),
-                      FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()), FileUtils.getSizeAsString(newValue));
+                      FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()), FileUtils.getSizeAsString(newValueBytes));
             else
               System.out.println(
                   "Setting '%s=%s' is > than 80%% of maximum heap (%s). Decreasing it to %s".formatted(MAX_PAGE_RAM.key,
                       FileUtils.getSizeAsString(maxRAM), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()),
-                      FileUtils.getSizeAsString(newValue)));
+                      FileUtils.getSizeAsString(newValueBytes)));
 
-            return newValue;
+            return newValueMB;
           }
           return value;
         }
