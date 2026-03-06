@@ -116,6 +116,18 @@ ArcadeDB can be used as:
 
 For more information, see the [documentation](https://docs.arcadedb.com).
 
+### Use Cases
+
+Explore real-world examples in the [arcadedb-usecases](https://github.com/ArcadeData/arcadedb-usecases) repository — self-contained projects with Docker Compose, SQL schemas, and runnable demos covering:
+
+- **Recommendation Engine** — graph traversal + vector similarity + time-series
+- **Knowledge Graphs** — co-authorship and citation networks with full-text search
+- **Graph RAG** — retrieval-augmented generation with LangChain4j and Neo4j Bolt
+- **Fraud Detection** — graph, vector, and time-series signals with Cypher
+- **Real-time Analytics** — IoT and service monitoring with time-series
+- **Social Network Analytics** — materialized view dashboards with polyglot queries
+- **Supply Chain** — multi-tier visibility with PostgreSQL protocol and JavaScript
+
 ### Getting started in 5 minutes
 
 Start ArcadeDB Server with Docker:
