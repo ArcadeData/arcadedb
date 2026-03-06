@@ -81,7 +81,7 @@ ArcadeDB supports the following models:
   SQL)
 - [Key/Value](https://docs.arcadedb.com#keyvalue-model) (compatible with the Redis driver)
 - [Search Engine](https://docs.arcadedb.com/#searchengine-model)
-- [Time Series](https://docs.arcadedb.com#timeseries-model) (with InfluxDB Line Protocol, Prometheus remote_write/read, and PromQL support)
+- [Time Series](https://docs.arcadedb.com/#timeseries-model) (with InfluxDB Line Protocol, Prometheus remote_write/read, and PromQL support)
 - [Vector Embedding](https://docs.arcadedb.com/#vector-model)
 - [Geospatial](https://docs.arcadedb.com/#geospatial-model)
 
@@ -95,10 +95,10 @@ ArcadeDB understands multiple languages:
 
 ArcadeDB key capabilities:
 
-- **73 Built-in Graph Algorithms** — Pathfinding, centrality, community detection, link prediction, graph embeddings, and more — all available out of the box
+- **70+ Built-in Graph Algorithms** — Pathfinding, centrality, community detection, link prediction, graph embeddings, and more — all available out of the box
 - **Parallel Query Execution** — SQL queries leverage multiple CPU cores for faster execution on large datasets
 - **Materialized Views** — Pre-computed query results stored and automatically maintained
-- **MCP Server** — Built-in [Model Context Protocol](https://docs.arcadedb.com#mcp) server for AI assistant and LLM integration
+- **MCP Server** — Built-in [Model Context Protocol](https://docs.arcadedb.com/#mcp) server for AI assistant and LLM integration
 - **AI Assistant** — Integrated AI assistant in Studio (Beta) for query help and database management
 - **Geospatial Indexing** — Native spatial queries and proximity searches with `geo.*` SQL functions
 - **TimeSeries** — Columnar storage with Gorilla/Delta-of-Delta compression, InfluxDB/Prometheus ingestion, PromQL queries, Grafana integration
@@ -112,7 +112,7 @@ ArcadeDB can be used as:
 - Remotely by using a [Postgres driver](https://docs.arcadedb.com#postgres-driver) (ArcadeDB implements Postgres Wire protocol)
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#redis-query-language) (only a subset of the operations are implemented)
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com#mongodb-query-language) (only a subset of the operations are implemented)
-- By AI assistants via the built-in [MCP Server](https://docs.arcadedb.com#mcp) (Model Context Protocol)
+- By AI assistants via the built-in [MCP Server](https://docs.arcadedb.com/#mcp) (Model Context Protocol)
 
 For more information, see the [documentation](https://docs.arcadedb.com).
 
@@ -137,12 +137,12 @@ You can also [download the latest release](https://github.com/ArcadeData/arcaded
 
 ### Releases
 
-There are three variants of (about monthly) releases:
+There are four variants of (about monthly) releases:
 
 - `full` - this is the complete package including all modules
 - `minimal` - this package excludes the `gremlin`, `redisw`, `mongodbw`, `graphql` modules
 - `headless` - this package excludes the `gremlin`, `redisw`, `mongodbw`, `graphql`, `studio` modules
-- `base` - core engine only, minimal footprint
+- `base` - core engine, server, and network only — excludes all optional modules (`console`, `gremlin`, `studio`, `redisw`, `mongodbw`, `postgresw`, `grpcw`, `graphql`, `metrics`)
 
 The nightly builds of the repository head can be found [here](https://central.sonatype.com/service/rest/repository/browse/maven-snapshots/com/arcadedb/arcadedb-package/).
 
