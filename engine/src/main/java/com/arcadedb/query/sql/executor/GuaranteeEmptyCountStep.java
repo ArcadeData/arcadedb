@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 
 import java.util.*;
@@ -26,11 +27,14 @@ import java.util.*;
 public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 
   private final ProjectionItem item;
+  private final Projection     preAggregateProjection;
   private       boolean        executed = false;
 
-  public GuaranteeEmptyCountStep(final ProjectionItem oProjectionItem, final CommandContext context) {
+  public GuaranteeEmptyCountStep(final ProjectionItem countItem, final Projection preAggregateProjection,
+      final CommandContext context) {
     super(context);
-    this.item = oProjectionItem;
+    this.item = countItem;
+    this.preAggregateProjection = preAggregateProjection;
   }
 
   @Override
@@ -57,6 +61,11 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 
           final ResultInternal result = new ResultInternal(context.getDatabase());
           result.setProperty(item.getProjectionAliasAsString(), 0L);
+          if (preAggregateProjection != null) {
+            for (final ProjectionItem preAggItem : preAggregateProjection.getItems()) {
+              result.setProperty(preAggItem.getProjectionAliasAsString(), preAggItem.execute((Result) null, context));
+            }
+          }
           return result;
         } finally {
           executed = true;
@@ -72,7 +81,7 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new GuaranteeEmptyCountStep(item.copy(), context);
+    return new GuaranteeEmptyCountStep(item.copy(), preAggregateProjection != null ? preAggregateProjection.copy() : null, context);
   }
 
   public boolean canBeCached() {
