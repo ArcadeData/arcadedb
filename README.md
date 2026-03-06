@@ -61,7 +61,7 @@
   &nbsp;
   <a href="https://stackoverflow.com/questions/tagged/arcadedb"><img height="25" src="studio/src/main/resources/static/images/social/stack-overflow.svg" alt="StackOverflow"></a>
 	&nbsp;
-	<a href="https://blog.arcadedb.com/"><img height="25" src="studio/src/main/resources/static/images/social/blog.svg" alt="Blog"></a>
+	<a href="https://arcadedb.com/blog/"><img height="25" src="studio/src/main/resources/static/images/social/blog.svg" alt="Blog"></a>
 </p>
 
 ArcadeDB is a Multi-Model DBMS created by Luca Garulli, the same founder of [OrientDB](https://github.com/orientechnologies/orientdb),
@@ -210,7 +210,7 @@ Join our growing community around the world, for ideas, discussions and help reg
 - Connect with us on [LinkedIn](https://www.linkedin.com/products/arcadedb)
 - or on [Facebook](https://www.facebook.com/arcadedb)
 - Questions tagged `#arcadedb` on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
-- View our official [Blog](https://blog.arcadedb.com/)
+- View our official [Blog](https://arcadedb.com/blog/)
 
 ### Security
 
