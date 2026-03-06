@@ -648,6 +648,26 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void countStarWithLiteralProjectionOnNonEmptyType() {
+    // Verify count(*) + literal works correctly when the type has records
+    final String className = "testCountStarWithLiteralProjectionOnNonEmptyType";
+    database.getSchema().createDocumentType(className);
+
+    database.begin();
+    for (int i = 0; i < 5; i++)
+      database.newDocument(className).save();
+    database.commit();
+
+    final ResultSet result = database.query("sql", "select count(*), 2 from " + className);
+    assertThat(result.hasNext()).isTrue();
+    final Result next = result.next();
+    assertThat((Object) next.getProperty("count(*)")).isEqualTo(5L);
+    assertThat((Object) next.getProperty("2")).isEqualTo(2);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
   void aggregateMixedWithNonAggregate() {
     final String className = "testAggregateMixedWithNonAggregate";
     database.getSchema().createDocumentType(className);

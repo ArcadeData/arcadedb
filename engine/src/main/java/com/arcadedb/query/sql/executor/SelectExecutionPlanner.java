@@ -472,27 +472,12 @@ public class SelectExecutionPlanner {
       if (countItem != null)
         return null; // more than one aggregate function
       final Expression exp = item.getExpression();
-      if (exp.getMathExpression() != null && exp.getMathExpression() instanceof final BaseExpression base
-          && base.isCount() && base.getModifier() == null)
+      if (exp.getMathExpression() instanceof final BaseExpression base && base.isCount() && base.getModifier() == null)
         countItem = item;
       else
         return null; // aggregate but not count(*)
     }
     return countItem;
-  }
-
-  private static boolean isCountOnly(final QueryPlanningInfo info) {
-    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1 ||
-        info.projection.getItems().stream().filter(x -> !x.getProjectionAliasAsString().startsWith("_$$$ORDER_BY_ALIAS$$$_"))
-            .count() != 1) {
-      return false;
-    }
-    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
-    final Expression exp = item.getExpression();
-    if (exp.getMathExpression() != null && exp.getMathExpression() instanceof final BaseExpression base) {
-      return base.isCount() && base.getModifier() == null;
-    }
-    return false;
   }
 
   private boolean isCount(final Projection aggregateProjection, final Projection projection) {
