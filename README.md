@@ -146,6 +146,15 @@ There are three variants of (about monthly) releases:
 
 The nightly builds of the repository head can be found [here](https://central.sonatype.com/service/rest/repository/browse/maven-snapshots/com/arcadedb/arcadedb-package/).
 
+You can also build a **custom distribution** with only the modules you need using the [Custom Package Builder](https://docs.arcadedb.com/#custom-package-builder):
+
+```bash
+curl -fsSL https://github.com/ArcadeData/arcadedb/releases/download/26.3.1/arcadedb-builder.sh | \
+  bash -s -- --version=26.3.1 --modules=gremlin,studio
+```
+
+Available optional modules: `console`, `gremlin`, `studio`, `redisw`, `mongodbw`, `postgresw`, `grpcw`, `graphql`, `metrics`. The builder supports interactive mode, Docker image generation, and offline builds from local Maven repositories.
+
 ### Java Versions
 
 Starting from ArcadeDB 24.4.1 code is compatible with Java 21.
