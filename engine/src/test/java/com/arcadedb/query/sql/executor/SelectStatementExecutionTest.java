@@ -616,6 +616,58 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void countStarWithLiteralProjectionOnEmptyType() {
+    // Regression test for https://github.com/ArcadeData/arcadedb/issues/3585
+    // SELECT count(*), <non-aggregate> FROM empty_type should return 1 row with count=0
+    final String className = "testCountStarWithLiteralProjectionOnEmptyType";
+    database.getSchema().createDocumentType(className);
+
+    final ResultSet result = database.query("sql", "select count(*), 2 from " + className);
+    assertThat(result.hasNext()).isTrue();
+    final Result next = result.next();
+    assertThat((Object) next.getProperty("count(*)")).isEqualTo(0L);
+    assertThat((Object) next.getProperty("2")).isEqualTo(2);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void countStarWithLetVariableProjectionOnEmptyType() {
+    // Regression test for https://github.com/ArcadeData/arcadedb/issues/3585
+    // SELECT count(*), $x FROM empty_type LET $x = 2 should return 1 row with count=0
+    final String className = "testCountStarWithLetVariableProjectionOnEmptyType";
+    database.getSchema().createDocumentType(className);
+
+    final ResultSet result = database.query("sql", "select count(*), $x from " + className + " let $x = 2");
+    assertThat(result.hasNext()).isTrue();
+    final Result next = result.next();
+    assertThat((Object) next.getProperty("count(*)")).isEqualTo(0L);
+    assertThat((Object) next.getProperty("$x")).isEqualTo(2);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void countStarWithLiteralProjectionOnNonEmptyType() {
+    // Verify count(*) + literal works correctly when the type has records
+    final String className = "testCountStarWithLiteralProjectionOnNonEmptyType";
+    database.getSchema().createDocumentType(className);
+
+    database.begin();
+    for (int i = 0; i < 5; i++)
+      database.newDocument(className).save();
+    database.commit();
+
+    final ResultSet result = database.query("sql", "select count(*), 2 from " + className);
+    assertThat(result.hasNext()).isTrue();
+    final Result next = result.next();
+    assertThat((Object) next.getProperty("count(*)")).isEqualTo(5L);
+    assertThat((Object) next.getProperty("2")).isEqualTo(2);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
   void aggregateMixedWithNonAggregate() {
     final String className = "testAggregateMixedWithNonAggregate";
     database.getSchema().createDocumentType(className);

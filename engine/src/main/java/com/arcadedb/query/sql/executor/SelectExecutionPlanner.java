@@ -457,18 +457,27 @@ public class SelectExecutionPlanner {
     return item.getExpression().toString().equalsIgnoreCase("count(*)");
   }
 
-  private static boolean isCountOnly(final QueryPlanningInfo info) {
-    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1 ||
-        info.projection.getItems().stream().filter(x -> !x.getProjectionAliasAsString().startsWith("_$$$ORDER_BY_ALIAS$$$_"))
-            .count() != 1) {
-      return false;
+  /**
+   * Returns the count(*) ProjectionItem if the aggregateProjection contains exactly one true aggregate and it is count(*),
+   * otherwise returns null. Non-aggregate pass-through alias items (added for non-aggregate projections) are ignored.
+   */
+  private static ProjectionItem findCountStarItem(final QueryPlanningInfo info, final CommandContext context) {
+    if (info.aggregateProjection == null)
+      return null;
+
+    ProjectionItem countItem = null;
+    for (final ProjectionItem item : info.aggregateProjection.getItems()) {
+      if (!item.isAggregate(context))
+        continue;
+      if (countItem != null)
+        return null; // more than one aggregate function
+      final Expression exp = item.getExpression();
+      if (exp.getMathExpression() instanceof final BaseExpression base && base.isCount() && base.getModifier() == null)
+        countItem = item;
+      else
+        return null; // aggregate but not count(*)
     }
-    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
-    final Expression exp = item.getExpression();
-    if (exp.getMathExpression() != null && exp.getMathExpression() instanceof final BaseExpression base) {
-      return base.isCount() && base.getModifier() == null;
-    }
-    return false;
+    return countItem;
   }
 
   private boolean isCount(final Projection aggregateProjection, final Projection projection) {
@@ -663,8 +672,9 @@ public class SelectExecutionPlanner {
 
         result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, context,
             info.timeout != null ? info.timeout.getVal().longValue() : -1));
-        if (isCountOnly(info) && info.groupBy == null) {
-          result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection.getItems().getFirst(), context));
+        final ProjectionItem countStarItem = findCountStarItem(info, context);
+        if (countStarItem != null && info.groupBy == null) {
+          result.chain(new GuaranteeEmptyCountStep(countStarItem, info.preAggregateProjection, context));
         }
       }
       result.chain(new ProjectionCalculationStep(info.projection, context));
