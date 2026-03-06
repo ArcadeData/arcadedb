@@ -335,12 +335,12 @@ public class SelectExecutionPlanner {
    */
   protected static Projection translateDistinct(Projection projection) {
     if (projection != null && projection.getItems().size() == 1) {
-      if (isDistinct(projection.getItems().get(0))) {
+      if (isDistinct(projection.getItems().getFirst())) {
         projection = projection.copy();
-        final ProjectionItem item = projection.getItems().get(0);
+        final ProjectionItem item = projection.getItems().getFirst();
         final FunctionCall function = ((BaseExpression) item.getExpression().getMathExpression()).getIdentifier().getLevelZero()
             .getFunctionCall();
-        final Expression exp = function.getParams().get(0);
+        final Expression exp = function.getParams().getFirst();
         final ProjectionItem resultItem = new ProjectionItem(-1);
         resultItem.setAlias(item.getAlias());
         resultItem.setExpression(exp.copy());
@@ -411,7 +411,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().get(0), context));
+    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().getFirst(), context));
     return true;
   }
 
@@ -433,7 +433,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info)) {
       return false;
     }
-    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().get(0), context));
+    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().getFirst(), context));
     return true;
   }
 
@@ -453,22 +453,31 @@ public class SelectExecutionPlanner {
         || info.projection.getItems().size() != 1) {
       return false;
     }
-    final ProjectionItem item = info.aggregateProjection.getItems().get(0);
+    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
     return item.getExpression().toString().equalsIgnoreCase("count(*)");
   }
 
-  private static boolean isCountOnly(final QueryPlanningInfo info) {
-    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1 ||
-        info.projection.getItems().stream().filter(x -> !x.getProjectionAliasAsString().startsWith("_$$$ORDER_BY_ALIAS$$$_"))
-            .count() != 1) {
-      return false;
+  /**
+   * Returns the count(*) ProjectionItem if the aggregateProjection contains exactly one true aggregate and it is count(*),
+   * otherwise returns null. Non-aggregate pass-through alias items (added for non-aggregate projections) are ignored.
+   */
+  private static ProjectionItem findCountStarItem(final QueryPlanningInfo info, final CommandContext context) {
+    if (info.aggregateProjection == null)
+      return null;
+
+    ProjectionItem countItem = null;
+    for (final ProjectionItem item : info.aggregateProjection.getItems()) {
+      if (!item.isAggregate(context))
+        continue;
+      if (countItem != null)
+        return null; // more than one aggregate function
+      final Expression exp = item.getExpression();
+      if (exp.getMathExpression() instanceof final BaseExpression base && base.isCount() && base.getModifier() == null)
+        countItem = item;
+      else
+        return null; // aggregate but not count(*)
     }
-    final ProjectionItem item = info.aggregateProjection.getItems().get(0);
-    final Expression exp = item.getExpression();
-    if (exp.getMathExpression() != null && exp.getMathExpression() instanceof final BaseExpression base) {
-      return base.isCount() && base.getModifier() == null;
-    }
-    return false;
+    return countItem;
   }
 
   private boolean isCount(final Projection aggregateProjection, final Projection projection) {
@@ -476,7 +485,7 @@ public class SelectExecutionPlanner {
         || projection.getItems().size() != 1) {
       return false;
     }
-    final ProjectionItem item = aggregateProjection.getItems().get(0);
+    final ProjectionItem item = aggregateProjection.getItems().getFirst();
     return item.getExpression().isCount();
   }
 
@@ -529,7 +538,7 @@ public class SelectExecutionPlanner {
       return false;
 
     // Create the optimized execution step
-    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().get(0), maxMinInfo.isMax, context));
+    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
     return true;
   }
 
@@ -557,12 +566,12 @@ public class SelectExecutionPlanner {
     // Ensure the projection expression is purely a function call (e.g., max(id)), not a compound
     // expression like max(id)+1. If the projection has additional arithmetic, the index-optimized
     // path would skip those operations and return wrong results.
-    final ProjectionItem projItem = info.projection.getItems().get(0);
+    final ProjectionItem projItem = info.projection.getItems().getFirst();
     final Expression projExp = projItem.getExpression();
     if (projExp.getMathExpression() == null || !(projExp.getMathExpression() instanceof BaseExpression))
       return null;
 
-    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().get(0);
+    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().getFirst();
     final Expression exp = aggregateItem.getExpression();
 
     if (exp.getMathExpression() == null || !(exp.getMathExpression() instanceof BaseExpression base))
@@ -588,7 +597,7 @@ public class SelectExecutionPlanner {
       return null;
 
     // Get the property name from the pre-aggregate projection
-    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().get(0);
+    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().getFirst();
     final Expression preAggExp = preAggItem.getExpression();
 
     if (preAggExp.getMathExpression() == null || !(preAggExp.getMathExpression() instanceof BaseExpression preAggBase))
@@ -613,7 +622,7 @@ public class SelectExecutionPlanner {
     for (final TypeIndex index : indexes) {
       // Must be a single-property index on the exact property
       final List<String> propNames = index.getPropertyNames();
-      if (propNames.size() == 1 && propNames.get(0).equals(propertyName)) {
+      if (propNames.size() == 1 && propNames.getFirst().equals(propertyName)) {
         // Must support ordered iterations (RangeIndex like LSM_TREE)
         if (index.supportsOrderedIterations())
           return index;
@@ -663,8 +672,9 @@ public class SelectExecutionPlanner {
 
         result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, context,
             info.timeout != null ? info.timeout.getVal().longValue() : -1));
-        if (isCountOnly(info) && info.groupBy == null) {
-          result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection.getItems().get(0), context));
+        final ProjectionItem countStarItem = findCountStarItem(info, context);
+        if (countStarItem != null && info.groupBy == null) {
+          result.chain(new GuaranteeEmptyCountStep(countStarItem, info.preAggregateProjection, context));
         }
       }
       result.chain(new ProjectionCalculationStep(info.projection, context));
@@ -775,7 +785,7 @@ public class SelectExecutionPlanner {
   private static void addOrderByProjections(final QueryPlanningInfo info) {
     if (info.orderApplied || info.expand || info.unwind != null || info.orderBy == null || info.orderBy.getItems().size() == 0
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().get(0).isAll())) {
+        && info.projection.getItems().getFirst().isAll())) {
       return;
     }
 
@@ -811,7 +821,7 @@ public class SelectExecutionPlanner {
   private static void addUnwindProjections(final QueryPlanningInfo info) {
     if (info.unwind == null || info.unwind.getItems() == null || info.unwind.getItems().isEmpty()
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().get(0).isAll())) {
+        && info.projection.getItems().getFirst().isAll())) {
       return;
     }
 
@@ -1315,7 +1325,7 @@ public class SelectExecutionPlanner {
       return result;
 
     //TODO optimization: merge multiple conditions
-    for (final BooleanExpression booleanExpression : flattenedWhereClause.get(0).getSubBlocks()) {
+    for (final BooleanExpression booleanExpression : flattenedWhereClause.getFirst().getSubBlocks()) {
       if (isRidRange(booleanExpression, context)) {
         result.getSubBlocks().add(booleanExpression.copy());
       }
@@ -1459,7 +1469,7 @@ public class SelectExecutionPlanner {
       } else if (info.flattenedWhereClause.size() > 1) {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + info.whereClause);
       } else {
-        final AndBlock andBlock = info.flattenedWhereClause.get(0);
+        final AndBlock andBlock = info.flattenedWhereClause.getFirst();
         if (andBlock.getSubBlocks().size() == 1) {
 
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
@@ -2357,7 +2367,7 @@ public class SelectExecutionPlanner {
           nullPlan.chain(new FetchFromTypeExecutionStep(queryTarget.getStringValue(), filterClusters, context, true));
 
           // Create IS NULL filter for the first indexed property
-          final String propertyName = indexFields.get(0);
+          final String propertyName = indexFields.getFirst();
           final IsNullCondition isNullCondition = new IsNullCondition(-1);
           final Expression expr = new Expression(new Identifier(propertyName));
           isNullCondition.setExpression(expr);
@@ -2433,7 +2443,7 @@ public class SelectExecutionPlanner {
     final List<DocumentType> stack = new ArrayList<>();
     stack.add(typez);
     while (!stack.isEmpty()) {
-      final DocumentType current = stack.remove(0);
+      final DocumentType current = stack.removeFirst();
       traversed.add(current);
       for (final DocumentType sub : current.getSubTypes()) {
         if (traversed.contains(sub))
@@ -2515,7 +2525,7 @@ public class SelectExecutionPlanner {
       final QueryPlanningInfo info, final CommandContext context, List<IndexSearchDescriptor> optimumIndexSearchDescriptors) {
     List<ExecutionStepInternal> result;
     if (optimumIndexSearchDescriptors.size() == 1) {
-      final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.get(0);
+      final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.getFirst();
       result = new ArrayList<>();
 
       final Boolean orderAsc = getOrderDirection(info);
@@ -2599,8 +2609,8 @@ public class SelectExecutionPlanner {
       if (orderItems.isEmpty()) {
         return true;//nothing to sort, the conditions completely overlap the ORDER BY
       }
-      if (s.equals(orderItems.get(0))) {
-        orderItems.remove(0);
+      if (s.equals(orderItems.getFirst())) {
+        orderItems.removeFirst();
         overlapping = true; //start overlapping
       } else if (overlapping) {
         return false; //overlapping, but next order item does not match...
@@ -2726,7 +2736,7 @@ public class SelectExecutionPlanner {
     if (sortedDescriptors.isEmpty()) {
       descriptors = Collections.emptyList();
     } else {
-      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst()))
+      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
           .map(Pair::getSecond).collect(Collectors.toList());
     }
 
@@ -2734,7 +2744,7 @@ public class SelectExecutionPlanner {
     descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.blockCount())).collect(Collectors.toList());
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.get(descriptors.size() - 1);
+    return descriptors.isEmpty() ? null : descriptors.getLast();
   }
 
   /**
@@ -2835,7 +2845,7 @@ public class SelectExecutionPlanner {
           .toList();
 
       // get only the descriptors with the lowest cost
-      final int lowestCost = sortedDescriptors.get(0).getFirst();
+      final int lowestCost = sortedDescriptors.getFirst().getFirst();
       descriptors = sortedDescriptors.stream()
           .filter(x -> x.getFirst().equals(lowestCost))
           .map(x -> x.getSecond())
@@ -2843,7 +2853,7 @@ public class SelectExecutionPlanner {
     }
 
     // Return the first descriptor (all remaining have same subBlocks size and cost)
-    return descriptors.get(0);
+    return descriptors.getFirst();
   }
 
   /**
@@ -3221,7 +3231,7 @@ public class SelectExecutionPlanner {
       info.orderApplied = true;
 
     if (buckets.size() == 1) {
-      final Bucket parserBucket = buckets.get(0);
+      final Bucket parserBucket = buckets.getFirst();
 
       Integer bucketId = parserBucket.getBucketNumber();
       if (bucketId == null) {
@@ -3308,7 +3318,7 @@ public class SelectExecutionPlanner {
       return false;
 
     if (info.orderBy.getItems().size() == 1) {
-      OrderByItem item = info.orderBy.getItems().get(0);
+      OrderByItem item = info.orderBy.getItems().getFirst();
       String recordAttr = item.getRecordAttr();
       return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && OrderByItem.DESC.equals(item.getType());
     }
@@ -3323,7 +3333,7 @@ public class SelectExecutionPlanner {
       return false;
 
     if (info.orderBy.getItems().size() == 1) {
-      final OrderByItem item = info.orderBy.getItems().get(0);
+      final OrderByItem item = info.orderBy.getItems().getFirst();
       final String recordAttr = item.getRecordAttr();
       return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && (item.getType() == null || OrderByItem.ASC.equals(
           item.getType()));
@@ -3397,7 +3407,7 @@ public class SelectExecutionPlanner {
 
     if (item.getRids() != null && !item.getRids().isEmpty()) {
       if (item.getRids().size() == 1) {
-        final PInteger bucket = item.getRids().get(0).getBucket();
+        final PInteger bucket = item.getRids().getFirst().getBucket();
         buckets.add(db.getSchema().getBucketById(bucket.getValue().intValue()).getName());
       } else {
         for (final Rid rid : item.getRids()) {
