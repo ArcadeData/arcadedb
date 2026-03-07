@@ -556,7 +556,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     ExecuteQueryRequest.Builder requestBuilder = ExecuteQueryRequest.newBuilder()
         .setDatabase(getName())
         .setQuery(query)
-        .setLanguage(language)
+        .setLanguage(langOrDefault(language))
         .setCredentials(buildCredentials());
 
     if (transactionId != null) {
@@ -779,7 +779,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     stats.queries.incrementAndGet();
 
     StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query)
-        .setLanguage(language)
+        .setLanguage(langOrDefault(language))
         .setCredentials(buildCredentials())
         .setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
 

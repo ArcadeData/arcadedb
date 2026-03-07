@@ -252,8 +252,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Map<String, Object> params = GrpcTypeConverter.convertParameters(req.getParametersMap());
 
-      // Language defaults to "sql" when empty
-      final String language = (req.getLanguage() == null || req.getLanguage().isEmpty()) ? "sql" : req.getLanguage();
+      final String language = langOrDefault(req.getLanguage());
 
       // Transaction: begin if requested
       final boolean hasTx = req.hasTransaction();
@@ -818,7 +817,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Execute the query
       long startTime = System.currentTimeMillis();
 
-      final String language = (request.getLanguage() == null || request.getLanguage().isEmpty()) ? "sql" : request.getLanguage();
+      final String language = langOrDefault(request.getLanguage());
 
       LogManager.instance().log(this, Level.FINE, "executeQuery(): language = %s query = %s", language, request.getQuery());
 
@@ -1107,12 +1106,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         beganHere = true;
       }
 
-      final String language = (request.getLanguage() == null || request.getLanguage().isEmpty()) ? "sql" : request.getLanguage();
+      final String language = langOrDefault(request.getLanguage());
 
       // --- Dispatch on mode (helpers do NOT manage transactions) ---
+      // PAGED mode uses SQL-specific SKIP/LIMIT wrapping, so fall back to CURSOR for non-SQL languages
       switch (request.getRetrievalMode()) {
         case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig, language);
-        case PAGED -> streamPaged(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        case PAGED -> {
+          if (!"sql".equalsIgnoreCase(language))
+            streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
+          else
+            streamPaged(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        }
         case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
         default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
       }
@@ -3065,6 +3070,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   private String generateTransactionId() {
     return "tx_" + System.nanoTime();
+  }
+
+  private static String langOrDefault(String language) {
+    return (language == null || language.isEmpty()) ? "sql" : language;
   }
 
   // ---- Debug helpers ----

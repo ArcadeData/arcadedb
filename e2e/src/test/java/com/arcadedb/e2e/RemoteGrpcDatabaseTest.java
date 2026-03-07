@@ -75,4 +75,16 @@ class RemoteGrpcDatabaseTest extends ArcadeContainerTemplate {
     }, false, 10);
   }
 
+  @Test
+  void streamQueryWithSQL() {
+    final ResultSet result = database.queryStream("sql", "select * from Beer limit 10");
+    assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+  }
+
+  @Test
+  void streamQueryWithOpenCypher() {
+    final ResultSet result = database.queryStream("opencypher", "MATCH(p:Beer) RETURN p LIMIT 10");
+    assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+  }
+
 }
