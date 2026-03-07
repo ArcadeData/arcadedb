@@ -252,8 +252,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Map<String, Object> params = GrpcTypeConverter.convertParameters(req.getParametersMap());
 
-      // Language defaults to "sql" when empty
-      final String language = (req.getLanguage() == null || req.getLanguage().isEmpty()) ? "sql" : req.getLanguage();
+      final String language = langOrDefault(req.getLanguage());
 
       // Transaction: begin if requested
       final boolean hasTx = req.hasTransaction();
@@ -818,9 +817,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Execute the query
       long startTime = System.currentTimeMillis();
 
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): query = %s", request.getQuery());
+      final String language = langOrDefault(request.getLanguage());
 
-      ResultSet resultSet = database.query("sql", request.getQuery(),
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): language = %s query = %s", language, request.getQuery());
+
+      ResultSet resultSet = database.query(language, request.getQuery(),
           GrpcTypeConverter.convertParameters(request.getParametersMap()));
 
       LogManager.instance()
@@ -1105,12 +1106,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         beganHere = true;
       }
 
+      final String language = langOrDefault(request.getLanguage());
+
       // --- Dispatch on mode (helpers do NOT manage transactions) ---
+      // PAGED mode uses SQL-specific SKIP/LIMIT wrapping, so fall back to CURSOR for non-SQL languages
       switch (request.getRetrievalMode()) {
-        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig);
-        case PAGED -> streamPaged(db, request, batchSize, scso, cancelled, projectionConfig);
-        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
-        default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
+        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        case PAGED -> {
+          if (!"sql".equalsIgnoreCase(language))
+            streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
+          else
+            streamPaged(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        }
+        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
       }
 
       // If the client cancelled mid-stream, choose rollback unless caller explicitly
@@ -1171,14 +1180,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamCursor(Database db, StreamQueryRequest request, int batchSize,
                             ServerCallStreamObserver<QueryResult> scso,
-                            AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
+                            AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
 
     long running = 0L;
 
     QueryResult.Builder batch = QueryResult.newBuilder();
     int inBatch = 0;
 
-    try (ResultSet rs = db.query("sql", request.getQuery(),
+    try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
 
       while (rs.hasNext()) {
@@ -1242,11 +1251,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamMaterialized(Database db, StreamQueryRequest request, int batchSize,
                                   ServerCallStreamObserver<QueryResult> scso,
-                                  AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
+                                  AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
 
     final List<GrpcRecord> all = new ArrayList<>();
 
-    try (ResultSet rs = db.query("sql", request.getQuery(),
+    try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
 
       while (rs.hasNext()) {
@@ -1295,7 +1304,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamPaged(Database db, StreamQueryRequest request, int batchSize,
                            ServerCallStreamObserver<QueryResult> scso,
-                           AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
+                           AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
 
     final String pagedSql = wrapWithSkipLimit(request.getQuery()); // see helper below
     int offset = 0;
@@ -1313,7 +1322,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       int count = 0;
       QueryResult.Builder b = QueryResult.newBuilder();
 
-      try (ResultSet rs = db.query("sql", pagedSql, params)) {
+      try (ResultSet rs = db.query(language, pagedSql, params)) {
         while (rs.hasNext()) {
           if (cancelled.get())
             return;
@@ -3061,6 +3070,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   private String generateTransactionId() {
     return "tx_" + System.nanoTime();
+  }
+
+  private static String langOrDefault(String language) {
+    return (language == null || language.isEmpty()) ? "sql" : language;
   }
 
   // ---- Debug helpers ----
