@@ -24,7 +24,6 @@ import com.arcadedb.remote.grpc.RemoteGrpcServer;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -57,16 +56,23 @@ class RemoteGrpcDatabaseTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  @Disabled("Gremlin not supported yet")
   void simpleGremlinQuery() {
     final ResultSet result = database.query("gremlin", "g.V().limit(10)");
     assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
   }
 
   @Test
-  @Disabled("Cypher not supported yet")
   void simpleCypherQuery() {
     final ResultSet result = database.query("cypher", "MATCH(p:Beer) RETURN * LIMIT 10");
     assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
   }
+
+  @Test
+  void simpleOpenCypherQuery() {
+    database.transaction(() -> {
+      final ResultSet result = database.query("opencypher", "MATCH(p:Beer) RETURN * LIMIT 10");
+      assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+    }, false, 10);
+  }
+
 }

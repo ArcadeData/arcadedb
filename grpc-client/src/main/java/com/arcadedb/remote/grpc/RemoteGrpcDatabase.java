@@ -553,7 +553,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
 
-    ExecuteQueryRequest.Builder requestBuilder = ExecuteQueryRequest.newBuilder().setDatabase(getName()).setQuery(query)
+    ExecuteQueryRequest.Builder requestBuilder = ExecuteQueryRequest.newBuilder()
+        .setDatabase(getName())
+        .setQuery(query)
+        .setLanguage(language)
         .setCredentials(buildCredentials());
 
     if (transactionId != null) {
@@ -776,6 +779,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     stats.queries.incrementAndGet();
 
     StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query)
+        .setLanguage(language)
         .setCredentials(buildCredentials())
         .setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
 
@@ -1763,6 +1767,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   private Iterator<Record> streamQuery(final String query) {
     StreamQueryRequest request = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query)
+        .setLanguage("sql")
         .setCredentials(buildCredentials())
         .setBatchSize(100).build();
 

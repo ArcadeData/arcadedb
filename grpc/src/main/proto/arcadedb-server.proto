@@ -286,6 +286,7 @@ message ExecuteQueryRequest {
   int32 timeout_ms = 7;
 
   ProjectionSettings projectionSettings = 8;
+  string language = 9; // "sql" if empty (default)
 }
 
 message ExecuteQueryResponse {
