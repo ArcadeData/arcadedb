@@ -87,7 +87,7 @@ public class LocalSchema implements Schema {
   public static final String                                 STATISTICS_FILE_NAME          = "statistics.json";
   public static final int                                    BUILD_TX_BATCH_SIZE           = 100_000;
   final               IndexFactory                           indexFactory                  = new IndexFactory();
-  final               Map<String, LocalDocumentType>         types                         = new HashMap<>();
+  final               Map<String, LocalDocumentType>         types                         = new ConcurrentHashMap<>();
   private             String                                 encoding                      = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
