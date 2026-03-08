@@ -30,7 +30,7 @@
     </parent>
 
     <properties>
-        <jline.version>3.30.6</jline.version>
+        <jline.version>4.0.0</jline.version>
     </properties>
 
     <artifactId>arcadedb-console</artifactId>
