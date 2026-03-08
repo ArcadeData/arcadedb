@@ -45,7 +45,7 @@
         <buildnumber-maven-plugin.version>3.3.0</buildnumber-maven-plugin.version>
         <antlr4.version>4.9.1</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
-        <cucumber.version>7.34.2</cucumber.version>
+        <cucumber.version>7.34.3</cucumber.version>
         <jmh.version>1.37</jmh.version>
     </properties>
 
