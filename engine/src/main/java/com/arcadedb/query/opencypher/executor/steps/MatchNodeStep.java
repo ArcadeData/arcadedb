@@ -26,8 +26,12 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -322,6 +326,18 @@ public class MatchNodeStep extends AbstractExecutionStep {
           }
         }
 
+        // OPTIMIZATION: Check if WHERE clause has equality predicates that can use an index
+        // This is critical for UNWIND...MATCH...WHERE patterns where the predicate references
+        // an UNWIND variable (e.g., WHERE a.id = e.src_id)
+        if (whereFilter != null && currentInputResult != null) {
+          final DocumentType type = context.getDatabase().getSchema().getType(label);
+          if (type != null) {
+            final Iterator<Identifiable> indexedIter = tryFindAndUseIndexFromWhere(type, label, currentInputResult);
+            if (indexedIter != null)
+              return indexedIter;
+          }
+        }
+
         // No index available - fall back to full type scan
         if (context.getDatabase().getSchema().existsType(label)) {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
@@ -495,6 +511,111 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
 
     return null;
+  }
+
+  /**
+   * Extracts equality predicates from the WHERE clause pushdown filter and tries to use
+   * an index for lookup. This is critical for UNWIND...MATCH...WHERE patterns where
+   * the WHERE references an UNWIND variable (e.g., WHERE a.id = e.src_id).
+   * Without this, each UNWIND row triggers a full type scan — O(N) per row.
+   * With index lookup, it's O(log N) per row.
+   */
+  private Iterator<Identifiable> tryFindAndUseIndexFromWhere(final DocumentType type, final String label,
+      final Result currentInputResult) {
+    // Extract equality predicates: variable.property = <expression>
+    final Map<String, Object> equalityPredicates = new LinkedHashMap<>();
+    extractEqualityPredicates(whereFilter, equalityPredicates, currentInputResult);
+
+    if (equalityPredicates.isEmpty())
+      return null;
+
+    // Find the best matching index
+    TypeIndex bestIndex = null;
+    int bestMatchCount = 0;
+    List<String> bestMatchedProperties = null;
+
+    for (final TypeIndex index : type.getAllIndexes(false)) {
+      final List<String> indexProperties = index.getPropertyNames();
+      int matchCount = 0;
+      final List<String> matchedProperties = new ArrayList<>();
+
+      for (final String indexProp : indexProperties) {
+        if (equalityPredicates.containsKey(indexProp)) {
+          matchCount++;
+          matchedProperties.add(indexProp);
+        } else
+          break; // Leftmost prefix matching
+      }
+
+      if (matchCount > 0 && matchCount > bestMatchCount) {
+        bestMatchCount = matchCount;
+        bestIndex = index;
+        bestMatchedProperties = matchedProperties;
+      }
+    }
+
+    if (bestIndex != null && bestMatchedProperties != null && !bestMatchedProperties.isEmpty()) {
+      final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
+      final Object[] propertyValues = new Object[propertyNames.length];
+      for (int i = 0; i < propertyNames.length; i++)
+        propertyValues[i] = equalityPredicates.get(propertyNames[i]);
+
+      usedIndexName = label + "[" + String.join(", ", propertyNames) + "]";
+
+      @SuppressWarnings("unchecked") final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
+          context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+      return iter;
+    }
+
+    return null;
+  }
+
+  /**
+   * Extracts equality predicates of the form variable.property = value from a boolean expression.
+   * Supports AND conjunctions. Resolves dynamic expressions against the current input result.
+   */
+  private void extractEqualityPredicates(final BooleanExpression expr,
+      final Map<String, Object> predicates, final Result currentInputResult) {
+    if (expr instanceof ComparisonExpression) {
+      final ComparisonExpression comp = (ComparisonExpression) expr;
+      if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
+        return;
+
+      // Check for pattern: variable.property = <expression>
+      String propertyName = null;
+      Expression valueExpr = null;
+
+      if (comp.getLeft() instanceof PropertyAccessExpression) {
+        final PropertyAccessExpression propAccess = (PropertyAccessExpression) comp.getLeft();
+        if (variable.equals(propAccess.getVariableName())) {
+          propertyName = propAccess.getPropertyName();
+          valueExpr = comp.getRight();
+        }
+      }
+      // Also check reversed: <expression> = variable.property
+      if (propertyName == null && comp.getRight() instanceof PropertyAccessExpression) {
+        final PropertyAccessExpression propAccess = (PropertyAccessExpression) comp.getRight();
+        if (variable.equals(propAccess.getVariableName())) {
+          propertyName = propAccess.getPropertyName();
+          valueExpr = comp.getLeft();
+        }
+      }
+
+      if (propertyName != null && valueExpr != null) {
+        // Resolve the value expression
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
+            new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
+        final Object resolvedValue = evaluator.evaluate(valueExpr, currentInputResult, context);
+        if (resolvedValue != null)
+          predicates.put(propertyName, resolvedValue);
+      }
+    } else if (expr instanceof LogicalExpression) {
+      final LogicalExpression logical = (LogicalExpression) expr;
+      if (logical.getOperator() == LogicalExpression.Operator.AND) {
+        extractEqualityPredicates(logical.getLeft(), predicates, currentInputResult);
+        extractEqualityPredicates(logical.getRight(), predicates, currentInputResult);
+      }
+    }
   }
 
   /**
