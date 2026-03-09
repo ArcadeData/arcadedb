@@ -180,7 +180,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                   iterator = Collections.<Identifiable>emptyList().iterator();
                 }
               } else {
-                iterator = getVertexIterator();
+                iterator = getVertexIterator(currentInputResult);
               }
             }
 
@@ -283,6 +283,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * OPTIMIZATION: Uses ID filter when available to return single vertex.
    */
   private Iterator<Identifiable> getVertexIterator() {
+    return getVertexIterator(null);
+  }
+
+  private Iterator<Identifiable> getVertexIterator(final Result currentInputResult) {
     // OPTIMIZATION: If ID filter is present, look up the specific vertex by ID
     // This is critical for performance when matching by ID (e.g., WHERE ID(a) = "#1:0")
     // Without this optimization, MATCH (a),(b) WHERE ID(a) = x AND ID(b) = y
@@ -312,7 +316,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
           if (type != null) {
             // Try to find an index that matches the property constraints
             // Support composite indexes with partial keys (leftmost prefix matching)
-            final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label);
+            final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult);
             if (indexedIter != null)
               return indexedIter;
           }
@@ -407,7 +411,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @param label the type label
    * @return iterator from index lookup, or null if no suitable index found
    */
-  private Iterator<Identifiable> tryFindAndUseIndex(final DocumentType type, final String label) {
+  private Iterator<Identifiable> tryFindAndUseIndex(final DocumentType type, final String label,
+      final Result currentInputResult) {
     // Prepare property names and values from the pattern
     final Map<String, Object> properties = new LinkedHashMap<>();
     for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
@@ -415,15 +420,22 @@ public class MatchNodeStep extends AbstractExecutionStep {
       Object propertyValue = entry.getValue();
 
       // Resolve parameter references
-      // Property values are already processed by CypherASTBuilder.evaluateExpression
       if (propertyValue instanceof CypherASTBuilder.ParameterReference) {
         final String paramName = ((CypherASTBuilder.ParameterReference) propertyValue).getName();
         if (context.getInputParameters() != null) {
           final Object paramValue = context.getInputParameters().get(paramName);
-          if (paramValue != null) {
+          if (paramValue != null)
             propertyValue = paramValue;
-          }
         }
+      }
+      // Resolve dynamic expressions (e.g., e.src_id from UNWIND) against the current input result
+      else if (propertyValue instanceof Expression) {
+        if (currentInputResult != null) {
+          final ExpressionEvaluator evaluator = new ExpressionEvaluator(
+              new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
+          propertyValue = evaluator.evaluate((Expression) propertyValue, currentInputResult, context);
+        } else
+          return null; // Cannot resolve expression without input row — skip index
       }
 
       properties.put(propertyName, propertyValue);
