@@ -95,6 +95,76 @@ cd package
 - **Run tests with specific pattern**: `mvn test -Dtest="*Pattern*"`
 - **Performance tests**: Located in `src/test/java/performance/` packages
 
+## Codebase Navigation Map
+
+### ANTLR Grammars
+- `engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLLexer.g4` — SQL lexer
+- `engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLParser.g4` — SQL parser
+- `engine/src/main/antlr4/com/arcadedb/query/opencypher/grammar/Cypher25Lexer.g4` — Cypher lexer
+- `engine/src/main/antlr4/com/arcadedb/query/opencypher/grammar/Cypher25Parser.g4` — Cypher parser
+
+### SQL Engine Key Files
+- **Parser AST nodes** (170+ classes): `engine/src/main/java/com/arcadedb/query/sql/parser/`
+  - `SuffixIdentifier.java` — property access (e.g., `record.field`)
+  - `BaseIdentifier.java`, `LevelZeroIdentifier.java` — identifier resolution
+  - `Expression.java`, `BaseExpression.java`, `MathExpression.java` — expression evaluation
+  - `Projection.java`, `ProjectionItem.java` — SELECT projection handling
+  - `SelectStatement.java`, `MatchStatement.java` — statement AST roots
+  - `NestedProjection.java`, `NestedProjectionItem.java` — nested projection (e.g., `{*}`)
+  - `FunctionCall.java`, `MethodCall.java` — function/method invocation
+  - `Modifier.java` — chained modifiers (array selectors, method calls, suffix identifiers)
+  - `WhereClause.java`, `BooleanExpression.java` — filter conditions
+  - `LetClause.java`, `LetItem.java` — LET variable bindings
+- **Executor steps** (158 classes): `engine/src/main/java/com/arcadedb/query/sql/executor/`
+  - `SelectExecutionPlanner.java` — main SELECT execution planner
+  - `ProjectionCalculationStep.java` — projection evaluation step
+  - `LetExpressionStep.java`, `GlobalLetExpressionStep.java` — LET evaluation
+  - `FetchFromTypeStep.java`, `FetchFromIndexStep.java` — data source steps
+  - `FilterStep.java`, `FilterByClustersStep.java` — filtering steps
+- **SQL methods** (50+ classes): `engine/src/main/java/com/arcadedb/query/sql/method/`
+  - `string/` — toLowerCase, toUpperCase, trim, split, etc.
+  - `collection/` — size, keys, values, sort, etc.
+  - `conversion/` — asInteger, asString, asList, asJSON, etc.
+- **SQL functions**: `engine/src/main/java/com/arcadedb/function/sql/`
+  - `graph/` — out, in, both, outE, inE, bothE, shortestPath, dijkstra, etc.
+  - `coll/` — difference, intersect, symmetricDifference
+  - `fulltext/` — search field/index functions
+
+### OpenCypher Engine Key Files
+- **AST** (40+ classes): `engine/src/main/java/com/arcadedb/query/opencypher/ast/`
+  - `CypherStatement.java`, `MatchClause.java`, `ReturnClause.java`, `WhereClause.java`
+  - `CreateClause.java`, `MergeClause.java`, `DeleteClause.java`, `SetClause.java`
+  - `PatternElement.java`, `NodePattern.java`, `RelationshipPattern.java`
+- **Executor**: `engine/src/main/java/com/arcadedb/query/opencypher/executor/`
+- **Optimizer**: `engine/src/main/java/com/arcadedb/query/opencypher/optimizer/`
+- **Planner**: `engine/src/main/java/com/arcadedb/query/opencypher/planner/`
+- **Tests**: `engine/src/test/java/com/arcadedb/query/opencypher/`
+
+### Graph Engine
+- `engine/src/main/java/com/arcadedb/graph/`
+  - `Vertex.java`, `MutableVertex.java`, `ImmutableVertex.java` — vertex types
+  - `Edge.java`, `MutableEdge.java`, `ImmutableEdge.java` — edge types
+  - `GraphEngine.java` — core graph operations
+  - `EdgeSegment.java`, `MutableEdgeSegment.java` — edge storage segments
+  - `EdgeLinkedList.java` — edge linked list structure
+  - `EdgeIterator.java`, `VertexIterator.java` — traversal iterators
+
+### Server / HTTP
+- **HTTP handlers**: `server/src/main/java/com/arcadedb/server/http/handler/`
+  - `DatabaseAbstractHandler.java` — base handler (wraps commands in transactions)
+  - `PostCommandHandler.java` — POST /command endpoint
+  - `PostQueryHandler.java`, `GetQueryHandler.java` — query endpoints
+- **HA**: `server/src/main/java/com/arcadedb/server/ha/`
+- **Security**: `server/src/main/java/com/arcadedb/server/security/`
+
+### Test Locations (by module)
+- `engine/src/test/java/` — 746 test files (SQL, Cypher, graph, storage, schema, indexing)
+- `server/src/test/java/` — 114 test files (HTTP API, HA, security)
+- `gremlin/src/test/java/` — 29 test files
+- `integration/src/test/java/` — 22 test files
+- `bolt/src/test/java/` — 10 test files
+- `graphql/src/test/java/` — 9 test files
+
 ## Architecture Overview
 
 ### Core Modules
