@@ -257,6 +257,16 @@ public class OrderByStep extends AbstractExecutionStep {
        * doesn't have native binary types for them.
        */
       private static Object convertFromStorage(final Object value) {
+        // Fast path: common non-temporal types don't need conversion
+        if (value == null || value instanceof Number || value instanceof Boolean)
+          return value;
+
+        // Handle single values - check temporal types before collections
+        if (value instanceof LocalDate ld)
+          return new CypherDate(ld);
+        if (value instanceof LocalDateTime ldt)
+          return new CypherLocalDateTime(ldt);
+
         // Handle collections (lists/arrays of temporal values)
         if (value instanceof Collection<?> collection) {
           final List<Object> converted = new ArrayList<>(collection.size());
@@ -273,12 +283,11 @@ public class OrderByStep extends AbstractExecutionStep {
           return converted;
         }
 
-        // Handle single values
-        if (value instanceof LocalDate ld)
-          return new CypherDate(ld);
-        if (value instanceof LocalDateTime ldt)
-          return new CypherLocalDateTime(ldt);
         if (value instanceof String str) {
+          // Fast path: short strings and common patterns can't be temporal
+          if (str.length() < 5 || !Character.isDigit(str.charAt(0)) && str.charAt(0) != 'P')
+            return value;
+
           // Duration strings start with P (ISO-8601)
           if (str.length() > 1 && str.charAt(0) == 'P') {
             try {
