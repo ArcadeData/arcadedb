@@ -231,6 +231,48 @@ class EdgeCreationCommitProfileTest extends TestHelper {
     return sorted[(int) (sorted.length * 0.99)] / 1_000_000.0;
   }
 
+  /**
+   * Profiles UNWIND batch edge creation to verify index usage.
+   * Related to #3613 comment: UNWIND batch should use index, not full scan.
+   */
+  @Test
+  void profileUnwindBatchEdgeCreation() {
+    // Test with increasing batch sizes to verify linear (not quadratic) scaling
+    final int[] batchSizes = {10, 50, 100};
+
+    final StringBuilder report = new StringBuilder();
+    report.append("\n=== UNWIND Batch Edge Creation Profile (Issue #3613) ===");
+    report.append(String.format("\n%-20s %12s %12s", "Batch Size", "Total(ms)", "Per-Edge(ms)"));
+
+    for (final int batchSize : batchSizes) {
+      final java.util.List<Map<String, Object>> batch = new java.util.ArrayList<>();
+      for (int i = 0; i < batchSize; i++)
+        batch.add(Map.of("src_id", i % VERTEX_COUNT, "dst_id", (i + 1) % VERTEX_COUNT,
+            "weight", 0.5, "since", "2024"));
+
+      // Warm up
+      database.command("opencypher",
+          "UNWIND $batch AS e MATCH (a:ProfPerson) WHERE a.id = e.src_id " +
+              "MATCH (b:ProfPerson) WHERE b.id = e.dst_id " +
+              "CREATE (a)-[:PROF_KNOWS {weight: e.weight}]->(b)",
+          Map.of("batch", batch));
+
+      // Measure
+      final long start = System.nanoTime();
+      database.command("opencypher",
+          "UNWIND $batch AS e MATCH (a:ProfPerson) WHERE a.id = e.src_id " +
+              "MATCH (b:ProfPerson) WHERE b.id = e.dst_id " +
+              "CREATE (a)-[:PROF_KNOWS {weight: e.weight}]->(b)",
+          Map.of("batch", batch));
+      final double totalMs = (System.nanoTime() - start) / 1_000_000.0;
+      final double perEdgeMs = totalMs / batchSize;
+
+      report.append(String.format("\n%-20d %12.2f %12.3f", batchSize, totalMs, perEdgeMs));
+    }
+
+    LogManager.instance().log(this, Level.INFO, report.toString());
+  }
+
   private static double pct(final double part, final double total) {
     return total > 0 ? (part / total) * 100.0 : 0;
   }

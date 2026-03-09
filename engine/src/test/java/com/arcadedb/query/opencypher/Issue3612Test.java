@@ -187,6 +187,35 @@ class Issue3612Test {
   }
 
   /**
+   * Test: UNWIND batch with WHERE clause uses index (not full scan).
+   * Related to #3613 comment: batch edge insertion with UNWIND should use index.
+   */
+  @Test
+  void testUnwindBatchWhereUsesIndex() {
+    // Clean edges first
+    database.command("opencypher", "MATCH ()-[k:KNOWS]->() DELETE k");
+
+    // Create a larger batch to verify index usage (would be very slow without index)
+    final List<Map<String, Object>> batch = new ArrayList<>();
+    for (int i = 0; i < 4; i++)
+      batch.add(Map.of("src_id", i, "dst_id", i + 1, "weight", 0.5, "since", "2024"));
+
+    database.command("opencypher",
+        "UNWIND $batch AS e " +
+            "MATCH (a:Person) WHERE a.id = e.src_id " +
+            "MATCH (b:Person) WHERE b.id = e.dst_id " +
+            "CREATE (a)-[:KNOWS {weight: e.weight, since: e.since}]->(b)",
+        Map.of("batch", batch));
+
+    // Verify all edges were created
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (:Person)-[k:KNOWS]->(:Person) RETURN count(k) AS cnt")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(4L);
+    }
+  }
+
+  /**
    * Test: UNWIND with inline property filter and simple list (not map).
    */
   @Test
