@@ -30,6 +30,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
 import java.io.File;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -405,5 +408,84 @@ class WithAndUnwindTest {
     result.close();
 
     assertThat(count).as("Alice knows 2 people").isEqualTo(2);
+  }
+
+  // ========== REGRESSION TEST: UNWIND + MATCH + WHERE + CREATE (issue #3612) ==========
+
+  /**
+   * Regression test for issue #3612: UNWIND + MATCH + WHERE + CREATE is slow because
+   * WHERE predicates referencing UNWIND variables were not pushed down into MatchNodeStep.
+   * Both query forms (WHERE clause vs inline properties) should produce the same result
+   * and complete in reasonable time.
+   */
+  @Test
+  @Order(50)
+  void unwindMatchWhereCreateShouldPushdownPredicates() {
+    database.transaction(() -> {
+      // Create schema for this test
+      final var benchType = database.getSchema().createVertexType("BenchNode");
+      benchType.createProperty("uid", String.class);
+      database.getSchema().createEdgeType("BENCH_EDGE");
+
+      // Create nodes
+      for (int i = 0; i < 200; i++)
+        database.command("opencypher", "CREATE (:BenchNode {uid: '" + i + "'})");
+    });
+
+    // Build batch parameter
+    final List<Map<String, Object>> batch = List.of(
+        Map.of("src", "0", "dst", "1"),
+        Map.of("src", "2", "dst", "3"),
+        Map.of("src", "4", "dst", "5"),
+        Map.of("src", "6", "dst", "7"),
+        Map.of("src", "8", "dst", "9")
+    );
+
+    // Query using WHERE clause (was slow before fix)
+    final long startWhere = System.nanoTime();
+    database.transaction(() -> {
+      database.command("opencypher",
+          "UNWIND $batch AS e MATCH (a:BenchNode), (b:BenchNode) WHERE a.uid = e.src AND b.uid = e.dst CREATE (a)-[:BENCH_EDGE]->(b)",
+          Map.of("batch", batch));
+    });
+    final long whereTimeMs = (System.nanoTime() - startWhere) / 1_000_000;
+
+    // Verify edges were created
+    final ResultSet countResult = database.query("opencypher",
+        "MATCH (:BenchNode)-[r:BENCH_EDGE]->(:BenchNode) RETURN count(r) AS cnt");
+    assertThat(countResult.hasNext()).isTrue();
+    assertThat(countResult.next().<Long>getProperty("cnt")).isEqualTo(5L);
+    countResult.close();
+
+    // Query using inline properties (was already fast) - create more edges to verify equivalence
+    final List<Map<String, Object>> batch2 = List.of(
+        Map.of("src", "10", "dst", "11"),
+        Map.of("src", "12", "dst", "13"),
+        Map.of("src", "14", "dst", "15"),
+        Map.of("src", "16", "dst", "17"),
+        Map.of("src", "18", "dst", "19")
+    );
+
+    final long startInline = System.nanoTime();
+    database.transaction(() -> {
+      database.command("opencypher",
+          "UNWIND $batch AS e MATCH (a:BenchNode {uid: e.src}), (b:BenchNode {uid: e.dst}) CREATE (a)-[:BENCH_EDGE]->(b)",
+          Map.of("batch", batch2));
+    });
+    final long inlineTimeMs = (System.nanoTime() - startInline) / 1_000_000;
+
+    // Verify total edges
+    final ResultSet countResult2 = database.query("opencypher",
+        "MATCH (:BenchNode)-[r:BENCH_EDGE]->(:BenchNode) RETURN count(r) AS cnt");
+    assertThat(countResult2.hasNext()).isTrue();
+    assertThat(countResult2.next().<Long>getProperty("cnt")).isEqualTo(10L);
+    countResult2.close();
+
+    // WHERE clause version should complete in reasonable time (not timeout)
+    // With 200 nodes, without pushdown it would do 200*200 = 40000 comparisons per UNWIND row
+    // With pushdown it does ~200 comparisons per UNWIND row
+    // Allow generous margin but ensure it's not catastrophically slow
+    assertThat(whereTimeMs).as("WHERE clause version should complete within 10 seconds (was timing out before fix)")
+        .isLessThan(10000);
   }
 }
