@@ -403,7 +403,9 @@ public class CreateStep extends AbstractExecutionStep {
     final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
 
     // Ensure edge type exists (Cypher auto-creates types)
-    context.getDatabase().getSchema().getOrCreateEdgeType(type);
+    // getOrCreateEdgeType returns quickly if the type already exists (schema cache lookup)
+    if (!context.getDatabase().getSchema().existsType(type))
+      context.getDatabase().getSchema().getOrCreateEdgeType(type);
 
     final MutableEdge edge = fromVertex.newEdge(type, toVertex);
 

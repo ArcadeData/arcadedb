@@ -136,6 +136,18 @@ public class StatementCache {
     throw new CommandSQLParsingException(e.getMessage(), e, statement);
   }
 
+  /**
+   * Returns whether a statement is idempotent (read-only), using the cached parsed statement.
+   * This avoids creating an AnalyzedQuery wrapper object on each call.
+   *
+   * @param statement the SQL statement string
+   * @return true if the statement is read-only
+   * @throws CommandSQLParsingException if the statement is invalid
+   */
+  public boolean isIdempotent(final String statement) {
+    return get(statement).isIdempotent();
+  }
+
   public boolean contains(final String statement) {
     synchronized (cache) {
       return cache.containsKey(statement);

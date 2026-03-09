@@ -36,6 +36,7 @@ import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -1141,12 +1142,13 @@ public class BoltNetworkExecutor extends Thread {
    * Uses ArcadeDB's query analyzer for accurate detection.
    */
   private boolean isWriteQuery(final String query) {
-    if (query == null || query.isEmpty()) {
+    if (query == null || query.isEmpty())
       return false;
-    }
+
     try {
-      // Use the query engine's analyzer to determine if the query is idempotent (read-only)
-      return !database.getQueryEngine("opencypher").analyze(query).isIdempotent();
+      // Use the statement cache directly to avoid creating an AnalyzedQuery wrapper object.
+      // The statement cache returns the parsed CypherStatement with isReadOnly() already computed.
+      return !((DatabaseInternal) database).getCypherStatementCache().isIdempotent(query);
     } catch (final Exception e) {
       // If analysis fails, assume it's a write operation to be safe
       // Log at FINE level to avoid spam for complex but valid queries

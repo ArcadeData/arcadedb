@@ -24,6 +24,7 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
@@ -109,6 +110,12 @@ public class CypherOptimizer {
     final List<String> typeNames = extractTypeNames(logicalPlan);
     statisticsProvider.collectStatistics(typeNames);
 
+    // Handle multiple independent MATCH clauses (e.g., MATCH (a:T) MATCH (b:T) CREATE ...)
+    // Each MATCH has a single node pattern — create operators for each and chain with CartesianProduct
+    if (statement.getMatchClauses().size() > 1 && logicalPlan.getRelationships().isEmpty()) {
+      return optimizeMultiMatchIndependent(logicalPlan);
+    }
+
     // 3. Select anchor node (best starting point)
     final AnchorSelection anchor = anchorSelector.selectAnchor(logicalPlan);
 
@@ -131,19 +138,52 @@ public class CypherOptimizer {
     }
 
     // 8. Calculate total cost and cardinality
-    double totalCost = rootOperator.getEstimatedCost();
-    long totalCardinality = rootOperator.getEstimatedCardinality();
+    final double totalCost = rootOperator.getEstimatedCost();
+    final long totalCardinality = rootOperator.getEstimatedCardinality();
 
     // 9. Build physical plan with complete operator tree
-    final PhysicalPlan physicalPlan = new PhysicalPlan(
-        logicalPlan,
-        anchor,
-        rootOperator,
-        totalCost,
-        totalCardinality
-    );
+    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality);
+  }
 
-    return physicalPlan;
+  /**
+   * Optimizes multiple independent MATCH clauses by creating an operator per node
+   * and chaining them with CartesianProduct.
+   * This is optimal for the common edge creation pattern:
+   * MATCH (a:T) WHERE a.id=$x MATCH (b:T) WHERE b.id=$y CREATE (a)-[:E]->(b)
+   */
+  private PhysicalPlan optimizeMultiMatchIndependent(final LogicalPlan logicalPlan) {
+    PhysicalOperator rootOperator = null;
+    AnchorSelection firstAnchor = null;
+    double totalCost = 0;
+    long totalCardinality = 1;
+
+    for (final LogicalNode node : logicalPlan.getNodes().values()) {
+      // Create a temporary single-node plan to use the anchor selector
+      final AnchorSelection anchor = anchorSelector.evaluateNodeDirect(node, logicalPlan);
+      final PhysicalOperator nodeOperator = createAnchorOperator(anchor);
+
+      if (firstAnchor == null)
+        firstAnchor = anchor;
+
+      if (rootOperator == null) {
+        rootOperator = nodeOperator;
+      } else {
+        // Chain with CartesianProduct
+        totalCardinality *= anchor.getEstimatedCardinality();
+        totalCost += anchor.getEstimatedCost();
+        rootOperator = new CartesianProduct(rootOperator, nodeOperator, totalCost, totalCardinality);
+      }
+
+      totalCost += anchor.getEstimatedCost();
+      totalCardinality = Math.max(1, anchor.getEstimatedCardinality());
+    }
+
+    // Apply filters
+    if (!logicalPlan.getWhereFilters().isEmpty())
+      rootOperator = applyFilterPushdown(logicalPlan, rootOperator);
+
+    return new PhysicalPlan(logicalPlan, firstAnchor, rootOperator,
+        rootOperator.getEstimatedCost(), rootOperator.getEstimatedCardinality());
   }
 
   /**

@@ -85,6 +85,18 @@ public class CypherStatementCache {
   }
 
   /**
+   * Returns whether a query is idempotent (read-only), using the cached statement.
+   * This avoids creating an AnalyzedQuery wrapper object on each call.
+   *
+   * @param query the OpenCypher query string
+   * @return true if the query is read-only
+   * @throws CommandParsingException if the query is invalid
+   */
+  public boolean isIdempotent(final String query) {
+    return get(query).isReadOnly();
+  }
+
+  /**
    * Checks if a statement is in the cache.
    *
    * @param query the query string
