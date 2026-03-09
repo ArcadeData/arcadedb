@@ -262,7 +262,7 @@ public class LocalSchema implements Schema {
   }
 
   @Override
-  public Component getFileById(final int id) {
+  public synchronized Component getFileById(final int id) {
     if (id >= files.size())
       throw new SchemaException("File with id '" + id + "' was not found");
 
@@ -273,14 +273,14 @@ public class LocalSchema implements Schema {
   }
 
   @Override
-  public Component getFileByIdIfExists(final int id) {
+  public synchronized Component getFileByIdIfExists(final int id) {
     if (id >= files.size())
       return null;
 
     return files.get(id);
   }
 
-  public Component getFileByName(final String name) {
+  public synchronized Component getFileByName(final String name) {
     for (final Component f : files)
       if (f != null && name.equals(f.getName()))
         return f;
@@ -318,7 +318,7 @@ public class LocalSchema implements Schema {
     return getBucketById(id, true);
   }
 
-  public LocalBucket getBucketById(final int id, final boolean throwExceptionIfNotFound) {
+  public synchronized LocalBucket getBucketById(final int id, final boolean throwExceptionIfNotFound) {
     if (id < 0 || id >= files.size())
       if (throwExceptionIfNotFound)
         throw new SchemaException("Bucket with id '" + id + "' was not found");

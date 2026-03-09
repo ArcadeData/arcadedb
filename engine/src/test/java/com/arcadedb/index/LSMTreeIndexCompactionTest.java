@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -163,11 +164,11 @@ class LSMTreeIndexCompactionTest extends TestHelper {
       });
 
       // Insert records into each type
+      database.async().setParallelLevel(1);
+      database.async().setCommitEvery(1000);
       for (int i = 0; i < numIndices; i++) {
         final String typeName = "ConcurrentType" + i;
         final int typeIndex = i;
-        database.async().setParallelLevel(1);
-        database.async().setCommitEvery(1000);
         database.async().transaction(() -> {
           for (int r = 0; r < recordsPerIndex; r++)
             database.newDocument(typeName).set("value", typeName + "_" + r + "_" + typeIndex).save();
@@ -200,7 +201,7 @@ class LSMTreeIndexCompactionTest extends TestHelper {
       }
 
       start.countDown();
-      done.await();
+      assertThat(done.await(60, TimeUnit.SECONDS)).as("Concurrent compaction must complete within 60s").isTrue();
 
       assertThat(errors.get()).as("Concurrent compaction must not throw errors").isEqualTo(0);
 
