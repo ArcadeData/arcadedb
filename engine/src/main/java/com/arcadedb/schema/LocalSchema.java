@@ -287,7 +287,7 @@ public class LocalSchema implements Schema {
     return null;
   }
 
-  public void removeFile(final int fileId) {
+  public synchronized void removeFile(final int fileId) {
     if (fileId >= files.size())
       return;
 
@@ -1745,7 +1745,7 @@ public class LocalSchema implements Schema {
     types.put(type.getName(), type);
   }
 
-  public void registerFile(final Component file) {
+  public synchronized void registerFile(final Component file) {
     final int fileId = file.getFileId();
 
     while (files.size() < fileId + 1)
