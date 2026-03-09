@@ -902,6 +902,9 @@ public class CypherExecutionPlan {
           unwindStep.setPrevious(currentStep);
         }
         currentStep = unwindStep;
+        // Track the UNWIND variable as bound so subsequent MATCH clauses can
+        // push down WHERE predicates referencing it (e.g., WHERE a.uid = e.src)
+        boundVariables.add(unwindClause.getVariable());
         break;
 
       case LOAD_CSV:
@@ -912,6 +915,7 @@ public class CypherExecutionPlan {
           loadCSVStep.setPrevious(currentStep);
         }
         currentStep = loadCSVStep;
+        boundVariables.add(loadCSVClause.getVariable());
         break;
 
       case MATCH:
