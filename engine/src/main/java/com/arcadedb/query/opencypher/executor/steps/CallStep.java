@@ -229,7 +229,9 @@ public class CallStep extends AbstractExecutionStep {
             return customResult;
         }
 
-        // Fall back to ArcadeDB SQL function
+        // Fall back to ArcadeDB SQL function (try full name first, e.g. "vector.neighbors", then simple name)
+        if (functionFactory.getSQLFunctionFactory().hasFunction(procedureName))
+          return callSQLFunction(procedureName, args, context);
         return callSQLFunction(simpleName, args, context);
     }
   }

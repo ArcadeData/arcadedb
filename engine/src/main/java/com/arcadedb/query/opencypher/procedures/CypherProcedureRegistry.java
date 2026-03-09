@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures;
 
 import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.procedures.db.DbIndexVectorQueryNodes;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAPSP;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAStar;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAdamicAdar;
@@ -289,6 +290,8 @@ public final class CypherProcedureRegistry {
     registerPathProcedures();
     // Meta/schema procedures
     registerMetaProcedures();
+    // Database index procedures (Neo4j compatibility)
+    registerDbProcedures();
   }
 
   private static void registerMergeProcedures() {
@@ -373,6 +376,10 @@ public final class CypherProcedureRegistry {
     register(new PathSubgraphNodes());
     register(new PathSubgraphAll());
     register(new PathSpanningTree());
+  }
+
+  private static void registerDbProcedures() {
+    register(new DbIndexVectorQueryNodes());
   }
 
   private static void registerMetaProcedures() {
