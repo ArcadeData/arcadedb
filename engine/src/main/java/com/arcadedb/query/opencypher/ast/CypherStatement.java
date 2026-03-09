@@ -167,4 +167,36 @@ public interface CypherStatement {
   default List<RemoveClause> getRemoveClauses() {
     return List.of();
   }
+
+  /**
+   * Returns true if any MATCH clause contains a variable-length path pattern.
+   * Pre-computed at parse time to avoid scanning on every execution.
+   */
+  default boolean hasVariableLengthPath() {
+    return false;
+  }
+
+  /**
+   * Returns true if UNWIND appears before MATCH in clause order.
+   * Pre-computed at parse time to avoid scanning on every execution.
+   */
+  default boolean hasUnwindBeforeMatch() {
+    return false;
+  }
+
+  /**
+   * Returns true if WITH appears before MATCH in clause order.
+   * Pre-computed at parse time to avoid scanning on every execution.
+   */
+  default boolean hasWithBeforeMatch() {
+    return false;
+  }
+
+  /**
+   * Returns true if the query contains a CALL subquery clause.
+   * Pre-computed at parse time to avoid scanning on every execution.
+   */
+  default boolean hasSubquery() {
+    return false;
+  }
 }

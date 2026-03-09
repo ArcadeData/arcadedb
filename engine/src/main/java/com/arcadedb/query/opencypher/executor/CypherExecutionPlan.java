@@ -211,20 +211,10 @@ public class CypherExecutionPlan {
     AbstractExecutionStep rootStep;
 
     // Phase 4: Use optimized physical plan if available
-    // BUT: Disable optimizer when UNWIND precedes MATCH in the query
-    // The optimizer doesn't handle clause ordering correctly - it puts the WHERE filter
-    // before UNWIND, which breaks queries like:
-    //   UNWIND $batch as row MATCH (a) WHERE ID(a) = row.source_id
-    // In this case, the WHERE filter needs to run AFTER UNWIND to access 'row'.
-    // Also disable optimizer when CALL subqueries are present, since the optimizer path
-    // doesn't handle SUBQUERY steps.
-    final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
-    final boolean hasSubquery = hasSubqueryClause();
-    final boolean hasWithBeforeMatch = hasWithPrecedingMatch();
-
-    final boolean hasVLP = hasVariableLengthPath();
-    if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasSubquery
-        && !hasWithBeforeMatch && !hasVLP) {
+    // Use pre-computed flags from the cached CypherStatement to avoid scanning clause lists per execution
+    if (physicalPlan != null && physicalPlan.getRootOperator() != null
+        && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
+        && !statement.hasWithBeforeMatch() && !statement.hasVariableLengthPath()) {
       // Use optimizer - execute physical operators directly
       // Note: For Phase 4, we only optimize MATCH patterns
       // RETURN, ORDER BY, LIMIT are still handled by execution steps
@@ -246,15 +236,8 @@ public class CypherExecutionPlan {
     // IMPORTANT: For write operations, we need to materialize the ResultSet immediately
     // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE/REMOVE
     // operations to actually execute, even when there's a RETURN clause.
-    final boolean hasForeach = statement.getClausesInOrder() != null &&
-        statement.getClausesInOrder().stream()
-            .anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
-    final boolean hasWriteOps = statement.getCreateClause() != null ||
-        (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) ||
-        (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) ||
-        !statement.getRemoveClauses().isEmpty() ||
-        statement.getMergeClause() != null ||
-        hasForeach;
+    // Use pre-computed readOnly flag to avoid re-checking on every execution.
+    final boolean hasWriteOps = !statement.isReadOnly();
 
     if (hasWriteOps) {
       // Materialize the ResultSet to force write operation execution

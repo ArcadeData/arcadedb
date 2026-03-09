@@ -28,6 +28,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
+import com.arcadedb.query.opencypher.ast.ParameterExpression;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -109,8 +111,16 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
             return;
           }
 
+          // Resolve property value at runtime (parameters change per execution)
+          Object resolvedValue = propertyValue;
+          if (resolvedValue instanceof ParameterExpression) {
+            final String paramName = ((ParameterExpression) resolvedValue).getParameterName();
+            if (context.getInputParameters() != null)
+              resolvedValue = context.getInputParameters().get(paramName);
+          }
+
           // Perform index lookup
-          final Object[] keys = new Object[]{propertyValue};
+          final Object[] keys = new Object[]{resolvedValue};
           cursor = index.get(keys);
         }
 

@@ -219,26 +219,30 @@ public class OpenCypherQueryEngine implements QueryEngine {
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile) {
     // Try to get cached physical plan first (saves optimization time: 200-500ms)
-    PhysicalPlan physicalPlan = null;
+    final CypherExecutionPlan plan;
 
     if (!explain && !profile) {
       // Only use plan cache for normal execution (not explain/profile)
-      physicalPlan = database.getCypherPlanCache().get(queryString);
-    }
+      final PhysicalPlan physicalPlan = database.getCypherPlanCache().get(queryString);
+      if (physicalPlan != null) {
+        // Reuse cached physical plan (avoids expensive statistics collection and optimization)
+        plan = new CypherExecutionPlan(
+            database, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
+      } else {
+        // Create new plan from scratch and cache it
+        final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters,
+            EXPRESSION_EVALUATOR);
+        plan = planner.createExecutionPlan(configuration);
 
-    final CypherExecutionPlan plan;
-    if (physicalPlan != null) {
-      // Reuse cached physical plan (avoids expensive statistics collection and optimization)
-      plan = new CypherExecutionPlan(
-          database, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
+        // Cache the physical plan for future use
+        if (plan.getPhysicalPlan() != null)
+          database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan());
+      }
     } else {
-      // Create new plan from scratch and cache it
-      final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters, EXPRESSION_EVALUATOR);
+      // explain/profile mode: always create new plan without caching
+      final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters,
+          EXPRESSION_EVALUATOR);
       plan = planner.createExecutionPlan(configuration);
-
-      // Cache the physical plan for future use (if not explain/profile)
-      if (!explain && !profile && plan.getPhysicalPlan() != null)
-        database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan());
     }
 
     if (explain)
