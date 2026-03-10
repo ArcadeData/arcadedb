@@ -67,13 +67,14 @@ public class CSRPerformanceTest extends TestHelper {
     assertThat(gav.getNodeCount()).isEqualTo(NODE_COUNT);
 
     // BENCHMARK: 2-hop traversal via CSR (count total 2-hop reachable nodes)
+    final CSRAdjacencyIndex linkCSR = gav.getCSRIndex("LINK");
     long csrTotal = 0;
     final long csrStart = System.nanoTime();
     for (int src = 0; src < NODE_COUNT; src++) {
-      final int outDeg = gav.outDegree(src);
+      final int outDeg = linkCSR.outDegree(src);
       for (int i = 0; i < outDeg; i++) {
-        final int neighbor = gav.getCSRIndex().outNeighbor(src, i);
-        csrTotal += gav.outDegree(neighbor);
+        final int neighbor = linkCSR.outNeighbor(src, i);
+        csrTotal += linkCSR.outDegree(neighbor);
       }
     }
     final long csrElapsed = System.nanoTime() - csrStart;

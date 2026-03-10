@@ -22,7 +22,7 @@ package com.arcadedb.grapholap;
  * A typed batch container for vectorized processing. Holds up to {@link #VECTOR_SIZE} values
  * of a single primitive type, stored in contiguous arrays for SIMD-friendly access.
  * <p>
- * Design follows the Kuzu/LadybugDB pattern:
+ * Design principles:
  * <ul>
  *   <li>Fixed-size batches (2048) aligned to typical L1/L2 cache sizes</li>
  *   <li>Primitive arrays only — zero boxing, zero GC pressure</li>

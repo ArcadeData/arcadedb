@@ -44,7 +44,7 @@ package com.arcadedb.grapholap;
  * </ul>
  * <p>
  * Double-indexed: both forward (OUT) and backward (IN) CSR are maintained,
- * following the Kuzu/LadybugDB pattern for bidirectional traversal at equal speed.
+ * enabling bidirectional traversal at equal speed.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

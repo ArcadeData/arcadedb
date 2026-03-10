@@ -20,39 +20,50 @@ package com.arcadedb.grapholap;
 
 import com.arcadedb.database.RID;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
- * Bidirectional mapping between ArcadeDB RIDs and dense integer IDs (0..N-1).
+ * Bidirectional mapping between ArcadeDB RIDs and dense integer IDs (0..N-1),
+ * with vertex type tracking for each node.
+ * <p>
  * Dense IDs enable array-based access patterns for CSR and columnar storage,
  * eliminating hash lookups in the hot path.
  * <p>
  * The internal arrays are laid out contiguously for SIMD-friendly sequential access:
  * - bucketIds[] and offsets[] store the RID components as parallel primitive arrays
+ * - typeIds[] stores the vertex type index for each node (0-based into the type catalog)
  * - The forward map (RID→int) uses a HashMap for building phase only
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class NodeIdMapping {
-  private final Map<RID, Integer> ridToId;
-  private       int[]             bucketIds;
-  private       long[]            offsets;
-  private       int               size;
+  private final Map<RID, Integer>    ridToId;
+  private final Map<String, Integer> typeNameToIndex;
+  private final List<String>         typeNames;
+  private       int[]                bucketIds;
+  private       long[]               offsets;
+  private       int[]                typeIds;
+  private       int                  size;
 
   public NodeIdMapping(final int initialCapacity) {
     this.ridToId = new HashMap<>(initialCapacity);
+    this.typeNameToIndex = new HashMap<>();
+    this.typeNames = new ArrayList<>();
     this.bucketIds = new int[initialCapacity];
     this.offsets = new long[initialCapacity];
+    this.typeIds = new int[initialCapacity];
     this.size = 0;
   }
 
   /**
-   * Adds a RID and assigns it the next dense ID.
+   * Adds a RID with its vertex type name and assigns it the next dense ID.
    *
    * @return the assigned dense ID
    */
-  public int addRID(final RID rid) {
+  public int addRID(final RID rid, final String typeName) {
     final Integer existing = ridToId.get(rid);
     if (existing != null)
       return existing;
@@ -63,6 +74,7 @@ public class NodeIdMapping {
 
     bucketIds[id] = rid.getBucketId();
     offsets[id] = rid.getPosition();
+    typeIds[id] = getOrCreateTypeIndex(typeName);
     ridToId.put(rid, id);
     size++;
     return id;
@@ -91,6 +103,50 @@ public class NodeIdMapping {
   }
 
   /**
+   * Returns the vertex type index for the given dense ID.
+   */
+  public int getTypeId(final int denseId) {
+    return typeIds[denseId];
+  }
+
+  /**
+   * Returns the vertex type name for the given dense ID.
+   */
+  public String getTypeName(final int denseId) {
+    return typeNames.get(typeIds[denseId]);
+  }
+
+  /**
+   * Returns the type index for a given type name, or -1 if not present.
+   */
+  public int getTypeIndex(final String typeName) {
+    final Integer idx = typeNameToIndex.get(typeName);
+    return idx != null ? idx : -1;
+  }
+
+  /**
+   * Returns the type name for a given type index.
+   */
+  public String getTypeNameByIndex(final int typeIndex) {
+    return typeNames.get(typeIndex);
+  }
+
+  /**
+   * Returns the number of distinct vertex types.
+   */
+  public int getTypeCount() {
+    return typeNames.size();
+  }
+
+  /**
+   * Returns the direct type IDs array for batch processing.
+   * Do NOT modify the returned array.
+   */
+  public int[] getTypeIds() {
+    return typeIds;
+  }
+
+  /**
    * Reconstructs the RID for a given dense ID. Note: this creates a new RID object.
    * Avoid calling in hot loops; use getBucketId/getOffset for batch operations.
    */
@@ -115,7 +171,22 @@ public class NodeIdMapping {
       final long[] newOffsets = new long[size];
       System.arraycopy(offsets, 0, newOffsets, 0, size);
       offsets = newOffsets;
+
+      final int[] newTypeIds = new int[size];
+      System.arraycopy(typeIds, 0, newTypeIds, 0, size);
+      typeIds = newTypeIds;
     }
+  }
+
+  private int getOrCreateTypeIndex(final String typeName) {
+    final Integer existing = typeNameToIndex.get(typeName);
+    if (existing != null)
+      return existing;
+
+    final int index = typeNames.size();
+    typeNames.add(typeName);
+    typeNameToIndex.put(typeName, index);
+    return index;
   }
 
   private void grow() {
@@ -128,5 +199,9 @@ public class NodeIdMapping {
     final long[] newOffsets = new long[newCapacity];
     System.arraycopy(offsets, 0, newOffsets, 0, size);
     offsets = newOffsets;
+
+    final int[] newTypeIds = new int[newCapacity];
+    System.arraycopy(typeIds, 0, newTypeIds, 0, size);
+    typeIds = newTypeIds;
   }
 }

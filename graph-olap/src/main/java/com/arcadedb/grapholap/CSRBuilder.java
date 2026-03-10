@@ -32,23 +32,27 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 
 import java.util.Arrays;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.Iterator;
-import java.util.Set;
+import java.util.Map;
 import java.util.logging.Level;
 
 /**
- * Builds a CSR adjacency index from the OLTP graph.
+ * Builds per-edge-type CSR adjacency indexes from the OLTP graph.
  * <p>
- * The build process is two-pass for memory efficiency:
+ * Each edge type gets its own {@link CSRAdjacencyIndex},
+ * while all vertex types share a single {@link NodeIdMapping}. This enables:
+ * <ul>
+ *   <li>Traversal filtered to a specific edge type with zero overhead</li>
+ *   <li>Degree counting per edge type</li>
+ *   <li>Multi-type traversal by iterating the relevant CSRs</li>
+ * </ul>
+ * <p>
+ * The build process is two-pass per edge type for memory efficiency:
  * <ol>
- *   <li>Pass 1: Scan all vertices, assign dense IDs, count degrees</li>
+ *   <li>Pass 1: Scan all vertices, assign dense IDs, count degrees per edge type</li>
  *   <li>Pass 2: Compute prefix sums (offsets), fill neighbor arrays</li>
  * </ol>
- * <p>
- * All arrays use {@code int[]} since Java arrays are capped at ~2.1B entries.
- * After building, neighbor lists for each node are sorted to enable
- * binary search and set intersection (needed for WCOJ in future phases).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -60,32 +64,33 @@ public class CSRBuilder {
   }
 
   /**
-   * Builds a CSR index for specific vertex and edge types.
+   * Builds per-edge-type CSR indexes for the specified vertex and edge types.
    *
    * @param vertexTypes vertex type names to include (null or empty = all vertex types)
    * @param edgeTypes   edge type names to include (null or empty = all edge types)
    *
-   * @return the built CSR adjacency index along with the node ID mapping
+   * @return the result containing per-edge-type CSRs and the shared node ID mapping
    */
   public CSRResult build(final String[] vertexTypes, final String[] edgeTypes) {
     final long startTime = System.currentTimeMillis();
 
-    // Resolve edge type bucket IDs for filtering
-    final int[] edgeBucketFilter = resolveEdgeBucketFilter(edgeTypes);
+    // Build bucket-to-edge-type-name lookup for classifying edges
+    final Map<Integer, String> bucketToEdgeType = buildBucketToEdgeTypeMap(edgeTypes);
 
-    // PASS 1: Collect all vertices and assign dense IDs
+    // PASS 1: Collect all vertices and assign dense IDs (with type tracking)
     final NodeIdMapping mapping = collectVertices(vertexTypes);
     final int nodeCount = mapping.size();
 
-    if (nodeCount == 0)
-      return new CSRResult(
-          new CSRAdjacencyIndex(new int[] { 0 }, new int[0], new int[] { 0 }, new int[0], 0, 0),
-          mapping);
+    if (nodeCount == 0) {
+      final long elapsedMs = System.currentTimeMillis() - startTime;
+      LogManager.instance().log(this, Level.INFO, "CSR built: 0 nodes, 0 edges, 0.0 MB, %d ms", elapsedMs);
+      return new CSRResult(new HashMap<>(), mapping);
+    }
 
-    // Count degrees in parallel arrays
-    final int[] outDegrees = new int[nodeCount];
-    final int[] inDegrees = new int[nodeCount];
-    int totalEdges = 0;
+    // Count degrees per edge type: edgeTypeName → int[nodeCount] for out and in
+    final Map<String, int[]> outDegreesPerType = new HashMap<>();
+    final Map<String, int[]> inDegreesPerType = new HashMap<>();
+    final Map<String, Integer> totalEdgesPerType = new HashMap<>();
 
     // Scan all edges by iterating vertices
     final Iterator<Record> vertexIter = createVertexIterator(vertexTypes);
@@ -103,90 +108,103 @@ public class CSRBuilder {
           final RID edgeRID = entry.getFirst();
           final RID targetVertexRID = entry.getSecond();
 
-          if (edgeBucketFilter != null && !containsBucket(edgeBucketFilter, edgeRID.getBucketId()))
-            continue;
+          final String edgeTypeName = bucketToEdgeType.get(edgeRID.getBucketId());
+          if (edgeTypeName == null)
+            continue; // edge type not selected
 
           final int targetId = mapping.getId(targetVertexRID);
           if (targetId < 0)
             continue;
 
-          outDegrees[srcId]++;
-          inDegrees[targetId]++;
-          totalEdges++;
+          outDegreesPerType.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[srcId]++;
+          inDegreesPerType.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[targetId]++;
+          totalEdgesPerType.merge(edgeTypeName, 1, Integer::sum);
         }
       }
     }
 
-    // PASS 2: Build CSR arrays using prefix sums
-    final int[] fwdOffsets = new int[nodeCount + 1];
-    final int[] bwdOffsets = new int[nodeCount + 1];
+    // PASS 2: Build CSR arrays per edge type using prefix sums
+    final Map<String, CSRAdjacencyIndex> csrPerType = new HashMap<>();
+    int totalAllEdges = 0;
 
-    // Compute prefix sums
-    for (int i = 0; i < nodeCount; i++) {
-      fwdOffsets[i + 1] = fwdOffsets[i] + outDegrees[i];
-      bwdOffsets[i + 1] = bwdOffsets[i] + inDegrees[i];
-    }
+    for (final Map.Entry<String, int[]> entry : outDegreesPerType.entrySet()) {
+      final String edgeTypeName = entry.getKey();
+      final int[] outDegrees = entry.getValue();
+      final int[] inDegrees = inDegreesPerType.getOrDefault(edgeTypeName, new int[nodeCount]);
+      final int totalEdges = totalEdgesPerType.getOrDefault(edgeTypeName, 0);
 
-    final int[] fwdNeighbors = new int[totalEdges];
-    final int[] bwdNeighbors = new int[totalEdges];
+      final int[] fwdOffsets = new int[nodeCount + 1];
+      final int[] bwdOffsets = new int[nodeCount + 1];
+      for (int i = 0; i < nodeCount; i++) {
+        fwdOffsets[i + 1] = fwdOffsets[i] + outDegrees[i];
+        bwdOffsets[i + 1] = bwdOffsets[i] + inDegrees[i];
+      }
 
-    // Use degree arrays as running insertion cursors (reset them)
-    Arrays.fill(outDegrees, 0);
-    Arrays.fill(inDegrees, 0);
+      final int[] fwdNeighbors = new int[totalEdges];
+      final int[] bwdNeighbors = new int[totalEdges];
 
-    // Second scan to fill neighbor arrays
-    final Iterator<Record> vertexIter2 = createVertexIterator(vertexTypes);
-    while (vertexIter2.hasNext()) {
-      final Vertex vertex = (Vertex) vertexIter2.next();
-      final int srcId = mapping.getId(vertex.getIdentity());
-      if (srcId < 0)
-        continue;
+      // Reset degrees as insertion cursors
+      final int[] outCursors = new int[nodeCount];
+      final int[] inCursors = new int[nodeCount];
 
-      final EdgeLinkedList outList = loadOutEdgeList(vertex);
-      if (outList != null) {
-        final Iterator<Pair<RID, RID>> entries = outList.entryIterator();
-        while (entries.hasNext()) {
-          final Pair<RID, RID> entry = entries.next();
-          final RID edgeRID = entry.getFirst();
-          final RID targetVertexRID = entry.getSecond();
+      // Second scan to fill neighbor arrays for this edge type
+      final Iterator<Record> vertexIter2 = createVertexIterator(vertexTypes);
+      while (vertexIter2.hasNext()) {
+        final Vertex vertex = (Vertex) vertexIter2.next();
+        final int srcId = mapping.getId(vertex.getIdentity());
+        if (srcId < 0)
+          continue;
 
-          if (edgeBucketFilter != null && !containsBucket(edgeBucketFilter, edgeRID.getBucketId()))
-            continue;
+        final EdgeLinkedList outList = loadOutEdgeList(vertex);
+        if (outList != null) {
+          final Iterator<Pair<RID, RID>> edgeEntries = outList.entryIterator();
+          while (edgeEntries.hasNext()) {
+            final Pair<RID, RID> edgeEntry = edgeEntries.next();
+            final RID edgeRID = edgeEntry.getFirst();
+            final RID targetVertexRID = edgeEntry.getSecond();
 
-          final int targetId = mapping.getId(targetVertexRID);
-          if (targetId < 0)
-            continue;
+            if (!edgeTypeName.equals(bucketToEdgeType.get(edgeRID.getBucketId())))
+              continue;
 
-          fwdNeighbors[fwdOffsets[srcId] + outDegrees[srcId]++] = targetId;
-          bwdNeighbors[bwdOffsets[targetId] + inDegrees[targetId]++] = srcId;
+            final int targetId = mapping.getId(targetVertexRID);
+            if (targetId < 0)
+              continue;
+
+            fwdNeighbors[fwdOffsets[srcId] + outCursors[srcId]++] = targetId;
+            bwdNeighbors[bwdOffsets[targetId] + inCursors[targetId]++] = srcId;
+          }
         }
       }
-    }
 
-    // Sort neighbor lists for binary search and set intersection support
-    for (int i = 0; i < nodeCount; i++) {
-      final int fwdStart = fwdOffsets[i];
-      final int fwdEnd = fwdOffsets[i + 1];
-      if (fwdEnd - fwdStart > 1)
-        Arrays.sort(fwdNeighbors, fwdStart, fwdEnd);
+      // Sort neighbor lists for binary search and set intersection
+      for (int i = 0; i < nodeCount; i++) {
+        final int fwdStart = fwdOffsets[i];
+        final int fwdEnd = fwdOffsets[i + 1];
+        if (fwdEnd - fwdStart > 1)
+          Arrays.sort(fwdNeighbors, fwdStart, fwdEnd);
 
-      final int bwdStart = bwdOffsets[i];
-      final int bwdEnd = bwdOffsets[i + 1];
-      if (bwdEnd - bwdStart > 1)
-        Arrays.sort(bwdNeighbors, bwdStart, bwdEnd);
+        final int bwdStart = bwdOffsets[i];
+        final int bwdEnd = bwdOffsets[i + 1];
+        if (bwdEnd - bwdStart > 1)
+          Arrays.sort(bwdNeighbors, bwdStart, bwdEnd);
+      }
+
+      csrPerType.put(edgeTypeName, new CSRAdjacencyIndex(fwdOffsets, fwdNeighbors, bwdOffsets, bwdNeighbors,
+          nodeCount, totalEdges));
+      totalAllEdges += totalEdges;
     }
 
     mapping.compact();
 
-    final CSRAdjacencyIndex index = new CSRAdjacencyIndex(fwdOffsets, fwdNeighbors, bwdOffsets, bwdNeighbors,
-        nodeCount, totalEdges);
-
     final long elapsedMs = System.currentTimeMillis() - startTime;
+    long totalMemory = 0;
+    for (final CSRAdjacencyIndex csr : csrPerType.values())
+      totalMemory += csr.getMemoryUsageBytes();
     LogManager.instance().log(this, Level.INFO,
-        "CSR built: %d nodes, %d edges, %.1f MB, %d ms",
-        nodeCount, totalEdges, index.getMemoryUsageBytes() / (1024.0 * 1024.0), elapsedMs);
+        "CSR built: %d nodes, %d edges (%d edge types), %.1f MB, %d ms",
+        nodeCount, totalAllEdges, csrPerType.size(), totalMemory / (1024.0 * 1024.0), elapsedMs);
 
-    return new CSRResult(index, mapping);
+    return new CSRResult(csrPerType, mapping);
   }
 
   private NodeIdMapping collectVertices(final String[] vertexTypes) {
@@ -195,15 +213,33 @@ public class CSRBuilder {
     final Iterator<Record> iter = createVertexIterator(vertexTypes);
     while (iter.hasNext()) {
       final Record record = iter.next();
-      mapping.addRID(record.getIdentity());
+      final String typeName = database.getSchema().getTypeByBucketId(record.getIdentity().getBucketId()).getName();
+      mapping.addRID(record.getIdentity(), typeName);
     }
 
     return mapping;
   }
 
+  private Map<Integer, String> buildBucketToEdgeTypeMap(final String[] edgeTypes) {
+    final Map<Integer, String> map = new HashMap<>();
+
+    if (edgeTypes == null || edgeTypes.length == 0) {
+      // All edge types
+      for (final DocumentType dt : database.getSchema().getTypes())
+        if (dt instanceof com.arcadedb.schema.EdgeType)
+          for (final int bucketId : dt.getBucketIds(true))
+            map.put(bucketId, dt.getName());
+    } else {
+      for (final String edgeType : edgeTypes)
+        for (final int bucketId : database.getSchema().getType(edgeType).getBucketIds(true))
+          map.put(bucketId, edgeType);
+    }
+
+    return map;
+  }
+
   private Iterator<Record> createVertexIterator(final String[] vertexTypes) {
     if (vertexTypes == null || vertexTypes.length == 0) {
-      // Iterate all vertex types
       final com.arcadedb.utility.MultiIterator<Record> multi = new com.arcadedb.utility.MultiIterator<>();
       for (final DocumentType dt : database.getSchema().getTypes())
         if (dt instanceof VertexType)
@@ -218,22 +254,6 @@ public class CSRBuilder {
     for (final String typeName : vertexTypes)
       multi.addIterator(database.iterateType(typeName, false));
     return multi;
-  }
-
-  private int[] resolveEdgeBucketFilter(final String[] edgeTypes) {
-    if (edgeTypes == null || edgeTypes.length == 0)
-      return null;
-
-    final Set<Integer> bucketIds = new HashSet<>();
-    for (final String edgeType : edgeTypes)
-      bucketIds.addAll(database.getSchema().getType(edgeType).getBucketIds(true));
-
-    final int[] result = new int[bucketIds.size()];
-    int i = 0;
-    for (final int id : bucketIds)
-      result[i++] = id;
-    Arrays.sort(result);
-    return result;
   }
 
   private EdgeLinkedList loadOutEdgeList(final Vertex vertex) {
@@ -252,24 +272,20 @@ public class CSRBuilder {
     }
   }
 
-  private static boolean containsBucket(final int[] sortedBucketIds, final int bucketId) {
-    return Arrays.binarySearch(sortedBucketIds, bucketId) >= 0;
-  }
-
   /**
-   * Result of CSR building: the index plus the node ID mapping.
+   * Result of CSR building: per-edge-type CSR indexes plus the shared node ID mapping.
    */
   public static class CSRResult {
-    private final CSRAdjacencyIndex index;
-    private final NodeIdMapping     mapping;
+    private final Map<String, CSRAdjacencyIndex> csrPerType;
+    private final NodeIdMapping                  mapping;
 
-    public CSRResult(final CSRAdjacencyIndex index, final NodeIdMapping mapping) {
-      this.index = index;
+    public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping) {
+      this.csrPerType = csrPerType;
       this.mapping = mapping;
     }
 
-    public CSRAdjacencyIndex getIndex() {
-      return index;
+    public Map<String, CSRAdjacencyIndex> getCsrPerType() {
+      return csrPerType;
     }
 
     public NodeIdMapping getMapping() {
