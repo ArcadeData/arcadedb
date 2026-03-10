@@ -2006,4 +2006,226 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Reopen database with the original factory for TestHelper cleanup
     database = new DatabaseFactory(dbPath).open();
   }
+
+  // --- Incremental update (delta overlay) tests ---
+
+  @Test
+  void testIncrementalAddVertexAndEdge() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-add-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withAutoUpdate(true)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Add a new vertex + edge in a new transaction
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    bob.asVertex().modify().newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    // GAV should reflect the new vertex and edge via overlay (no full rebuild)
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+
+    // The new vertex should be resolvable
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+    assertThat(charlieId).isGreaterThanOrEqualTo(0);
+
+    // Bob should now have Charlie as an out-neighbor
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int[] bobOutNeighbors = gav.getVertices(bobId, Vertex.DIRECTION.OUT, "FOLLOWS");
+    assertThat(bobOutNeighbors).contains(charlieId);
+
+    gav.close();
+  }
+
+  @Test
+  void testIncrementalPropertyUpdate() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").set("age", 30).save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-prop-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name", "age")
+        .withAutoUpdate(true)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    assertThat(gav.getProperty(aliceId, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(30);
+
+    // Update property in a new transaction
+    database.begin();
+    alice.asVertex().modify().set("age", 31).save();
+    database.commit();
+
+    // Property should be updated via overlay
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(31);
+    assertThat(gav.getProperty(aliceId, "name")).isEqualTo("Alice"); // unchanged
+
+    gav.close();
+  }
+
+  @Test
+  void testIncrementalMultipleTransactions() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-multi-tx")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withAutoUpdate(true)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // First incremental tx
+    database.begin();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.asVertex().modify().newEdge("FOLLOWS", bob);
+    database.commit();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Second incremental tx
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    bob.asVertex().modify().newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+
+    // Verify connectivity
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.getVertices(bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).contains(charlieId);
+    assertThat(gav.getVertices(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).contains(bobId);
+
+    gav.close();
+  }
+
+  @Test
+  void testIncrementalDeleteEdge() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-del-edge")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withAutoUpdate(true)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Delete the edge
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> e.delete());
+    database.commit();
+
+    // Edge should be deleted via overlay
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+
+    gav.close();
+  }
+
+  @Test
+  void testIncrementalDeleteVertex() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-del-vertex")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withAutoUpdate(true)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+
+    // Delete bob (cascade deletes edge too)
+    database.begin();
+    bob.getIdentity().asVertex().delete();
+    database.commit();
+
+    // Vertex count should decrease
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    gav.close();
+  }
+
+  @Test
+  void testIncrementalNewVertexProperties() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-new-props")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withAutoUpdate(true)
+        .build();
+
+    // Add new vertex with properties via incremental update
+    database.begin();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    assertThat(bobId).isGreaterThanOrEqualTo(0);
+
+    // Property of overflow node should be accessible
+    assertThat(gav.getProperty(bobId, "name")).isEqualTo("Bob");
+
+    gav.close();
+  }
 }

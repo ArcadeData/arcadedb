@@ -19,9 +19,7 @@
 package com.arcadedb.grapholap;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
@@ -89,10 +87,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private volatile Status                         status = Status.NOT_BUILT;
   private volatile CountDownLatch                 readyLatch = new CountDownLatch(1);
 
-  // Auto-update listeners
-  private AfterRecordCreateListener createListener;
-  private AfterRecordUpdateListener updateListener;
-  private AfterRecordDeleteListener deleteListener;
+  // Incremental auto-update: delta overlay + collector
+  private volatile DeltaOverlay overlay;
+  private DeltaCollector         deltaCollector;
+  private int                    compactionThreshold = 10000;
 
   /**
    * Creates a builder for configuring the analytical view.
@@ -153,7 +151,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       this.status = Status.READY;
       this.readyLatch.countDown();
 
-      if (autoUpdate && createListener == null)
+      this.overlay = null; // clear overlay on full rebuild
+
+      if (autoUpdate && deltaCollector == null)
         registerAutoUpdateListeners();
     } catch (final Exception e) {
       this.status = csrPerType != null ? Status.READY : Status.NOT_BUILT;
@@ -178,10 +178,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         this.nodeMapping = result.getMapping();
         this.bucketColumns = result.getBucketColumns();
         this.buildTimestamp = System.currentTimeMillis();
+        this.overlay = null; // clear overlay on full rebuild
         this.status = Status.READY;
         this.readyLatch.countDown();
 
-        if (autoUpdate && createListener == null)
+        if (autoUpdate && deltaCollector == null)
           registerAutoUpdateListeners();
       } catch (final Exception e) {
         this.status = csrPerType != null ? Status.READY : Status.NOT_BUILT;
@@ -261,6 +262,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public int getNodeId(final RID rid) {
     checkBuilt();
+    final DeltaOverlay ov = this.overlay;
+    if (ov != null)
+      return ov.resolveNodeId(rid, nodeMapping);
     return nodeMapping.getGlobalId(rid);
   }
 
@@ -269,6 +273,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public RID getRID(final int nodeId) {
     checkBuilt();
+    if (nodeId >= nodeMapping.size()) {
+      final DeltaOverlay ov = this.overlay;
+      if (ov != null) {
+        final RID rid = ov.getOverflowRID(nodeId);
+        if (rid != null)
+          return rid;
+      }
+    }
     return nodeMapping.getRID(nodeId);
   }
 
@@ -303,13 +315,23 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       for (final String edgeType : edgeTypes) {
         final CSRAdjacencyIndex csr = csrPerType.get(edgeType);
         if (csr != null)
-          total += countDirectional(csr, nodeId, direction);
+          total += countDirectional(csr, nodeId, direction, edgeType);
+        else {
+          // No base CSR but overlay may have edges for this type
+          final DeltaOverlay ov = this.overlay;
+          if (ov != null) {
+            if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
+              total += ov.getAddedOutNeighbors(nodeId, edgeType).length;
+            if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+              total += ov.getAddedInNeighbors(nodeId, edgeType).length;
+          }
+        }
       }
       return total;
     }
     long total = 0;
-    for (final CSRAdjacencyIndex csr : csrPerType.values())
-      total += countDirectional(csr, nodeId, direction);
+    for (final var entry : csrPerType.entrySet())
+      total += countDirectional(entry.getValue(), nodeId, direction, entry.getKey());
     return total;
   }
 
@@ -324,53 +346,49 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     if (edgeTypes != null && edgeTypes.length == 1) {
       final CSRAdjacencyIndex csr = csrPerType.get(edgeTypes[0]);
-      if (csr == null)
+      if (csr != null)
+        return getNeighborsFromCSR(csr, nodeId, direction, edgeTypes[0]);
+      // No base CSR — check overlay only
+      final DeltaOverlay ov = this.overlay;
+      if (ov == null)
         return new int[0];
-      return getNeighborsFromCSR(csr, nodeId, direction);
+      return getNeighborsFromCSR(null, nodeId, direction, edgeTypes[0]);
     }
 
-    final Iterable<CSRAdjacencyIndex> csrs;
+    // Multiple edge types: collect from each
+    final java.util.List<int[]> segments = new java.util.ArrayList<>();
+    int totalLen = 0;
     if (edgeTypes != null && edgeTypes.length > 0) {
-      final java.util.List<CSRAdjacencyIndex> list = new java.util.ArrayList<>(edgeTypes.length);
       for (final String et : edgeTypes) {
         final CSRAdjacencyIndex csr = csrPerType.get(et);
-        if (csr != null)
-          list.add(csr);
+        final int[] neighbors = csr != null
+            ? getNeighborsFromCSR(csr, nodeId, direction, et)
+            : getNeighborsFromCSR(null, nodeId, direction, et);
+        if (neighbors.length > 0) {
+          segments.add(neighbors);
+          totalLen += neighbors.length;
+        }
       }
-      csrs = list;
     } else {
-      csrs = csrPerType.values();
+      for (final var entry : csrPerType.entrySet()) {
+        final int[] neighbors = getNeighborsFromCSR(entry.getValue(), nodeId, direction, entry.getKey());
+        if (neighbors.length > 0) {
+          segments.add(neighbors);
+          totalLen += neighbors.length;
+        }
+      }
     }
 
-    final int totalDeg = (int) countEdges(nodeId, direction, edgeTypes);
-    if (totalDeg == 0)
+    if (totalLen == 0)
       return new int[0];
+    if (segments.size() == 1)
+      return segments.get(0);
 
-    final int[] result = new int[totalDeg];
+    final int[] result = new int[totalLen];
     int pos = 0;
-    for (final CSRAdjacencyIndex csr : csrs) {
-      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-        final int fStart = csr.outOffset(nodeId);
-        final int fLen = csr.outOffsetEnd(nodeId) - fStart;
-        if (fLen > 0) {
-          System.arraycopy(csr.getForwardNeighbors(), fStart, result, pos, fLen);
-          pos += fLen;
-        }
-      }
-      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-        final int bStart = csr.inOffset(nodeId);
-        final int bLen = csr.inOffsetEnd(nodeId) - bStart;
-        if (bLen > 0) {
-          System.arraycopy(csr.getBackwardNeighbors(), bStart, result, pos, bLen);
-          pos += bLen;
-        }
-      }
-    }
-    if (pos < result.length) {
-      final int[] trimmed = new int[pos];
-      System.arraycopy(result, 0, trimmed, 0, pos);
-      Arrays.sort(trimmed);
-      return trimmed;
+    for (final int[] seg : segments) {
+      System.arraycopy(seg, 0, result, pos, seg.length);
+      pos += seg.length;
     }
     Arrays.sort(result);
     return result;
@@ -435,7 +453,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public Object getProperty(final int nodeId, final String propertyName) {
     checkBuilt();
-    if (bucketColumns == null)
+    // Check overlay first (overrides and overflow nodes)
+    final DeltaOverlay ov = this.overlay;
+    if (ov != null) {
+      final Object override = ov.getPropertyOverride(nodeId, propertyName);
+      if (override != DeltaOverlay.UNSET)
+        return override;
+    }
+    // Fall back to base column store
+    if (bucketColumns == null || nodeId >= nodeMapping.size())
       return null;
     final int bucketIdx = nodeMapping.getBucketIdx(nodeId);
     final int localId = nodeMapping.getLocalId(nodeId);
@@ -485,6 +511,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   public int getNodeCount() {
     checkBuilt();
+    final DeltaOverlay ov = this.overlay;
+    if (ov != null)
+      return ov.getTotalNodeCount();
     return nodeMapping.size();
   }
 
@@ -493,6 +522,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     int total = 0;
     for (final CSRAdjacencyIndex csr : csrPerType.values())
       total += csr.getEdgeCount();
+    final DeltaOverlay ov = this.overlay;
+    if (ov != null)
+      total += ov.getDeltaEdgeCount();
     return total;
   }
 
@@ -538,6 +570,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return propertyFilter;
   }
 
+  Database getDatabase() {
+    return database;
+  }
+
   public long getMemoryUsageBytes() {
     if (csrPerType == null)
       return 0;
@@ -553,60 +589,91 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // --- Private helpers ---
 
   private void registerAutoUpdateListeners() {
-    createListener = record -> scheduleRebuild();
-    updateListener = record -> scheduleRebuild();
-    deleteListener = record -> scheduleRebuild();
-
-    database.getEvents().registerListener(createListener);
-    database.getEvents().registerListener(updateListener);
-    database.getEvents().registerListener(deleteListener);
+    deltaCollector = new DeltaCollector(this);
+    database.getEvents().registerListener((AfterRecordCreateListener) deltaCollector);
+    database.getEvents().registerListener((AfterRecordUpdateListener) deltaCollector);
+    database.getEvents().registerListener((AfterRecordDeleteListener) deltaCollector);
   }
 
   private void unregisterAutoUpdateListeners() {
-    if (createListener != null) {
-      database.getEvents().unregisterListener(createListener);
-      database.getEvents().unregisterListener(updateListener);
-      database.getEvents().unregisterListener(deleteListener);
-      createListener = null;
-      updateListener = null;
-      deleteListener = null;
+    if (deltaCollector != null) {
+      database.getEvents().unregisterListener((AfterRecordCreateListener) deltaCollector);
+      database.getEvents().unregisterListener((AfterRecordUpdateListener) deltaCollector);
+      database.getEvents().unregisterListener((AfterRecordDeleteListener) deltaCollector);
+      deltaCollector = null;
     }
   }
 
-  private void scheduleRebuild() {
-    try {
-      final DatabaseInternal dbInternal = (DatabaseInternal) database;
-      if (dbInternal.isTransactionActive()) {
-        final String callbackId = "gav-rebuild" + (name != null ? "-" + name : "");
-        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackId, () -> {
-          try {
-            buildAsync();
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Failed to auto-rebuild GraphAnalyticalView '%s'", e, name);
-          }
-        });
-      }
-    } catch (final Exception e) {
-      // Not in a transaction context or database is closing — skip
+  /**
+   * Applies a transaction delta to the overlay. Called from the post-commit callback.
+   * If the overlay grows beyond the compaction threshold, triggers a full rebuild.
+   */
+  void applyDelta(final TxDelta delta) {
+    final DeltaOverlay current = this.overlay;
+    final DeltaOverlay base = current != null ? current : new DeltaOverlay(nodeMapping.size());
+    final DeltaOverlay merged = base.merge(delta, nodeMapping);
+    this.overlay = merged;
+
+    if (Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold) {
+      // Trigger full compaction in background
+      final Thread compactThread = new Thread(() -> {
+        try {
+          final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
+          final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+          this.csrPerType = result.getCsrPerType();
+          this.nodeMapping = result.getMapping();
+          this.bucketColumns = result.getBucketColumns();
+          this.overlay = null; // clear overlay after successful compaction
+          this.buildTimestamp = System.currentTimeMillis();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Failed to compact GraphAnalyticalView '%s'", e, name);
+        }
+      }, "gav-compact" + (name != null ? "-" + name : ""));
+      compactThread.setDaemon(true);
+      compactThread.start();
     }
   }
 
   private boolean isConnectedForType(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
       final String edgeType) {
     final CSRAdjacencyIndex csr = csrPerType.get(edgeType);
-    if (csr == null)
-      return false;
-    if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-      final int[] neighbors = csr.getForwardNeighbors();
-      final int[] offsets = csr.getForwardOffsets();
-      if (Arrays.binarySearch(neighbors, offsets[nodeA], offsets[nodeA + 1], nodeB) >= 0)
-        return true;
+    final DeltaOverlay ov = this.overlay;
+    final boolean nodeAInBase = nodeA < nodeMapping.size();
+
+    // Check base CSR
+    if (csr != null && nodeAInBase) {
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+        if (ov != null && ov.isEdgeDeleted(edgeType, nodeA, nodeB)) { /* deleted */ }
+        else {
+          final int[] neighbors = csr.getForwardNeighbors();
+          final int[] offsets = csr.getForwardOffsets();
+          if (Arrays.binarySearch(neighbors, offsets[nodeA], offsets[nodeA + 1], nodeB) >= 0)
+            return true;
+        }
+      }
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+        if (ov != null && ov.isEdgeDeleted(edgeType, nodeB, nodeA)) { /* deleted */ }
+        else {
+          final int[] neighbors = csr.getBackwardNeighbors();
+          final int[] offsets = csr.getBackwardOffsets();
+          if (Arrays.binarySearch(neighbors, offsets[nodeA], offsets[nodeA + 1], nodeB) >= 0)
+            return true;
+        }
+      }
     }
-    if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-      final int[] neighbors = csr.getBackwardNeighbors();
-      final int[] offsets = csr.getBackwardOffsets();
-      if (Arrays.binarySearch(neighbors, offsets[nodeA], offsets[nodeA + 1], nodeB) >= 0)
-        return true;
+
+    // Check overlay added edges
+    if (ov != null) {
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+        for (final int neighbor : ov.getAddedOutNeighbors(nodeA, edgeType))
+          if (neighbor == nodeB)
+            return true;
+      }
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+        for (final int neighbor : ov.getAddedInNeighbors(nodeA, edgeType))
+          if (neighbor == nodeB)
+            return true;
+      }
     }
     return false;
   }
@@ -632,35 +699,67 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return count;
   }
 
-  private static long countDirectional(final CSRAdjacencyIndex csr, final int nodeId,
-      final Vertex.DIRECTION direction) {
+  private long countDirectional(final CSRAdjacencyIndex csr, final int nodeId,
+      final Vertex.DIRECTION direction, final String edgeType) {
     long count = 0;
-    if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
-      count += csr.outDegree(nodeId);
-    if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
-      count += csr.inDegree(nodeId);
+    final DeltaOverlay ov = this.overlay;
+    final boolean nodeInBase = nodeId < nodeMapping.size();
+
+    if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+      if (nodeInBase)
+        count += csr.outDegree(nodeId);
+      if (ov != null)
+        count += ov.getAddedOutNeighbors(nodeId, edgeType).length;
+    }
+    if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+      if (nodeInBase)
+        count += csr.inDegree(nodeId);
+      if (ov != null)
+        count += ov.getAddedInNeighbors(nodeId, edgeType).length;
+    }
     return count;
   }
 
-  private static int[] getNeighborsFromCSR(final CSRAdjacencyIndex csr, final int nodeId,
-      final Vertex.DIRECTION direction) {
-    if (direction == Vertex.DIRECTION.OUT)
-      return Arrays.copyOfRange(csr.getForwardNeighbors(), csr.outOffset(nodeId), csr.outOffsetEnd(nodeId));
-    if (direction == Vertex.DIRECTION.IN)
-      return Arrays.copyOfRange(csr.getBackwardNeighbors(), csr.inOffset(nodeId), csr.inOffsetEnd(nodeId));
+  private int[] getNeighborsFromCSR(final CSRAdjacencyIndex csr, final int nodeId,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    final DeltaOverlay ov = this.overlay;
+    final boolean nodeInBase = nodeId < nodeMapping.size();
 
-    final int outLen = csr.outDegree(nodeId);
-    final int inLen = csr.inDegree(nodeId);
-    if (outLen == 0 && inLen == 0)
-      return new int[0];
-    final int[] result = new int[outLen + inLen];
-    if (outLen > 0)
-      System.arraycopy(csr.getForwardNeighbors(), csr.outOffset(nodeId), result, 0, outLen);
-    if (inLen > 0)
-      System.arraycopy(csr.getBackwardNeighbors(), csr.inOffset(nodeId), result, outLen, inLen);
+    // Collect base CSR neighbors (only if node is in base mapping and CSR exists)
+    int[] baseOut = EMPTY_INT;
+    int[] baseIn = EMPTY_INT;
+    if (nodeInBase && csr != null) {
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
+        baseOut = Arrays.copyOfRange(csr.getForwardNeighbors(), csr.outOffset(nodeId), csr.outOffsetEnd(nodeId));
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+        baseIn = Arrays.copyOfRange(csr.getBackwardNeighbors(), csr.inOffset(nodeId), csr.inOffsetEnd(nodeId));
+    }
+
+    // Collect overlay neighbors
+    int[] ovOut = EMPTY_INT;
+    int[] ovIn = EMPTY_INT;
+    if (ov != null) {
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
+        ovOut = ov.getAddedOutNeighbors(nodeId, edgeType);
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+        ovIn = ov.getAddedInNeighbors(nodeId, edgeType);
+    }
+
+    final int totalLen = baseOut.length + baseIn.length + ovOut.length + ovIn.length;
+    if (totalLen == 0)
+      return EMPTY_INT;
+
+    final int[] result = new int[totalLen];
+    int pos = 0;
+    if (baseOut.length > 0) { System.arraycopy(baseOut, 0, result, pos, baseOut.length); pos += baseOut.length; }
+    if (baseIn.length > 0) { System.arraycopy(baseIn, 0, result, pos, baseIn.length); pos += baseIn.length; }
+    if (ovOut.length > 0) { System.arraycopy(ovOut, 0, result, pos, ovOut.length); pos += ovOut.length; }
+    if (ovIn.length > 0) { System.arraycopy(ovIn, 0, result, pos, ovIn.length); pos += ovIn.length; }
     Arrays.sort(result);
     return result;
   }
+
+  private static final int[] EMPTY_INT = new int[0];
 
   private void checkBuilt() {
     if (csrPerType == null)
