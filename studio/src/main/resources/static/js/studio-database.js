@@ -2687,13 +2687,13 @@ function displaySchema() {
     // Fetch OLAP views (materialized views + graph analytical views) and append to sidebar
     fetchMaterializedViews(function (views) {
       fetchGraphAnalyticalViews(function (gavs) {
-        if ((views && views.length > 0) || (gavs && gavs.length > 0)) {
-          html += "<div class='sidebar-section'>";
-          html += "<div class='sidebar-section-header'><i class='fa fa-cube'></i> OLAP</div>";
-          html += renderMaterializedViewsSidebarBadges(views || [], false);
-          html += renderGavSidebarBadges(gavs || [], false);
-          html += "</div>";
-        }
+        html += "<div class='sidebar-section'>";
+        html += "<div class='sidebar-section-header'><i class='fa fa-cube'></i> OLAP";
+        html += "<span class='sidebar-section-header-actions'><button onclick='createGraphAnalyticalView(); return false;' title='Create Graph Analytical View'><i class='fa fa-plus'></i></button></span>";
+        html += "</div>";
+        html += renderMaterializedViewsSidebarBadges(views || [], false);
+        html += renderGavSidebarBadges(gavs || [], false);
+        html += "</div>";
         $("#dbTypeBadges").html(html);
       });
     });
@@ -3606,6 +3606,138 @@ function showGavDetail(gavName) {
 
   html += "</div>";
   $("#dbTypeDetail").html(html);
+}
+
+function createGraphAnalyticalView() {
+  // Collect vertex and edge types from the schema for multi-selects
+  let vertexTypes = [];
+  let edgeTypes = [];
+  if (window._schemaTypes) {
+    for (let i in window._schemaTypes) {
+      let t = window._schemaTypes[i];
+      if (t.type === "vertex")
+        vertexTypes.push(t.name);
+      else if (t.type === "edge")
+        edgeTypes.push(t.name);
+    }
+    vertexTypes.sort(function (a, b) { return a.localeCompare(b); });
+    edgeTypes.sort(function (a, b) { return a.localeCompare(b); });
+  }
+
+  let html = "<label for='inputGavName'>View name <span style='color:#dc3545'>*</span></label>";
+  html += "<input class='form-control mt-1' id='inputGavName' placeholder='e.g. socialGraph'>";
+  html += "<div id='gavNameFeedback' style='font-size:0.78rem;min-height:20px;margin-bottom:8px;'></div>";
+
+  // Vertex types multi-select
+  html += "<label>Vertex Types <small class='text-muted'>(optional, leave empty for all)</small></label>";
+  html += "<select class='form-select mt-1 mb-3' id='inputGavVertexTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
+  for (let i = 0; i < vertexTypes.length; i++)
+    html += "<option value='" + escapeHtml(vertexTypes[i]) + "'>" + escapeHtml(vertexTypes[i]) + "</option>";
+  html += "</select>";
+  if (vertexTypes.length === 0)
+    html += "<small class='text-muted' style='display:block;margin-top:-10px;margin-bottom:10px;'>No vertex types defined yet.</small>";
+
+  // Edge types multi-select
+  html += "<label>Edge Types <small class='text-muted'>(optional, leave empty for all)</small></label>";
+  html += "<select class='form-select mt-1 mb-3' id='inputGavEdgeTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
+  for (let i = 0; i < edgeTypes.length; i++)
+    html += "<option value='" + escapeHtml(edgeTypes[i]) + "'>" + escapeHtml(edgeTypes[i]) + "</option>";
+  html += "</select>";
+  if (edgeTypes.length === 0)
+    html += "<small class='text-muted' style='display:block;margin-top:-10px;margin-bottom:10px;'>No edge types defined yet.</small>";
+
+  // Properties filter
+  html += "<label for='inputGavProperties'>Properties <small class='text-muted'>(optional, comma-separated)</small></label>";
+  html += "<input class='form-control mt-1 mb-3' id='inputGavProperties' placeholder='e.g. name, weight, score'>";
+
+  // Options row
+  html += "<div class='d-flex flex-wrap gap-3'>";
+  html += "<div class='form-check'>";
+  html += "<input class='form-check-input' type='checkbox' id='inputGavAutoUpdate'>";
+  html += "<label class='form-check-label' for='inputGavAutoUpdate'>Auto-update on data changes</label>";
+  html += "</div>";
+  html += "<div class='form-check'>";
+  html += "<input class='form-check-input' type='checkbox' id='inputGavIfNotExists'>";
+  html += "<label class='form-check-label' for='inputGavIfNotExists'>If not exists</label>";
+  html += "</div>";
+  html += "</div>";
+
+  globalPrompt("Create Graph Analytical View", html, "Create", function () {
+    let name = $("#inputGavName").val().trim();
+    if (!name) {
+      globalNotify("Error", "View name is required", "danger");
+      return;
+    }
+
+    let command = "CREATE GRAPH ANALYTICAL VIEW";
+    if ($("#inputGavIfNotExists").prop("checked"))
+      command += " IF NOT EXISTS";
+    command += " `" + name + "`";
+
+    let vt = $("#inputGavVertexTypes").val();
+    if (vt && vt.length > 0)
+      command += " VERTEX TYPES (" + vt.map(function (v) { return "`" + v + "`"; }).join(", ") + ")";
+
+    let et = $("#inputGavEdgeTypes").val();
+    if (et && et.length > 0)
+      command += " EDGE TYPES (" + et.map(function (e) { return "`" + e + "`"; }).join(", ") + ")";
+
+    let props = $("#inputGavProperties").val().trim();
+    if (props) {
+      let propList = props.split(",").map(function (p) { return "`" + p.trim() + "`"; }).filter(function (p) { return p !== "``"; });
+      if (propList.length > 0)
+        command += " PROPERTIES (" + propList.join(", ") + ")";
+    }
+
+    if ($("#inputGavAutoUpdate").prop("checked"))
+      command += " AUTO UPDATE";
+
+    let database = getCurrentDatabase();
+    if (database === "") {
+      globalNotify("Error", "Database not selected", "danger");
+      return;
+    }
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + database,
+      data: JSON.stringify({
+        language: "sql",
+        command: command,
+        serializer: "record",
+      }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function () {
+      globalNotify("Success", "Graph Analytical View '" + escapeHtml(name) + "' created.", "success");
+      displaySchema();
+    })
+    .fail(function (jqXHR) {
+      globalNotifyError(jqXHR.responseText);
+    });
+  });
+
+  // Wire up live validation on the name field
+  setTimeout(function () {
+    $("#inputGavName").on("input", function () {
+      let name = $(this).val().trim();
+      let feedback = $("#gavNameFeedback");
+      if (name === "") {
+        feedback.html("");
+        $(this).removeClass("is-invalid is-valid");
+        return;
+      }
+      if (/[^a-zA-Z0-9_]/.test(name)) {
+        feedback.html("<span style='color:#dc3545;'><i class='fa fa-circle-exclamation'></i> Only letters, digits and underscores allowed</span>");
+        $(this).addClass("is-invalid").removeClass("is-valid");
+      } else {
+        feedback.html("<span style='color:#198754;'><i class='fa fa-circle-check'></i> Valid</span>");
+        $(this).addClass("is-valid").removeClass("is-invalid");
+      }
+    });
+  }, 100);
 }
 
 function dropGav(gavName) {
