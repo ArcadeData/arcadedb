@@ -18,12 +18,18 @@
  */
 package com.arcadedb.grapholap;
 
+import com.arcadedb.grapholap.simd.GraphOlapVectorOps;
+import com.arcadedb.grapholap.simd.GraphOlapVectorOpsProvider;
+
 /**
  * Vectorized scan operator over a columnar property. Produces batches of values
  * from a {@link Column}, enabling downstream operators to process properties in bulk.
  * <p>
  * Supports scanning a full column (all nodes) or a subset defined by a selection
  * vector (array of node IDs to include).
+ * <p>
+ * Uses SIMD-accelerated gather operations (via {@link GraphOlapVectorOps}) for selective
+ * scans when the Java Vector API is available, falling back to scalar loops otherwise.
  * <p>
  * Usage pattern:
  * <pre>
@@ -37,6 +43,8 @@ package com.arcadedb.grapholap;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ColumnScanOperator {
+  private static final GraphOlapVectorOps VECTOR_OPS = GraphOlapVectorOpsProvider.getInstance();
+
   private final Column column;
   private final int[]  selectionVector;  // null = full scan
   private       int    cursor;
@@ -136,59 +144,24 @@ public class ColumnScanOperator {
     final long[] nullBits = column.getNullBitset();
 
     switch (column.getType()) {
-    case INT: {
-      final int[] src = column.getIntData();
-      final int[] dst = output.getIntData();
-      final boolean[] nullMask = output.getNullMask();
-      for (int i = 0; i < batchSize; i++) {
-        final int nodeId = selectionVector[cursor + i];
-        dst[i] = src[nodeId];
-        nullMask[i] = (nullBits[nodeId >>> 6] & (1L << (nodeId & 63))) != 0;
-      }
+    case INT:
+      VECTOR_OPS.gatherInt(column.getIntData(), selectionVector, output.getIntData(), cursor, batchSize);
+      break;
+    case LONG:
+      VECTOR_OPS.gatherLong(column.getLongData(), selectionVector, output.getLongData(), cursor, batchSize);
+      break;
+    case DOUBLE:
+      VECTOR_OPS.gatherDouble(column.getDoubleData(), selectionVector, output.getDoubleData(), cursor, batchSize);
+      break;
+    case STRING:
+      VECTOR_OPS.gatherInt(column.getStringCodes(), selectionVector, output.getIntData(), cursor, batchSize);
       break;
     }
-    case LONG: {
-      final long[] src = column.getLongData();
-      final long[] dst = output.getLongData();
-      final boolean[] nullMask = output.getNullMask();
-      for (int i = 0; i < batchSize; i++) {
-        final int nodeId = selectionVector[cursor + i];
-        dst[i] = src[nodeId];
-        nullMask[i] = (nullBits[nodeId >>> 6] & (1L << (nodeId & 63))) != 0;
-      }
-      break;
-    }
-    case DOUBLE: {
-      final double[] src = column.getDoubleData();
-      final double[] dst = output.getDoubleData();
-      final boolean[] nullMask = output.getNullMask();
-      for (int i = 0; i < batchSize; i++) {
-        final int nodeId = selectionVector[cursor + i];
-        dst[i] = src[nodeId];
-        nullMask[i] = (nullBits[nodeId >>> 6] & (1L << (nodeId & 63))) != 0;
-      }
-      break;
-    }
-    case STRING: {
-      final int[] src = column.getStringCodes();
-      final int[] dst = output.getIntData();
-      final boolean[] nullMask = output.getNullMask();
-      for (int i = 0; i < batchSize; i++) {
-        final int nodeId = selectionVector[cursor + i];
-        dst[i] = src[nodeId];
-        nullMask[i] = (nullBits[nodeId >>> 6] & (1L << (nodeId & 63))) != 0;
-      }
-      break;
-    }
-    }
+    VECTOR_OPS.extractNullMaskGather(nullBits, selectionVector, output.getNullMask(), cursor, batchSize);
   }
 
   private static void copyNulls(final DataVector output, final long[] nullBits,
       final int startNodeId, final int batchSize) {
-    final boolean[] nullMask = output.getNullMask();
-    for (int i = 0; i < batchSize; i++) {
-      final int nodeId = startNodeId + i;
-      nullMask[i] = (nullBits[nodeId >>> 6] & (1L << (nodeId & 63))) != 0;
-    }
+    VECTOR_OPS.extractNullMaskSequential(nullBits, startNodeId, output.getNullMask(), batchSize);
   }
 }

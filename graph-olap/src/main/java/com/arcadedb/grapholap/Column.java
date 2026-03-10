@@ -18,6 +18,9 @@
  */
 package com.arcadedb.grapholap;
 
+import com.arcadedb.grapholap.simd.GraphOlapVectorOps;
+import com.arcadedb.grapholap.simd.GraphOlapVectorOpsProvider;
+
 /**
  * A single typed column in the columnar property store, indexed by dense node ID.
  * <p>
@@ -37,6 +40,8 @@ package com.arcadedb.grapholap;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class Column {
+
+  private static final GraphOlapVectorOps VECTOR_OPS = GraphOlapVectorOpsProvider.getInstance();
 
   public enum Type {
     INT, LONG, DOUBLE, STRING
@@ -127,10 +132,7 @@ public class Column {
    * Counts the number of non-null values in this column.
    */
   public int countNonNull() {
-    int nullCount = 0;
-    for (final long word : nullBitset)
-      nullCount += Long.bitCount(word);
-    return nodeCount - nullCount;
+    return nodeCount - VECTOR_OPS.bitmaskPopcount(nullBitset, nullBitset.length);
   }
 
   // --- Int accessors ---
