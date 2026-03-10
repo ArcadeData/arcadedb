@@ -207,10 +207,25 @@
         </div>
 
         <div class="card mb-3">
-          <div class="card-header">Materialized Views Health</div>
+          <div class="card-header">
+            <i class="fa fa-cube"></i> OLAP
+            <ul class="nav nav-tabs card-header-tabs float-end" role="tablist" style="margin-top: -6px;">
+              <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-olap-mv" role="tab">Materialized Views</a></li>
+              <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-olap-gav" role="tab">Graph Analytical Views</a></li>
+            </ul>
+          </div>
           <div class="card-body">
-            <div id="dbMetricsMvContainer">
-              <p class="text-muted">No materialized views found.</p>
+            <div class="tab-content">
+              <div class="tab-pane fade show active" id="tab-olap-mv" role="tabpanel">
+                <div id="dbMetricsMvContainer">
+                  <p class="text-muted">No materialized views found.</p>
+                </div>
+              </div>
+              <div class="tab-pane fade" id="tab-olap-gav" role="tabpanel">
+                <div id="dbMetricsGavContainer">
+                  <p class="text-muted">Loading graph analytical views...</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>

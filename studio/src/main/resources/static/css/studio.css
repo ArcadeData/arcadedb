@@ -634,6 +634,23 @@ div.dt-search {
   margin-right: 2px;
 }
 
+.sidebar-subsection-header {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-lighter);
+  letter-spacing: 0.04em;
+  padding: 6px 0 2px;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-subsection-header i {
+  color: var(--icon-muted) !important;
+  font-size: 0.6rem;
+  margin-right: 2px;
+}
+
 .sidebar-count {
   font-weight: 400;
   color: var(--text-lightest);

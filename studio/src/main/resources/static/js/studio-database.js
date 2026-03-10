@@ -2684,10 +2684,18 @@ function displaySchema() {
       html += "</div></div>";
     }
 
-    // Fetch materialized views and append to sidebar
+    // Fetch OLAP views (materialized views + graph analytical views) and append to sidebar
     fetchMaterializedViews(function (views) {
-      html += renderMaterializedViewsSidebarSection(views || [], false);
-      $("#dbTypeBadges").html(html);
+      fetchGraphAnalyticalViews(function (gavs) {
+        if ((views && views.length > 0) || (gavs && gavs.length > 0)) {
+          html += "<div class='sidebar-section'>";
+          html += "<div class='sidebar-section-header'><i class='fa fa-cube'></i> OLAP</div>";
+          html += renderMaterializedViewsSidebarBadges(views || [], false);
+          html += renderGavSidebarBadges(gavs || [], false);
+          html += "</div>";
+        }
+        $("#dbTypeBadges").html(html);
+      });
     });
 
     // Reset detail panel
@@ -2957,12 +2965,19 @@ function populateQuerySidebar() {
     html += "</div></div>";
   }
 
-  // Fetch materialized views and append section, then render
+  // Fetch OLAP views (materialized views + graph analytical views) for query sidebar
   fetchMaterializedViews(function(views) {
-    let finalHtml = html;
-    if (views && views.length > 0)
-      finalHtml += renderMaterializedViewsSidebarSection(views, true);
-    container.html(finalHtml);
+    fetchGraphAnalyticalViews(function(gavs) {
+      let finalHtml = html;
+      if ((views && views.length > 0) || (gavs && gavs.length > 0)) {
+        finalHtml += "<div class='sidebar-section'>";
+        finalHtml += "<div class='sidebar-section-header'><i class='fa fa-cube'></i> OLAP</div>";
+        finalHtml += renderMaterializedViewsSidebarBadges(views || [], true);
+        finalHtml += renderGavSidebarBadges(gavs || [], true);
+        finalHtml += "</div>";
+      }
+      container.html(finalHtml);
+    });
   });
 }
 
@@ -3435,6 +3450,224 @@ function renderMaterializedViewsSidebarSection(views, isQuerySidebar) {
 
   html += "</div></div>";
   return html;
+}
+
+/**
+ * Renders MV badges without the section wrapper (for use inside the OLAP section).
+ */
+function renderMaterializedViewsSidebarBadges(views, isQuerySidebar) {
+  if (!views || views.length === 0) return "";
+  let html = "";
+  let palette = sidebarBadgeColors.materializedView;
+
+  html += "<div class='sidebar-subsection-header'><i class='fa fa-layer-group'></i> Materialized Views <span class='sidebar-count'>(" + views.length + ")</span>";
+  if (!isQuerySidebar)
+    html += "<span class='sidebar-section-header-actions'><button onclick='createMaterializedView(); return false;' title='Create materialized view'><i class='fa fa-plus'></i></button></span>";
+  html += "</div>";
+  html += "<div class='sidebar-badges'>";
+
+  for (let j = 0; j < views.length; j++) {
+    let view = views[j];
+    let color = palette[j % palette.length];
+    let name = escapeHtml(view.name);
+    let statusClass = "mv-status-dot-" + (view.status || "valid").toLowerCase();
+
+    if (isQuerySidebar) {
+      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+      html += "onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\"); return false;' ";
+      html += "title='" + name + " (Materialized View)'>";
+      html += "<span class='mv-status-dot " + statusClass + "'></span>";
+      html += "<span class='sidebar-badge-name'>" + name + "</span>";
+      html += "</a>";
+    } else {
+      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+      html += "onclick='showMaterializedViewDetail(\"" + view.name.replace(/"/g, "&quot;") + "\"); return false;' ";
+      html += "title='" + name + " (Materialized View)'>";
+      html += "<span class='mv-status-dot " + statusClass + "'></span>";
+      html += "<span class='sidebar-badge-name'>" + name + "</span>";
+      html += "</a>";
+    }
+  }
+
+  html += "</div>";
+  return html;
+}
+
+// ===== Graph Analytical Views =====
+
+function fetchGraphAnalyticalViews(callback) {
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
+    if (callback) callback([]);
+    return;
+  }
+
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/query/" + database,
+      data: JSON.stringify({
+        language: "sql",
+        command: "select from schema:graphAnalyticalViews",
+      }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      window._schemaGraphAnalyticalViews = data.result || [];
+      if (callback) callback(data.result || []);
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      window._schemaGraphAnalyticalViews = [];
+      if (callback) callback([]);
+    });
+}
+
+function renderGavSidebarBadges(gavs, isQuerySidebar) {
+  if (!gavs || gavs.length === 0) return "";
+  let html = "";
+  let palette = ["#0ea5e9", "#0284c7", "#0369a1", "#38bdf8", "#7dd3fc", "#0c4a6e"];
+
+  html += "<div class='sidebar-subsection-header'><i class='fa fa-project-diagram'></i> Graph Analytical Views <span class='sidebar-count'>(" + gavs.length + ")</span></div>";
+  html += "<div class='sidebar-badges'>";
+
+  for (let j = 0; j < gavs.length; j++) {
+    let gav = gavs[j];
+    let color = palette[j % palette.length];
+    let name = escapeHtml(gav.name);
+    let statusClass = gav.status === "ACTIVE" ? "mv-status-dot-valid" : "mv-status-dot-stale";
+
+    html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+    if (!isQuerySidebar)
+      html += "onclick='showGavDetail(\"" + gav.name.replace(/"/g, "&quot;") + "\"); return false;' ";
+    html += "title='" + name + " (Graph Analytical View)'>";
+    html += "<span class='mv-status-dot " + statusClass + "'></span>";
+    html += "<span class='sidebar-badge-name'>" + name + "</span>";
+    html += "</a>";
+  }
+
+  html += "</div>";
+  return html;
+}
+
+function showGavDetail(gavName) {
+  let gavs = window._schemaGraphAnalyticalViews;
+  if (!gavs) return;
+
+  let gav = null;
+  for (let i = 0; i < gavs.length; i++) {
+    if (gavs[i].name === gavName) {
+      gav = gavs[i];
+      break;
+    }
+  }
+  if (!gav) return;
+
+  let html = "<div class='mv-detail-panel'>";
+  html += "<h5><i class='fa fa-project-diagram'></i> " + escapeHtml(gav.name) + "</h5>";
+
+  // Status badge
+  let statusClass = gav.status === "ACTIVE" ? "mv-status-badge-valid" : "mv-status-badge-stale";
+  html += "<p><span class='mv-status-badge " + statusClass + "'>" + escapeHtml(gav.status || "UNKNOWN") + "</span></p>";
+
+  // Configuration info
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Vertex Types:</span> ";
+  if (gav.vertexTypes && gav.vertexTypes.length > 0)
+    html += escapeHtml(gav.vertexTypes.join(", "));
+  else
+    html += "<em>All types</em>";
+  html += "</div>";
+
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Edge Types:</span> ";
+  if (gav.edgeTypes && gav.edgeTypes.length > 0)
+    html += escapeHtml(gav.edgeTypes.join(", "));
+  else
+    html += "<em>All types</em>";
+  html += "</div>";
+
+  if (gav.propertyFilter && gav.propertyFilter.length > 0) {
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Properties:</span> " + escapeHtml(gav.propertyFilter.join(", ")) + "</div>";
+  }
+
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Auto-Update:</span> " + (gav.autoUpdate ? "Yes" : "No") + "</div>";
+
+  if (gav.nodeCount !== undefined)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Nodes:</span> " + (gav.nodeCount || 0).toLocaleString() + "</div>";
+  if (gav.edgeCount !== undefined)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Edges:</span> " + (gav.edgeCount || 0).toLocaleString() + "</div>";
+  if (gav.memoryUsageBytes !== undefined)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Memory:</span> " + formatBytes(gav.memoryUsageBytes) + "</div>";
+
+  // Actions
+  html += "<div class='mt-3'>";
+  html += "<button class='btn btn-sm btn-outline-danger' onclick='dropGav(\"" + gav.name.replace(/"/g, "&quot;") + "\")'><i class='fa fa-trash'></i> Drop</button>";
+  html += "</div>";
+
+  html += "</div>";
+  $("#dbTypeDetail").html(html);
+}
+
+function dropGav(gavName) {
+  globalConfirm("Drop Graph Analytical View",
+    "Are you sure you want to drop Graph Analytical View '" + escapeHtml(gavName) + "'?",
+    "warning",
+    function () {
+      let database = getCurrentDatabase();
+      jQuery.ajax({
+        type: "POST",
+        url: "api/v1/command/" + database,
+        data: JSON.stringify({
+          language: "sql",
+          command: "DROP GRAPH ANALYTICAL VIEW `" + gavName + "`"
+        }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function () {
+        globalNotify("Success", "Graph Analytical View '" + escapeHtml(gavName) + "' dropped.", "success");
+        loadDatabaseSchema();
+      })
+      .fail(function (jqXHR) {
+        globalNotifyError(jqXHR.responseText);
+      });
+    }
+  );
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return "0 B";
+  let k = 1024;
+  let sizes = ["B", "KB", "MB", "GB"];
+  let i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function displayGavHealth(gavs) {
+  let container = jQuery("#dbMetricsGavContainer");
+  if (!gavs || gavs.length === 0) {
+    container.html("<p class='text-muted'>No graph analytical views found.</p>");
+    return;
+  }
+
+  let html = "<table class='table table-sm table-striped'>";
+  html += "<thead><tr><th>Name</th><th>Status</th><th>Nodes</th><th>Edges</th><th>Memory</th><th>Auto-Update</th></tr></thead>";
+  html += "<tbody>";
+  for (let i = 0; i < gavs.length; i++) {
+    let g = gavs[i];
+    let statusClass = g.status === "ACTIVE" ? "mv-status-badge-valid" : "mv-status-badge-stale";
+    html += "<tr>";
+    html += "<td>" + escapeHtml(g.name) + "</td>";
+    html += "<td><span class='mv-status-badge " + statusClass + "'>" + escapeHtml(g.status || "UNKNOWN") + "</span></td>";
+    html += "<td>" + (g.nodeCount || "-").toLocaleString() + "</td>";
+    html += "<td>" + (g.edgeCount || "-").toLocaleString() + "</td>";
+    html += "<td>" + (g.memoryUsageBytes !== undefined ? formatBytes(g.memoryUsageBytes) : "-") + "</td>";
+    html += "<td>" + (g.autoUpdate ? "Yes" : "No") + "</td>";
+    html += "</tr>";
+  }
+  html += "</tbody></table>";
+  container.html(html);
 }
 
 function mvStatusDotClass(status) {
@@ -4022,6 +4255,10 @@ function loadDatabaseMetrics() {
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function (data) {
     displayMvHealth(data.result || []);
+  });
+
+  fetchGraphAnalyticalViews(function (gavs) {
+    displayGavHealth(gavs || []);
   });
 }
 
