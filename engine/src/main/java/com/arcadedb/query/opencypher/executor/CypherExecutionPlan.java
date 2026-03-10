@@ -55,6 +55,7 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
+import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
@@ -649,8 +650,12 @@ public class CypherExecutionPlan {
 
     // Step 7: RETURN clause (if any)
     if (statement.getReturnClause() != null) {
-      // Check if RETURN contains aggregation functions
-      if (statement.getReturnClause().hasAggregations()) {
+      // Try count-edges optimization: MATCH (p)-[:TYPE]->(x) RETURN expr, count(x) AS cnt
+      final AbstractExecutionStep countOpt = tryOptimizeMatchCountReturn(
+          statement.getClausesInOrder(), statement.getReturnClause(), currentStep, context);
+      if (countOpt != null) {
+        currentStep = countOpt;
+      } else if (statement.getReturnClause().hasAggregations()) {
         // Check if there are also non-aggregated expressions (implicit GROUP BY)
         if (statement.getReturnClause().hasNonAggregations()) {
           // Use GROUP BY aggregation step (implicit grouping)
@@ -1063,7 +1068,14 @@ public class CypherExecutionPlan {
 
     // Process RETURN clause
     if (statement.getReturnClause() != null && currentStep != null) {
-      if (statement.getReturnClause().hasAggregations()) {
+      // OPTIMIZATION: try CountEdgesReturnStep to avoid materializing target vertices
+      // Only if no statement-level WHERE (which would require filtering before aggregation)
+      final AbstractExecutionStep countOpt = statement.getWhereClause() == null
+          ? tryOptimizeMatchCountReturn(clausesInOrder, statement.getReturnClause(), currentStep, context)
+          : null;
+      if (countOpt != null)
+        currentStep = countOpt;
+      else if (statement.getReturnClause().hasAggregations()) {
         if (statement.getReturnClause().hasNonAggregations()) {
           final GroupByAggregationStep groupByAggStep =
               new GroupByAggregationStep(
@@ -2051,8 +2063,12 @@ public class CypherExecutionPlan {
 
     // Step 7: RETURN clause - project results or aggregate
     if (statement.getReturnClause() != null && currentStep != null) {
-      // Check if RETURN contains aggregation functions
-      if (statement.getReturnClause().hasAggregations()) {
+      // Try count-edges optimization: MATCH (p)-[:TYPE]->(x) RETURN expr, count(x) AS cnt
+      final AbstractExecutionStep countOpt = tryOptimizeMatchCountReturn(
+          statement.getClausesInOrder(), statement.getReturnClause(), currentStep, context);
+      if (countOpt != null) {
+        currentStep = countOpt;
+      } else if (statement.getReturnClause().hasAggregations()) {
         // Check if there are also non-aggregated expressions (implicit GROUP BY)
         if (statement.getReturnClause().hasNonAggregations()) {
           // Use GROUP BY aggregation step (implicit grouping)
@@ -2631,6 +2647,175 @@ public class CypherExecutionPlan {
       countEdgesStep.setPrevious(currentStep);
 
     return countEdgesStep;
+  }
+
+  /**
+   * Attempts to optimize MATCH + RETURN count() into a direct countEdges() call.
+   * <p>
+   * Detects pattern:
+   * MATCH (p:Label)-[:TYPE]->(x) RETURN expr(p) AS alias, count(x) AS cnt
+   * <p>
+   * Replaces MatchRelationshipStep + GroupByAggregationStep with CountEdgesReturnStep,
+   * avoiding materialization of all target vertices.
+   * <p>
+   * Requirements:
+   * - Exactly one MATCH clause (non-optional) with exactly one single-hop relationship
+   * - No WHERE clause on the MATCH
+   * - RETURN has exactly one count() aggregation on the target variable
+   * - count() is not DISTINCT
+   * - Target variable is not used in grouping expressions
+   * - No relationship property filters
+   * - No target node property filters
+   *
+   * @return optimized CountEdgesReturnStep if pattern matches, null otherwise
+   */
+  private AbstractExecutionStep tryOptimizeMatchCountReturn(
+      final List<ClauseEntry> clausesInOrder,
+      final ReturnClause returnClause,
+      final AbstractExecutionStep currentStep,
+      final CommandContext context) {
+
+    if (returnClause == null || !returnClause.hasAggregations() || !returnClause.hasNonAggregations())
+      return null;
+    if (returnClause.isDistinct())
+      return null;
+
+    // Find the single non-optional MATCH clause
+    MatchClause matchClause = null;
+    int matchCount = 0;
+    for (final ClauseEntry entry : clausesInOrder) {
+      if (entry.getType() == ClauseEntry.ClauseType.MATCH) {
+        final MatchClause mc = entry.getTypedClause();
+        if (!mc.isOptional()) {
+          matchClause = mc;
+          matchCount++;
+        }
+      }
+    }
+    if (matchCount != 1 || matchClause == null)
+      return null;
+
+    // Must have exactly one path pattern with one relationship
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    if (pathPattern.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern relPattern = pathPattern.getRelationship(0);
+    if (relPattern.isVariableLength())
+      return null;
+    if (relPattern.getProperties() != null && !relPattern.getProperties().isEmpty())
+      return null;
+
+    // No WHERE clause
+    if (matchClause.hasWhereClause())
+      return null;
+
+    // Get source and target nodes
+    final NodePattern sourceNode = pathPattern.getFirstNode();
+    final NodePattern targetNode = pathPattern.getLastNode();
+    final String sourceVar = sourceNode.getVariable();
+    final String targetVar = targetNode.getVariable();
+    if (sourceVar == null || targetVar == null)
+      return null;
+
+    // Target node must not have labels (countEdges doesn't filter by target type)
+    if (targetNode.hasLabels())
+      return null;
+    // Target node must not have property filters (would need filtering)
+    if (targetNode.getProperties() != null && !targetNode.getProperties().isEmpty())
+      return null;
+
+    // Classify RETURN items into grouping and aggregation
+    final List<ReturnClause.ReturnItem> groupingItems = new ArrayList<>();
+    FunctionCallExpression countExpr = null;
+    String countAlias = null;
+    int aggregationCount = 0;
+
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+      if (item.getExpression().containsAggregation()) {
+        aggregationCount++;
+        if (!(item.getExpression() instanceof FunctionCallExpression))
+          return null;
+        final FunctionCallExpression funcExpr = (FunctionCallExpression) item.getExpression();
+        if (!"count".equals(funcExpr.getFunctionName()))
+          return null;
+        if (funcExpr.isDistinct())
+          return null;
+        if (funcExpr.getArguments().size() != 1 || !(funcExpr.getArguments().get(0) instanceof VariableExpression))
+          return null;
+        countExpr = funcExpr;
+        countAlias = item.getAlias() != null ? item.getAlias() : item.getExpression().getText();
+      } else
+        groupingItems.add(item);
+    }
+
+    if (aggregationCount != 1 || countExpr == null)
+      return null;
+
+    // The count argument must be the target variable
+    final String countArgVar = ((VariableExpression) countExpr.getArguments().get(0)).getVariableName();
+    if (!countArgVar.equals(targetVar))
+      return null;
+
+    // Grouping expressions must not reference the target variable
+    for (final ReturnClause.ReturnItem item : groupingItems) {
+      if (item.getExpression().getText().contains(targetVar))
+        return null;
+    }
+
+    // Compute direction from source's perspective
+    final Vertex.DIRECTION direction;
+    final Direction relDirection = relPattern.getDirection();
+    if (relDirection == Direction.OUT)
+      direction = Vertex.DIRECTION.OUT;
+    else if (relDirection == Direction.IN)
+      direction = Vertex.DIRECTION.IN;
+    else
+      direction = Vertex.DIRECTION.BOTH;
+
+    // Edge types
+    final List<String> relTypes = relPattern.getTypes();
+    final String[] edgeTypes = (relTypes != null && !relTypes.isEmpty())
+        ? relTypes.toArray(new String[0]) : null;
+
+    // Build grouping expressions and aliases
+    final Expression[] groupingExpressions = new Expression[groupingItems.size()];
+    final String[] groupingAliases = new String[groupingItems.size()];
+    for (int i = 0; i < groupingItems.size(); i++) {
+      final ReturnClause.ReturnItem item = groupingItems.get(i);
+      groupingExpressions[i] = item.getExpression();
+      groupingAliases[i] = item.getAlias() != null ? item.getAlias() : item.getExpression().getText();
+    }
+
+    // The optimized step replaces MatchRelationshipStep + GroupByAggregationStep.
+    // Walk back to find the MatchNodeStep — the previous step chain may vary:
+    // - Legacy path: MatchNodeStep → MatchRelationshipStep (currentStep)
+    // - Optimizer path: physical operator wrapper step (currentStep)
+    // In either case, we need the step that provides source vertices.
+    AbstractExecutionStep nodeStep = currentStep;
+    // Try to find MatchNodeStep: walk back through MatchRelationshipStep if present
+    if (nodeStep instanceof MatchRelationshipStep) {
+      nodeStep = (AbstractExecutionStep) nodeStep.getPrev();
+      if (!(nodeStep instanceof MatchNodeStep))
+        return null;
+    }
+    // For optimizer path: the physical operator wrapper already handles the full traversal,
+    // so we need to rebuild with just a MatchNodeStep for the source variable.
+    if (!(nodeStep instanceof MatchNodeStep)) {
+      // Build a fresh MatchNodeStep for the source variable
+      final NodePattern srcPattern = sourceNode;
+      nodeStep = new MatchNodeStep(sourceVar, srcPattern, context);
+    }
+
+    final CountEdgesReturnStep countStep = new CountEdgesReturnStep(
+        sourceVar, direction, edgeTypes, countAlias,
+        groupingExpressions, groupingAliases, context,
+        expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null);
+    countStep.setPrevious(nodeStep);
+    return countStep;
   }
 
   /**

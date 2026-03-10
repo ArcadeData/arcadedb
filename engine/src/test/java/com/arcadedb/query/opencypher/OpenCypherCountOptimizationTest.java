@@ -196,4 +196,122 @@ class OpenCypherCountOptimizationTest {
     assertThat(result.next().<Long>getProperty("count")).isEqualTo(50L);
     result.close();
   }
+
+  @Test
+  void countEdgesReturnOptimization() {
+    // MATCH (p:Person)-[:KNOWS]->(friend) RETURN p.name AS name, count(friend) AS cnt ORDER BY cnt DESC LIMIT 2
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Person").createProperty("name", String.class);
+      database.getSchema().createEdgeType("KNOWS");
+
+      final var alice = database.newVertex("Person").set("name", "Alice").save();
+      final var bob = database.newVertex("Person").set("name", "Bob").save();
+      final var charlie = database.newVertex("Person").set("name", "Charlie").save();
+
+      alice.newEdge("KNOWS", bob, new Object[0]).save();
+      alice.newEdge("KNOWS", charlie, new Object[0]).save();
+      bob.newEdge("KNOWS", charlie, new Object[0]).save();
+    });
+
+    // Alice has 2 friends, Bob has 1. Charlie has 0 (no outgoing KNOWS), should not appear.
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person)-[:KNOWS]->(friend) RETURN p.name AS name, count(friend) AS cnt ORDER BY cnt DESC")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result r1 = rs.next();
+      assertThat(r1.<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(r1.<Long>getProperty("cnt")).isEqualTo(2L);
+
+      assertThat(rs.hasNext()).isTrue();
+      final Result r2 = rs.next();
+      assertThat(r2.<String>getProperty("name")).isEqualTo("Bob");
+      assertThat(r2.<Long>getProperty("cnt")).isEqualTo(1L);
+
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Verify the optimization is used via PROFILE
+    try (final ResultSet rs = database.query("opencypher",
+        "PROFILE MATCH (p:Person)-[:KNOWS]->(friend) RETURN p.name AS name, count(friend) AS cnt ORDER BY cnt DESC")) {
+      while (rs.hasNext())
+        rs.next();
+      assertThat(rs.getExecutionPlan().isPresent()).isTrue();
+      final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
+      assertThat(plan).contains("COUNT EDGES RETURN");
+    }
+  }
+
+  @Test
+  void countEdgesReturnNotAppliedWithTargetLabel() {
+    // When target node has a label, countEdges() can't filter by target type,
+    // so the optimization must NOT be applied — otherwise results would be wrong.
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Person").createProperty("name", String.class);
+      database.getSchema().createVertexType("Company").createProperty("name", String.class);
+      database.getSchema().createEdgeType("KNOWS");
+
+      final var alice = database.newVertex("Person").set("name", "Alice").save();
+      final var bob = database.newVertex("Person").set("name", "Bob").save();
+      final var acme = database.newVertex("Company").set("name", "Acme").save();
+
+      alice.newEdge("KNOWS", bob, new Object[0]).save();
+      alice.newEdge("KNOWS", acme, new Object[0]).save(); // edge to Company, not Person
+    });
+
+    // Count only Person targets — should be 1 (Bob), not 2
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person)-[:KNOWS]->(friend:Person) RETURN p.name AS name, count(friend) AS cnt")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result r1 = rs.next();
+      assertThat(r1.<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(r1.<Long>getProperty("cnt")).isEqualTo(1L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Verify the optimization is NOT used (falls back to standard path)
+    try (final ResultSet rs = database.query("opencypher",
+        "PROFILE MATCH (p:Person)-[:KNOWS]->(friend:Person) RETURN p.name AS name, count(friend) AS cnt")) {
+      while (rs.hasNext())
+        rs.next();
+      assertThat(rs.getExecutionPlan().isPresent()).isTrue();
+      final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
+      assertThat(plan).doesNotContain("COUNT EDGES RETURN");
+    }
+  }
+
+  @Test
+  void countEdgesReturnCorrectnessWithDuplicateNames() {
+    // Two persons with the same name — GROUP BY should merge their counts
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Person").createProperty("name", String.class);
+      database.getSchema().createEdgeType("LIKES");
+
+      final var alice1 = database.newVertex("Person").set("name", "Alice").save();
+      final var alice2 = database.newVertex("Person").set("name", "Alice").save();
+      final var bob = database.newVertex("Person").set("name", "Bob").save();
+      final var charlie = database.newVertex("Person").set("name", "Charlie").save();
+
+      alice1.newEdge("LIKES", bob, new Object[0]).save();       // Alice(1) -> Bob
+      alice2.newEdge("LIKES", charlie, new Object[0]).save();   // Alice(2) -> Charlie
+      alice2.newEdge("LIKES", bob, new Object[0]).save();       // Alice(2) -> Bob
+    });
+
+    // Two Alices: Alice(1) has 1 edge, Alice(2) has 2 edges. Grouped by name: Alice = 3
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person)-[:LIKES]->(x) RETURN p.name AS name, count(x) AS cnt ORDER BY cnt DESC")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result r1 = rs.next();
+      assertThat(r1.<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(r1.<Long>getProperty("cnt")).isEqualTo(3L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Verify optimization IS used
+    try (final ResultSet rs = database.query("opencypher",
+        "PROFILE MATCH (p:Person)-[:LIKES]->(x) RETURN p.name AS name, count(x) AS cnt ORDER BY cnt DESC")) {
+      while (rs.hasNext())
+        rs.next();
+      final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
+      assertThat(plan).contains("COUNT EDGES RETURN");
+    }
+  }
 }
