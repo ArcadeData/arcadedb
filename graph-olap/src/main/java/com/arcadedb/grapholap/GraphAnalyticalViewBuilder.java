@@ -111,8 +111,10 @@ public class GraphAnalyticalViewBuilder {
    */
   public GraphAnalyticalView build() {
     final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, autoUpdate);
-    if (name != null)
+    if (name != null) {
       GraphAnalyticalViewRegistry.register(database, name, view);
+      GraphAnalyticalViewPersistence.save(database, view);
+    }
     view.registerAsTraversalProvider();
     view.build();
     return view;
@@ -125,8 +127,10 @@ public class GraphAnalyticalViewBuilder {
    */
   public GraphAnalyticalView buildAsync() {
     final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, autoUpdate);
-    if (name != null)
+    if (name != null) {
       GraphAnalyticalViewRegistry.register(database, name, view);
+      GraphAnalyticalViewPersistence.save(database, view);
+    }
     view.registerAsTraversalProvider();
     view.buildAsync();
     return view;

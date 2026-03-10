@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -27,9 +26,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -85,17 +82,12 @@ public class AlgoArticulationPoints extends AbstractAlgoProcedure {
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
-
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     final int[] disc       = new int[n];
     final int[] low        = new int[n];
@@ -156,7 +148,7 @@ public class AlgoArticulationPoints extends AbstractAlgoProcedure {
       if (!isAP[i])
         continue;
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       results.add(r);
     }
     return results.stream();

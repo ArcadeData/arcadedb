@@ -18,12 +18,15 @@
  */
 package com.arcadedb.function.sql.graph;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeToVertexIterable;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -80,6 +83,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
      * option that decides whether or not to return the edge information
      */
     public Boolean edge;
+
+    GraphTraversalProvider provider;
   }
 
   public List<RID> execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
@@ -160,6 +165,14 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
     if (params.length > 4) {
       bindAdditionalParams(params[4], shortestPathContext);
+    }
+
+    // Try CSR-accelerated provider for non-edge path
+    if (!Boolean.TRUE.equals(shortestPathContext.edge)) {
+      final Database db = shortestPathContext.sourceVertex.getDatabase();
+      shortestPathContext.provider = GraphTraversalProviderRegistry.findProvider(db, shortestPathContext.edgeTypeParam);
+      if (shortestPathContext.provider != null)
+        context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
     }
 
     shortestPathContext.queueLeft.add(shortestPathContext.sourceVertex);
@@ -331,12 +344,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       while (!context.queueLeft.isEmpty()) {
         context.current = context.queueLeft.poll();
 
-        final Iterable<Vertex> neighbors;
-        if (context.edgeType == null) {
-          neighbors = context.current.getVertices(context.directionLeft);
-        } else {
-          neighbors = context.current.getVertices(context.directionLeft, context.edgeTypeParam);
-        }
+        final Iterable<Vertex> neighbors = getNeighborVertices(context.current, context.directionLeft,
+            context.edgeTypeParam, context.provider);
         for (final Vertex neighbor : neighbors) {
           final RID neighborIdentity = neighbor.getIdentity();
 
@@ -395,12 +404,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       while (!context.queueRight.isEmpty()) {
         context.currentRight = context.queueRight.poll();
 
-        final Iterable<Vertex> neighbors;
-        if (context.edgeType == null) {
-          neighbors = context.currentRight.getVertices(context.directionRight);
-        } else {
-          neighbors = context.currentRight.getVertices(context.directionRight, context.edgeTypeParam);
-        }
+        final Iterable<Vertex> neighbors = getNeighborVertices(context.currentRight, context.directionRight,
+            context.edgeTypeParam, context.provider);
         for (final Vertex neighbor : neighbors) {
           final RID neighborIdentity = neighbor.getIdentity();
 
@@ -453,6 +458,18 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     }
     context.queueRight = nextLevelQueue;
     return null;
+  }
+
+  private static Iterable<Vertex> getNeighborVertices(final Vertex vertex, final Vertex.DIRECTION direction,
+      final String[] edgeTypes, final GraphTraversalProvider provider) {
+    if (provider != null) {
+      final int nodeId = provider.getNodeId(vertex.getIdentity());
+      if (nodeId >= 0) {
+        final int[] neighborIds = provider.getNeighborIds(nodeId, direction, edgeTypes);
+        return new CSRVertexIterable(provider, neighborIds);
+      }
+    }
+    return edgeTypes != null ? vertex.getVertices(direction, edgeTypes) : vertex.getVertices(direction);
   }
 
   private List<RID> computePath(final Map<RID, RID> leftDistances, final Map<RID, RID> rightDistances, final RID neighbor) {

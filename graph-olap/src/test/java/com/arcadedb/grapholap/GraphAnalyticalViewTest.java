@@ -815,6 +815,99 @@ public class GraphAnalyticalViewTest extends TestHelper {
     gav.close();
   }
 
+  // --- Schema persistence tests ---
+
+  @Test
+  void testPersistenceRoundTrip() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    // Create a named GAV — should auto-save to schema
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("social-persist")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withAutoUpdate(true)
+        .build();
+
+    // Verify it's persisted in schema extensions
+    final com.arcadedb.serializer.json.JSONObject ext = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(ext).isNotNull();
+    assertThat(ext.has("social-persist")).isTrue();
+
+    final com.arcadedb.serializer.json.JSONObject gavDef = ext.getJSONObject("social-persist");
+    assertThat(gavDef.getString("name")).isEqualTo("social-persist");
+    assertThat(gavDef.getBoolean("autoUpdate")).isTrue();
+
+    // Close removes from schema
+    gav.close();
+    final com.arcadedb.serializer.json.JSONObject extAfter = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(extAfter).isNull();
+  }
+
+  @Test
+  void testRestoreFromSchema() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final var alice = database.newVertex("Person").set("name", "Alice").save();
+    final var bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    // Create a named GAV
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("restore-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+
+    // Simulate "unload" — close without removing from schema
+    GraphTraversalProviderRegistry.clearAll(database);
+    GraphAnalyticalViewRegistry.unregister(database, "restore-test");
+
+    // Restore from schema — should rebuild asynchronously
+    final int restored = GraphAnalyticalViewPersistence.restoreAll(database);
+    assertThat(restored).isEqualTo(1);
+
+    // Wait for async rebuild
+    final GraphAnalyticalView restoredGav = GraphAnalyticalViewRegistry.get(database, "restore-test");
+    assertThat(restoredGav).isNotNull();
+    assertThat(restoredGav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(restoredGav.getNodeCount()).isEqualTo(2);
+    assertThat(restoredGav.getEdgeCount()).isEqualTo(1);
+
+    // Clean up both
+    restoredGav.close();
+  }
+
+  @Test
+  void testSchemaExtensionGeneric() {
+    // Test the generic extension mechanism
+    assertThat(database.getSchema().getExtension("nonexistent")).isNull();
+
+    final com.arcadedb.serializer.json.JSONObject testExt = new com.arcadedb.serializer.json.JSONObject();
+    testExt.put("key", "value");
+    database.getSchema().setExtension("testModule", testExt);
+
+    final com.arcadedb.serializer.json.JSONObject loaded = database.getSchema().getExtension("testModule");
+    assertThat(loaded).isNotNull();
+    assertThat(loaded.getString("key")).isEqualTo("value");
+
+    // Remove
+    database.getSchema().setExtension("testModule", null);
+    assertThat(database.getSchema().getExtension("testModule")).isNull();
+  }
+
   // --- Traversal provider integration tests ---
 
   @Test
@@ -1103,5 +1196,654 @@ public class GraphAnalyticalViewTest extends TestHelper {
     col.setNull(0);
     assertThat(col.isNull(0)).isTrue();
     assertThat(col.countNonNull()).isEqualTo(63);
+  }
+
+  // --- SQL integration tests (Phase 6) ---
+
+  @Test
+  void testSqlOutWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-out-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // SQL out() should be accelerated by GAV
+    final ResultSet rs = database.query("sql", "SELECT name, out('KNOWS').size() AS friends FROM Person ORDER BY name");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("name") + ":" + r.getProperty("friends"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice:2", "Bob:1", "Charlie:0");
+
+    // Verify CSR acceleration is visible in PROFILE output
+    final ResultSet profileRs = database.command("sql",
+        "PROFILE SELECT name, out('KNOWS').size() AS friends FROM Person ORDER BY name");
+    assertThat(profileRs.getExecutionPlan().isPresent()).isTrue();
+    final String prettyPrint = profileRs.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(prettyPrint).contains("CSR-accelerated");
+    profileRs.close();
+
+    gav.close();
+  }
+
+  @Test
+  void testSqlInWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-in-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // SQL in() should be accelerated by GAV
+    final ResultSet rs = database.query("sql", "SELECT name, in('KNOWS').size() AS inbound FROM Person ORDER BY name");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("name") + ":" + r.getProperty("inbound"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice:0", "Bob:1", "Charlie:2");
+
+    gav.close();
+  }
+
+  @Test
+  void testSqlBothWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-both-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // SQL both() should return neighbors in both directions
+    final ResultSet rs = database.query("sql", "SELECT name, both('KNOWS').size() AS neighbors FROM Person ORDER BY name");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("name") + ":" + r.getProperty("neighbors"));
+    }
+    rs.close();
+
+    // Alice->Bob, Bob->Charlie: Alice has 1 (Bob), Bob has 2 (Alice+Charlie), Charlie has 1 (Bob)
+    assertThat(results).containsExactly("Alice:1", "Bob:2", "Charlie:1");
+
+    gav.close();
+  }
+
+  @Test
+  void testSqlOutWithEdgeTypeFilter() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+    database.getSchema().createEdgeType("WORKS_WITH");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("WORKS_WITH", charlie);
+    database.commit();
+
+    // GAV covers only KNOWS
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-filter-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Query for KNOWS — should use GAV
+    ResultSet rs = database.query("sql", "SELECT name, out('KNOWS').size() AS cnt FROM Person WHERE name = 'Alice'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((int) rs.next().getProperty("cnt")).isEqualTo(1);
+    rs.close();
+
+    // Query for WORKS_WITH — GAV doesn't cover this, falls back to OLTP
+    rs = database.query("sql", "SELECT name, out('WORKS_WITH').size() AS cnt FROM Person WHERE name = 'Alice'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((int) rs.next().getProperty("cnt")).isEqualTo(1);
+    rs.close();
+
+    gav.close();
+  }
+
+  @Test
+  void testSqlOutENotAccelerated() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("KNOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-oute-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // outE() returns edges, which CSR doesn't store — should still work via OLTP path
+    final ResultSet rs = database.query("sql", "SELECT outE('KNOWS').size() AS cnt FROM Person WHERE name = 'Alice'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((int) rs.next().getProperty("cnt")).isEqualTo(1);
+    rs.close();
+
+    gav.close();
+  }
+
+  @Test
+  void testSqlTraversalWithoutGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("KNOWS", bob);
+    database.commit();
+
+    // No GAV built — standard OLTP path should work fine
+    final ResultSet rs = database.query("sql", "SELECT name, out('KNOWS').size() AS cnt FROM Person ORDER BY name");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("name") + ":" + r.getProperty("cnt"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice:1", "Bob:0");
+  }
+
+  // --- Algorithm CSR acceleration tests ---
+
+  @Test
+  void testPageRankWithGAV() {
+    database.getSchema().createVertexType("Page");
+    database.getSchema().createEdgeType("LINKS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Page").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Page").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Page").set("name", "C").save();
+    a.newEdge("LINKS", b);
+    a.newEdge("LINKS", c);
+    b.newEdge("LINKS", c);
+    c.newEdge("LINKS", a);
+    database.commit();
+
+    // Build GAV covering all types (no filter) — algorithms should use CSR path
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("pagerank-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank() YIELD node, score RETURN node.name AS name, score ORDER BY score DESC");
+
+    final List<String> names = new ArrayList<>();
+    double totalScore = 0;
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      names.add((String) r.getProperty("name"));
+      totalScore += ((Number) r.getProperty("score")).doubleValue();
+    }
+    rs.close();
+
+    assertThat(names).hasSize(3);
+    // C has most incoming links (from A and B), should rank highest
+    assertThat(names.getFirst()).isEqualTo("C");
+    // Scores should sum to ~1.0
+    assertThat(totalScore).isBetween(0.9, 1.1);
+
+    // Verify CSR acceleration is visible in PROFILE output
+    final ResultSet profileRs = database.command("opencypher",
+        "PROFILE CALL algo.pagerank() YIELD node, score RETURN node.name AS name, score");
+    assertThat(profileRs.getExecutionPlan().isPresent()).isTrue();
+    final String prettyPrint = profileRs.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(prettyPrint).contains("CSR-accelerated");
+    profileRs.close();
+
+    gav.close();
+  }
+
+  @Test
+  void testArticleRankWithGAV() {
+    database.getSchema().createVertexType("Page");
+    database.getSchema().createEdgeType("LINKS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Page").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Page").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Page").set("name", "C").save();
+    a.newEdge("LINKS", b);
+    a.newEdge("LINKS", c);
+    b.newEdge("LINKS", c);
+    c.newEdge("LINKS", a);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("articlerank-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.articlerank() YIELD node, score RETURN node.name AS name, score ORDER BY score DESC");
+
+    final List<String> names = new ArrayList<>();
+    while (rs.hasNext())
+      names.add((String) rs.next().getProperty("name"));
+    rs.close();
+
+    assertThat(names).hasSize(3);
+    // C has most incoming links, should rank highest (same topology as PageRank)
+    assertThat(names.getFirst()).isEqualTo("C");
+
+    gav.close();
+  }
+
+  @Test
+  void testPersonalizedPageRankWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    charlie.newEdge("KNOWS", alice);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("ppr-test")
+        .build();
+
+    // PPR from Alice: Alice should have highest score (source node)
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (s:Person {name:'Alice'}) CALL algo.personalizedPageRank(s) YIELD nodeId, score RETURN nodeId, score ORDER BY score DESC");
+
+    final List<Double> scores = new ArrayList<>();
+    while (rs.hasNext())
+      scores.add(((Number) rs.next().getProperty("score")).doubleValue());
+    rs.close();
+
+    assertThat(scores).hasSize(3);
+    // Source node should have highest PPR score
+    assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
+
+    gav.close();
+  }
+
+  @Test
+  void testPageRankWithPartialGAVFallsBackToOLTP() {
+    database.getSchema().createVertexType("Page");
+    database.getSchema().createEdgeType("LINKS");
+    database.getSchema().createEdgeType("CITES");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Page").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Page").set("name", "B").save();
+    a.newEdge("LINKS", b);
+    a.newEdge("CITES", b);
+    database.commit();
+
+    // GAV only covers LINKS, not all types — algorithms should fall back to OLTP
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("partial-test")
+        .withEdgeTypes("LINKS")
+        .build();
+
+    // Should still produce correct results via OLTP path
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank() YIELD node, score RETURN node.name AS name, score");
+
+    int count = 0;
+    while (rs.hasNext()) {
+      rs.next();
+      count++;
+    }
+    rs.close();
+
+    assertThat(count).isEqualTo(2);
+
+    gav.close();
+  }
+
+  // --- SQL shortestPath CSR acceleration ---
+
+  @Test
+  void testSqlShortestPathWithGAV() {
+    database.getSchema().createVertexType("City");
+    database.getSchema().createEdgeType("ROAD");
+
+    // Chain: A → B → C → D
+    database.begin();
+    final MutableVertex a = database.newVertex("City").set("name", "A").save();
+    final MutableVertex b = database.newVertex("City").set("name", "B").save();
+    final MutableVertex c = database.newVertex("City").set("name", "C").save();
+    final MutableVertex d = database.newVertex("City").set("name", "D").save();
+    a.newEdge("ROAD", b);
+    b.newEdge("ROAD", c);
+    c.newEdge("ROAD", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("shortest-path-test")
+        .build();
+
+    // shortestPath should find path A → B → C → D (length 4 vertices including endpoints)
+    final ResultSet rs = database.query("sql",
+        "SELECT shortestPath(" + a.getIdentity() + ", " + d.getIdentity() + ", 'OUT', 'ROAD') AS path");
+
+    assertThat(rs.hasNext()).isTrue();
+    final List<?> path = rs.next().getProperty("path");
+    rs.close();
+
+    assertThat(path).hasSize(4); // A, B, C, D
+    assertThat(path.get(0)).isEqualTo(a.getIdentity());
+    assertThat(path.get(3)).isEqualTo(d.getIdentity());
+
+    // Verify CSR acceleration is visible in PROFILE output
+    final ResultSet profileRs = database.command("sql",
+        "PROFILE SELECT shortestPath(" + a.getIdentity() + ", " + d.getIdentity() + ", 'OUT', 'ROAD') AS path");
+    assertThat(profileRs.hasNext()).isTrue();
+    assertThat(profileRs.getExecutionPlan().isPresent()).isTrue();
+    final String prettyPrint = profileRs.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(prettyPrint).contains("CSR-accelerated");
+    profileRs.close();
+
+    gav.close();
+  }
+
+  // --- Algorithm CSR acceleration tests (additional algorithms) ---
+
+  @Test
+  void testBetweennessCentralityWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Star topology with bidirectional edges: center has highest betweenness
+    database.begin();
+    final MutableVertex center = database.newVertex("Node").set("name", "Center").save();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    center.newEdge("LINK", a); a.newEdge("LINK", center);
+    center.newEdge("LINK", b); b.newEdge("LINK", center);
+    center.newEdge("LINK", c); c.newEdge("LINK", center);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("betweenness-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.betweenness() YIELD node, score RETURN node, score ORDER BY score DESC");
+
+    final List<Double> scores = new ArrayList<>();
+    while (rs.hasNext())
+      scores.add(((Number) rs.next().getProperty("score")).doubleValue());
+    rs.close();
+
+    assertThat(scores).hasSize(4);
+    // Center node should have highest betweenness (it mediates all paths)
+    assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
+
+    gav.close();
+  }
+
+  @Test
+  void testWCCWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Two disconnected components: {A,B} and {C,D}
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    c.newEdge("LINK", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("wcc-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.wcc() YIELD nodeId, componentId RETURN nodeId, componentId");
+
+    final List<Integer> componentIds = new ArrayList<>();
+    while (rs.hasNext())
+      componentIds.add(((Number) rs.next().getProperty("componentId")).intValue());
+    rs.close();
+
+    assertThat(componentIds).hasSize(4);
+    // Should have exactly 2 distinct components
+    assertThat(componentIds.stream().distinct().count()).isEqualTo(2);
+
+    gav.close();
+  }
+
+  @Test
+  void testTriangleCountWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Triangle: A-B-C-A
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", a);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("triangle-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.triangleCount() YIELD nodeId, triangles RETURN nodeId, triangles");
+
+    int totalTriangles = 0;
+    int nodeCount = 0;
+    while (rs.hasNext()) {
+      totalTriangles += ((Number) rs.next().getProperty("triangles")).intValue();
+      nodeCount++;
+    }
+    rs.close();
+
+    assertThat(nodeCount).isEqualTo(3);
+    // Each node participates in 1 triangle, sum = 3, total unique = 3/3 = 1
+    assertThat(totalTriangles).isEqualTo(3);
+
+    gav.close();
+  }
+
+  @Test
+  void testLouvainWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Two dense clusters with weak bridge
+    database.begin();
+    final MutableVertex a1 = database.newVertex("Node").set("name", "A1").save();
+    final MutableVertex a2 = database.newVertex("Node").set("name", "A2").save();
+    final MutableVertex a3 = database.newVertex("Node").set("name", "A3").save();
+    final MutableVertex b1 = database.newVertex("Node").set("name", "B1").save();
+    final MutableVertex b2 = database.newVertex("Node").set("name", "B2").save();
+    final MutableVertex b3 = database.newVertex("Node").set("name", "B3").save();
+    // Cluster A: fully connected
+    a1.newEdge("LINK", a2); a2.newEdge("LINK", a1);
+    a1.newEdge("LINK", a3); a3.newEdge("LINK", a1);
+    a2.newEdge("LINK", a3); a3.newEdge("LINK", a2);
+    // Cluster B: fully connected
+    b1.newEdge("LINK", b2); b2.newEdge("LINK", b1);
+    b1.newEdge("LINK", b3); b3.newEdge("LINK", b1);
+    b2.newEdge("LINK", b3); b3.newEdge("LINK", b2);
+    // Bridge
+    a3.newEdge("LINK", b1); b1.newEdge("LINK", a3);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("louvain-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.louvain() YIELD node, communityId, modularity RETURN node, communityId");
+
+    final List<Integer> communities = new ArrayList<>();
+    while (rs.hasNext())
+      communities.add(((Number) rs.next().getProperty("communityId")).intValue());
+    rs.close();
+
+    assertThat(communities).hasSize(6);
+    // Should detect at least 2 communities
+    assertThat(communities.stream().distinct().count()).isGreaterThanOrEqualTo(2);
+
+    gav.close();
+  }
+
+  @Test
+  void testBFSWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("bfs-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (s:Node {name:'A'}) CALL algo.bfs(s) YIELD node, depth RETURN node, depth ORDER BY depth");
+
+    final List<Integer> depths = new ArrayList<>();
+    while (rs.hasNext())
+      depths.add(((Number) rs.next().getProperty("depth")).intValue());
+    rs.close();
+
+    // BFS does not include the start node itself, so depths start at 1
+    assertThat(depths).containsExactly(1, 2);
+
+    gav.close();
+  }
+
+  @Test
+  void testSCCWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Cycle A→B→C→A forms one SCC, D is separate
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", a);
+    a.newEdge("LINK", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("scc-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.scc() YIELD node, componentId RETURN node, componentId");
+
+    final List<Integer> components = new ArrayList<>();
+    while (rs.hasNext())
+      components.add(((Number) rs.next().getProperty("componentId")).intValue());
+    rs.close();
+
+    assertThat(components).hasSize(4);
+    // Should have 2 SCCs: {A,B,C} and {D}
+    assertThat(components.stream().distinct().count()).isEqualTo(2);
+
+    gav.close();
+  }
+
+  @Test
+  void testEigenvectorCentralityWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b); b.newEdge("LINK", a);
+    a.newEdge("LINK", c); c.newEdge("LINK", a);
+    b.newEdge("LINK", c); c.newEdge("LINK", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("eigenvector-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.eigenvector() YIELD node, score RETURN node, score");
+
+    int count = 0;
+    while (rs.hasNext()) {
+      final double score = ((Number) rs.next().getProperty("score")).doubleValue();
+      assertThat(score).isGreaterThan(0.0);
+      count++;
+    }
+    rs.close();
+
+    assertThat(count).isEqualTo(3);
+
+    gav.close();
   }
 }

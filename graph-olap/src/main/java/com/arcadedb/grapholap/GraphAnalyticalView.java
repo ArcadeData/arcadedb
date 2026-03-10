@@ -210,14 +210,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Unregisters auto-update listeners, removes from registries, and releases resources.
+   * Unregisters auto-update listeners, removes from registries and schema, and releases resources.
    * Call this when the view is no longer needed.
    */
   public void close() {
     unregisterAutoUpdateListeners();
     GraphTraversalProviderRegistry.unregister(database, this);
-    if (name != null)
+    if (name != null) {
       GraphAnalyticalViewRegistry.unregister(database, name);
+      GraphAnalyticalViewPersistence.remove(database, name);
+    }
   }
 
   // --- GraphTraversalProvider SPI ---

@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -104,6 +105,79 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
         num.doubleValue() : 0.0001;
 
     final Database db = context.getDatabase();
+
+    // Try CSR-accelerated path
+    final GraphTraversalProvider provider = findProvider(db, null);
+    if (provider != null) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(provider, dampingFactor, maxIterations, tolerance);
+    }
+
+    // Fall back to OLTP path
+    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphTraversalProvider provider,
+      final double dampingFactor, final int maxIterations, final double tolerance) {
+    final int n = provider.getNodeCount();
+    if (n == 0)
+      return Stream.empty();
+
+    final int[][] outNeighbors = buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, null);
+
+    // Compute out-degrees and average
+    long totalOutDeg = 0;
+    for (int i = 0; i < n; i++)
+      totalOutDeg += outNeighbors[i].length;
+    final double avgOutDeg = (double) totalOutDeg / n;
+
+    final double[] scores = new double[n];
+    final double initialScore = 1.0 / n;
+    for (int i = 0; i < n; i++)
+      scores[i] = initialScore;
+
+    for (int iter = 0; iter < maxIterations; iter++) {
+      final double[] newScores = new double[n];
+      double dangling = 0.0;
+
+      for (int i = 0; i < n; i++)
+        if (outNeighbors[i].length == 0)
+          dangling += scores[i];
+
+      for (int i = 0; i < n; i++) {
+        final int[] neighbors = outNeighbors[i];
+        if (neighbors.length == 0)
+          continue;
+        // ArticleRank: divide by (outDeg + avgOutDeg)
+        final double contribution = scores[i] / (neighbors.length + avgOutDeg);
+        for (final int neighbor : neighbors)
+          newScores[neighbor] += contribution;
+      }
+
+      final double danglingContribution = dampingFactor * dangling / n;
+      double maxChange = 0.0;
+      for (int i = 0; i < n; i++) {
+        newScores[i] = (1.0 - dampingFactor) / n + dampingFactor * newScores[i] + danglingContribution;
+        maxChange = Math.max(maxChange, Math.abs(newScores[i] - scores[i]));
+        scores[i] = newScores[i];
+      }
+
+      if (maxChange < tolerance)
+        break;
+    }
+
+    final List<Result> results = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      final ResultInternal r = new ResultInternal();
+      r.setProperty("node", provider.getRID(i).asVertex());
+      r.setProperty("score", scores[i]);
+      results.add(r);
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
+      final int maxIterations, final double tolerance) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> iter = getAllVertices(db, null);
     while (iter.hasNext())
@@ -114,34 +188,28 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
     final int n = vertices.size();
     final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
-    // Compute out-degrees
     final long[] outDegrees = new long[n];
     long totalOutDeg = 0;
     for (int i = 0; i < n; i++) {
       outDegrees[i] = vertices.get(i).countEdges(Vertex.DIRECTION.OUT);
       totalOutDeg += outDegrees[i];
     }
-    final double avgOutDeg = n > 0 ? (double) totalOutDeg / n : 1.0;
+    final double avgOutDeg = (double) totalOutDeg / n;
 
-    // Initialize scores
-    final double[] scores    = new double[n];
-    final double[] newScores = new double[n];
+    final double[] scores = new double[n];
     final double initialScore = 1.0 / n;
     for (int i = 0; i < n; i++)
       scores[i] = initialScore;
 
-    // Iterative ArticleRank computation
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
+      final double[] newScores = new double[n];
       double dangling = 0.0;
-      for (int i = 0; i < n; i++) {
+      for (int i = 0; i < n; i++)
         if (outDegrees[i] == 0)
           dangling += scores[i];
-        newScores[i] = 0.0;
-      }
 
       for (int i = 0; i < n; i++) {
         final Vertex v = vertices.get(i);
-        // ArticleRank: divide by (outDeg + avgOutDeg) instead of outDeg
         final double denom = outDegrees[i] + avgOutDeg;
         for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
           final Integer neighborIdx = ridToIdx.get(edge.getIn());

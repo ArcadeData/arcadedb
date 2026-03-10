@@ -430,6 +430,8 @@ public class CypherExecutionPlan {
     final StringBuilder profileOutput = new StringBuilder();
     profileOutput.append("OpenCypher Query Profile\n");
     profileOutput.append("========================\n\n");
+    if (Boolean.TRUE.equals(context.getVariable(CommandContext.CSR_ACCELERATED_VAR)))
+      profileOutput.append("CSR-accelerated via Graph Analytical View\n");
     profileOutput.append(String.format("Execution Time: %.3f ms\n", executionTimeMs));
     profileOutput.append(String.format("Rows Returned: %d\n", rowCount));
 

@@ -88,22 +88,18 @@ public class AlgoPreferentialAttachment extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
-
-    final Integer srcIdxObj = ridToIdx.get(sourceVertex.getIdentity());
-    if (srcIdxObj == null)
+    final int srcIdx = graph.indexOf(sourceVertex.getIdentity());
+    if (srcIdx < 0)
       return Stream.empty();
-    final int srcIdx = srcIdxObj;
 
     final int srcDegree = adj[srcIdx].length;
 
@@ -116,7 +112,7 @@ public class AlgoPreferentialAttachment extends AbstractAlgoProcedure {
         continue;
       final ResultInternal r = new ResultInternal();
       r.setProperty("node1", sourceVertex);
-      r.setProperty("node2", vertices.get(v));
+      r.setProperty("node2", graph.getVertex(v));
       r.setProperty("score", score);
       results.add(r);
     }

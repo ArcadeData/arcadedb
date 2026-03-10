@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -102,6 +103,74 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
 
     final Database db = context.getDatabase();
+
+    // Try CSR-accelerated path (only for unweighted PageRank)
+    final GraphTraversalProvider provider = weightProperty == null ? findProvider(db, null) : null;
+    if (provider != null) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(provider, dampingFactor, maxIterations, tolerance);
+    }
+
+    // Fall back to OLTP path
+    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphTraversalProvider provider,
+      final double dampingFactor, final int maxIterations, final double tolerance) {
+    final int n = provider.getNodeCount();
+    if (n == 0)
+      return Stream.empty();
+
+    // Pre-fetch all OUT neighbor arrays from CSR (O(1) per node)
+    final int[][] outNeighbors = buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, null);
+
+    final double[] scores = new double[n];
+    final double initialScore = 1.0 / n;
+    for (int i = 0; i < n; i++)
+      scores[i] = initialScore;
+
+    for (int iter = 0; iter < maxIterations; iter++) {
+      final double[] newScores = new double[n];
+      double dangling = 0.0;
+
+      for (int i = 0; i < n; i++)
+        if (outNeighbors[i].length == 0)
+          dangling += scores[i];
+
+      // Push contributions: each node distributes its score to OUT neighbors
+      for (int i = 0; i < n; i++) {
+        final int[] neighbors = outNeighbors[i];
+        if (neighbors.length == 0)
+          continue;
+        final double contribution = scores[i] / neighbors.length;
+        for (final int neighbor : neighbors)
+          newScores[neighbor] += contribution;
+      }
+
+      final double danglingContribution = dampingFactor * dangling / n;
+      double maxChange = 0.0;
+      for (int i = 0; i < n; i++) {
+        newScores[i] = (1.0 - dampingFactor) / n + dampingFactor * newScores[i] + danglingContribution;
+        maxChange = Math.max(maxChange, Math.abs(newScores[i] - scores[i]));
+        scores[i] = newScores[i];
+      }
+
+      if (maxChange < tolerance)
+        break;
+    }
+
+    final List<Result> results = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      final ResultInternal result = new ResultInternal();
+      result.setProperty("node", provider.getRID(i).asVertex());
+      result.setProperty("score", scores[i]);
+      results.add(result);
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
+      final int maxIterations, final double tolerance, final String weightProperty) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> vertIter = getAllVertices(db, null);
     while (vertIter.hasNext())
@@ -114,15 +183,13 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     for (int i = 0; i < n; i++)
       vertexIndex.put(vertices.get(i), i);
 
-    // Initialize scores
     final double[] scores = new double[n];
-    final double[] newScores = new double[n];
     final double initialScore = 1.0 / n;
     for (int i = 0; i < n; i++)
       scores[i] = initialScore;
 
-    // Iterative PageRank computation
     for (int iter = 0; iter < maxIterations; iter++) {
+      final double[] newScores = new double[n];
       double dangling = 0.0;
 
       for (int i = 0; i < n; i++) {
@@ -130,11 +197,13 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
         final long outDegree = v.countEdges(Vertex.DIRECTION.OUT);
         if (outDegree == 0)
           dangling += scores[i];
-        newScores[i] = 0.0;
       }
 
       for (int i = 0; i < n; i++) {
         final Vertex v = vertices.get(i);
+        final long outDegree = v.countEdges(Vertex.DIRECTION.OUT);
+        if (outDegree == 0)
+          continue;
         for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
           final Vertex neighbor = edge.getInVertex();
           final Integer neighborIdx = vertexIndex.get(neighbor);
@@ -148,13 +217,10 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
               weight = num.doubleValue();
           }
 
-          final long outDegree = v.countEdges(Vertex.DIRECTION.OUT);
-          if (outDegree > 0)
-            newScores[neighborIdx] += scores[i] * weight / outDegree;
+          newScores[neighborIdx] += scores[i] * weight / outDegree;
         }
       }
 
-      // Apply damping factor and dangling node contribution
       final double danglingContribution = dampingFactor * dangling / n;
       double maxChange = 0.0;
       for (int i = 0; i < n; i++) {
@@ -167,7 +233,6 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
         break;
     }
 
-    // Build result stream
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal result = new ResultInternal();

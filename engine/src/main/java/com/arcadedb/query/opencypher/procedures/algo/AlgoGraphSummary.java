@@ -88,12 +88,12 @@ public class AlgoGraphSummary extends AbstractAlgoProcedure {
     final String[] nodeLabels = args.length > 1 ? extractRelTypes(args[1]) : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> iter = getAllVertices(db, nodeLabels);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0) {
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeCount", 0L);
@@ -106,9 +106,7 @@ public class AlgoGraphSummary extends AbstractAlgoProcedure {
       r.setProperty("selfLoops", 0L);
       return Stream.of(r);
     }
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adjOut = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
+    final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
     long edgeCount    = 0L;
     long selfLoops    = 0L;

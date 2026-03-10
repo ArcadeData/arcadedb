@@ -75,4 +75,7 @@ public interface CommandContext {
   void setConfiguration(ContextConfiguration configuration);
 
   CommandContext getContextDeclaredVariable(String varName);
+
+  /** Context variable name set to {@code true} when CSR (Graph Analytical View) acceleration was used during execution. */
+  String CSR_ACCELERATED_VAR = "_csrAccelerated";
 }

@@ -96,22 +96,18 @@ public class AlgoBFS extends AbstractAlgoProcedure {
     final int maxDepth         = args.length > 3 ? ((Number) args[3]).intValue() : Integer.MAX_VALUE;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
-
-    final Integer startIdxObj = ridToIdx.get(startNode.getIdentity());
-    if (startIdxObj == null)
+    final int startIdx = graph.indexOf(startNode.getIdentity());
+    if (startIdx < 0)
       return Stream.empty();
-    final int startIdx = startIdxObj;
 
     // BFS with depth tracking; use int[] as queue to avoid object allocation
     final int[] queue = new int[n];
@@ -134,7 +130,7 @@ public class AlgoBFS extends AbstractAlgoProcedure {
           depth[u] = depth[v] + 1;
           queue[tail++] = u;
           final ResultInternal r = new ResultInternal();
-          r.setProperty("node", vertices.get(u));
+          r.setProperty("node", graph.getVertex(u));
           r.setProperty("depth", depth[u]);
           results.add(r);
         }

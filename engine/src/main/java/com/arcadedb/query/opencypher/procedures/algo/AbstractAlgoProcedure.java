@@ -23,8 +23,11 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.*;
 
@@ -152,6 +155,124 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
       final Vertex.DIRECTION dir, final String[] relTypes) {
     return GraphEngine.buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+  }
+
+  /**
+   * Finds a {@link GraphTraversalProvider} that covers all vertex and edge types, suitable for
+   * whole-graph algorithms. Returns null if no suitable provider is available.
+   *
+   * @param db       the database
+   * @param relTypes edge types to filter by (null = all types)
+   */
+  protected GraphTraversalProvider findProvider(final Database db, final String[] relTypes) {
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, relTypes);
+    if (provider != null && provider.coversVertexType(null))
+      return provider;
+    return null;
+  }
+
+  /**
+   * Builds an adjacency list (int[][]) from a {@link GraphTraversalProvider}'s CSR structure.
+   * Each {@code result[i]} contains the dense neighbor IDs for node {@code i} in the given direction.
+   */
+  protected int[][] buildAdjacencyFromProvider(final GraphTraversalProvider provider, final Vertex.DIRECTION dir,
+      final String[] relTypes) {
+    final int n = provider.getNodeCount();
+    final int[][] adj = new int[n][];
+    for (int i = 0; i < n; i++)
+      adj[i] = provider.getNeighborIds(i, dir, relTypes);
+    return adj;
+  }
+
+  /**
+   * Loads the graph structure, using CSR-backed adjacency from a {@link GraphTraversalProvider}
+   * when available, otherwise falling back to OLTP (vertex/edge iteration).
+   * <p>
+   * Algorithms replace their manual vertex loading + {@code buildAdjacencyList()} calls with:
+   * <pre>
+   *   final GraphData graph = loadGraph(db, null, relTypes);
+   *   final int[][] adj = graph.adjacency(Vertex.DIRECTION.OUT);
+   *   // ... algorithm using adj[i] ...
+   *   result.setProperty("node", graph.getVertex(i));
+   * </pre>
+   *
+   * @param db         the database
+   * @param nodeLabels vertex type filter (null = all types)
+   * @param relTypes   edge type filter (null = all types)
+   */
+  protected GraphData loadGraph(final Database db, final String[] nodeLabels, final String[] relTypes) {
+    return loadGraph(db, nodeLabels, relTypes, null);
+  }
+
+  protected GraphData loadGraph(final Database db, final String[] nodeLabels, final String[] relTypes,
+      final CommandContext context) {
+    if (nodeLabels == null || nodeLabels.length == 0) {
+      final GraphTraversalProvider provider = findProvider(db, relTypes);
+      if (provider != null) {
+        if (context != null)
+          context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+        return new GraphData(provider, provider.getNodeCount());
+      }
+    }
+    final List<Vertex> vertices = new ArrayList<>();
+    final Iterator<Vertex> iter = getAllVertices(db, nodeLabels);
+    while (iter.hasNext())
+      vertices.add(iter.next());
+    return new GraphData(vertices, buildRidIndex(vertices));
+  }
+
+  /**
+   * Encapsulates graph data that can be backed by either a CSR provider or OLTP vertex lists.
+   * Provides uniform access to adjacency, vertex lookup, and RID resolution regardless of backing.
+   */
+  protected static class GraphData {
+    public final int                     nodeCount;
+    private final GraphTraversalProvider provider;
+    private final List<Vertex>           vertices;
+    private final Map<RID, Integer>      ridToIdx;
+
+    private GraphData(final GraphTraversalProvider provider, final int nodeCount) {
+      this.provider = provider;
+      this.vertices = null;
+      this.ridToIdx = null;
+      this.nodeCount = nodeCount;
+    }
+
+    private GraphData(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx) {
+      this.provider = null;
+      this.vertices = vertices;
+      this.ridToIdx = ridToIdx;
+      this.nodeCount = vertices.size();
+    }
+
+    public int[][] adjacency(final Vertex.DIRECTION dir, final String... relTypes) {
+      if (provider != null) {
+        final int[][] adj = new int[nodeCount][];
+        for (int i = 0; i < nodeCount; i++)
+          adj[i] = provider.getNeighborIds(i, dir, relTypes);
+        return adj;
+      }
+      return GraphEngine.buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+    }
+
+    public Vertex getVertex(final int i) {
+      return provider != null ? provider.getRID(i).asVertex() : vertices.get(i);
+    }
+
+    public RID getRID(final int i) {
+      return provider != null ? provider.getRID(i) : vertices.get(i).getIdentity();
+    }
+
+    public int indexOf(final RID rid) {
+      if (provider != null)
+        return provider.getNodeId(rid);
+      final Integer idx = ridToIdx.get(rid);
+      return idx != null ? idx : -1;
+    }
+
+    public boolean isCSRBacked() {
+      return provider != null;
+    }
   }
 
   /**

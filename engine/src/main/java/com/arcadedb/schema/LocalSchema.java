@@ -99,6 +99,7 @@ public class LocalSchema implements Schema {
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
   protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
   protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
+  protected final     Map<String, JSONObject>               extensions                    = new LinkedHashMap<>();
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
@@ -259,6 +260,20 @@ public class LocalSchema implements Schema {
   @Override
   public void setDateTimeFormat(final String dateTimeFormat) {
     this.dateTimeFormat = dateTimeFormat;
+  }
+
+  @Override
+  public JSONObject getExtension(final String name) {
+    return extensions.get(name);
+  }
+
+  @Override
+  public void setExtension(final String name, final JSONObject value) {
+    if (value == null)
+      extensions.remove(name);
+    else
+      extensions.put(name, value);
+    saveConfiguration();
   }
 
   @Override
@@ -939,6 +954,7 @@ public class LocalSchema implements Schema {
     writeStatisticsFile();
     materializedViews.clear();
     continuousAggregates.clear();
+    extensions.clear();
     files.clear();
     for (final DocumentType type : types.values()) {
       if (type instanceof LocalTimeSeriesType tsType)
@@ -1664,6 +1680,14 @@ public class LocalSchema implements Schema {
         }
       }
 
+      // Load extensions (module-specific configuration)
+      extensions.clear();
+      if (root.has("extensions")) {
+        final JSONObject extJSON = root.getJSONObject("extensions");
+        for (final String extName : extJSON.keySet())
+          extensions.put(extName, extJSON.getJSONObject(extName));
+      }
+
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);
     } finally {
@@ -1737,6 +1761,14 @@ public class LocalSchema implements Schema {
     for (final Map.Entry<String, ContinuousAggregateImpl> entry : continuousAggregates.entrySet())
       caJSON.put(entry.getKey(), entry.getValue().toJSON());
     root.put("continuousAggregates", caJSON);
+
+    // Serialize extensions (module-specific configuration)
+    if (!extensions.isEmpty()) {
+      final JSONObject extJSON = new JSONObject();
+      for (final Map.Entry<String, JSONObject> entry : extensions.entrySet())
+        extJSON.put(entry.getKey(), entry.getValue());
+      root.put("extensions", extJSON);
+    }
 
     return root;
   }

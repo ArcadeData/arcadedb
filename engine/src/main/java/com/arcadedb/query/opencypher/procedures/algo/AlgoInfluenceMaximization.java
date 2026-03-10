@@ -90,17 +90,14 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
     final double propagationProbability = args.length > 3 && args[3] instanceof Number n ? n.doubleValue() : 0.1;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
     final int seedCount = Math.min(k, n);
     final boolean[] isSeed = new boolean[n];
@@ -139,7 +136,7 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
       prevSpread = bestSpread;
 
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", vertices.get(bestNode).getIdentity());
+      r.setProperty("nodeId", graph.getRID(bestNode));
       r.setProperty("rank", round + 1);
       r.setProperty("marginalGain", marginalGain);
       results.add(r);

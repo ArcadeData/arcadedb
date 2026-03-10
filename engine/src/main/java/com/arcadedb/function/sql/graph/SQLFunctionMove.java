@@ -21,7 +21,10 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -35,6 +38,8 @@ import java.util.*;
  * Created by luigidellaquila on 03/01/17.
  */
 public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
+  private CommandContext currentContext;
+
   protected SQLFunctionMove(final String iName) {
     super(iName);
   }
@@ -54,6 +59,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     else
       labels = null;
 
+    currentContext = context;
     return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels), self, context);
   }
 
@@ -61,10 +67,26 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
       final String[] iLabels) {
     if (iRecord != null) {
       final Document rec = (Document) iRecord.getRecord();
-      if (rec instanceof Vertex vertex)
+      if (rec instanceof Vertex vertex) {
+        final Database database = vertex.getDatabase();
+        final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, iLabels);
+        if (provider != null) {
+          final int nodeId = provider.getNodeId(vertex.getIdentity());
+          if (nodeId >= 0) {
+            final int[] neighborIds = provider.getNeighborIds(nodeId, iDirection, iLabels);
+            markCSRAccelerated();
+            return new CSRVertexIterable(provider, neighborIds);
+          }
+        }
         return vertex.getVertices(iDirection, iLabels);
+      }
     }
     return null;
+  }
+
+  protected void markCSRAccelerated() {
+    if (currentContext != null)
+      currentContext.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
   }
 
   protected Object v2e(final Identifiable iRecord, final Vertex.DIRECTION iDirection,

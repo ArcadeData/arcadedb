@@ -92,23 +92,20 @@ public class AlgoSimRank extends AbstractAlgoProcedure {
     final int maxIterations  = args.length > 4 ? ((Number) args[4]).intValue() : 5;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    final int idxA = graph.indexOf(nodeA.getIdentity());
+    final int idxB = graph.indexOf(nodeB.getIdentity());
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final Integer idxA = ridToIdx.get(nodeA.getIdentity());
-    final Integer idxB = ridToIdx.get(nodeB.getIdentity());
-
-    if (idxA == null || idxB == null)
+    if (idxA < 0 || idxB < 0)
       return Stream.empty();
 
-    if (idxA.equals(idxB)) {
+    if (idxA == idxB) {
       final ResultInternal r = new ResultInternal();
       r.setProperty("similarity", 1.0);
       r.setProperty("nodeAId", nodeA.getIdentity());
@@ -117,7 +114,7 @@ public class AlgoSimRank extends AbstractAlgoProcedure {
     }
 
     // Build IN adjacency list (who points to whom)
-    final int[][] adjIn = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.IN, relTypes);
+    final int[][] adjIn = graph.adjacency(Vertex.DIRECTION.IN, relTypes);
 
     // Initialize sim matrix: sim[i][i] = 1.0, all others = 0.0
     double[][] sim    = new double[n][n];

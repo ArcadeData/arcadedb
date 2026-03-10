@@ -91,22 +91,18 @@ public class AlgoResourceAllocation extends AbstractAlgoProcedure {
     final double cutoff        = args.length > 3 ? ((Number) args[3]).doubleValue() : 0.0;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
-
-    final Integer srcIdxObj = ridToIdx.get(sourceVertex.getIdentity());
-    if (srcIdxObj == null)
+    final int srcIdx = graph.indexOf(sourceVertex.getIdentity());
+    if (srcIdx < 0)
       return Stream.empty();
-    final int srcIdx = srcIdxObj;
 
     // Build BitSet of source neighbors for O(1) membership checks
     final BitSet srcNeighbors = new BitSet(n);
@@ -132,7 +128,7 @@ public class AlgoResourceAllocation extends AbstractAlgoProcedure {
         continue;
       final ResultInternal r = new ResultInternal();
       r.setProperty("node1", sourceVertex);
-      r.setProperty("node2", vertices.get(v));
+      r.setProperty("node2", graph.getVertex(v));
       r.setProperty("score", raScores[v]);
       results.add(r);
     }

@@ -86,17 +86,14 @@ public class AlgoTopologicalSort extends AbstractAlgoProcedure {
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
     // Compute in-degree for each vertex
     final int[] inDeg = new int[n];
@@ -128,7 +125,7 @@ public class AlgoTopologicalSort extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("order", order[i]);
       return (Result) r;
     });

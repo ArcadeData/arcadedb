@@ -90,17 +90,14 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     // Build neighbor BitSets for fast intersection
     final BitSet[] neighborSets = new BitSet[n];
@@ -126,7 +123,7 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
       final long deg = adj[i].length;
       final double coeff = deg < 2 ? 0.0 : (2.0 * triangles[i]) / (double) (deg * (deg - 1));
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("localClusteringCoefficient", coeff);
       return (Result) r;
     });

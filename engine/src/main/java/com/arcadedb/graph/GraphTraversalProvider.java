@@ -39,6 +39,12 @@ import com.arcadedb.database.RID;
 public interface GraphTraversalProvider {
 
   /**
+   * Returns the total number of nodes in this provider's CSR structure.
+   * Dense node IDs range from 0 (inclusive) to getNodeCount() (exclusive).
+   */
+  int getNodeCount();
+
+  /**
    * Returns true if this provider is ready to serve queries.
    * Providers that are still building should return false.
    */
