@@ -25,6 +25,8 @@ import com.arcadedb.database.Record;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 
@@ -32,6 +34,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -65,8 +69,14 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GraphAnalyticalView {
+public class GraphAnalyticalView implements GraphTraversalProvider {
+
+  public enum Status {
+    NOT_BUILT, BUILDING, READY
+  }
+
   private final Database                       database;
+  private final String                         name;
   private final String[]                       vertexTypes;
   private final String[]                       edgeTypes;
   private final String[]                       propertyFilter;
@@ -76,6 +86,8 @@ public class GraphAnalyticalView {
   private volatile NodeIdMapping                  nodeMapping;
   private volatile ColumnStore[]                  bucketColumns;
   private volatile long                           buildTimestamp;
+  private volatile Status                         status = Status.NOT_BUILT;
+  private volatile CountDownLatch                 readyLatch = new CountDownLatch(1);
 
   // Auto-update listeners
   private AfterRecordCreateListener createListener;
@@ -93,12 +105,13 @@ public class GraphAnalyticalView {
    * Simple constructor for backward compatibility. Use {@link #builder(Database)} for full control.
    */
   public GraphAnalyticalView(final Database database) {
-    this(database, null, null, null, false);
+    this(database, null, null, null, null, false);
   }
 
-  GraphAnalyticalView(final Database database, final String[] vertexTypes, final String[] edgeTypes,
+  GraphAnalyticalView(final Database database, final String name, final String[] vertexTypes, final String[] edgeTypes,
       final String[] propertyFilter, final boolean autoUpdate) {
     this.database = database;
+    this.name = name;
     this.vertexTypes = vertexTypes;
     this.edgeTypes = edgeTypes;
     this.propertyFilter = propertyFilter;
@@ -106,38 +119,137 @@ public class GraphAnalyticalView {
   }
 
   /**
-   * Builds (or rebuilds) the analytical view from the OLTP graph.
-   * When called with no arguments, uses the types configured via builder or constructor.
+   * Registers this view as a {@link GraphTraversalProvider} so the query planner can discover it.
+   * Called by the builder after construction.
+   */
+  void registerAsTraversalProvider() {
+    GraphTraversalProviderRegistry.register(database, this);
+  }
+
+  /**
+   * Builds (or rebuilds) the analytical view synchronously.
+   * Status transitions: NOT_BUILT/READY → BUILDING → READY.
    */
   public void build() {
     build(vertexTypes, edgeTypes);
   }
 
   /**
-   * Builds (or rebuilds) the analytical view from the OLTP graph.
+   * Builds (or rebuilds) the analytical view synchronously.
    *
    * @param vertexTypes vertex type names to include (null = all)
    * @param edgeTypes   edge type names to include (null = all)
    */
   public void build(final String[] vertexTypes, final String[] edgeTypes) {
-    final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
-    final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+    status = Status.BUILDING;
+    try {
+      final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
+      final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
 
-    this.csrPerType = result.getCsrPerType();
-    this.nodeMapping = result.getMapping();
-    this.bucketColumns = result.getBucketColumns();
-    this.buildTimestamp = System.currentTimeMillis();
+      this.csrPerType = result.getCsrPerType();
+      this.nodeMapping = result.getMapping();
+      this.bucketColumns = result.getBucketColumns();
+      this.buildTimestamp = System.currentTimeMillis();
+      this.status = Status.READY;
+      this.readyLatch.countDown();
 
-    if (autoUpdate && createListener == null)
-      registerAutoUpdateListeners();
+      if (autoUpdate && createListener == null)
+        registerAutoUpdateListeners();
+    } catch (final Exception e) {
+      this.status = csrPerType != null ? Status.READY : Status.NOT_BUILT;
+      throw e;
+    }
   }
 
   /**
-   * Unregisters auto-update listeners and releases resources.
+   * Builds the analytical view asynchronously in a background thread.
+   * Returns immediately. Use {@link #awaitReady(long, TimeUnit)} or
+   * {@link #getStatus()} to check completion.
+   */
+  public void buildAsync() {
+    status = Status.BUILDING;
+    readyLatch = new CountDownLatch(1);
+    final Thread buildThread = new Thread(() -> {
+      try {
+        final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
+        final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+
+        this.csrPerType = result.getCsrPerType();
+        this.nodeMapping = result.getMapping();
+        this.bucketColumns = result.getBucketColumns();
+        this.buildTimestamp = System.currentTimeMillis();
+        this.status = Status.READY;
+        this.readyLatch.countDown();
+
+        if (autoUpdate && createListener == null)
+          registerAutoUpdateListeners();
+      } catch (final Exception e) {
+        this.status = csrPerType != null ? Status.READY : Status.NOT_BUILT;
+        this.readyLatch.countDown();
+        LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
+      }
+    }, "gav-build" + (name != null ? "-" + name : ""));
+    buildThread.setDaemon(true);
+    buildThread.start();
+  }
+
+  /**
+   * Waits until the view reaches READY status or the timeout expires.
+   *
+   * @return true if the view is READY, false if the timeout elapsed
+   */
+  public boolean awaitReady(final long timeout, final TimeUnit unit) {
+    if (status == Status.READY)
+      return true;
+    try {
+      return readyLatch.await(timeout, unit);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+  }
+
+  /**
+   * Unregisters auto-update listeners, removes from registries, and releases resources.
    * Call this when the view is no longer needed.
    */
   public void close() {
     unregisterAutoUpdateListeners();
+    GraphTraversalProviderRegistry.unregister(database, this);
+    if (name != null)
+      GraphAnalyticalViewRegistry.unregister(database, name);
+  }
+
+  // --- GraphTraversalProvider SPI ---
+
+  @Override
+  public boolean coversVertexType(final String typeName) {
+    if (typeName == null)
+      return vertexTypes == null; // null = all types
+    if (vertexTypes == null)
+      return true; // we include all vertex types
+    for (final String vt : vertexTypes)
+      if (vt.equals(typeName))
+        return true;
+    return false;
+  }
+
+  @Override
+  public boolean coversEdgeType(final String edgeTypeName) {
+    if (edgeTypeName == null)
+      return edgeTypes == null; // null = all types
+    if (edgeTypes == null)
+      return true; // we include all edge types
+    for (final String et : edgeTypes)
+      if (et.equals(edgeTypeName))
+        return true;
+    return false;
+  }
+
+  @Override
+  public int[] getNeighborIds(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
+    checkBuilt();
+    return getVertices(nodeId, direction, edgeTypes);
   }
 
   // --- Node ID / RID mapping ---
@@ -388,6 +500,14 @@ public class GraphAnalyticalView {
     return csr != null ? csr.getEdgeCount() : 0;
   }
 
+  public String getName() {
+    return name;
+  }
+
+  public Status getStatus() {
+    return status;
+  }
+
   public long getBuildTimestamp() {
     return buildTimestamp;
   }
@@ -396,8 +516,24 @@ public class GraphAnalyticalView {
     return csrPerType != null;
   }
 
+  public boolean isReady() {
+    return status == Status.READY;
+  }
+
   public boolean isAutoUpdate() {
     return autoUpdate;
+  }
+
+  public String[] getVertexTypes() {
+    return vertexTypes;
+  }
+
+  public String[] getEdgeTypeFilter() {
+    return edgeTypes;
+  }
+
+  public String[] getPropertyFilter() {
+    return propertyFilter;
   }
 
   public long getMemoryUsageBytes() {
@@ -438,14 +574,16 @@ public class GraphAnalyticalView {
   private void scheduleRebuild() {
     try {
       final DatabaseInternal dbInternal = (DatabaseInternal) database;
-      if (dbInternal.isTransactionActive())
-        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent("gav-rebuild", () -> {
+      if (dbInternal.isTransactionActive()) {
+        final String callbackId = "gav-rebuild" + (name != null ? "-" + name : "");
+        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackId, () -> {
           try {
-            build();
+            buildAsync();
           } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Failed to auto-rebuild GraphAnalyticalView", e);
+            LogManager.instance().log(this, Level.WARNING, "Failed to auto-rebuild GraphAnalyticalView '%s'", e, name);
           }
         });
+      }
     } catch (final Exception e) {
       // Not in a transaction context or database is closing — skip
     }

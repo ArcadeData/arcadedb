@@ -20,12 +20,15 @@ package com.arcadedb.grapholap;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -584,7 +587,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAutoUpdate() {
+  void testAutoUpdate() throws Exception {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -610,13 +613,318 @@ public class GraphAnalyticalViewTest extends TestHelper {
     b.newEdge("FOLLOWS", c);
     database.commit();
 
-    // After commit, the view should have been rebuilt automatically
+    // After commit, the view rebuilds asynchronously — wait for it
+    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
     assertThat(gav.getNodeCount()).isEqualTo(3);
     assertThat(gav.getEdgeCount()).isEqualTo(2);
 
     final int idC = gav.getNodeId(c.getIdentity());
     assertThat(idC).isGreaterThanOrEqualTo(0);
     assertThat(gav.getProperty(idC, "name")).isEqualTo("Charlie");
+
+    gav.close();
+  }
+
+  // --- Status and async build tests ---
+
+  @Test
+  void testStatusLifecycle() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .buildAsync();
+
+    // Initial status before build completes
+    assertThat(gav.getStatus()).isIn(GraphAnalyticalView.Status.BUILDING, GraphAnalyticalView.Status.READY);
+
+    // Wait for build to complete
+    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.getNodeCount()).isEqualTo(0);
+
+    gav.close();
+  }
+
+  @Test
+  void testAsyncBuildWithData() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .buildAsync();
+
+    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.getProperty(idA, "name")).isEqualTo("Alice");
+
+    gav.close();
+  }
+
+  @Test
+  void testStatusNotBuilt() {
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.NOT_BUILT);
+  }
+
+  @Test
+  void testSyncBuildSetsReady() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+  }
+
+  @Test
+  void testAsyncAutoUpdate() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withAutoUpdate(true)
+        .buildAsync();
+
+    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+
+    // Add more data — auto-update triggers async rebuild after commit
+    database.begin();
+    final MutableVertex c = database.newVertex("Person").set("name", "Charlie").save();
+    b.newEdge("FOLLOWS", c);
+    database.commit();
+
+    // Wait for the async rebuild triggered by auto-update
+    Thread.sleep(500);
+    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+
+    gav.close();
+  }
+
+  // --- Registry tests ---
+
+  @Test
+  void testRegistryRegisterAndGet() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("social-graph")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(GraphAnalyticalViewRegistry.get(database, "social-graph")).isSameAs(gav);
+    assertThat(GraphAnalyticalViewRegistry.getAll(database)).hasSize(1);
+
+    gav.close();
+    assertThat(GraphAnalyticalViewRegistry.get(database, "social-graph")).isNull();
+  }
+
+  @Test
+  void testRegistryMultipleViews() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("BLOCKS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    a.newEdge("BLOCKS", b);
+    database.commit();
+
+    final GraphAnalyticalView follows = GraphAnalyticalView.builder(database)
+        .withName("follows-view")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    final GraphAnalyticalView blocks = GraphAnalyticalView.builder(database)
+        .withName("blocks-view")
+        .withVertexTypes("Person")
+        .withEdgeTypes("BLOCKS")
+        .build();
+
+    assertThat(GraphAnalyticalViewRegistry.getAll(database)).hasSize(2);
+    assertThat(GraphAnalyticalViewRegistry.get(database, "follows-view")).isSameAs(follows);
+    assertThat(GraphAnalyticalViewRegistry.get(database, "blocks-view")).isSameAs(blocks);
+    assertThat(follows.getEdgeCount("FOLLOWS")).isEqualTo(1);
+    assertThat(blocks.getEdgeCount("BLOCKS")).isEqualTo(1);
+
+    follows.close();
+    blocks.close();
+  }
+
+  @Test
+  void testGavName() {
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("test-view")
+        .build();
+
+    assertThat(gav.getName()).isEqualTo("test-view");
+    gav.close();
+  }
+
+  @Test
+  void testGavConfigAccessors() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("config-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name", "age")
+        .withAutoUpdate(true)
+        .build();
+
+    assertThat(gav.getName()).isEqualTo("config-test");
+    assertThat(gav.getVertexTypes()).containsExactly("Person");
+    assertThat(gav.getEdgeTypeFilter()).containsExactly("FOLLOWS");
+    assertThat(gav.getPropertyFilter()).containsExactly("name", "age");
+    assertThat(gav.isAutoUpdate()).isTrue();
+
+    gav.close();
+  }
+
+  // --- Traversal provider integration tests ---
+
+  @Test
+  void testTraversalProviderRegistration() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // Clear any providers left by previous tests
+    GraphTraversalProviderRegistry.clearAll(database);
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    // GAV should auto-register as a traversal provider
+    assertThat(GraphTraversalProviderRegistry.getProviders(database)).hasSize(1);
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isSameAs(gav);
+
+    // Provider should report correct coverage
+    assertThat(gav.coversVertexType("Person")).isTrue();
+    assertThat(gav.coversVertexType("Company")).isFalse();
+    assertThat(gav.coversEdgeType("FOLLOWS")).isTrue();
+    assertThat(gav.coversEdgeType("BLOCKS")).isFalse();
+
+    gav.close();
+    assertThat(GraphTraversalProviderRegistry.getProviders(database)).isEmpty();
+  }
+
+  @Test
+  void testTraversalProviderAllTypes() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // GAV with no type filters (covers all types)
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).build();
+
+    assertThat(gav.coversVertexType(null)).isTrue();
+    assertThat(gav.coversVertexType("Person")).isTrue();
+    assertThat(gav.coversVertexType("Anything")).isTrue();
+    assertThat(gav.coversEdgeType(null)).isTrue();
+    assertThat(gav.coversEdgeType("FOLLOWS")).isTrue();
+
+    gav.close();
+  }
+
+  @Test
+  void testCypherQueryWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    // Build GAV covering KNOWS edges
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("social")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Run a Cypher query — the optimizer should use GAVExpandAll when edge variable is not captured
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target ORDER BY source, target");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("source") + "->" + r.getProperty("target"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice->Bob", "Bob->Charlie");
+
+    gav.close();
+  }
+
+  @Test
+  void testCypherQueryWithEdgeVariable() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("KNOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("social2")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // When edge variable is captured [r:KNOWS], GAV can't be used (no edge objects in CSR)
+    // Query should still work correctly via standard OLTP path
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("source") + "->" + r.getProperty("target"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice->Bob");
 
     gav.close();
   }

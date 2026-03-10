@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher.optimizer;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
@@ -28,6 +30,8 @@ import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
+import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
+import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.optimizer.plan.*;
 import com.arcadedb.query.opencypher.optimizer.rules.*;
@@ -329,6 +333,17 @@ public class CypherOptimizer {
     final double expansionCost = inputCardinality * avgDegree * costModel.EXPAND_COST_PER_ROW;
     final double totalCost = input.getEstimatedCost() + expansionCost;
 
+    // Check for GAV provider: use CSR-backed expand when edge variable is not captured
+    if (edgeVariable == null) {
+      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
+      if (provider != null) {
+        // GAV expand: ~10x cheaper (array access vs linked list traversal)
+        final double gavCost = input.getEstimatedCost() + inputCardinality * avgDegree * costModel.EXPAND_COST_PER_ROW * 0.1;
+        return new GAVExpandAll(input, provider, sourceVariable, targetVariable, direction, edgeTypes,
+            gavCost, outputCardinality);
+      }
+    }
+
     return new ExpandAll(
         input,
         sourceVariable,
@@ -380,6 +395,17 @@ public class CypherOptimizer {
     final long outputCardinality = (long) (inputCardinality * selectivity);
     final double expandIntoCost = inputCardinality * 1.0; // O(1) per input row for existence check
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
+
+    // Check for GAV provider: use CSR-backed expand-into when edge variable is not captured
+    if (edgeVariable == null) {
+      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
+      if (provider != null) {
+        // GAV expand-into: binary search on CSR arrays, no edge loading
+        final double gavCost = input.getEstimatedCost() + inputCardinality * 0.1;
+        return new GAVExpandInto(input, provider, sourceVariable, targetVariable, direction, edgeTypes,
+            gavCost, outputCardinality);
+      }
+    }
 
     return new ExpandInto(
         input,

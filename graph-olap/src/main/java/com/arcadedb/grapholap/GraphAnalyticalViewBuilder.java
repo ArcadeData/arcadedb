@@ -28,18 +28,28 @@ import com.arcadedb.database.Database;
  * <p>
  * Usage:
  * <pre>
+ *   // Synchronous build
  *   GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+ *       .withName("social-graph")
  *       .withVertexTypes("Person", "Company")
  *       .withEdgeTypes("FOLLOWS", "WORKS_AT")
  *       .withProperties("name", "age")
  *       .withAutoUpdate(true)
  *       .build();
+ *
+ *   // Asynchronous build
+ *   GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+ *       .withName("social-graph")
+ *       .withVertexTypes("Person")
+ *       .buildAsync();
+ *   gav.awaitReady(10, TimeUnit.SECONDS);
  * </pre>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphAnalyticalViewBuilder {
   private final Database database;
+  private       String   name;
   private       String[] vertexTypes;
   private       String[] edgeTypes;
   private       String[] properties;
@@ -47,6 +57,15 @@ public class GraphAnalyticalViewBuilder {
 
   GraphAnalyticalViewBuilder(final Database database) {
     this.database = database;
+  }
+
+  /**
+   * Sets the name for this analytical view. When a name is set, the view is automatically
+   * registered in the {@link GraphAnalyticalViewRegistry} and can be looked up by name.
+   */
+  public GraphAnalyticalViewBuilder withName(final String name) {
+    this.name = name;
+    return this;
   }
 
   /**
@@ -78,7 +97,7 @@ public class GraphAnalyticalViewBuilder {
   /**
    * Enables automatic rebuild of the analytical view after each transaction commit.
    * When enabled, record listeners are registered on the database to detect changes,
-   * and a post-commit callback triggers a full rebuild.
+   * and a post-commit callback triggers an asynchronous rebuild.
    */
   public GraphAnalyticalViewBuilder withAutoUpdate(final boolean autoUpdate) {
     this.autoUpdate = autoUpdate;
@@ -86,12 +105,30 @@ public class GraphAnalyticalViewBuilder {
   }
 
   /**
-   * Builds the analytical view with the configured settings.
-   * This triggers the initial full build (CSR + columnar storage).
+   * Builds the analytical view synchronously with the configured settings.
+   * This triggers the initial full build (CSR + columnar storage) and blocks until complete.
+   * Status will be READY when this method returns.
    */
   public GraphAnalyticalView build() {
-    final GraphAnalyticalView view = new GraphAnalyticalView(database, vertexTypes, edgeTypes, properties, autoUpdate);
+    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, autoUpdate);
+    if (name != null)
+      GraphAnalyticalViewRegistry.register(database, name, view);
+    view.registerAsTraversalProvider();
     view.build();
+    return view;
+  }
+
+  /**
+   * Builds the analytical view asynchronously in a background thread.
+   * Returns immediately with the view in BUILDING status.
+   * Use {@link GraphAnalyticalView#awaitReady} or {@link GraphAnalyticalView#getStatus()} to check completion.
+   */
+  public GraphAnalyticalView buildAsync() {
+    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, autoUpdate);
+    if (name != null)
+      GraphAnalyticalViewRegistry.register(database, name, view);
+    view.registerAsTraversalProvider();
+    view.buildAsync();
     return view;
   }
 }
