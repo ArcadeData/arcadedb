@@ -20,188 +20,256 @@ package com.arcadedb.grapholap;
 
 import com.arcadedb.database.RID;
 
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
- * Bidirectional mapping between ArcadeDB RIDs and dense integer IDs (0..N-1),
- * with vertex type tracking for each node.
+ * Per-bucket bidirectional mapping between ArcadeDB RIDs and dense integer IDs.
  * <p>
- * Dense IDs enable array-based access patterns for CSR and columnar storage,
- * eliminating hash lookups in the hot path.
+ * Organized per bucket for:
+ * <ul>
+ *   <li>Each bucket has its own dense ID space [0..bucketSize), enabling billions of nodes
+ *       across multiple buckets (each bucket can hold up to 2.1B nodes)</li>
+ *   <li>1:1 alignment with ArcadeDB's storage architecture</li>
+ *   <li>Per-bucket parallel building and property scanning</li>
+ *   <li>No HashMap for RID→ID lookup (uses sorted position arrays with binary search)</li>
+ * </ul>
  * <p>
- * The internal arrays are laid out contiguously for SIMD-friendly sequential access:
- * - bucketIds[] and offsets[] store the RID components as parallel primitive arrays
- * - typeIds[] stores the vertex type index for each node (0-based into the type catalog)
- * - The forward map (RID→int) uses a HashMap for building phase only
+ * Global dense IDs are computed as {@code bucketBase[bucketIdx] + localId},
+ * where localId is the node's index within its bucket's sorted position array.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class NodeIdMapping {
-  private final Map<RID, Integer>    ridToId;
-  private final Map<String, Integer> typeNameToIndex;
-  private final List<String>         typeNames;
-  private       int[]                bucketIds;
-  private       long[]               offsets;
-  private       int[]                typeIds;
-  private       int                  size;
+  // Compact bucket index: maps ArcadeDB bucketId → bucketIdx (0..numBuckets-1)
+  private final Map<Integer, Integer> bucketIdToIdx;
+  private       int[]                 bucketIds;     // bucketIdx → ArcadeDB bucketId
+  private       String[]              bucketTypeNames; // bucketIdx → vertex type name
 
-  public NodeIdMapping(final int initialCapacity) {
-    this.ridToId = new HashMap<>(initialCapacity);
-    this.typeNameToIndex = new HashMap<>();
-    this.typeNames = new ArrayList<>();
-    this.bucketIds = new int[initialCapacity];
-    this.offsets = new long[initialCapacity];
-    this.typeIds = new int[initialCapacity];
-    this.size = 0;
+  // Per-bucket sorted RID positions: positions[bucketIdx][localId] = RID.getPosition()
+  // localId = index in sorted array. Binary search for reverse lookup.
+  private       long[][]              positions;
+
+  // Global ID computation: globalId = bucketBase[bucketIdx] + localId
+  private       int[]                 bucketBase;
+  private       int[]                 bucketSizes;
+  private       int                   totalSize;
+  private       int                   numBuckets;
+
+  // Building phase: temporary lists before compact()
+  private       long[][]              positionsBuilder;
+  private       int[]                 builderSizes;
+
+  public NodeIdMapping(final int expectedBuckets) {
+    this.bucketIdToIdx = new HashMap<>(expectedBuckets);
+    this.bucketIds = new int[expectedBuckets];
+    this.bucketTypeNames = new String[expectedBuckets];
+    this.positionsBuilder = new long[expectedBuckets][];
+    this.builderSizes = new int[expectedBuckets];
+    this.numBuckets = 0;
+    this.totalSize = 0;
   }
 
   /**
-   * Adds a RID with its vertex type name and assigns it the next dense ID.
+   * Registers a bucket and prepares it for node collection.
+   * Must be called before addNode().
    *
-   * @return the assigned dense ID
+   * @return the compact bucket index
    */
-  public int addRID(final RID rid, final String typeName) {
-    final Integer existing = ridToId.get(rid);
-    if (existing != null)
-      return existing;
+  public int registerBucket(final int bucketId, final String typeName, final int estimatedSize) {
+    Integer idx = bucketIdToIdx.get(bucketId);
+    if (idx != null)
+      return idx;
 
-    final int id = size;
-    if (id >= bucketIds.length)
-      grow();
+    idx = numBuckets++;
+    if (idx >= bucketIds.length)
+      growBucketArrays();
 
-    bucketIds[id] = rid.getBucketId();
-    offsets[id] = rid.getPosition();
-    typeIds[id] = getOrCreateTypeIndex(typeName);
-    ridToId.put(rid, id);
-    size++;
-    return id;
+    bucketIds[idx] = bucketId;
+    bucketTypeNames[idx] = typeName;
+    positionsBuilder[idx] = new long[Math.max(estimatedSize, 64)];
+    builderSizes[idx] = 0;
+    bucketIdToIdx.put(bucketId, idx);
+    return idx;
   }
 
   /**
-   * Returns the dense ID for a RID, or -1 if not mapped.
+   * Adds a node (RID position) to a bucket during the building phase.
+   *
+   * @return the local ID within the bucket
+   */
+  public int addNode(final int bucketIdx, final long ridPosition) {
+    final int localId = builderSizes[bucketIdx];
+    if (localId >= positionsBuilder[bucketIdx].length) {
+      final long[] old = positionsBuilder[bucketIdx];
+      positionsBuilder[bucketIdx] = new long[old.length * 2];
+      System.arraycopy(old, 0, positionsBuilder[bucketIdx], 0, localId);
+    }
+    positionsBuilder[bucketIdx][localId] = ridPosition;
+    builderSizes[bucketIdx] = localId + 1;
+    return localId;
+  }
+
+  /**
+   * Compacts the mapping after building is complete.
+   * Sorts positions per bucket and computes global base offsets.
+   * After this call, the mapping is immutable and ready for lookups.
+   */
+  public void compact() {
+    bucketBase = new int[numBuckets];
+    bucketSizes = new int[numBuckets];
+    positions = new long[numBuckets][];
+    totalSize = 0;
+
+    for (int i = 0; i < numBuckets; i++) {
+      bucketBase[i] = totalSize;
+      final int size = builderSizes[i];
+      bucketSizes[i] = size;
+
+      // Trim and sort positions for binary search
+      positions[i] = new long[size];
+      System.arraycopy(positionsBuilder[i], 0, positions[i], 0, size);
+      Arrays.sort(positions[i]);
+
+      totalSize += size;
+    }
+
+    // Release builder structures
+    positionsBuilder = null;
+    builderSizes = null;
+
+    // Trim bucket arrays
+    if (bucketIds.length > numBuckets) {
+      bucketIds = Arrays.copyOf(bucketIds, numBuckets);
+      bucketTypeNames = Arrays.copyOf(bucketTypeNames, numBuckets);
+    }
+  }
+
+  // --- Lookup methods (call after compact()) ---
+
+  /**
+   * Returns the global dense ID for a RID, or -1 if not mapped.
+   */
+  public int getGlobalId(final RID rid) {
+    final Integer bucketIdx = bucketIdToIdx.get(rid.getBucketId());
+    if (bucketIdx == null)
+      return -1;
+    final int localId = Arrays.binarySearch(positions[bucketIdx], rid.getPosition());
+    if (localId < 0)
+      return -1;
+    return bucketBase[bucketIdx] + localId;
+  }
+
+  /**
+   * Returns the global dense ID for a RID, or -1 if not mapped.
+   * Alias for getGlobalId() for backward compatibility.
    */
   public int getId(final RID rid) {
-    final Integer id = ridToId.get(rid);
-    return id != null ? id : -1;
+    return getGlobalId(rid);
   }
 
   /**
-   * Returns the bucket ID component of the RID at the given dense ID.
+   * Returns the bucket index for a global dense ID.
    */
-  public int getBucketId(final int denseId) {
-    return bucketIds[denseId];
+  public int getBucketIdx(final int globalId) {
+    // Binary search on bucketBase to find which bucket this ID falls in
+    int lo = 0, hi = numBuckets - 1;
+    while (lo < hi) {
+      final int mid = (lo + hi + 1) >>> 1;
+      if (bucketBase[mid] <= globalId)
+        lo = mid;
+      else
+        hi = mid - 1;
+    }
+    return lo;
   }
 
   /**
-   * Returns the offset component of the RID at the given dense ID.
+   * Returns the local ID within a bucket for a global dense ID.
    */
-  public long getOffset(final int denseId) {
-    return offsets[denseId];
+  public int getLocalId(final int globalId) {
+    return globalId - bucketBase[getBucketIdx(globalId)];
   }
 
   /**
-   * Returns the vertex type index for the given dense ID.
+   * Returns the ArcadeDB bucket ID for a given bucket index.
    */
-  public int getTypeId(final int denseId) {
-    return typeIds[denseId];
+  public int getBucketId(final int bucketIdx) {
+    return bucketIds[bucketIdx];
   }
 
   /**
-   * Returns the vertex type name for the given dense ID.
+   * Returns the bucket index for an ArcadeDB bucket ID, or -1 if not registered.
    */
-  public String getTypeName(final int denseId) {
-    return typeNames.get(typeIds[denseId]);
-  }
-
-  /**
-   * Returns the type index for a given type name, or -1 if not present.
-   */
-  public int getTypeIndex(final String typeName) {
-    final Integer idx = typeNameToIndex.get(typeName);
+  public int getBucketIdxForBucketId(final int bucketId) {
+    final Integer idx = bucketIdToIdx.get(bucketId);
     return idx != null ? idx : -1;
   }
 
   /**
-   * Returns the type name for a given type index.
+   * Reconstructs the RID for a given global dense ID.
    */
-  public String getTypeNameByIndex(final int typeIndex) {
-    return typeNames.get(typeIndex);
+  public RID getRID(final int globalId) {
+    final int bucketIdx = getBucketIdx(globalId);
+    final int localId = globalId - bucketBase[bucketIdx];
+    return new RID(bucketIds[bucketIdx], positions[bucketIdx][localId]);
   }
 
   /**
-   * Returns the number of distinct vertex types.
+   * Returns the vertex type name for a given global dense ID.
    */
-  public int getTypeCount() {
-    return typeNames.size();
+  public String getTypeName(final int globalId) {
+    return bucketTypeNames[getBucketIdx(globalId)];
   }
 
   /**
-   * Returns the direct type IDs array for batch processing.
-   * Do NOT modify the returned array.
+   * Returns the vertex type name for a given bucket index.
    */
-  public int[] getTypeIds() {
-    return typeIds;
+  public String getBucketTypeName(final int bucketIdx) {
+    return bucketTypeNames[bucketIdx];
   }
 
   /**
-   * Reconstructs the RID for a given dense ID. Note: this creates a new RID object.
-   * Avoid calling in hot loops; use getBucketId/getOffset for batch operations.
+   * Returns the number of nodes in a specific bucket.
    */
-  public RID getRID(final int denseId) {
-    return new RID(bucketIds[denseId], offsets[denseId]);
+  public int getBucketSize(final int bucketIdx) {
+    return bucketSizes[bucketIdx];
   }
 
+  /**
+   * Returns the global base offset for a bucket.
+   */
+  public int getBucketBase(final int bucketIdx) {
+    return bucketBase[bucketIdx];
+  }
+
+  /**
+   * Returns the total number of nodes across all buckets.
+   */
   public int size() {
-    return size;
+    return totalSize;
   }
 
   /**
-   * Compacts internal arrays to exact size, freeing unused memory.
-   * Call after building is complete.
+   * Returns the number of registered buckets.
    */
-  public void compact() {
-    if (bucketIds.length > size) {
-      final int[] newBucketIds = new int[size];
-      System.arraycopy(bucketIds, 0, newBucketIds, 0, size);
-      bucketIds = newBucketIds;
-
-      final long[] newOffsets = new long[size];
-      System.arraycopy(offsets, 0, newOffsets, 0, size);
-      offsets = newOffsets;
-
-      final int[] newTypeIds = new int[size];
-      System.arraycopy(typeIds, 0, newTypeIds, 0, size);
-      typeIds = newTypeIds;
-    }
+  public int getNumBuckets() {
+    return numBuckets;
   }
 
-  private int getOrCreateTypeIndex(final String typeName) {
-    final Integer existing = typeNameToIndex.get(typeName);
-    if (existing != null)
-      return existing;
-
-    final int index = typeNames.size();
-    typeNames.add(typeName);
-    typeNameToIndex.put(typeName, index);
-    return index;
+  /**
+   * Returns the RID position for a given bucket index and local ID.
+   */
+  public long getPosition(final int bucketIdx, final int localId) {
+    return positions[bucketIdx][localId];
   }
 
-  private void grow() {
-    final int newCapacity = Math.max(bucketIds.length * 2, 16);
-
-    final int[] newBucketIds = new int[newCapacity];
-    System.arraycopy(bucketIds, 0, newBucketIds, 0, size);
-    bucketIds = newBucketIds;
-
-    final long[] newOffsets = new long[newCapacity];
-    System.arraycopy(offsets, 0, newOffsets, 0, size);
-    offsets = newOffsets;
-
-    final int[] newTypeIds = new int[newCapacity];
-    System.arraycopy(typeIds, 0, newTypeIds, 0, size);
-    typeIds = newTypeIds;
+  private void growBucketArrays() {
+    final int newCap = Math.max(numBuckets * 2, 8);
+    bucketIds = Arrays.copyOf(bucketIds, newCap);
+    bucketTypeNames = Arrays.copyOf(bucketTypeNames, newCap);
+    positionsBuilder = Arrays.copyOf(positionsBuilder, newCap);
+    builderSizes = Arrays.copyOf(builderSizes, newCap);
   }
 }

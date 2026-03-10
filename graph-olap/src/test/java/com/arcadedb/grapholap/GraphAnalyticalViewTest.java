@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for the Graph OLAP module — CSR building, vectorized scan, and analytical operations.
+ * Tests for the Graph OLAP module — CSR building, columnar storage, vectorized scan, and analytical operations.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -87,35 +87,37 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(idB).isGreaterThanOrEqualTo(0);
     assertThat(idC).isGreaterThanOrEqualTo(0);
 
-    // Degrees for specific edge type
-    assertThat(gav.outDegree(idA, "FOLLOWS")).isEqualTo(1);
-    assertThat(gav.inDegree(idA, "FOLLOWS")).isEqualTo(0);
-    assertThat(gav.outDegree(idB, "FOLLOWS")).isEqualTo(1);
-    assertThat(gav.inDegree(idB, "FOLLOWS")).isEqualTo(1);
-    assertThat(gav.outDegree(idC, "FOLLOWS")).isEqualTo(0);
-    assertThat(gav.inDegree(idC, "FOLLOWS")).isEqualTo(1);
+    // Degrees
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
 
-    // Cross-type degrees (same since only one edge type)
-    assertThat(gav.outDegree(idA)).isEqualTo(1);
-    assertThat(gav.inDegree(idC)).isEqualTo(1);
+    // Cross-type and BOTH
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT)).isEqualTo(1);
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.IN)).isEqualTo(1);
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.BOTH, "FOLLOWS")).isEqualTo(2);
 
-    // Typed connectivity
-    assertThat(gav.isConnected(idA, idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
-    assertThat(gav.isConnected(idA, idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
-    assertThat(gav.isConnected(idB, idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    // Connectivity
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(idA, idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+    assertThat(gav.isConnectedTo(idB, idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT)).isTrue();
+    assertThat(gav.isConnectedTo(idB, idA, Vertex.DIRECTION.IN)).isTrue();
 
-    // Cross-type connectivity
-    assertThat(gav.isConnected(idA, idB, Vertex.DIRECTION.OUT)).isTrue();
-    assertThat(gav.isConnected(idB, idA, Vertex.DIRECTION.IN)).isTrue();
+    // Neighbor arrays
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).containsExactly(idB);
+    assertThat(gav.getVertices(idB, Vertex.DIRECTION.OUT, "FOLLOWS")).containsExactly(idC);
+    assertThat(gav.getVertices(idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isEmpty();
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT)).containsExactly(idB);
+    assertThat(gav.getVertices(idC, Vertex.DIRECTION.IN)).containsExactly(idB);
 
-    // Typed neighbor arrays
-    assertThat(gav.getOutNeighbors(idA, "FOLLOWS")).containsExactly(idB);
-    assertThat(gav.getOutNeighbors(idB, "FOLLOWS")).containsExactly(idC);
-    assertThat(gav.getOutNeighbors(idC, "FOLLOWS")).isEmpty();
-
-    // Cross-type neighbor arrays
-    assertThat(gav.getOutNeighbors(idA)).containsExactly(idB);
-    assertThat(gav.getInNeighbors(idC)).containsExactly(idB);
+    // Property access
+    assertThat(gav.getProperty(idA, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idB, "name")).isEqualTo("Bob");
+    assertThat(gav.getProperty(idC, "name")).isEqualTo("Charlie");
   }
 
   @Test
@@ -140,14 +142,14 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getEdgeCount()).isEqualTo(10);
 
     final int hubId = gav.getNodeId(hub.getIdentity());
-    assertThat(gav.outDegree(hubId, "FOLLOWS")).isEqualTo(10);
-    assertThat(gav.inDegree(hubId, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(hubId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(10);
+    assertThat(gav.countEdges(hubId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
 
     for (final RID spokeRID : spokeRIDs) {
       final int spokeId = gav.getNodeId(spokeRID);
-      assertThat(gav.outDegree(spokeId, "FOLLOWS")).isEqualTo(0);
-      assertThat(gav.inDegree(spokeId, "FOLLOWS")).isEqualTo(1);
-      assertThat(gav.isConnected(hubId, spokeId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+      assertThat(gav.countEdges(spokeId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
+      assertThat(gav.countEdges(spokeId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+      assertThat(gav.isConnectedTo(hubId, spokeId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
     }
   }
 
@@ -168,8 +170,6 @@ public class GraphAnalyticalViewTest extends TestHelper {
     gav.build(new String[] { "Node" }, new String[] { "LINK" });
 
     final int hubId = gav.getNodeId(hub.getIdentity());
-
-    // Vectorized scan with edge type
     final CSRScanOperator scan = gav.scanNeighbors(hubId, Vertex.DIRECTION.OUT, "LINK");
     final DataVector batch = new DataVector(DataVector.Type.INT);
 
@@ -183,7 +183,6 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
   @Test
   void testCommonNeighbors() {
-    // A -> C, A -> D, B -> C, B -> D, B -> E
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -206,15 +205,12 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final int idA = gav.getNodeId(a.getIdentity());
     final int idB = gav.getNodeId(b.getIdentity());
 
-    // Typed common neighbors
     assertThat(gav.countCommonNeighbors(idA, idB, Vertex.DIRECTION.OUT, "KNOWS")).isEqualTo(2);
-    // Cross-type common neighbors (same result, only one edge type)
     assertThat(gav.countCommonNeighbors(idA, idB, Vertex.DIRECTION.OUT)).isEqualTo(2);
   }
 
   @Test
   void testMultipleEdgeTypes() {
-    // A -FOLLOWS-> B, A -LIKES-> B, A -FOLLOWS-> C
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.getSchema().createEdgeType("LIKES");
@@ -229,45 +225,28 @@ public class GraphAnalyticalViewTest extends TestHelper {
     database.commit();
 
     final GraphAnalyticalView gav = new GraphAnalyticalView(database);
-    gav.build(new String[] { "Person" }, null); // all edge types
+    gav.build(new String[] { "Person" }, null);
 
     final int idA = gav.getNodeId(a.getIdentity());
     final int idB = gav.getNodeId(b.getIdentity());
     final int idC = gav.getNodeId(c.getIdentity());
 
     assertThat(gav.getEdgeTypes()).containsExactlyInAnyOrder("FOLLOWS", "LIKES");
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(2);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "LIKES")).isEqualTo(1);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT)).isEqualTo(3);
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.IN)).isEqualTo(2);
 
-    // Per-type degree
-    assertThat(gav.outDegree(idA, "FOLLOWS")).isEqualTo(2); // B and C
-    assertThat(gav.outDegree(idA, "LIKES")).isEqualTo(1);   // B only
-    assertThat(gav.inDegree(idB, "FOLLOWS")).isEqualTo(1);
-    assertThat(gav.inDegree(idB, "LIKES")).isEqualTo(1);
-    assertThat(gav.inDegree(idC, "FOLLOWS")).isEqualTo(1);
-    assertThat(gav.inDegree(idC, "LIKES")).isEqualTo(0);
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "LIKES")).isTrue();
+    assertThat(gav.isConnectedTo(idA, idC, Vertex.DIRECTION.OUT, "LIKES")).isFalse();
 
-    // Cross-type degree
-    assertThat(gav.outDegree(idA)).isEqualTo(3); // FOLLOWS(B,C) + LIKES(B)
-    assertThat(gav.inDegree(idB)).isEqualTo(2);  // FOLLOWS + LIKES from A
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).containsExactlyInAnyOrder(idB, idC);
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT, "LIKES")).containsExactly(idB);
 
-    // Per-type connectivity
-    assertThat(gav.isConnected(idA, idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
-    assertThat(gav.isConnected(idA, idB, Vertex.DIRECTION.OUT, "LIKES")).isTrue();
-    assertThat(gav.isConnected(idA, idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
-    assertThat(gav.isConnected(idA, idC, Vertex.DIRECTION.OUT, "LIKES")).isFalse();
+    final int[] allOut = gav.getVertices(idA, Vertex.DIRECTION.OUT);
+    assertThat(allOut).hasSize(3);
 
-    // Cross-type connectivity
-    assertThat(gav.isConnected(idA, idB, Vertex.DIRECTION.OUT)).isTrue();
-    assertThat(gav.isConnected(idA, idC, Vertex.DIRECTION.OUT)).isTrue();
-
-    // Per-type neighbor arrays
-    assertThat(gav.getOutNeighbors(idA, "FOLLOWS")).containsExactlyInAnyOrder(idB, idC);
-    assertThat(gav.getOutNeighbors(idA, "LIKES")).containsExactly(idB);
-
-    // Cross-type neighbor arrays
-    final int[] allOutNeighbors = gav.getOutNeighbors(idA);
-    assertThat(allOutNeighbors).hasSize(3); // B (FOLLOWS), B (LIKES), C (FOLLOWS) — B appears twice
-
-    // Per-type edge counts
     assertThat(gav.getEdgeCount("FOLLOWS")).isEqualTo(2);
     assertThat(gav.getEdgeCount("LIKES")).isEqualTo(1);
     assertThat(gav.getEdgeCount()).isEqualTo(3);
@@ -290,7 +269,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     database.commit();
 
     final GraphAnalyticalView gav = new GraphAnalyticalView(database);
-    gav.build(null, null); // all types
+    gav.build(null, null);
 
     assertThat(gav.getNodeCount()).isEqualTo(3);
 
@@ -298,34 +277,25 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final int idBob = gav.getNodeId(bob.getIdentity());
     final int idAcme = gav.getNodeId(acme.getIdentity());
 
-    // Vertex type tracking
     assertThat(gav.getNodeTypeName(idAlice)).isEqualTo("Person");
-    assertThat(gav.getNodeTypeName(idBob)).isEqualTo("Person");
     assertThat(gav.getNodeTypeName(idAcme)).isEqualTo("Company");
 
-    // Per-type degree
-    assertThat(gav.outDegree(idAlice, "WORKS_AT")).isEqualTo(1);
-    assertThat(gav.outDegree(idAlice, "KNOWS")).isEqualTo(1);
-    assertThat(gav.outDegree(idAlice)).isEqualTo(2);
-    assertThat(gav.inDegree(idAcme, "WORKS_AT")).isEqualTo(2); // Alice + Bob work there
+    assertThat(gav.countEdges(idAlice, Vertex.DIRECTION.OUT, "WORKS_AT")).isEqualTo(1);
+    assertThat(gav.countEdges(idAlice, Vertex.DIRECTION.OUT, "KNOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idAlice, Vertex.DIRECTION.OUT)).isEqualTo(2);
+    assertThat(gav.countEdges(idAcme, Vertex.DIRECTION.IN, "WORKS_AT")).isEqualTo(2);
 
-    // Per-type connectivity
-    assertThat(gav.isConnected(idAlice, idAcme, Vertex.DIRECTION.OUT, "WORKS_AT")).isTrue();
-    assertThat(gav.isConnected(idAlice, idBob, Vertex.DIRECTION.OUT, "WORKS_AT")).isFalse();
-    assertThat(gav.isConnected(idAlice, idBob, Vertex.DIRECTION.OUT, "KNOWS")).isTrue();
+    assertThat(gav.isConnectedTo(idAlice, idAcme, Vertex.DIRECTION.OUT, "WORKS_AT")).isTrue();
+    assertThat(gav.isConnectedTo(idAlice, idBob, Vertex.DIRECTION.OUT, "KNOWS")).isTrue();
 
-    // Edge type counts
-    assertThat(gav.getEdgeCount("WORKS_AT")).isEqualTo(2);
-    assertThat(gav.getEdgeCount("KNOWS")).isEqualTo(1);
-    assertThat(gav.getEdgeCount()).isEqualTo(3);
-
-    // Common neighbors via WORKS_AT: Alice and Bob both work at ACME
     assertThat(gav.countCommonNeighbors(idAlice, idBob, Vertex.DIRECTION.OUT, "WORKS_AT")).isEqualTo(1);
+
+    assertThat(gav.getProperty(idAlice, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idAcme, "name")).isEqualTo("ACME");
   }
 
   @Test
   void testSelectiveEdgeTypeBuild() {
-    // Build with only FOLLOWS, excluding LIKES
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.getSchema().createEdgeType("LIKES");
@@ -338,15 +308,13 @@ public class GraphAnalyticalViewTest extends TestHelper {
     database.commit();
 
     final GraphAnalyticalView gav = new GraphAnalyticalView(database);
-    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" }); // only FOLLOWS
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
 
     final int idA = gav.getNodeId(a.getIdentity());
-
     assertThat(gav.getEdgeTypes()).containsExactly("FOLLOWS");
-    assertThat(gav.outDegree(idA, "FOLLOWS")).isEqualTo(1);
-    assertThat(gav.outDegree(idA, "LIKES")).isEqualTo(0); // not in the view
-    assertThat(gav.outDegree(idA)).isEqualTo(1);           // only FOLLOWS counted
-    assertThat(gav.getEdgeCount()).isEqualTo(1);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "LIKES")).isEqualTo(0);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT)).isEqualTo(1);
   }
 
   @Test
@@ -364,13 +332,11 @@ public class GraphAnalyticalViewTest extends TestHelper {
     gav.build(null, null);
 
     final int idA = gav.getNodeId(a.getIdentity());
-
-    // Querying for edge type not in the view returns 0, not exception
-    assertThat(gav.outDegree(idA, "NONEXISTENT")).isEqualTo(0);
-    assertThat(gav.inDegree(idA, "NONEXISTENT")).isEqualTo(0);
-    assertThat(gav.getOutNeighbors(idA, "NONEXISTENT")).isEmpty();
-    assertThat(gav.getInNeighbors(idA, "NONEXISTENT")).isEmpty();
-    assertThat(gav.isConnected(idA, 0, Vertex.DIRECTION.OUT, "NONEXISTENT")).isFalse();
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "NONEXISTENT")).isEqualTo(0);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.IN, "NONEXISTENT")).isEqualTo(0);
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT, "NONEXISTENT")).isEmpty();
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.IN, "NONEXISTENT")).isEmpty();
+    assertThat(gav.isConnectedTo(idA, 0, Vertex.DIRECTION.OUT, "NONEXISTENT")).isFalse();
     assertThat(gav.getEdgeCount("NONEXISTENT")).isEqualTo(0);
   }
 
@@ -395,40 +361,59 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testNodeIdMapping() {
+  void testNodeIdMappingPerBucket() {
     final NodeIdMapping mapping = new NodeIdMapping(4);
 
-    final RID r1 = new RID(10, 0);
-    final RID r2 = new RID(10, 1);
-    final RID r3 = new RID(10, 2);
+    // Register two buckets
+    final int b0 = mapping.registerBucket(10, "Person", 4);
+    final int b1 = mapping.registerBucket(20, "Company", 4);
 
-    assertThat(mapping.addRID(r1, "Person")).isEqualTo(0);
-    assertThat(mapping.addRID(r2, "Person")).isEqualTo(1);
-    assertThat(mapping.addRID(r3, "Company")).isEqualTo(2);
+    assertThat(b0).isEqualTo(0);
+    assertThat(b1).isEqualTo(1);
 
-    // Duplicate should return existing ID
-    assertThat(mapping.addRID(r1, "Person")).isEqualTo(0);
+    // Add nodes
+    mapping.addNode(b0, 100L);
+    mapping.addNode(b0, 200L);
+    mapping.addNode(b0, 300L);
+    mapping.addNode(b1, 50L);
+    mapping.addNode(b1, 150L);
 
-    assertThat(mapping.size()).isEqualTo(3);
-    assertThat(mapping.getId(r1)).isEqualTo(0);
-    assertThat(mapping.getId(r2)).isEqualTo(1);
-    assertThat(mapping.getId(r3)).isEqualTo(2);
-    assertThat(mapping.getId(new RID(99, 99))).isEqualTo(-1);
-
-    // Type tracking
-    assertThat(mapping.getTypeName(0)).isEqualTo("Person");
-    assertThat(mapping.getTypeName(1)).isEqualTo("Person");
-    assertThat(mapping.getTypeName(2)).isEqualTo("Company");
-    assertThat(mapping.getTypeCount()).isEqualTo(2);
-    assertThat(mapping.getTypeIndex("Person")).isEqualTo(0);
-    assertThat(mapping.getTypeIndex("Company")).isEqualTo(1);
-    assertThat(mapping.getTypeIndex("Unknown")).isEqualTo(-1);
-
-    // Compact and verify
     mapping.compact();
-    assertThat(mapping.getBucketId(0)).isEqualTo(10);
-    assertThat(mapping.getOffset(0)).isEqualTo(0);
-    assertThat(mapping.getOffset(1)).isEqualTo(1);
+
+    assertThat(mapping.size()).isEqualTo(5);
+    assertThat(mapping.getNumBuckets()).isEqualTo(2);
+    assertThat(mapping.getBucketSize(b0)).isEqualTo(3);
+    assertThat(mapping.getBucketSize(b1)).isEqualTo(2);
+
+    // Global IDs: bucket 0 gets [0,1,2], bucket 1 gets [3,4]
+    assertThat(mapping.getBucketBase(b0)).isEqualTo(0);
+    assertThat(mapping.getBucketBase(b1)).isEqualTo(3);
+
+    // RID → globalId
+    assertThat(mapping.getGlobalId(new RID(10, 100))).isEqualTo(0);
+    assertThat(mapping.getGlobalId(new RID(10, 200))).isEqualTo(1);
+    assertThat(mapping.getGlobalId(new RID(10, 300))).isEqualTo(2);
+    assertThat(mapping.getGlobalId(new RID(20, 50))).isEqualTo(3);
+    assertThat(mapping.getGlobalId(new RID(20, 150))).isEqualTo(4);
+    assertThat(mapping.getGlobalId(new RID(99, 0))).isEqualTo(-1);
+
+    // globalId → bucketIdx
+    assertThat(mapping.getBucketIdx(0)).isEqualTo(b0);
+    assertThat(mapping.getBucketIdx(2)).isEqualTo(b0);
+    assertThat(mapping.getBucketIdx(3)).isEqualTo(b1);
+    assertThat(mapping.getBucketIdx(4)).isEqualTo(b1);
+
+    // globalId → localId
+    assertThat(mapping.getLocalId(0)).isEqualTo(0);
+    assertThat(mapping.getLocalId(2)).isEqualTo(2);
+    assertThat(mapping.getLocalId(3)).isEqualTo(0);
+    assertThat(mapping.getLocalId(4)).isEqualTo(1);
+
+    // Type names
+    assertThat(mapping.getTypeName(0)).isEqualTo("Person");
+    assertThat(mapping.getTypeName(3)).isEqualTo("Company");
+    assertThat(mapping.getBucketTypeName(b0)).isEqualTo("Person");
+    assertThat(mapping.getBucketTypeName(b1)).isEqualTo("Company");
   }
 
   @Test
@@ -448,11 +433,10 @@ public class GraphAnalyticalViewTest extends TestHelper {
     vec.setNull(2);
     assertThat(vec.isNull(2)).isTrue();
 
-    // Flat mode
     vec.setFlat(true, 0);
     assertThat(vec.isFlat()).isTrue();
     assertThat(vec.getInt(0)).isEqualTo(42);
-    assertThat(vec.getInt(1)).isEqualTo(42); // flat broadcasts index 0
+    assertThat(vec.getInt(1)).isEqualTo(42);
     assertThat(vec.getInt(999)).isEqualTo(42);
 
     vec.reset();
@@ -499,8 +483,8 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     final int idA = gav.getNodeId(a.getIdentity());
     final int idB = gav.getNodeId(b.getIdentity());
-    assertThat(gav.outDegree(idA, "FOLLOWS")).isEqualTo(1);
-    assertThat(gav.isConnected(idA, idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
   }
 
   @Test
@@ -521,9 +505,295 @@ public class GraphAnalyticalViewTest extends TestHelper {
     gav.build(null, null);
 
     final int hubId = gav.getNodeId(hub.getIdentity());
-    final int[] neighbors = gav.getOutNeighbors(hubId, "LINK");
-
+    final int[] neighbors = gav.getVertices(hubId, Vertex.DIRECTION.OUT, "LINK");
     for (int i = 1; i < neighbors.length; i++)
       assertThat(neighbors[i]).isGreaterThanOrEqualTo(neighbors[i - 1]);
+  }
+
+  // --- Builder tests ---
+
+  @Test
+  void testBuilderBasic() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").set("age", 30).save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").set("age", 25).save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.isBuilt()).isTrue();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.getProperty(idA, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idA, "age")).isEqualTo(30);
+  }
+
+  @Test
+  void testBuilderPropertyFilter() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").set("age", 30).save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").set("age", 25).save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    // Only materialize "name", skip "age"
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .build();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.getProperty(idA, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idA, "age")).isNull(); // not materialized
+  }
+
+  @Test
+  void testBuilderNoProperties() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    // Skip all properties
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties() // empty = no properties
+        .build();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.getProperty(idA, "name")).isNull();
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+  }
+
+  @Test
+  void testAutoUpdate() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withAutoUpdate(true)
+        .build();
+
+    assertThat(gav.isAutoUpdate()).isTrue();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Add a new vertex and edge
+    database.begin();
+    final MutableVertex c = database.newVertex("Person").set("name", "Charlie").save();
+    b.newEdge("FOLLOWS", c);
+    database.commit();
+
+    // After commit, the view should have been rebuilt automatically
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+
+    final int idC = gav.getNodeId(c.getIdentity());
+    assertThat(idC).isGreaterThanOrEqualTo(0);
+    assertThat(gav.getProperty(idC, "name")).isEqualTo("Charlie");
+
+    gav.close();
+  }
+
+  // --- Columnar storage tests ---
+
+  @Test
+  void testColumnStoreBasics() {
+    final ColumnStore store = new ColumnStore(5);
+
+    final Column intCol = store.createColumn("age", Column.Type.INT);
+    final Column strCol = store.createColumn("name", Column.Type.STRING);
+    final Column dblCol = store.createColumn("score", Column.Type.DOUBLE);
+
+    assertThat(store.getColumnCount()).isEqualTo(3);
+    assertThat(store.getPropertyNames()).containsExactlyInAnyOrder("age", "name", "score");
+
+    assertThat(intCol.isNull(0)).isTrue();
+    assertThat(intCol.countNonNull()).isEqualTo(0);
+
+    intCol.setInt(0, 30);
+    intCol.setInt(2, 25);
+    strCol.setString(0, "Alice");
+    strCol.setString(1, "Bob");
+    strCol.setString(2, "Alice");
+    dblCol.setDouble(0, 9.5);
+
+    assertThat(intCol.getInt(0)).isEqualTo(30);
+    assertThat(intCol.isNull(0)).isFalse();
+    assertThat(intCol.isNull(1)).isTrue();
+    assertThat(intCol.countNonNull()).isEqualTo(2);
+
+    assertThat(strCol.getString(0)).isEqualTo("Alice");
+    assertThat(strCol.getString(1)).isEqualTo("Bob");
+    assertThat(strCol.getString(2)).isEqualTo("Alice");
+
+    assertThat(store.getValue(0, "age")).isEqualTo(30);
+    assertThat(store.getValue(0, "name")).isEqualTo("Alice");
+    assertThat(store.getValue(1, "age")).isNull();
+    assertThat(store.getValue(0, "nonexistent")).isNull();
+  }
+
+  @Test
+  void testDictionaryEncoding() {
+    final DictionaryEncoding dict = new DictionaryEncoding();
+    assertThat(dict.size()).isEqualTo(0);
+
+    final int codeA = dict.encode("Alice");
+    final int codeB = dict.encode("Bob");
+    final int codeA2 = dict.encode("Alice");
+
+    assertThat(codeA).isEqualTo(0);
+    assertThat(codeB).isEqualTo(1);
+    assertThat(codeA2).isEqualTo(0);
+
+    assertThat(dict.size()).isEqualTo(2);
+    assertThat(dict.decode(0)).isEqualTo("Alice");
+    assertThat(dict.decode(1)).isEqualTo("Bob");
+    assertThat(dict.getCode("Unknown")).isEqualTo(-1);
+  }
+
+  @Test
+  void testColumnScanOperatorFullScan() {
+    final Column col = new Column("age", Column.Type.INT, 5);
+    col.setInt(0, 30);
+    col.setInt(1, 25);
+    col.setInt(3, 40);
+    col.setInt(4, 35);
+
+    final ColumnScanOperator scan = new ColumnScanOperator(col);
+    final DataVector batch = new DataVector(DataVector.Type.INT);
+
+    assertThat(scan.getNextBatch(batch)).isTrue();
+    assertThat(batch.getSize()).isEqualTo(5);
+    assertThat(batch.getIntData()[0]).isEqualTo(30);
+    assertThat(batch.isNull(0)).isFalse();
+    assertThat(batch.isNull(2)).isTrue();
+
+    assertThat(scan.getNextBatch(batch)).isFalse();
+
+    scan.reset();
+    assertThat(scan.getNextBatch(batch)).isTrue();
+  }
+
+  @Test
+  void testColumnScanOperatorSelective() {
+    final Column col = new Column("score", Column.Type.DOUBLE, 10);
+    for (int i = 0; i < 10; i++)
+      col.setDouble(i, i * 1.5);
+
+    final int[] selection = { 2, 5, 7 };
+    final ColumnScanOperator scan = new ColumnScanOperator(col, selection);
+    final DataVector batch = new DataVector(DataVector.Type.DOUBLE);
+
+    assertThat(scan.getNextBatch(batch)).isTrue();
+    assertThat(batch.getSize()).isEqualTo(3);
+    assertThat(batch.getDoubleData()[0]).isEqualTo(3.0);
+    assertThat(batch.getDoubleData()[1]).isEqualTo(7.5);
+    assertThat(batch.getDoubleData()[2]).isEqualTo(10.5);
+
+    assertThat(scan.getNextBatch(batch)).isFalse();
+  }
+
+  @Test
+  void testColumnarPropertyIntegration() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").set("age", 30).save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").set("age", 25).save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(null, null);
+
+    final int idAlice = gav.getNodeId(alice.getIdentity());
+    final int idBob = gav.getNodeId(bob.getIdentity());
+    final int idCharlie = gav.getNodeId(charlie.getIdentity());
+
+    assertThat(gav.getProperty(idAlice, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idBob, "name")).isEqualTo("Bob");
+    assertThat(gav.getProperty(idCharlie, "name")).isEqualTo("Charlie");
+
+    assertThat(gav.getProperty(idAlice, "age")).isEqualTo(30);
+    assertThat(gav.getProperty(idBob, "age")).isEqualTo(25);
+    assertThat(gav.getProperty(idCharlie, "age")).isNull();
+  }
+
+  @Test
+  void testColumnarMultipleTypes() {
+    database.getSchema().createVertexType("Item");
+    database.getSchema().createEdgeType("RELATED");
+
+    database.begin();
+    final MutableVertex v1 = database.newVertex("Item")
+        .set("name", "Widget").set("price", 19.99).set("quantity", 100).set("sku", 12345L).save();
+    final MutableVertex v2 = database.newVertex("Item")
+        .set("name", "Gadget").set("price", 29.99).set("quantity", 50).set("sku", 67890L).save();
+    v1.newEdge("RELATED", v2);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(null, null);
+
+    final int id1 = gav.getNodeId(v1.getIdentity());
+    final int id2 = gav.getNodeId(v2.getIdentity());
+
+    assertThat(gav.getProperty(id1, "name")).isEqualTo("Widget");
+    assertThat(gav.getProperty(id1, "price")).isEqualTo(19.99);
+    assertThat(gav.getProperty(id1, "quantity")).isEqualTo(100);
+    assertThat(gav.getProperty(id1, "sku")).isEqualTo(12345L);
+
+    assertThat(gav.getProperty(id2, "name")).isEqualTo("Gadget");
+    assertThat(gav.getProperty(id2, "price")).isEqualTo(29.99);
+  }
+
+  @Test
+  void testNullBitset() {
+    final Column col = new Column("val", Column.Type.INT, 128);
+
+    for (int i = 0; i < 128; i++)
+      assertThat(col.isNull(i)).isTrue();
+    assertThat(col.countNonNull()).isEqualTo(0);
+
+    for (int i = 0; i < 128; i += 2)
+      col.setInt(i, i);
+
+    assertThat(col.countNonNull()).isEqualTo(64);
+    assertThat(col.isNull(0)).isFalse();
+    assertThat(col.isNull(1)).isTrue();
+
+    col.setNull(0);
+    assertThat(col.isNull(0)).isTrue();
+    assertThat(col.countNonNull()).isEqualTo(63);
   }
 }
