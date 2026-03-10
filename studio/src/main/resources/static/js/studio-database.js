@@ -2688,9 +2688,7 @@ function displaySchema() {
     fetchMaterializedViews(function (views) {
       fetchGraphAnalyticalViews(function (gavs) {
         html += "<div class='sidebar-section'>";
-        html += "<div class='sidebar-section-header'><i class='fa fa-cube'></i> OLAP";
-        html += "<span class='sidebar-section-header-actions'><button onclick='createGraphAnalyticalView(); return false;' title='Create Graph Analytical View'><i class='fa fa-plus'></i></button></span>";
-        html += "</div>";
+        html += "<div class='sidebar-section-header'><i class='fa fa-cube'></i> OLAP</div>";
         html += renderMaterializedViewsSidebarBadges(views || [], false);
         html += renderGavSidebarBadges(gavs || [], false);
         html += "</div>";
@@ -3456,14 +3454,17 @@ function renderMaterializedViewsSidebarSection(views, isQuerySidebar) {
  * Renders MV badges without the section wrapper (for use inside the OLAP section).
  */
 function renderMaterializedViewsSidebarBadges(views, isQuerySidebar) {
-  if (!views || views.length === 0) return "";
   let html = "";
+  let count = (views && views.length) || 0;
   let palette = sidebarBadgeColors.materializedView;
 
-  html += "<div class='sidebar-subsection-header'><i class='fa fa-layer-group'></i> Materialized Views <span class='sidebar-count'>(" + views.length + ")</span>";
+  html += "<div class='sidebar-subsection-header'><i class='fa fa-layer-group'></i> Materialized Views <span class='sidebar-count'>(" + count + ")</span>";
   if (!isQuerySidebar)
     html += "<span class='sidebar-section-header-actions'><button onclick='createMaterializedView(); return false;' title='Create materialized view'><i class='fa fa-plus'></i></button></span>";
   html += "</div>";
+
+  if (count === 0) return html;
+
   html += "<div class='sidebar-badges'>";
 
   for (let j = 0; j < views.length; j++) {
@@ -3525,11 +3526,17 @@ function fetchGraphAnalyticalViews(callback) {
 }
 
 function renderGavSidebarBadges(gavs, isQuerySidebar) {
-  if (!gavs || gavs.length === 0) return "";
   let html = "";
+  let count = (gavs && gavs.length) || 0;
   let palette = ["#0ea5e9", "#0284c7", "#0369a1", "#38bdf8", "#7dd3fc", "#0c4a6e"];
 
-  html += "<div class='sidebar-subsection-header'><i class='fa fa-project-diagram'></i> Graph Analytical Views <span class='sidebar-count'>(" + gavs.length + ")</span></div>";
+  html += "<div class='sidebar-subsection-header'><i class='fa fa-project-diagram'></i> Graph Analytical Views <span class='sidebar-count'>(" + count + ")</span>";
+  if (!isQuerySidebar)
+    html += "<span class='sidebar-section-header-actions'><button onclick='createGraphAnalyticalView(); return false;' title='Create graph analytical view'><i class='fa fa-plus'></i></button></span>";
+  html += "</div>";
+
+  if (count === 0) return html;
+
   html += "<div class='sidebar-badges'>";
 
   for (let j = 0; j < gavs.length; j++) {
