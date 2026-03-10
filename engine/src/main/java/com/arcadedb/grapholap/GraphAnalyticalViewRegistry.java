@@ -105,4 +105,12 @@ public class GraphAnalyticalViewRegistry {
       for (final GraphAnalyticalView view : views.values())
         view.close();
   }
+
+  /**
+   * Removes all registry entries for a database without calling close() on them.
+   * Used during restore to clear stale entries from a previous database lifecycle.
+   */
+  public static void clearAll(final Database database) {
+    REGISTRY.remove(database);
+  }
 }

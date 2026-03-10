@@ -6158,6 +6158,97 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
+  // ── Graph Analytical View ─────────────────────────────────────────────
+
+  @Override
+  public CreateGraphAnalyticalViewStatement visitCreateGraphAnalyticalViewStmt(
+      final SQLParser.CreateGraphAnalyticalViewStmtContext ctx) {
+    final CreateGraphAnalyticalViewStatement stmt = new CreateGraphAnalyticalViewStatement(-1);
+    final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx = ctx.createGraphAnalyticalViewBody();
+
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+
+    // First identifier is the view name
+    final var identifiers = bodyCtx.identifier();
+    stmt.name = (Identifier) visit(identifiers.get(0));
+
+    // Parse VERTEX TYPES (...), EDGE TYPES (...), PROPERTIES (...)
+    // The grammar produces multiple identifier nodes; we need to figure out which belong to which clause
+    int idx = 1; // skip the view name
+
+    if (bodyCtx.VERTEX() != null) {
+      final int count = countIdentifiersInClause(bodyCtx.getText(), "VERTEXTYPES(", "EDGETYPES(", "PROPERTIES(", "AUTOUPDATE");
+      // Actually, we'll use a simpler approach: parse the identifiers in order based on keyword positions
+      stmt.vertexTypes = extractClauseIdentifiers(identifiers, idx, bodyCtx);
+      idx += stmt.vertexTypes.length;
+    }
+
+    if (bodyCtx.EDGE() != null) {
+      stmt.edgeTypes = extractEdgeTypeIdentifiers(identifiers, idx, bodyCtx);
+      idx += stmt.edgeTypes.length;
+    }
+
+    if (bodyCtx.PROPERTIES() != null) {
+      stmt.properties = extractRemainingIdentifiers(identifiers, idx);
+    }
+
+    stmt.autoUpdate = bodyCtx.AUTO() != null && bodyCtx.UPDATE() != null;
+
+    return stmt;
+  }
+
+  private Identifier[] extractClauseIdentifiers(final java.util.List<SQLParser.IdentifierContext> identifiers,
+      final int startIdx, final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx) {
+    // Count identifiers between VERTEX TYPES (...) by checking positions until next keyword
+    final java.util.List<Identifier> result = new java.util.ArrayList<>();
+    final int edgePos = bodyCtx.EDGE() != null ? bodyCtx.EDGE().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
+    final int propsPos = bodyCtx.PROPERTIES() != null ? bodyCtx.PROPERTIES().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
+    final int limit = Math.min(edgePos, propsPos);
+
+    for (int i = startIdx; i < identifiers.size(); i++) {
+      if (identifiers.get(i).start.getTokenIndex() > limit)
+        break;
+      result.add((Identifier) visit(identifiers.get(i)));
+    }
+    return result.toArray(new Identifier[0]);
+  }
+
+  private Identifier[] extractEdgeTypeIdentifiers(final java.util.List<SQLParser.IdentifierContext> identifiers,
+      final int startIdx, final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx) {
+    final java.util.List<Identifier> result = new java.util.ArrayList<>();
+    final int propsPos = bodyCtx.PROPERTIES() != null ? bodyCtx.PROPERTIES().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
+
+    for (int i = startIdx; i < identifiers.size(); i++) {
+      if (identifiers.get(i).start.getTokenIndex() > propsPos)
+        break;
+      result.add((Identifier) visit(identifiers.get(i)));
+    }
+    return result.toArray(new Identifier[0]);
+  }
+
+  private Identifier[] extractRemainingIdentifiers(final java.util.List<SQLParser.IdentifierContext> identifiers,
+      final int startIdx) {
+    final Identifier[] result = new Identifier[identifiers.size() - startIdx];
+    for (int i = startIdx; i < identifiers.size(); i++)
+      result[i - startIdx] = (Identifier) visit(identifiers.get(i));
+    return result;
+  }
+
+  private int countIdentifiersInClause(final String text, final String... markers) {
+    // Helper — unused, kept for potential future use
+    return 0;
+  }
+
+  @Override
+  public DropGraphAnalyticalViewStatement visitDropGraphAnalyticalViewStmt(
+      final SQLParser.DropGraphAnalyticalViewStmtContext ctx) {
+    final DropGraphAnalyticalViewStatement stmt = new DropGraphAnalyticalViewStatement(-1);
+    final SQLParser.DropGraphAnalyticalViewBodyContext bodyCtx = ctx.dropGraphAnalyticalViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+    return stmt;
+  }
+
   /**
    * Visit trigger timing (BEFORE or AFTER).
    */

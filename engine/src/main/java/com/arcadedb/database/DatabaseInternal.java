@@ -44,7 +44,7 @@ import java.util.concurrent.*;
 @ExcludeFromJacocoGeneratedReport
 public interface DatabaseInternal extends Database {
   enum CALLBACK_EVENT {
-    TX_AFTER_WAL_WRITE, DB_NOT_CLOSED
+    TX_AFTER_WAL_WRITE, DB_NOT_CLOSED, DB_AFTER_OPEN
   }
 
   default TransactionContext getTransaction() {

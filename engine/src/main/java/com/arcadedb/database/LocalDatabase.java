@@ -50,6 +50,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.grapholap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
@@ -261,6 +262,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
 
     openInternal();
+
+    try {
+      executeCallbacks(CALLBACK_EVENT.DB_AFTER_OPEN);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on executing DB_AFTER_OPEN callbacks", e);
+    }
+
+    // Restore Graph Analytical Views persisted in schema extensions
+    try {
+      GraphAnalyticalViewPersistence.restoreAll(this);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error restoring Graph Analytical Views on database open", e);
+    }
   }
 
   protected void create() {

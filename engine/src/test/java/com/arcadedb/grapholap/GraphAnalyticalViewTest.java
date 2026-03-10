@@ -19,6 +19,8 @@
 package com.arcadedb.grapholap;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
@@ -1845,5 +1847,163 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(count).isEqualTo(3);
 
     gav.close();
+  }
+
+  // ── SQL DDL Tests ────────────────────────────────────────────────────────
+
+  @Test
+  void testCreateGraphAnalyticalViewSQL() {
+    database.getSchema().createVertexType("City");
+    database.getSchema().createEdgeType("ROAD");
+    database.begin();
+    final MutableVertex a = database.newVertex("City").set("name", "Rome").save();
+    final MutableVertex b = database.newVertex("City").set("name", "Milan").save();
+    a.newEdge("ROAD", b);
+    database.commit();
+
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW cityRoads VERTEX TYPES (City) EDGE TYPES (ROAD)");
+
+    // Verify it's persisted in schema
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(extension).isNotNull();
+    assertThat(extension.has("cityRoads")).isTrue();
+    assertThat(extension.getJSONObject("cityRoads").getString("name")).isEqualTo("cityRoads");
+
+    // Verify it shows up in schema:graphAnalyticalViews
+    final ResultSet rs = database.query("sql", "SELECT FROM schema:graphAnalyticalViews");
+    boolean found = false;
+    while (rs.hasNext()) {
+      final var result = rs.next();
+      if ("cityRoads".equals(result.getProperty("name"))) {
+        found = true;
+        break;
+      }
+    }
+    rs.close();
+    assertThat(found).isTrue();
+
+    // Clean up
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW cityRoads");
+    final var afterDrop = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(afterDrop).isNull();
+  }
+
+  @Test
+  void testCreateGraphAnalyticalViewWithAutoUpdate() {
+    database.getSchema().createVertexType("Sensor");
+    database.getSchema().createEdgeType("FEEDS");
+    database.begin();
+    database.newVertex("Sensor").set("name", "S1").save();
+    database.commit();
+
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW sensorNet VERTEX TYPES (Sensor) EDGE TYPES (FEEDS) AUTO UPDATE");
+
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(extension.getJSONObject("sensorNet").getBoolean("autoUpdate")).isTrue();
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW sensorNet");
+  }
+
+  @Test
+  void testCreateGraphAnalyticalViewIfNotExists() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW testView");
+
+    // Second creation with IF NOT EXISTS should not throw
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW IF NOT EXISTS testView");
+
+    // Cleanup
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW testView");
+  }
+
+  @Test
+  void testDropGraphAnalyticalViewIfExists() {
+    // Drop non-existent with IF EXISTS should not throw
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW IF EXISTS nonExistentView");
+  }
+
+  @Test
+  void testCreateGraphAnalyticalViewWithProperties() {
+    database.getSchema().createVertexType("Product");
+    database.getSchema().createEdgeType("SIMILAR");
+    database.begin();
+    database.newVertex("Product").set("name", "Widget").set("price", 9.99).save();
+    database.commit();
+
+
+    database.command("sql",
+        "CREATE GRAPH ANALYTICAL VIEW productGraph VERTEX TYPES (Product) EDGE TYPES (SIMILAR) PROPERTIES (name, price)");
+
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    final var def = extension.getJSONObject("productGraph");
+    assertThat(def.getJSONArray("propertyFilter").length()).isEqualTo(2);
+    assertThat(def.getJSONArray("propertyFilter").getString(0)).isEqualTo("name");
+    assertThat(def.getJSONArray("propertyFilter").getString(1)).isEqualTo("price");
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW productGraph");
+  }
+
+  @Test
+  void testSchemaGraphAnalyticalViewsQuery() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW socialGraph VERTEX TYPES (Person) EDGE TYPES (KNOWS) AUTO UPDATE");
+
+    final ResultSet rs = database.query("sql", "SELECT FROM schema:graphAnalyticalViews WHERE name = 'socialGraph'");
+    assertThat(rs.hasNext()).isTrue();
+    final var result = rs.next();
+    assertThat((String) result.getProperty("name")).isEqualTo("socialGraph");
+    assertThat((boolean) result.getProperty("autoUpdate")).isTrue();
+    rs.close();
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW socialGraph");
+  }
+
+  @Test
+  void testGavRestoredOnDatabaseReopen() {
+    // Setup: create types and data
+    database.getSchema().createVertexType("City");
+    database.getSchema().createEdgeType("ROAD");
+    database.begin();
+    final MutableVertex a = database.newVertex("City").set("name", "Rome").save();
+    final MutableVertex b = database.newVertex("City").set("name", "Milan").save();
+    a.newEdge("ROAD", b);
+    database.commit();
+
+    // Create GAV via SQL (persists definition to schema extensions)
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW cityRoads VERTEX TYPES (City) EDGE TYPES (ROAD)");
+
+    // Verify schema extension was persisted
+    assertThat(database.getSchema().getExtension("graphAnalyticalViews")).isNotNull();
+
+    // Close database
+    final String dbPath = database.getDatabasePath();
+    database.close();
+
+    // Reopen database — restoreAll is called during open()
+    final DatabaseFactory factory2 = new DatabaseFactory(dbPath);
+    final Database db2 = factory2.open();
+    try {
+      // Verify the GAV was restored in the in-memory registry
+      final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db2, "cityRoads");
+      assertThat(restored).isNotNull();
+      assertThat(restored.getNodeCount()).isEqualTo(2);
+      assertThat(restored.getEdgeCount()).isEqualTo(1);
+
+      // Clean up
+      db2.command("sql", "DROP GRAPH ANALYTICAL VIEW cityRoads");
+    } finally {
+      db2.close();
+    }
+
+    // Reopen database with the original factory for TestHelper cleanup
+    database = new DatabaseFactory(dbPath).open();
   }
 }

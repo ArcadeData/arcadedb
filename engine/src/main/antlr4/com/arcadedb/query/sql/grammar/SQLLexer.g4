@@ -245,6 +245,10 @@ POLICY: P O L I C Y;
 GRANULARITY: G R A N U L A R I T Y;
 CONTINUOUS: C O N T I N U O U S;
 AGGREGATE: A G G R E G A T E;
+GRAPH: G R A P H;
+ANALYTICAL: A N A L Y T I C A L;
+AUTO: A U T O;
+PROPERTIES: P R O P E R T I E S;
 
 // ============================================================================
 // COMPARISON OPERATORS

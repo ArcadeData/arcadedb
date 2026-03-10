@@ -88,6 +88,9 @@ public class GraphAnalyticalViewPersistence {
     if (allGavs == null || allGavs.isEmpty())
       return 0;
 
+    // Clear any stale entries from a previous lifecycle of the same database path
+    GraphAnalyticalViewRegistry.clearAll(database);
+
     int count = 0;
     for (final String gavName : allGavs.keySet()) {
       try {
@@ -119,11 +122,11 @@ public class GraphAnalyticalViewPersistence {
         }
 
         builder.withAutoUpdate(gavDef.getBoolean("autoUpdate", false));
-        builder.buildAsync();
+        builder.build();
         count++;
 
         LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.INFO,
-            "Restoring GraphAnalyticalView '%s' (async)", gavName);
+            "Restored GraphAnalyticalView '%s'", gavName);
 
       } catch (final Exception e) {
         LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.WARNING,

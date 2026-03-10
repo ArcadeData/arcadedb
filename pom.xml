@@ -126,7 +126,6 @@
     <modules>
         <module>test-utils</module>
         <module>engine</module>
-        <module>graph-olap</module>
         <module>network</module>
         <module>grpc</module>
         <module>server</module>

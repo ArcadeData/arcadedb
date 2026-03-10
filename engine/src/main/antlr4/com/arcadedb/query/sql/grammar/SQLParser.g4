@@ -97,6 +97,7 @@ statement
     | CREATE MATERIALIZED VIEW createMaterializedViewBody   # createMaterializedViewStmt
     | CREATE TIMESERIES TYPE createTimeSeriesTypeBody       # createTimeSeriesTypeStmt
     | CREATE CONTINUOUS AGGREGATE createContinuousAggregateBody  # createContinuousAggregateStmt
+    | CREATE GRAPH ANALYTICAL VIEW createGraphAnalyticalViewBody  # createGraphAnalyticalViewStmt
 
     // DDL Statements - ALTER variants
     | ALTER TYPE alterTypeBody                       # alterTypeStmt
@@ -114,6 +115,7 @@ statement
     | DROP TRIGGER dropTriggerBody                   # dropTriggerStmt
     | DROP MATERIALIZED VIEW dropMaterializedViewBody       # dropMaterializedViewStmt
     | DROP CONTINUOUS AGGREGATE dropContinuousAggregateBody # dropContinuousAggregateStmt
+    | DROP GRAPH ANALYTICAL VIEW dropGraphAnalyticalViewBody   # dropGraphAnalyticalViewStmt
 
     // DDL Statements - TRUNCATE variants
     | TRUNCATE TYPE truncateTypeBody                 # truncateTypeStmt
@@ -764,6 +766,34 @@ dropContinuousAggregateBody
  */
 refreshContinuousAggregateBody
     : identifier
+    ;
+
+// ============================================================================
+// DDL STATEMENTS - GRAPH ANALYTICAL VIEW
+// ============================================================================
+
+/**
+ * CREATE GRAPH ANALYTICAL VIEW statement
+ * Syntax: CREATE GRAPH ANALYTICAL VIEW [IF NOT EXISTS] name
+ *         [VERTEX TYPES (type1, type2, ...)]
+ *         [EDGE TYPES (type1, type2, ...)]
+ *         [PROPERTIES (prop1, prop2, ...)]
+ *         [AUTO UPDATE]
+ */
+createGraphAnalyticalViewBody
+    : (IF NOT EXISTS)? identifier
+      (VERTEX TYPES LPAREN identifier (COMMA identifier)* RPAREN)?
+      (EDGE TYPES LPAREN identifier (COMMA identifier)* RPAREN)?
+      (PROPERTIES LPAREN identifier (COMMA identifier)* RPAREN)?
+      (AUTO UPDATE)?
+    ;
+
+/**
+ * DROP GRAPH ANALYTICAL VIEW statement
+ * Syntax: DROP GRAPH ANALYTICAL VIEW [IF EXISTS] name
+ */
+dropGraphAnalyticalViewBody
+    : (IF EXISTS)? identifier
     ;
 
 // ============================================================================
