@@ -65,8 +65,8 @@ import java.util.concurrent.ThreadLocalRandom;
 public class GraphOLAPBenchmark {
 
   private static final String DB_PATH = "target/databases/olap-benchmark";
-  private static final int    VERTEX_COUNT      = Integer.getInteger("arcadedb.olap.vertices", 100_000);
-  private static final int    EDGES_PER_VERTEX  = Integer.getInteger("arcadedb.olap.edgesPerVertex", 32);
+  private static final int    VERTEX_COUNT      = Integer.getInteger("arcadedb.olap.vertices", 500_000);
+  private static final int    EDGES_PER_VERTEX  = Integer.getInteger("arcadedb.olap.edgesPerVertex", 16);
   private static final int    TRAVERSAL_SAMPLES = 1000;
 
   private Database             database;
