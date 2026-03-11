@@ -20,8 +20,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.grapholap.GraphAnalyticalView;
-import com.arcadedb.grapholap.GraphAnalyticalViewRegistry;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;

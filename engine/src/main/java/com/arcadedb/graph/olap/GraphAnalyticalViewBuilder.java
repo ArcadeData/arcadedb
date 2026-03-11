@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.grapholap;
+package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
 
@@ -54,6 +54,7 @@ public class GraphAnalyticalViewBuilder {
   private       String[] edgeTypes;
   private       String[] properties;
   private       boolean  autoUpdate;
+  private       int      compactionThreshold = -1;
 
   GraphAnalyticalViewBuilder(final Database database) {
     this.database = database;
@@ -105,12 +106,24 @@ public class GraphAnalyticalViewBuilder {
   }
 
   /**
+   * Sets the compaction threshold — the number of delta edges accumulated before
+   * triggering a full background rebuild of the CSR. Default is 10,000.
+   * Only meaningful when {@link #withAutoUpdate(boolean)} is enabled.
+   */
+  public GraphAnalyticalViewBuilder withCompactionThreshold(final int compactionThreshold) {
+    this.compactionThreshold = compactionThreshold;
+    return this;
+  }
+
+  /**
    * Builds the analytical view synchronously with the configured settings.
    * This triggers the initial full build (CSR + columnar storage) and blocks until complete.
    * Status will be READY when this method returns.
    */
   public GraphAnalyticalView build() {
     final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, autoUpdate);
+    if (compactionThreshold > 0)
+      view.setCompactionThreshold(compactionThreshold);
     if (name != null) {
       GraphAnalyticalViewRegistry.register(database, name, view);
       GraphAnalyticalViewPersistence.save(database, view);
@@ -127,6 +140,8 @@ public class GraphAnalyticalViewBuilder {
    */
   public GraphAnalyticalView buildAsync() {
     final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, autoUpdate);
+    if (compactionThreshold > 0)
+      view.setCompactionThreshold(compactionThreshold);
     if (name != null) {
       GraphAnalyticalViewRegistry.register(database, name, view);
       GraphAnalyticalViewPersistence.save(database, view);

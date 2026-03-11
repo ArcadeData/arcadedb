@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.grapholap;
+package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
@@ -30,6 +30,7 @@ import com.arcadedb.log.LogManager;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -574,16 +575,103 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return database;
   }
 
+  public int getCompactionThreshold() {
+    return compactionThreshold;
+  }
+
+  void setCompactionThreshold(final int compactionThreshold) {
+    this.compactionThreshold = compactionThreshold;
+  }
+
   public long getMemoryUsageBytes() {
     if (csrPerType == null)
       return 0;
     long total = 0;
+    // CSR arrays (forward + backward offsets and neighbors per edge type)
     for (final CSRAdjacencyIndex csr : csrPerType.values())
       total += csr.getMemoryUsageBytes();
+    // Column stores (per-bucket property data)
     if (bucketColumns != null)
       for (final ColumnStore cs : bucketColumns)
         total += cs.getMemoryUsageBytes();
+    // Node ID mapping (bucketId→idx maps, position arrays, base offsets)
+    if (nodeMapping != null)
+      total += nodeMapping.getMemoryUsageBytes();
     return total;
+  }
+
+  /**
+   * Returns detailed statistics about this view as a map.
+   * Includes vertex/edge counts, memory breakdown, edge types, and overlay state.
+   */
+  public Map<String, Object> getStats() {
+    final Map<String, Object> stats = new HashMap<>();
+    stats.put("name", name);
+    stats.put("status", status.name());
+    stats.put("autoUpdate", autoUpdate);
+
+    if (csrPerType == null) {
+      stats.put("nodeCount", 0);
+      stats.put("edgeCount", 0);
+      stats.put("memoryUsageBytes", 0L);
+      return stats;
+    }
+
+    stats.put("nodeCount", getNodeCount());
+    stats.put("edgeCount", getEdgeCount());
+    stats.put("buildTimestamp", buildTimestamp);
+
+    // Per-edge-type breakdown
+    final Map<String, Object> edgeTypeStats = new HashMap<>();
+    for (final var entry : csrPerType.entrySet()) {
+      final CSRAdjacencyIndex csr = entry.getValue();
+      final Map<String, Object> etStat = new HashMap<>();
+      etStat.put("edgeCount", csr.getEdgeCount());
+      etStat.put("nodeCount", csr.getNodeCount());
+      etStat.put("memoryBytes", csr.getMemoryUsageBytes());
+      edgeTypeStats.put(entry.getKey(), etStat);
+    }
+    stats.put("edgeTypes", edgeTypeStats);
+
+    // Memory breakdown
+    long csrMemory = 0;
+    for (final CSRAdjacencyIndex csr : csrPerType.values())
+      csrMemory += csr.getMemoryUsageBytes();
+    long columnMemory = 0;
+    int propertyCount = 0;
+    if (bucketColumns != null) {
+      for (final ColumnStore cs : bucketColumns) {
+        columnMemory += cs.getMemoryUsageBytes();
+        propertyCount = Math.max(propertyCount, cs.getColumnCount());
+      }
+    }
+    long mappingMemory = nodeMapping != null ? nodeMapping.getMemoryUsageBytes() : 0;
+
+    stats.put("memoryUsageBytes", csrMemory + columnMemory + mappingMemory);
+    stats.put("csrMemoryBytes", csrMemory);
+    stats.put("columnMemoryBytes", columnMemory);
+    stats.put("mappingMemoryBytes", mappingMemory);
+    stats.put("propertyCount", propertyCount);
+
+    if (vertexTypes != null)
+      stats.put("vertexTypes", java.util.Arrays.asList(vertexTypes));
+    if (edgeTypes != null)
+      stats.put("edgeTypeFilter", java.util.Arrays.asList(edgeTypes));
+    if (propertyFilter != null)
+      stats.put("propertyFilter", java.util.Arrays.asList(propertyFilter));
+
+    // Overlay state
+    final DeltaOverlay ov = this.overlay;
+    if (ov != null) {
+      stats.put("overlayActive", true);
+      stats.put("overlayOverflowNodes", ov.getOverflowCount());
+      stats.put("overlayDeltaEdges", ov.getDeltaEdgeCount());
+    } else {
+      stats.put("overlayActive", false);
+    }
+
+    stats.put("compactionThreshold", compactionThreshold);
+    return stats;
   }
 
   // --- Private helpers ---

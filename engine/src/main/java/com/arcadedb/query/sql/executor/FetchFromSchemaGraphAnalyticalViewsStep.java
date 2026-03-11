@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -64,7 +66,21 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionSt
             r.setProperty("edgeTypes", jsonArrayToList(gavDef.getJSONArray("edgeTypes", null)));
             r.setProperty("propertyFilter", jsonArrayToList(gavDef.getJSONArray("propertyFilter", null)));
             r.setProperty("autoUpdate", gavDef.getBoolean("autoUpdate", false));
-            r.setProperty("status", hasProvider ? "ACTIVE" : "PERSISTED");
+
+            // Enrich with live stats from in-memory registry
+            final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, name);
+            if (liveView != null && liveView.isBuilt()) {
+              r.setProperty("status", liveView.getStatus().name());
+              r.setProperty("nodeCount", liveView.getNodeCount());
+              r.setProperty("edgeCount", liveView.getEdgeCount());
+              r.setProperty("memoryUsageBytes", liveView.getMemoryUsageBytes());
+              r.setProperty("buildTimestamp", liveView.getBuildTimestamp());
+            } else {
+              r.setProperty("status", hasProvider ? "ACTIVE" : "PERSISTED");
+              r.setProperty("nodeCount", 0);
+              r.setProperty("edgeCount", 0);
+              r.setProperty("memoryUsageBytes", 0L);
+            }
 
             context.setVariable("current", r);
           }

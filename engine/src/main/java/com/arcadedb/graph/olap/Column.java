@@ -16,10 +16,10 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.grapholap;
+package com.arcadedb.graph.olap;
 
-import com.arcadedb.grapholap.simd.GraphOlapVectorOps;
-import com.arcadedb.grapholap.simd.GraphOlapVectorOpsProvider;
+import com.arcadedb.graph.olap.simd.GraphOlapVectorOps;
+import com.arcadedb.graph.olap.simd.GraphOlapVectorOpsProvider;
 
 /**
  * A single typed column in the columnar property store, indexed by dense node ID.

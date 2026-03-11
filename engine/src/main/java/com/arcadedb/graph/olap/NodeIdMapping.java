@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.grapholap;
+package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.RID;
 
@@ -263,6 +263,30 @@ public class NodeIdMapping {
    */
   public long getPosition(final int bucketIdx, final int localId) {
     return positions[bucketIdx][localId];
+  }
+
+  /**
+   * Returns the estimated memory footprint in bytes.
+   */
+  public long getMemoryUsageBytes() {
+    long bytes = 0;
+    // bucketIds, bucketBase, bucketSizes arrays
+    bytes += (long) bucketIds.length * Integer.BYTES;
+    if (bucketBase != null)
+      bytes += (long) bucketBase.length * Integer.BYTES;
+    if (bucketSizes != null)
+      bytes += (long) bucketSizes.length * Integer.BYTES;
+    // positions arrays (long[][])
+    if (positions != null) {
+      for (int i = 0; i < numBuckets; i++)
+        if (positions[i] != null)
+          bytes += (long) positions[i].length * Long.BYTES;
+    }
+    // bucketIdToIdx HashMap: ~48 bytes per entry (key Integer 16B + value Integer 16B + Entry 32B)
+    bytes += (long) bucketIdToIdx.size() * 48;
+    // bucketTypeNames: reference array + rough estimate for String objects
+    bytes += (long) numBuckets * 8; // references
+    return bytes;
   }
 
   private void growBucketArrays() {
