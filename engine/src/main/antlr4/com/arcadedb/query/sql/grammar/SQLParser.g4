@@ -1534,4 +1534,6 @@ identifier
     // would need a distinct keyword or a separate production rule.
     | CONTAINS
     | MODE
+    | GRAPH
+    | ANALYTICAL
     ;

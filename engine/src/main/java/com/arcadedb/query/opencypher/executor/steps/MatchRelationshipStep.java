@@ -177,12 +177,26 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     return true;
   }
 
+  /**
+   * Checks whether all target node labels exist in the schema.
+   * If any label does not exist, no target vertex can match.
+   */
+  private boolean targetLabelsExistInSchema(final CommandContext context) {
+    if (targetNodePattern == null || !targetNodePattern.hasLabels())
+      return true;
+    final var schema = context.getDatabase().getSchema();
+    for (final String label : targetNodePattern.getLabels())
+      if (!schema.existsType(label))
+        return false;
+    return true;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("MatchRelationshipStep requires a previous step");
 
-    // Short-circuit: if edge types don't exist in the schema, no results are possible
-    if (!edgeTypesExistInSchema(context)) {
+    // Short-circuit: if edge types or target node labels don't exist in the schema, no results are possible
+    if (!edgeTypesExistInSchema(context) || !targetLabelsExistInSchema(context)) {
       return new ResultSet() {
         @Override
         public boolean hasNext() {
@@ -469,39 +483,53 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
-   * Determines if we can use the fast path (skip loading edges).
-   * Fast path is possible when:
-   * - No relationship variable binding (anonymous relationship) OR internal anonymous variable
-   * - No edge properties to filter
-   * - No path variable
-   * - No edges already in the result (for uniqueness checking)
+   * Determines if we can use the fast path (skip loading edge objects, use vertex-only traversal).
+   * <p>
+   * Philosophy: fast path (and GAV/CSR acceleration) is the DEFAULT. We only fall back to
+   * standard edge-loading when there is a hard structural reason that requires edge objects.
+   * This ensures GAV is used for all common patterns: aggregations, GROUP BY, ORDER BY,
+   * WHERE on vertices, OPTIONAL MATCH, WITH, etc.
+   * <p>
+   * Hard blockers (edge objects are required):
+   * <ol>
+   *   <li>User-visible edge variable (e.g., [r:TYPE]) — the query references the edge object</li>
+   *   <li>Edge property filter (e.g., [{weight: 5}]) — GAV has no edge property data</li>
+   *   <li>Path variable (e.g., p = ...) — paths need edge objects for reconstruction</li>
+   *   <li>Pre-bound edge variable — identity check requires the edge object</li>
+   *   <li>Edge uniqueness — other edges in result require deduplication via edge identity</li>
+   *   <li>Undirected (BOTH) — self-loop edges appear twice (once OUT, once IN); edge
+   *       identity is needed to deduplicate them</li>
+   *   <li>Multi-hop relationship variable — internal anonymous vars (e.g., "  rel0") signal
+   *       that cross-hop edge uniqueness checking is needed</li>
+   * </ol>
+   * <p>
+   * The plan builder cooperates: for single-hop anonymous patterns it passes null as the
+   * relationship variable (enabling fast path), while for multi-hop patterns it generates
+   * internal anonymous variables that trigger condition 6, preserving correctness.
    */
   private boolean canUseFastPath(final Result result) {
-    // Check if edge variable is needed
-    // Allow fast path for internal anonymous variables (start with spaces like "  rel0")
-    // since they're only created for uniqueness checking but aren't actually used
-    final boolean isInternalAnonymousVar = relationshipVariable != null &&
-        !relationshipVariable.isEmpty() &&
-        relationshipVariable.charAt(0) == ' ';
-
-    if (relationshipVariable != null && !relationshipVariable.isEmpty() && !isInternalAnonymousVar)
+    // 1. Any relationship variable (user-visible or internal anonymous) — either the query
+    //    references the edge object, or the plan builder needs edge identity for cross-hop
+    //    uniqueness checking in multi-hop patterns
+    if (relationshipVariable != null && !relationshipVariable.isEmpty())
       return false;
 
-    // Check if edge properties need to be filtered
+    // 2. Edge property filter — GAV doesn't store edge properties
     if (pattern.hasProperties())
       return false;
 
-    // Check if path variable requires edge tracking
+    // 3. Path variable — path reconstruction needs edge objects
     if (pathVariable != null && !pathVariable.isEmpty())
       return false;
 
-    // Check if relationship variable is pre-bound (requires edge identity check)
-    if (boundVariableNames != null && relationshipVariable != null
-        && boundVariableNames.contains(relationshipVariable))
+    // 4. Edge uniqueness — other hops in the same MATCH already produced edges,
+    //    so Cypher requires deduplication via edge identity
+    if (resultContainsEdges(result))
       return false;
 
-    // Check if result already contains edges (would need uniqueness checking)
-    if (resultContainsEdges(result))
+    // 5. Undirected traversal (BOTH) — self-loop edges produce the same vertex twice
+    //    (once via OUT, once via IN) and require edge-level dedup via seenEdges
+    if (getEffectiveDirection() == Direction.BOTH)
       return false;
 
     return true;

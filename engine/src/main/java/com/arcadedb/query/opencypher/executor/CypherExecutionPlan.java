@@ -38,6 +38,7 @@ import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
+import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
@@ -1469,13 +1470,26 @@ public class CypherExecutionPlan {
         // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
         String currentSourceVar = sourceVar;
 
+        // Smart GAV eligibility: for each anonymous hop, check if its edge types overlap
+        // with any other hop's types in the same pattern. If disjoint, null relVar enables
+        // fast path (GAV/CSR). If overlapping, generate an internal anonymous variable to
+        // force edge-loading for cross-hop uniqueness checking.
+        final boolean[] hopNeedsEdgeTracking = computeHopEdgeTrackingNeeds(pathPattern);
+
         for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
           final RelationshipPattern relPattern = pathPattern.getRelationship(i);
           final NodePattern targetNode = pathPattern.getNode(i + 1);
-          // Generate internal variable name for anonymous relationships to ensure
-          // relationship uniqueness checking works (edges must be stored in results)
-          final String relVar = (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty())
-              ? relPattern.getVariable() : ("  rel" + anonymousVarCounter++);
+          // Named edge: keep user variable only if actually referenced in the query;
+          // otherwise treat as anonymous for GAV eligibility.
+          // Anonymous edge: null if GAV-eligible, internal var if edge tracking needed.
+          final String relVar;
+          if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
+            if (isEdgeVariableReferenced(relPattern.getVariable()))
+              relVar = relPattern.getVariable();
+            else
+              relVar = hopNeedsEdgeTracking[i] ? ("  rel" + anonymousVarCounter++) : null;
+          } else
+            relVar = hopNeedsEdgeTracking[i] ? ("  rel" + anonymousVarCounter++) : null;
           String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
               ("  tgt" + anonymousVarCounter++);
 
@@ -1498,9 +1512,9 @@ public class CypherExecutionPlan {
             directionOverride = null;
           }
 
-          // Always track relationship variables (including anonymous generated ones)
-          // so cross-MATCH uniqueness scoping works correctly
-          matchVariables.add(relVar);
+          // Track relationship and target variables for cross-MATCH uniqueness scoping
+          if (relVar != null)
+            matchVariables.add(relVar);
           matchVariables.add(effectiveTargetVar);
 
           AbstractExecutionStep nextStep;
@@ -1812,19 +1826,26 @@ public class CypherExecutionPlan {
               // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
               String currentSourceVar = sourceVar;
 
+              // Smart GAV eligibility: same analysis as ordered path
+              final boolean[] hopNeedsEdgeTrackingLegacy = computeHopEdgeTrackingNeeds(pathPattern);
+
               for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
                 final RelationshipPattern relPattern = pathPattern.getRelationship(i);
                 final NodePattern targetNode = pathPattern.getNode(i + 1);
-                // Generate internal variable name for anonymous relationships to ensure
-                // relationship uniqueness checking works (edges must be stored in results)
-                final String relVar = (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty())
-                    ? relPattern.getVariable() : ("  rel" + anonymousVarCounter++);
+                final String relVar;
+                if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
+                  if (isEdgeVariableReferenced(relPattern.getVariable()))
+                    relVar = relPattern.getVariable();
+                  else
+                    relVar = hopNeedsEdgeTrackingLegacy[i] ? ("  rel" + anonymousVarCounter++) : null;
+                } else
+                  relVar = hopNeedsEdgeTrackingLegacy[i] ? ("  rel" + anonymousVarCounter++) : null;
                 final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
                     ("  tgt" + anonymousVarCounter++);
 
-                // Always track relationship variables (including anonymous generated ones)
-                // so cross-MATCH uniqueness scoping works correctly
-                matchVariables.add(relVar);
+                // Track relationship and target variables for cross-MATCH uniqueness scoping
+                if (relVar != null)
+                  matchVariables.add(relVar);
                 matchVariables.add(targetVar);
 
                 AbstractExecutionStep nextStep;
@@ -3010,6 +3031,174 @@ public class CypherExecutionPlan {
     available.add(currentVar);
 
     return WhereClause.extractForVariables(whereClause.getConditionExpression(), available);
+  }
+
+  /**
+   * Checks whether an edge variable is actually referenced in the query outside its
+   * MATCH pattern declaration. If the variable appears only in the pattern (e.g.,
+   * {@code [r:KNOWS]}) but is never used in RETURN, WHERE, ORDER BY, WITH, SET, or DELETE,
+   * it can be treated as anonymous for GAV/fast-path purposes.
+   *
+   * @param variable the edge variable name to check
+   * @return true if the variable is referenced in the query clauses
+   */
+  private boolean isEdgeVariableReferenced(final String variable) {
+    // Check RETURN clause
+    if (statement.getReturnClause() != null)
+      for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
+        if (expressionReferencesVariable(item.getExpression().getText(), variable))
+          return true;
+
+    // Check WHERE clause
+    if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
+      if (expressionReferencesVariable(statement.getWhereClause().getConditionExpression().getText(), variable))
+        return true;
+
+    // Check MATCH-scoped WHERE clauses
+    for (final MatchClause match : statement.getMatchClauses())
+      if (match.hasWhereClause() && match.getWhereClause().getConditionExpression() != null)
+        if (expressionReferencesVariable(match.getWhereClause().getConditionExpression().getText(), variable))
+          return true;
+
+    // Check ORDER BY
+    if (statement.getOrderByClause() != null)
+      for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
+        if (expressionReferencesVariable(item.getExpression(), variable))
+          return true;
+
+    // Check WITH clauses
+    for (final WithClause withClause : statement.getWithClauses()) {
+      for (final ReturnClause.ReturnItem item : withClause.getItems())
+        if (expressionReferencesVariable(item.getExpression().getText(), variable))
+          return true;
+      if (withClause.getWhereClause() != null && withClause.getWhereClause().getConditionExpression() != null)
+        if (expressionReferencesVariable(withClause.getWhereClause().getConditionExpression().getText(), variable))
+          return true;
+    }
+
+    // Check SET clause
+    if (statement.getSetClause() != null)
+      for (final SetClause.SetItem item : statement.getSetClause().getItems())
+        if (variable.equals(item.getVariable()))
+          return true;
+
+    // Check DELETE clause
+    if (statement.getDeleteClause() != null)
+      if (statement.getDeleteClause().getVariables().contains(variable))
+        return true;
+
+    // Check clausesInOrder for any WITH/SET/DELETE we might have missed
+    if (statement.getClausesInOrder() != null) {
+      for (final ClauseEntry entry : statement.getClausesInOrder()) {
+        if (entry.getType() == ClauseEntry.ClauseType.WITH) {
+          final WithClause wc = entry.getTypedClause();
+          for (final ReturnClause.ReturnItem item : wc.getItems())
+            if (expressionReferencesVariable(item.getExpression().getText(), variable))
+              return true;
+          if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null)
+            if (expressionReferencesVariable(wc.getWhereClause().getConditionExpression().getText(), variable))
+              return true;
+        } else if (entry.getType() == ClauseEntry.ClauseType.SET) {
+          final SetClause sc = entry.getTypedClause();
+          for (final SetClause.SetItem item : sc.getItems())
+            if (variable.equals(item.getVariable()))
+              return true;
+        } else if (entry.getType() == ClauseEntry.ClauseType.DELETE) {
+          final DeleteClause dc = entry.getTypedClause();
+          if (dc.getVariables().contains(variable))
+            return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Checks if an expression text references a variable as a standalone identifier.
+   * Uses word-boundary matching to avoid false positives (e.g., "relation" matching "r").
+   */
+  private static boolean expressionReferencesVariable(final String expressionText, final String variable) {
+    if (expressionText == null || variable == null)
+      return false;
+    // Find the variable as a standalone identifier (not part of a longer word)
+    int idx = 0;
+    while ((idx = expressionText.indexOf(variable, idx)) >= 0) {
+      final boolean startOk = idx == 0 || !Character.isLetterOrDigit(expressionText.charAt(idx - 1))
+          && expressionText.charAt(idx - 1) != '_';
+      final int end = idx + variable.length();
+      final boolean endOk = end >= expressionText.length() || !Character.isLetterOrDigit(expressionText.charAt(end))
+          && expressionText.charAt(end) != '_';
+      if (startOk && endOk)
+        return true;
+      idx++;
+    }
+    return false;
+  }
+
+  /**
+   * Determines which hops in a path pattern need edge tracking for Cypher's relationship
+   * uniqueness constraint. A hop needs tracking only if its edge types could overlap with
+   * another hop's types in the same pattern. Hops with disjoint types are guaranteed to
+   * match distinct edges, so they can safely use the fast path (GAV/CSR).
+   * <p>
+   * Rules:
+   * <ul>
+   *   <li>Single-hop pattern → no tracking needed (no other hop to conflict with)</li>
+   *   <li>Untyped hop (matches all edge types) → always needs tracking</li>
+   *   <li>Typed hop whose types are disjoint from all other hops → no tracking</li>
+   *   <li>Typed hop with any overlap → needs tracking</li>
+   * </ul>
+   *
+   * @param pathPattern the path pattern to analyze
+   * @return boolean array, true at index i if hop i needs edge tracking
+   */
+  private static boolean[] computeHopEdgeTrackingNeeds(final PathPattern pathPattern) {
+    final int hopCount = pathPattern.getRelationshipCount();
+    final boolean[] needs = new boolean[hopCount];
+    if (hopCount <= 1)
+      return needs; // single-hop: all false
+
+    // Collect edge types per hop (null = untyped, matches all)
+    final List<String>[] hopTypes = new List[hopCount];
+    boolean hasUntyped = false;
+    for (int i = 0; i < hopCount; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      if (rel.hasTypes())
+        hopTypes[i] = rel.getTypes();
+      else {
+        hopTypes[i] = null;
+        hasUntyped = true;
+      }
+    }
+
+    for (int i = 0; i < hopCount; i++) {
+      if (hopTypes[i] == null) {
+        // Untyped hop: overlaps with everything
+        needs[i] = true;
+        continue;
+      }
+      if (hasUntyped) {
+        // Another hop is untyped → overlaps with us
+        needs[i] = true;
+        continue;
+      }
+      // Check if our types overlap with any other hop's types
+      for (int j = 0; j < hopCount; j++) {
+        if (i == j)
+          continue;
+        // Both typed: check intersection
+        for (final String type : hopTypes[i]) {
+          if (hopTypes[j].contains(type)) {
+            needs[i] = true;
+            break;
+          }
+        }
+        if (needs[i])
+          break;
+      }
+    }
+    return needs;
   }
 
   private String extractIdFilter(final WhereClause whereClause, final String variable) {

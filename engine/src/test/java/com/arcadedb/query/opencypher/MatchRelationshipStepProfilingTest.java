@@ -182,4 +182,161 @@ class MatchRelationshipStepProfilingTest {
 
     result.close();
   }
+
+  @Test
+  void nonExistentEdgeTypeShortCircuits() {
+    // Query with edge type that doesn't exist in schema — should short-circuit
+    // without scanning any vertices or edge segments.
+    // Use [r:NONEXISTENT] to force standard path (edge variable prevents count optimization).
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (a:Person)<-[r:NONEXISTENT]-(b) RETURN a.name, b.name LIMIT 1");
+
+    // Should return no results
+    int count = 0;
+    while (result.hasNext()) {
+      result.next();
+      count++;
+    }
+    assertThat(count).isZero();
+
+    // Check execution plan — MatchNodeStep should show 0 rows because the short-circuit
+    // in MatchRelationshipStep prevents it from ever pulling from MatchNodeStep
+    final ExecutionPlan plan = result.getExecutionPlan().get();
+    final String planString = plan.prettyPrint(0, 2);
+
+    // The MATCH NODE step should not report scanning rows (it was never pulled from)
+    assertThat(planString).doesNotContainPattern("MATCH NODE.*\\d+ rows");
+
+    result.close();
+  }
+
+  @Test
+  void existingEdgeTypeShowsAccurateProfiling() {
+    // Query with existing edge type and edge variable to force MATCH RELATIONSHIP step
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (a:Person)-[r:KNOWS]->(b) RETURN a.name AS name, collect(b.name) AS friends");
+
+    while (result.hasNext()) {
+      result.next();
+    }
+
+    final ExecutionPlan plan = result.getExecutionPlan().get();
+    final String planString = plan.prettyPrint(0, 2);
+
+    // MatchRelationshipStep should show timing
+    assertThat(planString).contains("MATCH RELATIONSHIP");
+    // GroupByAggregation should show timing
+    assertThat(planString).contains("GROUP BY AGGREGATION");
+
+    result.close();
+  }
+
+  @Test
+  void singleHopAnonymousUsesFastPath() {
+    // Single-hop anonymous relationship should use fast path (vertex-only traversal)
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    // Should use optimized (fast path) traversal, not standard edges
+    assertThat(planString).containsPattern("traversal: optimized \\(\\d+ vertices\\)");
+    result.close();
+  }
+
+  @Test
+  void multiHopDisjointTypesUsesFastPath() {
+    // Multi-hop with disjoint edge types — each hop should use fast path
+    // because different types can never be the same edge (uniqueness guaranteed)
+    database.getSchema().createVertexType("City");
+    database.getSchema().createEdgeType("LIVES_IN");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (c:City {name: 'NYC'})");
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}), (c:City {name: 'NYC'}) CREATE (a)-[:LIVES_IN]->(c)");
+    });
+
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (a:Person)-[:KNOWS]->(b:Person)-[:LIVES_IN]->(c:City) RETURN a.name, c.name");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    // Both hops should use optimized traversal (disjoint types → no uniqueness issue)
+    assertThat(planString).doesNotContain("traversal: standard");
+    result.close();
+  }
+
+  @Test
+  void namedButUnusedEdgeVariableUsesFastPath() {
+    // User writes [r:KNOWS] but never references r in RETURN/WHERE/ORDER BY
+    // The planner should detect that r is unused and enable fast path
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    // Should use optimized fast path even though r is declared — it's unused
+    assertThat(planString).containsPattern("traversal: optimized \\(\\d+ vertices\\)");
+    result.close();
+  }
+
+  @Test
+  void namedAndUsedEdgeVariableUsesStandardPath() {
+    // User writes [r:KNOWS] AND references r.since in RETURN — must use standard path
+    // Use collect() aggregation to force the traditional execution path
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, collect(r.since) AS years");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    // Must use standard path because r is referenced in collect(r.since)
+    assertThat(planString).contains("traversal: standard");
+    result.close();
+  }
+
+  @Test
+  void multiHopSameTypeUsesStandardPath() {
+    // Multi-hop with same edge type — must use standard path for edge uniqueness
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN a.name, c.name");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    // Should use standard (edge-loading) for uniqueness checking
+    assertThat(planString).contains("traversal: standard");
+    result.close();
+  }
+
+  @Test
+  void nonExistentTargetLabelShortCircuits() {
+    // Edge type KNOWS exists, but target label NonExistent does not — should short-circuit
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (a:Person)-[r:KNOWS]->(b:NonExistent) RETURN a.name, b.name LIMIT 1");
+
+    int count = 0;
+    while (result.hasNext()) {
+      result.next();
+      count++;
+    }
+    assertThat(count).isZero();
+
+    final ExecutionPlan plan = result.getExecutionPlan().get();
+    final String planString = plan.prettyPrint(0, 2);
+
+    // MatchNodeStep should show 0 rows — never pulled from due to short-circuit
+    assertThat(planString).doesNotContainPattern("MATCH NODE.*\\d+ rows");
+
+    result.close();
+  }
 }
