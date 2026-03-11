@@ -70,6 +70,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private long fastPathCount = 0;
   private long standardPathCount = 0;
   private long gavPathCount = 0;
+  private boolean gavUsed = false;
 
   /**
    * Creates a match relationship step.
@@ -523,6 +524,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     if (provider != null) {
       final int nodeId = provider.getNodeId(vertex.getIdentity());
       if (nodeId >= 0) {
+        gavUsed = true;
         final int[] neighborIds = provider.getNeighborIds(nodeId, direction.toArcadeDirection(), types);
         return new Iterator<>() {
           private int idx = 0;
@@ -701,9 +703,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         builder.append(", ").append(getRowCountFormatted());
 
       // Show fast path vs standard path statistics
-      if (gavPathCount > 0 || fastPathCount > 0 || standardPathCount > 0) {
+      if (gavUsed || fastPathCount > 0 || standardPathCount > 0) {
         builder.append(", traversal: ");
-        if (gavPathCount > 0) {
+        if (gavUsed) {
           builder.append("GAV/CSR (").append(gavPathCount).append(" vertices");
           if (gavProvider != null)
             builder.append(", provider=").append(gavProvider.getName());
