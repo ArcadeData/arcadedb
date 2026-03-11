@@ -58,17 +58,18 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
       throw new CommandExecutionException("Graph Analytical View '" + viewName + "' does not exist");
     }
 
-    // Close the in-memory view if it exists
+    // Drop the in-memory view if it exists (also removes from schema)
     final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, viewName);
-    if (view != null)
-      view.close();
-
-    // Remove from schema extensions
-    allGavs.remove(viewName);
-    if (allGavs.isEmpty())
-      database.getSchema().setExtension("graphAnalyticalViews", null);
-    else
-      database.getSchema().setExtension("graphAnalyticalViews", allGavs);
+    if (view != null) {
+      view.drop();
+    } else {
+      // No in-memory view, remove directly from schema extensions
+      allGavs.remove(viewName);
+      if (allGavs.isEmpty())
+        database.getSchema().setExtension("graphAnalyticalViews", null);
+      else
+        database.getSchema().setExtension("graphAnalyticalViews", allGavs);
+    }
 
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal r = new ResultInternal();

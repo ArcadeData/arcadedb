@@ -400,6 +400,6 @@ public class GraphAlgorithmsTest extends TestHelper {
         .build();
 
     assertThat(gav.getCompactionThreshold()).isEqualTo(5000);
-    gav.close();
+    gav.drop();
   }
 }

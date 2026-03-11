@@ -46,10 +46,11 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
     else
       labels = null;
 
-    return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels, iPossibleResults), self,
-        context);
+    return SQLQueryEngine.foreachRecord(
+        iArgument -> move(context.getDatabase(), iArgument, labels, iPossibleResults, context), self, context);
   }
 
-  protected abstract Object move(Database graph, Identifiable iArgument, String[] labels, Iterable<Identifiable> iPossibleResults);
+  protected abstract Object move(Database graph, Identifiable iArgument, String[] labels,
+      Iterable<Identifiable> iPossibleResults, CommandContext context);
 
 }

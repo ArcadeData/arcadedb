@@ -137,6 +137,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
           frozen.deletedEdges.addAll(delta.deletedEdges);
           frozen.updatedProperties.putAll(delta.updatedProperties);
           delta.clear();
+          currentDelta.remove();
           if (!frozen.isEmpty())
             view.applyDelta(frozen);
         });

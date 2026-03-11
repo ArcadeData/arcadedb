@@ -50,10 +50,12 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
-import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
@@ -1881,6 +1883,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               e.getMessage());
         }
       }
+    }
+
+    // Shutdown all Graph Analytical Views before closing the database
+    try {
+      GraphAnalyticalViewRegistry.shutdownAll(this);
+      GraphTraversalProviderRegistry.clearAll(this);
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error on shutting down Graph Analytical Views during close for database '%s'", e, name);
     }
 
     executeInWriteLock(() -> {

@@ -74,6 +74,19 @@ public interface DatabaseInternal extends Database {
 
   DatabaseInternal getWrappedDatabaseInstance();
 
+  /**
+   * Unwraps a database to its underlying instance (e.g., ServerDatabase → LocalDatabase).
+   * Ensures consistent identity regardless of wrapper layers.
+   */
+  static Database unwrap(final Database database) {
+    if (database instanceof DatabaseInternal) {
+      final DatabaseInternal internal = ((DatabaseInternal) database).getWrappedDatabaseInstance();
+      if (internal != null && internal != database)
+        return unwrap(internal);
+    }
+    return database;
+  }
+
   Map<String, Object> getWrappers();
 
   void setWrapper(final String name, final Object instance);

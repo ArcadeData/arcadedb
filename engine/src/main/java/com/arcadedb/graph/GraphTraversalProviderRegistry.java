@@ -106,16 +106,7 @@ public class GraphTraversalProviderRegistry {
     REGISTRY.remove(unwrap(database));
   }
 
-  /**
-   * Unwraps a database to its underlying instance (e.g., ServerDatabase → LocalDatabase).
-   * Ensures consistent identity for WeakHashMap lookups regardless of wrapper layers.
-   */
   private static Database unwrap(final Database database) {
-    if (database instanceof DatabaseInternal) {
-      final DatabaseInternal internal = ((DatabaseInternal) database).getWrappedDatabaseInstance();
-      if (internal != null && internal != database)
-        return unwrap(internal);
-    }
-    return database;
+    return DatabaseInternal.unwrap(database);
   }
 }

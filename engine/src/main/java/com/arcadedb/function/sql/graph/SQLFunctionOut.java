@@ -22,6 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
 
+import com.arcadedb.query.sql.executor.CommandContext;
+
 import java.util.*;
 
 /**
@@ -35,18 +37,20 @@ public class SQLFunctionOut extends SQLFunctionMoveFiltered {
   }
 
   @Override
-  protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels) {
-    return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels);
+  protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
+      final CommandContext context) {
+    return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels, context);
   }
 
+  @Override
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
-      final Iterable<Identifiable> iPossibleResults) {
+      final Iterable<Identifiable> iPossibleResults, final CommandContext context) {
     if (iPossibleResults == null)
-      return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels);
+      return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels, context);
 
     if (!iPossibleResults.iterator().hasNext())
       return Collections.emptyList();
 
-    return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels);
+    return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels, context);
   }
 }

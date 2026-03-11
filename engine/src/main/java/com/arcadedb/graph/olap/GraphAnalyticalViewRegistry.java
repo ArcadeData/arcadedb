@@ -99,13 +99,24 @@ public class GraphAnalyticalViewRegistry {
   }
 
   /**
-   * Closes and unregisters all GAVs for a database.
+   * Shuts down all GAVs for a database without removing schema definitions.
+   * Called during database close to release resources while preserving persistence for next open.
    */
-  public static void closeAll(final Database database) {
+  public static void shutdownAll(final Database database) {
     final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.remove(unwrap(database));
     if (views != null)
       for (final GraphAnalyticalView view : views.values())
-        view.close();
+        view.shutdown();
+  }
+
+  /**
+   * Drops all GAVs for a database, including their schema definitions.
+   */
+  public static void dropAll(final Database database) {
+    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.remove(unwrap(database));
+    if (views != null)
+      for (final GraphAnalyticalView view : views.values())
+        view.drop();
   }
 
   /**
@@ -116,16 +127,7 @@ public class GraphAnalyticalViewRegistry {
     REGISTRY.remove(unwrap(database));
   }
 
-  /**
-   * Unwraps a database to its underlying instance (e.g., ServerDatabase → LocalDatabase).
-   * Ensures consistent identity for WeakHashMap lookups regardless of wrapper layers.
-   */
   private static Database unwrap(final Database database) {
-    if (database instanceof DatabaseInternal) {
-      final DatabaseInternal internal = ((DatabaseInternal) database).getWrappedDatabaseInstance();
-      if (internal != null && internal != database)
-        return unwrap(internal);
-    }
-    return database;
+    return DatabaseInternal.unwrap(database);
   }
 }

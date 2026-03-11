@@ -34,6 +34,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -70,6 +72,10 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphAnalyticalView implements GraphTraversalProvider {
+
+  /** Shared executor for all GAV async builds and compactions. Uses virtual threads for lightweight concurrency. */
+  private static final ExecutorService EXECUTOR = Executors.newThreadPerTaskExecutor(
+      Thread.ofVirtual().name("gav-worker-", 0).factory());
 
   public enum Status {
     NOT_BUILT, BUILDING, READY, STALE
@@ -171,7 +177,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @param vertexTypes vertex type names to include (null = all)
    * @param edgeTypes   edge type names to include (null = all)
    */
-  public void build(final String[] vertexTypes, final String[] edgeTypes) {
+  public synchronized void build(final String[] vertexTypes, final String[] edgeTypes) {
     status = Status.BUILDING;
     readyLatch = new CountDownLatch(1);
     try {
@@ -202,7 +208,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public void buildAsync() {
     status = Status.BUILDING;
     readyLatch = new CountDownLatch(1);
-    final Thread buildThread = new Thread(() -> {
+    EXECUTOR.execute(() -> {
       try {
         final long buildStart = System.currentTimeMillis();
         final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
@@ -221,9 +227,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         this.readyLatch.countDown();
         LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
       }
-    }, "gav-build" + (name != null ? "-" + name : ""));
-    buildThread.setDaemon(true);
-    buildThread.start();
+    });
   }
 
   /**
@@ -243,16 +247,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Unregisters auto-update listeners, removes from registries and schema, and releases resources.
-   * Call this when the view is no longer needed.
+   * Drops this view: unregisters listeners, removes from registries and schema.
+   * Call this when the view is no longer needed (user-initiated removal).
    */
-  public void close() {
+  public void drop() {
+    shutdown();
+    if (name != null)
+      GraphAnalyticalViewPersistence.remove(database, name);
+  }
+
+  /**
+   * Shuts down this view without removing the schema definition.
+   * Called during database close to release resources while preserving persistence.
+   */
+  public void shutdown() {
     unregisterChangeListeners();
     GraphTraversalProviderRegistry.unregister(database, this);
-    if (name != null) {
+    if (name != null)
       GraphAnalyticalViewRegistry.unregister(database, name);
-      GraphAnalyticalViewPersistence.remove(database, name);
-    }
   }
 
   // --- GraphTraversalProvider SPI ---
@@ -757,7 +769,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         return; // rebuild already in progress, it will pick up committed changes
       this.status = Status.BUILDING;
       this.readyLatch = new CountDownLatch(1);
-      final Thread rebuildThread = new Thread(() -> {
+      EXECUTOR.execute(() -> {
         try {
           final long buildStart = System.currentTimeMillis();
           final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
@@ -773,9 +785,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           compacting.set(false);
           this.readyLatch.countDown();
         }
-      }, "gav-rebuild" + (name != null ? "-" + name : ""));
-      rebuildThread.setDaemon(true);
-      rebuildThread.start();
+      });
     } else {
       this.status = Status.STALE;
     }
@@ -806,16 +816,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (!compacting.compareAndSet(false, true))
         return;
 
-      final Thread compactThread = new Thread(() -> {
+      EXECUTOR.execute(() -> {
         try {
           final long buildStart = System.currentTimeMillis();
           final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
           final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
           final long durationMs = System.currentTimeMillis() - buildStart;
-
-          // Capture any overlay that accumulated during the rebuild
-          final Snapshot beforeSwap = this.snapshot;
-          final DeltaOverlay pendingOverlay = beforeSwap.overlay;
 
           // Swap to fresh CSR with no overlay
           this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
@@ -828,9 +834,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         } finally {
           compacting.set(false);
         }
-      }, "gav-compact" + (name != null ? "-" + name : ""));
-      compactThread.setDaemon(true);
-      compactThread.start();
+      });
     }
   }
 

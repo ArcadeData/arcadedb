@@ -625,7 +625,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(idC).isGreaterThanOrEqualTo(0);
     assertThat(gav.getProperty(idC, "name")).isEqualTo("Charlie");
 
-    gav.close();
+    gav.drop();
   }
 
   // --- Status and async build tests ---
@@ -648,7 +648,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
     assertThat(gav.getNodeCount()).isEqualTo(0);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -675,7 +675,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final int idA = gav.getNodeId(a.getIdentity());
     assertThat(gav.getProperty(idA, "name")).isEqualTo("Alice");
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -725,7 +725,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(gav.getNodeCount()).isEqualTo(3);
 
-    gav.close();
+    gav.drop();
   }
 
   // --- Registry tests ---
@@ -744,7 +744,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(GraphAnalyticalViewRegistry.get(database, "social-graph")).isSameAs(gav);
     assertThat(GraphAnalyticalViewRegistry.getAll(database)).hasSize(1);
 
-    gav.close();
+    gav.drop();
     assertThat(GraphAnalyticalViewRegistry.get(database, "social-graph")).isNull();
   }
 
@@ -779,8 +779,8 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(follows.getEdgeCount("FOLLOWS")).isEqualTo(1);
     assertThat(blocks.getEdgeCount("BLOCKS")).isEqualTo(1);
 
-    follows.close();
-    blocks.close();
+    follows.drop();
+    blocks.drop();
   }
 
   @Test
@@ -790,7 +790,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .build();
 
     assertThat(gav.getName()).isEqualTo("test-view");
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -812,7 +812,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getPropertyFilter()).containsExactly("name", "age");
     assertThat(gav.isAutoUpdate()).isTrue();
 
-    gav.close();
+    gav.drop();
   }
 
   // --- Schema persistence tests ---
@@ -846,7 +846,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gavDef.getString("updateMode")).isEqualTo("SYNCHRONOUS");
 
     // Close removes from schema
-    gav.close();
+    gav.drop();
     final com.arcadedb.serializer.json.JSONObject extAfter = database.getSchema().getExtension("graphAnalyticalViews");
     assertThat(extAfter).isNull();
   }
@@ -887,7 +887,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(restoredGav.getEdgeCount()).isEqualTo(1);
 
     // Clean up both
-    restoredGav.close();
+    restoredGav.drop();
   }
 
   @Test
@@ -933,7 +933,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.coversEdgeType("FOLLOWS")).isTrue();
     assertThat(gav.coversEdgeType("BLOCKS")).isFalse();
 
-    gav.close();
+    gav.drop();
     assertThat(GraphTraversalProviderRegistry.getProviders(database)).isEmpty();
   }
 
@@ -951,7 +951,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.coversEdgeType(null)).isTrue();
     assertThat(gav.coversEdgeType("FOLLOWS")).isTrue();
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -986,7 +986,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(results).containsExactly("Alice->Bob", "Bob->Charlie");
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1019,7 +1019,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(results).containsExactly("Alice->Bob");
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1060,7 +1060,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(results).containsExactly("Alice->[Bob, Charlie]", "Bob->[Charlie]");
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1103,7 +1103,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Only s1 (duration=500 > 300) should appear, with both resources
     assertThat(results).containsExactly("s1->[file1, file2]");
 
-    gav.close();
+    gav.drop();
   }
 
   // --- Columnar storage tests ---
@@ -1323,7 +1323,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(prettyPrint).contains("CSR-accelerated");
     profileRs.close();
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1357,7 +1357,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(results).containsExactly("Alice:0", "Bob:1", "Charlie:2");
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1391,7 +1391,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Alice->Bob, Bob->Charlie: Alice has 1 (Bob), Bob has 2 (Alice+Charlie), Charlie has 1 (Bob)
     assertThat(results).containsExactly("Alice:1", "Bob:2", "Charlie:1");
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1426,7 +1426,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat((int) rs.next().getProperty("cnt")).isEqualTo(1);
     rs.close();
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1451,7 +1451,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat((int) rs.next().getProperty("cnt")).isEqualTo(1);
     rs.close();
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1526,7 +1526,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(prettyPrint).contains("CSR-accelerated");
     profileRs.close();
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1560,7 +1560,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // C has most incoming links, should rank highest (same topology as PageRank)
     assertThat(names.getFirst()).isEqualTo("C");
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1594,7 +1594,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Source node should have highest PPR score
     assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1629,7 +1629,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(count).isEqualTo(2);
 
-    gav.close();
+    gav.drop();
   }
 
   // --- SQL shortestPath CSR acceleration ---
@@ -1675,7 +1675,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(prettyPrint).contains("CSR-accelerated");
     profileRs.close();
 
-    gav.close();
+    gav.drop();
   }
 
   // --- Algorithm CSR acceleration tests (additional algorithms) ---
@@ -1712,7 +1712,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Center node should have highest betweenness (it mediates all paths)
     assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1746,7 +1746,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Should have exactly 2 distinct components
     assertThat(componentIds.stream().distinct().count()).isEqualTo(2);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1783,7 +1783,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Each node participates in 1 triangle, sum = 3, total unique = 3/3 = 1
     assertThat(totalTriangles).isEqualTo(3);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1827,7 +1827,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Should detect at least 2 communities
     assertThat(communities.stream().distinct().count()).isGreaterThanOrEqualTo(2);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1858,7 +1858,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // BFS does not include the start node itself, so depths start at 1
     assertThat(depths).containsExactly(1, 2);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1894,7 +1894,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Should have 2 SCCs: {A,B,C} and {D}
     assertThat(components.stream().distinct().count()).isEqualTo(2);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -1928,7 +1928,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(count).isEqualTo(3);
 
-    gav.close();
+    gav.drop();
   }
 
   // ── SQL DDL Tests ────────────────────────────────────────────────────────
@@ -2133,7 +2133,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final int[] bobOutNeighbors = gav.getVertices(bobId, Vertex.DIRECTION.OUT, "FOLLOWS");
     assertThat(bobOutNeighbors).contains(charlieId);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -2166,7 +2166,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getProperty(aliceId, "age")).isEqualTo(31);
     assertThat(gav.getProperty(aliceId, "name")).isEqualTo("Alice"); // unchanged
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -2213,7 +2213,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getVertices(bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).contains(charlieId);
     assertThat(gav.getVertices(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).contains(bobId);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -2247,7 +2247,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // SYNCHRONOUS: overlay reflects deletion immediately
     assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -2278,7 +2278,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // SYNCHRONOUS: overlay reflects deletion immediately
     assertThat(gav.getNodeCount()).isEqualTo(1);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -2310,7 +2310,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Property of overflow node should be accessible
     assertThat(gav.getProperty(bobId, "name")).isEqualTo("Bob");
 
-    gav.close();
+    gav.drop();
   }
 
   // --- Delta correctness and compaction tests ---
@@ -2365,7 +2365,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "LIKES")).isEqualTo(1);
     assertThat(gav.countEdges(daveId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -2415,7 +2415,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Latest value should be visible
     assertThat(gav.getProperty(aliceId, "age")).isEqualTo(32);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -2462,7 +2462,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final int aliceId = gav.getNodeId(alice.getIdentity());
     assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -2500,7 +2500,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Verify live view is updated
     assertThat(liveView.getCompactionThreshold()).isEqualTo(2000);
 
-    liveView.close();
+    liveView.drop();
   }
 
   // --- STALE status tests ---
@@ -2541,7 +2541,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.isStale()).isFalse();
     assertThat(gav.getNodeCount()).isEqualTo(2); // now reflects new state
 
-    gav.close();
+    gav.drop();
   }
 
   @Test
@@ -2571,7 +2571,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
     assertThat(gav.isStale()).isFalse();
 
-    gav.close();
+    gav.drop();
   }
 
   @Test

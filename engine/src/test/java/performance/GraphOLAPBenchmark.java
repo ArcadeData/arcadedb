@@ -137,7 +137,7 @@ public class GraphOLAPBenchmark {
   @AfterAll
   void teardown() {
     if (gav != null)
-      gav.close();
+      gav.drop();
     if (database != null) {
       database.drop();
       database = null;

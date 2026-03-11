@@ -38,13 +38,13 @@ import java.util.*;
  * Created by luigidellaquila on 03/01/17.
  */
 public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
-  private CommandContext currentContext;
 
   protected SQLFunctionMove(final String iName) {
     super(iName);
   }
 
-  protected abstract Object move(final Database db, final Identifiable iRecord, final String[] iLabels);
+  protected abstract Object move(final Database db, final Identifiable iRecord, final String[] iLabels,
+      final CommandContext context);
 
   public String getSyntax() {
     return "Syntax error: " + name + "([<labels>])";
@@ -59,12 +59,11 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     else
       labels = null;
 
-    currentContext = context;
-    return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels), self, context);
+    return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels, context), self, context);
   }
 
   protected Object v2v(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
-      final String[] iLabels) {
+      final String[] iLabels, final CommandContext context) {
     if (iRecord != null) {
       final Document rec = (Document) iRecord.getRecord();
       if (rec instanceof Vertex vertex) {
@@ -74,7 +73,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
           final int nodeId = provider.getNodeId(vertex.getIdentity());
           if (nodeId >= 0) {
             final int[] neighborIds = provider.getNeighborIds(nodeId, iDirection, iLabels);
-            markCSRAccelerated();
+            markCSRAccelerated(context);
             return new CSRVertexIterable(provider, neighborIds);
           }
         }
@@ -84,9 +83,9 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     return null;
   }
 
-  protected void markCSRAccelerated() {
-    if (currentContext != null)
-      currentContext.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+  protected static void markCSRAccelerated(final CommandContext context) {
+    if (context != null)
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
   }
 
   protected Object v2e(final Identifiable iRecord, final Vertex.DIRECTION iDirection,

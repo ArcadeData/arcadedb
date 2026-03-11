@@ -26,7 +26,9 @@ import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Returns an Result containing metadata regarding the graph analytical views.

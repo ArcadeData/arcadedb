@@ -66,6 +66,20 @@ public final class GraphAlgorithms {
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
+    // Precompute dangling nodes (no outgoing edges across all relevant edge types)
+    final boolean[] isDangling = new boolean[n];
+    for (int u = 0; u < n; u++) {
+      boolean hasDeg = false;
+      for (final String edgeType : types) {
+        final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
+        if (csr != null && csr.outDegree(u) > 0) {
+          hasDeg = true;
+          break;
+        }
+      }
+      isDangling[u] = !hasDeg;
+    }
+
     for (int iter = 0; iter < iterations; iter++) {
       final double teleport = (1.0 - damping) / n;
       Arrays.fill(next, teleport);
@@ -89,20 +103,11 @@ public final class GraphAlgorithms {
         }
       }
 
-      // Handle dangling nodes (no outgoing edges): distribute their rank evenly
+      // Handle dangling nodes: distribute their rank evenly
       double danglingSum = 0.0;
-      for (int u = 0; u < n; u++) {
-        boolean hasDeg = false;
-        for (final String edgeType : types) {
-          final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
-          if (csr != null && csr.outDegree(u) > 0) {
-            hasDeg = true;
-            break;
-          }
-        }
-        if (!hasDeg)
+      for (int u = 0; u < n; u++)
+        if (isDangling[u])
           danglingSum += rank[u];
-      }
       if (danglingSum > 0.0) {
         final double danglingContrib = damping * danglingSum / n;
         for (int u = 0; u < n; u++)
