@@ -57,7 +57,8 @@ public class ResultInternal implements Result {
   }
 
   public ResultInternal(final Identifiable indent) {
-    this.element = (Document) indent.getRecord();
+    final Record record = indent.getRecord();
+    this.element = record instanceof Document doc ? doc : null;
     this.database = null;
     this.value = null;
   }
