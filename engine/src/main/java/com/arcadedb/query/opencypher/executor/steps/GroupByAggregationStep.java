@@ -149,13 +149,13 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     // may fail to resolve aggregation expressions and fall back to iteration order
     final Map<Object, StatelessFunction[]> groups = new LinkedHashMap<>();
 
-    final long beginGrouping = context.isProfiling() ? System.nanoTime() : 0;
-    try {
-      final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
+    final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
 
-      while (prevResults.hasNext()) {
-        final Result inputRow = prevResults.next();
+    while (prevResults.hasNext()) {
+      final Result inputRow = prevResults.next();
 
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
+      try {
         if (context.isProfiling())
           rowCount++;
 
@@ -180,10 +180,10 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
             args[j] = evaluator.evaluate(funcArgs.get(j), inputRow, context);
           aggregators[i].execute(args, context);
         }
+      } finally {
+        if (context.isProfiling())
+          cost += (System.nanoTime() - begin);
       }
-    } finally {
-      if (context.isProfiling())
-        cost += (System.nanoTime() - beginGrouping);
     }
 
     // Build results
@@ -218,13 +218,13 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
 
     final Map<GroupKeyValues, GroupAggregators> groups = new LinkedHashMap<>();
 
-    final long beginGrouping = context.isProfiling() ? System.nanoTime() : 0;
-    try {
-      final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
+    final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
 
-      while (prevResults.hasNext()) {
-        final Result inputRow = prevResults.next();
+    while (prevResults.hasNext()) {
+      final Result inputRow = prevResults.next();
 
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
+      try {
         if (context.isProfiling())
           rowCount++;
 
@@ -258,10 +258,10 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
             function.execute(args, context);
           }
         }
+      } finally {
+        if (context.isProfiling())
+          cost += (System.nanoTime() - begin);
       }
-    } finally {
-      if (context.isProfiling())
-        cost += (System.nanoTime() - beginGrouping);
     }
 
     // Build results

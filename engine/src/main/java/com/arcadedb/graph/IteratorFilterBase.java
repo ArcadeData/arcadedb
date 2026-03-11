@@ -52,7 +52,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
     if (next != null)
       return true;
 
-    if (currentContainer == null)
+    if (currentContainer == null || validBuckets.isEmpty())
       return false;
 
     while (true) {

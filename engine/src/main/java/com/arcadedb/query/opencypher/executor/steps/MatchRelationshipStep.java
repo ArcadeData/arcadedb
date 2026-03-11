@@ -163,9 +163,43 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     this.directionOverride = directionOverride;
   }
 
+  /**
+   * Checks whether all edge types in the pattern exist in the schema.
+   * If any type does not exist, the relationship match can never produce results.
+   */
+  private boolean edgeTypesExistInSchema(final CommandContext context) {
+    if (!pattern.hasTypes())
+      return true; // No type filter means all edges match
+    final var schema = context.getDatabase().getSchema();
+    for (final String type : pattern.getTypes())
+      if (!schema.existsType(type))
+        return false;
+    return true;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("MatchRelationshipStep requires a previous step");
+
+    // Short-circuit: if edge types don't exist in the schema, no results are possible
+    if (!edgeTypesExistInSchema(context)) {
+      return new ResultSet() {
+        @Override
+        public boolean hasNext() {
+          return false;
+        }
+
+        @Override
+        public Result next() {
+          throw new NoSuchElementException();
+        }
+
+        @Override
+        public void close() {
+          MatchRelationshipStep.this.close();
+        }
+      };
+    }
 
     return new ResultSet() {
       private ResultSet prevResults = null;
@@ -212,54 +246,56 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
           } else if (!useFastPath && currentEdges != null && currentEdges.hasNext()) {
             processStandardPath(n);
           } else {
-            // Initialize prevResults on first call
-            if (prevResults == null) {
-              prevResults = prev.syncPull(context, nRecords);
-            }
-
-            // Get next source vertex from previous step
-            if (!prevResults.hasNext()) {
-              finished = true;
-              break;
-            }
-
-            lastResult = prevResults.next();
-            final Object sourceObj = lastResult.getProperty(sourceVariable);
-
-            if (sourceObj instanceof Vertex) {
-              final Vertex sourceVertex = (Vertex) sourceObj;
-              final long begin;
-              if (context.isProfiling()) {
-                begin = System.nanoTime();
-                if (cost < 0)
-                  cost = 0;
-              } else
-                begin = 0;
-
-              // Determine if we can use fast path for this vertex
-              useFastPath = canUseFastPath(lastResult);
-
-              if (useFastPath) {
-                // Fast path: get vertices directly without loading edges
-                currentVertices = getVertices(sourceVertex);
-                currentEdges = null;
-                seenEdges = null;
-              } else {
-                // Standard path: load edges
-                currentEdges = getEdges(sourceVertex);
-                currentVertices = null;
-                // Track seen edges for BOTH direction to deduplicate self-loops
-                seenEdges = getEffectiveDirection() == Direction.BOTH ? new HashSet<>() : null;
+            final long begin;
+            if (context.isProfiling()) {
+              begin = System.nanoTime();
+              if (cost < 0)
+                cost = 0;
+            } else
+              begin = 0;
+            try {
+              // Initialize prevResults on first call
+              if (prevResults == null) {
+                prevResults = prev.syncPull(context, nRecords);
               }
 
+              // Get next source vertex from previous step
+              if (!prevResults.hasNext()) {
+                finished = true;
+                break;
+              }
+
+              lastResult = prevResults.next();
+              final Object sourceObj = lastResult.getProperty(sourceVariable);
+
+              if (sourceObj instanceof Vertex) {
+                final Vertex sourceVertex = (Vertex) sourceObj;
+
+                // Determine if we can use fast path for this vertex
+                useFastPath = canUseFastPath(lastResult);
+
+                if (useFastPath) {
+                  // Fast path: get vertices directly without loading edges
+                  currentVertices = getVertices(sourceVertex);
+                  currentEdges = null;
+                  seenEdges = null;
+                } else {
+                  // Standard path: load edges
+                  currentEdges = getEdges(sourceVertex);
+                  currentVertices = null;
+                  // Track seen edges for BOTH direction to deduplicate self-loops
+                  seenEdges = getEffectiveDirection() == Direction.BOTH ? new HashSet<>() : null;
+                }
+              } else {
+                // Source is not a vertex, skip
+                currentEdges = null;
+                currentVertices = null;
+                seenEdges = null;
+                useFastPath = false;
+              }
+            } finally {
               if (context.isProfiling())
                 cost += (System.nanoTime() - begin);
-            } else {
-              // Source is not a vertex, skip
-              currentEdges = null;
-              currentVertices = null;
-              seenEdges = null;
-              useFastPath = false;
             }
           }
         }
