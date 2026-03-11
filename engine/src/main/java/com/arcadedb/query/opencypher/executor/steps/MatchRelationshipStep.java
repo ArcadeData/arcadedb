@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -30,8 +33,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-
-import com.arcadedb.database.RID;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -61,9 +62,14 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private final Set<String> previousStepVariables; // Snapshot for uniqueness scoping
   private final Direction directionOverride; // When non-null, overrides pattern.getDirection()
 
+  // GAV provider for CSR-accelerated fast path (null = not checked yet, resolved lazily)
+  private GraphTraversalProvider gavProvider;
+  private boolean gavProviderResolved = false;
+
   // Profiling: track fast path vs standard path usage
   private long fastPathCount = 0;
   private long standardPathCount = 0;
+  private long gavPathCount = 0;
 
   /**
    * Creates a match relationship step.
@@ -504,6 +510,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   /**
    * Gets vertices directly from a vertex based on the relationship pattern.
    * This is an optimized path that skips loading edge objects.
+   * When a GAV provider covers the required edge types, uses CSR arrays for O(1) neighbor lookup.
    */
   private Iterator<Vertex> getVertices(final Vertex vertex) {
     final Direction direction = getEffectiveDirection();
@@ -511,11 +518,48 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         pattern.getTypes().toArray(new String[0]) :
         null;
 
-    if (types == null || types.length == 0) {
-      return vertex.getVertices(direction.toArcadeDirection()).iterator();
-    } else {
-      return vertex.getVertices(direction.toArcadeDirection(), types).iterator();
+    // Try GAV-accelerated lookup (lazy resolution, cached)
+    final GraphTraversalProvider provider = resolveGavProvider(types);
+    if (provider != null) {
+      final int nodeId = provider.getNodeId(vertex.getIdentity());
+      if (nodeId >= 0) {
+        final int[] neighborIds = provider.getNeighborIds(nodeId, direction.toArcadeDirection(), types);
+        return new Iterator<>() {
+          private int idx = 0;
+
+          @Override
+          public boolean hasNext() {
+            return idx < neighborIds.length;
+          }
+
+          @Override
+          public Vertex next() {
+            if (!hasNext())
+              throw new NoSuchElementException();
+            final RID rid = provider.getRID(neighborIds[idx++]);
+            gavPathCount++;
+            return (Vertex) context.getDatabase().lookupByRID(rid, true);
+          }
+        };
+      }
     }
+
+    if (types == null || types.length == 0)
+      return vertex.getVertices(direction.toArcadeDirection()).iterator();
+    else
+      return vertex.getVertices(direction.toArcadeDirection(), types).iterator();
+  }
+
+  /**
+   * Lazily resolves a GAV provider that covers the required edge types.
+   * Result is cached for the lifetime of this step.
+   */
+  private GraphTraversalProvider resolveGavProvider(final String[] edgeTypes) {
+    if (!gavProviderResolved) {
+      gavProviderResolved = true;
+      gavProvider = GraphTraversalProviderRegistry.findProvider(context.getDatabase(), edgeTypes);
+    }
+    return gavProvider;
   }
 
   /**
@@ -657,9 +701,14 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         builder.append(", ").append(getRowCountFormatted());
 
       // Show fast path vs standard path statistics
-      if (fastPathCount > 0 || standardPathCount > 0) {
+      if (gavPathCount > 0 || fastPathCount > 0 || standardPathCount > 0) {
         builder.append(", traversal: ");
-        if (fastPathCount > 0 && standardPathCount > 0) {
+        if (gavPathCount > 0) {
+          builder.append("GAV/CSR (").append(gavPathCount).append(" vertices");
+          if (gavProvider != null)
+            builder.append(", provider=").append(gavProvider.getName());
+          builder.append(")");
+        } else if (fastPathCount > 0 && standardPathCount > 0) {
           // Mixed: both paths used
           builder.append("mixed [fast: ").append(fastPathCount);
           builder.append(", edges: ").append(standardPathCount).append("]");

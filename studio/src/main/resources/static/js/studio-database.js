@@ -3614,6 +3614,8 @@ function showGavDetail(gavName) {
     html += "<div class='mv-info-row'><span class='mv-info-label'>Edges:</span> " + (gav.edgeCount || 0).toLocaleString() + "</div>";
   if (gav.memoryUsageBytes !== undefined)
     html += "<div class='mv-info-row'><span class='mv-info-label'>Memory:</span> " + formatBytes(gav.memoryUsageBytes) + "</div>";
+  if (gav.buildDurationMs !== undefined && gav.buildDurationMs > 0)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Last Build Time:</span> " + formatDuration(gav.buildDurationMs) + "</div>";
 
   // Actions
   html += "<div class='mt-3 d-flex gap-2'>";
@@ -3779,7 +3781,8 @@ function dropGav(gavName) {
       })
       .done(function () {
         globalNotify("Success", "Graph Analytical View '" + escapeHtml(gavName) + "' dropped.", "success");
-        loadDatabaseSchema();
+        $("#dbTypeDetail").html("");
+        displaySchema();
       })
       .fail(function (jqXHR) {
         globalNotifyError(jqXHR.responseText);
@@ -3803,7 +3806,7 @@ function alterGavUpdateMode(gavName, newMode) {
   })
   .done(function () {
     globalNotify("Success", "Update mode changed to " + newMode, "success");
-    loadDatabaseSchema();
+    displaySchema();
   })
   .fail(function (jqXHR) {
     globalNotifyError(jqXHR.responseText);
@@ -3825,7 +3828,7 @@ function rebuildGav(gavName) {
   })
   .done(function () {
     globalNotify("Success", "Rebuild started for '" + escapeHtml(gavName) + "'", "success");
-    loadDatabaseSchema();
+    displaySchema();
   })
   .fail(function (jqXHR) {
     globalNotifyError(jqXHR.responseText);
@@ -3838,6 +3841,14 @@ function formatBytes(bytes) {
   let sizes = ["B", "KB", "MB", "GB"];
   let i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function formatDuration(ms) {
+  if (ms < 1000) return ms + " ms";
+  if (ms < 60000) return (ms / 1000).toFixed(1) + " s";
+  let minutes = Math.floor(ms / 60000);
+  let seconds = ((ms % 60000) / 1000).toFixed(0);
+  return minutes + " min " + seconds + " s";
 }
 
 function displayGavHealth(gavs) {

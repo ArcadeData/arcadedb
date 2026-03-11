@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -1016,6 +1017,90 @@ public class GraphAnalyticalViewTest extends TestHelper {
     rs.close();
 
     assertThat(results).containsExactly("Alice->Bob");
+
+    gav.close();
+  }
+
+  @Test
+  void testCypherTraditionalPathUsesGAV() {
+    // Queries with aggregation disable the optimizer, falling back to the traditional path.
+    // The traditional path's MatchRelationshipStep should still use GAV for fast neighbor lookup.
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("socialAgg")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // This query has aggregation (collect) which disables the optimizer,
+    // but GAV should still be used in the traditional path via MatchRelationshipStep
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS person, collect(b.name) AS friends ORDER BY person");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      final List<String> friends = r.getProperty("friends");
+      final List<String> sorted = new ArrayList<>(friends);
+      Collections.sort(sorted);
+      results.add(r.getProperty("person") + "->" + sorted);
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice->[Bob, Charlie]", "Bob->[Charlie]");
+
+    gav.close();
+  }
+
+  @Test
+  void testCypherTraditionalPathWithWhereAndGAV() {
+    // Test GAV usage in traditional path with WHERE clause and property constraints
+    database.getSchema().createVertexType("Session");
+    database.getSchema().createVertexType("Resource");
+    database.getSchema().createEdgeType("ACCESSED");
+
+    database.begin();
+    final MutableVertex s1 = database.newVertex("Session").set("sessionId", "s1").set("duration", 500).save();
+    final MutableVertex s2 = database.newVertex("Session").set("sessionId", "s2").set("duration", 100).save();
+    final MutableVertex r1 = database.newVertex("Resource").set("name", "file1").save();
+    final MutableVertex r2 = database.newVertex("Resource").set("name", "file2").save();
+    s1.newEdge("ACCESSED", r1);
+    s1.newEdge("ACCESSED", r2);
+    s2.newEdge("ACCESSED", r1);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sessionGraph")
+        .withEdgeTypes("ACCESSED")
+        .build();
+
+    // Query similar to user's real use case: property constraint + aggregation
+    final ResultSet rs = database.command("cypher",
+        "MATCH (s:Session)-[:ACCESSED]->(r:Resource) WHERE s.duration > 300 " +
+            "RETURN s.sessionId AS sid, collect(r.name) AS resources ORDER BY sid");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      final List<String> resources = r.getProperty("resources");
+      final List<String> sorted = new ArrayList<>(resources);
+      Collections.sort(sorted);
+      results.add(r.getProperty("sid") + "->" + sorted);
+    }
+    rs.close();
+
+    // Only s1 (duration=500 > 300) should appear, with both resources
+    assertThat(results).containsExactly("s1->[file1, file2]");
 
     gav.close();
   }

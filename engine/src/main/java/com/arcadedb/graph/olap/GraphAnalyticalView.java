@@ -89,19 +89,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final ColumnStore[]                  bucketColumns;
     final DeltaOverlay                   overlay;
     final long                           buildTimestamp;
+    final long                           buildDurationMs;
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
-        final ColumnStore[] bucketColumns, final DeltaOverlay overlay, final long buildTimestamp) {
+        final ColumnStore[] bucketColumns, final DeltaOverlay overlay, final long buildTimestamp,
+        final long buildDurationMs) {
       this.csrPerType = csrPerType;
       this.nodeMapping = nodeMapping;
       this.bucketColumns = bucketColumns;
       this.overlay = overlay;
       this.buildTimestamp = buildTimestamp;
+      this.buildDurationMs = buildDurationMs;
     }
 
     /** Returns a new snapshot with a different overlay, keeping everything else unchanged. */
     Snapshot withOverlay(final DeltaOverlay newOverlay) {
-      return new Snapshot(csrPerType, nodeMapping, bucketColumns, newOverlay, buildTimestamp);
+      return new Snapshot(csrPerType, nodeMapping, bucketColumns, newOverlay, buildTimestamp, buildDurationMs);
     }
   }
 
@@ -171,12 +174,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public void build(final String[] vertexTypes, final String[] edgeTypes) {
     status = Status.BUILDING;
     try {
+      final long buildStart = System.currentTimeMillis();
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
       final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+      final long durationMs = System.currentTimeMillis() - buildStart;
 
       // Atomic swap — readers see all-or-nothing
       this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-          result.getBucketColumns(), null, System.currentTimeMillis());
+          result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
       this.status = Status.READY;
       this.readyLatch.countDown();
 
@@ -198,11 +203,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     readyLatch = new CountDownLatch(1);
     final Thread buildThread = new Thread(() -> {
       try {
+        final long buildStart = System.currentTimeMillis();
         final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
         final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+        final long durationMs = System.currentTimeMillis() - buildStart;
 
         this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-            result.getBucketColumns(), null, System.currentTimeMillis());
+            result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
         this.status = Status.READY;
         this.readyLatch.countDown();
 
@@ -568,6 +575,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap != null ? snap.buildTimestamp : 0;
   }
 
+  public long getBuildDurationMs() {
+    final Snapshot snap = this.snapshot;
+    return snap != null ? snap.buildDurationMs : 0;
+  }
+
   public boolean isBuilt() {
     return snapshot != null;
   }
@@ -661,6 +673,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     stats.put("nodeCount", getNodeCount());
     stats.put("edgeCount", getEdgeCount());
     stats.put("buildTimestamp", snap.buildTimestamp);
+    stats.put("buildDurationMs", snap.buildDurationMs);
 
     // Per-edge-type breakdown
     final Map<String, Object> edgeTypeStats = new HashMap<>();
@@ -745,11 +758,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       this.readyLatch = new CountDownLatch(1);
       final Thread rebuildThread = new Thread(() -> {
         try {
+          final long buildStart = System.currentTimeMillis();
           final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
           final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+          final long durationMs = System.currentTimeMillis() - buildStart;
           // Atomic swap — readers see all-or-nothing
           this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-              result.getBucketColumns(), null, System.currentTimeMillis());
+              result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
           this.status = Status.READY;
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
@@ -792,8 +807,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
       final Thread compactThread = new Thread(() -> {
         try {
+          final long buildStart = System.currentTimeMillis();
           final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
           final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+          final long durationMs = System.currentTimeMillis() - buildStart;
 
           // Capture any overlay that accumulated during the rebuild
           final Snapshot beforeSwap = this.snapshot;
@@ -801,7 +818,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
           // Swap to fresh CSR with no overlay
           this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-              result.getBucketColumns(), null, System.currentTimeMillis());
+              result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
 
           // Note: any deltas that arrived during rebuild are already committed to OLTP,
           // so the fresh CSR built from OLTP already includes them. No need to re-apply.

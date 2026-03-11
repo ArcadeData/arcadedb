@@ -273,13 +273,18 @@ public class CSRBuilder {
 
   private void collectSchemaProperties(final DocumentType type, final Map<String, Column.Type> result) {
     for (final com.arcadedb.schema.Property prop : type.getProperties()) {
-      if (result.containsKey(prop.getName()))
-        continue;
       if (propertyFilter != null && !containsProperty(prop.getName()))
         continue;
       final Column.Type colType = schemaTypeToColumnType(prop.getType());
-      if (colType != null)
-        result.put(prop.getName(), colType);
+      if (colType == null)
+        continue;
+      final Column.Type existing = result.get(prop.getName());
+      final Column.Type merged = mergeColumnType(existing, colType);
+      if (merged != null)
+        result.put(prop.getName(), merged);
+      else
+        // Type conflict across vertex types — remove to prevent ClassCastException
+        result.remove(prop.getName());
     }
   }
 
@@ -291,6 +296,19 @@ public class CSRBuilder {
       case STRING -> Column.Type.STRING;
       default -> null;
     };
+  }
+
+  /**
+   * Same property name can have different schema types across vertex types (e.g., LONG vs DATETIME_MICROS).
+   * When types conflict, drop the property from columnar storage to avoid ClassCastException.
+   */
+  private static Column.Type mergeColumnType(final Column.Type existing, final Column.Type incoming) {
+    if (existing == null)
+      return incoming;
+    if (incoming == null || existing == incoming)
+      return existing;
+    // Type conflict — cannot safely store in a single column
+    return null;
   }
 
   private boolean containsProperty(final String propName) {
@@ -311,6 +329,17 @@ public class CSRBuilder {
       final Column column = store.getColumn(propName);
       if (column == null)
         continue;
+
+      // Skip values whose runtime type doesn't match the detected column type
+      // (e.g., LocalDateTime in a property detected as LONG from schema or sampling)
+      switch (entry.getValue()) {
+      case INT:
+      case LONG:
+      case DOUBLE:
+        if (!(value instanceof Number))
+          continue;
+        break;
+      }
 
       switch (entry.getValue()) {
       case INT:
