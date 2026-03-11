@@ -25,11 +25,15 @@ import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -296,6 +300,107 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   @Override
   public int[] getNeighborIds(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
     return getVertices(nodeId, direction, edgeTypes);
+  }
+
+  @Override
+  public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    final Snapshot snap = checkBuilt();
+
+    // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
+    if (snap.overlay != null)
+      return null;
+
+    final int n = snap.nodeMapping.size();
+
+    if (edgeTypes != null && edgeTypes.length == 1) {
+      // Single edge type: zero-copy — return CSR arrays directly
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeTypes[0]);
+      if (csr == null)
+        return null;
+      return buildNeighborViewFromCSR(csr, n, direction);
+    }
+
+    // Multiple or all edge types: merge CSR arrays into a single packed structure
+    final Collection<CSRAdjacencyIndex> indices;
+    if (edgeTypes != null && edgeTypes.length > 0) {
+      final List<CSRAdjacencyIndex> list = new ArrayList<>(edgeTypes.length);
+      for (final String et : edgeTypes) {
+        final CSRAdjacencyIndex csr = snap.csrPerType.get(et);
+        if (csr != null)
+          list.add(csr);
+      }
+      if (list.isEmpty())
+        return null;
+      if (list.size() == 1)
+        return buildNeighborViewFromCSR(list.get(0), n, direction);
+      indices = list;
+    } else {
+      indices = snap.csrPerType.values();
+      if (indices.isEmpty())
+        return null;
+      if (indices.size() == 1)
+        return buildNeighborViewFromCSR(indices.iterator().next(), n, direction);
+    }
+
+    return buildMergedNeighborView(indices, n, direction);
+  }
+
+  private static NeighborView buildNeighborViewFromCSR(final CSRAdjacencyIndex csr, final int n,
+      final Vertex.DIRECTION direction) {
+    if (direction == Vertex.DIRECTION.OUT)
+      return new NeighborView(n, csr.getForwardOffsets(), csr.getForwardNeighbors());
+    if (direction == Vertex.DIRECTION.IN)
+      return new NeighborView(n, csr.getBackwardOffsets(), csr.getBackwardNeighbors());
+
+    // BOTH: merge forward + backward into a single packed structure
+    return buildMergedNeighborView(List.of(csr), n, direction);
+  }
+
+  private static NeighborView buildMergedNeighborView(final Collection<CSRAdjacencyIndex> indices,
+      final int n, final Vertex.DIRECTION direction) {
+    // First pass: compute degree per node
+    final int[] offsets = new int[n + 1];
+    for (final CSRAdjacencyIndex csr : indices)
+      for (int i = 0; i < n; i++) {
+        if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
+          offsets[i + 1] += csr.outDegree(i);
+        if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+          offsets[i + 1] += csr.inDegree(i);
+      }
+
+    // Convert counts to prefix sums
+    for (int i = 1; i <= n; i++)
+      offsets[i] += offsets[i - 1];
+
+    // Second pass: fill neighbors
+    final int totalEdges = offsets[n];
+    final int[] neighbors = new int[totalEdges];
+    final int[] pos = new int[n]; // current write position per node
+    for (int i = 0; i < n; i++)
+      pos[i] = offsets[i];
+
+    for (final CSRAdjacencyIndex csr : indices) {
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+        final int[] fwdNbrs = csr.getForwardNeighbors();
+        for (int i = 0; i < n; i++) {
+          final int start = csr.outOffset(i);
+          final int end = csr.outOffsetEnd(i);
+          for (int j = start; j < end; j++)
+            neighbors[pos[i]++] = fwdNbrs[j];
+        }
+      }
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+        final int[] bwdNbrs = csr.getBackwardNeighbors();
+        for (int i = 0; i < n; i++) {
+          final int start = csr.inOffset(i);
+          final int end = csr.inOffsetEnd(i);
+          for (int j = start; j < end; j++)
+            neighbors[pos[i]++] = bwdNbrs[j];
+        }
+      }
+    }
+
+    return new NeighborView(n, offsets, neighbors);
   }
 
   // --- Node ID / RID mapping ---

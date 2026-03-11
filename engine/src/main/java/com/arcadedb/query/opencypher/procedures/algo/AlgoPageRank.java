@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -121,8 +122,18 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    // Pre-fetch all OUT neighbor arrays from CSR (O(1) per node)
-    final int[][] outNeighbors = buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, null);
+    // Zero-allocation neighbor access via NeighborView
+    final NeighborView outView = provider.getNeighborView(Vertex.DIRECTION.OUT);
+    final int[] nbrs;
+    final boolean hasView = outView != null;
+
+    if (hasView) {
+      nbrs = outView.neighbors();
+    } else {
+      // Fallback: materialize adjacency (should not happen with GAV, but keeps correctness)
+      nbrs = null;
+    }
+    final int[][] outNeighborsFallback = hasView ? null : buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, null);
 
     final double[] scores = new double[n];
     final double initialScore = 1.0 / n;
@@ -133,18 +144,33 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
       final double[] newScores = new double[n];
       double dangling = 0.0;
 
-      for (int i = 0; i < n; i++)
-        if (outNeighbors[i].length == 0)
+      // Detect dangling nodes (no outgoing edges)
+      for (int i = 0; i < n; i++) {
+        final int deg = hasView ? outView.degree(i) : outNeighborsFallback[i].length;
+        if (deg == 0)
           dangling += scores[i];
+      }
 
       // Push contributions: each node distributes its score to OUT neighbors
-      for (int i = 0; i < n; i++) {
-        final int[] neighbors = outNeighbors[i];
-        if (neighbors.length == 0)
-          continue;
-        final double contribution = scores[i] / neighbors.length;
-        for (final int neighbor : neighbors)
-          newScores[neighbor] += contribution;
+      if (hasView) {
+        for (int i = 0; i < n; i++) {
+          final int start = outView.offset(i);
+          final int end = outView.offsetEnd(i);
+          if (start == end)
+            continue;
+          final double contribution = scores[i] / (end - start);
+          for (int j = start; j < end; j++)
+            newScores[nbrs[j]] += contribution;
+        }
+      } else {
+        for (int i = 0; i < n; i++) {
+          final int[] neighbors = outNeighborsFallback[i];
+          if (neighbors.length == 0)
+            continue;
+          final double contribution = scores[i] / neighbors.length;
+          for (final int neighbor : neighbors)
+            newScores[neighbor] += contribution;
+        }
       }
 
       final double danglingContribution = dampingFactor * dangling / n;

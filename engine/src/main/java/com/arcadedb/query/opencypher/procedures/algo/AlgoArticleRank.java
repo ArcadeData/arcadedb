@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -123,12 +124,22 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    final int[][] outNeighbors = buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, null);
+    // Zero-allocation neighbor access via NeighborView
+    final NeighborView outView = provider.getNeighborView(Vertex.DIRECTION.OUT);
+    final int[] nbrs;
+    final boolean hasView = outView != null;
+
+    if (hasView) {
+      nbrs = outView.neighbors();
+    } else {
+      nbrs = null;
+    }
+    final int[][] outNeighborsFallback = hasView ? null : buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, null);
 
     // Compute out-degrees and average
     long totalOutDeg = 0;
     for (int i = 0; i < n; i++)
-      totalOutDeg += outNeighbors[i].length;
+      totalOutDeg += hasView ? outView.degree(i) : outNeighborsFallback[i].length;
     final double avgOutDeg = (double) totalOutDeg / n;
 
     final double[] scores = new double[n];
@@ -140,18 +151,31 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
       final double[] newScores = new double[n];
       double dangling = 0.0;
 
-      for (int i = 0; i < n; i++)
-        if (outNeighbors[i].length == 0)
-          dangling += scores[i];
-
       for (int i = 0; i < n; i++) {
-        final int[] neighbors = outNeighbors[i];
-        if (neighbors.length == 0)
-          continue;
-        // ArticleRank: divide by (outDeg + avgOutDeg)
-        final double contribution = scores[i] / (neighbors.length + avgOutDeg);
-        for (final int neighbor : neighbors)
-          newScores[neighbor] += contribution;
+        final int deg = hasView ? outView.degree(i) : outNeighborsFallback[i].length;
+        if (deg == 0)
+          dangling += scores[i];
+      }
+
+      if (hasView) {
+        for (int i = 0; i < n; i++) {
+          final int start = outView.offset(i);
+          final int end = outView.offsetEnd(i);
+          if (start == end)
+            continue;
+          final double contribution = scores[i] / ((end - start) + avgOutDeg);
+          for (int j = start; j < end; j++)
+            newScores[nbrs[j]] += contribution;
+        }
+      } else {
+        for (int i = 0; i < n; i++) {
+          final int[] neighbors = outNeighborsFallback[i];
+          if (neighbors.length == 0)
+            continue;
+          final double contribution = scores[i] / (neighbors.length + avgOutDeg);
+          for (final int neighbor : neighbors)
+            newScores[neighbor] += contribution;
+        }
       }
 
       final double danglingContribution = dampingFactor * dangling / n;

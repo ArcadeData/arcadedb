@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -112,12 +113,17 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    final int[][] outAdj = buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, relTypes);
-    final int[][] inAdj = buildAdjacencyFromProvider(provider, Vertex.DIRECTION.IN, relTypes);
+    // Zero-allocation neighbor access via NeighborView
+    final NeighborView outView = provider.getNeighborView(Vertex.DIRECTION.OUT, relTypes);
+    final NeighborView inView = provider.getNeighborView(Vertex.DIRECTION.IN, relTypes);
+    final boolean hasView = outView != null && inView != null;
+
+    final int[][] outAdjFallback = hasView ? null : buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, relTypes);
+    final int[][] inAdjFallback = hasView ? null : buildAdjacencyFromProvider(provider, Vertex.DIRECTION.IN, relTypes);
 
     final int[] outDegree = new int[n];
     for (int i = 0; i < n; i++)
-      outDegree[i] = outAdj[i].length;
+      outDegree[i] = hasView ? outView.degree(i) : outAdjFallback[i].length;
 
     final double[] rank = new double[n];
     rank[sourceIdx] = 1.0;
@@ -129,13 +135,27 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
         if (outDegree[i] == 0)
           dangling += rank[i];
 
-      for (int i = 0; i < n; i++) {
-        double incoming = 0.0;
-        for (final int j : inAdj[i])
-          if (outDegree[j] > 0)
-            incoming += rank[j] / outDegree[j];
-        final double personal = (i == sourceIdx) ? 1.0 : 0.0;
-        newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
+      if (hasView) {
+        final int[] inNbrs = inView.neighbors();
+        for (int i = 0; i < n; i++) {
+          double incoming = 0.0;
+          for (int k = inView.offset(i), end = inView.offsetEnd(i); k < end; k++) {
+            final int j = inNbrs[k];
+            if (outDegree[j] > 0)
+              incoming += rank[j] / outDegree[j];
+          }
+          final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+          newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
+        }
+      } else {
+        for (int i = 0; i < n; i++) {
+          double incoming = 0.0;
+          for (final int j : inAdjFallback[i])
+            if (outDegree[j] > 0)
+              incoming += rank[j] / outDegree[j];
+          final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+          newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
+        }
       }
 
       double maxChange = 0.0;

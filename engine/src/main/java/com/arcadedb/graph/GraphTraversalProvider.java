@@ -99,4 +99,15 @@ public interface GraphTraversalProvider {
    * Returns a property value from columnar storage, or null if not materialized.
    */
   Object getProperty(int nodeId, String propertyName);
+
+  /**
+   * Returns a packed {@link NeighborView} for zero-allocation iteration over all nodes' neighbors,
+   * or {@code null} if this provider does not support the optimization (e.g., when overlays are active).
+   * <p>
+   * When available, algorithms should prefer this over per-node {@link #getNeighborIds} calls
+   * to avoid O(N) array allocations.
+   */
+  default NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return null;
+  }
 }

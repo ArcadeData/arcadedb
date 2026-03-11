@@ -25,11 +25,18 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Abstract base class for algorithm procedures.
@@ -226,6 +233,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * Provides uniform access to adjacency, vertex lookup, and RID resolution regardless of backing.
    */
   protected static class GraphData {
+    private static final int[] EMPTY_NEIGHBORS = new int[0];
+
     public final int                     nodeCount;
     private final GraphTraversalProvider provider;
     private final List<Vertex>           vertices;
@@ -247,12 +256,33 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
     public int[][] adjacency(final Vertex.DIRECTION dir, final String... relTypes) {
       if (provider != null) {
+        // Try zero-allocation NeighborView first
+        final NeighborView nv = provider.getNeighborView(dir, relTypes);
+        if (nv != null) {
+          final int[][] adj = new int[nodeCount][];
+          final int[] nbrs = nv.neighbors();
+          for (int i = 0; i < nodeCount; i++) {
+            final int start = nv.offset(i);
+            final int end = nv.offsetEnd(i);
+            adj[i] = start == end ? EMPTY_NEIGHBORS : Arrays.copyOfRange(nbrs, start, end);
+          }
+          return adj;
+        }
         final int[][] adj = new int[nodeCount][];
         for (int i = 0; i < nodeCount; i++)
           adj[i] = provider.getNeighborIds(i, dir, relTypes);
         return adj;
       }
       return GraphEngine.buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+    }
+
+    /**
+     * Returns a zero-allocation {@link NeighborView} for offset-based iteration when CSR-backed,
+     * or {@code null} if backed by OLTP vertices. Algorithms that iterate all neighbors should
+     * prefer this over {@link #adjacency} to avoid O(N) array allocations.
+     */
+    public NeighborView neighborView(final Vertex.DIRECTION dir, final String... relTypes) {
+      return provider != null ? provider.getNeighborView(dir, relTypes) : null;
     }
 
     public Vertex getVertex(final int i) {
