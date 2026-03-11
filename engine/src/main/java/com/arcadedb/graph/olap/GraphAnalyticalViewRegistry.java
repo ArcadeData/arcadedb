@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 
 import java.util.Collections;
 import java.util.Map;
@@ -48,7 +49,7 @@ public class GraphAnalyticalViewRegistry {
    */
   public static void register(final Database database, final String name, final GraphAnalyticalView view) {
     final ConcurrentHashMap<String, GraphAnalyticalView> views =
-        REGISTRY.computeIfAbsent(database, k -> new ConcurrentHashMap<>());
+        REGISTRY.computeIfAbsent(unwrap(database), k -> new ConcurrentHashMap<>());
     final GraphAnalyticalView existing = views.putIfAbsent(name, view);
     if (existing != null)
       throw new IllegalArgumentException("GraphAnalyticalView '" + name + "' is already registered");
@@ -58,7 +59,7 @@ public class GraphAnalyticalViewRegistry {
    * Returns the named GAV for a database, or null if not registered.
    */
   public static GraphAnalyticalView get(final Database database, final String name) {
-    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(database);
+    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
     return views != null ? views.get(name) : null;
   }
 
@@ -66,7 +67,7 @@ public class GraphAnalyticalViewRegistry {
    * Returns all registered GAVs for a database (unmodifiable).
    */
   public static Map<String, GraphAnalyticalView> getAll(final Database database) {
-    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(database);
+    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
     return views != null ? Collections.unmodifiableMap(views) : Collections.emptyMap();
   }
 
@@ -74,7 +75,7 @@ public class GraphAnalyticalViewRegistry {
    * Returns all registered GAVs for a database that are ready for use.
    */
   public static Map<String, GraphAnalyticalView> getReady(final Database database) {
-    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(database);
+    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
     if (views == null)
       return Collections.emptyMap();
     final ConcurrentHashMap<String, GraphAnalyticalView> ready = new ConcurrentHashMap<>();
@@ -88,11 +89,12 @@ public class GraphAnalyticalViewRegistry {
    * Unregisters a named GAV.
    */
   public static void unregister(final Database database, final String name) {
-    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(database);
+    final Database unwrapped = unwrap(database);
+    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrapped);
     if (views != null) {
       views.remove(name);
       if (views.isEmpty())
-        REGISTRY.remove(database);
+        REGISTRY.remove(unwrapped);
     }
   }
 
@@ -100,7 +102,7 @@ public class GraphAnalyticalViewRegistry {
    * Closes and unregisters all GAVs for a database.
    */
   public static void closeAll(final Database database) {
-    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.remove(database);
+    final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.remove(unwrap(database));
     if (views != null)
       for (final GraphAnalyticalView view : views.values())
         view.close();
@@ -111,6 +113,19 @@ public class GraphAnalyticalViewRegistry {
    * Used during restore to clear stale entries from a previous database lifecycle.
    */
   public static void clearAll(final Database database) {
-    REGISTRY.remove(database);
+    REGISTRY.remove(unwrap(database));
+  }
+
+  /**
+   * Unwraps a database to its underlying instance (e.g., ServerDatabase → LocalDatabase).
+   * Ensures consistent identity for WeakHashMap lookups regardless of wrapper layers.
+   */
+  private static Database unwrap(final Database database) {
+    if (database instanceof DatabaseInternal) {
+      final DatabaseInternal internal = ((DatabaseInternal) database).getWrappedDatabaseInstance();
+      if (internal != null && internal != database)
+        return unwrap(internal);
+    }
+    return database;
   }
 }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -65,6 +66,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   // GAV provider for CSR-accelerated fast path (null = not checked yet, resolved lazily)
   private GraphTraversalProvider gavProvider;
   private boolean gavProviderResolved = false;
+  private String gavProviderDebug = null;
 
   // Profiling: track fast path vs standard path usage
   private long fastPathCount = 0;
@@ -226,6 +228,13 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;
+              final long begin;
+              if (context.isProfiling()) {
+                begin = System.nanoTime();
+                if (cost < 0)
+                  cost = 0;
+              } else
+                begin = 0;
 
               // Determine if we can use fast path for this vertex
               useFastPath = canUseFastPath(lastResult);
@@ -242,6 +251,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                 // Track seen edges for BOTH direction to deduplicate self-loops
                 seenEdges = getEffectiveDirection() == Direction.BOTH ? new HashSet<>() : null;
               }
+
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
             } else {
               // Source is not a vertex, skip
               currentEdges = null;
@@ -559,7 +571,15 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private GraphTraversalProvider resolveGavProvider(final String[] edgeTypes) {
     if (!gavProviderResolved) {
       gavProviderResolved = true;
-      gavProvider = GraphTraversalProviderRegistry.findProvider(context.getDatabase(), edgeTypes);
+      final Database db = context.getDatabase();
+      gavProvider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+      if (gavProvider == null && context.isProfiling()) {
+        final List<GraphTraversalProvider> allProviders = GraphTraversalProviderRegistry.getProviders(db);
+        gavProviderDebug = "db=" + db.getClass().getSimpleName() + ", providers=" + allProviders.size();
+        if (!allProviders.isEmpty())
+          gavProviderDebug += " [ready=" + allProviders.stream().filter(GraphTraversalProvider::isReady).count()
+              + ", edgeTypes=" + java.util.Arrays.toString(edgeTypes) + "]";
+      }
     }
     return gavProvider;
   }
@@ -722,6 +742,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
           builder.append("standard (").append(standardPathCount).append(" edges)");
         }
       }
+      if (gavProviderDebug != null)
+        builder.append(", GAV-debug: ").append(gavProviderDebug);
 
       builder.append(")");
     }
