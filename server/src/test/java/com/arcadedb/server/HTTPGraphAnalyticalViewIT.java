@@ -79,16 +79,16 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
       command(serverIndex, "CREATE EDGE TYPE READS");
 
       final String response = command(serverIndex,
-          "CREATE GRAPH ANALYTICAL VIEW sensorNet VERTEX TYPES (Sensor) EDGE TYPES (READS) AUTO UPDATE");
+          "CREATE GRAPH ANALYTICAL VIEW sensorNet VERTEX TYPES (Sensor) EDGE TYPES (READS) UPDATE MODE SYNCHRONOUS");
       assertThat(response).contains("\"created\":true");
 
-      // Verify auto-update flag via schema query
+      // Verify update mode via schema query
       final JSONObject result = executeCommand(serverIndex, "sql",
           "SELECT FROM schema:graphAnalyticalViews WHERE name = 'sensorNet'");
       assertThat(result).isNotNull();
       final JSONArray records = result.getJSONObject("result").getJSONArray("records");
       assertThat(records.length()).isEqualTo(1);
-      assertThat(records.getJSONObject(0).getBoolean("autoUpdate")).isTrue();
+      assertThat(records.getJSONObject(0).getString("updateMode")).isEqualTo("SYNCHRONOUS");
 
       // Cleanup
       command(serverIndex, "DROP GRAPH ANALYTICAL VIEW sensorNet");
@@ -113,6 +113,42 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
       command(serverIndex, "DROP GRAPH ANALYTICAL VIEW myView");
       command(serverIndex, "DROP TYPE LINK UNSAFE");
       command(serverIndex, "DROP TYPE Node UNSAFE");
+    });
+  }
+
+  @Test
+  void cypherQueryUsesGavViaServer() throws Exception {
+    testEachServer((serverIndex) -> {
+      command(serverIndex, "CREATE VERTEX TYPE GavPerson");
+      command(serverIndex, "CREATE EDGE TYPE GAV_KNOWS");
+      command(serverIndex, "CREATE VERTEX GavPerson SET name = 'Alice'");
+      command(serverIndex, "CREATE VERTEX GavPerson SET name = 'Bob'");
+      command(serverIndex, "CREATE VERTEX GavPerson SET name = 'Charlie'");
+
+      // Create edges via SQL (simpler than Cypher for setup)
+      command(serverIndex,
+          "CREATE EDGE GAV_KNOWS FROM (SELECT FROM GavPerson WHERE name = 'Alice') TO (SELECT FROM GavPerson WHERE name = 'Bob')");
+      command(serverIndex,
+          "CREATE EDGE GAV_KNOWS FROM (SELECT FROM GavPerson WHERE name = 'Alice') TO (SELECT FROM GavPerson WHERE name = 'Charlie')");
+
+      // Create GAV and rebuild synchronously
+      command(serverIndex, "CREATE GRAPH ANALYTICAL VIEW testGav EDGE TYPES (GAV_KNOWS)");
+      Thread.sleep(2000);
+      command(serverIndex, "REBUILD GRAPH ANALYTICAL VIEW testGav");
+
+      // Run Cypher with aggregation — this disables optimizer but MatchRelationshipStep should use GAV
+      // The key: this query goes through ServerDatabase, verifying unwrap logic works
+      final JSONObject result = executeCommand(serverIndex, "cypher",
+          "MATCH (a:GavPerson)-[:GAV_KNOWS]->(b:GavPerson) RETURN a.name AS person, collect(b.name) AS friends ORDER BY person");
+      assertThat(result).isNotNull();
+      final JSONArray records = result.getJSONObject("result").getJSONArray("records");
+      assertThat(records.length()).isEqualTo(1);
+      assertThat(records.getJSONObject(0).getString("person")).isEqualTo("Alice");
+
+      // Cleanup
+      command(serverIndex, "DROP GRAPH ANALYTICAL VIEW testGav");
+      command(serverIndex, "DROP TYPE GAV_KNOWS UNSAFE");
+      command(serverIndex, "DROP TYPE GavPerson UNSAFE");
     });
   }
 
@@ -159,7 +195,7 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
       command(serverIndex, "CREATE EDGE TYPE MANAGES");
 
       command(serverIndex,
-          "CREATE GRAPH ANALYTICAL VIEW socialGraph VERTEX TYPES (Employee) EDGE TYPES (MANAGES) AUTO UPDATE");
+          "CREATE GRAPH ANALYTICAL VIEW socialGraph VERTEX TYPES (Employee) EDGE TYPES (MANAGES) UPDATE MODE SYNCHRONOUS");
 
       final JSONObject result = executeCommand(serverIndex, "sql",
           "SELECT FROM schema:graphAnalyticalViews WHERE name = 'socialGraph'");
@@ -169,7 +205,7 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
 
       final JSONObject viewMeta = records.getJSONObject(0);
       assertThat(viewMeta.getString("name")).isEqualTo("socialGraph");
-      assertThat(viewMeta.getBoolean("autoUpdate")).isTrue();
+      assertThat(viewMeta.getString("updateMode")).isEqualTo("SYNCHRONOUS");
       assertThat(viewMeta.has("vertexTypes")).isTrue();
       assertThat(viewMeta.has("edgeTypes")).isTrue();
 
