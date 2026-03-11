@@ -78,8 +78,11 @@ public class SuffixIdentifier extends SimpleNode {
       if (context != null && varName.startsWith("$") && context.getVariable(varName) != null)
         return context.getVariable(varName);
 
-      if (currentRecord != null)
-        return ((Document) currentRecord.getRecord()).get(varName);
+      if (currentRecord != null) {
+        final Record record = currentRecord.getRecord();
+        if (record instanceof Document doc)
+          return doc.get(varName);
+      }
 
       // Return null instead of the variable name for uninitialized variables (issue #1939)
       return null;
@@ -101,7 +104,9 @@ public class SuffixIdentifier extends SimpleNode {
       else if (OUT_PROPERTY.equalsIgnoreCase(recordAttribute.name) && currentRecord.getRecord() instanceof Edge edge)
         return edge.getOut();
 
-      return ((Document) currentRecord.getRecord()).get(recordAttribute.name);
+      final Record record = currentRecord.getRecord();
+      if (record instanceof Document doc)
+        return doc.get(recordAttribute.name);
     }
     return null;
   }
@@ -391,8 +396,12 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public boolean isDefinedFor(final Record currentRecord) {
-    if (identifier != null)
-      return ((Document) currentRecord.getRecord()).has(identifier.getStringValue());
+    if (identifier != null) {
+      final Record record = currentRecord.getRecord();
+      if (record instanceof Document doc)
+        return doc.has(identifier.getStringValue());
+      return false;
+    }
 
     return true;
   }
