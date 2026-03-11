@@ -3,6 +3,16 @@
 
 ## How to contribute to ArcadeDB
 
+### Contribution License
+
+ArcadeDB is licensed under the [Apache License 2.0](LICENSE). By submitting a contribution (pull request, patch, or any other form), you agree that your contribution is licensed under the same terms, as stated in [Section 5 of the Apache License 2.0](LICENSE). This means:
+
+- **You keep your copyright.** You are not transferring ownership of your code to anyone.
+- **You grant a perpetual license.** Your contribution is irrevocably available under Apache 2.0, including copyright and patent grants (Sections 2 and 3).
+- **No CLA required.** We deliberately do not use a Contributor License Agreement. This keeps the copyright distributed among all contributors, which structurally prevents any single entity from changing the project's license. See our [Governance](GOVERNANCE.md) for details.
+
+By submitting a contribution, you represent that you have the right to license it under the Apache License 2.0 — i.e., the work is your own, or you have permission from the copyright holder.
+
 #### **Did you find a bug?**
 
 - **Do not open up a GitHub issue if the bug is a security vulnerability**, and instead write to support -at- arcadedb.com.

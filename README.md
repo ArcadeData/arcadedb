@@ -218,14 +218,13 @@ For security issues kindly email us at support@arcadedb.com instead of posting a
 
 ### License and Attribution
 
-ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). If you need commercial
-support, or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both
-Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
+ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). We are committed to remaining **Open Source Forever** — see our [Governance](GOVERNANCE.md) for the structural guarantees that make this more than a promise. If you need commercial support, or you need to have an issue fixed ASAP, check our [pricing page](https://arcadedb.com/pricing.html).
 
 For third-party attributions and copyright notices, see:
 - [NOTICE](NOTICE) - Required legal attributions
 - [ATTRIBUTIONS.md](ATTRIBUTIONS.md) - Detailed third-party acknowledgments
 - [LICENSE](LICENSE) - Full license text
+- [GOVERNANCE.md](GOVERNANCE.md) - License guarantee and project governance
 
 ### Thanks To
 
