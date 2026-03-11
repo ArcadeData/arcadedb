@@ -2396,11 +2396,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
             if (loc != null && !loc.deleted) {
               // JVector returns similarity scores - convert to distance based on similarity function
+              // Note: JVector's COSINE returns (1 + cos(a,b)) / 2 mapped to [0, 1]
               final float score = nodeScore.score;
               final float distance = switch (metadata.similarityFunction) {
                 case COSINE ->
-                  // For cosine, similarity is in [-1, 1], distance is 1 - similarity
-                    1.0f - score;
+                  // JVector COSINE score = (1 + cos) / 2, so cos = 2*score - 1, distance = 1 - cos
+                    2.0f * (1.0f - score);
                 case EUCLIDEAN ->
                   // For euclidean, the score is already the distance
                     score;
@@ -2558,9 +2559,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
             if (loc != null && !loc.deleted) {
               // Convert similarity score to distance
+              // Note: JVector's COSINE returns (1 + cos(a,b)) / 2 mapped to [0, 1]
               final float score = nodeScore.score;
               final float distance = switch (metadata.similarityFunction) {
-                case COSINE -> 1.0f - score;
+                case COSINE ->
+                  // JVector COSINE score = (1 + cos) / 2, so cos = 2*score - 1, distance = 1 - cos
+                    2.0f * (1.0f - score);
                 case EUCLIDEAN -> score;
                 case DOT_PRODUCT -> -score;
                 default -> score;
