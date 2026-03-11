@@ -1479,12 +1479,13 @@ public class CypherExecutionPlan {
         for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
           final RelationshipPattern relPattern = pathPattern.getRelationship(i);
           final NodePattern targetNode = pathPattern.getNode(i + 1);
-          // Named edge: keep user variable only if actually referenced in the query;
-          // otherwise treat as anonymous for GAV eligibility.
+          // Named edge: keep user variable if actually referenced in the query or if VLP
+          // (VLP steps always need the variable for pre-bound path validation).
+          // For unreferenced fixed-length edges, treat as anonymous for GAV eligibility.
           // Anonymous edge: null if GAV-eligible, internal var if edge tracking needed.
           final String relVar;
           if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
-            if (isEdgeVariableReferenced(relPattern.getVariable()))
+            if (relPattern.isVariableLength() || isEdgeVariableReferenced(relPattern.getVariable()))
               relVar = relPattern.getVariable();
             else
               relVar = hopNeedsEdgeTracking[i] ? ("  rel" + anonymousVarCounter++) : null;
@@ -1834,7 +1835,7 @@ public class CypherExecutionPlan {
                 final NodePattern targetNode = pathPattern.getNode(i + 1);
                 final String relVar;
                 if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
-                  if (isEdgeVariableReferenced(relPattern.getVariable()))
+                  if (relPattern.isVariableLength() || isEdgeVariableReferenced(relPattern.getVariable()))
                     relVar = relPattern.getVariable();
                   else
                     relVar = hopNeedsEdgeTrackingLegacy[i] ? ("  rel" + anonymousVarCounter++) : null;
@@ -3036,61 +3037,50 @@ public class CypherExecutionPlan {
   /**
    * Checks whether an edge variable is actually referenced in the query outside its
    * MATCH pattern declaration. If the variable appears only in the pattern (e.g.,
-   * {@code [r:KNOWS]}) but is never used in RETURN, WHERE, ORDER BY, WITH, SET, or DELETE,
-   * it can be treated as anonymous for GAV/fast-path purposes.
+   * {@code [r:KNOWS]}) but is never used elsewhere, it can be treated as anonymous
+   * for GAV/fast-path purposes.
+   * <p>
+   * Rather than enumerating every clause type, this method counts how many times
+   * the variable appears across all relationship patterns in all MATCH clauses.
+   * If it appears more than once, it's a bound reference in another pattern.
+   * Then it checks all expression texts from all other clauses (RETURN, WHERE,
+   * ORDER BY, WITH, UNWIND, SET, DELETE, CREATE, MERGE) for the variable name.
    *
    * @param variable the edge variable name to check
-   * @return true if the variable is referenced in the query clauses
+   * @return true if the variable is referenced elsewhere in the query
    */
   private boolean isEdgeVariableReferenced(final String variable) {
-    // Check RETURN clause
-    if (statement.getReturnClause() != null)
-      for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
-        if (expressionReferencesVariable(item.getExpression().getText(), variable))
-          return true;
-
-    // Check WHERE clause
-    if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
-      if (expressionReferencesVariable(statement.getWhereClause().getConditionExpression().getText(), variable))
-        return true;
-
-    // Check MATCH-scoped WHERE clauses
-    for (final MatchClause match : statement.getMatchClauses())
-      if (match.hasWhereClause() && match.getWhereClause().getConditionExpression() != null)
-        if (expressionReferencesVariable(match.getWhereClause().getConditionExpression().getText(), variable))
-          return true;
-
-    // Check ORDER BY
-    if (statement.getOrderByClause() != null)
-      for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
-        if (expressionReferencesVariable(item.getExpression(), variable))
-          return true;
-
-    // Check WITH clauses
-    for (final WithClause withClause : statement.getWithClauses()) {
-      for (final ReturnClause.ReturnItem item : withClause.getItems())
-        if (expressionReferencesVariable(item.getExpression().getText(), variable))
-          return true;
-      if (withClause.getWhereClause() != null && withClause.getWhereClause().getConditionExpression() != null)
-        if (expressionReferencesVariable(withClause.getWhereClause().getConditionExpression().getText(), variable))
-          return true;
+    // 1. Check if the variable appears as a relationship variable in OTHER MATCH patterns
+    //    (e.g., MATCH ()-[r:E]-() MATCH p = ()-[r]-() — r is bound in the second MATCH)
+    int relVarCount = 0;
+    for (final MatchClause match : statement.getMatchClauses()) {
+      if (match.hasPathPatterns()) {
+        for (final PathPattern path : match.getPathPatterns()) {
+          for (int i = 0; i < path.getRelationshipCount(); i++) {
+            final RelationshipPattern rel = path.getRelationship(i);
+            if (variable.equals(rel.getVariable()))
+              relVarCount++;
+          }
+        }
+      }
     }
+    // If the variable appears in more than one relationship pattern, it's referenced elsewhere
+    if (relVarCount > 1)
+      return true;
 
-    // Check SET clause
-    if (statement.getSetClause() != null)
-      for (final SetClause.SetItem item : statement.getSetClause().getItems())
-        if (variable.equals(item.getVariable()))
-          return true;
-
-    // Check DELETE clause
-    if (statement.getDeleteClause() != null)
-      if (statement.getDeleteClause().getVariables().contains(variable))
-        return true;
-
-    // Check clausesInOrder for any WITH/SET/DELETE we might have missed
+    // 2. Check all expression texts from non-MATCH clauses.
+    //    Use clausesInOrder to cover everything: RETURN, WHERE, WITH, UNWIND, SET, DELETE, etc.
     if (statement.getClausesInOrder() != null) {
       for (final ClauseEntry entry : statement.getClausesInOrder()) {
-        if (entry.getType() == ClauseEntry.ClauseType.WITH) {
+        switch (entry.getType()) {
+        case RETURN: {
+          final ReturnClause rc = entry.getTypedClause();
+          for (final ReturnClause.ReturnItem item : rc.getReturnItems())
+            if (expressionReferencesVariable(item.getExpression().getText(), variable))
+              return true;
+          break;
+        }
+        case WITH: {
           final WithClause wc = entry.getTypedClause();
           for (final ReturnClause.ReturnItem item : wc.getItems())
             if (expressionReferencesVariable(item.getExpression().getText(), variable))
@@ -3098,18 +3088,58 @@ public class CypherExecutionPlan {
           if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null)
             if (expressionReferencesVariable(wc.getWhereClause().getConditionExpression().getText(), variable))
               return true;
-        } else if (entry.getType() == ClauseEntry.ClauseType.SET) {
+          break;
+        }
+        case UNWIND: {
+          final UnwindClause uc = entry.getTypedClause();
+          if (expressionReferencesVariable(uc.getListExpression().getText(), variable))
+            return true;
+          break;
+        }
+        case SET: {
           final SetClause sc = entry.getTypedClause();
           for (final SetClause.SetItem item : sc.getItems())
             if (variable.equals(item.getVariable()))
               return true;
-        } else if (entry.getType() == ClauseEntry.ClauseType.DELETE) {
+          break;
+        }
+        case DELETE: {
           final DeleteClause dc = entry.getTypedClause();
           if (dc.getVariables().contains(variable))
             return true;
+          break;
+        }
+        default:
+          break;
         }
       }
     }
+
+    // 3. Check statement-level WHERE, ORDER BY (may not be in clausesInOrder)
+    if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
+      if (expressionReferencesVariable(statement.getWhereClause().getConditionExpression().getText(), variable))
+        return true;
+
+    for (final MatchClause match : statement.getMatchClauses())
+      if (match.hasWhereClause() && match.getWhereClause().getConditionExpression() != null)
+        if (expressionReferencesVariable(match.getWhereClause().getConditionExpression().getText(), variable))
+          return true;
+
+    if (statement.getOrderByClause() != null)
+      for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
+        if (expressionReferencesVariable(item.getExpression(), variable))
+          return true;
+
+    // 4. Check RETURN clause (may not be in clausesInOrder for simple queries)
+    if (statement.getReturnClause() != null)
+      for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
+        if (expressionReferencesVariable(item.getExpression().getText(), variable))
+          return true;
+
+    // 5. Check UNWIND clauses (may not be in clausesInOrder for legacy path)
+    for (final UnwindClause uc : statement.getUnwindClauses())
+      if (expressionReferencesVariable(uc.getListExpression().getText(), variable))
+        return true;
 
     return false;
   }
