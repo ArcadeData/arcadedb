@@ -31,6 +31,7 @@ import com.arcadedb.serializer.json.JSONObject;
 public class AlterGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier name;
   public String     updateModeStr;
+  public int        compactionThreshold = -1; // -1 means not set
 
   public AlterGraphAnalyticalViewStatement(final int id) {
     super(id);
@@ -46,29 +47,43 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
     if (allGavs == null || !allGavs.has(viewName))
       throw new CommandExecutionException("Graph Analytical View '" + viewName + "' does not exist");
 
-    final GraphAnalyticalView.UpdateMode newMode = GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase());
-
-    // Update the persisted definition
     final JSONObject gavDef = allGavs.getJSONObject(viewName);
-    gavDef.put("updateMode", newMode.name());
-    database.getSchema().setExtension("graphAnalyticalViews", allGavs);
-
-    // Update the live view if it exists in the registry
-    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, viewName);
-    if (liveView != null)
-      liveView.setUpdateMode(newMode);
-
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal r = new ResultInternal();
     r.setProperty("operation", "alter graph analytical view");
     r.setProperty("name", viewName);
-    r.setProperty("updateMode", newMode.name());
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, viewName);
+
+    if (updateModeStr != null) {
+      final GraphAnalyticalView.UpdateMode newMode = GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase());
+      gavDef.put("updateMode", newMode.name());
+      if (liveView != null)
+        liveView.setUpdateMode(newMode);
+      r.setProperty("updateMode", newMode.name());
+    }
+
+    if (compactionThreshold > 0) {
+      gavDef.put("compactionThreshold", compactionThreshold);
+      if (liveView != null)
+        liveView.setCompactionThreshold(compactionThreshold);
+      r.setProperty("compactionThreshold", compactionThreshold);
+    }
+
+    database.getSchema().setExtension("graphAnalyticalViews", allGavs);
+
     result.add(r);
     return result;
   }
 
   @Override
   public String toString() {
-    return "ALTER GRAPH ANALYTICAL VIEW " + name + " UPDATE MODE " + updateModeStr.toUpperCase();
+    final StringBuilder sb = new StringBuilder("ALTER GRAPH ANALYTICAL VIEW ");
+    sb.append(name);
+    if (updateModeStr != null)
+      sb.append(" UPDATE MODE ").append(updateModeStr.toUpperCase());
+    if (compactionThreshold > 0)
+      sb.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
+    return sb.toString();
   }
 }

@@ -173,6 +173,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public void build(final String[] vertexTypes, final String[] edgeTypes) {
     status = Status.BUILDING;
+    readyLatch = new CountDownLatch(1);
     try {
       final long buildStart = System.currentTimeMillis();
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
@@ -633,7 +634,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return compactionThreshold;
   }
 
-  void setCompactionThreshold(final int compactionThreshold) {
+  public void setCompactionThreshold(final int compactionThreshold) {
     this.compactionThreshold = compactionThreshold;
   }
 

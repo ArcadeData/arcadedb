@@ -3597,7 +3597,7 @@ function showGavDetail(gavName) {
     html += "<div class='mv-info-row'><span class='mv-info-label'>Properties:</span> " + escapeHtml(gav.propertyFilter.join(", ")) + "</div>";
   }
 
-  let safeName = gav.name.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+  let safeName = gav.name.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
   let currentMode = escapeHtml(gav.updateMode || "OFF");
   html += "<div class='mv-info-row'><span class='mv-info-label'>Update Mode:</span> ";
   html += "<select class='form-select form-select-sm d-inline-block' style='width:auto;' id='gavUpdateModeSelect' onchange='alterGavUpdateMode(\"" + safeName + "\", this.value)'>";
@@ -3607,6 +3607,8 @@ function showGavDetail(gavName) {
   }
   html += "</select>";
   html += "</div>";
+
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Compaction Threshold:</span> " + (gav.compactionThreshold || 10000).toLocaleString() + "</div>";
 
   if (gav.nodeCount !== undefined)
     html += "<div class='mv-info-row'><span class='mv-info-label'>Nodes:</span> " + (gav.nodeCount || 0).toLocaleString() + "</div>";
@@ -3677,6 +3679,10 @@ function createGraphAnalyticalView() {
   html += "<option value='ASYNCHRONOUS'>ASYNCHRONOUS — async rebuild on commit</option>";
   html += "</select>";
 
+  // Compaction threshold
+  html += "<label for='inputGavCompactionThreshold'>Compaction Threshold <small class='text-muted'>(optional, default 10000)</small></label>";
+  html += "<input class='form-control mt-1 mb-3' id='inputGavCompactionThreshold' type='number' min='1' placeholder='10000'>";
+
   // If not exists
   html += "<div class='form-check'>";
   html += "<input class='form-check-input' type='checkbox' id='inputGavIfNotExists'>";
@@ -3713,6 +3719,10 @@ function createGraphAnalyticalView() {
     let updateMode = $("#inputGavUpdateMode").val();
     if (updateMode && updateMode !== "OFF")
       command += " UPDATE MODE " + updateMode;
+
+    let compThreshold = $("#inputGavCompactionThreshold").val();
+    if (compThreshold && parseInt(compThreshold) > 0)
+      command += " COMPACTION THRESHOLD " + parseInt(compThreshold);
 
     let database = getCurrentDatabase();
     if (database === "") {

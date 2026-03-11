@@ -66,6 +66,7 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionSt
             r.setProperty("edgeTypes", jsonArrayToList(gavDef.getJSONArray("edgeTypes", null)));
             r.setProperty("propertyFilter", jsonArrayToList(gavDef.getJSONArray("propertyFilter", null)));
             r.setProperty("updateMode", gavDef.getString("updateMode", "OFF"));
+            r.setProperty("compactionThreshold", gavDef.getInt("compactionThreshold", 10000));
 
             // Enrich with live stats from in-memory registry
             final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, name);

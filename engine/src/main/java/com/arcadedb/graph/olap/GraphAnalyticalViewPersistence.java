@@ -123,6 +123,9 @@ public class GraphAnalyticalViewPersistence {
 
         final String updateModeStr = gavDef.getString("updateMode", "OFF");
         builder.withUpdateMode(GraphAnalyticalView.UpdateMode.valueOf(updateModeStr));
+        final int ct = gavDef.getInt("compactionThreshold", -1);
+        if (ct > 0)
+          builder.withCompactionThreshold(ct);
         builder.skipPersistence().buildAsync();
         count++;
 
@@ -134,6 +137,10 @@ public class GraphAnalyticalViewPersistence {
             "Failed to restore GraphAnalyticalView '%s'", e, gavName);
       }
     }
+    if (count > 0)
+      LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.INFO,
+          "Restoring %d Graph Analytical View(s) asynchronously on database open", count);
+
     return count;
   }
 
@@ -171,6 +178,8 @@ public class GraphAnalyticalViewPersistence {
     }
 
     json.put("updateMode", view.getUpdateMode().name());
+    if (view.getCompactionThreshold() != 10000)
+      json.put("compactionThreshold", view.getCompactionThreshold());
     return json;
   }
 }

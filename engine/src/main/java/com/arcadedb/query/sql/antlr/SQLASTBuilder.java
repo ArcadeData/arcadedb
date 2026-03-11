@@ -6205,6 +6205,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.MODE() != null && idx < identifiers.size())
       stmt.updateModeStr = identifiers.get(idx).getText();
 
+    // COMPACTION THRESHOLD <n>
+    if (bodyCtx.COMPACTION() != null && bodyCtx.THRESHOLD() != null)
+      stmt.compactionThreshold = Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText());
+
     return stmt;
   }
 
@@ -6269,7 +6273,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.AlterGraphAnalyticalViewBodyContext bodyCtx = ctx.alterGraphAnalyticalViewBody();
     final var identifiers = bodyCtx.identifier();
     stmt.name = (Identifier) visit(identifiers.get(0));
-    stmt.updateModeStr = identifiers.get(1).getText();
+    if (bodyCtx.MODE() != null && identifiers.size() > 1)
+      stmt.updateModeStr = identifiers.get(1).getText();
+    if (bodyCtx.COMPACTION() != null && bodyCtx.THRESHOLD() != null)
+      stmt.compactionThreshold = Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText());
     return stmt;
   }
 

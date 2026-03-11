@@ -26,6 +26,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -2310,6 +2311,196 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getProperty(bobId, "name")).isEqualTo("Bob");
 
     gav.close();
+  }
+
+  // --- Delta correctness and compaction tests ---
+
+  @Test
+  void testDeltaEdgeCorrectnessAfterCommit() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("LIKES");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("FOLLOWS", bob);
+    bob.newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("delta-correctness")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS", "LIKES")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(bobId, charlieId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(aliceId, charlieId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+
+    // Add edges of different type + new vertex in single transaction
+    database.begin();
+    final MutableVertex dave = database.newVertex("Person").set("name", "Dave").save();
+    alice.getIdentity().asVertex().modify().newEdge("LIKES", charlie);
+    charlie.getIdentity().asVertex().modify().newEdge("FOLLOWS", dave);
+    database.commit();
+
+    // Delta should correctly reflect multi-type additions
+    assertThat(gav.getNodeCount()).isEqualTo(4);
+    assertThat(gav.getEdgeCount()).isEqualTo(4);
+
+    final int daveId = gav.getNodeId(dave.getIdentity());
+    assertThat(gav.isConnectedTo(aliceId, charlieId, Vertex.DIRECTION.OUT, "LIKES")).isTrue();
+    assertThat(gav.isConnectedTo(charlieId, daveId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+
+    // Verify reverse direction
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "LIKES")).isEqualTo(1);
+    assertThat(gav.countEdges(daveId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+
+    gav.close();
+  }
+
+  @Test
+  void testDeltaPropertyUpdatesInColumnarStore() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").set("age", 30).set("score", 100.0).save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").set("age", 25).set("score", 85.5).save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("delta-props")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name", "age", "score")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+
+    // Verify initial values
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(30);
+    assertThat(gav.getProperty(bobId, "score")).isEqualTo(85.5);
+
+    // Update multiple properties in a single transaction
+    database.begin();
+    alice.getIdentity().asVertex().modify().set("age", 31).set("score", 105.0).save();
+    bob.getIdentity().asVertex().modify().set("name", "Robert").save();
+    database.commit();
+
+    // All updates should be reflected in the overlay immediately
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(31);
+    assertThat(gav.getProperty(aliceId, "score")).isEqualTo(105.0);
+    assertThat(gav.getProperty(aliceId, "name")).isEqualTo("Alice"); // unchanged
+    assertThat(gav.getProperty(bobId, "name")).isEqualTo("Robert");
+    assertThat(gav.getProperty(bobId, "age")).isEqualTo(25); // unchanged
+
+    // Second transaction: update again
+    database.begin();
+    alice.getIdentity().asVertex().modify().set("age", 32).save();
+    database.commit();
+
+    // Latest value should be visible
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(32);
+
+    gav.close();
+  }
+
+  @Test
+  void testCompactionTriggersFullRebuild() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // Set a very low compaction threshold to trigger compaction quickly
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("compaction-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .withCompactionThreshold(5)
+        .build();
+
+    assertThat(gav.getCompactionThreshold()).isEqualTo(5);
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Add enough edges to exceed the compaction threshold (5)
+    // This should trigger a full rebuild after the threshold is exceeded
+    database.begin();
+    MutableVertex prev = alice;
+    for (int i = 0; i < 8; i++) {
+      final MutableVertex next = database.newVertex("Person").set("name", "P" + i).save();
+      prev.getIdentity().asVertex().modify().newEdge("FOLLOWS", next);
+      prev = next;
+    }
+    database.commit();
+
+    // After compaction/rebuild, the view should still be correct
+    // Wait a bit for async compaction to complete
+    gav.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+
+    assertThat(gav.getNodeCount()).isEqualTo(9);
+    assertThat(gav.getEdgeCount()).isEqualTo(8);
+
+    // Verify the chain is intact
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+
+    gav.close();
+  }
+
+  @Test
+  void testCompactionThresholdViaDDL() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // Create GAV with compaction threshold via SQL DDL
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW compThresholdTest " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500");
+
+    // Verify persisted definition contains the threshold
+    final JSONObject allGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(allGavs).isNotNull();
+    assertThat(allGavs.has("compThresholdTest")).isTrue();
+    assertThat(allGavs.getJSONObject("compThresholdTest").getInt("compactionThreshold", -1)).isEqualTo(500);
+
+    // Verify the live view has the threshold
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "compThresholdTest");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(500);
+
+    // ALTER the compaction threshold
+    database.command("sql", "ALTER GRAPH ANALYTICAL VIEW compThresholdTest COMPACTION THRESHOLD 2000");
+
+    // Verify persisted definition is updated
+    final JSONObject updatedGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(updatedGavs.getJSONObject("compThresholdTest").getInt("compactionThreshold", -1)).isEqualTo(2000);
+
+    // Verify live view is updated
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(2000);
+
+    liveView.close();
   }
 
   // --- STALE status tests ---

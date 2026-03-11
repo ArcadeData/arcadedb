@@ -790,14 +790,16 @@ createGraphAnalyticalViewBody
       (EDGE TYPES LPAREN identifier (COMMA identifier)* RPAREN)?
       (PROPERTIES LPAREN identifier (COMMA identifier)* RPAREN)?
       (UPDATE MODE identifier)?
+      (COMPACTION THRESHOLD INTEGER_LITERAL)?
     ;
 
 /**
  * ALTER GRAPH ANALYTICAL VIEW statement
  * Syntax: ALTER GRAPH ANALYTICAL VIEW name UPDATE MODE OFF|SYNCHRONOUS|ASYNCHRONOUS
+ *         ALTER GRAPH ANALYTICAL VIEW name COMPACTION THRESHOLD <n>
  */
 alterGraphAnalyticalViewBody
-    : identifier UPDATE MODE identifier
+    : identifier (UPDATE MODE identifier | COMPACTION THRESHOLD INTEGER_LITERAL)
     ;
 
 /**
@@ -1536,4 +1538,8 @@ identifier
     | MODE
     | GRAPH
     | ANALYTICAL
+    | AUTO
+    | PROPERTIES
+    | COMPACTION
+    | THRESHOLD
     ;

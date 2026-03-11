@@ -26,8 +26,10 @@ import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 
 import java.util.Collections;
+import java.util.logging.Level;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -140,7 +142,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
         });
       }
     } catch (final Exception e) {
-      // Not in a transaction context or database is closing — skip
+      LogManager.instance().log(this, Level.FINE, "SYNC delta collection skipped (no active transaction or database closing): %s", e.getMessage());
     }
   }
 
@@ -150,7 +152,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       if (dbInternal.isTransactionActive())
         dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, view::onRelevantCommit);
     } catch (final Exception e) {
-      // Not in a transaction context or database is closing — skip
+      LogManager.instance().log(this, Level.FINE, "ASYNC delta collection skipped (no active transaction or database closing): %s", e.getMessage());
     }
   }
 

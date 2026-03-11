@@ -195,31 +195,14 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("MatchRelationshipStep requires a previous step");
 
-    // Short-circuit: if edge types or target node labels don't exist in the schema, no results are possible
-    if (!edgeTypesExistInSchema(context) || !targetLabelsExistInSchema(context)) {
-      return new ResultSet() {
-        @Override
-        public boolean hasNext() {
-          return false;
-        }
-
-        @Override
-        public Result next() {
-          throw new NoSuchElementException();
-        }
-
-        @Override
-        public void close() {
-          MatchRelationshipStep.this.close();
-        }
-      };
-    }
-
     return new ResultSet() {
       private ResultSet prevResults = null;
       private Result lastResult = null;
       private Iterator<Edge> currentEdges = null;
       private Iterator<Vertex> currentVertices = null;
+      // Short-circuit flag: checked lazily after first pull from predecessor
+      // (predecessor might create the edge type via CREATE/FOREACH/MERGE)
+      private Boolean schemaShortCircuit = null;
       private boolean useFastPath = false;
       private Set<RID> seenEdges = null;
       private final List<Result> buffer = new ArrayList<>();
@@ -269,12 +252,21 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               begin = 0;
             try {
               // Initialize prevResults on first call
-              if (prevResults == null) {
+              if (prevResults == null)
                 prevResults = prev.syncPull(context, nRecords);
-              }
 
               // Get next source vertex from previous step
               if (!prevResults.hasNext()) {
+                finished = true;
+                break;
+              }
+
+              // Lazy schema short-circuit: check AFTER first pull from predecessor
+              // so that upstream CREATE/FOREACH/MERGE steps have a chance to create types.
+              // prevResults.hasNext() triggers the lazy pull chain, executing predecessor steps.
+              if (schemaShortCircuit == null)
+                schemaShortCircuit = !edgeTypesExistInSchema(context) || !targetLabelsExistInSchema(context);
+              if (schemaShortCircuit) {
                 finished = true;
                 break;
               }

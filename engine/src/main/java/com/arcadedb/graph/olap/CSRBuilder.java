@@ -282,9 +282,13 @@ public class CSRBuilder {
       final Column.Type merged = mergeColumnType(existing, colType);
       if (merged != null)
         result.put(prop.getName(), merged);
-      else
+      else {
         // Type conflict across vertex types — remove to prevent ClassCastException
+        LogManager.instance().log(this, Level.WARNING,
+            "Property '%s' excluded from columnar storage: type conflict (%s vs %s) across vertex types",
+            prop.getName(), existing, colType);
         result.remove(prop.getName());
+      }
     }
   }
 

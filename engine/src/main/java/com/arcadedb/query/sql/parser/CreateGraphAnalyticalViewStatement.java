@@ -35,6 +35,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier[] edgeTypes;
   public Identifier[] properties;
   public String       updateModeStr;          // "OFF", "SYNCHRONOUS", "ASYNCHRONOUS"
+  public int          compactionThreshold = -1; // -1 means not set (use default)
   public boolean      ifNotExists  = false;
 
   public CreateGraphAnalyticalViewStatement(final int id) {
@@ -76,6 +77,8 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     if (propArray != null)
       def.put("propertyFilter", toJsonArray(propArray));
     def.put("updateMode", resolveUpdateMode().name());
+    if (compactionThreshold > 0)
+      def.put("compactionThreshold", compactionThreshold);
     gavDefs.put(viewName, def);
     database.getSchema().setExtension("graphAnalyticalViews", gavDefs);
 
@@ -88,6 +91,8 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     if (propArray != null && propArray.length > 0)
       builder.withProperties(propArray);
     builder.withUpdateMode(resolveUpdateMode());
+    if (compactionThreshold > 0)
+      builder.withCompactionThreshold(compactionThreshold);
     builder.buildAsync();
 
     final InternalResultSet result = new InternalResultSet();
@@ -139,6 +144,8 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     final GraphAnalyticalView.UpdateMode mode = resolveUpdateMode();
     if (mode != GraphAnalyticalView.UpdateMode.OFF)
       sb.append(" UPDATE MODE ").append(mode.name());
+    if (compactionThreshold > 0)
+      sb.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
     return sb.toString();
   }
 

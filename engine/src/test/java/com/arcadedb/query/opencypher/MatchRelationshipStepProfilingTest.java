@@ -186,8 +186,8 @@ class MatchRelationshipStepProfilingTest {
   @Test
   void nonExistentEdgeTypeShortCircuits() {
     // Query with edge type that doesn't exist in schema — should short-circuit
-    // without scanning any vertices or edge segments.
-    // Use [r:NONEXISTENT] to force standard path (edge variable prevents count optimization).
+    // without scanning any edge segments (but MatchNodeStep IS pulled from to
+    // ensure predecessor steps like CREATE/FOREACH execute before schema check).
     final ResultSet result = database.query("opencypher",
         "PROFILE MATCH (a:Person)<-[r:NONEXISTENT]-(b) RETURN a.name, b.name LIMIT 1");
 
@@ -199,13 +199,10 @@ class MatchRelationshipStepProfilingTest {
     }
     assertThat(count).isZero();
 
-    // Check execution plan — MatchNodeStep should show 0 rows because the short-circuit
-    // in MatchRelationshipStep prevents it from ever pulling from MatchNodeStep
+    // Check execution plan — MATCH RELATIONSHIP should exist but produce 0 results
     final ExecutionPlan plan = result.getExecutionPlan().get();
     final String planString = plan.prettyPrint(0, 2);
-
-    // The MATCH NODE step should not report scanning rows (it was never pulled from)
-    assertThat(planString).doesNotContainPattern("MATCH NODE.*\\d+ rows");
+    assertThat(planString).contains("MATCH RELATIONSHIP");
 
     result.close();
   }
@@ -321,6 +318,7 @@ class MatchRelationshipStepProfilingTest {
   @Test
   void nonExistentTargetLabelShortCircuits() {
     // Edge type KNOWS exists, but target label NonExistent does not — should short-circuit
+    // without scanning any edges (but predecessor steps are pulled first for lazy check)
     final ResultSet result = database.query("opencypher",
         "PROFILE MATCH (a:Person)-[r:KNOWS]->(b:NonExistent) RETURN a.name, b.name LIMIT 1");
 
@@ -333,9 +331,7 @@ class MatchRelationshipStepProfilingTest {
 
     final ExecutionPlan plan = result.getExecutionPlan().get();
     final String planString = plan.prettyPrint(0, 2);
-
-    // MatchNodeStep should show 0 rows — never pulled from due to short-circuit
-    assertThat(planString).doesNotContainPattern("MATCH NODE.*\\d+ rows");
+    assertThat(planString).contains("MATCH RELATIONSHIP");
 
     result.close();
   }
