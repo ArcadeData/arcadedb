@@ -76,7 +76,7 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionSt
               r.setProperty("memoryUsageBytes", liveView.getMemoryUsageBytes());
               r.setProperty("buildTimestamp", liveView.getBuildTimestamp());
             } else {
-              r.setProperty("status", hasProvider ? "ACTIVE" : "PERSISTED");
+              r.setProperty("status", liveView != null ? liveView.getStatus().name() : "NOT_BUILT");
               r.setProperty("nodeCount", 0);
               r.setProperty("edgeCount", 0);
               r.setProperty("memoryUsageBytes", 0L);

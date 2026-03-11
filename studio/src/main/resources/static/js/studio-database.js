@@ -3543,7 +3543,7 @@ function renderGavSidebarBadges(gavs, isQuerySidebar) {
     let gav = gavs[j];
     let color = palette[j % palette.length];
     let name = escapeHtml(gav.name);
-    let statusClass = gav.status === "ACTIVE" ? "mv-status-dot-valid" : "mv-status-dot-stale";
+    let statusClass = mvStatusDotClass(gav.status);
 
     html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
     if (!isQuerySidebar)
@@ -3575,7 +3575,7 @@ function showGavDetail(gavName) {
   html += "<h5><i class='fa fa-project-diagram'></i> " + escapeHtml(gav.name) + "</h5>";
 
   // Status badge
-  let statusClass = gav.status === "ACTIVE" ? "mv-status-badge-valid" : "mv-status-badge-stale";
+  let statusClass = mvStatusBadgeClass(gav.status);
   html += "<p><span class='mv-status-badge " + statusClass + "'>" + escapeHtml(gav.status || "UNKNOWN") + "</span></p>";
 
   // Configuration info
@@ -3657,16 +3657,18 @@ function createGraphAnalyticalView() {
   html += "<label for='inputGavProperties'>Properties <small class='text-muted'>(optional, comma-separated)</small></label>";
   html += "<input class='form-control mt-1 mb-3' id='inputGavProperties' placeholder='e.g. name, weight, score'>";
 
-  // Options row
-  html += "<div class='d-flex flex-wrap gap-3'>";
-  html += "<div class='form-check'>";
-  html += "<input class='form-check-input' type='checkbox' id='inputGavAutoUpdate'>";
-  html += "<label class='form-check-label' for='inputGavAutoUpdate'>Auto-update on data changes</label>";
-  html += "</div>";
+  // Update mode
+  html += "<label for='inputGavUpdateMode'>Update Mode</label>";
+  html += "<select class='form-select mt-1 mb-3' id='inputGavUpdateMode'>";
+  html += "<option value='OFF' selected>OFF — manual rebuild only</option>";
+  html += "<option value='SYNCHRONOUS'>SYNCHRONOUS — overlay on commit (no stale window)</option>";
+  html += "<option value='ASYNCHRONOUS'>ASYNCHRONOUS — async rebuild on commit</option>";
+  html += "</select>";
+
+  // If not exists
   html += "<div class='form-check'>";
   html += "<input class='form-check-input' type='checkbox' id='inputGavIfNotExists'>";
   html += "<label class='form-check-label' for='inputGavIfNotExists'>If not exists</label>";
-  html += "</div>";
   html += "</div>";
 
   globalPrompt("Create Graph Analytical View", html, "Create", function () {
@@ -3696,8 +3698,9 @@ function createGraphAnalyticalView() {
         command += " PROPERTIES (" + propList.join(", ") + ")";
     }
 
-    if ($("#inputGavAutoUpdate").prop("checked"))
-      command += " AUTO UPDATE";
+    let updateMode = $("#inputGavUpdateMode").val();
+    if (updateMode && updateMode !== "OFF")
+      command += " UPDATE MODE " + updateMode;
 
     let database = getCurrentDatabase();
     if (database === "") {
@@ -3795,7 +3798,7 @@ function displayGavHealth(gavs) {
   html += "<tbody>";
   for (let i = 0; i < gavs.length; i++) {
     let g = gavs[i];
-    let statusClass = g.status === "ACTIVE" ? "mv-status-badge-valid" : "mv-status-badge-stale";
+    let statusClass = mvStatusBadgeClass(g.status);
     html += "<tr>";
     html += "<td>" + escapeHtml(g.name) + "</td>";
     html += "<td><span class='mv-status-badge " + statusClass + "'>" + escapeHtml(g.status || "UNKNOWN") + "</span></td>";
@@ -3811,7 +3814,7 @@ function displayGavHealth(gavs) {
 
 function mvStatusDotClass(status) {
   let s = (status || "VALID").toUpperCase();
-  if (s == "VALID") return "mv-status-dot-valid";
+  if (s == "VALID" || s == "READY") return "mv-status-dot-valid";
   if (s == "BUILDING") return "mv-status-dot-building";
   if (s == "STALE") return "mv-status-dot-stale";
   if (s == "ERROR") return "mv-status-dot-error";
@@ -3820,7 +3823,7 @@ function mvStatusDotClass(status) {
 
 function mvStatusBadgeClass(status) {
   let s = (status || "VALID").toUpperCase();
-  if (s == "VALID") return "mv-status-badge-valid";
+  if (s == "VALID" || s == "READY") return "mv-status-badge-valid";
   if (s == "BUILDING") return "mv-status-badge-building";
   if (s == "STALE") return "mv-status-badge-stale";
   if (s == "ERROR") return "mv-status-badge-error";

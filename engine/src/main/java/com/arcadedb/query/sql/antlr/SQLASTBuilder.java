@@ -6189,21 +6189,32 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     if (bodyCtx.PROPERTIES() != null) {
-      stmt.properties = extractRemainingIdentifiers(identifiers, idx);
+      // Properties are identifiers between PROPERTIES keyword and UPDATE/MODE/end
+      final int modePos = bodyCtx.MODE() != null ? bodyCtx.MODE().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
+      final java.util.List<Identifier> propList = new java.util.ArrayList<>();
+      for (int i = idx; i < identifiers.size(); i++) {
+        if (identifiers.get(i).start.getTokenIndex() > modePos)
+          break;
+        propList.add((Identifier) visit(identifiers.get(i)));
+      }
+      stmt.properties = propList.toArray(new Identifier[0]);
+      idx += stmt.properties.length;
     }
 
-    stmt.autoUpdate = bodyCtx.AUTO() != null && bodyCtx.UPDATE() != null;
+    // UPDATE MODE <identifier> — the mode identifier is the last one
+    if (bodyCtx.MODE() != null && idx < identifiers.size())
+      stmt.updateModeStr = identifiers.get(idx).getText();
 
     return stmt;
   }
 
   private Identifier[] extractClauseIdentifiers(final java.util.List<SQLParser.IdentifierContext> identifiers,
       final int startIdx, final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx) {
-    // Count identifiers between VERTEX TYPES (...) by checking positions until next keyword
     final java.util.List<Identifier> result = new java.util.ArrayList<>();
     final int edgePos = bodyCtx.EDGE() != null ? bodyCtx.EDGE().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
     final int propsPos = bodyCtx.PROPERTIES() != null ? bodyCtx.PROPERTIES().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
-    final int limit = Math.min(edgePos, propsPos);
+    final int modePos = bodyCtx.MODE() != null ? bodyCtx.MODE().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
+    final int limit = Math.min(edgePos, Math.min(propsPos, modePos));
 
     for (int i = startIdx; i < identifiers.size(); i++) {
       if (identifiers.get(i).start.getTokenIndex() > limit)
@@ -6217,9 +6228,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final int startIdx, final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx) {
     final java.util.List<Identifier> result = new java.util.ArrayList<>();
     final int propsPos = bodyCtx.PROPERTIES() != null ? bodyCtx.PROPERTIES().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
+    final int modePos = bodyCtx.MODE() != null ? bodyCtx.MODE().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
+    final int limit = Math.min(propsPos, modePos);
 
     for (int i = startIdx; i < identifiers.size(); i++) {
-      if (identifiers.get(i).start.getTokenIndex() > propsPos)
+      if (identifiers.get(i).start.getTokenIndex() > limit)
         break;
       result.add((Identifier) visit(identifiers.get(i)));
     }
@@ -6246,6 +6259,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.DropGraphAnalyticalViewBodyContext bodyCtx = ctx.dropGraphAnalyticalViewBody();
     stmt.name = (Identifier) visit(bodyCtx.identifier());
     stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+    return stmt;
+  }
+
+  @Override
+  public AlterGraphAnalyticalViewStatement visitAlterGraphAnalyticalViewStmt(
+      final SQLParser.AlterGraphAnalyticalViewStmtContext ctx) {
+    final AlterGraphAnalyticalViewStatement stmt = new AlterGraphAnalyticalViewStatement(-1);
+    final SQLParser.AlterGraphAnalyticalViewBodyContext bodyCtx = ctx.alterGraphAnalyticalViewBody();
+    final var identifiers = bodyCtx.identifier();
+    stmt.name = (Identifier) visit(identifiers.get(0));
+    stmt.updateModeStr = identifiers.get(1).getText();
     return stmt;
   }
 

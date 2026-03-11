@@ -34,7 +34,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier[] vertexTypes;
   public Identifier[] edgeTypes;
   public Identifier[] properties;
-  public boolean      autoUpdate   = false;
+  public String       updateModeStr;          // "OFF", "SYNCHRONOUS", "ASYNCHRONOUS"
   public boolean      ifNotExists  = false;
 
   public CreateGraphAnalyticalViewStatement(final int id) {
@@ -75,7 +75,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       def.put("edgeTypes", toJsonArray(etArray));
     if (propArray != null)
       def.put("propertyFilter", toJsonArray(propArray));
-    def.put("updateMode", autoUpdate ? "SYNCHRONOUS" : "OFF");
+    def.put("updateMode", resolveUpdateMode().name());
     gavDefs.put(viewName, def);
     database.getSchema().setExtension("graphAnalyticalViews", gavDefs);
 
@@ -87,7 +87,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       builder.withEdgeTypes(etArray);
     if (propArray != null && propArray.length > 0)
       builder.withProperties(propArray);
-    builder.withUpdateMode(autoUpdate ? GraphAnalyticalView.UpdateMode.SYNCHRONOUS : GraphAnalyticalView.UpdateMode.OFF);
+    builder.withUpdateMode(resolveUpdateMode());
     builder.buildAsync();
 
     final InternalResultSet result = new InternalResultSet();
@@ -136,9 +136,16 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       appendIdentifiers(sb, properties);
       sb.append(')');
     }
-    if (autoUpdate)
-      sb.append(" AUTO UPDATE");
+    final GraphAnalyticalView.UpdateMode mode = resolveUpdateMode();
+    if (mode != GraphAnalyticalView.UpdateMode.OFF)
+      sb.append(" UPDATE MODE ").append(mode.name());
     return sb.toString();
+  }
+
+  private GraphAnalyticalView.UpdateMode resolveUpdateMode() {
+    if (updateModeStr != null)
+      return GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase());
+    return GraphAnalyticalView.UpdateMode.OFF;
   }
 
   private static void appendIdentifiers(final StringBuilder sb, final Identifier[] ids) {

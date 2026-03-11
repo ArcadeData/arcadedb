@@ -55,6 +55,7 @@ public class GraphAnalyticalViewBuilder {
   private       String[]                        properties;
   private       GraphAnalyticalView.UpdateMode  updateMode = GraphAnalyticalView.UpdateMode.OFF;
   private       int                             compactionThreshold = -1;
+  private       boolean                         skipPersistence;
 
   GraphAnalyticalViewBuilder(final Database database) {
     this.database = database;
@@ -124,14 +125,7 @@ public class GraphAnalyticalViewBuilder {
    * Status will be READY when this method returns.
    */
   public GraphAnalyticalView build() {
-    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, updateMode);
-    if (compactionThreshold > 0)
-      view.setCompactionThreshold(compactionThreshold);
-    if (name != null) {
-      GraphAnalyticalViewRegistry.register(database, name, view);
-      GraphAnalyticalViewPersistence.save(database, view);
-    }
-    view.registerAsTraversalProvider();
+    final GraphAnalyticalView view = createView();
     view.build();
     return view;
   }
@@ -142,15 +136,29 @@ public class GraphAnalyticalViewBuilder {
    * Use {@link GraphAnalyticalView#awaitReady} or {@link GraphAnalyticalView#getStatus()} to check completion.
    */
   public GraphAnalyticalView buildAsync() {
+    final GraphAnalyticalView view = createView();
+    view.buildAsync();
+    return view;
+  }
+
+  /**
+   * Skips persisting the definition to schema. Used during restore to avoid redundant writes.
+   */
+  GraphAnalyticalViewBuilder skipPersistence() {
+    this.skipPersistence = true;
+    return this;
+  }
+
+  private GraphAnalyticalView createView() {
     final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, updateMode);
     if (compactionThreshold > 0)
       view.setCompactionThreshold(compactionThreshold);
     if (name != null) {
       GraphAnalyticalViewRegistry.register(database, name, view);
-      GraphAnalyticalViewPersistence.save(database, view);
+      if (!skipPersistence)
+        GraphAnalyticalViewPersistence.save(database, view);
     }
     view.registerAsTraversalProvider();
-    view.buildAsync();
     return view;
   }
 }

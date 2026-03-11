@@ -110,7 +110,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final String[]   vertexTypes;
   private final String[]   edgeTypes;
   private final String[]   propertyFilter;
-  private final UpdateMode updateMode;
+  private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
   private volatile Snapshot          snapshot;
@@ -586,6 +586,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   public UpdateMode getUpdateMode() {
     return updateMode;
+  }
+
+  /**
+   * Changes the update mode at runtime. Re-registers change listeners as needed.
+   */
+  public void setUpdateMode(final UpdateMode newMode) {
+    if (this.updateMode == newMode)
+      return;
+    this.updateMode = newMode;
+    // Re-register listeners: DeltaCollector behavior depends on the mode
+    unregisterChangeListeners();
+    if (snapshot != null)
+      registerChangeListeners();
   }
 
   public String[] getVertexTypes() {

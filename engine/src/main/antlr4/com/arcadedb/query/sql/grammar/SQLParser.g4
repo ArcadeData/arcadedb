@@ -106,6 +106,7 @@ statement
     | ALTER DATABASE alterDatabaseBody               # alterDatabaseStmt
     | ALTER MATERIALIZED VIEW alterMaterializedViewBody     # alterMaterializedViewStmt
     | ALTER TIMESERIES TYPE alterTimeSeriesTypeBody        # alterTimeSeriesTypeStmt
+    | ALTER GRAPH ANALYTICAL VIEW alterGraphAnalyticalViewBody  # alterGraphAnalyticalViewStmt
 
     // DDL Statements - DROP variants
     | DROP TYPE dropTypeBody                         # dropTypeStmt
@@ -785,7 +786,15 @@ createGraphAnalyticalViewBody
       (VERTEX TYPES LPAREN identifier (COMMA identifier)* RPAREN)?
       (EDGE TYPES LPAREN identifier (COMMA identifier)* RPAREN)?
       (PROPERTIES LPAREN identifier (COMMA identifier)* RPAREN)?
-      (AUTO UPDATE)?
+      (UPDATE MODE identifier)?
+    ;
+
+/**
+ * ALTER GRAPH ANALYTICAL VIEW statement
+ * Syntax: ALTER GRAPH ANALYTICAL VIEW name UPDATE MODE OFF|SYNCHRONOUS|ASYNCHRONOUS
+ */
+alterGraphAnalyticalViewBody
+    : identifier UPDATE MODE identifier
     ;
 
 /**
@@ -1513,4 +1522,5 @@ identifier
     // (e.g. "WHERE tags CONTAINS 'value'") without introducing a grammar conflict. Any such operator
     // would need a distinct keyword or a separate production rule.
     | CONTAINS
+    | MODE
     ;

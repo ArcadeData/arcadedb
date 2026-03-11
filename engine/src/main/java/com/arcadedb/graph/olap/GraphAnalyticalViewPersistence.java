@@ -123,11 +123,11 @@ public class GraphAnalyticalViewPersistence {
 
         final String updateModeStr = gavDef.getString("updateMode", "OFF");
         builder.withUpdateMode(GraphAnalyticalView.UpdateMode.valueOf(updateModeStr));
-        builder.build();
+        builder.skipPersistence().buildAsync();
         count++;
 
         LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.INFO,
-            "Restored GraphAnalyticalView '%s'", gavName);
+            "Restoring GraphAnalyticalView '%s' (async)", gavName);
 
       } catch (final Exception e) {
         LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.WARNING,

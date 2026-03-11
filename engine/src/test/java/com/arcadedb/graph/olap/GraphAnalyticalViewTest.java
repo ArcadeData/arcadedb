@@ -1886,7 +1886,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCreateGraphAnalyticalViewWithAutoUpdate() {
+  void testCreateGraphAnalyticalViewWithUpdateMode() {
     database.getSchema().createVertexType("Sensor");
     database.getSchema().createEdgeType("FEEDS");
     database.begin();
@@ -1894,7 +1894,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     database.commit();
 
 
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW sensorNet VERTEX TYPES (Sensor) EDGE TYPES (FEEDS) AUTO UPDATE");
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW sensorNet VERTEX TYPES (Sensor) EDGE TYPES (FEEDS) UPDATE MODE SYNCHRONOUS");
 
     final var extension = database.getSchema().getExtension("graphAnalyticalViews");
     assertThat(extension.getJSONObject("sensorNet").getString("updateMode")).isEqualTo("SYNCHRONOUS");
@@ -1950,7 +1950,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     database.getSchema().createEdgeType("KNOWS");
 
 
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW socialGraph VERTEX TYPES (Person) EDGE TYPES (KNOWS) AUTO UPDATE");
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW socialGraph VERTEX TYPES (Person) EDGE TYPES (KNOWS) UPDATE MODE SYNCHRONOUS");
 
     final ResultSet rs = database.query("sql", "SELECT FROM schema:graphAnalyticalViews WHERE name = 'socialGraph'");
     assertThat(rs.hasNext()).isTrue();
@@ -1987,9 +1987,10 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final DatabaseFactory factory2 = new DatabaseFactory(dbPath);
     final Database db2 = factory2.open();
     try {
-      // Verify the GAV was restored in the in-memory registry
+      // Verify the GAV was restored in the in-memory registry (async build)
       final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db2, "cityRoads");
       assertThat(restored).isNotNull();
+      assertThat(restored.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
       assertThat(restored.getNodeCount()).isEqualTo(2);
       assertThat(restored.getEdgeCount()).isEqualTo(1);
 
