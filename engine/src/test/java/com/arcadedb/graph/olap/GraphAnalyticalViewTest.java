@@ -602,7 +602,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .build();
 
     assertThat(gav.isAutoUpdate()).isTrue();
@@ -615,8 +615,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     b.newEdge("FOLLOWS", c);
     database.commit();
 
-    // After commit, the view rebuilds asynchronously — wait for it
-    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    // SYNCHRONOUS: overlay applied immediately after commit
     assertThat(gav.getNodeCount()).isEqualTo(3);
     assertThat(gav.getEdgeCount()).isEqualTo(2);
 
@@ -710,21 +709,18 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .buildAsync();
 
     assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
     assertThat(gav.getNodeCount()).isEqualTo(2);
 
-    // Add more data — auto-update triggers async rebuild after commit
+    // Add more data — SYNCHRONOUS mode applies overlay immediately
     database.begin();
     final MutableVertex c = database.newVertex("Person").set("name", "Charlie").save();
     b.newEdge("FOLLOWS", c);
     database.commit();
 
-    // Wait for the async rebuild triggered by auto-update
-    Thread.sleep(500);
-    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
     assertThat(gav.getNodeCount()).isEqualTo(3);
 
     gav.close();
@@ -805,7 +801,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
         .withProperties("name", "age")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .build();
 
     assertThat(gav.getName()).isEqualTo("config-test");
@@ -835,7 +831,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
         .withProperties("name")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .build();
 
     // Verify it's persisted in schema extensions
@@ -845,7 +841,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     final com.arcadedb.serializer.json.JSONObject gavDef = ext.getJSONObject("social-persist");
     assertThat(gavDef.getString("name")).isEqualTo("social-persist");
-    assertThat(gavDef.getBoolean("autoUpdate")).isTrue();
+    assertThat(gavDef.getString("updateMode")).isEqualTo("SYNCHRONOUS");
 
     // Close removes from schema
     gav.close();
@@ -1901,7 +1897,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW sensorNet VERTEX TYPES (Sensor) EDGE TYPES (FEEDS) AUTO UPDATE");
 
     final var extension = database.getSchema().getExtension("graphAnalyticalViews");
-    assertThat(extension.getJSONObject("sensorNet").getBoolean("autoUpdate")).isTrue();
+    assertThat(extension.getJSONObject("sensorNet").getString("updateMode")).isEqualTo("SYNCHRONOUS");
 
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW sensorNet");
   }
@@ -1960,7 +1956,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(rs.hasNext()).isTrue();
     final var result = rs.next();
     assertThat((String) result.getProperty("name")).isEqualTo("socialGraph");
-    assertThat((boolean) result.getProperty("autoUpdate")).isTrue();
+    assertThat((String) result.getProperty("updateMode")).isEqualTo("SYNCHRONOUS");
     rs.close();
 
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW socialGraph");
@@ -2025,7 +2021,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
         .withProperties("name")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .build();
 
     assertThat(gav.getNodeCount()).isEqualTo(2);
@@ -2037,7 +2033,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     bob.asVertex().modify().newEdge("FOLLOWS", charlie);
     database.commit();
 
-    // GAV should reflect the new vertex and edge via overlay (no full rebuild)
+    // SYNCHRONOUS: overlay applied immediately, no wait needed
     assertThat(gav.getNodeCount()).isEqualTo(3);
     assertThat(gav.getEdgeCount()).isEqualTo(2);
 
@@ -2067,7 +2063,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
         .withProperties("name", "age")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .build();
 
     final int aliceId = gav.getNodeId(alice.getIdentity());
@@ -2079,7 +2075,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     alice.asVertex().modify().set("age", 31).save();
     database.commit();
 
-    // Property should be updated via overlay
+    // SYNCHRONOUS: property updated via overlay immediately
     assertThat(gav.getProperty(aliceId, "age")).isEqualTo(31);
     assertThat(gav.getProperty(aliceId, "name")).isEqualTo("Alice"); // unchanged
 
@@ -2099,7 +2095,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withName("inc-multi-tx")
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .build();
 
     assertThat(gav.getNodeCount()).isEqualTo(1);
@@ -2148,7 +2144,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withName("inc-del-edge")
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .build();
 
     final int aliceId = gav.getNodeId(alice.getIdentity());
@@ -2161,7 +2157,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> e.delete());
     database.commit();
 
-    // Edge should be deleted via overlay
+    // SYNCHRONOUS: overlay reflects deletion immediately
     assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
 
     gav.close();
@@ -2182,7 +2178,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withName("inc-del-vertex")
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .build();
 
     assertThat(gav.getNodeCount()).isEqualTo(2);
@@ -2192,7 +2188,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     bob.getIdentity().asVertex().delete();
     database.commit();
 
-    // Vertex count should decrease
+    // SYNCHRONOUS: overlay reflects deletion immediately
     assertThat(gav.getNodeCount()).isEqualTo(1);
 
     gav.close();
@@ -2212,7 +2208,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
         .withProperties("name")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .build();
 
     // Add new vertex with properties via incremental update
@@ -2220,11 +2216,83 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
     database.commit();
 
+    // SYNCHRONOUS: overlay reflects new vertex immediately
     final int bobId = gav.getNodeId(bob.getIdentity());
     assertThat(bobId).isGreaterThanOrEqualTo(0);
 
     // Property of overflow node should be accessible
     assertThat(gav.getProperty(bobId, "name")).isEqualTo("Bob");
+
+    gav.close();
+  }
+
+  // --- STALE status tests ---
+
+  @Test
+  void testStaleStatusOnNonAutoUpdateGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // Build without autoUpdate
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("stale-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.isStale()).isFalse();
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Modify the graph — GAV should become STALE
+    database.begin();
+    database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+    assertThat(gav.isStale()).isTrue();
+    // Data is still accessible (stale but usable)
+    assertThat(gav.getNodeCount()).isEqualTo(1); // still reflects old state
+
+    // Rebuild to clear stale status
+    gav.build();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.isStale()).isFalse();
+    assertThat(gav.getNodeCount()).isEqualTo(2); // now reflects new state
+
+    gav.close();
+  }
+
+  @Test
+  void testStaleNotTriggeredForUnrelatedTypes() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createVertexType("Product");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // GAV only covers Person/FOLLOWS
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("stale-unrelated")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    // Modify an unrelated type — GAV should NOT become stale
+    database.begin();
+    database.newVertex("Product").set("name", "Widget").save();
+    database.commit();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.isStale()).isFalse();
 
     gav.close();
   }

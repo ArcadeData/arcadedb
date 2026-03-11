@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -57,7 +58,7 @@ import java.util.logging.Level;
  *       .withVertexTypes("Person", "Company")
  *       .withEdgeTypes("FOLLOWS", "WORKS_AT")
  *       .withProperties("name", "age")
- *       .withAutoUpdate(true)
+ *       .withUpdateMode(UpdateMode.SYNCHRONOUS)
  *       .build();
  *
  *   int nodeId = gav.getNodeId(vertexRID);
@@ -71,27 +72,55 @@ import java.util.logging.Level;
 public class GraphAnalyticalView implements GraphTraversalProvider {
 
   public enum Status {
-    NOT_BUILT, BUILDING, READY
+    NOT_BUILT, BUILDING, READY, STALE
   }
 
-  private final Database                       database;
-  private final String                         name;
-  private final String[]                       vertexTypes;
-  private final String[]                       edgeTypes;
-  private final String[]                       propertyFilter;
-  private final boolean                        autoUpdate;
+  public enum UpdateMode {
+    OFF, SYNCHRONOUS, ASYNCHRONOUS
+  }
 
-  private volatile Map<String, CSRAdjacencyIndex> csrPerType;
-  private volatile NodeIdMapping                  nodeMapping;
-  private volatile ColumnStore[]                  bucketColumns;
-  private volatile long                           buildTimestamp;
-  private volatile Status                         status = Status.NOT_BUILT;
-  private volatile CountDownLatch                 readyLatch = new CountDownLatch(1);
+  /**
+   * Immutable snapshot of all mutable CSR state. Swapped atomically via a single volatile write
+   * to guarantee readers always see a consistent view, even during background compaction/rebuild.
+   */
+  static final class Snapshot {
+    final Map<String, CSRAdjacencyIndex> csrPerType;
+    final NodeIdMapping                  nodeMapping;
+    final ColumnStore[]                  bucketColumns;
+    final DeltaOverlay                   overlay;
+    final long                           buildTimestamp;
 
-  // Incremental auto-update: delta overlay + collector
-  private volatile DeltaOverlay overlay;
+    Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
+        final ColumnStore[] bucketColumns, final DeltaOverlay overlay, final long buildTimestamp) {
+      this.csrPerType = csrPerType;
+      this.nodeMapping = nodeMapping;
+      this.bucketColumns = bucketColumns;
+      this.overlay = overlay;
+      this.buildTimestamp = buildTimestamp;
+    }
+
+    /** Returns a new snapshot with a different overlay, keeping everything else unchanged. */
+    Snapshot withOverlay(final DeltaOverlay newOverlay) {
+      return new Snapshot(csrPerType, nodeMapping, bucketColumns, newOverlay, buildTimestamp);
+    }
+  }
+
+  private final Database   database;
+  private final String     name;
+  private final String[]   vertexTypes;
+  private final String[]   edgeTypes;
+  private final String[]   propertyFilter;
+  private final UpdateMode updateMode;
+
+  /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
+  private volatile Snapshot          snapshot;
+  private volatile Status            status    = Status.NOT_BUILT;
+  private volatile CountDownLatch    readyLatch = new CountDownLatch(1);
+
+  // Incremental auto-update
   private DeltaCollector         deltaCollector;
   private int                    compactionThreshold = 10000;
+  private final AtomicBoolean    compacting = new AtomicBoolean(false);
 
   /**
    * Creates a builder for configuring the analytical view.
@@ -104,17 +133,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Simple constructor for backward compatibility. Use {@link #builder(Database)} for full control.
    */
   public GraphAnalyticalView(final Database database) {
-    this(database, null, null, null, null, false);
+    this(database, null, null, null, null, UpdateMode.OFF);
   }
 
   GraphAnalyticalView(final Database database, final String name, final String[] vertexTypes, final String[] edgeTypes,
-      final String[] propertyFilter, final boolean autoUpdate) {
+      final String[] propertyFilter, final UpdateMode updateMode) {
     this.database = database;
     this.name = name;
     this.vertexTypes = vertexTypes;
     this.edgeTypes = edgeTypes;
     this.propertyFilter = propertyFilter;
-    this.autoUpdate = autoUpdate;
+    this.updateMode = updateMode;
   }
 
   /**
@@ -145,19 +174,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
       final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
 
-      this.csrPerType = result.getCsrPerType();
-      this.nodeMapping = result.getMapping();
-      this.bucketColumns = result.getBucketColumns();
-      this.buildTimestamp = System.currentTimeMillis();
+      // Atomic swap — readers see all-or-nothing
+      this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
+          result.getBucketColumns(), null, System.currentTimeMillis());
       this.status = Status.READY;
       this.readyLatch.countDown();
 
-      this.overlay = null; // clear overlay on full rebuild
-
-      if (autoUpdate && deltaCollector == null)
-        registerAutoUpdateListeners();
+      if (deltaCollector == null)
+        registerChangeListeners();
     } catch (final Exception e) {
-      this.status = csrPerType != null ? Status.READY : Status.NOT_BUILT;
+      this.status = snapshot != null ? Status.READY : Status.NOT_BUILT;
       throw e;
     }
   }
@@ -175,18 +201,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
         final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
 
-        this.csrPerType = result.getCsrPerType();
-        this.nodeMapping = result.getMapping();
-        this.bucketColumns = result.getBucketColumns();
-        this.buildTimestamp = System.currentTimeMillis();
-        this.overlay = null; // clear overlay on full rebuild
+        this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
+            result.getBucketColumns(), null, System.currentTimeMillis());
         this.status = Status.READY;
         this.readyLatch.countDown();
 
-        if (autoUpdate && deltaCollector == null)
-          registerAutoUpdateListeners();
+        if (deltaCollector == null)
+          registerChangeListeners();
       } catch (final Exception e) {
-        this.status = csrPerType != null ? Status.READY : Status.NOT_BUILT;
+        this.status = snapshot != null ? Status.READY : Status.NOT_BUILT;
         this.readyLatch.countDown();
         LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
       }
@@ -216,7 +239,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Call this when the view is no longer needed.
    */
   public void close() {
-    unregisterAutoUpdateListeners();
+    unregisterChangeListeners();
     GraphTraversalProviderRegistry.unregister(database, this);
     if (name != null) {
       GraphAnalyticalViewRegistry.unregister(database, name);
@@ -252,7 +275,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public int[] getNeighborIds(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
-    checkBuilt();
     return getVertices(nodeId, direction, edgeTypes);
   }
 
@@ -262,27 +284,27 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Returns the dense node ID for a given RID, or -1 if not in the view.
    */
   public int getNodeId(final RID rid) {
-    checkBuilt();
-    final DeltaOverlay ov = this.overlay;
+    final Snapshot snap = checkBuilt();
+    final DeltaOverlay ov = snap.overlay;
     if (ov != null)
-      return ov.resolveNodeId(rid, nodeMapping);
-    return nodeMapping.getGlobalId(rid);
+      return ov.resolveNodeId(rid, snap.nodeMapping);
+    return snap.nodeMapping.getGlobalId(rid);
   }
 
   /**
    * Returns the RID for a given dense node ID.
    */
   public RID getRID(final int nodeId) {
-    checkBuilt();
-    if (nodeId >= nodeMapping.size()) {
-      final DeltaOverlay ov = this.overlay;
+    final Snapshot snap = checkBuilt();
+    if (nodeId >= snap.nodeMapping.size()) {
+      final DeltaOverlay ov = snap.overlay;
       if (ov != null) {
         final RID rid = ov.getOverflowRID(nodeId);
         if (rid != null)
           return rid;
       }
     }
-    return nodeMapping.getRID(nodeId);
+    return snap.nodeMapping.getRID(nodeId);
   }
 
   // --- Node type queries ---
@@ -291,16 +313,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Returns the vertex type name for the given node.
    */
   public String getNodeTypeName(final int nodeId) {
-    checkBuilt();
-    return nodeMapping.getTypeName(nodeId);
+    final Snapshot snap = checkBuilt();
+    return snap.nodeMapping.getTypeName(nodeId);
   }
 
   /**
    * Returns the bucket index for the given node.
    */
   public int getNodeBucketIdx(final int nodeId) {
-    checkBuilt();
-    return nodeMapping.getBucketIdx(nodeId);
+    final Snapshot snap = checkBuilt();
+    return snap.nodeMapping.getBucketIdx(nodeId);
   }
 
   // --- Edge counting (mirrors Vertex.countEdges) ---
@@ -310,16 +332,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Mirrors {@code Vertex.countEdges(DIRECTION, String...)}.
    */
   public long countEdges(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
-    checkBuilt();
+    final Snapshot snap = checkBuilt();
     if (edgeTypes != null && edgeTypes.length > 0) {
       long total = 0;
       for (final String edgeType : edgeTypes) {
-        final CSRAdjacencyIndex csr = csrPerType.get(edgeType);
+        final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
         if (csr != null)
-          total += countDirectional(csr, nodeId, direction, edgeType);
+          total += countDirectional(snap, csr, nodeId, direction, edgeType);
         else {
           // No base CSR but overlay may have edges for this type
-          final DeltaOverlay ov = this.overlay;
+          final DeltaOverlay ov = snap.overlay;
           if (ov != null) {
             if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
               total += ov.getAddedOutNeighbors(nodeId, edgeType).length;
@@ -331,8 +353,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return total;
     }
     long total = 0;
-    for (final var entry : csrPerType.entrySet())
-      total += countDirectional(entry.getValue(), nodeId, direction, entry.getKey());
+    for (final var entry : snap.csrPerType.entrySet())
+      total += countDirectional(snap, entry.getValue(), nodeId, direction, entry.getKey());
     return total;
   }
 
@@ -343,17 +365,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Mirrors {@code Vertex.getVertices(DIRECTION, String...)}.
    */
   public int[] getVertices(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
-    checkBuilt();
+    final Snapshot snap = checkBuilt();
 
     if (edgeTypes != null && edgeTypes.length == 1) {
-      final CSRAdjacencyIndex csr = csrPerType.get(edgeTypes[0]);
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeTypes[0]);
       if (csr != null)
-        return getNeighborsFromCSR(csr, nodeId, direction, edgeTypes[0]);
+        return getNeighborsFromCSR(snap, csr, nodeId, direction, edgeTypes[0]);
       // No base CSR — check overlay only
-      final DeltaOverlay ov = this.overlay;
-      if (ov == null)
+      if (snap.overlay == null)
         return new int[0];
-      return getNeighborsFromCSR(null, nodeId, direction, edgeTypes[0]);
+      return getNeighborsFromCSR(snap, null, nodeId, direction, edgeTypes[0]);
     }
 
     // Multiple edge types: collect from each
@@ -361,18 +382,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     int totalLen = 0;
     if (edgeTypes != null && edgeTypes.length > 0) {
       for (final String et : edgeTypes) {
-        final CSRAdjacencyIndex csr = csrPerType.get(et);
+        final CSRAdjacencyIndex csr = snap.csrPerType.get(et);
         final int[] neighbors = csr != null
-            ? getNeighborsFromCSR(csr, nodeId, direction, et)
-            : getNeighborsFromCSR(null, nodeId, direction, et);
+            ? getNeighborsFromCSR(snap, csr, nodeId, direction, et)
+            : getNeighborsFromCSR(snap, null, nodeId, direction, et);
         if (neighbors.length > 0) {
           segments.add(neighbors);
           totalLen += neighbors.length;
         }
       }
     } else {
-      for (final var entry : csrPerType.entrySet()) {
-        final int[] neighbors = getNeighborsFromCSR(entry.getValue(), nodeId, direction, entry.getKey());
+      for (final var entry : snap.csrPerType.entrySet()) {
+        final int[] neighbors = getNeighborsFromCSR(snap, entry.getValue(), nodeId, direction, entry.getKey());
         if (neighbors.length > 0) {
           segments.add(neighbors);
           totalLen += neighbors.length;
@@ -401,8 +422,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Creates a vectorized scan operator for the neighbors of a node, for a specific edge type.
    */
   public CSRScanOperator scanNeighbors(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
-    checkBuilt();
-    final CSRAdjacencyIndex csr = csrPerType.get(edgeType);
+    final Snapshot snap = checkBuilt();
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     if (csr == null)
       throw new IllegalArgumentException("Edge type not in view: " + edgeType);
     return new CSRScanOperator(csr, nodeId, direction);
@@ -416,15 +437,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public boolean isConnectedTo(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
       final String... edgeTypes) {
-    checkBuilt();
+    final Snapshot snap = checkBuilt();
     if (edgeTypes != null && edgeTypes.length > 0) {
       for (final String edgeType : edgeTypes)
-        if (isConnectedForType(nodeA, nodeB, direction, edgeType))
+        if (isConnectedForType(snap, nodeA, nodeB, direction, edgeType))
           return true;
       return false;
     }
-    for (final String edgeType : csrPerType.keySet())
-      if (isConnectedForType(nodeA, nodeB, direction, edgeType))
+    for (final String edgeType : snap.csrPerType.keySet())
+      if (isConnectedForType(snap, nodeA, nodeB, direction, edgeType))
         return true;
     return false;
   }
@@ -434,14 +455,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public int countCommonNeighbors(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
       final String... edgeTypes) {
-    checkBuilt();
+    final Snapshot snap = checkBuilt();
     int total = 0;
     if (edgeTypes != null && edgeTypes.length > 0) {
       for (final String edgeType : edgeTypes)
-        total += countCommonForType(nodeA, nodeB, direction, edgeType);
+        total += countCommonForType(snap, nodeA, nodeB, direction, edgeType);
     } else {
-      for (final String edgeType : csrPerType.keySet())
-        total += countCommonForType(nodeA, nodeB, direction, edgeType);
+      for (final String edgeType : snap.csrPerType.keySet())
+        total += countCommonForType(snap, nodeA, nodeB, direction, edgeType);
     }
     return total;
   }
@@ -453,38 +474,37 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Mirrors {@code Document.get(String)}.
    */
   public Object getProperty(final int nodeId, final String propertyName) {
-    checkBuilt();
+    final Snapshot snap = checkBuilt();
     // Check overlay first (overrides and overflow nodes)
-    final DeltaOverlay ov = this.overlay;
+    final DeltaOverlay ov = snap.overlay;
     if (ov != null) {
       final Object override = ov.getPropertyOverride(nodeId, propertyName);
       if (override != DeltaOverlay.UNSET)
         return override;
     }
     // Fall back to base column store
-    if (bucketColumns == null || nodeId >= nodeMapping.size())
+    if (snap.bucketColumns == null || nodeId >= snap.nodeMapping.size())
       return null;
-    final int bucketIdx = nodeMapping.getBucketIdx(nodeId);
-    final int localId = nodeMapping.getLocalId(nodeId);
-    return bucketColumns[bucketIdx].getValue(localId, propertyName);
+    final int bucketIdx = snap.nodeMapping.getBucketIdx(nodeId);
+    final int localId = snap.nodeMapping.getLocalId(nodeId);
+    return snap.bucketColumns[bucketIdx].getValue(localId, propertyName);
   }
 
   /**
    * Returns the per-bucket column store for direct vectorized access.
    */
   public ColumnStore getBucketColumnStore(final int bucketIdx) {
-    checkBuilt();
-    return bucketColumns != null ? bucketColumns[bucketIdx] : null;
+    final Snapshot snap = checkBuilt();
+    return snap.bucketColumns != null ? snap.bucketColumns[bucketIdx] : null;
   }
 
   /**
    * Returns the column store for a given node's bucket.
    */
   public ColumnStore getColumnStore() {
-    checkBuilt();
-    // Return first non-empty bucket column store for backward compatibility
-    if (bucketColumns != null)
-      for (final ColumnStore cs : bucketColumns)
+    final Snapshot snap = checkBuilt();
+    if (snap.bucketColumns != null)
+      for (final ColumnStore cs : snap.bucketColumns)
         if (cs.getColumnCount() > 0)
           return cs;
     return null;
@@ -496,42 +516,42 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Returns the CSR index for a specific edge type, or null if not present.
    */
   public CSRAdjacencyIndex getCSRIndex(final String edgeType) {
-    checkBuilt();
-    return csrPerType.get(edgeType);
+    final Snapshot snap = checkBuilt();
+    return snap.csrPerType.get(edgeType);
   }
 
   public Set<String> getEdgeTypes() {
-    checkBuilt();
-    return Collections.unmodifiableSet(csrPerType.keySet());
+    final Snapshot snap = checkBuilt();
+    return Collections.unmodifiableSet(snap.csrPerType.keySet());
   }
 
   public NodeIdMapping getNodeMapping() {
-    checkBuilt();
-    return nodeMapping;
+    final Snapshot snap = checkBuilt();
+    return snap.nodeMapping;
   }
 
   public int getNodeCount() {
-    checkBuilt();
-    final DeltaOverlay ov = this.overlay;
+    final Snapshot snap = checkBuilt();
+    final DeltaOverlay ov = snap.overlay;
     if (ov != null)
       return ov.getTotalNodeCount();
-    return nodeMapping.size();
+    return snap.nodeMapping.size();
   }
 
   public int getEdgeCount() {
-    checkBuilt();
+    final Snapshot snap = checkBuilt();
     int total = 0;
-    for (final CSRAdjacencyIndex csr : csrPerType.values())
+    for (final CSRAdjacencyIndex csr : snap.csrPerType.values())
       total += csr.getEdgeCount();
-    final DeltaOverlay ov = this.overlay;
+    final DeltaOverlay ov = snap.overlay;
     if (ov != null)
       total += ov.getDeltaEdgeCount();
     return total;
   }
 
   public int getEdgeCount(final String edgeType) {
-    checkBuilt();
-    final CSRAdjacencyIndex csr = csrPerType.get(edgeType);
+    final Snapshot snap = checkBuilt();
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     return csr != null ? csr.getEdgeCount() : 0;
   }
 
@@ -544,19 +564,28 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   public long getBuildTimestamp() {
-    return buildTimestamp;
+    final Snapshot snap = this.snapshot;
+    return snap != null ? snap.buildTimestamp : 0;
   }
 
   public boolean isBuilt() {
-    return csrPerType != null;
+    return snapshot != null;
   }
 
   public boolean isReady() {
-    return status == Status.READY;
+    return status == Status.READY || status == Status.STALE;
+  }
+
+  public boolean isStale() {
+    return status == Status.STALE;
   }
 
   public boolean isAutoUpdate() {
-    return autoUpdate;
+    return updateMode != UpdateMode.OFF;
+  }
+
+  public UpdateMode getUpdateMode() {
+    return updateMode;
   }
 
   public String[] getVertexTypes() {
@@ -584,19 +613,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   public long getMemoryUsageBytes() {
-    if (csrPerType == null)
+    final Snapshot snap = this.snapshot;
+    if (snap == null)
       return 0;
     long total = 0;
-    // CSR arrays (forward + backward offsets and neighbors per edge type)
-    for (final CSRAdjacencyIndex csr : csrPerType.values())
+    for (final CSRAdjacencyIndex csr : snap.csrPerType.values())
       total += csr.getMemoryUsageBytes();
-    // Column stores (per-bucket property data)
-    if (bucketColumns != null)
-      for (final ColumnStore cs : bucketColumns)
+    if (snap.bucketColumns != null)
+      for (final ColumnStore cs : snap.bucketColumns)
         total += cs.getMemoryUsageBytes();
-    // Node ID mapping (bucketId→idx maps, position arrays, base offsets)
-    if (nodeMapping != null)
-      total += nodeMapping.getMemoryUsageBytes();
+    if (snap.nodeMapping != null)
+      total += snap.nodeMapping.getMemoryUsageBytes();
     return total;
   }
 
@@ -608,9 +635,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Map<String, Object> stats = new HashMap<>();
     stats.put("name", name);
     stats.put("status", status.name());
-    stats.put("autoUpdate", autoUpdate);
+    stats.put("updateMode", updateMode.name());
 
-    if (csrPerType == null) {
+    final Snapshot snap = this.snapshot;
+    if (snap == null) {
       stats.put("nodeCount", 0);
       stats.put("edgeCount", 0);
       stats.put("memoryUsageBytes", 0L);
@@ -619,11 +647,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     stats.put("nodeCount", getNodeCount());
     stats.put("edgeCount", getEdgeCount());
-    stats.put("buildTimestamp", buildTimestamp);
+    stats.put("buildTimestamp", snap.buildTimestamp);
 
     // Per-edge-type breakdown
     final Map<String, Object> edgeTypeStats = new HashMap<>();
-    for (final var entry : csrPerType.entrySet()) {
+    for (final var entry : snap.csrPerType.entrySet()) {
       final CSRAdjacencyIndex csr = entry.getValue();
       final Map<String, Object> etStat = new HashMap<>();
       etStat.put("edgeCount", csr.getEdgeCount());
@@ -635,17 +663,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // Memory breakdown
     long csrMemory = 0;
-    for (final CSRAdjacencyIndex csr : csrPerType.values())
+    for (final CSRAdjacencyIndex csr : snap.csrPerType.values())
       csrMemory += csr.getMemoryUsageBytes();
     long columnMemory = 0;
     int propertyCount = 0;
-    if (bucketColumns != null) {
-      for (final ColumnStore cs : bucketColumns) {
+    if (snap.bucketColumns != null) {
+      for (final ColumnStore cs : snap.bucketColumns) {
         columnMemory += cs.getMemoryUsageBytes();
         propertyCount = Math.max(propertyCount, cs.getColumnCount());
       }
     }
-    long mappingMemory = nodeMapping != null ? nodeMapping.getMemoryUsageBytes() : 0;
+    long mappingMemory = snap.nodeMapping != null ? snap.nodeMapping.getMemoryUsageBytes() : 0;
 
     stats.put("memoryUsageBytes", csrMemory + columnMemory + mappingMemory);
     stats.put("csrMemoryBytes", csrMemory);
@@ -661,7 +689,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       stats.put("propertyFilter", java.util.Arrays.asList(propertyFilter));
 
     // Overlay state
-    final DeltaOverlay ov = this.overlay;
+    final DeltaOverlay ov = snap.overlay;
     if (ov != null) {
       stats.put("overlayActive", true);
       stats.put("overlayOverflowNodes", ov.getOverflowCount());
@@ -676,14 +704,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   // --- Private helpers ---
 
-  private void registerAutoUpdateListeners() {
+  private void registerChangeListeners() {
     deltaCollector = new DeltaCollector(this);
     database.getEvents().registerListener((AfterRecordCreateListener) deltaCollector);
     database.getEvents().registerListener((AfterRecordUpdateListener) deltaCollector);
     database.getEvents().registerListener((AfterRecordDeleteListener) deltaCollector);
   }
 
-  private void unregisterAutoUpdateListeners() {
+  private void unregisterChangeListeners() {
     if (deltaCollector != null) {
       database.getEvents().unregisterListener((AfterRecordCreateListener) deltaCollector);
       database.getEvents().unregisterListener((AfterRecordUpdateListener) deltaCollector);
@@ -693,28 +721,81 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Applies a transaction delta to the overlay. Called from the post-commit callback.
-   * If the overlay grows beyond the compaction threshold, triggers a full rebuild.
+   * Called by the DeltaCollector (ASYNCHRONOUS/OFF mode) after a committed transaction affected
+   * covered vertex/edge types. ASYNCHRONOUS triggers an async rebuild, OFF marks the view as STALE.
+   */
+  void onRelevantCommit() {
+    if (updateMode == UpdateMode.ASYNCHRONOUS) {
+      if (!compacting.compareAndSet(false, true))
+        return; // rebuild already in progress, it will pick up committed changes
+      this.status = Status.BUILDING;
+      this.readyLatch = new CountDownLatch(1);
+      final Thread rebuildThread = new Thread(() -> {
+        try {
+          final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
+          final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+          // Atomic swap — readers see all-or-nothing
+          this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
+              result.getBucketColumns(), null, System.currentTimeMillis());
+          this.status = Status.READY;
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
+        } finally {
+          compacting.set(false);
+          this.readyLatch.countDown();
+        }
+      }, "gav-rebuild" + (name != null ? "-" + name : ""));
+      rebuildThread.setDaemon(true);
+      rebuildThread.start();
+    } else {
+      this.status = Status.STALE;
+    }
+  }
+
+  /**
+   * Applies a transaction delta to the overlay (SYNCHRONOUS mode). Called from the post-commit callback.
+   * If the overlay grows beyond the compaction threshold, triggers a full rebuild in the background.
+   * <p>
+   * Thread-safety guarantees:
+   * <ul>
+   *   <li>Snapshot swap is atomic — readers always see consistent state</li>
+   *   <li>Only one compaction thread runs at a time (AtomicBoolean guard)</li>
+   *   <li>Overlays applied during compaction are preserved: the compaction thread
+   *       re-checks the overlay after rebuild and merges any accumulated deltas</li>
+   * </ul>
    */
   void applyDelta(final TxDelta delta) {
-    final DeltaOverlay current = this.overlay;
-    final DeltaOverlay base = current != null ? current : new DeltaOverlay(nodeMapping.size());
-    final DeltaOverlay merged = base.merge(delta, nodeMapping);
-    this.overlay = merged;
+    // Merge delta into the current snapshot's overlay
+    final Snapshot current = this.snapshot;
+    final DeltaOverlay base = current.overlay != null ? current.overlay : new DeltaOverlay(current.nodeMapping.size());
+    final DeltaOverlay merged = base.merge(delta, current.nodeMapping);
+    // Atomic swap — overlay update visible to all readers immediately
+    this.snapshot = current.withOverlay(merged);
 
     if (Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold) {
-      // Trigger full compaction in background
+      // Guard: only one compaction thread at a time
+      if (!compacting.compareAndSet(false, true))
+        return;
+
       final Thread compactThread = new Thread(() -> {
         try {
           final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
           final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
-          this.csrPerType = result.getCsrPerType();
-          this.nodeMapping = result.getMapping();
-          this.bucketColumns = result.getBucketColumns();
-          this.overlay = null; // clear overlay after successful compaction
-          this.buildTimestamp = System.currentTimeMillis();
+
+          // Capture any overlay that accumulated during the rebuild
+          final Snapshot beforeSwap = this.snapshot;
+          final DeltaOverlay pendingOverlay = beforeSwap.overlay;
+
+          // Swap to fresh CSR with no overlay
+          this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
+              result.getBucketColumns(), null, System.currentTimeMillis());
+
+          // Note: any deltas that arrived during rebuild are already committed to OLTP,
+          // so the fresh CSR built from OLTP already includes them. No need to re-apply.
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING, "Failed to compact GraphAnalyticalView '%s'", e, name);
+        } finally {
+          compacting.set(false);
         }
       }, "gav-compact" + (name != null ? "-" + name : ""));
       compactThread.setDaemon(true);
@@ -722,11 +803,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
   }
 
-  private boolean isConnectedForType(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
-      final String edgeType) {
-    final CSRAdjacencyIndex csr = csrPerType.get(edgeType);
-    final DeltaOverlay ov = this.overlay;
-    final boolean nodeAInBase = nodeA < nodeMapping.size();
+  private boolean isConnectedForType(final Snapshot snap, final int nodeA, final int nodeB,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    final DeltaOverlay ov = snap.overlay;
+    final boolean nodeAInBase = nodeA < snap.nodeMapping.size();
 
     // Check base CSR
     if (csr != null && nodeAInBase) {
@@ -766,9 +847,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return false;
   }
 
-  private int countCommonForType(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
-      final String edgeType) {
-    final CSRAdjacencyIndex csr = csrPerType.get(edgeType);
+  private int countCommonForType(final Snapshot snap, final int nodeA, final int nodeB,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     if (csr == null)
       return 0;
     int count = 0;
@@ -787,11 +868,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return count;
   }
 
-  private long countDirectional(final CSRAdjacencyIndex csr, final int nodeId,
+  private long countDirectional(final Snapshot snap, final CSRAdjacencyIndex csr, final int nodeId,
       final Vertex.DIRECTION direction, final String edgeType) {
     long count = 0;
-    final DeltaOverlay ov = this.overlay;
-    final boolean nodeInBase = nodeId < nodeMapping.size();
+    final DeltaOverlay ov = snap.overlay;
+    final boolean nodeInBase = nodeId < snap.nodeMapping.size();
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
       if (nodeInBase)
@@ -808,10 +889,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return count;
   }
 
-  private int[] getNeighborsFromCSR(final CSRAdjacencyIndex csr, final int nodeId,
+  private int[] getNeighborsFromCSR(final Snapshot snap, final CSRAdjacencyIndex csr, final int nodeId,
       final Vertex.DIRECTION direction, final String edgeType) {
-    final DeltaOverlay ov = this.overlay;
-    final boolean nodeInBase = nodeId < nodeMapping.size();
+    final DeltaOverlay ov = snap.overlay;
+    final boolean nodeInBase = nodeId < snap.nodeMapping.size();
 
     // Collect base CSR neighbors (only if node is in base mapping and CSR exists)
     int[] baseOut = EMPTY_INT;
@@ -849,9 +930,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   private static final int[] EMPTY_INT = new int[0];
 
-  private void checkBuilt() {
-    if (csrPerType == null)
+  /**
+   * Checks the view is built and returns a consistent snapshot for the caller to use.
+   * All public methods should capture this once and use it throughout their execution.
+   */
+  private Snapshot checkBuilt() {
+    final Snapshot snap = this.snapshot;
+    if (snap == null)
       throw new IllegalStateException("GraphAnalyticalView has not been built yet. Call build() first.");
+    return snap;
   }
 
   private static int sortedIntersectionCount(final int[] a, int startA, final int endA,

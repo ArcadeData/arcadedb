@@ -65,7 +65,7 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionSt
             r.setProperty("vertexTypes", jsonArrayToList(gavDef.getJSONArray("vertexTypes", null)));
             r.setProperty("edgeTypes", jsonArrayToList(gavDef.getJSONArray("edgeTypes", null)));
             r.setProperty("propertyFilter", jsonArrayToList(gavDef.getJSONArray("propertyFilter", null)));
-            r.setProperty("autoUpdate", gavDef.getBoolean("autoUpdate", false));
+            r.setProperty("updateMode", gavDef.getString("updateMode", "OFF"));
 
             // Enrich with live stats from in-memory registry
             final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, name);

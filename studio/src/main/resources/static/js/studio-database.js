@@ -3597,7 +3597,7 @@ function showGavDetail(gavName) {
     html += "<div class='mv-info-row'><span class='mv-info-label'>Properties:</span> " + escapeHtml(gav.propertyFilter.join(", ")) + "</div>";
   }
 
-  html += "<div class='mv-info-row'><span class='mv-info-label'>Auto-Update:</span> " + (gav.autoUpdate ? "Yes" : "No") + "</div>";
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Update Mode:</span> " + escapeHtml(gav.updateMode || "OFF") + "</div>";
 
   if (gav.nodeCount !== undefined)
     html += "<div class='mv-info-row'><span class='mv-info-label'>Nodes:</span> " + (gav.nodeCount || 0).toLocaleString() + "</div>";
@@ -3791,7 +3791,7 @@ function displayGavHealth(gavs) {
   }
 
   let html = "<table class='table table-sm table-striped'>";
-  html += "<thead><tr><th>Name</th><th>Status</th><th>Nodes</th><th>Edges</th><th>Memory</th><th>Auto-Update</th></tr></thead>";
+  html += "<thead><tr><th>Name</th><th>Status</th><th>Nodes</th><th>Edges</th><th>Memory</th><th>Update Mode</th></tr></thead>";
   html += "<tbody>";
   for (let i = 0; i < gavs.length; i++) {
     let g = gavs[i];
@@ -3802,7 +3802,7 @@ function displayGavHealth(gavs) {
     html += "<td>" + (g.nodeCount || "-").toLocaleString() + "</td>";
     html += "<td>" + (g.edgeCount || "-").toLocaleString() + "</td>";
     html += "<td>" + (g.memoryUsageBytes !== undefined ? formatBytes(g.memoryUsageBytes) : "-") + "</td>";
-    html += "<td>" + (g.autoUpdate ? "Yes" : "No") + "</td>";
+    html += "<td>" + escapeHtml(g.updateMode || "OFF") + "</td>";
     html += "</tr>";
   }
   html += "</tbody></table>";

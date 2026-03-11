@@ -27,87 +27,107 @@ import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * Listens to record changes during a transaction and collects them into a {@link TxDelta}.
- * On transaction commit, the delta is applied to the {@link GraphAnalyticalView}'s overlay.
+ * Detects when a transaction affects vertex/edge types covered by the GAV and handles updates.
  * <p>
- * Implements all three after-record listeners so the view only needs one registration point.
- * Uses ThreadLocal to collect per-thread changes (one transaction per thread).
+ * Behavior depends on the view's {@link GraphAnalyticalView.UpdateMode}:
+ * <ul>
+ *   <li><b>SYNCHRONOUS</b>: Collects detailed changes (TxDelta) during the transaction,
+ *       then applies them to the overlay on commit — no stale window.</li>
+ *   <li><b>ASYNCHRONOUS</b>: Only detects that a relevant change occurred,
+ *       then triggers an async rebuild on commit.</li>
+ *   <li><b>OFF</b>: Only detects relevance, marks the view as STALE on commit.</li>
+ * </ul>
  */
 class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
 
   private final GraphAnalyticalView view;
-  private final ThreadLocal<TxDelta> currentDelta = ThreadLocal.withInitial(TxDelta::new);
+  private final String              callbackKey;
+
+  // Only used in SYNCHRONOUS mode: per-thread delta tracking
+  private final ThreadLocal<TxDelta> currentDelta;
 
   DeltaCollector(final GraphAnalyticalView view) {
     this.view = view;
+    this.callbackKey = "gav-delta-" + (view.getName() != null ? view.getName() : System.identityHashCode(view));
+    this.currentDelta = view.getUpdateMode() == GraphAnalyticalView.UpdateMode.SYNCHRONOUS
+        ? ThreadLocal.withInitial(TxDelta::new)
+        : null;
   }
 
   @Override
   public void onAfterCreate(final Record record) {
-    if (!view.isReady())
+    if (!isRelevant(record))
       return;
 
-    if (record instanceof Vertex vertex) {
-      if (!view.coversVertexType(vertex.getTypeName()))
-        return;
+    if (currentDelta != null) {
+      // SYNCHRONOUS: collect detailed changes
       final TxDelta delta = currentDelta.get();
-      final Map<String, Object> props = extractProperties(vertex);
-      delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), props));
-      scheduleCommitCallback(delta);
-
-    } else if (record instanceof Edge edge) {
-      if (!view.coversEdgeType(edge.getTypeName()))
-        return;
-      final TxDelta delta = currentDelta.get();
-      delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn()));
-      scheduleCommitCallback(delta);
+      if (record instanceof Vertex vertex)
+        delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
+      else if (record instanceof Edge edge)
+        delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn()));
+      scheduleSyncCallback(delta);
+    } else {
+      scheduleAsyncCallback();
     }
   }
 
   @Override
   public void onAfterUpdate(final Record record) {
-    if (!view.isReady())
+    if (!isRelevant(record))
       return;
 
-    if (record instanceof Vertex vertex) {
-      if (!view.coversVertexType(vertex.getTypeName()))
-        return;
-      final TxDelta delta = currentDelta.get();
-      delta.updatedProperties.put(vertex.getIdentity(), extractProperties(vertex));
-      scheduleCommitCallback(delta);
+    if (currentDelta != null) {
+      // SYNCHRONOUS: collect property changes
+      if (record instanceof Vertex vertex) {
+        final TxDelta delta = currentDelta.get();
+        delta.updatedProperties.put(vertex.getIdentity(), extractProperties(vertex));
+        scheduleSyncCallback(delta);
+      }
+    } else {
+      scheduleAsyncCallback();
     }
   }
 
   @Override
   public void onAfterDelete(final Record record) {
-    if (!view.isReady())
+    if (!isRelevant(record))
       return;
 
-    if (record instanceof Vertex vertex) {
-      if (!view.coversVertexType(vertex.getTypeName()))
-        return;
+    if (currentDelta != null) {
+      // SYNCHRONOUS: collect deletions
       final TxDelta delta = currentDelta.get();
-      delta.deletedVertices.add(vertex.getIdentity());
-      scheduleCommitCallback(delta);
-
-    } else if (record instanceof Edge edge) {
-      if (!view.coversEdgeType(edge.getTypeName()))
-        return;
-      final TxDelta delta = currentDelta.get();
-      delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn()));
-      scheduleCommitCallback(delta);
+      if (record instanceof Vertex vertex)
+        delta.deletedVertices.add(vertex.getIdentity());
+      else if (record instanceof Edge edge)
+        delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn()));
+      scheduleSyncCallback(delta);
+    } else {
+      scheduleAsyncCallback();
     }
   }
 
-  private void scheduleCommitCallback(final TxDelta delta) {
+  private boolean isRelevant(final Record record) {
+    if (!view.isBuilt())
+      return false;
+    if (record instanceof Vertex vertex)
+      return view.coversVertexType(vertex.getTypeName());
+    if (record instanceof Edge edge)
+      return view.coversEdgeType(edge.getTypeName());
+    return false;
+  }
+
+  private void scheduleSyncCallback(final TxDelta delta) {
     try {
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
       if (dbInternal.isTransactionActive()) {
-        final String callbackId = "gav-delta-" + (view.getName() != null ? view.getName() : System.identityHashCode(view));
-        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackId, () -> {
+        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, () -> {
           final TxDelta frozen = new TxDelta();
           frozen.addedVertices.addAll(delta.addedVertices);
           frozen.deletedVertices.addAll(delta.deletedVertices);
@@ -124,7 +144,17 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     }
   }
 
-  private Map<String, Object> extractProperties(final Document doc) {
+  private void scheduleAsyncCallback() {
+    try {
+      final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
+      if (dbInternal.isTransactionActive())
+        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, view::onRelevantCommit);
+    } catch (final Exception e) {
+      // Not in a transaction context or database is closing — skip
+    }
+  }
+
+  private static Map<String, Object> extractProperties(final Document doc) {
     final Set<String> names = doc.getPropertyNames();
     if (names.isEmpty())
       return Collections.emptyMap();

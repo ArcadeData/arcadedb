@@ -395,7 +395,7 @@ public class GraphAlgorithmsTest extends TestHelper {
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
         .withVertexTypes("Node")
         .withEdgeTypes("LINK")
-        .withAutoUpdate(true)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
         .withCompactionThreshold(5000)
         .build();
 

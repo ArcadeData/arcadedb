@@ -28,33 +28,33 @@ import com.arcadedb.database.Database;
  * <p>
  * Usage:
  * <pre>
- *   // Synchronous build
+ *   // Synchronous update mode (overlay, no stale window)
  *   GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
  *       .withName("social-graph")
  *       .withVertexTypes("Person", "Company")
  *       .withEdgeTypes("FOLLOWS", "WORKS_AT")
  *       .withProperties("name", "age")
- *       .withAutoUpdate(true)
+ *       .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
  *       .build();
  *
- *   // Asynchronous build
+ *   // Asynchronous update mode (async rebuild after commit)
  *   GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
  *       .withName("social-graph")
  *       .withVertexTypes("Person")
- *       .buildAsync();
- *   gav.awaitReady(10, TimeUnit.SECONDS);
+ *       .withUpdateMode(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS)
+ *       .build();
  * </pre>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphAnalyticalViewBuilder {
-  private final Database database;
-  private       String   name;
-  private       String[] vertexTypes;
-  private       String[] edgeTypes;
-  private       String[] properties;
-  private       boolean  autoUpdate;
-  private       int      compactionThreshold = -1;
+  private final Database                        database;
+  private       String                          name;
+  private       String[]                        vertexTypes;
+  private       String[]                        edgeTypes;
+  private       String[]                        properties;
+  private       GraphAnalyticalView.UpdateMode  updateMode = GraphAnalyticalView.UpdateMode.OFF;
+  private       int                             compactionThreshold = -1;
 
   GraphAnalyticalViewBuilder(final Database database) {
     this.database = database;
@@ -96,19 +96,22 @@ public class GraphAnalyticalViewBuilder {
   }
 
   /**
-   * Enables automatic rebuild of the analytical view after each transaction commit.
-   * When enabled, record listeners are registered on the database to detect changes,
-   * and a post-commit callback triggers an asynchronous rebuild.
+   * Sets the update mode for the analytical view:
+   * <ul>
+   *   <li>{@link GraphAnalyticalView.UpdateMode#OFF OFF} — no auto-update; view becomes STALE on commit (default)</li>
+   *   <li>{@link GraphAnalyticalView.UpdateMode#SYNCHRONOUS SYNCHRONOUS} — applies changes via overlay on commit; no stale window</li>
+   *   <li>{@link GraphAnalyticalView.UpdateMode#ASYNCHRONOUS ASYNCHRONOUS} — triggers async rebuild on commit; brief BUILDING window</li>
+   * </ul>
    */
-  public GraphAnalyticalViewBuilder withAutoUpdate(final boolean autoUpdate) {
-    this.autoUpdate = autoUpdate;
+  public GraphAnalyticalViewBuilder withUpdateMode(final GraphAnalyticalView.UpdateMode updateMode) {
+    this.updateMode = updateMode;
     return this;
   }
 
   /**
    * Sets the compaction threshold — the number of delta edges accumulated before
    * triggering a full background rebuild of the CSR. Default is 10,000.
-   * Only meaningful when {@link #withAutoUpdate(boolean)} is enabled.
+   * Only meaningful when update mode is {@link GraphAnalyticalView.UpdateMode#SYNCHRONOUS}.
    */
   public GraphAnalyticalViewBuilder withCompactionThreshold(final int compactionThreshold) {
     this.compactionThreshold = compactionThreshold;
@@ -121,7 +124,7 @@ public class GraphAnalyticalViewBuilder {
    * Status will be READY when this method returns.
    */
   public GraphAnalyticalView build() {
-    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, autoUpdate);
+    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, updateMode);
     if (compactionThreshold > 0)
       view.setCompactionThreshold(compactionThreshold);
     if (name != null) {
@@ -139,7 +142,7 @@ public class GraphAnalyticalViewBuilder {
    * Use {@link GraphAnalyticalView#awaitReady} or {@link GraphAnalyticalView#getStatus()} to check completion.
    */
   public GraphAnalyticalView buildAsync() {
-    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, autoUpdate);
+    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, updateMode);
     if (compactionThreshold > 0)
       view.setCompactionThreshold(compactionThreshold);
     if (name != null) {

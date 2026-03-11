@@ -75,7 +75,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       def.put("edgeTypes", toJsonArray(etArray));
     if (propArray != null)
       def.put("propertyFilter", toJsonArray(propArray));
-    def.put("autoUpdate", autoUpdate);
+    def.put("updateMode", autoUpdate ? "SYNCHRONOUS" : "OFF");
     gavDefs.put(viewName, def);
     database.getSchema().setExtension("graphAnalyticalViews", gavDefs);
 
@@ -87,7 +87,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       builder.withEdgeTypes(etArray);
     if (propArray != null && propArray.length > 0)
       builder.withProperties(propArray);
-    builder.withAutoUpdate(autoUpdate);
+    builder.withUpdateMode(autoUpdate ? GraphAnalyticalView.UpdateMode.SYNCHRONOUS : GraphAnalyticalView.UpdateMode.OFF);
     builder.buildAsync();
 
     final InternalResultSet result = new InternalResultSet();

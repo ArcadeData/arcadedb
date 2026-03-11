@@ -121,7 +121,8 @@ public class GraphAnalyticalViewPersistence {
           builder.withProperties(props);
         }
 
-        builder.withAutoUpdate(gavDef.getBoolean("autoUpdate", false));
+        final String updateModeStr = gavDef.getString("updateMode", "OFF");
+        builder.withUpdateMode(GraphAnalyticalView.UpdateMode.valueOf(updateModeStr));
         builder.build();
         count++;
 
@@ -169,7 +170,7 @@ public class GraphAnalyticalViewPersistence {
       json.put("propertyFilter", pf);
     }
 
-    json.put("autoUpdate", view.isAutoUpdate());
+    json.put("updateMode", view.getUpdateMode().name());
     return json;
   }
 }
