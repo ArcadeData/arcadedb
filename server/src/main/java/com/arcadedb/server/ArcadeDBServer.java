@@ -80,7 +80,8 @@ import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
-  public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
+  public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server" +
+      "-configuration.json";
   private final       ContextConfiguration                  configuration;
   private final       String                                serverName;
   private             String                                hostAddress;
@@ -94,7 +95,8 @@ public class ArcadeDBServer {
   private             MCPConfiguration                      mcpConfiguration;
   private             AiConfiguration                       aiConfiguration;
   private             ServerQueryProfiler                   queryProfiler;
-  private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
+  private final       ConcurrentMap<String, ServerDatabase> databases                            =
+      new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
 
@@ -168,7 +170,7 @@ public class ArcadeDBServer {
         LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");
         Metrics.addRegistry(new LoggingMeterRegistry());
       }
-      LogManager.instance().log(this, Level.INFO, "- Metrics Collection Started...");
+      LogManager.instance().log(this, Level.INFO, "Metrics Collection Started");
     }
 
     security = new ServerSecurity(this, configuration, serverRootPath + "/config");
@@ -241,10 +243,11 @@ public class ArcadeDBServer {
 
   private void createDirectories() {
 
-    LogManager.instance().log(this, Level.INFO, "Server root path: %s",
-        configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH));
-    LogManager.instance().log(this, Level.INFO, "Databases directory: %s",
-        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    LogManager.instance().log(this, Level.INFO, "Paths - server root: %s - databases: %s - backups: %s",
+        configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH),
+        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
+
     final File databaseDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     if (!databaseDir.exists()) {
       if (!databaseDir.mkdirs()) {
@@ -254,8 +257,6 @@ public class ArcadeDBServer {
       }
     }
 
-    LogManager.instance().log(this, Level.INFO, "Backups directory: %s",
-        configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
     final File backupsDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
     if (!backupsDir.exists()) {
       if (!backupsDir.mkdirs()) {
@@ -264,7 +265,6 @@ public class ArcadeDBServer {
         throw new ServerException("Unable to create backups directory: " + backupsDir.getAbsolutePath());
       }
     }
-
   }
 
   private void welcomeBanner() {
@@ -486,7 +486,7 @@ public class ArcadeDBServer {
   }
 
   public ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
-      final boolean allowLoad) {
+                                    final boolean allowLoad) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
@@ -604,47 +604,47 @@ public class ArcadeDBServer {
             final String commandParams = command.substring(commandSeparator + 1);
 
             switch (commandType) {
-            case "restore":
-              // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
-              if (database != null) {
-                ((DatabaseInternal) database).getEmbedded().drop();
-                databases.remove(dbName);
-              }
-              final String dbPath =
-                  configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
+              case "restore":
+                // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
+                if (database != null) {
+                  ((DatabaseInternal) database).getEmbedded().drop();
+                  databases.remove(dbName);
+                }
+                final String dbPath =
+                    configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
 //              new Restore(commandParams, dbPath).restoreDatabase();
 
-              try {
-                final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-                final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(commandParams,
-                    dbPath);
+                try {
+                  final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+                  final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(commandParams,
+                      dbPath);
 
-                clazz.getMethod("restoreDatabase").invoke(restorer);
+                  clazz.getMethod("restoreDatabase").invoke(restorer);
 
-              } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
-                             InstantiationException e) {
-                throw new CommandExecutionException("""
-                    Error on restoring database, restore libs not found in \
-                    classpath""", e);
-              } catch (final InvocationTargetException e) {
-                throw new CommandExecutionException("Error on restoring database", e.getTargetException());
-              }
+                } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
+                               InstantiationException e) {
+                  throw new CommandExecutionException("""
+                                                      Error on restoring database, restore libs not found in \
+                                                      classpath""", e);
+                } catch (final InvocationTargetException e) {
+                  throw new CommandExecutionException("Error on restoring database", e.getTargetException());
+                }
 
-              getDatabase(dbName);
-              break;
+                getDatabase(dbName);
+                break;
 
-            case "import":
-              if (database == null) {
-                // CREATE THE DATABASE
-                LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
-                database = createDatabase(dbName, defaultDbMode);
-              }
-              database.command("sql", "import database " + commandParams);
-              break;
+              case "import":
+                if (database == null) {
+                  // CREATE THE DATABASE
+                  LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
+                  database = createDatabase(dbName, defaultDbMode);
+                }
+                database.command("sql", "import database " + commandParams);
+                break;
 
-            default:
-              LogManager.instance().log(this, Level.SEVERE, "Unsupported command %s in startup command: '%s'", null
-                  , commandType);
+              default:
+                LogManager.instance().log(this, Level.SEVERE, "Unsupported command %s in startup command: '%s'", null
+                    , commandType);
             }
           }
         } else {
@@ -668,8 +668,8 @@ public class ArcadeDBServer {
         if (!security.existsUser(credential)) {
           LogManager.instance()
               .log(this, Level.WARNING, """
-                      Cannot create user '%s' to access database '%s' because the user does not \
-                      exist""", null,
+                                        Cannot create user '%s' to access database '%s' because the user does not \
+                                        exist""", null,
                   credential, dbName);
         }
         //FIXME: else if user exists, should we give him access to the dbName?
@@ -686,7 +686,7 @@ public class ArcadeDBServer {
               user = security.authenticate(userName, userPassword, dbName);
 
               // UPDATE DB LIST + GROUP
-              user.addDatabase(dbName, new String[] { userGroup });
+              user.addDatabase(dbName, new String[]{userGroup});
               security.saveUsers();
 
             } catch (final ServerSecurityException e) {
@@ -697,7 +697,7 @@ public class ArcadeDBServer {
             }
           } else {
             // UPDATE DB LIST
-            user.addDatabase(dbName, new String[] { userGroup });
+            user.addDatabase(dbName, new String[]{userGroup});
             security.saveUsers();
           }
         } else {
@@ -708,7 +708,7 @@ public class ArcadeDBServer {
 
           // UPDATE DB LIST + GROUP
           ServerSecurityUser user = security.getUser(userName);
-          user.addDatabase(dbName, new String[] { userGroup });
+          user.addDatabase(dbName, new String[]{userGroup});
           security.saveUsers();
         }
       }
@@ -775,8 +775,8 @@ public class ArcadeDBServer {
       if (hostNameEnvVariable == null) {
         LogManager.instance().log(this, Level.SEVERE,
             """
-                Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server \
-                will be halted""");
+            Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server \
+            will be halted""");
         stop();
         System.exit(1);
         return null;

@@ -3597,7 +3597,16 @@ function showGavDetail(gavName) {
     html += "<div class='mv-info-row'><span class='mv-info-label'>Properties:</span> " + escapeHtml(gav.propertyFilter.join(", ")) + "</div>";
   }
 
-  html += "<div class='mv-info-row'><span class='mv-info-label'>Update Mode:</span> " + escapeHtml(gav.updateMode || "OFF") + "</div>";
+  let safeName = gav.name.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+  let currentMode = escapeHtml(gav.updateMode || "OFF");
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Update Mode:</span> ";
+  html += "<select class='form-select form-select-sm d-inline-block' style='width:auto;' id='gavUpdateModeSelect' onchange='alterGavUpdateMode(\"" + safeName + "\", this.value)'>";
+  let modes = ["OFF", "SYNCHRONOUS", "ASYNCHRONOUS"];
+  for (let m = 0; m < modes.length; m++) {
+    html += "<option value='" + modes[m] + "'" + (modes[m] === currentMode ? " selected" : "") + ">" + modes[m] + "</option>";
+  }
+  html += "</select>";
+  html += "</div>";
 
   if (gav.nodeCount !== undefined)
     html += "<div class='mv-info-row'><span class='mv-info-label'>Nodes:</span> " + (gav.nodeCount || 0).toLocaleString() + "</div>";
@@ -3607,8 +3616,9 @@ function showGavDetail(gavName) {
     html += "<div class='mv-info-row'><span class='mv-info-label'>Memory:</span> " + formatBytes(gav.memoryUsageBytes) + "</div>";
 
   // Actions
-  html += "<div class='mt-3'>";
-  html += "<button class='btn btn-sm btn-outline-danger' onclick='dropGav(\"" + gav.name.replace(/"/g, "&quot;") + "\")'><i class='fa fa-trash'></i> Drop</button>";
+  html += "<div class='mt-3 d-flex gap-2'>";
+  html += "<button class='btn btn-sm btn-outline-primary' onclick='rebuildGav(\"" + safeName + "\")'><i class='fa fa-sync'></i> Rebuild</button>";
+  html += "<button class='btn btn-sm btn-outline-danger' onclick='dropGav(\"" + safeName + "\")'><i class='fa fa-trash'></i> Drop</button>";
   html += "</div>";
 
   html += "</div>";
@@ -3776,6 +3786,50 @@ function dropGav(gavName) {
       });
     }
   );
+}
+
+function alterGavUpdateMode(gavName, newMode) {
+  let database = getCurrentDatabase();
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/command/" + database,
+    data: JSON.stringify({
+      language: "sql",
+      command: "ALTER GRAPH ANALYTICAL VIEW `" + gavName + "` UPDATE MODE " + newMode
+    }),
+    beforeSend: function (xhr) {
+      xhr.setRequestHeader("Authorization", globalCredentials);
+    },
+  })
+  .done(function () {
+    globalNotify("Success", "Update mode changed to " + newMode, "success");
+    loadDatabaseSchema();
+  })
+  .fail(function (jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
+}
+
+function rebuildGav(gavName) {
+  let database = getCurrentDatabase();
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/command/" + database,
+    data: JSON.stringify({
+      language: "sql",
+      command: "REBUILD GRAPH ANALYTICAL VIEW `" + gavName + "`"
+    }),
+    beforeSend: function (xhr) {
+      xhr.setRequestHeader("Authorization", globalCredentials);
+    },
+  })
+  .done(function () {
+    globalNotify("Success", "Rebuild started for '" + escapeHtml(gavName) + "'", "success");
+    loadDatabaseSchema();
+  })
+  .fail(function (jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
 }
 
 function formatBytes(bytes) {

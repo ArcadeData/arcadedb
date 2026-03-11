@@ -6273,6 +6273,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
+  @Override
+  public RebuildGraphAnalyticalViewStatement visitRebuildGraphAnalyticalViewStmt(
+      final SQLParser.RebuildGraphAnalyticalViewStmtContext ctx) {
+    final RebuildGraphAnalyticalViewStatement stmt = new RebuildGraphAnalyticalViewStatement(-1);
+    final SQLParser.RebuildGraphAnalyticalViewBodyContext bodyCtx = ctx.rebuildGraphAnalyticalViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    return stmt;
+  }
+
   /**
    * Visit trigger timing (BEFORE or AFTER).
    */

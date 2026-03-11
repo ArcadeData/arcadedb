@@ -129,6 +129,9 @@ statement
     // Continuous Aggregate Refresh
     | REFRESH CONTINUOUS AGGREGATE refreshContinuousAggregateBody # refreshContinuousAggregateStmt
 
+    // Graph Analytical View Rebuild
+    | REBUILD GRAPH ANALYTICAL VIEW rebuildGraphAnalyticalViewBody # rebuildGraphAnalyticalViewStmt
+
     // Index Management
     | rebuildIndexStatement                          # rebuildIndexStmt
 
@@ -803,6 +806,14 @@ alterGraphAnalyticalViewBody
  */
 dropGraphAnalyticalViewBody
     : (IF EXISTS)? identifier
+    ;
+
+/**
+ * REBUILD GRAPH ANALYTICAL VIEW statement
+ * Syntax: REBUILD GRAPH ANALYTICAL VIEW name
+ */
+rebuildGraphAnalyticalViewBody
+    : identifier
     ;
 
 // ============================================================================

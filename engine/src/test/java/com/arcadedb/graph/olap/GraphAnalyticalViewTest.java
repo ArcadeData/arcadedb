@@ -2297,4 +2297,64 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     gav.close();
   }
+
+  @Test
+  void testAlterGraphAnalyticalViewUpdateMode() {
+    database.getSchema().createVertexType("Device");
+    database.getSchema().createEdgeType("CONNECTS");
+    database.begin();
+    database.newVertex("Device").set("name", "D1").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW deviceNet VERTEX TYPES (Device) EDGE TYPES (CONNECTS) UPDATE MODE OFF");
+
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(extension.getJSONObject("deviceNet").getString("updateMode")).isEqualTo("OFF");
+
+    database.command("sql", "ALTER GRAPH ANALYTICAL VIEW deviceNet UPDATE MODE SYNCHRONOUS");
+
+    final var updatedExtension = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(updatedExtension.getJSONObject("deviceNet").getString("updateMode")).isEqualTo("SYNCHRONOUS");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "deviceNet");
+    assertThat(liveView).isNotNull();
+    assertThat(liveView.getUpdateMode()).isEqualTo(GraphAnalyticalView.UpdateMode.SYNCHRONOUS);
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW deviceNet");
+  }
+
+  @Test
+  void testRebuildGraphAnalyticalView() {
+    database.getSchema().createVertexType("Machine");
+    database.getSchema().createEdgeType("POWERS");
+    database.begin();
+    final MutableVertex m1 = database.newVertex("Machine").set("name", "M1").save();
+    final MutableVertex m2 = database.newVertex("Machine").set("name", "M2").save();
+    m1.newEdge("POWERS", m2);
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW machineNet VERTEX TYPES (Machine) EDGE TYPES (POWERS)");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "machineNet");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    assertThat(liveView.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    // Add more data
+    database.begin();
+    final MutableVertex m3 = database.newVertex("Machine").set("name", "M3").save();
+    m2.asVertex().modify().newEdge("POWERS", m3);
+    database.commit();
+
+    // Rebuild via SQL
+    final ResultSet rs = database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW machineNet");
+    assertThat(rs.hasNext()).isTrue();
+    final var result = rs.next();
+    assertThat((String) result.getProperty("operation")).isEqualTo("rebuild graph analytical view");
+    assertThat((String) result.getProperty("name")).isEqualTo("machineNet");
+
+    assertThat(liveView.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW machineNet");
+  }
 }
