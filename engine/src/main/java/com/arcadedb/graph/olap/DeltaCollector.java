@@ -165,7 +165,20 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   }
 
   private TxDelta getOrCreateDelta() {
-    return perThreadDeltas.computeIfAbsent(Thread.currentThread().threadId(), k -> new TxDelta());
+    final long tid = Thread.currentThread().threadId();
+    final TxDelta existing = perThreadDeltas.get(tid);
+    if (existing != null) {
+      // If there's an existing delta but the commit callback is no longer registered
+      // (because a previous transaction rolled back and reset() cleared the callback keys),
+      // discard the stale delta to avoid leaking rolled-back changes into this transaction.
+      final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
+      if (dbInternal.isTransactionActive() && !dbInternal.getTransaction().hasCallbackKey(callbackKey))
+        existing.clear();
+      return existing;
+    }
+    final TxDelta fresh = new TxDelta();
+    perThreadDeltas.put(tid, fresh);
+    return fresh;
   }
 
   /**

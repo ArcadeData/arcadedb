@@ -16,11 +16,9 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.function.sql.graph;
+package com.arcadedb.graph;
 
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.GraphTraversalProvider;
-import com.arcadedb.graph.Vertex;
 
 import java.util.Iterator;
 import java.util.NoSuchElementException;
@@ -28,14 +26,12 @@ import java.util.NoSuchElementException;
 /**
  * Lazy iterable that converts CSR dense node IDs to Vertex objects on demand.
  * Used by SQL graph functions (out/in/both) when a GAV provider is available.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class CSRVertexIterable implements Iterable<Vertex> {
+public class CSRVertexIterable implements Iterable<Vertex> {
   private final GraphTraversalProvider provider;
   private final int[]                  neighborIds;
 
-  CSRVertexIterable(final GraphTraversalProvider provider, final int[] neighborIds) {
+  public CSRVertexIterable(final GraphTraversalProvider provider, final int[] neighborIds) {
     this.provider = provider;
     this.neighborIds = neighborIds;
   }

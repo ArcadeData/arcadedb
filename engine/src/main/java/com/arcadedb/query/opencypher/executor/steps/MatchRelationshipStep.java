@@ -489,11 +489,13 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    *   <li>Path variable (e.g., p = ...) — paths need edge objects for reconstruction</li>
    *   <li>Pre-bound edge variable — identity check requires the edge object</li>
    *   <li>Edge uniqueness — other edges in result require deduplication via edge identity</li>
-   *   <li>Undirected (BOTH) — self-loop edges appear twice (once OUT, once IN); edge
-   *       identity is needed to deduplicate them</li>
    *   <li>Multi-hop relationship variable — internal anonymous vars (e.g., "  rel0") signal
    *       that cross-hop edge uniqueness checking is needed</li>
    * </ol>
+   * <p>
+   * Note: BOTH direction is allowed on the fast path. Self-loop deduplication (a self-loop
+   * edge appears once in OUT and once in IN) is handled in {@link #getVertices(Vertex)}
+   * by halving self-loop entries in the neighbor array.
    * <p>
    * The plan builder cooperates: for single-hop anonymous patterns it passes null as the
    * relationship variable (enabling fast path), while for multi-hop patterns it generates
@@ -517,11 +519,6 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     // 4. Edge uniqueness — other hops in the same MATCH already produced edges,
     //    so Cypher requires deduplication via edge identity
     if (resultContainsEdges(result))
-      return false;
-
-    // 5. Undirected traversal (BOTH) — self-loop edges produce the same vertex twice
-    //    (once via OUT, once via IN) and require edge-level dedup via seenEdges
-    if (getEffectiveDirection() == Direction.BOTH)
       return false;
 
     return true;
@@ -593,20 +590,28 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       final int nodeId = provider.getNodeId(vertex.getIdentity());
       if (nodeId >= 0) {
         gavUsed = true;
-        final int[] neighborIds = provider.getNeighborIds(nodeId, direction.toArcadeDirection(), types);
+        int[] neighborIds = provider.getNeighborIds(nodeId, direction.toArcadeDirection(), types);
+
+        // For BOTH direction, deduplicate self-loop entries: each self-loop edge
+        // appears once in the forward and once in the backward neighbor list,
+        // doubling it in the merged result. Keep only half the self-loop entries.
+        if (direction == Direction.BOTH)
+          neighborIds = deduplicateSelfLoops(neighborIds, nodeId);
+
+        final int[] neighbors = neighborIds;
         return new Iterator<>() {
           private int idx = 0;
 
           @Override
           public boolean hasNext() {
-            return idx < neighborIds.length;
+            return idx < neighbors.length;
           }
 
           @Override
           public Vertex next() {
             if (!hasNext())
               throw new NoSuchElementException();
-            final RID rid = provider.getRID(neighborIds[idx++]);
+            final RID rid = provider.getRID(neighbors[idx++]);
             gavPathCount++;
             return (Vertex) context.getDatabase().lookupByRID(rid, true);
           }
@@ -614,10 +619,49 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       }
     }
 
+    final Iterator<Vertex> it;
     if (types == null || types.length == 0)
-      return vertex.getVertices(direction.toArcadeDirection()).iterator();
+      it = vertex.getVertices(direction.toArcadeDirection()).iterator();
     else
-      return vertex.getVertices(direction.toArcadeDirection(), types).iterator();
+      it = vertex.getVertices(direction.toArcadeDirection(), types).iterator();
+
+    // For BOTH direction, deduplicate self-loop vertices: the OLTP iterator
+    // concatenates OUT and IN edge iterators, so self-loops yield the source
+    // vertex twice. Skip every other occurrence of the source vertex.
+    if (direction == Direction.BOTH) {
+      final RID sourceRid = vertex.getIdentity();
+      return new Iterator<>() {
+        private Vertex nextVertex = null;
+        private int selfLoopSeen = 0;
+
+        @Override
+        public boolean hasNext() {
+          if (nextVertex != null)
+            return true;
+          while (it.hasNext()) {
+            final Vertex v = it.next();
+            if (v.getIdentity().equals(sourceRid)) {
+              selfLoopSeen++;
+              if (selfLoopSeen % 2 == 0)
+                continue; // skip every other self-loop occurrence
+            }
+            nextVertex = v;
+            return true;
+          }
+          return false;
+        }
+
+        @Override
+        public Vertex next() {
+          if (!hasNext())
+            throw new NoSuchElementException();
+          final Vertex v = nextVertex;
+          nextVertex = null;
+          return v;
+        }
+      };
+    }
+    return it;
   }
 
   /**
@@ -804,6 +848,33 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       builder.append(")");
     }
     return builder.toString();
+  }
+
+  /**
+   * Removes duplicate self-loop entries from a neighbor ID array for BOTH direction.
+   * Each self-loop edge contributes the source node to both the forward and backward
+   * neighbor lists, so it appears twice in the merged array. This method keeps only
+   * half the self-loop entries, preserving correct multiplicity for multi-self-loop cases.
+   */
+  private static int[] deduplicateSelfLoops(final int[] neighborIds, final int sourceNodeId) {
+    int selfLoopCount = 0;
+    for (final int id : neighborIds)
+      if (id == sourceNodeId)
+        selfLoopCount++;
+    if (selfLoopCount <= 1)
+      return neighborIds; // 0 or 1 self-loop entries: no duplicates to remove
+    final int toRemove = selfLoopCount / 2;
+    final int[] result = new int[neighborIds.length - toRemove];
+    int w = 0;
+    int skipped = 0;
+    for (final int id : neighborIds) {
+      if (id == sourceNodeId && skipped < toRemove) {
+        skipped++;
+        continue;
+      }
+      result[w++] = id;
+    }
+    return result;
   }
 
   private static String getIndent(final int depth, final int indent) {

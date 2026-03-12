@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.event.AfterRecordCreateListener;
@@ -85,8 +86,41 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
 
   /** Shared executor for all GAV async builds and compactions. Uses virtual threads for lightweight scheduling. */
-  private static final ExecutorService EXECUTOR = Executors.newThreadPerTaskExecutor(
-      Thread.ofVirtual().name("gav-worker-", 0).factory());
+  private static volatile ExecutorService EXECUTOR;
+
+  private static ExecutorService getExecutor() {
+    ExecutorService exec = EXECUTOR;
+    if (exec == null || exec.isShutdown()) {
+      synchronized (GraphAnalyticalView.class) {
+        exec = EXECUTOR;
+        if (exec == null || exec.isShutdown())
+          EXECUTOR = exec = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("gav-worker-", 0).factory());
+      }
+    }
+    return exec;
+  }
+
+  /**
+   * Gracefully shuts down the shared async build executor. Waits up to 30 seconds
+   * for in-progress builds to complete, then forcibly terminates remaining tasks.
+   * Called when the last database instance is closed (alongside {@code PageManager.INSTANCE.close()}).
+   * The executor is lazily re-created if a new database is opened later.
+   */
+  public static void closeExecutor() {
+    synchronized (GraphAnalyticalView.class) {
+      final ExecutorService exec = EXECUTOR;
+      if (exec == null || exec.isShutdown())
+        return;
+      exec.shutdown();
+      try {
+        if (!exec.awaitTermination(30, TimeUnit.SECONDS))
+          exec.shutdownNow();
+      } catch (final InterruptedException e) {
+        exec.shutdownNow();
+        Thread.currentThread().interrupt();
+      }
+    }
+  }
 
   public enum Status {
     NOT_BUILT, BUILDING, READY, STALE
@@ -130,6 +164,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final String[]   vertexTypes;
   private final String[]   edgeTypes;
   private final String[]   propertyFilter;
+  private       int        propertySampleSize = CSRBuilder.DEFAULT_PROPERTY_SAMPLE_SIZE;
+  private       boolean    useWhenStale = true;
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -140,7 +176,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   // Incremental auto-update
   private DeltaCollector         deltaCollector;
-  private int                    compactionThreshold = 10000;
+  public static final int        DEFAULT_COMPACTION_THRESHOLD = 10_000;
+  private int                    compactionThreshold = DEFAULT_COMPACTION_THRESHOLD;
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
 
@@ -170,6 +207,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     this.edgeTypes = edgeTypes;
     this.propertyFilter = propertyFilter;
     this.updateMode = updateMode;
+    this.useWhenStale = GlobalConfiguration.GAV_USE_WHEN_STALE.getValueAsBoolean();
   }
 
   /**
@@ -195,12 +233,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @param edgeTypes   edge type names to include (null = all)
    */
   public synchronized void build(final String[] vertexTypes, final String[] edgeTypes) {
-    readyLatch = new CountDownLatch(1);
+    final CountDownLatch latch = new CountDownLatch(1);
+    readyLatch = latch;
     status = Status.BUILDING;
     buildError = null;
     try {
       final long buildStart = System.currentTimeMillis();
-      final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
+      final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
       final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
       final long durationMs = System.currentTimeMillis() - buildStart;
 
@@ -216,7 +255,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       this.status = snapshot != null ? Status.READY : Status.NOT_BUILT;
       throw e;
     } finally {
-      this.readyLatch.countDown();
+      latch.countDown();
     }
   }
 
@@ -225,17 +264,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Returns immediately. Use {@link #awaitReady(long, TimeUnit)} or
    * {@link #getStatus()} to check completion.
    */
-  public void buildAsync() {
+  public synchronized void buildAsync() {
     if (!buildQueued.compareAndSet(false, true))
       return; // a build is already queued or running
-    readyLatch = new CountDownLatch(1);
+    final CountDownLatch latch = new CountDownLatch(1);
+    readyLatch = latch;
     status = Status.BUILDING;
     buildError = null;
-    EXECUTOR.execute(() -> {
+    getExecutor().execute(() -> {
       BUILD_PERMITS.acquireUninterruptibly();
       try {
         final long buildStart = System.currentTimeMillis();
-        final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
+        final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
         final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
         final long durationMs = System.currentTimeMillis() - buildStart;
 
@@ -252,7 +292,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       } finally {
         BUILD_PERMITS.release();
         buildQueued.set(false);
-        this.readyLatch.countDown();
+        latch.countDown();
       }
     });
   }
@@ -448,11 +488,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Snapshot snap = checkBuilt();
     if (nodeId >= snap.nodeMapping.size()) {
       final DeltaOverlay ov = snap.overlay;
-      if (ov != null) {
-        final RID rid = ov.getOverflowRID(nodeId);
-        if (rid != null)
-          return rid;
-      }
+      if (ov != null)
+        return ov.getOverflowRID(nodeId);
+      return null;
     }
     return snap.nodeMapping.getRID(nodeId);
   }
@@ -735,11 +773,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   public boolean isReady() {
-    return status == Status.READY || status == Status.STALE;
+    final Status s = status;
+    if (s == Status.READY)
+      return true;
+    return s == Status.STALE && useWhenStale;
   }
 
   public boolean isStale() {
     return status == Status.STALE;
+  }
+
+  public boolean isUseWhenStale() {
+    return useWhenStale;
+  }
+
+  public void setUseWhenStale(final boolean useWhenStale) {
+    this.useWhenStale = useWhenStale;
   }
 
   public boolean isAutoUpdate() {
@@ -794,6 +843,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   public void setCompactionThreshold(final int compactionThreshold) {
     this.compactionThreshold = compactionThreshold;
+  }
+
+  public int getPropertySampleSize() {
+    return propertySampleSize;
+  }
+
+  void setPropertySampleSize(final int propertySampleSize) {
+    this.propertySampleSize = propertySampleSize;
   }
 
   public long getMemoryUsageBytes() {
@@ -917,13 +974,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (updateMode == UpdateMode.ASYNCHRONOUS) {
       if (!compacting.compareAndSet(false, true))
         return; // rebuild already in progress, it will pick up committed changes
-      this.readyLatch = new CountDownLatch(1);
+      final CountDownLatch latch = new CountDownLatch(1);
+      this.readyLatch = latch;
       this.status = Status.BUILDING;
-      EXECUTOR.execute(() -> {
+      getExecutor().execute(() -> {
         BUILD_PERMITS.acquireUninterruptibly();
         try {
           final long buildStart = System.currentTimeMillis();
-          final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
+          final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
           final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
           final long durationMs = System.currentTimeMillis() - buildStart;
           // Atomic swap — readers see all-or-nothing
@@ -937,7 +995,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         } finally {
           BUILD_PERMITS.release();
           compacting.set(false);
-          this.readyLatch.countDown();
+          latch.countDown();
         }
       });
     } else {
@@ -979,11 +1037,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Start buffering raw deltas for re-application after the swap
       pendingDeltas = new ArrayList<>();
 
-      EXECUTOR.execute(() -> {
+      getExecutor().execute(() -> {
         BUILD_PERMITS.acquireUninterruptibly();
         try {
           final long buildStart = System.currentTimeMillis();
-          final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
+          final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
           final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
           final long durationMs = System.currentTimeMillis() - buildStart;
 

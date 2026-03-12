@@ -200,7 +200,7 @@ public class GraphAnalyticalViewPersistence {
     }
 
     json.put("updateMode", view.getUpdateMode().name());
-    if (view.getCompactionThreshold() != 10000)
+    if (view.getCompactionThreshold() != GraphAnalyticalView.DEFAULT_COMPACTION_THRESHOLD)
       json.put("compactionThreshold", view.getCompactionThreshold());
     return json;
   }

@@ -55,6 +55,8 @@ public class GraphAnalyticalViewBuilder {
   private       String[]                        properties;
   private       GraphAnalyticalView.UpdateMode  updateMode = GraphAnalyticalView.UpdateMode.OFF;
   private       int                             compactionThreshold = -1;
+  private       int                             propertySampleSize  = -1;
+  private       Boolean                         useWhenStale;
   private       boolean                         skipPersistence;
 
   GraphAnalyticalViewBuilder(final Database database) {
@@ -120,6 +122,27 @@ public class GraphAnalyticalViewBuilder {
   }
 
   /**
+   * Controls whether this view is used by the query planner when its data is stale.
+   * When true (default), stale CSR data is used for faster traversals even though it may not
+   * reflect the latest committed changes. When false, the query planner falls back to OLTP
+   * traversal if the view is stale.
+   */
+  public GraphAnalyticalViewBuilder withUseWhenStale(final boolean useWhenStale) {
+    this.useWhenStale = useWhenStale;
+    return this;
+  }
+
+  /**
+   * Sets the number of records to sample for detecting property types in schemaless databases.
+   * Default is 100. Properties that first appear beyond this limit will be excluded from the
+   * columnar store. Has no effect when vertex types have schema-defined properties.
+   */
+  public GraphAnalyticalViewBuilder withPropertySampleSize(final int propertySampleSize) {
+    this.propertySampleSize = propertySampleSize;
+    return this;
+  }
+
+  /**
    * Builds the analytical view synchronously with the configured settings.
    * This triggers the initial full build (CSR + columnar storage) and blocks until complete.
    * Status will be READY when this method returns.
@@ -153,6 +176,10 @@ public class GraphAnalyticalViewBuilder {
     final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, updateMode);
     if (compactionThreshold >= 0)
       view.setCompactionThreshold(compactionThreshold);
+    if (propertySampleSize >= 0)
+      view.setPropertySampleSize(propertySampleSize);
+    if (useWhenStale != null)
+      view.setUseWhenStale(useWhenStale);
     if (name != null) {
       GraphAnalyticalViewRegistry.register(database, name, view);
       if (!skipPersistence)

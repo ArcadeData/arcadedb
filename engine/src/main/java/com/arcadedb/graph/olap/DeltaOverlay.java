@@ -41,6 +41,9 @@ class DeltaOverlay {
   // Deleted base-mapped nodes
   private final BitSet                      deletedBaseNodes;
 
+  // Deleted overflow nodes (indexed by overflowIdx = globalId - baseNodeCount)
+  private final BitSet                      deletedOverflowNodes;
+
   // Added edges per type: edgeType -> list of (srcGlobalId, tgtGlobalId) pairs
   private final Map<String, List<long[]>>   addedEdgesPerType;
 
@@ -50,6 +53,10 @@ class DeltaOverlay {
 
   // Deleted edges per type: edgeType -> set of packed (src << 32 | tgt)
   private final Map<String, Set<Long>>      deletedEdgesPerType;
+
+  // Per-node deleted edge counts for O(1) lookup: edgeType -> nodeId -> count
+  private final Map<String, Map<Integer, Integer>> deletedOutEdgeCounts;
+  private final Map<String, Map<Integer, Integer>> deletedInEdgeCounts;
 
   // Property overrides for base nodes: globalId -> (propName -> value)
   private final Map<Integer, Map<String, Object>> propertyOverrides;
@@ -65,8 +72,11 @@ class DeltaOverlay {
     this.overflowIdToRID = new RID[0];
     this.overflowProperties = new Map[0];
     this.deletedBaseNodes = new BitSet();
+    this.deletedOverflowNodes = new BitSet();
     this.addedEdgesPerType = Collections.emptyMap();
     this.deletedEdgesPerType = Collections.emptyMap();
+    this.deletedOutEdgeCounts = Collections.emptyMap();
+    this.deletedInEdgeCounts = Collections.emptyMap();
     this.propertyOverrides = Collections.emptyMap();
     this.outNeighborIndex = Collections.emptyMap();
     this.inNeighborIndex = Collections.emptyMap();
@@ -78,9 +88,11 @@ class DeltaOverlay {
   private DeltaOverlay(final int baseNodeCount,
       final Map<RID, Integer> overflowNodeIds, final RID[] overflowIdToRID,
       final Map<String, Object>[] overflowProperties,
-      final BitSet deletedBaseNodes,
+      final BitSet deletedBaseNodes, final BitSet deletedOverflowNodes,
       final Map<String, List<long[]>> addedEdgesPerType,
       final Map<String, Set<Long>> deletedEdgesPerType,
+      final Map<String, Map<Integer, Integer>> deletedOutEdgeCounts,
+      final Map<String, Map<Integer, Integer>> deletedInEdgeCounts,
       final Map<Integer, Map<String, Object>> propertyOverrides,
       final Map<String, Map<Integer, int[]>> outNeighborIndex,
       final Map<String, Map<Integer, int[]>> inNeighborIndex,
@@ -90,8 +102,11 @@ class DeltaOverlay {
     this.overflowIdToRID = overflowIdToRID;
     this.overflowProperties = overflowProperties;
     this.deletedBaseNodes = deletedBaseNodes;
+    this.deletedOverflowNodes = deletedOverflowNodes;
     this.addedEdgesPerType = addedEdgesPerType;
     this.deletedEdgesPerType = deletedEdgesPerType;
+    this.deletedOutEdgeCounts = deletedOutEdgeCounts;
+    this.deletedInEdgeCounts = deletedInEdgeCounts;
     this.propertyOverrides = propertyOverrides;
     this.outNeighborIndex = outNeighborIndex;
     this.inNeighborIndex = inNeighborIndex;
@@ -110,6 +125,7 @@ class DeltaOverlay {
     final List<RID> overflowRIDsList = new ArrayList<>(Arrays.asList(overflowIdToRID));
     final List<Map<String, Object>> overflowPropsList = new ArrayList<>(Arrays.asList(overflowProperties));
     final BitSet newDeleted = (BitSet) deletedBaseNodes.clone();
+    final BitSet newDeletedOverflow = (BitSet) deletedOverflowNodes.clone();
     final Map<String, List<long[]>> newAddedEdges = new HashMap<>();
     for (final var entry : addedEdgesPerType.entrySet())
       newAddedEdges.put(entry.getKey(), new ArrayList<>(entry.getValue()));
@@ -139,8 +155,11 @@ class DeltaOverlay {
       final int baseId = baseMapping.getGlobalId(rid);
       if (baseId >= 0)
         newDeleted.set(baseId);
-      else
-        newOverflowIds.remove(rid); // remove from overflow if present
+      else {
+        final Integer overflowId = newOverflowIds.remove(rid);
+        if (overflowId != null)
+          newDeletedOverflow.set(overflowId - baseNodeCount);
+      }
     }
 
     // Process added edges
@@ -176,11 +195,16 @@ class DeltaOverlay {
     final Map<String, Map<Integer, int[]>> newOutIndex = buildNeighborIndex(newAddedEdges, true);
     final Map<String, Map<Integer, int[]>> newInIndex = buildNeighborIndex(newAddedEdges, false);
 
+    // Build per-node deleted edge count indexes for O(1) lookup
+    final Map<String, Map<Integer, Integer>> newDelOutCounts = buildDeletedEdgeCounts(newDeletedEdges, true);
+    final Map<String, Map<Integer, Integer>> newDelInCounts = buildDeletedEdgeCounts(newDeletedEdges, false);
+
     return new DeltaOverlay(baseNodeCount,
         Collections.unmodifiableMap(newOverflowIds),
         overflowRIDsList.toArray(new RID[0]),
         overflowPropsList.toArray(new Map[0]),
-        newDeleted, newAddedEdges, newDeletedEdges, newPropOverrides,
+        newDeleted, newDeletedOverflow, newAddedEdges, newDeletedEdges,
+        newDelOutCounts, newDelInCounts, newPropOverrides,
         newOutIndex, newInIndex,
         newOverflowCount, newDeltaEdgeCount);
   }
@@ -196,7 +220,10 @@ class DeltaOverlay {
   }
 
   boolean isDeleted(final int globalId) {
-    return globalId < baseNodeCount && deletedBaseNodes.get(globalId);
+    if (globalId < baseNodeCount)
+      return deletedBaseNodes.get(globalId);
+    final int overflowIdx = globalId - baseNodeCount;
+    return overflowIdx < overflowCount && deletedOverflowNodes.get(overflowIdx);
   }
 
   /**
@@ -228,33 +255,23 @@ class DeltaOverlay {
   }
 
   /**
-   * Counts the number of deleted outgoing edges from {@code nodeId} for the given edge type.
+   * Counts the number of deleted outgoing edges from {@code nodeId} for the given edge type. O(1).
    */
   int countDeletedOutEdges(final int nodeId, final String edgeType) {
-    final Set<Long> deleted = deletedEdgesPerType.get(edgeType);
-    if (deleted == null || deleted.isEmpty())
+    final Map<Integer, Integer> counts = deletedOutEdgeCounts.get(edgeType);
+    if (counts == null)
       return 0;
-    int count = 0;
-    final long prefix = (long) nodeId << 32;
-    for (final long packed : deleted)
-      if ((packed & 0xFFFFFFFF00000000L) == prefix)
-        count++;
-    return count;
+    return counts.getOrDefault(nodeId, 0);
   }
 
   /**
-   * Counts the number of deleted incoming edges to {@code nodeId} for the given edge type.
+   * Counts the number of deleted incoming edges to {@code nodeId} for the given edge type. O(1).
    */
   int countDeletedInEdges(final int nodeId, final String edgeType) {
-    final Set<Long> deleted = deletedEdgesPerType.get(edgeType);
-    if (deleted == null || deleted.isEmpty())
+    final Map<Integer, Integer> counts = deletedInEdgeCounts.get(edgeType);
+    if (counts == null)
       return 0;
-    int count = 0;
-    final int masked = nodeId;
-    for (final long packed : deleted)
-      if ((int) packed == masked)
-        count++;
-    return count;
+    return counts.getOrDefault(nodeId, 0);
   }
 
   /**
@@ -265,7 +282,7 @@ class DeltaOverlay {
     if (globalId >= baseNodeCount) {
       // Overflow node
       final int overflowIdx = globalId - baseNodeCount;
-      if (overflowIdx < overflowProperties.length) {
+      if (overflowIdx < overflowProperties.length && !deletedOverflowNodes.get(overflowIdx)) {
         final Map<String, Object> props = overflowProperties[overflowIdx];
         if (props != null && props.containsKey(propertyName))
           return props.get(propertyName);
@@ -281,11 +298,13 @@ class DeltaOverlay {
 
   RID getOverflowRID(final int globalId) {
     final int idx = globalId - baseNodeCount;
-    return idx >= 0 && idx < overflowIdToRID.length ? overflowIdToRID[idx] : null;
+    if (idx < 0 || idx >= overflowIdToRID.length || deletedOverflowNodes.get(idx))
+      return null;
+    return overflowIdToRID[idx];
   }
 
   int getTotalNodeCount() {
-    return baseNodeCount - deletedBaseNodes.cardinality() + overflowCount;
+    return baseNodeCount - deletedBaseNodes.cardinality() + overflowCount - deletedOverflowNodes.cardinality();
   }
 
   int getOverflowCount() {
@@ -315,7 +334,9 @@ class DeltaOverlay {
 
   /**
    * Builds a secondary index: edgeType -> nodeId -> int[] neighbors, for O(1) lookup.
-   * Uses primitive int arrays throughout to avoid Integer autoboxing.
+   * The fill count is stored in {@code arr[0]} of each growable array to avoid a separate
+   * autoboxing-heavy {@code Map<Integer, Integer>} for size tracking. Data occupies
+   * {@code arr[1..size]}, then is trimmed into a clean {@code int[size]} at the end.
    */
   private static Map<String, Map<Integer, int[]>> buildNeighborIndex(
       final Map<String, List<long[]>> addedEdges, final boolean outgoing) {
@@ -324,32 +345,53 @@ class DeltaOverlay {
     final Map<String, Map<Integer, int[]>> result = new HashMap<>();
     for (final var entry : addedEdges.entrySet()) {
       final Map<Integer, int[]> perNode = new HashMap<>();
-      final Map<Integer, Integer> sizes = new HashMap<>();
       for (final long[] pair : entry.getValue()) {
         final int key = (int) (outgoing ? pair[0] : pair[1]);
         final int neighbor = (int) (outgoing ? pair[1] : pair[0]);
-        final int size = sizes.getOrDefault(key, 0);
         int[] arr = perNode.get(key);
         if (arr == null) {
-          arr = new int[4];
+          arr = new int[5]; // arr[0] = fill count, arr[1..4] = data slots
           perNode.put(key, arr);
-        } else if (size == arr.length) {
+        }
+        final int size = arr[0];
+        if (size + 1 == arr.length) {
           final int[] grown = new int[arr.length * 2];
-          System.arraycopy(arr, 0, grown, 0, size);
+          System.arraycopy(arr, 0, grown, 0, size + 1);
           arr = grown;
           perNode.put(key, arr);
         }
-        arr[size] = neighbor;
-        sizes.put(key, size + 1);
+        arr[size + 1] = neighbor;
+        arr[0] = size + 1;
       }
-      // Trim to exact size
+      // Trim: extract arr[1..size] into a clean int[size]
       final Map<Integer, int[]> frozen = new HashMap<>(perNode.size());
       for (final var e : perNode.entrySet()) {
-        final int size = sizes.get(e.getKey());
         final int[] arr = e.getValue();
-        frozen.put(e.getKey(), size == arr.length ? arr : Arrays.copyOf(arr, size));
+        final int size = arr[0];
+        frozen.put(e.getKey(), Arrays.copyOfRange(arr, 1, size + 1));
       }
       result.put(entry.getKey(), frozen);
+    }
+    return result;
+  }
+
+  /**
+   * Builds per-node deleted edge count index: edgeType -> nodeId -> count, for O(1) lookup.
+   *
+   * @param outgoing true for outgoing counts (keyed by source), false for incoming (keyed by target)
+   */
+  private static Map<String, Map<Integer, Integer>> buildDeletedEdgeCounts(
+      final Map<String, Set<Long>> deletedEdges, final boolean outgoing) {
+    if (deletedEdges.isEmpty())
+      return Collections.emptyMap();
+    final Map<String, Map<Integer, Integer>> result = new HashMap<>();
+    for (final var entry : deletedEdges.entrySet()) {
+      final Map<Integer, Integer> counts = new HashMap<>();
+      for (final long packed : entry.getValue()) {
+        final int nodeId = outgoing ? (int) (packed >>> 32) : (int) packed;
+        counts.merge(nodeId, 1, Integer::sum);
+      }
+      result.put(entry.getKey(), counts);
     }
     return result;
   }

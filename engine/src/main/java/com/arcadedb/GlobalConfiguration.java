@@ -588,6 +588,10 @@ public enum GlobalConfiguration {
 
   MONGO_HOST("arcadedb.mongo.host", SCOPE.SERVER,
       "TCP/IP host name used for incoming connections for Mongo plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
+
+  GAV_USE_WHEN_STALE("arcadedb.gavUseWhenStale", SCOPE.DATABASE,
+      "When true, the query planner uses stale Graph Analytical Views (GAV/CSR) for traversals instead of falling back to OLTP. "
+          + "Stale data is faster but may not reflect the latest committed changes", Boolean.class, true),
   ;
 
   /**

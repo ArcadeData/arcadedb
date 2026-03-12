@@ -56,16 +56,24 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CSRBuilder {
+  static final int DEFAULT_PROPERTY_SAMPLE_SIZE = 100;
+
   private final Database database;
   private final Set<String> propertyFilterSet; // null = all properties, empty = no properties
+  private final int propertySampleSize;
 
   public CSRBuilder(final Database database) {
-    this(database, null);
+    this(database, null, DEFAULT_PROPERTY_SAMPLE_SIZE);
   }
 
   public CSRBuilder(final Database database, final String[] propertyFilter) {
+    this(database, propertyFilter, DEFAULT_PROPERTY_SAMPLE_SIZE);
+  }
+
+  public CSRBuilder(final Database database, final String[] propertyFilter, final int propertySampleSize) {
     this.database = database;
     this.propertyFilterSet = propertyFilter != null ? new HashSet<>(Arrays.asList(propertyFilter)) : null;
+    this.propertySampleSize = propertySampleSize;
   }
 
   /**
@@ -123,6 +131,7 @@ public class CSRBuilder {
     final Map<String, int[]> inDegrees = new HashMap<>();
     final Map<String, IntPairList> edgePairs = new HashMap<>();
     int propertySampleCount = 0;
+    boolean newTypesInLastSample = false;
 
     final Iterator<Record> mainIter = createVertexIterator(vertexTypes);
     while (mainIter.hasNext()) {
@@ -132,8 +141,8 @@ public class CSRBuilder {
       if (globalId < 0)
         continue;
 
-      // For schemaless properties: detect types from first 100 records, creating columns lazily
-      if (extractProps && !schemaComplete && propertySampleCount < 100) {
+      // For schemaless properties: detect types from sampled records, creating columns lazily
+      if (extractProps && !schemaComplete && propertySampleCount < propertySampleSize) {
         for (final String propName : vertex.getPropertyNames()) {
           if (detectedTypes.containsKey(propName))
             continue;
@@ -147,6 +156,7 @@ public class CSRBuilder {
             detectedTypes.put(propName, colType);
             for (final ColumnStore cs : bucketColumns)
               cs.createColumn(propName, colType);
+            newTypesInLastSample = true;
           }
         }
         propertySampleCount++;
@@ -176,6 +186,13 @@ public class CSRBuilder {
         }
       }
     }
+
+    // Warn if schema sampling stopped while still discovering new property types
+    if (!schemaComplete && propertySampleCount >= propertySampleSize && newTypesInLastSample && nodeCount > propertySampleSize)
+      LogManager.instance().log(this, Level.WARNING,
+          "Property type sampling stopped after %d records (of %d total). Properties appearing only beyond this point will be "
+              + "excluded from the columnar store. Use withPropertySampleSize() to increase the sample size or define properties in the schema.",
+          propertySampleSize, nodeCount);
 
     // --- Phase C: Build CSR arrays per edge type from collected edge pairs ---
     final Map<String, CSRAdjacencyIndex> csrPerType = new HashMap<>();

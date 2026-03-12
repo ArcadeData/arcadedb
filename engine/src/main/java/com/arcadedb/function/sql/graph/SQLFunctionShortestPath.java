@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.CSRVertexIterable;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeToVertexIterable;
 import com.arcadedb.graph.GraphTraversalProvider;

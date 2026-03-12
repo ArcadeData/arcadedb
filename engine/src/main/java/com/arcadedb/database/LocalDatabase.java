@@ -50,11 +50,12 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
-import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -1888,6 +1889,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // Shutdown all Graph Analytical Views before closing the database
     try {
       GraphAnalyticalViewRegistry.shutdownAll(this);
+      // Safety net: clear any orphaned traversal providers that were not cleaned up
+      // by individual view shutdown() calls (e.g., if a view was registered directly
+      // in GraphTraversalProviderRegistry without being in GraphAnalyticalViewRegistry)
       GraphTraversalProviderRegistry.clearAll(this);
     } catch (final Throwable e) {
       LogManager.instance().log(this, Level.WARNING,
@@ -1984,8 +1988,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     });
 
-    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath)) {
+      GraphAnalyticalView.closeExecutor();
       PageManager.INSTANCE.close();
+    }
   }
 
   private void checkForRecovery() throws IOException {

@@ -3249,4 +3249,91 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     gav.drop();
   }
+
+  @Test
+  void testDeletedOverflowVertexNotDangling() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // Build GAV with initial data
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("del-overflow")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Add an overflow vertex (not in base CSR)
+    database.begin();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    assertThat(bobId).isGreaterThanOrEqualTo(0);
+
+    // Delete the overflow vertex
+    database.begin();
+    bob.getIdentity().asVertex().delete();
+    database.commit();
+
+    // Node count must reflect deletion
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Deleted overflow vertex should not be resolvable
+    assertThat(gav.getNodeId(bob.getIdentity())).isEqualTo(-1);
+
+    // getRID for the stale ID should return null (not the deleted vertex's RID)
+    assertThat(gav.getRID(bobId)).isNull();
+
+    gav.drop();
+  }
+
+  @Test
+  void testUseWhenStaleFalseExcludesFromQueryPlanner() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // Build with useWhenStale=false and OFF update mode (goes STALE on commit)
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("stale-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUseWhenStale(false)
+        .build();
+
+    assertThat(gav.isReady()).isTrue();
+    assertThat(gav.isStale()).isFalse();
+
+    // Commit a change — OFF mode marks the view as STALE
+    database.begin();
+    database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    assertThat(gav.isStale()).isTrue();
+
+    // With useWhenStale=false, isReady() should return false for STALE status
+    assertThat(gav.isReady()).isFalse();
+
+    // Query planner should NOT find this provider when stale
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, new String[] { "FOLLOWS" })).isNull();
+
+    // Toggle to true — query planner should find it again
+    gav.setUseWhenStale(true);
+    assertThat(gav.isReady()).isTrue();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, new String[] { "FOLLOWS" })).isNotNull();
+
+    gav.drop();
+  }
 }
