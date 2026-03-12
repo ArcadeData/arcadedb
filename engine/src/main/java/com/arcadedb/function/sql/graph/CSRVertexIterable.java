@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.sql.graph;
 
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 
@@ -43,17 +44,30 @@ class CSRVertexIterable implements Iterable<Vertex> {
   public Iterator<Vertex> iterator() {
     return new Iterator<>() {
       private int index = 0;
+      private Vertex nextVertex = null;
 
       @Override
       public boolean hasNext() {
-        return index < neighborIds.length;
+        while (nextVertex == null && index < neighborIds.length) {
+          final var rid = provider.getRID(neighborIds[index++]);
+          if (rid != null) {
+            try {
+              nextVertex = rid.asVertex();
+            } catch (final RecordNotFoundException e) {
+              // vertex deleted in OLTP since CSR was built — skip
+            }
+          }
+        }
+        return nextVertex != null;
       }
 
       @Override
       public Vertex next() {
-        if (index >= neighborIds.length)
+        if (!hasNext())
           throw new NoSuchElementException();
-        return provider.getRID(neighborIds[index++]).asVertex();
+        final Vertex v = nextVertex;
+        nextVertex = null;
+        return v;
       }
     };
   }

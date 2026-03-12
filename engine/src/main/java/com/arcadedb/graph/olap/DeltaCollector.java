@@ -29,6 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 
 import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.HashMap;
 import java.util.Map;
@@ -51,14 +52,16 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   private final GraphAnalyticalView view;
   private final String              callbackKey;
 
-  // Only used in SYNCHRONOUS mode: per-thread delta tracking
-  private final ThreadLocal<TxDelta> currentDelta;
+  // Only used in SYNCHRONOUS mode: per-thread delta tracking.
+  // Uses ConcurrentHashMap keyed by thread ID instead of ThreadLocal to allow complete
+  // cleanup on close() — ThreadLocal entries leak in long-lived thread pools (e.g., HTTP server).
+  private final ConcurrentHashMap<Long, TxDelta> perThreadDeltas;
 
   DeltaCollector(final GraphAnalyticalView view) {
     this.view = view;
     this.callbackKey = "gav-delta-" + (view.getName() != null ? view.getName() : System.identityHashCode(view));
-    this.currentDelta = view.getUpdateMode() == GraphAnalyticalView.UpdateMode.SYNCHRONOUS
-        ? ThreadLocal.withInitial(TxDelta::new)
+    this.perThreadDeltas = view.getUpdateMode() == GraphAnalyticalView.UpdateMode.SYNCHRONOUS
+        ? new ConcurrentHashMap<>()
         : null;
   }
 
@@ -67,9 +70,9 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     if (!isRelevant(record))
       return;
 
-    if (currentDelta != null) {
+    if (perThreadDeltas != null) {
       // SYNCHRONOUS: collect detailed changes
-      final TxDelta delta = currentDelta.get();
+      final TxDelta delta = getOrCreateDelta();
       if (record instanceof Vertex vertex)
         delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
       else if (record instanceof Edge edge)
@@ -85,10 +88,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     if (!isRelevant(record))
       return;
 
-    if (currentDelta != null) {
+    if (perThreadDeltas != null) {
       // SYNCHRONOUS: collect property changes
       if (record instanceof Vertex vertex) {
-        final TxDelta delta = currentDelta.get();
+        final TxDelta delta = getOrCreateDelta();
         delta.updatedProperties.put(vertex.getIdentity(), extractProperties(vertex));
         scheduleSyncCallback(delta);
       }
@@ -102,9 +105,9 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     if (!isRelevant(record))
       return;
 
-    if (currentDelta != null) {
+    if (perThreadDeltas != null) {
       // SYNCHRONOUS: collect deletions
-      final TxDelta delta = currentDelta.get();
+      final TxDelta delta = getOrCreateDelta();
       if (record instanceof Vertex vertex)
         delta.deletedVertices.add(vertex.getIdentity());
       else if (record instanceof Edge edge)
@@ -137,7 +140,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
           frozen.deletedEdges.addAll(delta.deletedEdges);
           frozen.updatedProperties.putAll(delta.updatedProperties);
           delta.clear();
-          currentDelta.remove();
+          perThreadDeltas.remove(Thread.currentThread().threadId());
           if (!frozen.isEmpty())
             view.applyDelta(frozen);
         });
@@ -159,6 +162,19 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "ASYNC delta collection failed for GraphAnalyticalView '%s'", e, view.getName());
     }
+  }
+
+  private TxDelta getOrCreateDelta() {
+    return perThreadDeltas.computeIfAbsent(Thread.currentThread().threadId(), k -> new TxDelta());
+  }
+
+  /**
+   * Releases all per-thread delta state. Must be called when the collector is deregistered
+   * to prevent memory leaks in long-lived thread pools (e.g., HTTP server threads).
+   */
+  void close() {
+    if (perThreadDeltas != null)
+      perThreadDeltas.clear();
   }
 
   private static Map<String, Object> extractProperties(final Document doc) {

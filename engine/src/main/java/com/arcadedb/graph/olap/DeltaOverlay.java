@@ -228,6 +228,36 @@ class DeltaOverlay {
   }
 
   /**
+   * Counts the number of deleted outgoing edges from {@code nodeId} for the given edge type.
+   */
+  int countDeletedOutEdges(final int nodeId, final String edgeType) {
+    final Set<Long> deleted = deletedEdgesPerType.get(edgeType);
+    if (deleted == null || deleted.isEmpty())
+      return 0;
+    int count = 0;
+    final long prefix = (long) nodeId << 32;
+    for (final long packed : deleted)
+      if ((packed & 0xFFFFFFFF00000000L) == prefix)
+        count++;
+    return count;
+  }
+
+  /**
+   * Counts the number of deleted incoming edges to {@code nodeId} for the given edge type.
+   */
+  int countDeletedInEdges(final int nodeId, final String edgeType) {
+    final Set<Long> deleted = deletedEdgesPerType.get(edgeType);
+    if (deleted == null || deleted.isEmpty())
+      return 0;
+    int count = 0;
+    final int masked = nodeId;
+    for (final long packed : deleted)
+      if ((int) packed == masked)
+        count++;
+    return count;
+  }
+
+  /**
    * Returns a property value for a node, or null if no override exists.
    * Returns UNSET if the property is not overridden.
    */
@@ -285,6 +315,7 @@ class DeltaOverlay {
 
   /**
    * Builds a secondary index: edgeType -> nodeId -> int[] neighbors, for O(1) lookup.
+   * Uses primitive int arrays throughout to avoid Integer autoboxing.
    */
   private static Map<String, Map<Integer, int[]>> buildNeighborIndex(
       final Map<String, List<long[]>> addedEdges, final boolean outgoing) {
@@ -292,19 +323,31 @@ class DeltaOverlay {
       return Collections.emptyMap();
     final Map<String, Map<Integer, int[]>> result = new HashMap<>();
     for (final var entry : addedEdges.entrySet()) {
-      final Map<Integer, List<Integer>> perNode = new HashMap<>();
+      final Map<Integer, int[]> perNode = new HashMap<>();
+      final Map<Integer, Integer> sizes = new HashMap<>();
       for (final long[] pair : entry.getValue()) {
         final int key = (int) (outgoing ? pair[0] : pair[1]);
         final int neighbor = (int) (outgoing ? pair[1] : pair[0]);
-        perNode.computeIfAbsent(key, k -> new ArrayList<>()).add(neighbor);
+        final int size = sizes.getOrDefault(key, 0);
+        int[] arr = perNode.get(key);
+        if (arr == null) {
+          arr = new int[4];
+          perNode.put(key, arr);
+        } else if (size == arr.length) {
+          final int[] grown = new int[arr.length * 2];
+          System.arraycopy(arr, 0, grown, 0, size);
+          arr = grown;
+          perNode.put(key, arr);
+        }
+        arr[size] = neighbor;
+        sizes.put(key, size + 1);
       }
+      // Trim to exact size
       final Map<Integer, int[]> frozen = new HashMap<>(perNode.size());
       for (final var e : perNode.entrySet()) {
-        final List<Integer> list = e.getValue();
-        final int[] arr = new int[list.size()];
-        for (int i = 0; i < arr.length; i++)
-          arr[i] = list.get(i);
-        frozen.put(e.getKey(), arr);
+        final int size = sizes.get(e.getKey());
+        final int[] arr = e.getValue();
+        frozen.put(e.getKey(), size == arr.length ? arr : Arrays.copyOf(arr, size));
       }
       result.put(entry.getKey(), frozen);
     }

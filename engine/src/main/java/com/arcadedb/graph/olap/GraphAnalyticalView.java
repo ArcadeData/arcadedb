@@ -40,6 +40,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -77,7 +78,13 @@ import java.util.logging.Level;
  */
 public class GraphAnalyticalView implements GraphTraversalProvider {
 
-  /** Shared executor for all GAV async builds and compactions. Uses virtual threads for lightweight concurrency. */
+  /** Maximum number of concurrent CSR builds/compactions across all databases. */
+  private static final int MAX_CONCURRENT_BUILDS = Math.max(2, Runtime.getRuntime().availableProcessors());
+
+  /** Semaphore bounding concurrent CPU-intensive build operations. */
+  private static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
+
+  /** Shared executor for all GAV async builds and compactions. Uses virtual threads for lightweight scheduling. */
   private static final ExecutorService EXECUTOR = Executors.newThreadPerTaskExecutor(
       Thread.ofVirtual().name("gav-worker-", 0).factory());
 
@@ -129,6 +136,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private volatile Snapshot          snapshot;
   private volatile Status            status    = Status.NOT_BUILT;
   private volatile CountDownLatch    readyLatch = new CountDownLatch(1);
+  private volatile Throwable         buildError;
 
   // Incremental auto-update
   private DeltaCollector         deltaCollector;
@@ -187,8 +195,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @param edgeTypes   edge type names to include (null = all)
    */
   public synchronized void build(final String[] vertexTypes, final String[] edgeTypes) {
-    status = Status.BUILDING;
     readyLatch = new CountDownLatch(1);
+    status = Status.BUILDING;
+    buildError = null;
     try {
       final long buildStart = System.currentTimeMillis();
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
@@ -203,6 +212,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (deltaCollector == null)
         registerChangeListeners();
     } catch (final Exception e) {
+      this.buildError = e;
       this.status = snapshot != null ? Status.READY : Status.NOT_BUILT;
       throw e;
     } finally {
@@ -218,9 +228,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public void buildAsync() {
     if (!buildQueued.compareAndSet(false, true))
       return; // a build is already queued or running
-    status = Status.BUILDING;
     readyLatch = new CountDownLatch(1);
+    status = Status.BUILDING;
+    buildError = null;
     EXECUTOR.execute(() -> {
+      BUILD_PERMITS.acquireUninterruptibly();
       try {
         final long buildStart = System.currentTimeMillis();
         final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
@@ -234,9 +246,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         if (deltaCollector == null)
           registerChangeListeners();
       } catch (final Exception e) {
-        this.status = snapshot != null ? Status.READY : Status.NOT_BUILT;
+        this.buildError = e;
+        this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
         LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
       } finally {
+        BUILD_PERMITS.release();
         buildQueued.set(false);
         this.readyLatch.countDown();
       }
@@ -246,17 +260,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /**
    * Waits until the view reaches READY status or the timeout expires.
    *
-   * @return true if the view is READY, false if the timeout elapsed
+   * @return true if the view is READY, false if the timeout elapsed or the build failed
    */
   public boolean awaitReady(final long timeout, final TimeUnit unit) {
     if (status == Status.READY)
       return true;
     try {
-      return readyLatch.await(timeout, unit);
+      if (!readyLatch.await(timeout, unit))
+        return false;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       return false;
     }
+    return status == Status.READY;
   }
 
   /**
@@ -697,6 +713,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return status;
   }
 
+  /**
+   * Returns the last build error, or null if the last build succeeded.
+   */
+  public Throwable getBuildError() {
+    return buildError;
+  }
+
   public long getBuildTimestamp() {
     final Snapshot snap = this.snapshot;
     return snap != null ? snap.buildTimestamp : 0;
@@ -861,6 +884,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
 
     stats.put("compactionThreshold", compactionThreshold);
+    final Throwable err = buildError;
+    if (err != null)
+      stats.put("buildError", err.getMessage());
     return stats;
   }
 
@@ -878,6 +904,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       database.getEvents().unregisterListener((AfterRecordCreateListener) deltaCollector);
       database.getEvents().unregisterListener((AfterRecordUpdateListener) deltaCollector);
       database.getEvents().unregisterListener((AfterRecordDeleteListener) deltaCollector);
+      deltaCollector.close();
       deltaCollector = null;
     }
   }
@@ -890,9 +917,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (updateMode == UpdateMode.ASYNCHRONOUS) {
       if (!compacting.compareAndSet(false, true))
         return; // rebuild already in progress, it will pick up committed changes
-      this.status = Status.BUILDING;
       this.readyLatch = new CountDownLatch(1);
+      this.status = Status.BUILDING;
       EXECUTOR.execute(() -> {
+        BUILD_PERMITS.acquireUninterruptibly();
         try {
           final long buildStart = System.currentTimeMillis();
           final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
@@ -903,8 +931,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
           this.status = Status.READY;
         } catch (final Exception e) {
+          this.buildError = e;
+          this.status = Status.STALE;
           LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
         } finally {
+          BUILD_PERMITS.release();
           compacting.set(false);
           this.readyLatch.countDown();
         }
@@ -940,7 +971,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (pendingDeltas != null)
       pendingDeltas.add(delta);
 
-    if (Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold) {
+    if (compactionThreshold > 0 && Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold) {
       // Guard: only one compaction thread at a time
       if (!compacting.compareAndSet(false, true))
         return;
@@ -949,6 +980,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       pendingDeltas = new ArrayList<>();
 
       EXECUTOR.execute(() -> {
+        BUILD_PERMITS.acquireUninterruptibly();
         try {
           final long buildStart = System.currentTimeMillis();
           final CSRBuilder builder = new CSRBuilder(database, propertyFilter);
@@ -982,6 +1014,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           }
           LogManager.instance().log(this, Level.WARNING, "Failed to compact GraphAnalyticalView '%s'", e, name);
         } finally {
+          BUILD_PERMITS.release();
           compacting.set(false);
         }
       });
@@ -1062,14 +1095,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
       if (nodeInBase)
         count += csr.outDegree(nodeId);
-      if (ov != null)
+      if (ov != null) {
         count += ov.getAddedOutNeighbors(nodeId, edgeType).length;
+        count -= ov.countDeletedOutEdges(nodeId, edgeType);
+      }
     }
     if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
       if (nodeInBase)
         count += csr.inDegree(nodeId);
-      if (ov != null)
+      if (ov != null) {
         count += ov.getAddedInNeighbors(nodeId, edgeType).length;
+        count -= ov.countDeletedInEdges(nodeId, edgeType);
+      }
     }
     return count;
   }
@@ -1079,17 +1116,61 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final DeltaOverlay ov = snap.overlay;
     final boolean nodeInBase = nodeId < snap.nodeMapping.size();
 
-    // Collect base CSR neighbors (only if node is in base mapping and CSR exists)
+    // Fast path: no overlay, single direction — return a single copyOfRange (CSR is already sorted)
+    if (ov == null && nodeInBase && csr != null && direction != Vertex.DIRECTION.BOTH) {
+      if (direction == Vertex.DIRECTION.OUT) {
+        final int start = csr.outOffset(nodeId);
+        final int end = csr.outOffsetEnd(nodeId);
+        return start == end ? EMPTY_INT : Arrays.copyOfRange(csr.getForwardNeighbors(), start, end);
+      } else {
+        final int start = csr.inOffset(nodeId);
+        final int end = csr.inOffsetEnd(nodeId);
+        return start == end ? EMPTY_INT : Arrays.copyOfRange(csr.getBackwardNeighbors(), start, end);
+      }
+    }
+
+    // Fast path: no overlay, BOTH direction — merge two sorted slices without intermediate copies
+    if (ov == null && nodeInBase && csr != null) {
+      final int outStart = csr.outOffset(nodeId), outEnd = csr.outOffsetEnd(nodeId);
+      final int inStart = csr.inOffset(nodeId), inEnd = csr.inOffsetEnd(nodeId);
+      final int outLen = outEnd - outStart;
+      final int inLen = inEnd - inStart;
+      if (outLen == 0 && inLen == 0)
+        return EMPTY_INT;
+      if (outLen == 0)
+        return Arrays.copyOfRange(csr.getBackwardNeighbors(), inStart, inEnd);
+      if (inLen == 0)
+        return Arrays.copyOfRange(csr.getForwardNeighbors(), outStart, outEnd);
+      // Both non-empty: sorted merge into a single result array
+      final int[] fwd = csr.getForwardNeighbors();
+      final int[] bwd = csr.getBackwardNeighbors();
+      final int[] result = new int[outLen + inLen];
+      int i = outStart, j = inStart, k = 0;
+      while (i < outEnd && j < inEnd)
+        result[k++] = fwd[i] <= bwd[j] ? fwd[i++] : bwd[j++];
+      while (i < outEnd)
+        result[k++] = fwd[i++];
+      while (j < inEnd)
+        result[k++] = bwd[j++];
+      return result;
+    }
+
+    // Slow path: overlay is active or node not in base — collect and merge all sources
     int[] baseOut = EMPTY_INT;
     int[] baseIn = EMPTY_INT;
     if (nodeInBase && csr != null) {
-      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
-        baseOut = Arrays.copyOfRange(csr.getForwardNeighbors(), csr.outOffset(nodeId), csr.outOffsetEnd(nodeId));
-      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
-        baseIn = Arrays.copyOfRange(csr.getBackwardNeighbors(), csr.inOffset(nodeId), csr.inOffsetEnd(nodeId));
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+        final int start = csr.outOffset(nodeId), end = csr.outOffsetEnd(nodeId);
+        if (start < end)
+          baseOut = Arrays.copyOfRange(csr.getForwardNeighbors(), start, end);
+      }
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+        final int start = csr.inOffset(nodeId), end = csr.inOffsetEnd(nodeId);
+        if (start < end)
+          baseIn = Arrays.copyOfRange(csr.getBackwardNeighbors(), start, end);
+      }
     }
 
-    // Collect overlay neighbors
     int[] ovOut = EMPTY_INT;
     int[] ovIn = EMPTY_INT;
     if (ov != null) {

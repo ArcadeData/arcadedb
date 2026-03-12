@@ -264,7 +264,8 @@ public class LocalSchema implements Schema {
 
   @Override
   public JSONObject getExtension(final String name) {
-    return extensions.get(name);
+    final JSONObject ext = extensions.get(name);
+    return ext != null ? ext.copy() : null;
   }
 
   @Override

@@ -88,9 +88,7 @@ public class AlgoGraphSummary extends AbstractAlgoProcedure {
     final String[] nodeLabels = args.length > 1 ? extractRelTypes(args[1]) : null;
 
     final Database db = context.getDatabase();
-    final Iterator<Vertex> iter = getAllVertices(db, nodeLabels);
-
-    final GraphData graph = loadGraph(db, null, relTypes, context);
+    final GraphData graph = loadGraph(db, nodeLabels, relTypes, context);
 
 
     final int n = graph.nodeCount;

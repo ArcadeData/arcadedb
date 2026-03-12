@@ -102,9 +102,11 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
         num.longValue() : -1L;
     final Random rng = seedVal < 0 ? new Random() : new Random(seedVal);
 
+    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
+
     final Database db = context.getDatabase();
 
-    final GraphData graph = loadGraph(db, null, null);
+    final GraphData graph = loadGraph(db, null, relTypes, context);
 
 
     final int n = graph.nodeCount;

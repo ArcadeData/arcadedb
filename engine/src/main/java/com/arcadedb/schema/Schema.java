@@ -440,8 +440,9 @@ public interface Schema {
   FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException;
 
   /**
-   * Returns a named schema extension (module-specific configuration stored in schema.json).
-   * Returns null if the extension is not set.
+   * Returns a defensive copy of a named schema extension (module-specific configuration stored in schema.json).
+   * Returns null if the extension is not set. Callers must call {@link #setExtension(String, JSONObject)}
+   * to persist any changes.
    */
   JSONObject getExtension(String name);
 

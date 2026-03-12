@@ -23,6 +23,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 
@@ -92,6 +94,7 @@ public class GraphAnalyticalViewPersistence {
     GraphAnalyticalViewRegistry.clearAll(database);
 
     int count = 0;
+    List<String> failedKeys = null;
     for (final String gavName : allGavs.keySet()) {
       try {
         final JSONObject gavDef = allGavs.getJSONObject(gavName);
@@ -124,7 +127,7 @@ public class GraphAnalyticalViewPersistence {
         final String updateModeStr = gavDef.getString("updateMode", "OFF");
         builder.withUpdateMode(GraphAnalyticalView.UpdateMode.valueOf(updateModeStr));
         final int ct = gavDef.getInt("compactionThreshold", -1);
-        if (ct > 0)
+        if (ct >= 0)
           builder.withCompactionThreshold(ct);
         builder.skipPersistence().buildAsync();
         count++;
@@ -135,18 +138,27 @@ public class GraphAnalyticalViewPersistence {
       } catch (final Exception e) {
         LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.WARNING,
             "Failed to restore GraphAnalyticalView '%s', removing corrupted definition from schema", e, gavName);
-        try {
-          allGavs.remove(gavName);
-          if (allGavs.isEmpty())
-            database.getSchema().setExtension(EXTENSION_KEY, null);
-          else
-            database.getSchema().setExtension(EXTENSION_KEY, allGavs);
-        } catch (final Exception cleanupEx) {
-          LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.WARNING,
-              "Failed to remove corrupted GraphAnalyticalView '%s' from schema", cleanupEx, gavName);
-        }
+        if (failedKeys == null)
+          failedKeys = new ArrayList<>();
+        failedKeys.add(gavName);
       }
     }
+
+    // Remove corrupted definitions after iteration to avoid ConcurrentModificationException
+    if (failedKeys != null) {
+      for (final String failedKey : failedKeys)
+        allGavs.remove(failedKey);
+      try {
+        if (allGavs.isEmpty())
+          database.getSchema().setExtension(EXTENSION_KEY, null);
+        else
+          database.getSchema().setExtension(EXTENSION_KEY, allGavs);
+      } catch (final Exception cleanupEx) {
+        LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.WARNING,
+            "Failed to remove corrupted GraphAnalyticalView definitions from schema", cleanupEx);
+      }
+    }
+
     if (count > 0)
       LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.INFO,
           "Restoring %d Graph Analytical View(s) asynchronously on database open", count);

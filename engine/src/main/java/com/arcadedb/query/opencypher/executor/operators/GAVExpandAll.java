@@ -135,7 +135,10 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
 
             final Vertex targetVertex;
             try {
-              targetVertex = (Vertex) context.getDatabase().lookupByRID(targetRID, true);
+              final var record = context.getDatabase().lookupByRID(targetRID, true);
+              if (!(record instanceof Vertex))
+                continue; // non-vertex record (edge, document) — skip
+              targetVertex = (Vertex) record;
             } catch (final RecordNotFoundException e) {
               continue; // vertex deleted in OLTP since CSR was built
             }

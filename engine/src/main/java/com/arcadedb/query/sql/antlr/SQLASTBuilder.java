@@ -6167,93 +6167,31 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx = ctx.createGraphAnalyticalViewBody();
 
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+    stmt.name = (Identifier) visit(bodyCtx.viewName);
 
-    // First identifier is the view name
-    final var identifiers = bodyCtx.identifier();
-    stmt.name = (Identifier) visit(identifiers.get(0));
+    if (bodyCtx.gavIdentifierList() != null)
+      stmt.vertexTypes = visitIdentifierList(bodyCtx.gavIdentifierList().identifier());
 
-    // Parse VERTEX TYPES (...), EDGE TYPES (...), PROPERTIES (...)
-    // The grammar produces multiple identifier nodes; we need to figure out which belong to which clause
-    int idx = 1; // skip the view name
+    if (bodyCtx.gavEdgeTypeList() != null)
+      stmt.edgeTypes = visitIdentifierList(bodyCtx.gavEdgeTypeList().identifier());
 
-    if (bodyCtx.VERTEX() != null) {
-      final int count = countIdentifiersInClause(bodyCtx.getText(), "VERTEXTYPES(", "EDGETYPES(", "PROPERTIES(", "AUTOUPDATE");
-      // Actually, we'll use a simpler approach: parse the identifiers in order based on keyword positions
-      stmt.vertexTypes = extractClauseIdentifiers(identifiers, idx, bodyCtx);
-      idx += stmt.vertexTypes.length;
-    }
+    if (bodyCtx.gavPropertyList() != null)
+      stmt.properties = visitIdentifierList(bodyCtx.gavPropertyList().identifier());
 
-    if (bodyCtx.EDGE() != null) {
-      stmt.edgeTypes = extractEdgeTypeIdentifiers(identifiers, idx, bodyCtx);
-      idx += stmt.edgeTypes.length;
-    }
+    if (bodyCtx.updateModeName != null)
+      stmt.updateModeStr = bodyCtx.updateModeName.getText();
 
-    if (bodyCtx.PROPERTIES() != null) {
-      // Properties are identifiers between PROPERTIES keyword and UPDATE/MODE/end
-      final int modePos = bodyCtx.MODE() != null ? bodyCtx.MODE().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
-      final java.util.List<Identifier> propList = new java.util.ArrayList<>();
-      for (int i = idx; i < identifiers.size(); i++) {
-        if (identifiers.get(i).start.getTokenIndex() > modePos)
-          break;
-        propList.add((Identifier) visit(identifiers.get(i)));
-      }
-      stmt.properties = propList.toArray(new Identifier[0]);
-      idx += stmt.properties.length;
-    }
-
-    // UPDATE MODE <identifier> — the mode identifier is the last one
-    if (bodyCtx.MODE() != null && idx < identifiers.size())
-      stmt.updateModeStr = identifiers.get(idx).getText();
-
-    // COMPACTION THRESHOLD <n>
     if (bodyCtx.COMPACTION() != null && bodyCtx.THRESHOLD() != null)
-      stmt.compactionThreshold = Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText());
+      stmt.compactionThreshold = parseCompactionThreshold(bodyCtx.INTEGER_LITERAL().getText());
 
     return stmt;
   }
 
-  private Identifier[] extractClauseIdentifiers(final java.util.List<SQLParser.IdentifierContext> identifiers,
-      final int startIdx, final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx) {
-    final java.util.List<Identifier> result = new java.util.ArrayList<>();
-    final int edgePos = bodyCtx.EDGE() != null ? bodyCtx.EDGE().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
-    final int propsPos = bodyCtx.PROPERTIES() != null ? bodyCtx.PROPERTIES().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
-    final int modePos = bodyCtx.MODE() != null ? bodyCtx.MODE().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
-    final int limit = Math.min(edgePos, Math.min(propsPos, modePos));
-
-    for (int i = startIdx; i < identifiers.size(); i++) {
-      if (identifiers.get(i).start.getTokenIndex() > limit)
-        break;
-      result.add((Identifier) visit(identifiers.get(i)));
-    }
-    return result.toArray(new Identifier[0]);
-  }
-
-  private Identifier[] extractEdgeTypeIdentifiers(final java.util.List<SQLParser.IdentifierContext> identifiers,
-      final int startIdx, final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx) {
-    final java.util.List<Identifier> result = new java.util.ArrayList<>();
-    final int propsPos = bodyCtx.PROPERTIES() != null ? bodyCtx.PROPERTIES().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
-    final int modePos = bodyCtx.MODE() != null ? bodyCtx.MODE().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
-    final int limit = Math.min(propsPos, modePos);
-
-    for (int i = startIdx; i < identifiers.size(); i++) {
-      if (identifiers.get(i).start.getTokenIndex() > limit)
-        break;
-      result.add((Identifier) visit(identifiers.get(i)));
-    }
-    return result.toArray(new Identifier[0]);
-  }
-
-  private Identifier[] extractRemainingIdentifiers(final java.util.List<SQLParser.IdentifierContext> identifiers,
-      final int startIdx) {
-    final Identifier[] result = new Identifier[identifiers.size() - startIdx];
-    for (int i = startIdx; i < identifiers.size(); i++)
-      result[i - startIdx] = (Identifier) visit(identifiers.get(i));
+  private Identifier[] visitIdentifierList(final java.util.List<SQLParser.IdentifierContext> identifiers) {
+    final Identifier[] result = new Identifier[identifiers.size()];
+    for (int i = 0; i < identifiers.size(); i++)
+      result[i] = (Identifier) visit(identifiers.get(i));
     return result;
-  }
-
-  private int countIdentifiersInClause(final String text, final String... markers) {
-    // Helper — unused, kept for potential future use
-    return 0;
   }
 
   @Override
@@ -6276,7 +6214,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.MODE() != null && identifiers.size() > 1)
       stmt.updateModeStr = identifiers.get(1).getText();
     if (bodyCtx.COMPACTION() != null && bodyCtx.THRESHOLD() != null)
-      stmt.compactionThreshold = Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText());
+      stmt.compactionThreshold = parseCompactionThreshold(bodyCtx.INTEGER_LITERAL().getText());
     return stmt;
   }
 
@@ -7415,6 +7353,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         return Collections.emptyList();
       }
     };
+  }
+
+  private static int parseCompactionThreshold(final String text) {
+    final int value;
+    try {
+      value = Integer.parseInt(text);
+    } catch (final NumberFormatException e) {
+      throw new CommandSQLParsingException("Invalid COMPACTION THRESHOLD value: '" + text + "' (must be a valid integer)");
+    }
+    if (value < 0)
+      throw new CommandSQLParsingException("COMPACTION THRESHOLD must be >= 0 (0 = disabled), got: " + value);
+    if (value == 1)
+      throw new CommandSQLParsingException("COMPACTION THRESHOLD = 1 is not allowed (would trigger compaction after every delta). Use 0 to disable or >= 2 for a valid threshold");
+    return value;
   }
 
 }

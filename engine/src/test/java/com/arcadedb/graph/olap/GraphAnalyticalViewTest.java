@@ -2246,6 +2246,55 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     // SYNCHRONOUS: overlay reflects deletion immediately
     assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.BOTH, "FOLLOWS")).isEqualTo(0);
+
+    gav.drop();
+  }
+
+  @Test
+  void testCountEdgesAfterEdgeDeletionSynchronous() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("FOLLOWS", bob);
+    alice.newEdge("FOLLOWS", charlie);
+    bob.newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("count-del-edge")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+
+    // Before deletion
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(2);
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(2);
+
+    // Delete one edge: alice -> bob
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> {
+      if (e.getIn().equals(bob.getIdentity()))
+        e.delete();
+    });
+    database.commit();
+
+    // After deletion, countEdges must reflect the removal
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(2);
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.BOTH, "FOLLOWS")).isEqualTo(1);
 
     gav.drop();
   }
@@ -2809,5 +2858,395 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     // Verify edge count for the merged BOTH view
     assertThat(bothView.edgeCount()).isEqualTo(6); // 3 out + 3 in
+  }
+
+  @Test
+  void testCSRVertexIterableSkipsDeletedNodes() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    database.commit();
+
+    // Build GAV — all 3 vertices in CSR
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("csrIterTest")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Delete Bob in OLTP without rebuilding GAV — CSR is stale
+    database.begin();
+    database.deleteRecord(bob.getIdentity().asVertex());
+    database.commit();
+
+    // SQL out() function uses CSRVertexIterable — should skip deleted vertex, not throw NPE
+    final ResultSet rs = database.query("sql",
+        "SELECT out('KNOWS').name AS targets FROM " + alice.getIdentity());
+    assertThat(rs.hasNext()).isTrue();
+    final var targets = (List<?>) rs.next().getProperty("targets");
+    // Bob is deleted — only Charlie should appear
+    assertThat(targets).hasSize(1);
+    assertThat(targets.get(0).toString()).isEqualTo("Charlie");
+    rs.close();
+
+    gav.drop();
+  }
+
+  @Test
+  void testAlterPersistsBeforeUpdatingLiveView() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "A").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW alterOrderTest VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE OFF");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "alterOrderTest");
+    assertThat(liveView).isNotNull();
+    assertThat(liveView.getUpdateMode()).isEqualTo(GraphAnalyticalView.UpdateMode.OFF);
+
+    // Alter to SYNCHRONOUS
+    database.command("sql", "ALTER GRAPH ANALYTICAL VIEW alterOrderTest UPDATE MODE SYNCHRONOUS");
+
+    // Both schema and live view should be consistent
+    final var ext = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(ext.getJSONObject("alterOrderTest").getString("updateMode")).isEqualTo("SYNCHRONOUS");
+    assertThat(liveView.getUpdateMode()).isEqualTo(GraphAnalyticalView.UpdateMode.SYNCHRONOUS);
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW alterOrderTest");
+  }
+
+  @Test
+  void testDropCleansUpOrphanedTraversalProvider() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    // Create via builder and register as traversal provider
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("orphanTest")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+    gav.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+
+    // Verify provider is registered
+    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+
+    // Remove from the in-memory registry so the DROP goes through the else branch
+    GraphAnalyticalViewRegistry.unregister(database, "orphanTest");
+    assertThat(GraphAnalyticalViewRegistry.get(database, "orphanTest")).isNull();
+
+    // The traversal provider should still be registered at this point
+    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+
+    // DROP should clean up both schema AND the orphaned traversal provider
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW orphanTest");
+
+    // Traversal provider must be unregistered
+    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+
+    // Schema must be clean
+    final var ext = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(ext == null || !ext.has("orphanTest")).isTrue();
+  }
+
+  // --- Bug 16: COMPACTION THRESHOLD validation ---
+
+  @Test
+  void testCompactionThresholdNegativeRejected() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    assertThatThrownBy(() ->
+        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW negThresh " +
+            "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) COMPACTION THRESHOLD -5"))
+        .hasMessageContaining("COMPACTION THRESHOLD");
+  }
+
+  @Test
+  void testCompactionThresholdOneRejected() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    assertThatThrownBy(() ->
+        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW oneThresh " +
+            "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) COMPACTION THRESHOLD 1"))
+        .hasMessageContaining("COMPACTION THRESHOLD");
+  }
+
+  @Test
+  void testCompactionThresholdZeroDisablesCompaction() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW zeroThresh " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 0");
+
+    final JSONObject allGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(allGavs).isNotNull();
+    assertThat(allGavs.getJSONObject("zeroThresh").getInt("compactionThreshold", -1)).isEqualTo(0);
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "zeroThresh");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, TimeUnit.SECONDS);
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(0);
+
+    liveView.shutdown();
+  }
+
+  @Test
+  void testAlterCompactionThresholdToZero() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW alterZero " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "alterZero");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, TimeUnit.SECONDS);
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(500);
+
+    // ALTER to 0 to disable compaction
+    database.command("sql", "ALTER GRAPH ANALYTICAL VIEW alterZero COMPACTION THRESHOLD 0");
+
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(0);
+    final JSONObject updatedGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(updatedGavs.getJSONObject("alterZero").getInt("compactionThreshold", -1)).isEqualTo(0);
+
+    liveView.shutdown();
+  }
+
+  @Test
+  void testAlterCompactionThresholdOneRejected() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW alterOneThresh " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "alterOneThresh");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, TimeUnit.SECONDS);
+
+    assertThatThrownBy(() ->
+        database.command("sql", "ALTER GRAPH ANALYTICAL VIEW alterOneThresh COMPACTION THRESHOLD 1"))
+        .hasMessageContaining("COMPACTION THRESHOLD");
+
+    // Value should remain unchanged
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(500);
+
+    liveView.shutdown();
+  }
+
+  // --- Bug 17: UpdateMode.valueOf() throws IllegalArgumentException for invalid mode strings ---
+
+  @Test
+  void testCreateWithInvalidUpdateModeThrowsCommandExecutionException() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    assertThatThrownBy(() ->
+        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW invalidMode " +
+            "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE BANANA"))
+        .hasMessageContaining("Unknown update mode")
+        .hasMessageContaining("BANANA");
+  }
+
+  @Test
+  void testAlterWithInvalidUpdateModeThrowsCommandExecutionException() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW modeTest " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE OFF");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "modeTest");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, TimeUnit.SECONDS);
+
+    assertThatThrownBy(() ->
+        database.command("sql", "ALTER GRAPH ANALYTICAL VIEW modeTest UPDATE MODE INVALID"))
+        .hasMessageContaining("Unknown update mode")
+        .hasMessageContaining("INVALID");
+
+    // Original mode should remain unchanged
+    assertThat(liveView.getUpdateMode()).isEqualTo(GraphAnalyticalView.UpdateMode.OFF);
+
+    liveView.shutdown();
+  }
+
+  // --- Bug 18: buildAsync() failure silently marks view READY with no error surface ---
+
+  @Test
+  void testAwaitReadyReturnsFalseOnBuildFailure() {
+    // Create a view that references a non-existent vertex type to force build failure
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("failView")
+        .withVertexTypes("NonExistentType")
+        .withEdgeTypes("AlsoNonExistent")
+        .buildAsync();
+
+    // awaitReady should return false since the build will fail
+    final boolean ready = view.awaitReady(10, TimeUnit.SECONDS);
+    assertThat(ready).isFalse();
+
+    // Status should NOT be READY
+    assertThat(view.getStatus()).isNotEqualTo(GraphAnalyticalView.Status.READY);
+
+    // Build error should be surfaced
+    assertThat(view.getBuildError()).isNotNull();
+
+    view.shutdown();
+  }
+
+  // --- Bug 21: SYNCHRONOUS mode with mixed additions and deletions ---
+
+  @Test
+  void testCountEdgesWithMixedAdditionsAndDeletionsSynchronous() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("BLOCKS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("FOLLOWS", bob);
+    alice.newEdge("FOLLOWS", charlie);
+    bob.newEdge("FOLLOWS", charlie);
+    alice.newEdge("BLOCKS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("mixed-delta")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS", "BLOCKS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+
+    // Before any changes — verify baseline
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(2);
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "BLOCKS")).isEqualTo(1);
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(2);
+
+    // Transaction 1: delete Alice->Bob FOLLOWS, add Bob->Alice FOLLOWS
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> {
+      if (e.getIn().equals(bob.getIdentity()))
+        e.delete();
+    });
+    bob.getIdentity().asVertex().modify().newEdge("FOLLOWS", alice.getIdentity().asVertex());
+    database.commit();
+
+    // Alice: OUT FOLLOWS went from 2 to 1 (deleted Alice->Bob, kept Alice->Charlie)
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    // Alice: IN FOLLOWS is now 1 (new Bob->Alice)
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+    // Alice: BOTH FOLLOWS = 1 OUT + 1 IN = 2
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.BOTH, "FOLLOWS")).isEqualTo(2);
+    // Bob: IN FOLLOWS went from 1 to 0 (deleted Alice->Bob)
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    // Bob: OUT FOLLOWS went from 1 to 2 (kept Bob->Charlie, added Bob->Alice)
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(2);
+    // BLOCKS edge is unaffected
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "BLOCKS")).isEqualTo(1);
+    // Charlie: IN FOLLOWS unchanged at 2 (Alice->Charlie, Bob->Charlie)
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(2);
+
+    gav.drop();
+  }
+
+  // --- Bug 22: compaction actually triggers and clears overlay ---
+
+  @Test
+  void testCompactionClearsOverlay() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex root = database.newVertex("Person").set("name", "Root").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("compact-overlay")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .withCompactionThreshold(3)
+        .build();
+
+    // Record the initial build timestamp for comparison after compaction
+    final long initialBuildTimestamp = gav.getBuildTimestamp();
+
+    // Add 5 edges in a single transaction — exceeds threshold of 3, should trigger compaction
+    database.begin();
+    MutableVertex prev = root;
+    for (int i = 0; i < 5; i++) {
+      final MutableVertex next = database.newVertex("Person").set("name", "P" + i).save();
+      prev.getIdentity().asVertex().modify().newEdge("FOLLOWS", next);
+      prev = next;
+    }
+    database.commit();
+
+    // Wait for async compaction to complete (compaction runs in background, no latch to await)
+    final long deadline = System.currentTimeMillis() + 10_000;
+    while ((Boolean) gav.getStats().get("overlayActive") && System.currentTimeMillis() < deadline) {
+      try {
+        Thread.sleep(50);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+
+    // After compaction: overlay should be cleared (fresh CSR rebuilt), all data in base CSR
+    assertThat((Boolean) gav.getStats().get("overlayActive")).isFalse();
+    assertThat(gav.getNodeCount()).isEqualTo(6);
+    assertThat(gav.getEdgeCount()).isEqualTo(5);
+
+    // Build timestamp should have changed, proving a rebuild happened
+    assertThat(gav.getBuildTimestamp()).isGreaterThan(initialBuildTimestamp);
+
+    gav.drop();
   }
 }

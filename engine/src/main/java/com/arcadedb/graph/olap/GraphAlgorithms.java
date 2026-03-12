@@ -368,6 +368,21 @@ public final class GraphAlgorithms {
     final String[] types = resolveEdgeTypes(view, edgeTypes);
     final Random rng = new Random(42);
 
+    // Pre-compute max degree to pre-allocate a reusable neighbor labels buffer
+    int maxDegree = 0;
+    for (int u = 0; u < n; u++) {
+      int deg = 0;
+      for (final String edgeType : types) {
+        final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
+        if (csr != null)
+          deg += csr.outDegree(u) + csr.inDegree(u);
+      }
+      if (deg > maxDegree)
+        maxDegree = deg;
+    }
+
+    final int[] neighborLabels = new int[maxDegree];
+
     // Shuffle order for each iteration to avoid bias
     final int[] order = new int[n];
     for (int i = 0; i < n; i++)
@@ -388,7 +403,6 @@ public final class GraphAlgorithms {
         final int u = order[idx];
 
         // Count neighbor labels using a simple frequency approach
-        // We use the labels array itself and count occurrences
         int bestLabel = labels[u];
         int bestCount = 0;
 
@@ -404,8 +418,7 @@ public final class GraphAlgorithms {
         if (totalNeighbors == 0)
           continue;
 
-        // Collect neighbor labels into a temporary array, then count
-        final int[] neighborLabels = new int[totalNeighbors];
+        // Fill reusable buffer with neighbor labels
         int pos = 0;
         for (final String edgeType : types) {
           final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);

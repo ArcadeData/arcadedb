@@ -151,7 +151,7 @@ public class GraphAnalyticalViewBuilder {
 
   private GraphAnalyticalView createView() {
     final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, updateMode);
-    if (compactionThreshold > 0)
+    if (compactionThreshold >= 0)
       view.setCompactionThreshold(compactionThreshold);
     if (name != null) {
       GraphAnalyticalViewRegistry.register(database, name, view);

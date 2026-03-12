@@ -51,6 +51,10 @@ public class NodeIdMapping {
   // localId = index in sorted array. Binary search for reverse lookup.
   private       long[][]              positions;
 
+  // Per-bucket cached RID objects: ridCache[bucketIdx][localId] = RID
+  // Pre-built during compact() to avoid allocation on the hot getRID() path.
+  private       RID[][]               ridCache;
+
   // Global ID computation: globalId = bucketBase[bucketIdx] + localId
   private       int[]                 bucketBase;
   private       int[]                 bucketSizes;
@@ -120,6 +124,7 @@ public class NodeIdMapping {
     bucketBase = new int[numBuckets];
     bucketSizes = new int[numBuckets];
     positions = new long[numBuckets][];
+    ridCache = new RID[numBuckets][];
     totalSize = 0;
 
     for (int i = 0; i < numBuckets; i++) {
@@ -131,6 +136,13 @@ public class NodeIdMapping {
       positions[i] = new long[size];
       System.arraycopy(positionsBuilder[i], 0, positions[i], 0, size);
       Arrays.sort(positions[i]);
+
+      // Pre-build RID cache to avoid allocation on the hot getRID() path
+      final int bucketId = bucketIds[i];
+      final RID[] cache = new RID[size];
+      for (int j = 0; j < size; j++)
+        cache[j] = new RID(bucketId, positions[i][j]);
+      ridCache[i] = cache;
 
       totalSize += size;
     }
@@ -208,12 +220,13 @@ public class NodeIdMapping {
   }
 
   /**
-   * Reconstructs the RID for a given global dense ID.
+   * Returns the cached RID for a given global dense ID.
+   * Zero-allocation: RID objects are pre-built during compact().
    */
   public RID getRID(final int globalId) {
     final int bucketIdx = getBucketIdx(globalId);
     final int localId = globalId - bucketBase[bucketIdx];
-    return new RID(bucketIds[bucketIdx], positions[bucketIdx][localId]);
+    return ridCache[bucketIdx][localId];
   }
 
   /**
@@ -281,6 +294,12 @@ public class NodeIdMapping {
       for (int i = 0; i < numBuckets; i++)
         if (positions[i] != null)
           bytes += (long) positions[i].length * Long.BYTES;
+    }
+    // ridCache: RID[][] — each RID is ~32 bytes (object header 16B + bucketId 4B + position 8B + padding)
+    if (ridCache != null) {
+      for (int i = 0; i < numBuckets; i++)
+        if (ridCache[i] != null)
+          bytes += (long) ridCache[i].length * 40; // 32B per RID + 8B reference
     }
     // bucketIdToIdx HashMap: ~48 bytes per entry (key Integer 16B + value Integer 16B + Entry 32B)
     bytes += (long) bucketIdToIdx.size() * 48;

@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -69,6 +71,11 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
         database.getSchema().setExtension("graphAnalyticalViews", null);
       else
         database.getSchema().setExtension("graphAnalyticalViews", allGavs);
+
+      // Unregister any orphaned traversal provider with this name
+      for (final GraphTraversalProvider provider : GraphTraversalProviderRegistry.getProviders(database))
+        if (viewName.equals(provider.getName()))
+          GraphTraversalProviderRegistry.unregister(database, provider);
     }
 
     final InternalResultSet result = new InternalResultSet();

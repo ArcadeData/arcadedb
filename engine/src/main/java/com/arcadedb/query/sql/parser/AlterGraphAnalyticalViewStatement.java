@@ -55,22 +55,33 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
 
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, viewName);
 
+    GraphAnalyticalView.UpdateMode newMode = null;
     if (updateModeStr != null) {
-      final GraphAnalyticalView.UpdateMode newMode = GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase());
+      try {
+        newMode = GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase());
+      } catch (final IllegalArgumentException e) {
+        throw new CommandExecutionException(
+            "Unknown update mode: '" + updateModeStr + "'. Valid values: OFF, SYNCHRONOUS, ASYNCHRONOUS");
+      }
       gavDef.put("updateMode", newMode.name());
-      if (liveView != null)
-        liveView.setUpdateMode(newMode);
       r.setProperty("updateMode", newMode.name());
     }
 
-    if (compactionThreshold > 0) {
+    if (compactionThreshold >= 0) {
       gavDef.put("compactionThreshold", compactionThreshold);
-      if (liveView != null)
-        liveView.setCompactionThreshold(compactionThreshold);
       r.setProperty("compactionThreshold", compactionThreshold);
     }
 
+    // Persist to schema first — if this fails, the live view remains unchanged
     database.getSchema().setExtension("graphAnalyticalViews", allGavs);
+
+    // Only update the live view after schema persistence succeeds
+    if (liveView != null) {
+      if (newMode != null)
+        liveView.setUpdateMode(newMode);
+      if (compactionThreshold >= 0)
+        liveView.setCompactionThreshold(compactionThreshold);
+    }
 
     result.add(r);
     return result;
@@ -82,7 +93,7 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
     sb.append(name);
     if (updateModeStr != null)
       sb.append(" UPDATE MODE ").append(updateModeStr.toUpperCase());
-    if (compactionThreshold > 0)
+    if (compactionThreshold >= 0)
       sb.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
     return sb.toString();
   }

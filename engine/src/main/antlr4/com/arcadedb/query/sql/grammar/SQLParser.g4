@@ -785,13 +785,17 @@ refreshContinuousAggregateBody
  *         [AUTO UPDATE]
  */
 createGraphAnalyticalViewBody
-    : (IF NOT EXISTS)? identifier
-      (VERTEX TYPES LPAREN identifier (COMMA identifier)* RPAREN)?
-      (EDGE TYPES LPAREN identifier (COMMA identifier)* RPAREN)?
-      (PROPERTIES LPAREN identifier (COMMA identifier)* RPAREN)?
-      (UPDATE MODE identifier)?
+    : (IF NOT EXISTS)? viewName=identifier
+      (VERTEX TYPES LPAREN gavIdentifierList RPAREN)?
+      (EDGE TYPES LPAREN gavEdgeTypeList RPAREN)?
+      (PROPERTIES LPAREN gavPropertyList RPAREN)?
+      (UPDATE MODE updateModeName=identifier)?
       (COMPACTION THRESHOLD INTEGER_LITERAL)?
     ;
+
+gavIdentifierList: identifier (COMMA identifier)*;
+gavEdgeTypeList: identifier (COMMA identifier)*;
+gavPropertyList: identifier (COMMA identifier)*;
 
 /**
  * ALTER GRAPH ANALYTICAL VIEW statement

@@ -77,7 +77,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     if (propArray != null)
       def.put("propertyFilter", toJsonArray(propArray));
     def.put("updateMode", resolveUpdateMode().name());
-    if (compactionThreshold > 0)
+    if (compactionThreshold >= 0)
       def.put("compactionThreshold", compactionThreshold);
     gavDefs.put(viewName, def);
     database.getSchema().setExtension("graphAnalyticalViews", gavDefs);
@@ -91,7 +91,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     if (propArray != null && propArray.length > 0)
       builder.withProperties(propArray);
     builder.withUpdateMode(resolveUpdateMode());
-    if (compactionThreshold > 0)
+    if (compactionThreshold >= 0)
       builder.withCompactionThreshold(compactionThreshold);
     builder.buildAsync();
 
@@ -144,14 +144,20 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     final GraphAnalyticalView.UpdateMode mode = resolveUpdateMode();
     if (mode != GraphAnalyticalView.UpdateMode.OFF)
       sb.append(" UPDATE MODE ").append(mode.name());
-    if (compactionThreshold > 0)
+    if (compactionThreshold >= 0)
       sb.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
     return sb.toString();
   }
 
   private GraphAnalyticalView.UpdateMode resolveUpdateMode() {
-    if (updateModeStr != null)
-      return GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase());
+    if (updateModeStr != null) {
+      try {
+        return GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase());
+      } catch (final IllegalArgumentException e) {
+        throw new CommandExecutionException(
+            "Unknown update mode: '" + updateModeStr + "'. Valid values: OFF, SYNCHRONOUS, ASYNCHRONOUS");
+      }
+    }
     return GraphAnalyticalView.UpdateMode.OFF;
   }
 

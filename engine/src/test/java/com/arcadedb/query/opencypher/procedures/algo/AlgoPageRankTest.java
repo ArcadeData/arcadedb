@@ -27,9 +27,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
+
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -127,6 +132,50 @@ class AlgoPageRankTest {
     // C has most incoming links (from A and B), should have higher score
     final String topNode = (String) results.getFirst().getProperty("name");
     assertThat(topNode).isEqualTo("C");
+  }
+
+  @Test
+  void pageRankCSRAndOLTPProduceIdenticalResults() {
+    // Step 1: Run PageRank without GAV → OLTP path
+    final Map<String, Double> oltpScores = new HashMap<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0001}) " +
+            "YIELD node, score RETURN node.name AS name, score")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        oltpScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
+      }
+    }
+    assertThat(oltpScores).hasSize(3);
+
+    // Step 2: Build a GAV so the CSR path is used
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("pagerank-csr")
+        .withVertexTypes("Page")
+        .withEdgeTypes("LINKS")
+        .build();
+    gav.awaitReady(10, TimeUnit.SECONDS);
+
+    // Step 3: Run PageRank with GAV → CSR path
+    final Map<String, Double> csrScores = new HashMap<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0001}) " +
+            "YIELD node, score RETURN node.name AS name, score")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        csrScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
+      }
+    }
+    assertThat(csrScores).hasSize(3);
+
+    // Step 4: Compare — scores must be identical within floating-point tolerance
+    for (final Map.Entry<String, Double> entry : oltpScores.entrySet()) {
+      final String name = entry.getKey();
+      assertThat(csrScores).containsKey(name);
+      assertThat(csrScores.get(name)).isCloseTo(entry.getValue(), org.assertj.core.data.Offset.offset(1e-6));
+    }
+
+    gav.shutdown();
   }
 
   @Test
