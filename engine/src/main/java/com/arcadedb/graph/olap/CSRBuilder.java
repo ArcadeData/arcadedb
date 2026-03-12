@@ -29,7 +29,10 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.Arrays;
@@ -291,7 +294,7 @@ public class CSRBuilder {
   }
 
   private void collectSchemaProperties(final DocumentType type, final Map<String, Column.Type> result) {
-    for (final com.arcadedb.schema.Property prop : type.getProperties()) {
+    for (final Property prop : type.getProperties()) {
       if (propertyFilterSet != null && !propertyFilterSet.contains(prop.getName()))
         continue;
       final Column.Type colType = schemaTypeToColumnType(prop.getType());
@@ -385,7 +388,7 @@ public class CSRBuilder {
     final Map<Integer, String> map = new HashMap<>();
     if (edgeTypes == null || edgeTypes.length == 0) {
       for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof com.arcadedb.schema.EdgeType)
+        if (dt instanceof EdgeType)
           for (final int bucketId : dt.getBucketIds(true))
             map.put(bucketId, dt.getName());
     } else {
@@ -398,7 +401,7 @@ public class CSRBuilder {
 
   private Iterator<Record> createVertexIterator(final String[] vertexTypes) {
     if (vertexTypes == null || vertexTypes.length == 0) {
-      final com.arcadedb.utility.MultiIterator<Record> multi = new com.arcadedb.utility.MultiIterator<>();
+      final MultiIterator<Record> multi = new MultiIterator<>();
       for (final DocumentType dt : database.getSchema().getTypes())
         if (dt instanceof VertexType)
           multi.addIterator(database.iterateType(dt.getName(), false));
@@ -407,7 +410,7 @@ public class CSRBuilder {
     if (vertexTypes.length == 1)
       return database.iterateType(vertexTypes[0], false);
 
-    final com.arcadedb.utility.MultiIterator<Record> multi = new com.arcadedb.utility.MultiIterator<>();
+    final MultiIterator<Record> multi = new MultiIterator<>();
     for (final String typeName : vertexTypes)
       multi.addIterator(database.iterateType(typeName, false));
     return multi;

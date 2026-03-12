@@ -128,6 +128,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     return false;
   }
 
+  // The callback captures the live `delta` reference, not a snapshot. Subsequent record events
+  // in the same transaction append to the same delta. addAfterCommitCallbackIfAbsent ensures
+  // the callback is registered only once (keyed by callbackKey), and the frozen copy is made
+  // at commit time — after all record events have fired — so it captures the complete delta set.
   private void scheduleSyncCallback(final TxDelta delta) {
     try {
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();

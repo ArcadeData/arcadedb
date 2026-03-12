@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -51,7 +52,7 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionSt
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         final Database database = context.getDatabase();
-        final JSONObject extension = database.getSchema().getExtension("graphAnalyticalViews");
+        final JSONObject extension = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
         if (extension != null) {
           final boolean hasProvider = !GraphTraversalProviderRegistry.getProviders(database).isEmpty();
 

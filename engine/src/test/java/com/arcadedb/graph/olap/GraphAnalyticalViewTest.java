@@ -2254,6 +2254,45 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
+  void testIncrementalDeleteEdgeInDirection() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-del-edge-in")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+
+    // Before deletion: bob has an IN edge from alice
+    assertThat(gav.isConnectedTo(bobId, aliceId, Vertex.DIRECTION.IN, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+
+    // Delete the edge
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> e.delete());
+    database.commit();
+
+    // SYNCHRONOUS: overlay reflects deletion for IN direction
+    assertThat(gav.isConnectedTo(bobId, aliceId, Vertex.DIRECTION.IN, "FOLLOWS")).isFalse();
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
+
+    gav.drop();
+  }
+
+  @Test
   void testCountEdgesAfterEdgeDeletionSynchronous() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
@@ -3335,5 +3374,236 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(GraphTraversalProviderRegistry.findProvider(database, new String[] { "FOLLOWS" })).isNotNull();
 
     gav.drop();
+  }
+
+  // ── Robustness tests ────────────────────────────────────────────────────
+
+  @Test
+  void testStaleGAVReturnsDeterministicApproximateResults() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // Build initial graph: Alice -> Bob
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    // Build GAV in OFF mode (no auto-update) with useWhenStale=true
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("stale-approx")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .withUseWhenStale(true)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+
+    // Mutate the graph: add Charlie, edge Alice -> Charlie, delete edge Alice -> Bob
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.getIdentity().asVertex().newEdge("FOLLOWS", charlie);
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> {
+      if (e.getIn().equals(bob.getIdentity()))
+        e.delete();
+    });
+    database.commit();
+
+    // GAV should be STALE but still ready (useWhenStale=true)
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+    assertThat(gav.isReady()).isTrue();
+
+    // Stale results must be deterministic: they reflect the OLD snapshot, not a mix
+    // The stale GAV should still see 2 nodes (Alice, Bob) — not Charlie
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+    // Alice -> Bob should still appear connected in the stale view
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    // Charlie should not be in the stale view
+    assertThat(gav.getNodeId(charlie.getIdentity())).isEqualTo(-1);
+
+    // Query multiple times to verify determinism — results must be stable
+    for (int i = 0; i < 10; i++) {
+      assertThat(gav.getNodeCount()).isEqualTo(2);
+      assertThat(gav.getEdgeCount()).isEqualTo(1);
+      assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    }
+
+    // Verify the query planner can find the stale provider
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+
+    // Rebuild and verify the new state is correct
+    gav.build();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+    assertThat(charlieId).isGreaterThanOrEqualTo(0);
+    assertThat(gav.isConnectedTo(aliceId, charlieId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+
+    gav.drop();
+  }
+
+  @Test
+  void testConcurrentWriteAndReadUnderSynchronousOverlay() throws Exception {
+    // Each writer gets its own vertex/edge type to avoid page contention.
+    // This isolates the test to exercise concurrent overlay merges + reads.
+    final int writerCount = 2;
+    final int edgesPerWriter = 30;
+    final int readerIterations = 200;
+
+    final String[] vTypes = new String[writerCount];
+    final String[] eTypes = new String[writerCount];
+    for (int t = 0; t < writerCount; t++) {
+      vTypes[t] = "W" + t;
+      eTypes[t] = "LINK" + t;
+      database.getSchema().createVertexType(vTypes[t]);
+      database.getSchema().createEdgeType(eTypes[t]);
+    }
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("concurrent-rw")
+        .withVertexTypes(vTypes)
+        .withEdgeTypes(eTypes)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(0);
+
+    final java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(writerCount + 1);
+    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+
+    // Writer threads: each creates vertices/edges in its own type
+    final Thread[] writers = new Thread[writerCount];
+    for (int t = 0; t < writerCount; t++) {
+      final int threadIdx = t;
+      writers[t] = new Thread(() -> {
+        try {
+          barrier.await(5, TimeUnit.SECONDS);
+          for (int i = 0; i < edgesPerWriter; i++) {
+            database.begin();
+            final MutableVertex src = database.newVertex("W" + threadIdx)
+                .set("name", "src_" + threadIdx + "_" + i).save();
+            final MutableVertex tgt = database.newVertex("W" + threadIdx)
+                .set("name", "tgt_" + threadIdx + "_" + i).save();
+            src.newEdge("LINK" + threadIdx, tgt);
+            database.commit();
+          }
+        } catch (final Exception e) {
+          e.printStackTrace();
+          errors.incrementAndGet();
+        }
+      });
+      writers[t].start();
+    }
+
+    // Reader thread: continuously query GAV and verify overlay consistency.
+    // getNodeCount() and getEdgeCount() are separate snapshot reads, so we verify
+    // weaker but sufficient invariants: counts are non-negative and non-decreasing.
+    final Thread reader = new Thread(() -> {
+      try {
+        barrier.await(5, TimeUnit.SECONDS);
+        int prevNodeCount = 0;
+        int prevEdgeCount = 0;
+        for (int i = 0; i < readerIterations; i++) {
+          final int nodeCount = gav.getNodeCount();
+          final int edgeCount = gav.getEdgeCount();
+
+          assertThat(nodeCount).as("nodeCount iteration " + i).isGreaterThanOrEqualTo(0);
+          assertThat(edgeCount).as("edgeCount iteration " + i).isGreaterThanOrEqualTo(0);
+
+          // Monotonicity: counts never decrease under SYNCHRONOUS mode
+          assertThat(nodeCount).as("nodeCount monotonic at iteration " + i)
+              .isGreaterThanOrEqualTo(prevNodeCount);
+          assertThat(edgeCount).as("edgeCount monotonic at iteration " + i)
+              .isGreaterThanOrEqualTo(prevEdgeCount);
+
+          prevNodeCount = nodeCount;
+          prevEdgeCount = edgeCount;
+        }
+      } catch (final Exception e) {
+        e.printStackTrace();
+        errors.incrementAndGet();
+      }
+    });
+    reader.start();
+
+    for (final Thread w : writers)
+      w.join(30_000);
+    reader.join(30_000);
+
+    assertThat(errors.get()).as("Thread errors").isEqualTo(0);
+
+    // Final state: all edges committed
+    final int expectedEdges = writerCount * edgesPerWriter;
+    final int expectedNodes = 2 * expectedEdges; // 2 vertices per edge
+    assertThat(gav.getNodeCount()).isEqualTo(expectedNodes);
+    assertThat(gav.getEdgeCount()).isEqualTo(expectedEdges);
+
+    gav.drop();
+  }
+
+  @Test
+  void testDroppedGAVQueriesFailGracefully() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("drop-graceful")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    // Verify the GAV is working and query planner finds it
+    assertThat(gav.isReady()).isTrue();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+
+    // Simulate what happens when a plan captures a provider reference, then the GAV is dropped.
+    // Save a direct reference to the provider (as the optimizer would at plan-build time).
+    final var capturedProvider = GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS");
+    assertThat(capturedProvider).isNotNull();
+
+    final int aliceId = capturedProvider.getNodeId(alice.getIdentity());
+    assertThat(aliceId).isGreaterThanOrEqualTo(0);
+
+    // Drop the GAV — unregisters from all registries
+    gav.drop();
+
+    // The registry should no longer find a provider
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+
+    // The captured provider reference still has a valid snapshot (not nulled on drop).
+    // Operations on the stale reference should either succeed with old data or fail gracefully
+    // (no NPE, no ArrayIndexOutOfBounds, no corrupted state).
+    assertThat(capturedProvider.getNodeId(alice.getIdentity())).isEqualTo(aliceId);
+    assertThat(capturedProvider.getRID(aliceId)).isEqualTo(alice.getIdentity());
+    assertThat(capturedProvider.getNeighborIds(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isNotNull();
+    assertThat(capturedProvider.isConnectedTo(aliceId,
+        capturedProvider.getNodeId(bob.getIdentity()), Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(capturedProvider.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+
+    // New queries should NOT find the provider and should fall back to OLTP
+    try (final ResultSet rs = database.query("cypher",
+        "MATCH (a:Person)-[:FOLLOWS]->(b:Person) RETURN a.name AS src, b.name AS tgt")) {
+      assertThat(rs.hasNext()).isTrue();
+      final var row = rs.next();
+      assertThat((String) row.getProperty("src")).isEqualTo("Alice");
+      assertThat((String) row.getProperty("tgt")).isEqualTo("Bob");
+    }
   }
 }

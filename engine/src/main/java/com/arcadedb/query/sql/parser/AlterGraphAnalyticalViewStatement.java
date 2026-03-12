@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -43,7 +44,7 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
     final String viewName = name.getStringValue();
 
     // Validate the view exists
-    final JSONObject allGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    final JSONObject allGavs = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
     if (allGavs == null || !allGavs.has(viewName))
       throw new CommandExecutionException("Graph Analytical View '" + viewName + "' does not exist");
 
@@ -73,7 +74,7 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
     }
 
     // Persist to schema first — if this fails, the live view remains unchanged
-    database.getSchema().setExtension("graphAnalyticalViews", allGavs);
+    database.getSchema().setExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY, allGavs);
 
     // Only update the live view after schema persistence succeeds
     if (liveView != null) {

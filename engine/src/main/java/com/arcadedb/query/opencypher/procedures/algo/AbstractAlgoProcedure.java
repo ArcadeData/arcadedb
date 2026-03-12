@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -286,11 +287,26 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     public Vertex getVertex(final int i) {
-      return provider != null ? provider.getRID(i).asVertex() : vertices.get(i);
+      if (provider != null) {
+        final RID rid = provider.getRID(i);
+        if (rid == null)
+          return null;
+        try {
+          return rid.asVertex();
+        } catch (final RecordNotFoundException e) {
+          // vertex deleted in OLTP since CSR was built — skip
+          return null;
+        }
+      }
+      return vertices.get(i);
     }
 
     public RID getRID(final int i) {
-      return provider != null ? provider.getRID(i) : vertices.get(i).getIdentity();
+      if (provider != null) {
+        final RID rid = provider.getRID(i);
+        return rid; // may be null for overflow nodes
+      }
+      return vertices.get(i).getIdentity();
     }
 
     public int indexOf(final RID rid) {

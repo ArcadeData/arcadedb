@@ -89,6 +89,8 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
   }
 
+  // Note: v2e always uses the OLTP path (Vertex.getEdges) because CSR stores only neighbor node IDs,
+  // not edge RIDs. Unlike v2v, there is no CSR acceleration possible for edge-returning functions.
   protected Object v2e(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
       final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();

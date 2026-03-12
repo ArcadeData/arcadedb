@@ -47,7 +47,7 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphAnalyticalViewPersistence {
-  static final String EXTENSION_KEY = "graphAnalyticalViews";
+  public static final String EXTENSION_KEY = "graphAnalyticalViews";
 
   /**
    * Saves a GAV definition to the schema.

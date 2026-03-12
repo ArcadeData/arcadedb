@@ -566,7 +566,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
 
     // Multiple edge types: collect from each
-    final java.util.List<int[]> segments = new java.util.ArrayList<>();
+    final List<int[]> segments = new ArrayList<>();
     int totalLen = 0;
     if (edgeTypes != null && edgeTypes.length > 0) {
       for (final String et : edgeTypes) {
@@ -779,6 +779,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return s == Status.STALE && useWhenStale;
   }
 
+  @Override
   public boolean isStale() {
     return status == Status.STALE;
   }

@@ -101,6 +101,14 @@ public interface GraphTraversalProvider {
   Object getProperty(int nodeId, String propertyName);
 
   /**
+   * Returns true if this provider's data is stale (not reflecting latest committed changes).
+   * A provider may still be ready ({@link #isReady()}) while stale, if configured to serve stale data.
+   */
+  default boolean isStale() {
+    return false;
+  }
+
+  /**
    * Returns a packed {@link NeighborView} for zero-allocation iteration over all nodes' neighbors,
    * or {@code null} if this provider does not support the optimization (e.g., when overlays are active).
    * <p>

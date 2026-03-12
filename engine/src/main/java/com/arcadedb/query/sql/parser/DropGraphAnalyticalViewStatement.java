@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -44,7 +45,7 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
     final String viewName = name.getStringValue();
 
     // Check if exists in schema extensions
-    final JSONObject allGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    final JSONObject allGavs = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
     final boolean existsInSchema = allGavs != null && allGavs.has(viewName);
 
     if (!existsInSchema) {
@@ -68,9 +69,9 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
       // No in-memory view, remove directly from schema extensions
       allGavs.remove(viewName);
       if (allGavs.isEmpty())
-        database.getSchema().setExtension("graphAnalyticalViews", null);
+        database.getSchema().setExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY, null);
       else
-        database.getSchema().setExtension("graphAnalyticalViews", allGavs);
+        database.getSchema().setExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY, allGavs);
 
       // Unregister any orphaned traversal provider with this name
       for (final GraphTraversalProvider provider : GraphTraversalProviderRegistry.getProviders(database))

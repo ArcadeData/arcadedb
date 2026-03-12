@@ -22,11 +22,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.olap.GraphAnalyticalViewBuilder;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 public class CreateGraphAnalyticalViewStatement extends DDLStatement {
@@ -48,7 +48,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     final String viewName = name.getStringValue();
 
     // Check if already exists
-    final JSONObject allGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    final JSONObject allGavs = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
     if (allGavs != null && allGavs.has(viewName)) {
       if (ifNotExists) {
         final InternalResultSet result = new InternalResultSet();
@@ -66,23 +66,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     final String[] etArray = toStringArray(edgeTypes);
     final String[] propArray = toStringArray(properties);
 
-    // Persist the definition to schema extensions
-    JSONObject gavDefs = allGavs != null ? allGavs : new JSONObject();
-    final JSONObject def = new JSONObject();
-    def.put("name", viewName);
-    if (vtArray != null)
-      def.put("vertexTypes", toJsonArray(vtArray));
-    if (etArray != null)
-      def.put("edgeTypes", toJsonArray(etArray));
-    if (propArray != null)
-      def.put("propertyFilter", toJsonArray(propArray));
-    def.put("updateMode", resolveUpdateMode().name());
-    if (compactionThreshold >= 0)
-      def.put("compactionThreshold", compactionThreshold);
-    gavDefs.put(viewName, def);
-    database.getSchema().setExtension("graphAnalyticalViews", gavDefs);
-
-    // Trigger the actual CSR build
+    // Build the view — the builder handles persistence via GraphAnalyticalViewPersistence.save()
     final GraphAnalyticalViewBuilder builder = GraphAnalyticalView.builder(database).withName(viewName);
     if (vtArray != null && vtArray.length > 0)
       builder.withVertexTypes(vtArray);
@@ -111,13 +95,6 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     for (int i = 0; i < identifiers.length; i++)
       result[i] = identifiers[i].getStringValue();
     return result;
-  }
-
-  private static JSONArray toJsonArray(final String[] values) {
-    final JSONArray arr = new JSONArray();
-    for (final String v : values)
-      arr.put(v);
-    return arr;
   }
 
   @Override

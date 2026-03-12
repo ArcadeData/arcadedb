@@ -6187,7 +6187,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
-  private Identifier[] visitIdentifierList(final java.util.List<SQLParser.IdentifierContext> identifiers) {
+  private Identifier[] visitIdentifierList(final List<SQLParser.IdentifierContext> identifiers) {
     final Identifier[] result = new Identifier[identifiers.size()];
     for (int i = 0; i < identifiers.size(); i++)
       result[i] = (Identifier) visit(identifiers.get(i));

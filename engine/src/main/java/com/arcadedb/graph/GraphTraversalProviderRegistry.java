@@ -20,12 +20,14 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.log.LogManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Level;
 
 /**
  * Registry for {@link GraphTraversalProvider}s, keyed by {@link Database}.
@@ -101,8 +103,12 @@ public class GraphTraversalProviderRegistry {
       if (!provider.isReady())
         continue;
       if (edgeTypes == null || edgeTypes.length == 0) {
-        if (provider.coversEdgeType(null))
+        if (provider.coversEdgeType(null)) {
+          if (provider.isStale())
+            LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
+                "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
           return provider;
+        }
       } else {
         boolean allCovered = true;
         for (final String et : edgeTypes)
@@ -110,8 +116,12 @@ public class GraphTraversalProviderRegistry {
             allCovered = false;
             break;
           }
-        if (allCovered)
+        if (allCovered) {
+          if (provider.isStale())
+            LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
+                "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
           return provider;
+        }
       }
     }
     return null;
