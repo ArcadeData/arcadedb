@@ -71,6 +71,12 @@ import java.util.Set;
  * - Filter pushdown: 2-10x speedup depending on selectivity
  */
 public class CypherOptimizer {
+  // TODO: replace with runtime statistics once the statistics provider tracks per-type average degree
+  private static final double DEFAULT_AVG_DEGREE = 10.0;
+  // TODO: replace with runtime statistics once histogram-based selectivity estimation is implemented
+  private static final double DEFAULT_EXPAND_INTO_SELECTIVITY = 0.1;
+  private static final double DEFAULT_FILTER_SELECTIVITY = 0.5;
+
   private final DatabaseInternal database;
   private final CypherStatement statement;
   private final Map<String, Object> parameters;
@@ -328,9 +334,8 @@ public class CypherOptimizer {
 
     // Estimate cost and cardinality for this expansion
     final long inputCardinality = input.getEstimatedCardinality();
-    final double avgDegree = 10.0; // TODO: Use statistics to estimate average degree
-    final long outputCardinality = inputCardinality * (long) avgDegree;
-    final double expansionCost = inputCardinality * avgDegree * costModel.EXPAND_COST_PER_ROW;
+    final long outputCardinality = inputCardinality * (long) DEFAULT_AVG_DEGREE;
+    final double expansionCost = inputCardinality * DEFAULT_AVG_DEGREE * costModel.EXPAND_COST_PER_ROW;
     final double totalCost = input.getEstimatedCost() + expansionCost;
 
     // Check for GAV provider: use CSR-backed expand when edge variable is not captured
@@ -338,7 +343,7 @@ public class CypherOptimizer {
       final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
       if (provider != null) {
         // GAV expand: ~10x cheaper (array access vs linked list traversal)
-        final double gavCost = input.getEstimatedCost() + inputCardinality * avgDegree * costModel.EXPAND_COST_PER_ROW * 0.1;
+        final double gavCost = input.getEstimatedCost() + inputCardinality * DEFAULT_AVG_DEGREE * costModel.EXPAND_COST_PER_ROW * 0.1;
         return new GAVExpandAll(input, provider, sourceVariable, targetVariable, direction, edgeTypes,
             gavCost, outputCardinality);
       }
@@ -391,7 +396,7 @@ public class CypherOptimizer {
     // Estimate cost and cardinality for ExpandInto
     // ExpandInto is much cheaper than ExpandAll because it's just an existence check
     final long inputCardinality = input.getEstimatedCardinality();
-    final double selectivity = 0.1; // Estimate 10% of input rows have matching connections
+    final double selectivity = DEFAULT_EXPAND_INTO_SELECTIVITY;
     final long outputCardinality = (long) (inputCardinality * selectivity);
     final double expandIntoCost = inputCardinality * 1.0; // O(1) per input row for existence check
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
@@ -441,7 +446,7 @@ public class CypherOptimizer {
       if (filterExpression != null) {
         // Estimate cost and cardinality for this filter
         final long inputCardinality = currentOp.getEstimatedCardinality();
-        final double selectivity = 0.5; // Default selectivity estimate (50% pass through)
+        final double selectivity = DEFAULT_FILTER_SELECTIVITY;
         final long outputCardinality = (long) (inputCardinality * selectivity);
         final double filterCost = inputCardinality * costModel.FILTER_COST_PER_ROW;
         final double totalCost = currentOp.getEstimatedCost() + filterCost;

@@ -44,6 +44,10 @@ class DeltaOverlay {
   // Added edges per type: edgeType -> list of (srcGlobalId, tgtGlobalId) pairs
   private final Map<String, List<long[]>>   addedEdgesPerType;
 
+  // Secondary indexes for O(1) neighbor lookup: edgeType -> nodeId -> neighbor list
+  private final Map<String, Map<Integer, int[]>> outNeighborIndex;
+  private final Map<String, Map<Integer, int[]>> inNeighborIndex;
+
   // Deleted edges per type: edgeType -> set of packed (src << 32 | tgt)
   private final Map<String, Set<Long>>      deletedEdgesPerType;
 
@@ -64,6 +68,8 @@ class DeltaOverlay {
     this.addedEdgesPerType = Collections.emptyMap();
     this.deletedEdgesPerType = Collections.emptyMap();
     this.propertyOverrides = Collections.emptyMap();
+    this.outNeighborIndex = Collections.emptyMap();
+    this.inNeighborIndex = Collections.emptyMap();
     this.overflowCount = 0;
     this.deltaEdgeCount = 0;
   }
@@ -76,6 +82,8 @@ class DeltaOverlay {
       final Map<String, List<long[]>> addedEdgesPerType,
       final Map<String, Set<Long>> deletedEdgesPerType,
       final Map<Integer, Map<String, Object>> propertyOverrides,
+      final Map<String, Map<Integer, int[]>> outNeighborIndex,
+      final Map<String, Map<Integer, int[]>> inNeighborIndex,
       final int overflowCount, final int deltaEdgeCount) {
     this.baseNodeCount = baseNodeCount;
     this.overflowNodeIds = overflowNodeIds;
@@ -85,6 +93,8 @@ class DeltaOverlay {
     this.addedEdgesPerType = addedEdgesPerType;
     this.deletedEdgesPerType = deletedEdgesPerType;
     this.propertyOverrides = propertyOverrides;
+    this.outNeighborIndex = outNeighborIndex;
+    this.inNeighborIndex = inNeighborIndex;
     this.overflowCount = overflowCount;
     this.deltaEdgeCount = deltaEdgeCount;
   }
@@ -162,11 +172,16 @@ class DeltaOverlay {
         newPropOverrides.merge(baseId, entry.getValue(), (old, nw) -> { old.putAll(nw); return old; });
     }
 
+    // Build secondary neighbor indexes for O(1) lookup
+    final Map<String, Map<Integer, int[]>> newOutIndex = buildNeighborIndex(newAddedEdges, true);
+    final Map<String, Map<Integer, int[]>> newInIndex = buildNeighborIndex(newAddedEdges, false);
+
     return new DeltaOverlay(baseNodeCount,
         Collections.unmodifiableMap(newOverflowIds),
         overflowRIDsList.toArray(new RID[0]),
         overflowPropsList.toArray(new Map[0]),
         newDeleted, newAddedEdges, newDeletedEdges, newPropOverrides,
+        newOutIndex, newInIndex,
         newOverflowCount, newDeltaEdgeCount);
   }
 
@@ -199,25 +214,12 @@ class DeltaOverlay {
   }
 
   private int[] getAddedNeighbors(final int nodeId, final String edgeType, final boolean outgoing) {
-    final List<long[]> edges = addedEdgesPerType.get(edgeType);
-    if (edges == null || edges.isEmpty())
+    final Map<String, Map<Integer, int[]>> index = outgoing ? outNeighborIndex : inNeighborIndex;
+    final Map<Integer, int[]> typeIndex = index.get(edgeType);
+    if (typeIndex == null)
       return EMPTY_INT;
-
-    int count = 0;
-    for (final long[] pair : edges) {
-      if (outgoing ? pair[0] == nodeId : pair[1] == nodeId)
-        count++;
-    }
-    if (count == 0)
-      return EMPTY_INT;
-
-    final int[] result = new int[count];
-    int idx = 0;
-    for (final long[] pair : edges) {
-      if (outgoing ? pair[0] == nodeId : pair[1] == nodeId)
-        result[idx++] = (int) (outgoing ? pair[1] : pair[0]);
-    }
-    return result;
+    final int[] result = typeIndex.get(nodeId);
+    return result != null ? result : EMPTY_INT;
   }
 
   boolean isEdgeDeleted(final String edgeType, final int srcId, final int tgtId) {
@@ -279,6 +281,34 @@ class DeltaOverlay {
       return baseId;
     final Integer overflowId = overflowIds.get(rid);
     return overflowId != null ? overflowId : -1;
+  }
+
+  /**
+   * Builds a secondary index: edgeType -> nodeId -> int[] neighbors, for O(1) lookup.
+   */
+  private static Map<String, Map<Integer, int[]>> buildNeighborIndex(
+      final Map<String, List<long[]>> addedEdges, final boolean outgoing) {
+    if (addedEdges.isEmpty())
+      return Collections.emptyMap();
+    final Map<String, Map<Integer, int[]>> result = new HashMap<>();
+    for (final var entry : addedEdges.entrySet()) {
+      final Map<Integer, List<Integer>> perNode = new HashMap<>();
+      for (final long[] pair : entry.getValue()) {
+        final int key = (int) (outgoing ? pair[0] : pair[1]);
+        final int neighbor = (int) (outgoing ? pair[1] : pair[0]);
+        perNode.computeIfAbsent(key, k -> new ArrayList<>()).add(neighbor);
+      }
+      final Map<Integer, int[]> frozen = new HashMap<>(perNode.size());
+      for (final var e : perNode.entrySet()) {
+        final List<Integer> list = e.getValue();
+        final int[] arr = new int[list.size()];
+        for (int i = 0; i < arr.length; i++)
+          arr[i] = list.get(i);
+        frozen.put(e.getKey(), arr);
+      }
+      result.put(entry.getKey(), frozen);
+    }
+    return result;
   }
 
   private static long packEdge(final int src, final int tgt) {

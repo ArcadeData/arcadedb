@@ -54,7 +54,9 @@ public final class GraphOlapVectorOpsProvider {
     } catch (final Exception | LinkageError t) {
       ops = new ScalarGraphOlapVectorOps();
       LogManager.instance()
-          .log(GraphOlapVectorOpsProvider.class, Level.INFO, "Graph-OLAP SIMD not available, using scalar fallback: %s",
+          .log(GraphOlapVectorOpsProvider.class, Level.WARNING,
+              "Graph-OLAP SIMD not available, using scalar fallback (reason: %s). "
+                  + "For better performance, add '--add-modules jdk.incubator.vector' to JVM flags",
               t.getMessage());
     }
     INSTANCE = ops;

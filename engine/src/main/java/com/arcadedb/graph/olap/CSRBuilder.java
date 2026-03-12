@@ -34,8 +34,10 @@ import com.arcadedb.utility.Pair;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -55,7 +57,7 @@ import java.util.logging.Level;
  */
 public class CSRBuilder {
   private final Database database;
-  private final String[] propertyFilter; // null = all properties, empty = no properties
+  private final Set<String> propertyFilterSet; // null = all properties, empty = no properties
 
   public CSRBuilder(final Database database) {
     this(database, null);
@@ -63,7 +65,7 @@ public class CSRBuilder {
 
   public CSRBuilder(final Database database, final String[] propertyFilter) {
     this.database = database;
-    this.propertyFilter = propertyFilter;
+    this.propertyFilterSet = propertyFilter != null ? new HashSet<>(Arrays.asList(propertyFilter)) : null;
   }
 
   /**
@@ -80,7 +82,7 @@ public class CSRBuilder {
 
   private CSRResult buildClean(final String[] vertexTypes, final String[] edgeTypes, final long startTime) {
     final Map<Integer, String> bucketToEdgeType = buildBucketToEdgeTypeMap(edgeTypes);
-    final boolean extractProps = propertyFilter == null || propertyFilter.length > 0;
+    final boolean extractProps = propertyFilterSet == null || !propertyFilterSet.isEmpty();
 
     // --- Phase A: Collect RID positions for node ID mapping ---
     final NodeIdMapping mapping = new NodeIdMapping(16);
@@ -135,7 +137,7 @@ public class CSRBuilder {
         for (final String propName : vertex.getPropertyNames()) {
           if (detectedTypes.containsKey(propName))
             continue;
-          if (propertyFilter != null && !containsProperty(propName))
+          if (propertyFilterSet != null && !propertyFilterSet.contains(propName))
             continue;
           final Object value = vertex.get(propName);
           if (value == null)
@@ -273,7 +275,7 @@ public class CSRBuilder {
 
   private void collectSchemaProperties(final DocumentType type, final Map<String, Column.Type> result) {
     for (final com.arcadedb.schema.Property prop : type.getProperties()) {
-      if (propertyFilter != null && !containsProperty(prop.getName()))
+      if (propertyFilterSet != null && !propertyFilterSet.contains(prop.getName()))
         continue;
       final Column.Type colType = schemaTypeToColumnType(prop.getType());
       if (colType == null)
@@ -313,13 +315,6 @@ public class CSRBuilder {
       return existing;
     // Type conflict — cannot safely store in a single column
     return null;
-  }
-
-  private boolean containsProperty(final String propName) {
-    for (final String p : propertyFilter)
-      if (p.equals(propName))
-        return true;
-    return false;
   }
 
   private void fillProperties(final Document doc, final ColumnStore store, final int localId,

@@ -130,29 +130,30 @@ public class CSRAdjacencyIndex {
   /**
    * Direct access to the forward neighbors array for vectorized batch processing.
    * The array is the internal buffer — do NOT modify it.
+   * Package-private: callers outside the package should use offset-based access methods.
    */
-  public int[] getForwardNeighbors() {
+  int[] getForwardNeighbors() {
     return fwdNeighbors;
   }
 
   /**
    * Direct access to the backward neighbors array for vectorized batch processing.
    */
-  public int[] getBackwardNeighbors() {
+  int[] getBackwardNeighbors() {
     return bwdNeighbors;
   }
 
   /**
    * Direct access to the forward offsets array.
    */
-  public int[] getForwardOffsets() {
+  int[] getForwardOffsets() {
     return fwdOffsets;
   }
 
   /**
    * Direct access to the backward offsets array.
    */
-  public int[] getBackwardOffsets() {
+  int[] getBackwardOffsets() {
     return bwdOffsets;
   }
 

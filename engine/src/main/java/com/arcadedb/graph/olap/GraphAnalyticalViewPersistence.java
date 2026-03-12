@@ -134,7 +134,17 @@ public class GraphAnalyticalViewPersistence {
 
       } catch (final Exception e) {
         LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.WARNING,
-            "Failed to restore GraphAnalyticalView '%s'", e, gavName);
+            "Failed to restore GraphAnalyticalView '%s', removing corrupted definition from schema", e, gavName);
+        try {
+          allGavs.remove(gavName);
+          if (allGavs.isEmpty())
+            database.getSchema().setExtension(EXTENSION_KEY, null);
+          else
+            database.getSchema().setExtension(EXTENSION_KEY, allGavs);
+        } catch (final Exception cleanupEx) {
+          LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.WARNING,
+              "Failed to remove corrupted GraphAnalyticalView '%s' from schema", cleanupEx, gavName);
+        }
       }
     }
     if (count > 0)

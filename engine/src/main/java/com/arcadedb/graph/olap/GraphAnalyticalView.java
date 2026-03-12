@@ -134,6 +134,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private DeltaCollector         deltaCollector;
   private int                    compactionThreshold = 10000;
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
+  private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
 
   /**
    * Creates a builder for configuring the analytical view.
@@ -194,13 +195,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
           result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
       this.status = Status.READY;
-      this.readyLatch.countDown();
 
       if (deltaCollector == null)
         registerChangeListeners();
     } catch (final Exception e) {
       this.status = snapshot != null ? Status.READY : Status.NOT_BUILT;
       throw e;
+    } finally {
+      this.readyLatch.countDown();
     }
   }
 
@@ -210,6 +212,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * {@link #getStatus()} to check completion.
    */
   public void buildAsync() {
+    if (!buildQueued.compareAndSet(false, true))
+      return; // a build is already queued or running
     status = Status.BUILDING;
     readyLatch = new CountDownLatch(1);
     EXECUTOR.execute(() -> {
@@ -222,14 +226,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
             result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
         this.status = Status.READY;
-        this.readyLatch.countDown();
 
         if (deltaCollector == null)
           registerChangeListeners();
       } catch (final Exception e) {
         this.status = snapshot != null ? Status.READY : Status.NOT_BUILT;
-        this.readyLatch.countDown();
         LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
+      } finally {
+        buildQueued.set(false);
+        this.readyLatch.countDown();
       }
     });
   }
@@ -720,15 +725,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * Changes the update mode at runtime. Re-registers change listeners as needed.
+   * Synchronized to prevent a race window where a committing transaction's delta
+   * could be lost between unregister and register.
    */
-  public void setUpdateMode(final UpdateMode newMode) {
+  public synchronized void setUpdateMode(final UpdateMode newMode) {
     if (this.updateMode == newMode)
       return;
+    // Re-register listeners: DeltaCollector behavior depends on the mode.
+    // Register new listener before unregistering old one to avoid a window
+    // where no listener is active and a committing tx's delta is lost.
+    final DeltaCollector oldCollector = this.deltaCollector;
     this.updateMode = newMode;
-    // Re-register listeners: DeltaCollector behavior depends on the mode
-    unregisterChangeListeners();
     if (snapshot != null)
       registerChangeListeners();
+    if (oldCollector != null) {
+      database.getEvents().unregisterListener((AfterRecordCreateListener) oldCollector);
+      database.getEvents().unregisterListener((AfterRecordUpdateListener) oldCollector);
+      database.getEvents().unregisterListener((AfterRecordDeleteListener) oldCollector);
+    }
   }
 
   public String[] getVertexTypes() {
