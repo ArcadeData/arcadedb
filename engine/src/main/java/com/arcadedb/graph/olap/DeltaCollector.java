@@ -142,8 +142,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
             view.applyDelta(frozen);
         });
       }
+    } catch (final com.arcadedb.exception.DatabaseIsClosedException e) {
+      LogManager.instance().log(this, Level.FINE, "SYNC delta collection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "SYNC delta collection skipped (no active transaction or database closing): %s", e.getMessage());
+      LogManager.instance().log(this, Level.WARNING, "SYNC delta collection failed for GraphAnalyticalView '%s'", e, view.getName());
     }
   }
 
@@ -152,8 +154,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
       if (dbInternal.isTransactionActive())
         dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, view::onRelevantCommit);
+    } catch (final com.arcadedb.exception.DatabaseIsClosedException e) {
+      LogManager.instance().log(this, Level.FINE, "ASYNC delta collection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "ASYNC delta collection skipped (no active transaction or database closing): %s", e.getMessage());
+      LogManager.instance().log(this, Level.WARNING, "ASYNC delta collection failed for GraphAnalyticalView '%s'", e, view.getName());
     }
   }
 

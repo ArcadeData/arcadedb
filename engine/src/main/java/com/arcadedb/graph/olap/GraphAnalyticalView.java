@@ -136,6 +136,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
 
+  // Raw TxDeltas buffered during compaction. Non-null only while a compaction rebuild is in progress.
+  // Accessed only under synchronized(this), so ArrayList is safe.
+  private List<TxDelta>          pendingDeltas;
+
   /**
    * Creates a builder for configuring the analytical view.
    */
@@ -916,24 +920,33 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * <p>
    * Thread-safety guarantees:
    * <ul>
-   *   <li>Snapshot swap is atomic — readers always see consistent state</li>
+   *   <li>Synchronized to prevent lost updates from concurrent post-commit callbacks:
+   *       two threads reading the same snapshot, merging independently, and last-write-wins</li>
    *   <li>Only one compaction thread runs at a time (AtomicBoolean guard)</li>
-   *   <li>Overlays applied during compaction are preserved: the compaction thread
-   *       re-checks the overlay after rebuild and merges any accumulated deltas</li>
+   *   <li>Raw TxDeltas are buffered during compaction so they can be re-applied against the
+   *       new NodeIdMapping after the swap — this avoids both the cost of a full retry rebuild
+   *       and the risk of losing deltas that committed after the CSR scan started</li>
    * </ul>
    */
-  void applyDelta(final TxDelta delta) {
-    // Merge delta into the current snapshot's overlay
+  synchronized void applyDelta(final TxDelta delta) {
+    // Merge delta into the current snapshot's overlay for immediate visibility
     final Snapshot current = this.snapshot;
     final DeltaOverlay base = current.overlay != null ? current.overlay : new DeltaOverlay(current.nodeMapping.size());
     final DeltaOverlay merged = base.merge(delta, current.nodeMapping);
-    // Atomic swap — overlay update visible to all readers immediately
     this.snapshot = current.withOverlay(merged);
+
+    // Buffer raw delta during compaction for re-application against the new mapping.
+    // TxDelta uses RIDs (not dense IDs), so it can be cleanly re-applied against any mapping.
+    if (pendingDeltas != null)
+      pendingDeltas.add(delta);
 
     if (Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold) {
       // Guard: only one compaction thread at a time
       if (!compacting.compareAndSet(false, true))
         return;
+
+      // Start buffering raw deltas for re-application after the swap
+      pendingDeltas = new ArrayList<>();
 
       EXECUTOR.execute(() -> {
         try {
@@ -942,13 +955,31 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
           final long durationMs = System.currentTimeMillis() - buildStart;
 
-          // Swap to fresh CSR with no overlay
-          this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-              result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
+          // Synchronized swap: capture buffered deltas and re-apply against the new mapping
+          synchronized (GraphAnalyticalView.this) {
+            final List<TxDelta> buffered = pendingDeltas;
+            pendingDeltas = null;
 
-          // Note: any deltas that arrived during rebuild are already committed to OLTP,
-          // so the fresh CSR built from OLTP already includes them. No need to re-apply.
+            Snapshot fresh = new Snapshot(result.getCsrPerType(), result.getMapping(),
+                result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
+
+            // Re-apply any deltas that arrived during the rebuild.
+            // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
+            // Merging against the new mapping resolves RIDs to correct dense IDs.
+            if (buffered != null && !buffered.isEmpty()) {
+              DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
+              for (final TxDelta d : buffered)
+                overlay = overlay.merge(d, result.getMapping());
+              if (overlay.hasChanges())
+                fresh = fresh.withOverlay(overlay);
+            }
+
+            this.snapshot = fresh;
+          }
         } catch (final Exception e) {
+          synchronized (GraphAnalyticalView.this) {
+            pendingDeltas = null;
+          }
           LogManager.instance().log(this, Level.WARNING, "Failed to compact GraphAnalyticalView '%s'", e, name);
         } finally {
           compacting.set(false);

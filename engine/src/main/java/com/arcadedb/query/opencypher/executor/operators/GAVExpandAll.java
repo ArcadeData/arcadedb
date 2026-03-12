@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -129,7 +130,15 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
           // Produce target vertex from neighbor ID
           if (neighborIdx < neighborIds.length) {
             final RID targetRID = provider.getRID(neighborIds[neighborIdx++]);
-            final Vertex targetVertex = (Vertex) context.getDatabase().lookupByRID(targetRID, true);
+            if (targetRID == null)
+              continue; // stale node ID — vertex deleted since last CSR build
+
+            final Vertex targetVertex;
+            try {
+              targetVertex = (Vertex) context.getDatabase().lookupByRID(targetRID, true);
+            } catch (final RecordNotFoundException e) {
+              continue; // vertex deleted in OLTP since CSR was built
+            }
 
             final ResultInternal result = new ResultInternal();
             for (final String prop : currentInputResult.getPropertyNames())

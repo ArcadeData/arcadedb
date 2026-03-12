@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -33,30 +32,42 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>
  * The query planner queries this registry to find providers that can accelerate
  * graph traversals for a given database. Uses a {@link WeakHashMap} so that
- * providers are automatically cleaned up when the database is garbage-collected.
+ * entries for closed databases are eligible for GC after all providers are unregistered.
+ * <p>
+ * <b>Lifecycle note:</b> Registered providers (e.g. {@code GraphAnalyticalView}) typically
+ * hold a strong reference back to the Database, which prevents the WeakHashMap key from being
+ * GC-collected while any provider is registered. This is intentional — providers are explicitly
+ * unregistered via {@link #unregister} during {@code drop()}/{@code shutdown()}, which removes
+ * the strong reference chain and allows GC. The WeakHashMap acts as a safety net for any
+ * leaked entries, not as the primary cleanup mechanism.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphTraversalProviderRegistry {
-  private static final Map<Database, CopyOnWriteArrayList<GraphTraversalProvider>> REGISTRY =
-      Collections.synchronizedMap(new WeakHashMap<>());
+  private static final WeakHashMap<Database, CopyOnWriteArrayList<GraphTraversalProvider>> REGISTRY = new WeakHashMap<>();
 
   /**
    * Registers a traversal provider for a database.
    */
   public static void register(final Database database, final GraphTraversalProvider provider) {
-    REGISTRY.computeIfAbsent(unwrap(database), k -> new CopyOnWriteArrayList<>()).add(provider);
+    final Database key = unwrap(database);
+    synchronized (REGISTRY) {
+      REGISTRY.computeIfAbsent(key, k -> new CopyOnWriteArrayList<>()).add(provider);
+    }
   }
 
   /**
    * Unregisters a traversal provider from a database.
    */
   public static void unregister(final Database database, final GraphTraversalProvider provider) {
-    final CopyOnWriteArrayList<GraphTraversalProvider> list = REGISTRY.get(unwrap(database));
-    if (list != null) {
-      list.remove(provider);
-      if (list.isEmpty())
-        REGISTRY.remove(unwrap(database));
+    final Database key = unwrap(database);
+    synchronized (REGISTRY) {
+      final CopyOnWriteArrayList<GraphTraversalProvider> list = REGISTRY.get(key);
+      if (list != null) {
+        list.remove(provider);
+        if (list.isEmpty())
+          REGISTRY.remove(key);
+      }
     }
   }
 
@@ -64,8 +75,11 @@ public class GraphTraversalProviderRegistry {
    * Returns all registered providers for a database (unmodifiable snapshot).
    */
   public static List<GraphTraversalProvider> getProviders(final Database database) {
-    final CopyOnWriteArrayList<GraphTraversalProvider> list = REGISTRY.get(unwrap(database));
-    return list != null ? Collections.unmodifiableList(new ArrayList<>(list)) : Collections.emptyList();
+    final Database key = unwrap(database);
+    synchronized (REGISTRY) {
+      final CopyOnWriteArrayList<GraphTraversalProvider> list = REGISTRY.get(key);
+      return list != null ? Collections.unmodifiableList(new ArrayList<>(list)) : Collections.emptyList();
+    }
   }
 
   /**
@@ -76,9 +90,13 @@ public class GraphTraversalProviderRegistry {
    * @return a matching ready provider, or null if none found
    */
   public static GraphTraversalProvider findProvider(final Database database, final String... edgeTypes) {
-    final CopyOnWriteArrayList<GraphTraversalProvider> list = REGISTRY.get(unwrap(database));
+    final CopyOnWriteArrayList<GraphTraversalProvider> list;
+    synchronized (REGISTRY) {
+      list = REGISTRY.get(unwrap(database));
+    }
     if (list == null)
       return null;
+    // CopyOnWriteArrayList iteration is safe outside the lock
     for (final GraphTraversalProvider provider : list) {
       if (!provider.isReady())
         continue;
@@ -103,7 +121,9 @@ public class GraphTraversalProviderRegistry {
    * Removes all providers for a database.
    */
   public static void clearAll(final Database database) {
-    REGISTRY.remove(unwrap(database));
+    synchronized (REGISTRY) {
+      REGISTRY.remove(unwrap(database));
+    }
   }
 
   private static Database unwrap(final Database database) {

@@ -2633,4 +2633,181 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW machineNet");
   }
+
+  // --- Regression tests for PR review findings ---
+
+  @Test
+  void testConcurrentApplyDeltaNoLostUpdates() throws Exception {
+    // Each thread gets its own vertex type to avoid page contention entirely.
+    // This isolates the test to exercise concurrent applyDelta, not CME retry behavior.
+    final int threadCount = 4;
+    final int edgesPerThread = 20;
+
+    final String[] vTypes = new String[threadCount];
+    final String[] eTypes = new String[threadCount];
+    for (int t = 0; t < threadCount; t++) {
+      vTypes[t] = "V" + t;
+      eTypes[t] = "LINK" + t;
+      database.getSchema().createVertexType(vTypes[t]);
+      database.getSchema().createEdgeType(eTypes[t]);
+    }
+
+    // Build SYNCHRONOUS GAV covering all types
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes(vTypes)
+        .withEdgeTypes(eTypes)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(0);
+
+    // Each thread creates vertices in its own type (separate pages, no CME).
+    // Concurrent applyDelta calls all merge into the same overlay.
+    final java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(threadCount);
+    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+
+    final Thread[] threads = new Thread[threadCount];
+    for (int t = 0; t < threadCount; t++) {
+      final int threadIdx = t;
+      threads[t] = new Thread(() -> {
+        try {
+          barrier.await(5, TimeUnit.SECONDS);
+          for (int i = 0; i < edgesPerThread; i++) {
+            database.begin();
+            final MutableVertex src = database.newVertex("V" + threadIdx)
+                .set("name", "src_" + threadIdx + "_" + i).save();
+            final MutableVertex tgt = database.newVertex("V" + threadIdx)
+                .set("name", "tgt_" + threadIdx + "_" + i).save();
+            src.newEdge("LINK" + threadIdx, tgt);
+            database.commit();
+          }
+        } catch (final Exception e) {
+          e.printStackTrace();
+          errors.incrementAndGet();
+        }
+      });
+      threads[t].start();
+    }
+
+    for (final Thread thread : threads)
+      thread.join(30_000);
+
+    assertThat(errors.get()).as("Thread errors").isEqualTo(0);
+
+    // Every thread committed exactly edgesPerThread edges — none lost
+    final int expectedVertices = threadCount * edgesPerThread * 2; // src + tgt per edge
+    final int expectedEdges = threadCount * edgesPerThread;
+    assertThat(gav.getNodeCount()).isEqualTo(expectedVertices);
+    assertThat(gav.getEdgeCount()).isEqualTo(expectedEdges);
+
+    gav.drop();
+  }
+
+  @Test
+  void testGAVExpandAllWithStaleVertex() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    database.commit();
+
+    // Build GAV — all 3 vertices are in the CSR
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("staleTest")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+
+    // Delete Bob in OLTP (but GAV is NOT rebuilt — CSR is now stale)
+    database.begin();
+    database.deleteRecord(bob.getIdentity().asVertex());
+    database.commit();
+
+    // Cypher query via GAVExpandAll should skip the stale vertex, not throw NPE/RecordNotFound
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.name = 'Alice' RETURN b.name AS target ORDER BY target");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next().getProperty("target"));
+    rs.close();
+
+    // Only Charlie should be returned — Bob was deleted
+    assertThat(results).containsExactly("Charlie");
+
+    gav.drop();
+  }
+
+  @Test
+  void testNeighborViewBoundaryLastNode() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Create a chain: N0 -> N1 -> N2 -> N3 (last node has edges only inbound)
+    database.begin();
+    final MutableVertex n0 = database.newVertex("Node").set("idx", 0).save();
+    final MutableVertex n1 = database.newVertex("Node").set("idx", 1).save();
+    final MutableVertex n2 = database.newVertex("Node").set("idx", 2).save();
+    final MutableVertex n3 = database.newVertex("Node").set("idx", 3).save();
+    n0.newEdge("LINK", n1);
+    n1.newEdge("LINK", n2);
+    n2.newEdge("LINK", n3);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Node" }, new String[] { "LINK" });
+
+    final int nodeCount = gav.getNodeCount();
+    assertThat(nodeCount).isEqualTo(4);
+
+    // Test NeighborView for OUT direction — last node should have degree 0
+    final com.arcadedb.graph.NeighborView outView = gav.getNeighborView(Vertex.DIRECTION.OUT, "LINK");
+    assertThat(outView).isNotNull();
+    assertThat(outView.nodeCount()).isEqualTo(nodeCount);
+
+    // Verify degree() works for every node including the last one (offsets[nodeCount] must be in bounds)
+    int totalOutDegree = 0;
+    for (int i = 0; i < nodeCount; i++) {
+      final int deg = outView.degree(i);
+      assertThat(deg).isGreaterThanOrEqualTo(0);
+      totalOutDegree += deg;
+      // Verify offset/offsetEnd are consistent
+      assertThat(outView.offsetEnd(i) - outView.offset(i)).isEqualTo(deg);
+    }
+    assertThat(totalOutDegree).isEqualTo(3); // 3 edges total
+
+    // Test NeighborView for IN direction — first node should have degree 0
+    final com.arcadedb.graph.NeighborView inView = gav.getNeighborView(Vertex.DIRECTION.IN, "LINK");
+    assertThat(inView).isNotNull();
+
+    int totalInDegree = 0;
+    for (int i = 0; i < nodeCount; i++) {
+      final int deg = inView.degree(i);
+      assertThat(deg).isGreaterThanOrEqualTo(0);
+      totalInDegree += deg;
+      assertThat(inView.offsetEnd(i) - inView.offset(i)).isEqualTo(deg);
+    }
+    assertThat(totalInDegree).isEqualTo(3);
+
+    // Test BOTH direction — verify merged view handles last node correctly
+    final com.arcadedb.graph.NeighborView bothView = gav.getNeighborView(Vertex.DIRECTION.BOTH, "LINK");
+    assertThat(bothView).isNotNull();
+    assertThat(bothView.nodeCount()).isEqualTo(nodeCount);
+
+    // Last node: 0 out + 1 in = degree 1 in BOTH
+    final int lastNodeId = gav.getNodeId(n3.getIdentity());
+    assertThat(bothView.degree(lastNodeId)).isEqualTo(1);
+    // First node: 1 out + 0 in = degree 1 in BOTH
+    final int firstNodeId = gav.getNodeId(n0.getIdentity());
+    assertThat(bothView.degree(firstNodeId)).isEqualTo(1);
+
+    // Verify edge count for the merged BOTH view
+    assertThat(bothView.edgeCount()).isEqualTo(6); // 3 out + 3 in
+  }
 }
