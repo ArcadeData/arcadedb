@@ -143,8 +143,9 @@ public final class SimdGraphOlapVectorOps implements GraphOlapVectorOps {
     int i = 0;
     for (; i + lanes <= length; i += lanes) {
       final IntVector v = IntVector.fromArray(INT_SPECIES, data, offset + i);
-      // Use long accumulator to avoid int overflow
-      s += v.reduceLanes(VectorOperators.ADD);
+      // Extract lanes individually to avoid int overflow in reduceLanes
+      for (int j = 0; j < lanes; j++)
+        s += v.lane(j);
     }
     for (; i < length; i++)
       s += data[offset + i];

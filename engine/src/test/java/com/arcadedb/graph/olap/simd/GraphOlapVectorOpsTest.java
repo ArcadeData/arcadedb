@@ -139,6 +139,15 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
+  void testSumIntOverflow(final GraphOlapVectorOps ops) {
+    // Regression: values whose lane-wise sum exceeds Integer.MAX_VALUE
+    final int[] data = new int[16];
+    java.util.Arrays.fill(data, 400_000_000); // 16 × 400M = 6.4B > Integer.MAX_VALUE
+    assertThat(ops.sumInt(data, 0, 16)).isEqualTo(16L * 400_000_000L);
+  }
+
+  @ParameterizedTest
+  @MethodSource("implementations")
   void testMinMaxInt(final GraphOlapVectorOps ops) {
     final int[] data = { 30, 10, 40, 15, 90, 26 };
     assertThat(ops.minInt(data, 0, 6)).isEqualTo(10);
