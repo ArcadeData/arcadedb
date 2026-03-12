@@ -718,6 +718,75 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * Creates multiple records from pre-serialized Binary buffers in a single operation.
+   * Always appends to new pages to avoid complexity with existing page layouts, deletions,
+   * and multi-page records. This avoids the per-record findAvailableSpace overhead and is
+   * designed for bulk import scenarios where sequential page writes are optimal.
+   *
+   * @param buffers    array of pre-serialized record content (NOT including the size prefix)
+   * @param from       start index in buffers array (inclusive)
+   * @param to         end index in buffers array (exclusive)
+   * @param ridsOut    output array for assigned RIDs (must have length >= to - from)
+   */
+  public void createRecordsBulk(final Binary[] buffers, final int from, final int to, final RID[] ridsOut) {
+    int txPageCounter = getTotalPages();
+
+      // Always start from a fresh new page for bulk writes
+      MutablePage currentPage = database.getTransaction()
+          .addPage(new PageId(database, file.getFileId(), txPageCounter), pageSize);
+      txPageCounter++;
+      int recordPositionInPage = contentHeaderSize;
+      int availablePositionIndex = 0;
+      final int maxContent = currentPage.getMaxContentSize();
+
+      for (int i = from; i < to; i++) {
+        final Binary buffer = buffers[i];
+
+        // Pad to minimum record size
+        while (buffer.size() < MINIMUM_RECORD_SIZE)
+          buffer.append((byte) 0);
+
+        final int actualSize = buffer.size();
+        final int spaceNeeded = Binary.getNumberSpace(actualSize) + actualSize;
+
+        // Check if current page has room
+        if (availablePositionIndex >= maxRecordsInPage
+            || recordPositionInPage + spaceNeeded > maxContent) {
+          // Finalize current page record count
+          currentPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) availablePositionIndex);
+
+          // Create a new page
+          currentPage = database.getTransaction()
+              .addPage(new PageId(database, file.getFileId(), txPageCounter), pageSize);
+          txPageCounter++;
+          recordPositionInPage = contentHeaderSize;
+          availablePositionIndex = 0;
+        }
+
+        // Write the record offset in the record table
+        currentPage.writeUnsignedInt(
+            PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
+            recordPositionInPage);
+
+        // Write record size + content
+        final int sizeBytes = currentPage.writeNumber(recordPositionInPage, actualSize);
+        currentPage.writeByteArray(recordPositionInPage + sizeBytes,
+            buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
+
+        // Assign RID
+        ridsOut[i - from] = new RID(database, file.getFileId(),
+            ((long) currentPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
+
+        recordPositionInPage += sizeBytes + actualSize;
+        availablePositionIndex++;
+      }
+
+    // Finalize last page record count
+    if (availablePositionIndex > 0)
+      currentPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) availablePositionIndex);
+  }
+
   private boolean updateRecordInternal(final Record record, final RID rid, final boolean updatePlaceholderContent,
                                        final boolean discardRecordAfter) {
     if (rid.getPosition() < 0)
