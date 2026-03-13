@@ -135,6 +135,21 @@ class GraphImporterBenchmarkTest {
         "%nSpeedup with props: BatchImporter=%.2fx vs Standard%n",
         stdPropsMs / newPropsMs));
 
+    // ========================================================
+    // 6. GraphBatchImporter with parallel incoming edges
+    // ========================================================
+    final long newParallelTimeNs = benchmarkNewGraphBatchImporterParallel(edgeSrc, edgeDst);
+    final double newParallelMs = newParallelTimeNs / 1_000_000.0;
+
+    report.append(String.format("%n--- Parallel incoming edge connection ---%n"));
+    report.append(String.format("%-45s %12.1f %14.0f%n",
+        "6. BatchImporter + parallel IN", newParallelMs, EDGE_COUNT / (newParallelMs / 1000.0)));
+    report.append(String.format("%-45s %12.1f %14.0f%n",
+        "   (sequential for reference)", newMs, EDGE_COUNT / (newMs / 1000.0)));
+    report.append(String.format(
+        "%nParallel IN speedup: %.2fx vs sequential%n",
+        newMs / newParallelMs));
+
     System.out.println(report);
     LogManager.instance().log(this, Level.INFO, report.toString());
   }
@@ -528,6 +543,62 @@ class GraphImporterBenchmarkTest {
         vRIDs = importer.createVertices("Person", VERTEX_COUNT);
 
         // Phase 2: buffer + flush edges
+        for (int i = 0; i < EDGE_COUNT; i++)
+          importer.newEdge(vRIDs[edgeSrc[i]], "KNOWS", vRIDs[edgeDst[i]]);
+      }
+      final long elapsed = System.nanoTime() - start;
+
+      // Verify both OUT and IN
+      db.begin();
+      long outTotal = 0;
+      long inTotal = 0;
+      for (int i = 0; i < VERTEX_COUNT; i++) {
+        for (final Edge ignored : vRIDs[i].asVertex().getEdges(Vertex.DIRECTION.OUT, "KNOWS"))
+          outTotal++;
+        for (final Edge ignored : vRIDs[i].asVertex().getEdges(Vertex.DIRECTION.IN, "KNOWS"))
+          inTotal++;
+      }
+      db.rollback();
+      assertThat(outTotal).isEqualTo(EDGE_COUNT);
+      assertThat(inTotal).isEqualTo(EDGE_COUNT);
+
+      return elapsed;
+    } finally {
+      db.close();
+      FileUtils.deleteRecursively(new File(path));
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Benchmark 6: New GraphBatchImporter with parallel incoming edges
+  // -----------------------------------------------------------------------
+
+  private long benchmarkNewGraphBatchImporterParallel(final int[] edgeSrc, final int[] edgeDst) {
+    final String path = "target/databases/BenchCompare_newParallel";
+    FileUtils.deleteRecursively(new File(path));
+
+    final Database db = new DatabaseFactory(path).create();
+    try {
+      db.transaction(() -> {
+        db.getSchema().createVertexType("Person");
+        db.getSchema().createEdgeType("KNOWS");
+      });
+
+      final long start = System.nanoTime();
+
+      final RID[] vRIDs;
+      try (final GraphBatchImporter importer = GraphBatchImporter.builder(db)
+          .withExpectedEdgeCount(EDGE_COUNT)
+          .withEdgeListInitialSize(2048)
+          .withLightEdges(true)
+          .withWAL(false)
+          .withPreAllocateEdgeChunks(true)
+          .withCommitEvery(0)
+          .withParallelFlush(true)
+          .build()) {
+
+        vRIDs = importer.createVertices("Person", VERTEX_COUNT);
+
         for (int i = 0; i < EDGE_COUNT; i++)
           importer.newEdge(vRIDs[edgeSrc[i]], "KNOWS", vRIDs[edgeDst[i]]);
       }
