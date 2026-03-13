@@ -29,11 +29,11 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 
 import java.util.Collections;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Level;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 /**
  * Detects when a transaction affects vertex/edge types covered by the GAV and handles updates.

@@ -1889,13 +1889,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // Shutdown all Graph Analytical Views before closing the database
     try {
       GraphAnalyticalViewRegistry.shutdownAll(this);
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error on shutting down Graph Analytical Views during close for database '%s'", e, name);
+    } finally {
       // Safety net: clear any orphaned traversal providers that were not cleaned up
       // by individual view shutdown() calls (e.g., if a view was registered directly
       // in GraphTraversalProviderRegistry without being in GraphAnalyticalViewRegistry)
       GraphTraversalProviderRegistry.clearAll(this);
-    } catch (final Throwable e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Error on shutting down Graph Analytical Views during close for database '%s'", e, name);
     }
 
     executeInWriteLock(() -> {

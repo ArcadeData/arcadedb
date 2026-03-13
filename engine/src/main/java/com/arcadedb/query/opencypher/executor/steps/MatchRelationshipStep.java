@@ -68,7 +68,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private volatile boolean gavProviderResolved = false;
   private volatile String gavProviderDebug = null;
 
-  // Profiling: track fast path vs standard path usage
+  // Profiling: track fast path vs standard path usage (single-threaded access — one thread per step instance)
   private long fastPathCount = 0;
   private long standardPathCount = 0;
   private long gavPathCount = 0;

@@ -274,18 +274,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     getExecutor().execute(() -> {
       BUILD_PERMITS.acquireUninterruptibly();
       try {
-        final long buildStart = System.currentTimeMillis();
-        final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
-        final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
-        final long durationMs = System.currentTimeMillis() - buildStart;
+        // The build thread needs its own read transaction for database iteration
+        database.begin();
+        try {
+          final long buildStart = System.currentTimeMillis();
+          final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
+          final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+          final long durationMs = System.currentTimeMillis() - buildStart;
 
-        this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-            result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
-        this.status = Status.READY;
+          this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
+              result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
+          this.status = Status.READY;
 
-        synchronized (GraphAnalyticalView.this) {
-          if (deltaCollector == null)
-            registerChangeListeners();
+          synchronized (GraphAnalyticalView.this) {
+            if (deltaCollector == null)
+              registerChangeListeners();
+          }
+        } finally {
+          if (database.isTransactionActive())
+            database.rollback();
         }
       } catch (final Exception e) {
         this.buildError = e;
@@ -984,14 +991,20 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       getExecutor().execute(() -> {
         BUILD_PERMITS.acquireUninterruptibly();
         try {
-          final long buildStart = System.currentTimeMillis();
-          final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
-          final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
-          final long durationMs = System.currentTimeMillis() - buildStart;
-          // Atomic swap — readers see all-or-nothing
-          this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-              result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
-          this.status = Status.READY;
+          database.begin();
+          try {
+            final long buildStart = System.currentTimeMillis();
+            final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
+            final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+            final long durationMs = System.currentTimeMillis() - buildStart;
+            // Atomic swap — readers see all-or-nothing
+            this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
+                result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
+            this.status = Status.READY;
+          } finally {
+            if (database.isTransactionActive())
+              database.rollback();
+          }
         } catch (final Exception e) {
           this.buildError = e;
           this.status = Status.STALE;
@@ -1044,31 +1057,37 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       getExecutor().execute(() -> {
         BUILD_PERMITS.acquireUninterruptibly();
         try {
-          final long buildStart = System.currentTimeMillis();
-          final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
-          final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
-          final long durationMs = System.currentTimeMillis() - buildStart;
+          database.begin();
+          try {
+            final long buildStart = System.currentTimeMillis();
+            final CSRBuilder builder = new CSRBuilder(database, propertyFilter, propertySampleSize);
+            final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+            final long durationMs = System.currentTimeMillis() - buildStart;
 
-          // Synchronized swap: capture buffered deltas and re-apply against the new mapping
-          synchronized (GraphAnalyticalView.this) {
-            final List<TxDelta> buffered = pendingDeltas;
-            pendingDeltas = null;
+            // Synchronized swap: capture buffered deltas and re-apply against the new mapping
+            synchronized (GraphAnalyticalView.this) {
+              final List<TxDelta> buffered = pendingDeltas;
+              pendingDeltas = null;
 
-            Snapshot fresh = new Snapshot(result.getCsrPerType(), result.getMapping(),
-                result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
+              Snapshot fresh = new Snapshot(result.getCsrPerType(), result.getMapping(),
+                  result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
 
-            // Re-apply any deltas that arrived during the rebuild.
-            // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
-            // Merging against the new mapping resolves RIDs to correct dense IDs.
-            if (buffered != null && !buffered.isEmpty()) {
-              DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
-              for (final TxDelta d : buffered)
-                overlay = overlay.merge(d, result.getMapping());
-              if (overlay.hasChanges())
-                fresh = fresh.withOverlay(overlay);
+              // Re-apply any deltas that arrived during the rebuild.
+              // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
+              // Merging against the new mapping resolves RIDs to correct dense IDs.
+              if (buffered != null && !buffered.isEmpty()) {
+                DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
+                for (final TxDelta d : buffered)
+                  overlay = overlay.merge(d, result.getMapping());
+                if (overlay.hasChanges())
+                  fresh = fresh.withOverlay(overlay);
+              }
+
+              this.snapshot = fresh;
             }
-
-            this.snapshot = fresh;
+          } finally {
+            if (database.isTransactionActive())
+              database.rollback();
           }
         } catch (final Exception e) {
           synchronized (GraphAnalyticalView.this) {

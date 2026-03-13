@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
@@ -54,8 +53,6 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionSt
         final Database database = context.getDatabase();
         final JSONObject extension = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
         if (extension != null) {
-          final boolean hasProvider = !GraphTraversalProviderRegistry.getProviders(database).isEmpty();
-
           final List<String> names = new ArrayList<>(extension.keySet());
           Collections.sort(names, String::compareToIgnoreCase);
 
