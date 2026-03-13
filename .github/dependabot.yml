@@ -100,6 +100,21 @@ updates:
       - dependency-name: "bootstrap"
         update-types: ["version-update:semver-major"]
 
+  # Pre-commit hook versions
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: "sunday"
+    open-pull-requests-limit: 10
+    groups:
+      pre-commit-hooks:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
   # E2E JavaScript Testing Dependencies
   - package-ecosystem: "npm"
     directory: "/e2e-js"
