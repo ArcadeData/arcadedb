@@ -1706,6 +1706,8 @@ public class GraphBatchImporter implements AutoCloseable {
 
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final int parallelLevel = async.getParallelLevel();
+    final ConcurrentHashMap<Long, RID> parallelDeferredOutHead = new ConcurrentHashMap<>();
+    final ConcurrentHashMap<Long, RID> parallelOutChunkCache = new ConcurrentHashMap<>();
 
     for (int b = 0; b <= maxBucket; b++) {
       if (bucketCounts[b] == 0)
@@ -1715,7 +1717,8 @@ public class GraphBatchImporter implements AutoCloseable {
       final int to = bucketOffsets[b + 1];
       final int slot = b % parallelLevel;
 
-      async.transaction(() -> connectEdgesRange(edgeRIDs, from, to),
+      async.transaction(() -> connectOutEdgesRangeLocal(edgeRIDs, from, to,
+              parallelDeferredOutHead, parallelOutChunkCache),
           3, null, e -> error.compareAndSet(null, e), slot);
     }
 
@@ -1723,15 +1726,29 @@ public class GraphBatchImporter implements AutoCloseable {
     async.setTransactionUseWAL(savedAsyncWAL);
     async.setTransactionSync(savedAsyncSync);
 
+    // Merge deferred head pointers back
+    deferredOutHead.putAll(parallelDeferredOutHead);
+    outChunkRIDCache.putAll(parallelOutChunkCache);
+
     final Throwable t = error.get();
     if (t != null)
       throw (t instanceof RuntimeException) ? (RuntimeException) t : new RuntimeException(t);
   }
 
   /**
-   * Connects outgoing edges for a range of the sorted index. Used by the parallel path.
+   * Connects outgoing edges for a bucket range using local tmp arrays.
+   * Uses fill-then-persist for new segments and vectorized writes for existing ones.
    */
-  private void connectEdgesRange(final RID[] edgeRIDs, final int from, final int to) {
+  private void connectOutEdgesRangeLocal(final RID[] edgeRIDs, final int from, final int to,
+      final ConcurrentHashMap<Long, RID> sharedDeferredOutHead,
+      final ConcurrentHashMap<Long, RID> sharedOutChunkCache) {
+
+    int tmpSize = 64;
+    int[] localTmpEdgeBucketIds = new int[tmpSize];
+    long[] localTmpEdgePositions = new long[tmpSize];
+    int[] localTmpVertexBucketIds = new int[tmpSize];
+    long[] localTmpVertexPositions = new long[tmpSize];
+
     int i = from;
     while (i < to) {
       final int idx = sortIndex[i];
@@ -1746,18 +1763,75 @@ public class GraphBatchImporter implements AutoCloseable {
         j++;
       }
 
-      final long vertexKey = packVertexKey(srcBucket, srcPos);
-      final RID cachedChunkRID = outChunkRIDCache.get(vertexKey);
+      final int groupSize = j - i;
 
+      // Ensure local tmp arrays are big enough
+      if (groupSize > tmpSize) {
+        tmpSize = groupSize;
+        localTmpEdgeBucketIds = new int[tmpSize];
+        localTmpEdgePositions = new long[tmpSize];
+        localTmpVertexBucketIds = new int[tmpSize];
+        localTmpVertexPositions = new long[tmpSize];
+      }
+
+      // Fill local tmp arrays and compute total bytes
+      int totalBytesNeeded = 0;
+      for (int k = 0; k < groupSize; k++) {
+        final int kIdx = sortIndex[i + k];
+        final RID edgeRID = edgeRIDs[kIdx];
+        localTmpEdgeBucketIds[k] = edgeRID.getBucketId();
+        localTmpEdgePositions[k] = edgeRID.getPosition();
+        localTmpVertexBucketIds[k] = edgeDstBucketIds[kIdx];
+        localTmpVertexPositions[k] = edgeDstPositions[kIdx];
+        totalBytesNeeded += Binary.getNumberSpace(localTmpEdgeBucketIds[k]) + Binary.getNumberSpace(localTmpEdgePositions[k])
+            + Binary.getNumberSpace(localTmpVertexBucketIds[k]) + Binary.getNumberSpace(localTmpVertexPositions[k]);
+      }
+
+      final long vertexKey = packVertexKey(srcBucket, srcPos);
+
+      // Get or create OUT segment
       EdgeSegment outChunk;
+      boolean isNew;
+      final RID cachedChunkRID = outChunkRIDCache.get(vertexKey);
       if (cachedChunkRID != null) {
         outChunk = (EdgeSegment) database.lookupByRID(cachedChunkRID, true);
+        isNew = false;
+      } else if (knownNewVertexKeys.contains(vertexKey)) {
+        final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
+        outChunk = new MutableEdgeSegment(database, segmentSize);
+        isNew = true;
       } else {
         final MutableVertex srcVertex = new RID(database, srcBucket, srcPos).asVertex().modify();
         outChunk = getOrCreateOutEdgeChunk(srcVertex);
+        isNew = false;
       }
 
-      addEdgesToSegmentBulkLazy(srcBucket, srcPos, Vertex.DIRECTION.OUT, outChunk, edgeRIDs, i, j, true);
+      final String edgeBucketName = database.getGraphEngine().getEdgesBucketName(srcBucket, Vertex.DIRECTION.OUT);
+
+      if (isNew) {
+        outChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
+            localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+        database.createRecord(outChunk, edgeBucketName);
+        sharedOutChunkCache.put(vertexKey, outChunk.getIdentity());
+        sharedDeferredOutHead.put(vertexKey, outChunk.getIdentity());
+      } else {
+        final int available = outChunk.getRecordSize() - outChunk.getUsed();
+        if (totalBytesNeeded <= available) {
+          outChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
+              localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+          database.updateRecord(outChunk);
+        } else {
+          // Overflow: create exact-sized new segment, fill, persist
+          final int newSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
+          final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, newSize);
+          newChunk.setPrevious(outChunk);
+          newChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
+              localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+          database.createRecord(newChunk, edgeBucketName);
+          sharedOutChunkCache.put(vertexKey, newChunk.getIdentity());
+          sharedDeferredOutHead.put(vertexKey, newChunk.getIdentity());
+        }
+      }
 
       i = j;
     }
@@ -1873,7 +1947,7 @@ public class GraphBatchImporter implements AutoCloseable {
     private boolean            useWAL               = false;
     private WALFile.FlushType  walFlush             = WALFile.FlushType.NO;
     private boolean            preAllocateEdgeChunks = true;
-    private boolean            parallelFlush         = false;
+    private boolean            parallelFlush         = true;
 
     Builder(final DatabaseInternal database) {
       this.database = database;
