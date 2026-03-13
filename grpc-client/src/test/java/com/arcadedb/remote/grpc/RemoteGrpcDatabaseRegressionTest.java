@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.test.BaseGraphServerTest;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
@@ -34,6 +35,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -41,6 +44,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -68,6 +72,7 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
 
   private RemoteGrpcServer   grpcServer;
   private RemoteGrpcDatabase grpc;
+  private RemoteDatabase     httpDb;
 
   @Override
   public void setTestConfiguration() {
@@ -98,6 +103,7 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
   @BeforeEach
   void open() {
     grpc = new RemoteGrpcDatabase(this.grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    httpDb = new RemoteDatabase("localhost", 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Create isolated schema for these tests (id unique, name string, n integer)
     grpc.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS", Map.of());
@@ -117,6 +123,14 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
       } catch (Throwable ignore) {
       }
       grpc.close();
+    }
+    if (httpDb != null) {
+      try {
+        httpDb.rollback();
+      } catch (Throwable ignore) {
+      }
+      httpDb.close();
+      httpDb = null;
     }
   }
 
@@ -399,6 +413,107 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
       }
     } finally {
       grpc.command("sql", "DELETE FROM `" + VERTEX_TYPE + "`", Map.of());
+    }
+  }
+
+  static Stream<String> allDatabases() {
+    return Stream.of("gRPC", "HTTP");
+  }
+
+  private RemoteDatabase resolveDatabase(final String label) {
+    return "gRPC".equals(label) ? grpc : httpDb;
+  }
+
+  @ParameterizedTest(name = "[{0}] newVertex().save() and newEdge() within a transaction should not throw 'Transaction not active'")
+  @MethodSource("allDatabases")
+  @DisplayName("Issue #3524: newVertex().save() and newEdge() within a transaction [parametric: gRPC + HTTP]")
+  void vertexSaveAndEdgeCreationWithinTransactionParametric(final String label) {
+    final RemoteDatabase db = resolveDatabase(label);
+    final String VERTEX_TYPE = "SVEx3524P";
+    final String EDGE_TYPE = "SVEx3524P_Edge";
+
+    db.command("sql", "CREATE VERTEX TYPE `" + VERTEX_TYPE + "` IF NOT EXISTS", Map.of());
+    db.command("sql", "CREATE PROPERTY `" + VERTEX_TYPE + "`.svex IF NOT EXISTS STRING", Map.of());
+    db.command("sql", "CREATE EDGE TYPE `" + EDGE_TYPE + "` IF NOT EXISTS", Map.of());
+
+    try {
+      db.begin();
+
+      MutableVertex svt1 = db.newVertex(VERTEX_TYPE);
+      svt1.set("svex", "svt1");
+      svt1.save();
+
+      MutableVertex svt2 = db.newVertex(VERTEX_TYPE);
+      svt2.set("svex", "svt2");
+      svt2.save();
+
+      // This should not throw 'Transaction not active'
+      svt1.newEdge(EDGE_TYPE, svt2);
+
+      // This save (updating the vertex after edge creation) should also work within the transaction
+      svt1.save();
+
+      db.commit();
+
+      // Verify both vertices exist
+      try (ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM `" + VERTEX_TYPE + "`", Map.of())) {
+        assertThat(rs.hasNext()).isTrue();
+        Number count = rs.next().getProperty("c");
+        assertThat(count.longValue()).as("[%s] both vertices should be persisted", label).isEqualTo(2L);
+      }
+
+      // Verify the edge exists
+      try (ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM `" + EDGE_TYPE + "`", Map.of())) {
+        assertThat(rs.hasNext()).isTrue();
+        Number count = rs.next().getProperty("c");
+        assertThat(count.longValue()).as("[%s] edge should be persisted", label).isEqualTo(1L);
+      }
+    } finally {
+      db.command("sql", "DELETE FROM `" + EDGE_TYPE + "`", Map.of());
+      db.command("sql", "DELETE FROM `" + VERTEX_TYPE + "`", Map.of());
+    }
+  }
+
+  @ParameterizedTest(name = "[{0}] newVertex().save() within a transaction should persist only on commit and rollback on abort")
+  @MethodSource("allDatabases")
+  @DisplayName("Issue #3524: newVertex().save() persist-only-on-commit semantics [parametric: gRPC + HTTP]")
+  void vertexSaveRollbackWithinTransactionParametric(final String label) {
+    final RemoteDatabase db = resolveDatabase(label);
+    final String VERTEX_TYPE = "SVEx3524PRoll";
+
+    db.command("sql", "CREATE VERTEX TYPE `" + VERTEX_TYPE + "` IF NOT EXISTS", Map.of());
+    db.command("sql", "CREATE PROPERTY `" + VERTEX_TYPE + "`.svex IF NOT EXISTS STRING", Map.of());
+
+    try {
+      // Verify rollback: creates a vertex and then rolls back
+      db.begin();
+
+      MutableVertex svt1 = db.newVertex(VERTEX_TYPE);
+      svt1.set("svex", "rollback1");
+      svt1.save();
+
+      db.rollback();
+
+      try (ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM `" + VERTEX_TYPE + "`", Map.of())) {
+        Number count = rs.next().getProperty("c");
+        assertThat(count.longValue()).as("[%s] vertex should NOT be persisted after rollback", label).isEqualTo(0L);
+      }
+
+      // Verify commit: creates a vertex and commits
+      db.begin();
+
+      MutableVertex svt2 = db.newVertex(VERTEX_TYPE);
+      svt2.set("svex", "committed");
+      svt2.save();
+
+      db.commit();
+
+      try (ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM `" + VERTEX_TYPE + "`", Map.of())) {
+        Number count = rs.next().getProperty("c");
+        assertThat(count.longValue()).as("[%s] vertex should be persisted after commit", label).isEqualTo(1L);
+      }
+    } finally {
+      db.command("sql", "DELETE FROM `" + VERTEX_TYPE + "`", Map.of());
     }
   }
 
