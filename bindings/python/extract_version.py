@@ -113,6 +113,7 @@ Usage:
     --increment-dev  : Increment dev version number in tracker for next build
                        (only applies to SNAPSHOT versions)
 """
+
 import json
 import re
 import sys
