@@ -34,7 +34,7 @@ repos:
         args: ["--profile", "black"]
         files: ^bindings/python/.*\.py$
   - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-    rev: v2.15.0
+    rev: v2.16.0
     hooks:
       - id: pretty-format-yaml
         args:
