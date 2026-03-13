@@ -3606,4 +3606,167 @@ public class GraphAnalyticalViewTest extends TestHelper {
       assertThat((String) row.getProperty("tgt")).isEqualTo("Bob");
     }
   }
+
+  // === Edge Property Tests ===
+
+  @Test
+  void testEdgePropertyBasic() {
+    // A -[weight:1.0]-> B -[weight:2.5]-> C
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("ROAD").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("ROAD", b, "weight", 1.0);
+    b.newEdge("ROAD", c, "weight", 2.5);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("ROAD")
+        .withEdgeProperties("weight")
+        .build();
+
+    assertThat(gav.hasEdgeProperties()).isTrue();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+    final int idC = gav.getNodeId(c.getIdentity());
+
+    // Forward (OUT) edge properties
+    // A has 1 outgoing edge to B with weight 1.0
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "ROAD")).isEqualTo(1);
+    final Object weightAB = gav.getEdgeProperty(idA, 0, Vertex.DIRECTION.OUT, "ROAD", "weight");
+    assertThat(weightAB).isInstanceOf(Double.class);
+    assertThat((Double) weightAB).isEqualTo(1.0);
+
+    // B has 1 outgoing edge to C with weight 2.5
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.OUT, "ROAD")).isEqualTo(1);
+    final Object weightBC = gav.getEdgeProperty(idB, 0, Vertex.DIRECTION.OUT, "ROAD", "weight");
+    assertThat((Double) weightBC).isEqualTo(2.5);
+
+    // Backward (IN) edge properties — should resolve via bwdToFwd indirection
+    // B has 1 incoming edge from A with weight 1.0
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.IN, "ROAD")).isEqualTo(1);
+    final Object weightBA = gav.getEdgeProperty(idB, 0, Vertex.DIRECTION.IN, "ROAD", "weight");
+    assertThat((Double) weightBA).isEqualTo(1.0);
+
+    // C has 1 incoming edge from B with weight 2.5
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.IN, "ROAD")).isEqualTo(1);
+    final Object weightCB = gav.getEdgeProperty(idC, 0, Vertex.DIRECTION.IN, "ROAD", "weight");
+    assertThat((Double) weightCB).isEqualTo(2.5);
+
+    // C has no outgoing edges
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.OUT, "ROAD")).isEqualTo(0);
+
+    gav.drop();
+  }
+
+  @Test
+  void testEdgePropertyNoConfig() {
+    // Default: no edge properties — zero overhead
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("ROAD").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    a.newEdge("ROAD", b, "weight", 3.0);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("ROAD")
+        .build();
+
+    assertThat(gav.hasEdgeProperties()).isFalse();
+    final int idA = gav.getNodeId(a.getIdentity());
+    // getEdgeProperty should return null gracefully
+    assertThat(gav.getEdgeProperty(idA, 0, Vertex.DIRECTION.OUT, "ROAD", "weight")).isNull();
+
+    gav.drop();
+  }
+
+  @Test
+  void testEdgePropertyStarTopology() {
+    // Hub -> spoke1, spoke2, spoke3, spoke4, spoke5 with distinct weights
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK").createProperty("cost", com.arcadedb.schema.Type.DOUBLE);
+
+    database.begin();
+    final MutableVertex hub = database.newVertex("Node").set("name", "hub").save();
+    final MutableVertex[] spokes = new MutableVertex[5];
+    final double[] expectedWeights = { 0.1, 0.2, 0.3, 0.4, 0.5 };
+    for (int i = 0; i < 5; i++) {
+      spokes[i] = database.newVertex("Node").set("name", "spoke" + i).save();
+      hub.newEdge("LINK", spokes[i], "cost", expectedWeights[i]);
+    }
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .withEdgeProperties("cost")
+        .build();
+
+    assertThat(gav.hasEdgeProperties()).isTrue();
+    final int hubId = gav.getNodeId(hub.getIdentity());
+    assertThat(gav.countEdges(hubId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(5);
+
+    // Verify all 5 edge properties are correct (order may differ due to CSR sorting)
+    final int[] neighbors = gav.getNeighborIds(hubId, Vertex.DIRECTION.OUT, "LINK");
+    final java.util.Set<Double> retrievedWeights = new java.util.HashSet<>();
+    for (int i = 0; i < neighbors.length; i++) {
+      final Object cost = gav.getEdgeProperty(hubId, i, Vertex.DIRECTION.OUT, "LINK", "cost");
+      assertThat(cost).isNotNull();
+      retrievedWeights.add((Double) cost);
+    }
+    assertThat(retrievedWeights).containsExactlyInAnyOrder(0.1, 0.2, 0.3, 0.4, 0.5);
+
+    // Verify backward access from each spoke
+    for (int i = 0; i < 5; i++) {
+      final int spokeId = gav.getNodeId(spokes[i].getIdentity());
+      assertThat(gav.countEdges(spokeId, Vertex.DIRECTION.IN, "LINK")).isEqualTo(1);
+      final Object cost = gav.getEdgeProperty(spokeId, 0, Vertex.DIRECTION.IN, "LINK", "cost");
+      assertThat(cost).isNotNull();
+      assertThat(expectedWeights).contains((Double) cost);
+    }
+
+    gav.drop();
+  }
+
+  @Test
+  void testEdgePropertyMemoryAccounted() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    a.newEdge("LINK", b, "weight", 1.0);
+    database.commit();
+
+    // Build without edge properties
+    final GraphAnalyticalView gavNoEdgeProps = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final long memWithout = gavNoEdgeProps.getMemoryUsageBytes();
+    gavNoEdgeProps.drop();
+
+    // Build with edge properties
+    final GraphAnalyticalView gavWithEdgeProps = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").withEdgeProperties("weight").build();
+    final long memWith = gavWithEdgeProps.getMemoryUsageBytes();
+
+    // Memory should be higher when edge properties are stored
+    assertThat(memWith).isGreaterThan(memWithout);
+
+    // Stats should include edge property info
+    final java.util.Map<String, Object> stats = gavWithEdgeProps.getStats();
+    assertThat(stats.get("edgePropertyColumns")).isEqualTo(1);
+    assertThat((long) stats.get("edgePropertyMemoryBytes")).isGreaterThan(0);
+
+    gavWithEdgeProps.drop();
+  }
 }

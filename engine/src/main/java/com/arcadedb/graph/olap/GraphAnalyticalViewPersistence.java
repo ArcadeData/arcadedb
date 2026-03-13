@@ -124,6 +124,14 @@ public class GraphAnalyticalViewPersistence {
           builder.withProperties(props);
         }
 
+        if (gavDef.has("edgePropertyFilter")) {
+          final JSONArray epf = gavDef.getJSONArray("edgePropertyFilter");
+          final String[] edgeProps = new String[epf.length()];
+          for (int i = 0; i < epf.length(); i++)
+            edgeProps[i] = epf.getString(i);
+          builder.withEdgeProperties(edgeProps);
+        }
+
         final String updateModeStr = gavDef.getString("updateMode", "OFF");
         builder.withUpdateMode(GraphAnalyticalView.UpdateMode.valueOf(updateModeStr));
         final int ct = gavDef.getInt("compactionThreshold", -1);
@@ -197,6 +205,13 @@ public class GraphAnalyticalViewPersistence {
       for (final String p : view.getPropertyFilter())
         pf.put(p);
       json.put("propertyFilter", pf);
+    }
+
+    if (view.getEdgePropertyFilter() != null) {
+      final JSONArray epf = new JSONArray();
+      for (final String p : view.getEdgePropertyFilter())
+        epf.put(p);
+      json.put("edgePropertyFilter", epf);
     }
 
     json.put("updateMode", view.getUpdateMode().name());

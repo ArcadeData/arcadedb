@@ -101,6 +101,33 @@ public interface GraphTraversalProvider {
   Object getProperty(int nodeId, String propertyName);
 
   /**
+   * Returns true if this provider has edge property columns materialized.
+   * When true, {@link #getEdgeProperty} can be used to retrieve edge properties from CSR storage.
+   */
+  default boolean hasEdgeProperties() {
+    return false;
+  }
+
+  /**
+   * Returns an edge property value from columnar storage, or null if not materialized.
+   * <p>
+   * The {@code neighborIndex} is the position within the node's adjacency list for the given direction
+   * (0-based, matching the order returned by {@link #getNeighborIds}).
+   *
+   * @param nodeId         the source node's dense ID
+   * @param neighborIndex  the index within the node's neighbor list for the given direction
+   * @param direction      OUT or IN
+   * @param edgeType       the edge type name
+   * @param propertyName   the property to retrieve
+   *
+   * @return the property value, or null if not available
+   */
+  default Object getEdgeProperty(final int nodeId, final int neighborIndex,
+      final Vertex.DIRECTION direction, final String edgeType, final String propertyName) {
+    return null;
+  }
+
+  /**
    * Returns true if this provider's data is stale (not reflecting latest committed changes).
    * A provider may still be ready ({@link #isReady()}) while stale, if configured to serve stale data.
    */

@@ -53,6 +53,7 @@ public class GraphAnalyticalViewBuilder {
   private       String[]                        vertexTypes;
   private       String[]                        edgeTypes;
   private       String[]                        properties;
+  private       String[]                        edgeProperties;
   private       GraphAnalyticalView.UpdateMode  updateMode = GraphAnalyticalView.UpdateMode.OFF;
   private       int                             compactionThreshold = -1;
   private       int                             propertySampleSize  = -1;
@@ -95,6 +96,19 @@ public class GraphAnalyticalViewBuilder {
    */
   public GraphAnalyticalViewBuilder withProperties(final String... properties) {
     this.properties = properties;
+    return this;
+  }
+
+  /**
+   * Specifies the edge properties to materialize in columnar storage alongside the CSR adjacency.
+   * If not called or null, no edge properties are stored (default — zero overhead).
+   * When specified, edge properties are stored aligned to the forward CSR arrays and accessible
+   * via {@link GraphTraversalProvider#getEdgeProperty} for both forward and backward traversals.
+   * <p>
+   * Example: {@code .withEdgeProperties("weight")} to store edge weights for Dijkstra/SSSP.
+   */
+  public GraphAnalyticalViewBuilder withEdgeProperties(final String... edgeProperties) {
+    this.edgeProperties = edgeProperties;
     return this;
   }
 
@@ -183,7 +197,7 @@ public class GraphAnalyticalViewBuilder {
   }
 
   private GraphAnalyticalView createView() {
-    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, updateMode);
+    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, edgeProperties, updateMode);
     if (compactionThreshold >= 0)
       view.setCompactionThreshold(compactionThreshold);
     if (propertySampleSize >= 0)
