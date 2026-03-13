@@ -3639,7 +3639,7 @@ function createGraphAnalyticalView() {
   if (window._schemaTypes) {
     for (let i in window._schemaTypes) {
       let t = window._schemaTypes[i];
-      typeCounts[t.name] = t.count || 0;
+      typeCounts[t.name] = t.records || 0;
       typeProperties[t.name] = (t.properties && t.properties.length) || 0;
       if (t.type === "vertex")
         vertexTypes.push(t.name);
@@ -3702,6 +3702,7 @@ function createGraphAnalyticalView() {
   html += "<div class='gav-section-header'><label for='inputGavEdgeProperties'>Edge Properties</label>";
   html += " <span class='gav-info-toggle' id='gavEdgePropToggle' title='Show details'><i class='fa fa-circle-info'></i></span></div>";
   html += "<input class='form-control mt-1 mb-1' id='inputGavEdgeProperties' placeholder='e.g. weight, distance'>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:6px;'>Stored alongside CSR for weighted algorithms. Leave empty for none (default).</small>";
   html += "<div id='gavEdgePropInfo' class='gav-info-box' style='display:none;'>";
   html += "<b>When to use:</b> Enable edge properties when algorithms need edge weights (e.g., Dijkstra SSSP, weighted PageRank).<br>";
   html += "<b>Pros:</b> Zero OLTP access for weighted algorithms, columnar storage aligned with CSR for cache-friendly access.<br>";
@@ -3712,11 +3713,11 @@ function createGraphAnalyticalView() {
   // -- Update mode --
   html += "<label for='inputGavUpdateMode' class='mt-2'>Update Mode</label>";
   html += "<select class='form-select mt-1 mb-1' id='inputGavUpdateMode'>";
-  html += "<option value='OFF' selected>OFF — manual rebuild only</option>";
-  html += "<option value='SYNCHRONOUS'>SYNCHRONOUS — overlay on commit (no stale window)</option>";
+  html += "<option value='OFF'>OFF — manual rebuild only</option>";
+  html += "<option value='SYNCHRONOUS' selected>SYNCHRONOUS — overlay on commit (no stale window)</option>";
   html += "<option value='ASYNCHRONOUS'>ASYNCHRONOUS — async rebuild on commit</option>";
   html += "</select>";
-  html += "<small class='text-muted' style='display:block;margin-bottom:10px;' id='gavUpdateModeHelp'>The view must be rebuilt manually after data changes.</small>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:10px;' id='gavUpdateModeHelp'>Changes are applied as an overlay on each commit. No stale window, but slightly more RAM for the overlay buffer.</small>";
 
   // -- Advanced settings (collapsed) --
   html += "<div class='gav-advanced-toggle' id='gavAdvancedToggle'><i class='fa fa-chevron-right'></i> Advanced Settings</div>";
