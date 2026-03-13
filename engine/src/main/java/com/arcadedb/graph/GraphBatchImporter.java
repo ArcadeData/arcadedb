@@ -1944,6 +1944,7 @@ public class GraphBatchImporter implements AutoCloseable {
     private boolean            lightEdges           = false;
     private boolean            bidirectional        = true;
     private int                commitEvery          = 50_000;
+    private boolean            commitEveryExplicit  = false;
     private boolean            useWAL               = false;
     private WALFile.FlushType  walFlush             = WALFile.FlushType.NO;
     private boolean            preAllocateEdgeChunks = true;
@@ -2010,10 +2011,11 @@ public class GraphBatchImporter implements AutoCloseable {
 
     /**
      * Number of edges to process before committing and starting a new transaction within a flush.
-     * Default: 50,000. Set to 0 to commit once per flush.
+     * Default: 50,000 (or 0 when WAL is off, for single-commit-per-flush). Set to 0 to commit once per flush.
      */
     public Builder withCommitEvery(final int commitEvery) {
       this.commitEvery = commitEvery;
+      this.commitEveryExplicit = true;
       return this;
     }
 
@@ -2049,7 +2051,7 @@ public class GraphBatchImporter implements AutoCloseable {
      * If true, edge connection during flush() and close() is parallelized across
      * multiple async threads, partitioned by bucket ID. Each bucket's edges are
      * routed to a consistent thread slot, so there is no page contention.
-     * Default: false.
+     * Default: true.
      */
     public Builder withParallelFlush(final boolean parallel) {
       this.parallelFlush = parallel;
@@ -2061,8 +2063,12 @@ public class GraphBatchImporter implements AutoCloseable {
       if (!batchSizeExplicit && expectedEdgeCount > 0)
         effectiveBatchSize = Math.max(MIN_BATCH_SIZE, Math.min(MAX_BATCH_SIZE, expectedEdgeCount));
 
+      // When WAL is off and no explicit commitEvery, use 0 (single commit per flush)
+      // to eliminate unnecessary transaction begin/commit overhead
+      final int effectiveCommitEvery = (!commitEveryExplicit && !useWAL) ? 0 : commitEvery;
+
       return new GraphBatchImporter(database, effectiveBatchSize, edgeListInitialSize, lightEdges,
-          bidirectional, commitEvery, useWAL, walFlush, preAllocateEdgeChunks, parallelFlush);
+          bidirectional, effectiveCommitEvery, useWAL, walFlush, preAllocateEdgeChunks, parallelFlush);
     }
   }
 }

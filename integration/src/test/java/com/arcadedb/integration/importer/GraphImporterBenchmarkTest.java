@@ -73,8 +73,10 @@ class GraphImporterBenchmarkTest {
     }
 
     // ========================================================
-    // BatchImporter with different batch sizes
+    // Warmup: run BatchImporter once to trigger JIT compilation
     // ========================================================
+    benchmarkNewGraphBatchImporter(edgeSrc, edgeDst);
+
     // ========================================================
     // 1. Standard API (one edge per transaction batch of 1000)
     // ========================================================
@@ -134,21 +136,6 @@ class GraphImporterBenchmarkTest {
     report.append(String.format(
         "%nSpeedup with props: BatchImporter=%.2fx vs Standard%n",
         stdPropsMs / newPropsMs));
-
-    // ========================================================
-    // 6. GraphBatchImporter with parallel incoming edges
-    // ========================================================
-    final long newParallelTimeNs = benchmarkNewGraphBatchImporterParallel(edgeSrc, edgeDst);
-    final double newParallelMs = newParallelTimeNs / 1_000_000.0;
-
-    report.append(String.format("%n--- Parallel incoming edge connection ---%n"));
-    report.append(String.format("%-45s %12.1f %14.0f%n",
-        "6. BatchImporter + parallel IN", newParallelMs, EDGE_COUNT / (newParallelMs / 1000.0)));
-    report.append(String.format("%-45s %12.1f %14.0f%n",
-        "   (sequential for reference)", newMs, EDGE_COUNT / (newMs / 1000.0)));
-    report.append(String.format(
-        "%nParallel IN speedup: %.2fx vs sequential%n",
-        newMs / newParallelMs));
 
     System.out.println(report);
     LogManager.instance().log(this, Level.INFO, report.toString());
@@ -402,117 +389,6 @@ class GraphImporterBenchmarkTest {
   }
 
   // -----------------------------------------------------------------------
-  // Benchmark 6: BatchImporter with varying batch sizes (light edges)
-  // -----------------------------------------------------------------------
-
-  private void benchmarkBatchSizes(final int[] edgeSrc, final int[] edgeDst, final StringBuilder report) {
-    final int[] batchSizes = { 100_000, 250_000, 500_000, 1_000_000, 2_000_000 };
-    report.append(String.format("%n--- Batch size comparison (light edges) ---%n"));
-    report.append(String.format("%-45s %12s %14s%n", "Batch Size", "Time(ms)", "Edges/sec"));
-
-    for (final int batchSize : batchSizes) {
-      final String path = "target/databases/BenchCompare_batch_" + batchSize;
-      FileUtils.deleteRecursively(new File(path));
-
-      final Database db = new DatabaseFactory(path).create();
-      try {
-        db.transaction(() -> {
-          db.getSchema().createVertexType("Person");
-          db.getSchema().createEdgeType("KNOWS");
-        });
-
-        final long start = System.nanoTime();
-        final RID[] vRIDs;
-        try (final GraphBatchImporter importer = GraphBatchImporter.builder(db)
-            .withBatchSize(batchSize)
-            .withEdgeListInitialSize(2048)
-            .withLightEdges(true)
-            .withWAL(false)
-            .withPreAllocateEdgeChunks(true)
-            .withCommitEvery(0)
-            .build()) {
-
-          vRIDs = importer.createVertices("Person", VERTEX_COUNT);
-          for (int i = 0; i < EDGE_COUNT; i++)
-            importer.newEdge(vRIDs[edgeSrc[i]], "KNOWS", vRIDs[edgeDst[i]]);
-        }
-        final long elapsed = System.nanoTime() - start;
-        final double ms = elapsed / 1_000_000.0;
-
-        // Verify
-        db.begin();
-        long outTotal = 0;
-        for (int i = 0; i < VERTEX_COUNT; i++)
-          for (final Edge ignored : vRIDs[i].asVertex().getEdges(Vertex.DIRECTION.OUT, "KNOWS"))
-            outTotal++;
-        db.rollback();
-        assertThat(outTotal).isEqualTo(EDGE_COUNT);
-
-        report.append(String.format("%-45s %12.1f %14.0f%n",
-            "BatchSize=" + batchSize, ms, EDGE_COUNT / (ms / 1000.0)));
-      } finally {
-        db.close();
-        FileUtils.deleteRecursively(new File(path));
-      }
-    }
-
-    // Also test with property edges at 400K batch
-    report.append(String.format("%n--- Batch size comparison (property edges) ---%n"));
-    report.append(String.format("%-45s %12s %14s%n", "Batch Size", "Time(ms)", "Edges/sec"));
-
-    for (final int batchSize : new int[] { 100_000, 250_000, 500_000, 1_000_000, 2_000_000 }) {
-      final String path = "target/databases/BenchCompare_batchProps_" + batchSize;
-      FileUtils.deleteRecursively(new File(path));
-
-      final Database db = new DatabaseFactory(path).create();
-      try {
-        db.transaction(() -> {
-          db.getSchema().createVertexType("Person");
-          final var edgeType = db.getSchema().createEdgeType("KNOWS");
-          edgeType.createProperty("weight", Type.INTEGER);
-          edgeType.createProperty("timestamp", Type.LONG);
-        });
-
-        final long start = System.nanoTime();
-        final RID[] vRIDs;
-        try (final GraphBatchImporter importer = GraphBatchImporter.builder(db)
-            .withBatchSize(batchSize)
-            .withEdgeListInitialSize(2048)
-            .withLightEdges(false)
-            .withWAL(false)
-            .withPreAllocateEdgeChunks(true)
-            .withCommitEvery(0)
-            .build()) {
-
-          vRIDs = importer.createVertices("Person", VERTEX_COUNT);
-          for (int i = 0; i < EDGE_COUNT; i++)
-            importer.newEdge(vRIDs[edgeSrc[i]], "KNOWS", vRIDs[edgeDst[i]],
-                "weight", i % 100, "timestamp", System.currentTimeMillis());
-        }
-        final long elapsed = System.nanoTime() - start;
-        final double ms = elapsed / 1_000_000.0;
-
-        // Verify
-        db.begin();
-        long outTotal = 0;
-        for (int i = 0; i < VERTEX_COUNT; i++)
-          for (final Edge e : vRIDs[i].asVertex().getEdges(Vertex.DIRECTION.OUT, "KNOWS")) {
-            assertThat(e.getInteger("weight")).isNotNull();
-            outTotal++;
-          }
-        db.rollback();
-        assertThat(outTotal).isEqualTo(EDGE_COUNT);
-
-        report.append(String.format("%-45s %12.1f %14.0f%n",
-            "BatchSize=" + batchSize + " (props)", ms, EDGE_COUNT / (ms / 1000.0)));
-      } finally {
-        db.close();
-        FileUtils.deleteRecursively(new File(path));
-      }
-    }
-  }
-
-  // -----------------------------------------------------------------------
   // Benchmark 3: New GraphBatchImporter (light edges)
   // -----------------------------------------------------------------------
 
@@ -569,59 +445,4 @@ class GraphImporterBenchmarkTest {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // Benchmark 6: New GraphBatchImporter with parallel incoming edges
-  // -----------------------------------------------------------------------
-
-  private long benchmarkNewGraphBatchImporterParallel(final int[] edgeSrc, final int[] edgeDst) {
-    final String path = "target/databases/BenchCompare_newParallel";
-    FileUtils.deleteRecursively(new File(path));
-
-    final Database db = new DatabaseFactory(path).create();
-    try {
-      db.transaction(() -> {
-        db.getSchema().createVertexType("Person");
-        db.getSchema().createEdgeType("KNOWS");
-      });
-
-      final long start = System.nanoTime();
-
-      final RID[] vRIDs;
-      try (final GraphBatchImporter importer = GraphBatchImporter.builder(db)
-          .withExpectedEdgeCount(EDGE_COUNT)
-          .withEdgeListInitialSize(2048)
-          .withLightEdges(true)
-          .withWAL(false)
-          .withPreAllocateEdgeChunks(true)
-          .withCommitEvery(0)
-          .withParallelFlush(true)
-          .build()) {
-
-        vRIDs = importer.createVertices("Person", VERTEX_COUNT);
-
-        for (int i = 0; i < EDGE_COUNT; i++)
-          importer.newEdge(vRIDs[edgeSrc[i]], "KNOWS", vRIDs[edgeDst[i]]);
-      }
-      final long elapsed = System.nanoTime() - start;
-
-      // Verify both OUT and IN
-      db.begin();
-      long outTotal = 0;
-      long inTotal = 0;
-      for (int i = 0; i < VERTEX_COUNT; i++) {
-        for (final Edge ignored : vRIDs[i].asVertex().getEdges(Vertex.DIRECTION.OUT, "KNOWS"))
-          outTotal++;
-        for (final Edge ignored : vRIDs[i].asVertex().getEdges(Vertex.DIRECTION.IN, "KNOWS"))
-          inTotal++;
-      }
-      db.rollback();
-      assertThat(outTotal).isEqualTo(EDGE_COUNT);
-      assertThat(inTotal).isEqualTo(EDGE_COUNT);
-
-      return elapsed;
-    } finally {
-      db.close();
-      FileUtils.deleteRecursively(new File(path));
-    }
-  }
 }
