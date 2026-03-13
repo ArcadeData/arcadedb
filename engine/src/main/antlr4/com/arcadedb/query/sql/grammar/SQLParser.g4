@@ -789,6 +789,7 @@ createGraphAnalyticalViewBody
       (VERTEX TYPES LPAREN vertexTypeList=gavTypeList RPAREN)?
       (EDGE TYPES LPAREN edgeTypeList=gavTypeList RPAREN)?
       (PROPERTIES LPAREN propertyList=gavTypeList RPAREN)?
+      (EDGE PROPERTIES LPAREN edgePropertyList=gavTypeList RPAREN)?
       (UPDATE MODE updateModeName=identifier)?
       (COMPACTION THRESHOLD INTEGER_LITERAL)?
     ;

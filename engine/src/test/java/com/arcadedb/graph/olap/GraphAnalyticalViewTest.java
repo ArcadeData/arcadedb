@@ -938,6 +938,59 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
+  void testCoversAllTypesWhenExplicitTypesMatchSchema() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    GraphTraversalProviderRegistry.clearAll(database);
+
+    // GAV built with explicit types that cover ALL vertex/edge types in the schema
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    // coversVertexType(null) and coversEdgeType(null) should return true
+    // because the explicit types cover everything in the schema
+    assertThat(gav.coversVertexType(null)).isTrue();
+    assertThat(gav.coversEdgeType(null)).isTrue();
+
+    // findProvider with null edge types should also find the GAV
+    assertThat(GraphTraversalProviderRegistry.findProvider(database)).isSameAs(gav);
+
+    gav.drop();
+  }
+
+  @Test
+  void testDoesNotCoverAllTypesWhenSchemaHasMore() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createVertexType("Company");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("WORKS_AT");
+
+    GraphTraversalProviderRegistry.clearAll(database);
+
+    // GAV built with only a subset of types
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    // coversVertexType(null) should be false — Company is not covered
+    assertThat(gav.coversVertexType(null)).isFalse();
+    // coversEdgeType(null) should be false — WORKS_AT is not covered
+    assertThat(gav.coversEdgeType(null)).isFalse();
+
+    // findProvider with null should NOT find this GAV
+    assertThat(GraphTraversalProviderRegistry.findProvider(database)).isNull();
+
+    // But findProvider with specific types should still work
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isSameAs(gav);
+
+    gav.drop();
+  }
+
+  @Test
   void testTraversalProviderAllTypes() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
@@ -3768,5 +3821,32 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat((long) stats.get("edgePropertyMemoryBytes")).isGreaterThan(0);
 
     gavWithEdgeProps.drop();
+  }
+
+  // --- Edge Properties SQL Tests ---
+
+  @Test
+  void testEdgePropertiesSQL() {
+    database.getSchema().createVertexType("EPNode");
+    database.getSchema().createEdgeType("EPLINK");
+    database.begin();
+    final MutableVertex a = database.newVertex("EPNode").set("name", "A").save();
+    final MutableVertex b = database.newVertex("EPNode").set("name", "B").save();
+    a.newEdge("EPLINK", b, "weight", 3.14);
+    database.commit();
+
+    database.command("sql",
+        "CREATE GRAPH ANALYTICAL VIEW epView VERTEX TYPES (EPNode) EDGE TYPES (EPLINK) EDGE PROPERTIES (weight)");
+
+    final GraphAnalyticalView gav = GraphAnalyticalViewRegistry.get(database, "epView");
+    assertThat(gav).isNotNull();
+
+    // Verify edge properties persisted
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    final var def = extension.getJSONObject("epView");
+    assertThat(def.getJSONArray("edgePropertyFilter").length()).isEqualTo(1);
+    assertThat(def.getJSONArray("edgePropertyFilter").getString(0)).isEqualTo("weight");
+
+    gav.drop();
   }
 }

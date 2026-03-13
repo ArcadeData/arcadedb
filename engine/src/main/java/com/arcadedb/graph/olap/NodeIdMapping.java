@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.RID;
 
 import java.util.Arrays;
@@ -213,9 +214,18 @@ public class NodeIdMapping {
    * (which would add ~40 bytes/node of heap for a cache that may never be fully accessed).
    */
   public RID getRID(final int globalId) {
+    return getRID(null, globalId);
+  }
+
+  /**
+   * Returns the RID for a given global dense ID, with an explicit database reference.
+   * Passing the database avoids reliance on thread-local context (which can be null
+   * when multiple databases are open in tests or concurrent scenarios).
+   */
+  public RID getRID(final BasicDatabase database, final int globalId) {
     final int bucketIdx = getBucketIdx(globalId);
     final int localId = globalId - bucketBase[bucketIdx];
-    return new RID(bucketIds[bucketIdx], positions[bucketIdx][localId]);
+    return new RID(database, bucketIds[bucketIdx], positions[bucketIdx][localId]);
   }
 
   /**

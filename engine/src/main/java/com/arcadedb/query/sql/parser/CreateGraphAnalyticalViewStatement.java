@@ -35,6 +35,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier[] vertexTypes;
   public Identifier[] edgeTypes;
   public Identifier[] properties;
+  public Identifier[] edgeProperties;
   public String       updateModeStr;          // "OFF", "SYNCHRONOUS", "ASYNCHRONOUS"
   public int          compactionThreshold = -1; // -1 means not set (use default)
   public boolean      ifNotExists  = false;
@@ -76,6 +77,9 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       builder.withEdgeTypes(etArray);
     if (propArray != null && propArray.length > 0)
       builder.withProperties(propArray);
+    final String[] edgePropArray = toStringArray(edgeProperties);
+    if (edgePropArray != null && edgePropArray.length > 0)
+      builder.withEdgeProperties(edgePropArray);
     builder.withUpdateMode(resolveUpdateMode());
     if (compactionThreshold >= 0)
       builder.withCompactionThreshold(compactionThreshold);
@@ -118,6 +122,11 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     if (properties != null && properties.length > 0) {
       sb.append(" PROPERTIES (");
       appendIdentifiers(sb, properties);
+      sb.append(')');
+    }
+    if (edgeProperties != null && edgeProperties.length > 0) {
+      sb.append(" EDGE PROPERTIES (");
+      appendIdentifiers(sb, edgeProperties);
       sb.append(')');
     }
     final GraphAnalyticalView.UpdateMode mode = resolveUpdateMode();

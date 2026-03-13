@@ -6178,6 +6178,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.propertyList != null)
       stmt.properties = visitIdentifierList(bodyCtx.propertyList.identifier());
 
+    if (bodyCtx.edgePropertyList != null)
+      stmt.edgeProperties = visitIdentifierList(bodyCtx.edgePropertyList.identifier());
+
     if (bodyCtx.updateModeName != null)
       stmt.updateModeStr = bodyCtx.updateModeName.getText();
 

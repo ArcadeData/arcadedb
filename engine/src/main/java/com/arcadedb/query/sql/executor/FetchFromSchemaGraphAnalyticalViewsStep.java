@@ -65,6 +65,7 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionSt
             r.setProperty("vertexTypes", jsonArrayToList(gavDef.getJSONArray("vertexTypes", null)));
             r.setProperty("edgeTypes", jsonArrayToList(gavDef.getJSONArray("edgeTypes", null)));
             r.setProperty("propertyFilter", jsonArrayToList(gavDef.getJSONArray("propertyFilter", null)));
+            r.setProperty("edgePropertyFilter", jsonArrayToList(gavDef.getJSONArray("edgePropertyFilter", null)));
             r.setProperty("updateMode", gavDef.getString("updateMode", "OFF"));
             r.setProperty("compactionThreshold", gavDef.getInt("compactionThreshold", 10000));
 

@@ -319,6 +319,67 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     public boolean isCSRBacked() {
       return provider != null;
     }
+
+    /**
+     * Returns true if this graph has edge properties available for the given weight property.
+     */
+    public boolean hasEdgeProperties() {
+      return provider != null && provider.hasEdgeProperties();
+    }
+
+    /**
+     * Builds weighted adjacency from CSR edge properties when available. Returns edge weights
+     * aligned with the adjacency array returned by {@link #adjacency(Vertex.DIRECTION, String...)}.
+     * <p>
+     * Returns {@code null} if edge properties are not available in CSR (caller should extract
+     * weights from OLTP edges in that case).
+     * <p>
+     * For each node {@code i}, {@code result[i][j]} is the weight of the edge to {@code adj[i][j]}.
+     *
+     * @param dir            traversal direction
+     * @param weightProperty edge property name for weights
+     * @param relTypes       edge types to filter
+     * @return double[][] of weights aligned with adjacency, or null if not available
+     */
+    public double[][] edgeWeights(final Vertex.DIRECTION dir, final String weightProperty,
+        final String... relTypes) {
+      if (provider == null || !provider.hasEdgeProperties())
+        return null;
+
+      final double[][] weights = new double[nodeCount][];
+      for (int i = 0; i < nodeCount; i++) {
+        final String[] types = relTypes != null && relTypes.length > 0 ? relTypes : null;
+        if (types != null && types.length == 1) {
+          // Single edge type: direct per-neighbor weight extraction
+          final int[] neighbors = provider.getNeighborIds(i, dir, types[0]);
+          weights[i] = new double[neighbors.length];
+          for (int j = 0; j < neighbors.length; j++) {
+            final Object w = provider.getEdgeProperty(i, j, dir, types[0], weightProperty);
+            weights[i][j] = w instanceof Number num ? num.doubleValue() : 1.0;
+          }
+        } else {
+          // Multiple edge types: concatenate per-type weights to match adjacency order
+          final List<Double> wts = new ArrayList<>();
+          final String[] allTypes = types != null ? types : getProviderEdgeTypes();
+          for (final String edgeType : allTypes) {
+            final int[] neighbors = provider.getNeighborIds(i, dir, edgeType);
+            for (int j = 0; j < neighbors.length; j++) {
+              final Object w = provider.getEdgeProperty(i, j, dir, edgeType, weightProperty);
+              wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+            }
+          }
+          weights[i] = new double[wts.size()];
+          for (int j = 0; j < wts.size(); j++)
+            weights[i][j] = wts.get(j);
+        }
+      }
+      return weights;
+    }
+
+    private String[] getProviderEdgeTypes() {
+      // Fallback: return empty array to indicate all types
+      return new String[0];
+    }
   }
 
   /**

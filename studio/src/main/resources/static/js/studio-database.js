@@ -3593,22 +3593,23 @@ function showGavDetail(gavName) {
     html += "<em>All types</em>";
   html += "</div>";
 
-  if (gav.propertyFilter && gav.propertyFilter.length > 0) {
+  if (gav.propertyFilter && gav.propertyFilter.length > 0)
     html += "<div class='mv-info-row'><span class='mv-info-label'>Properties:</span> " + escapeHtml(gav.propertyFilter.join(", ")) + "</div>";
-  }
+
+  if (gav.edgePropertyFilter && gav.edgePropertyFilter.length > 0)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Edge Properties:</span> " + escapeHtml(gav.edgePropertyFilter.join(", ")) + "</div>";
 
   let safeName = gav.name.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
   let currentMode = escapeHtml(gav.updateMode || "OFF");
   html += "<div class='mv-info-row'><span class='mv-info-label'>Update Mode:</span> ";
   html += "<select class='form-select form-select-sm d-inline-block' style='width:auto;' id='gavUpdateModeSelect' onchange='alterGavUpdateMode(\"" + safeName + "\", this.value)'>";
   let modes = ["OFF", "SYNCHRONOUS", "ASYNCHRONOUS"];
-  for (let m = 0; m < modes.length; m++) {
+  for (let m = 0; m < modes.length; m++)
     html += "<option value='" + modes[m] + "'" + (modes[m] === currentMode ? " selected" : "") + ">" + modes[m] + "</option>";
-  }
   html += "</select>";
   html += "</div>";
 
-  html += "<div class='mv-info-row'><span class='mv-info-label'>Compaction Threshold:</span> " + (gav.compactionThreshold || 10000).toLocaleString() + "</div>";
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Compaction:</span> " + (gav.compactionThreshold || 10000).toLocaleString() + "</div>";
 
   if (gav.nodeCount !== undefined)
     html += "<div class='mv-info-row'><span class='mv-info-label'>Nodes:</span> " + (gav.nodeCount || 0).toLocaleString() + "</div>";
@@ -3630,12 +3631,16 @@ function showGavDetail(gavName) {
 }
 
 function createGraphAnalyticalView() {
-  // Collect vertex and edge types from the schema for multi-selects
+  // Collect vertex and edge types from the schema with record counts
   let vertexTypes = [];
   let edgeTypes = [];
+  let typeCounts = {}; // name -> count
+  let typeProperties = {}; // name -> number of properties
   if (window._schemaTypes) {
     for (let i in window._schemaTypes) {
       let t = window._schemaTypes[i];
+      typeCounts[t.name] = t.count || 0;
+      typeProperties[t.name] = (t.properties && t.properties.length) || 0;
       if (t.type === "vertex")
         vertexTypes.push(t.name);
       else if (t.type === "edge")
@@ -3645,49 +3650,90 @@ function createGraphAnalyticalView() {
     edgeTypes.sort(function (a, b) { return a.localeCompare(b); });
   }
 
-  let html = "<label for='inputGavName'>View name <span style='color:#dc3545'>*</span></label>";
+  // Store for RAM estimation
+  window._gavCreateTypeCounts = typeCounts;
+  window._gavCreateTypeProperties = typeProperties;
+  window._gavCreateVertexTypes = vertexTypes;
+  window._gavCreateEdgeTypes = edgeTypes;
+
+  let html = "";
+
+  // -- RAM estimation bar (top, always visible) --
+  html += "<div id='gavRamEstimate' class='gav-ram-panel'>";
+  html += "<div class='gav-ram-header'><i class='fa fa-memory'></i> Estimated RAM Usage</div>";
+  html += "<div class='gav-ram-bar-container'><div class='gav-ram-bar' id='gavRamBar' style='width:0%'></div></div>";
+  html += "<div class='gav-ram-value' id='gavRamValue'>Calculating...</div>";
+  html += "<div class='gav-ram-breakdown' id='gavRamBreakdown'></div>";
+  html += "</div>";
+
+  // -- View name --
+  html += "<label for='inputGavName'>View name <span style='color:#dc3545'>*</span></label>";
   html += "<input class='form-control mt-1' id='inputGavName' placeholder='e.g. socialGraph'>";
   html += "<div id='gavNameFeedback' style='font-size:0.78rem;min-height:20px;margin-bottom:8px;'></div>";
 
-  // Vertex types multi-select
+  // -- Vertex types multi-select --
   html += "<label>Vertex Types <small class='text-muted'>(optional, leave empty for all)</small></label>";
-  html += "<select class='form-select mt-1 mb-3' id='inputGavVertexTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
-  for (let i = 0; i < vertexTypes.length; i++)
-    html += "<option value='" + escapeHtml(vertexTypes[i]) + "'>" + escapeHtml(vertexTypes[i]) + "</option>";
+  html += "<select class='form-select mt-1 mb-2' id='inputGavVertexTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
+  for (let i = 0; i < vertexTypes.length; i++) {
+    let cnt = typeCounts[vertexTypes[i]] || 0;
+    html += "<option value='" + escapeHtml(vertexTypes[i]) + "'>" + escapeHtml(vertexTypes[i]) + " (" + cnt.toLocaleString() + ")</option>";
+  }
   html += "</select>";
   if (vertexTypes.length === 0)
-    html += "<small class='text-muted' style='display:block;margin-top:-10px;margin-bottom:10px;'>No vertex types defined yet.</small>";
+    html += "<small class='text-muted' style='display:block;margin-top:-4px;margin-bottom:10px;'>No vertex types defined yet.</small>";
 
-  // Edge types multi-select
+  // -- Edge types multi-select --
   html += "<label>Edge Types <small class='text-muted'>(optional, leave empty for all)</small></label>";
-  html += "<select class='form-select mt-1 mb-3' id='inputGavEdgeTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
-  for (let i = 0; i < edgeTypes.length; i++)
-    html += "<option value='" + escapeHtml(edgeTypes[i]) + "'>" + escapeHtml(edgeTypes[i]) + "</option>";
+  html += "<select class='form-select mt-1 mb-2' id='inputGavEdgeTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
+  for (let i = 0; i < edgeTypes.length; i++) {
+    let cnt = typeCounts[edgeTypes[i]] || 0;
+    html += "<option value='" + escapeHtml(edgeTypes[i]) + "'>" + escapeHtml(edgeTypes[i]) + " (" + cnt.toLocaleString() + ")</option>";
+  }
   html += "</select>";
   if (edgeTypes.length === 0)
-    html += "<small class='text-muted' style='display:block;margin-top:-10px;margin-bottom:10px;'>No edge types defined yet.</small>";
+    html += "<small class='text-muted' style='display:block;margin-top:-4px;margin-bottom:10px;'>No edge types defined yet.</small>";
 
-  // Properties filter
-  html += "<label for='inputGavProperties'>Properties <small class='text-muted'>(optional, comma-separated)</small></label>";
-  html += "<input class='form-control mt-1 mb-3' id='inputGavProperties' placeholder='e.g. name, weight, score'>";
+  // -- Vertex Properties filter --
+  html += "<label for='inputGavProperties'>Vertex Properties <small class='text-muted'>(optional, comma-separated)</small></label>";
+  html += "<input class='form-control mt-1 mb-1' id='inputGavProperties' placeholder='e.g. name, age, score'>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:10px;'>Materialized in columnar storage for fast analytical scans. Leave empty for all.</small>";
 
-  // Update mode
-  html += "<label for='inputGavUpdateMode'>Update Mode</label>";
-  html += "<select class='form-select mt-1 mb-3' id='inputGavUpdateMode'>";
+  // -- Edge Properties (new) --
+  html += "<div class='gav-section-header'><label for='inputGavEdgeProperties'>Edge Properties</label>";
+  html += " <span class='gav-info-toggle' id='gavEdgePropToggle' title='Show details'><i class='fa fa-circle-info'></i></span></div>";
+  html += "<input class='form-control mt-1 mb-1' id='inputGavEdgeProperties' placeholder='e.g. weight, distance'>";
+  html += "<div id='gavEdgePropInfo' class='gav-info-box' style='display:none;'>";
+  html += "<b>When to use:</b> Enable edge properties when algorithms need edge weights (e.g., Dijkstra SSSP, weighted PageRank).<br>";
+  html += "<b>Pros:</b> Zero OLTP access for weighted algorithms, columnar storage aligned with CSR for cache-friendly access.<br>";
+  html += "<b>Cons:</b> Increases RAM by ~8 bytes per edge per numeric property. For large graphs with many edge properties, this can be significant.<br>";
+  html += "<b>Recommendation:</b> Only include properties you actually need for graph algorithms. Leave empty if using only unweighted algorithms (BFS, PageRank, WCC, LCC, Label Propagation).";
+  html += "</div>";
+
+  // -- Update mode --
+  html += "<label for='inputGavUpdateMode' class='mt-2'>Update Mode</label>";
+  html += "<select class='form-select mt-1 mb-1' id='inputGavUpdateMode'>";
   html += "<option value='OFF' selected>OFF — manual rebuild only</option>";
   html += "<option value='SYNCHRONOUS'>SYNCHRONOUS — overlay on commit (no stale window)</option>";
   html += "<option value='ASYNCHRONOUS'>ASYNCHRONOUS — async rebuild on commit</option>";
   html += "</select>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:10px;' id='gavUpdateModeHelp'>The view must be rebuilt manually after data changes.</small>";
+
+  // -- Advanced settings (collapsed) --
+  html += "<div class='gav-advanced-toggle' id='gavAdvancedToggle'><i class='fa fa-chevron-right'></i> Advanced Settings</div>";
+  html += "<div id='gavAdvancedPanel' style='display:none;'>";
 
   // Compaction threshold
-  html += "<label for='inputGavCompactionThreshold'>Compaction Threshold <small class='text-muted'>(optional, default 10000)</small></label>";
-  html += "<input class='form-control mt-1 mb-3' id='inputGavCompactionThreshold' type='number' min='1' placeholder='10000'>";
+  html += "<label for='inputGavCompactionThreshold'>Compaction Threshold <small class='text-muted'>(default 10,000)</small></label>";
+  html += "<input class='form-control mt-1 mb-1' id='inputGavCompactionThreshold' type='number' min='0' placeholder='10000'>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:10px;'>Number of delta edges before triggering a full CSR rebuild. Only used with SYNCHRONOUS mode. Set to 0 to disable.</small>";
 
   // If not exists
-  html += "<div class='form-check'>";
+  html += "<div class='form-check mt-2'>";
   html += "<input class='form-check-input' type='checkbox' id='inputGavIfNotExists'>";
-  html += "<label class='form-check-label' for='inputGavIfNotExists'>If not exists</label>";
+  html += "<label class='form-check-label' for='inputGavIfNotExists'>If not exists (skip if view already exists)</label>";
   html += "</div>";
+
+  html += "</div>"; // end advanced panel
 
   globalPrompt("Create Graph Analytical View", html, "Create", function () {
     let name = $("#inputGavName").val().trim();
@@ -3714,6 +3760,13 @@ function createGraphAnalyticalView() {
       let propList = props.split(",").map(function (p) { return "`" + p.trim() + "`"; }).filter(function (p) { return p !== "``"; });
       if (propList.length > 0)
         command += " PROPERTIES (" + propList.join(", ") + ")";
+    }
+
+    let edgeProps = $("#inputGavEdgeProperties").val().trim();
+    if (edgeProps) {
+      let edgePropList = edgeProps.split(",").map(function (p) { return "`" + p.trim() + "`"; }).filter(function (p) { return p !== "``"; });
+      if (edgePropList.length > 0)
+        command += " EDGE PROPERTIES (" + edgePropList.join(", ") + ")";
     }
 
     let updateMode = $("#inputGavUpdateMode").val();
@@ -3751,8 +3804,9 @@ function createGraphAnalyticalView() {
     });
   });
 
-  // Wire up live validation on the name field
+  // Wire up interactive behaviors after the modal renders
   setTimeout(function () {
+    // Name validation
     $("#inputGavName").on("input", function () {
       let name = $(this).val().trim();
       let feedback = $("#gavNameFeedback");
@@ -3769,7 +3823,134 @@ function createGraphAnalyticalView() {
         $(this).addClass("is-valid").removeClass("is-invalid");
       }
     });
+
+    // Update mode help text
+    $("#inputGavUpdateMode").on("change", function () {
+      let mode = $(this).val();
+      let helpTexts = {
+        "OFF": "The view must be rebuilt manually after data changes.",
+        "SYNCHRONOUS": "Changes are applied as an overlay on each commit. No stale window, but slightly more RAM for the overlay buffer.",
+        "ASYNCHRONOUS": "A full rebuild is triggered asynchronously after each commit. Brief BUILDING window during rebuild."
+      };
+      $("#gavUpdateModeHelp").text(helpTexts[mode] || "");
+      gavUpdateRamEstimate();
+    });
+
+    // Edge property info toggle
+    $("#gavEdgePropToggle").on("click", function () {
+      $("#gavEdgePropInfo").slideToggle(150);
+    });
+
+    // Advanced settings toggle
+    $("#gavAdvancedToggle").on("click", function () {
+      let panel = $("#gavAdvancedPanel");
+      let icon = $(this).find("i");
+      panel.slideToggle(150);
+      icon.toggleClass("fa-chevron-right fa-chevron-down");
+    });
+
+    // Live RAM estimation on any input change
+    $("#inputGavVertexTypes, #inputGavEdgeTypes").on("change", gavUpdateRamEstimate);
+    $("#inputGavProperties, #inputGavEdgeProperties").on("input", gavUpdateRamEstimate);
+    $("#inputGavUpdateMode").on("change", gavUpdateRamEstimate);
+
+    // Initial estimate
+    gavUpdateRamEstimate();
   }, 100);
+}
+
+/**
+ * Estimates RAM usage for a GAV based on current form selections and updates the UI in real time.
+ *
+ * Estimation model (per CSR documentation):
+ *   CSR topology:      ~8 bytes/node (offsets) + ~4 bytes/edge (neighbors), doubled for forward+backward
+ *   Node ID mapping:   ~8 bytes/node
+ *   Vertex properties:  ~8 bytes/node/property (columnar)
+ *   Edge properties:    ~8 bytes/edge/property (columnar + null bitset)
+ *   Overlay (SYNC):    ~10% overhead on base CSR
+ */
+function gavUpdateRamEstimate() {
+  let typeCounts = window._gavCreateTypeCounts || {};
+  let typeProperties = window._gavCreateTypeProperties || {};
+  let allVertexTypes = window._gavCreateVertexTypes || [];
+  let allEdgeTypes = window._gavCreateEdgeTypes || [];
+
+  // Selected types (empty = all)
+  let selectedVT = $("#inputGavVertexTypes").val();
+  let selectedET = $("#inputGavEdgeTypes").val();
+  let vtList = (selectedVT && selectedVT.length > 0) ? selectedVT : allVertexTypes;
+  let etList = (selectedET && selectedET.length > 0) ? selectedET : allEdgeTypes;
+
+  // Count nodes and edges
+  let totalNodes = 0;
+  for (let i = 0; i < vtList.length; i++)
+    totalNodes += typeCounts[vtList[i]] || 0;
+  let totalEdges = 0;
+  for (let i = 0; i < etList.length; i++)
+    totalEdges += typeCounts[etList[i]] || 0;
+
+  // Count properties
+  let vertexPropInput = ($("#inputGavProperties").val() || "").trim();
+  let numVertexProps = 0;
+  if (vertexPropInput) {
+    numVertexProps = vertexPropInput.split(",").filter(function (p) { return p.trim() !== ""; }).length;
+  } else {
+    // All properties — estimate from schema
+    for (let i = 0; i < vtList.length; i++)
+      numVertexProps = Math.max(numVertexProps, typeProperties[vtList[i]] || 0);
+  }
+
+  let edgePropInput = ($("#inputGavEdgeProperties").val() || "").trim();
+  let numEdgeProps = 0;
+  if (edgePropInput)
+    numEdgeProps = edgePropInput.split(",").filter(function (p) { return p.trim() !== ""; }).length;
+
+  let updateMode = $("#inputGavUpdateMode").val();
+
+  // Calculate RAM components
+  let csrBytes = totalNodes * 16 + totalEdges * 8;   // fwd+bwd offsets (2*4 bytes * N+1) + fwd+bwd neighbors (2*4 bytes * E)
+  let mappingBytes = totalNodes * 8;                   // NodeIdMapping (~8 bytes/node)
+  let vertexPropBytes = totalNodes * numVertexProps * 8; // columnar arrays
+  let edgePropBytes = totalEdges * numEdgeProps * 9;   // 8 bytes data + ~1 byte null bitset per edge per property
+  let overlayBytes = 0;
+  if (updateMode === "SYNCHRONOUS")
+    overlayBytes = Math.ceil((csrBytes + mappingBytes) * 0.1); // ~10% for overlay structures
+
+  let totalBytes = csrBytes + mappingBytes + vertexPropBytes + edgePropBytes + overlayBytes;
+
+  // Update the UI
+  let barEl = $("#gavRamBar");
+  let valueEl = $("#gavRamValue");
+  let breakdownEl = $("#gavRamBreakdown");
+
+  if (totalNodes === 0 && totalEdges === 0) {
+    valueEl.html("<span class='text-muted'>No data yet — create vertex and edge types with data first</span>");
+    barEl.css("width", "0%");
+    breakdownEl.html("");
+    return;
+  }
+
+  valueEl.html("<b>" + formatBytes(totalBytes) + "</b> estimated");
+
+  // Color the bar based on size
+  let pct = Math.min(100, Math.max(3, totalBytes / (512 * 1024 * 1024) * 100)); // scale to 512MB
+  let barColor = totalBytes < 50 * 1024 * 1024 ? "#22c55e" :
+                 totalBytes < 200 * 1024 * 1024 ? "#eab308" :
+                 totalBytes < 500 * 1024 * 1024 ? "#f97316" : "#ef4444";
+  barEl.css({ "width": pct + "%", "background-color": barColor });
+
+  // Breakdown
+  let bd = "";
+  bd += "<div class='gav-ram-row'><span>CSR topology (fwd + bwd)</span><span>" + formatBytes(csrBytes) + "</span></div>";
+  bd += "<div class='gav-ram-row'><span>Node ID mapping</span><span>" + formatBytes(mappingBytes) + "</span></div>";
+  if (vertexPropBytes > 0)
+    bd += "<div class='gav-ram-row'><span>Vertex properties (" + numVertexProps + " col" + (numVertexProps > 1 ? "s" : "") + ")</span><span>" + formatBytes(vertexPropBytes) + "</span></div>";
+  if (edgePropBytes > 0)
+    bd += "<div class='gav-ram-row'><span>Edge properties (" + numEdgeProps + " col" + (numEdgeProps > 1 ? "s" : "") + ")</span><span>" + formatBytes(edgePropBytes) + "</span></div>";
+  if (overlayBytes > 0)
+    bd += "<div class='gav-ram-row'><span>Sync overlay buffer</span><span>~" + formatBytes(overlayBytes) + "</span></div>";
+  bd += "<div class='gav-ram-row gav-ram-total'><span>Total (" + totalNodes.toLocaleString() + " nodes, " + totalEdges.toLocaleString() + " edges)</span><span>" + formatBytes(totalBytes) + "</span></div>";
+  breakdownEl.html(bd);
 }
 
 function dropGav(gavName) {

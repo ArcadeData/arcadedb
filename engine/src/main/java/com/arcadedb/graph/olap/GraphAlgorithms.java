@@ -343,6 +343,142 @@ public final class GraphAlgorithms {
     return dist;
   }
 
+  // --- Dijkstra Single-Source Shortest Path (weighted) ---
+
+  /**
+   * Computes single-source shortest paths using Dijkstra's algorithm directly on CSR arrays
+   * with edge weights from columnar storage. Zero OLTP access.
+   *
+   * @param view           the analytical view (must be built with edge properties)
+   * @param source         source dense node ID
+   * @param weightProperty edge property name for weights (must be numeric)
+   * @param direction      traversal direction (OUT, IN, or BOTH)
+   * @param edgeTypes      edge types to traverse (null or empty = all)
+   * @return double[] of distances indexed by dense node ID (POSITIVE_INFINITY = unreachable)
+   */
+  public static double[] dijkstraSingleSource(final GraphAnalyticalView view, final int source,
+      final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
+    final int n = view.getNodeMapping().size();
+    final double[] dist = new double[n];
+    Arrays.fill(dist, Double.POSITIVE_INFINITY);
+
+    if (source < 0 || source >= n)
+      return dist;
+
+    dist[source] = 0.0;
+    final String[] types = resolveEdgeTypes(view, edgeTypes);
+
+    // Pre-load CSR arrays and weight columns for each edge type (avoid map lookups in hot loop)
+    final int typeCount = types.length;
+    final CSRAdjacencyIndex[] csrs = new CSRAdjacencyIndex[typeCount];
+    final double[][] weightDoubleArrays = new double[typeCount][];
+    final int[][] weightIntArrays = new int[typeCount][];
+    final long[][] weightLongArrays = new long[typeCount][];
+    final long[][] weightNullBitsets = new long[typeCount][];
+    final int[][] bwdToFwds = new int[typeCount][];
+
+    for (int t = 0; t < typeCount; t++) {
+      csrs[t] = view.getCSRIndex(types[t]);
+      if (csrs[t] == null)
+        continue;
+      final ColumnStore edgeStore = view.getEdgeColumnStore(types[t]);
+      if (edgeStore != null) {
+        final Column wCol = edgeStore.getColumn(weightProperty);
+        if (wCol != null) {
+          weightNullBitsets[t] = wCol.getNullBitset();
+          switch (wCol.getType()) {
+          case DOUBLE:
+            weightDoubleArrays[t] = wCol.getDoubleData();
+            break;
+          case INT:
+            weightIntArrays[t] = wCol.getIntData();
+            break;
+          case LONG:
+            weightLongArrays[t] = wCol.getLongData();
+            break;
+          default:
+            break;
+          }
+        }
+      }
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+        bwdToFwds[t] = view.getBwdToFwdMapping(types[t]);
+    }
+
+    // Dijkstra with binary min-heap (PriorityQueue)
+    final java.util.PriorityQueue<double[]> heap = new java.util.PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
+    heap.offer(new double[]{ 0.0, source });
+
+    while (!heap.isEmpty()) {
+      final double[] entry = heap.poll();
+      final double d = entry[0];
+      final int u = (int) entry[1];
+      if (d > dist[u])
+        continue;
+
+      for (int t = 0; t < typeCount; t++) {
+        final CSRAdjacencyIndex csr = csrs[t];
+        if (csr == null)
+          continue;
+
+        if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+          final int[] fwdOffsets = csr.getForwardOffsets();
+          final int[] fwdNeighbors = csr.getForwardNeighbors();
+          final int start = fwdOffsets[u];
+          final int end = fwdOffsets[u + 1];
+          for (int j = start; j < end; j++) {
+            final double w = getWeight(j, weightDoubleArrays[t], weightIntArrays[t],
+                weightLongArrays[t], weightNullBitsets[t]);
+            if (w < 0)
+              continue;
+            final double newDist = d + w;
+            final int v = fwdNeighbors[j];
+            if (newDist < dist[v]) {
+              dist[v] = newDist;
+              heap.offer(new double[]{ newDist, v });
+            }
+          }
+        }
+
+        if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+          final int[] bwdOffsets = csr.getBackwardOffsets();
+          final int[] bwdNeighbors = csr.getBackwardNeighbors();
+          final int start = bwdOffsets[u];
+          final int end = bwdOffsets[u + 1];
+          for (int j = start; j < end; j++) {
+            final int fwdIdx = bwdToFwds[t] != null ? bwdToFwds[t][j] : j;
+            final double w = getWeight(fwdIdx, weightDoubleArrays[t], weightIntArrays[t],
+                weightLongArrays[t], weightNullBitsets[t]);
+            if (w < 0)
+              continue;
+            final double newDist = d + w;
+            final int v = bwdNeighbors[j];
+            if (newDist < dist[v]) {
+              dist[v] = newDist;
+              heap.offer(new double[]{ newDist, v });
+            }
+          }
+        }
+      }
+    }
+
+    return dist;
+  }
+
+  /** Extracts edge weight from the appropriate typed array. Returns 1.0 if no weight column. */
+  private static double getWeight(final int fwdIdx, final double[] doubleData, final int[] intData,
+      final long[] longData, final long[] nullBitset) {
+    if (nullBitset != null && (nullBitset[fwdIdx >>> 6] & (1L << (fwdIdx & 63))) != 0)
+      return 1.0;
+    if (doubleData != null)
+      return doubleData[fwdIdx];
+    if (intData != null)
+      return intData[fwdIdx];
+    if (longData != null)
+      return longData[fwdIdx];
+    return 1.0;
+  }
+
   // --- Label Propagation (Community Detection) ---
 
   /**

@@ -21,7 +21,12 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.CSRAdjacencyIndex;
+import com.arcadedb.graph.olap.Column;
+import com.arcadedb.graph.olap.ColumnStore;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -42,6 +47,10 @@ import java.util.stream.Stream;
  * Computes the single-source shortest path (SSSP) from a given start node to all reachable
  * nodes using Dijkstra's algorithm with a binary min-heap. This extends the existing
  * source-target {@code algo.dijkstra} to return results for all reachable targets at once.
+ * </p>
+ * <p>
+ * When a Graph Analytical View (GAV) with edge properties is available, the algorithm runs
+ * entirely on CSR arrays with zero OLTP access, providing massive speedups on large graphs.
  * </p>
  * <p>
  * Parameters:
@@ -102,6 +111,45 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir  = args.length > 3 ? parseDirection(extractString(args[3], "direction")) : Vertex.DIRECTION.OUT;
 
     final Database db = context.getDatabase();
+
+    // Try CSR-accelerated path: requires a provider with edge properties
+    final GraphTraversalProvider provider = findProvider(db, relTypes);
+    if (provider instanceof GraphAnalyticalView gav && gav.hasEdgeProperties()) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(gav, startNode.getIdentity(), relTypes, weightProperty, dir);
+    }
+
+    // Fall back to OLTP path
+    return executeWithOLTP(db, startNode, relTypes, weightProperty, dir);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final RID startRid,
+      final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
+    final int n = gav.getNodeCount();
+    if (n == 0)
+      return Stream.empty();
+
+    final int src = gav.getNodeId(startRid);
+    if (src < 0)
+      return Stream.empty();
+
+    final double[] dist = com.arcadedb.graph.olap.GraphAlgorithms.dijkstraSingleSource(
+        gav, src, weightProperty, dir, relTypes);
+
+    final List<Result> results = new ArrayList<>();
+    for (int i = 0; i < n; i++) {
+      if (i != src && dist[i] < Double.POSITIVE_INFINITY) {
+        final ResultInternal r = new ResultInternal();
+        r.setProperty("node", gav.getRID(i).asVertex());
+        r.setProperty("cost", dist[i]);
+        results.add(r);
+      }
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db, final Vertex startNode,
+      final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> iter = getAllVertices(db, null);
     while (iter.hasNext())
