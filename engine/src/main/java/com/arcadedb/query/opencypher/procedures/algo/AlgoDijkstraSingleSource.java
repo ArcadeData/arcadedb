@@ -117,16 +117,47 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       return Stream.empty();
     final int src = startIdxObj;
 
+    // Build weighted adjacency once to avoid OLTP per-vertex during Dijkstra
+    final Set<String> relTypeSet = relTypes != null ? new HashSet<>(Arrays.asList(relTypes)) : null;
+    final int[][] adjNeighbors = new int[n][];
+    final double[][] adjWeights = new double[n][];
+    for (int i = 0; i < n; i++) {
+      final Vertex v = vertices.get(i);
+      final List<int[]> nbrs = new ArrayList<>();
+      final List<Double> wts = new ArrayList<>();
+      for (final Edge edge : v.getEdges(dir)) {
+        if (relTypeSet != null && !relTypeSet.contains(edge.getTypeName()))
+          continue;
+        final RID neighborRid = neighborRid(edge, v.getIdentity(), dir);
+        final Integer nbrIdx = ridToIdx.get(neighborRid);
+        if (nbrIdx == null)
+          continue;
+        double weight = 1.0;
+        if (weightProperty != null) {
+          final Object w = edge.get(weightProperty);
+          if (w instanceof Number num)
+            weight = num.doubleValue();
+        }
+        if (weight < 0)
+          continue;
+        nbrs.add(new int[]{ nbrIdx });
+        wts.add(weight);
+      }
+      adjNeighbors[i] = new int[nbrs.size()];
+      adjWeights[i] = new double[wts.size()];
+      for (int j = 0; j < nbrs.size(); j++) {
+        adjNeighbors[i][j] = nbrs.get(j)[0];
+        adjWeights[i][j] = wts.get(j);
+      }
+    }
+
+    // Dijkstra purely in-memory
     final double[] dist = new double[n];
     Arrays.fill(dist, Double.POSITIVE_INFINITY);
     dist[src] = 0.0;
 
-    // Min-heap entries: [distance, nodeIndex]
     final PriorityQueue<double[]> heap = new PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
     heap.offer(new double[]{ 0.0, src });
-
-    // Build rel-type filter set for fast lookup
-    final Set<String> relTypeSet = relTypes != null ? new HashSet<>(Arrays.asList(relTypes)) : null;
 
     while (!heap.isEmpty()) {
       final double[] entry = heap.poll();
@@ -135,26 +166,9 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       if (d > dist[u])
         continue;
 
-      for (final Edge edge : vertices.get(u).getEdges(dir)) {
-        if (relTypeSet != null && !relTypeSet.contains(edge.getTypeName()))
-          continue;
-        final RID neighborRid = neighborRid(edge, vertices.get(u).getIdentity(), dir);
-        final Integer vObj = ridToIdx.get(neighborRid);
-        if (vObj == null)
-          continue;
-        final int v = vObj;
-
-        double weight = 1.0;
-        if (weightProperty != null) {
-          final Object w = edge.get(weightProperty);
-          if (w instanceof Number num)
-            weight = num.doubleValue();
-        }
-
-        if (weight < 0)
-          continue; // Dijkstra requires non-negative weights
-
-        final double newDist = dist[u] + weight;
+      for (int j = 0; j < adjNeighbors[u].length; j++) {
+        final int v = adjNeighbors[u][j];
+        final double newDist = d + adjWeights[u][j];
         if (newDist < dist[v]) {
           dist[v] = newDist;
           heap.offer(new double[]{ newDist, v });

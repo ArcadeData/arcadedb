@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
@@ -28,7 +29,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -205,10 +205,36 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
       return Stream.empty();
 
     final int n = vertices.size();
-    final Map<Vertex, Integer> vertexIndex = new HashMap<>(n);
-    for (int i = 0; i < n; i++)
-      vertexIndex.put(vertices.get(i), i);
+    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
+    // Build adjacency once: for each node, store (neighborIdx, weight) pairs
+    final int[][] outNeighbors = new int[n][];
+    final double[][] outWeights = weightProperty != null ? new double[n][] : null;
+    for (int i = 0; i < n; i++) {
+      final Vertex v = vertices.get(i);
+      final List<int[]> nbrs = new ArrayList<>();
+      final List<Double> wts = weightProperty != null ? new ArrayList<>() : null;
+      for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
+        final Integer neighborIdx = ridToIdx.get(edge.getInVertex().getIdentity());
+        if (neighborIdx == null)
+          continue;
+        nbrs.add(new int[]{ neighborIdx });
+        if (wts != null) {
+          final Object w = edge.get(weightProperty);
+          wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+        }
+      }
+      outNeighbors[i] = new int[nbrs.size()];
+      for (int j = 0; j < nbrs.size(); j++)
+        outNeighbors[i][j] = nbrs.get(j)[0];
+      if (outWeights != null) {
+        outWeights[i] = new double[wts.size()];
+        for (int j = 0; j < wts.size(); j++)
+          outWeights[i][j] = wts.get(j);
+      }
+    }
+
+    // Iterate purely in-memory
     final double[] scores = new double[n];
     final double initialScore = 1.0 / n;
     for (int i = 0; i < n; i++)
@@ -219,31 +245,26 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
       double dangling = 0.0;
 
       for (int i = 0; i < n; i++) {
-        final Vertex v = vertices.get(i);
-        final long outDegree = v.countEdges(Vertex.DIRECTION.OUT);
-        if (outDegree == 0)
+        if (outNeighbors[i].length == 0)
           dangling += scores[i];
       }
 
       for (int i = 0; i < n; i++) {
-        final Vertex v = vertices.get(i);
-        final long outDegree = v.countEdges(Vertex.DIRECTION.OUT);
-        if (outDegree == 0)
+        final int[] neighbors = outNeighbors[i];
+        if (neighbors.length == 0)
           continue;
-        for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
-          final Vertex neighbor = edge.getInVertex();
-          final Integer neighborIdx = vertexIndex.get(neighbor);
-          if (neighborIdx == null)
+        if (outWeights != null) {
+          double totalWeight = 0;
+          for (final double w : outWeights[i])
+            totalWeight += w;
+          if (totalWeight == 0)
             continue;
-
-          double weight = 1.0;
-          if (weightProperty != null) {
-            final Object w = edge.get(weightProperty);
-            if (w instanceof Number num)
-              weight = num.doubleValue();
-          }
-
-          newScores[neighborIdx] += scores[i] * weight / outDegree;
+          for (int j = 0; j < neighbors.length; j++)
+            newScores[neighbors[j]] += scores[i] * outWeights[i][j] / totalWeight;
+        } else {
+          final double contribution = scores[i] / neighbors.length;
+          for (final int neighbor : neighbors)
+            newScores[neighbor] += contribution;
         }
       }
 

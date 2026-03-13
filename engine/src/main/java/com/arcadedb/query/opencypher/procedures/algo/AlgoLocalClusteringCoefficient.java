@@ -25,11 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
-import java.util.BitSet;
-import java.util.Iterator;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -99,25 +96,34 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
       return Stream.empty();
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
-    // Build neighbor BitSets for fast intersection
-    final BitSet[] neighborSets = new BitSet[n];
-    for (int i = 0; i < n; i++) {
-      neighborSets[i] = new BitSet(n);
-      for (final int j : adj[i])
-        neighborSets[i].set(j);
-    }
+    // Sort adjacency lists for merge-based intersection (O(m log m) total)
+    for (int i = 0; i < n; i++)
+      Arrays.sort(adj[i]);
 
+    // Count triangles using sorted-merge intersection — O(m * sqrt(m)) time, O(m) memory
     final long[] triangles = new long[n];
     for (int u = 0; u < n; u++) {
-      long count = 0;
-      for (final int v : adj[u]) {
-        for (final int w : adj[v]) {
-          if (neighborSets[u].get(w))
-            count++;
+      final int[] neighborsU = adj[u];
+      for (final int v : neighborsU) {
+        // Count common neighbors of u and v via sorted merge
+        final int[] neighborsV = adj[v];
+        int iu = 0, iv = 0;
+        while (iu < neighborsU.length && iv < neighborsV.length) {
+          if (neighborsU[iu] < neighborsV[iv])
+            iu++;
+          else if (neighborsU[iu] > neighborsV[iv])
+            iv++;
+          else {
+            triangles[u]++;
+            iu++;
+            iv++;
+          }
         }
       }
-      triangles[u] = count / 2;
     }
+    // Each triangle counted twice per node (once per neighbor direction)
+    for (int u = 0; u < n; u++)
+      triangles[u] /= 2;
 
     return IntStream.range(0, n).mapToObj(i -> {
       final long deg = adj[i].length;
