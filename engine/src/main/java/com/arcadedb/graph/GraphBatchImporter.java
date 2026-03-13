@@ -35,9 +35,12 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
@@ -758,7 +761,7 @@ public class GraphBatchImporter implements AutoCloseable {
     int ki = 0;
     for (final long key : allKeys)
       sortedKeys[ki++] = key;
-    Arrays.sort(sortedKeys);
+    Arrays.parallelSort(sortedKeys);
 
     beginTx();
     int updated = 0;
@@ -1032,7 +1035,12 @@ public class GraphBatchImporter implements AutoCloseable {
 
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final int parallelLevel = async.getParallelLevel();
+    final ConcurrentHashMap<Long, RID> parallelDeferredInHead = new ConcurrentHashMap<>();
+    final ConcurrentHashMap<Long, RID> parallelInChunkCache = new ConcurrentHashMap<>();
 
+    // Schedule each bucket as a transaction on its assigned async slot (bucket % parallelLevel).
+    // Buckets assigned to the same slot run sequentially within that slot's thread, so
+    // no two tasks on the same slot ever run concurrently — thread-local state is safe.
     for (int b = 0; b <= maxBucket; b++) {
       if (bucketCounts[b] == 0)
         continue;
@@ -1041,7 +1049,8 @@ public class GraphBatchImporter implements AutoCloseable {
       final int to = bucketOffsets[b + 1];
       final int slot = b % parallelLevel;
 
-      async.transaction(() -> connectIncomingEdgesRange(inSortIndex, from, to),
+      async.transaction(() -> connectIncomingEdgesRangeLocal(inSortIndex, from, to,
+              parallelDeferredInHead, parallelInChunkCache),
           3, null, e -> error.compareAndSet(null, e), slot);
     }
 
@@ -1049,18 +1058,38 @@ public class GraphBatchImporter implements AutoCloseable {
     async.setTransactionUseWAL(savedAsyncWAL);
     async.setTransactionSync(savedAsyncSync);
 
+    // Merge deferred head pointers back
+    deferredInHead.putAll(parallelDeferredInHead);
+    inChunkRIDCache.putAll(parallelInChunkCache);
+
     final Throwable t = error.get();
     if (t != null)
       throw (t instanceof RuntimeException) ? (RuntimeException) t : new RuntimeException(t);
   }
 
-  private void connectIncomingEdgesRange(final int[] inSortIndex, final int from, final int to) {
+  /**
+   * Connects incoming edges for a bucket range using local tmp arrays.
+   * Uses the same fill-then-persist optimization as the sequential path.
+   * Each invocation runs within a single async slot's transaction.
+   */
+  private void connectIncomingEdgesRangeLocal(final int[] inSortIndex, final int from, final int to,
+      final ConcurrentHashMap<Long, RID> sharedDeferredInHead,
+      final ConcurrentHashMap<Long, RID> sharedInChunkCache) {
+
+    // Local tmp arrays (not shared across threads)
+    int tmpSize = 64;
+    int[] localTmpEdgeBucketIds = new int[tmpSize];
+    long[] localTmpEdgePositions = new long[tmpSize];
+    int[] localTmpVertexBucketIds = new int[tmpSize];
+    long[] localTmpVertexPositions = new long[tmpSize];
+
     int i = from;
     while (i < to) {
       final int idx = inSortIndex[i];
       final int dstBucket = inDstBucketIds[idx];
       final long dstPos = inDstPositions[idx];
 
+      // Group edges for the same destination vertex
       int j = i;
       while (j < to) {
         final int jIdx = inSortIndex[j];
@@ -1069,18 +1098,75 @@ public class GraphBatchImporter implements AutoCloseable {
         j++;
       }
 
-      final long vertexKey = packVertexKey(dstBucket, dstPos);
-      final RID cachedChunkRID = inChunkRIDCache.get(vertexKey);
+      final int groupSize = j - i;
 
+      // Ensure local tmp arrays are big enough
+      if (groupSize > tmpSize) {
+        tmpSize = groupSize;
+        localTmpEdgeBucketIds = new int[tmpSize];
+        localTmpEdgePositions = new long[tmpSize];
+        localTmpVertexBucketIds = new int[tmpSize];
+        localTmpVertexPositions = new long[tmpSize];
+      }
+
+      // Fill local tmp arrays and compute total bytes
+      int totalBytesNeeded = 0;
+      for (int k = 0; k < groupSize; k++) {
+        final int kIdx = inSortIndex[i + k];
+        localTmpEdgeBucketIds[k] = inEdgeBucketIds[kIdx];
+        localTmpEdgePositions[k] = inEdgePositions[kIdx];
+        localTmpVertexBucketIds[k] = inVertexBucketIds[kIdx];
+        localTmpVertexPositions[k] = inVertexPositions[kIdx];
+        totalBytesNeeded += Binary.getNumberSpace(localTmpEdgeBucketIds[k]) + Binary.getNumberSpace(localTmpEdgePositions[k])
+            + Binary.getNumberSpace(localTmpVertexBucketIds[k]) + Binary.getNumberSpace(localTmpVertexPositions[k]);
+      }
+
+      final long vertexKey = packVertexKey(dstBucket, dstPos);
+
+      // Get or create IN segment
       EdgeSegment inChunk;
+      boolean isNew;
+      final RID cachedChunkRID = inChunkRIDCache.get(vertexKey);
       if (cachedChunkRID != null) {
         inChunk = (EdgeSegment) database.lookupByRID(cachedChunkRID, true);
+        isNew = false;
+      } else if (knownNewVertexKeys.contains(vertexKey)) {
+        final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
+        inChunk = new MutableEdgeSegment(database, segmentSize);
+        isNew = true;
       } else {
         final MutableVertex dstVertex = new RID(database, dstBucket, dstPos).asVertex().modify();
         inChunk = getOrCreateInEdgeChunk(dstVertex);
+        isNew = false;
       }
 
-      addIncomingEdgesToSegmentBulkLazy(dstBucket, dstPos, inChunk, inSortIndex, i, j);
+      final String edgeBucketName = database.getGraphEngine().getEdgesBucketName(dstBucket, Vertex.DIRECTION.IN);
+
+      if (isNew) {
+        // Fill first, then persist once
+        inChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
+            localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+        database.createRecord(inChunk, edgeBucketName);
+        sharedInChunkCache.put(vertexKey, inChunk.getIdentity());
+        sharedDeferredInHead.put(vertexKey, inChunk.getIdentity());
+      } else {
+        final int available = inChunk.getRecordSize() - inChunk.getUsed();
+        if (totalBytesNeeded <= available) {
+          inChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
+              localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+          database.updateRecord(inChunk);
+        } else {
+          // Overflow: create exact-sized new segment, fill, persist
+          final int newSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
+          final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, newSize);
+          newChunk.setPrevious(inChunk);
+          newChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
+              localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+          database.createRecord(newChunk, edgeBucketName);
+          sharedInChunkCache.put(vertexKey, newChunk.getIdentity());
+          sharedDeferredInHead.put(vertexKey, newChunk.getIdentity());
+        }
+      }
 
       i = j;
     }
