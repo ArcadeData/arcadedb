@@ -134,14 +134,12 @@ def test_csv_import_with_custom_delimiter(temp_db_path):
 def test_xml_import_as_documents(temp_db_path):
     """Test importing XML as documents with attributes and child elements."""
     temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".xml", delete=False)
-    temp_file.write(
-        """
+    temp_file.write("""
         <people>
           <person id="1" name="Alice"><city>New York</city></person>
           <person id="2" name="Bob"><city>London</city></person>
         </people>
-        """
-    )
+        """)
     temp_file.close()
 
     try:

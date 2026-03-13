@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Write version to _version.py file during build"""
+
 import io
 import sys
 from pathlib import Path

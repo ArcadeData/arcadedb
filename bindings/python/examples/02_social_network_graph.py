@@ -857,13 +857,11 @@ def compare_query_languages(db):
 
         # SQL Version
         print("\n    🔵 SQL MATCH syntax:")
-        print(
-            """      SELECT name, city FROM Person
+        print("""      SELECT name, city FROM Person
       WHERE name IN (
           SELECT p2.name FROM Person p1, FRIEND_OF f, Person p2
           WHERE p1.name = 'Alice Johnson' AND f.out = p1 AND f.in = p2
-      )"""
-        )
+      )""")
 
         sql_time_start = time.time()
         try:
@@ -897,11 +895,9 @@ def compare_query_languages(db):
 
         # OpenCypher Version
         print("\n    🟣 OpenCypher syntax:")
-        print(
-            """      MATCH (alice:Person {name: 'Alice Johnson'})
+        print("""      MATCH (alice:Person {name: 'Alice Johnson'})
             -[edge:FRIEND_OF]->(friend:Person)
-      RETURN friend.name, friend.city, edge.closeness, edge.since"""
-        )
+      RETURN friend.name, friend.city, edge.closeness, edge.since""")
 
         opencypher_time_start = time.time()
         try:
