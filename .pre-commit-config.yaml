@@ -48,7 +48,7 @@ repos:
         args: ["-i", "4", "-ci", "-sr", "-w"]
         files: ^bindings/python/.*\.sh$
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: v3.7.4
+    rev: v3.8.1
     hooks:
       - id: prettier
         types: [ java, xml ]
