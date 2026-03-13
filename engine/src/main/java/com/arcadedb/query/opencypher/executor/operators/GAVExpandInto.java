@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -100,11 +101,17 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
           // CSR connectivity check: O(log(degree)) binary search
           final int srcId = provider.getNodeId(sourceVertex.getIdentity());
           final int tgtId = provider.getNodeId(targetVertex.getIdentity());
-          if (srcId < 0 || tgtId < 0)
-            continue;
 
-          final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-          if (provider.isConnectedTo(srcId, tgtId, arcadeDirection, edgeTypes)) {
+          boolean connected;
+          if (srcId < 0 || tgtId < 0) {
+            // One or both vertices not in GAV mapping — fall back to OLTP edge check
+            connected = isConnectedOLTP(sourceVertex, targetVertex);
+          } else {
+            final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+            connected = provider.isConnectedTo(srcId, tgtId, arcadeDirection, edgeTypes);
+          }
+
+          if (connected) {
             final ResultInternal result = new ResultInternal();
             for (final String prop : inputResult.getPropertyNames())
               result.setProperty(prop, inputResult.getProperty(prop));
@@ -114,6 +121,27 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
 
         if (!inputResults.hasNext())
           finished = true;
+      }
+
+      /**
+       * OLTP fallback: checks connectivity by iterating edges when one or both vertices
+       * are not present in the GAV mapping (created after last build).
+       */
+      private boolean isConnectedOLTP(final Vertex source, final Vertex target) {
+        final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+        for (final Edge edge : source.getEdges(arcadeDirection, edgeTypes)) {
+          final Vertex other = arcadeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+          if (other.getIdentity().equals(target.getIdentity()))
+            return true;
+          // For BOTH direction, check either end
+          if (arcadeDirection == Vertex.DIRECTION.BOTH) {
+            final Vertex out = edge.getOutVertex();
+            final Vertex in = edge.getInVertex();
+            if (out.getIdentity().equals(target.getIdentity()) || in.getIdentity().equals(target.getIdentity()))
+              return true;
+          }
+        }
+        return false;
       }
 
       @Override

@@ -819,6 +819,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       database.getEvents().unregisterListener((AfterRecordCreateListener) oldCollector);
       database.getEvents().unregisterListener((AfterRecordUpdateListener) oldCollector);
       database.getEvents().unregisterListener((AfterRecordDeleteListener) oldCollector);
+      oldCollector.close();
     }
   }
 

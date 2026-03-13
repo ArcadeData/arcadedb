@@ -64,9 +64,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private final Direction directionOverride; // When non-null, overrides pattern.getDirection()
 
   // GAV provider for CSR-accelerated fast path (null = not checked yet, resolved lazily)
-  private GraphTraversalProvider gavProvider;
-  private boolean gavProviderResolved = false;
-  private String gavProviderDebug = null;
+  private volatile GraphTraversalProvider gavProvider;
+  private volatile boolean gavProviderResolved = false;
+  private volatile String gavProviderDebug = null;
 
   // Profiling: track fast path vs standard path usage
   private long fastPathCount = 0;

@@ -48,6 +48,7 @@ import java.util.stream.Stream;
  *   <li>maxIterations (int, default 20): maximum number of iterations</li>
  *   <li>tolerance (double, default 0.0001): convergence threshold</li>
  *   <li>weightProperty (string, default null): edge property to use as weight</li>
+ *   <li>direction (string, default "OUT"): edge direction for push — "OUT" for directed graphs, "BOTH" for undirected</li>
  * </ul>
  * </p>
  * <p>
@@ -102,6 +103,9 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
+    final String dirStr = config != null && config.get("direction") instanceof String s ? s : "OUT";
+    final Vertex.DIRECTION direction = "BOTH".equalsIgnoreCase(dirStr) ? Vertex.DIRECTION.BOTH :
+        "IN".equalsIgnoreCase(dirStr) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
 
     final Database db = context.getDatabase();
 
@@ -109,31 +113,32 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final GraphTraversalProvider provider = weightProperty == null ? findProvider(db, null) : null;
     if (provider != null) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(provider, dampingFactor, maxIterations, tolerance);
+      return executeWithCSR(provider, dampingFactor, maxIterations, tolerance, direction);
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty);
+    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction);
   }
 
   private Stream<Result> executeWithCSR(final GraphTraversalProvider provider,
-      final double dampingFactor, final int maxIterations, final double tolerance) {
+      final double dampingFactor, final int maxIterations, final double tolerance,
+      final Vertex.DIRECTION direction) {
     final int n = provider.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
     // Zero-allocation neighbor access via NeighborView
-    final NeighborView outView = provider.getNeighborView(Vertex.DIRECTION.OUT);
+    final NeighborView view = provider.getNeighborView(direction);
     final int[] nbrs;
-    final boolean hasView = outView != null;
+    final boolean hasView = view != null;
 
     if (hasView) {
-      nbrs = outView.neighbors();
+      nbrs = view.neighbors();
     } else {
       // Fallback: materialize adjacency (should not happen with GAV, but keeps correctness)
       nbrs = null;
     }
-    final int[][] outNeighborsFallback = hasView ? null : buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, null);
+    final int[][] neighborsFallback = hasView ? null : buildAdjacencyFromProvider(provider, direction, null);
 
     final double[] scores = new double[n];
     final double initialScore = 1.0 / n;
@@ -146,7 +151,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
       // Detect dangling nodes (no outgoing edges)
       for (int i = 0; i < n; i++) {
-        final int deg = hasView ? outView.degree(i) : outNeighborsFallback[i].length;
+        final int deg = hasView ? view.degree(i) : neighborsFallback[i].length;
         if (deg == 0)
           dangling += scores[i];
       }
@@ -154,8 +159,8 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
       // Push contributions: each node distributes its score to OUT neighbors
       if (hasView) {
         for (int i = 0; i < n; i++) {
-          final int start = outView.offset(i);
-          final int end = outView.offsetEnd(i);
+          final int start = view.offset(i);
+          final int end = view.offsetEnd(i);
           if (start == end)
             continue;
           final double contribution = scores[i] / (end - start);
@@ -164,7 +169,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
         }
       } else {
         for (int i = 0; i < n; i++) {
-          final int[] neighbors = outNeighborsFallback[i];
+          final int[] neighbors = neighborsFallback[i];
           if (neighbors.length == 0)
             continue;
           final double contribution = scores[i] / neighbors.length;
@@ -196,7 +201,8 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
-      final int maxIterations, final double tolerance, final String weightProperty) {
+      final int maxIterations, final double tolerance, final String weightProperty,
+      final Vertex.DIRECTION direction) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> vertIter = getAllVertices(db, null);
     while (vertIter.hasNext())
@@ -207,13 +213,16 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final int n = vertices.size();
     final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
-    // Build adjacency once: for each node, store (neighborIdx, weight) pairs
+    // Build adjacency once: for each node, store (neighborIdx, weight) pairs.
+    // When direction is BOTH, edges are treated as bidirectional (undirected graphs).
     final int[][] outNeighbors = new int[n][];
     final double[][] outWeights = weightProperty != null ? new double[n][] : null;
     for (int i = 0; i < n; i++) {
       final Vertex v = vertices.get(i);
       final List<int[]> nbrs = new ArrayList<>();
       final List<Double> wts = weightProperty != null ? new ArrayList<>() : null;
+
+      // Always traverse OUT edges
       for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
         final Integer neighborIdx = ridToIdx.get(edge.getInVertex().getIdentity());
         if (neighborIdx == null)
@@ -224,6 +233,21 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
           wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
         }
       }
+
+      // For BOTH direction, also traverse IN edges (treat undirected edges as bidirectional)
+      if (direction == Vertex.DIRECTION.BOTH) {
+        for (final Edge edge : v.getEdges(Vertex.DIRECTION.IN)) {
+          final Integer neighborIdx = ridToIdx.get(edge.getOutVertex().getIdentity());
+          if (neighborIdx == null)
+            continue;
+          nbrs.add(new int[]{ neighborIdx });
+          if (wts != null) {
+            final Object w = edge.get(weightProperty);
+            wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+          }
+        }
+      }
+
       outNeighbors[i] = new int[nbrs.size()];
       for (int j = 0; j < nbrs.size(); j++)
         outNeighbors[i][j] = nbrs.get(j)[0];

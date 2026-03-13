@@ -6169,14 +6169,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
     stmt.name = (Identifier) visit(bodyCtx.viewName);
 
-    if (bodyCtx.gavIdentifierList() != null)
-      stmt.vertexTypes = visitIdentifierList(bodyCtx.gavIdentifierList().identifier());
+    if (bodyCtx.vertexTypeList != null)
+      stmt.vertexTypes = visitIdentifierList(bodyCtx.vertexTypeList.identifier());
 
-    if (bodyCtx.gavEdgeTypeList() != null)
-      stmt.edgeTypes = visitIdentifierList(bodyCtx.gavEdgeTypeList().identifier());
+    if (bodyCtx.edgeTypeList != null)
+      stmt.edgeTypes = visitIdentifierList(bodyCtx.edgeTypeList.identifier());
 
-    if (bodyCtx.gavPropertyList() != null)
-      stmt.properties = visitIdentifierList(bodyCtx.gavPropertyList().identifier());
+    if (bodyCtx.propertyList != null)
+      stmt.properties = visitIdentifierList(bodyCtx.propertyList.identifier());
 
     if (bodyCtx.updateModeName != null)
       stmt.updateModeStr = bodyCtx.updateModeName.getText();

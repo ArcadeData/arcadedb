@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 
 public class AlterGraphAnalyticalViewStatement extends DDLStatement {
@@ -40,7 +41,12 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-    final Database database = context.getDatabase();
+    final DatabaseInternal database = context.getDatabase();
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
+    if (updateModeStr == null && compactionThreshold < 0)
+      throw new CommandExecutionException("ALTER GRAPH ANALYTICAL VIEW requires at least one parameter (UPDATE MODE or COMPACTION THRESHOLD)");
+
     final String viewName = name.getStringValue();
 
     // Validate the view exists
@@ -56,6 +62,7 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
 
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, viewName);
 
+    // Validate and apply to live view FIRST — if this throws, schema remains unchanged
     GraphAnalyticalView.UpdateMode newMode = null;
     if (updateModeStr != null) {
       try {
@@ -64,25 +71,21 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
         throw new CommandExecutionException(
             "Unknown update mode: '" + updateModeStr + "'. Valid values: OFF, SYNCHRONOUS, ASYNCHRONOUS");
       }
+      if (liveView != null)
+        liveView.setUpdateMode(newMode);
       gavDef.put("updateMode", newMode.name());
       r.setProperty("updateMode", newMode.name());
     }
 
     if (compactionThreshold >= 0) {
+      if (liveView != null)
+        liveView.setCompactionThreshold(compactionThreshold);
       gavDef.put("compactionThreshold", compactionThreshold);
       r.setProperty("compactionThreshold", compactionThreshold);
     }
 
-    // Persist to schema first — if this fails, the live view remains unchanged
+    // Persist to schema after live view is successfully updated
     database.getSchema().setExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY, allGavs);
-
-    // Only update the live view after schema persistence succeeds
-    if (liveView != null) {
-      if (newMode != null)
-        liveView.setUpdateMode(newMode);
-      if (compactionThreshold >= 0)
-        liveView.setCompactionThreshold(compactionThreshold);
-    }
 
     result.add(r);
     return result;

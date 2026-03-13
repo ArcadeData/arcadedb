@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -29,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -75,6 +77,8 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       private Result currentInputResult = null;
       private int[] neighborIds = null;
       private int neighborIdx = 0;
+      // OLTP fallback iterator for vertices not present in the GAV mapping
+      private Iterator<Edge> oltpFallbackEdges = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -101,6 +105,18 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
         bufferIndex = 0;
 
         while (buffer.size() < n) {
+          // OLTP fallback path: drain edges for vertices not in the GAV mapping
+          if (oltpFallbackEdges != null) {
+            if (oltpFallbackEdges.hasNext()) {
+              final Edge edge = oltpFallbackEdges.next();
+              final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
+              final Vertex targetVertex = getTargetVertex(edge, sourceVertex);
+              addResultWithTarget(targetVertex);
+              continue;
+            }
+            oltpFallbackEdges = null;
+          }
+
           // If we've exhausted neighbors for current input, get next input
           if (neighborIds == null || neighborIdx >= neighborIds.length) {
             if (!inputResults.hasNext()) {
@@ -118,6 +134,9 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
             // CSR lookup: RID → dense ID → neighbor IDs (O(1) array slice)
             final int nodeId = provider.getNodeId(sourceVertex.getIdentity());
             if (nodeId < 0) {
+              // Vertex not in GAV mapping (created after last build) — fall back to OLTP
+              final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+              oltpFallbackEdges = sourceVertex.getEdges(arcadeDirection, edgeTypes).iterator();
               neighborIds = null;
               continue;
             }
@@ -143,16 +162,29 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
               continue; // vertex deleted in OLTP since CSR was built
             }
 
-            final ResultInternal result = new ResultInternal();
-            for (final String prop : currentInputResult.getPropertyNames())
-              result.setProperty(prop, currentInputResult.getProperty(prop));
-
-            if (targetVariable != null)
-              result.setProperty(targetVariable, targetVertex);
-
-            buffer.add(result);
+            addResultWithTarget(targetVertex);
           }
         }
+      }
+
+      private void addResultWithTarget(final Vertex targetVertex) {
+        final ResultInternal result = new ResultInternal();
+        for (final String prop : currentInputResult.getPropertyNames())
+          result.setProperty(prop, currentInputResult.getProperty(prop));
+        if (targetVariable != null)
+          result.setProperty(targetVariable, targetVertex);
+        buffer.add(result);
+      }
+
+      private Vertex getTargetVertex(final Edge edge, final Vertex sourceVertex) {
+        final Vertex out = edge.getOutVertex();
+        final Vertex in = edge.getInVertex();
+        if (direction == Direction.OUT)
+          return in;
+        if (direction == Direction.IN)
+          return out;
+        // BOTH — return the vertex that's not the source
+        return out.getIdentity().equals(sourceVertex.getIdentity()) ? in : out;
       }
 
       @Override

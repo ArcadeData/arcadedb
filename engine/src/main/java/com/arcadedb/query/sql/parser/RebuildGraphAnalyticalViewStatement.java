@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 public class RebuildGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier name;
@@ -36,7 +37,8 @@ public class RebuildGraphAnalyticalViewStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-    final Database database = context.getDatabase();
+    final DatabaseInternal database = context.getDatabase();
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     final String viewName = name.getStringValue();
 
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, viewName);

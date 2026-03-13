@@ -591,7 +591,7 @@ public enum GlobalConfiguration {
 
   GAV_USE_WHEN_STALE("arcadedb.gavUseWhenStale", SCOPE.DATABASE,
       "When true, the query planner uses stale Graph Analytical Views (GAV/CSR) for traversals instead of falling back to OLTP. "
-          + "Stale data is faster but may not reflect the latest committed changes", Boolean.class, true),
+          + "Stale data is faster but may not reflect the latest committed changes", Boolean.class, false),
   ;
 
   /**
