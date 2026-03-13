@@ -219,7 +219,7 @@ module.exports = {
           to: 'js/cytoscape-node-html-label.min.js',
         },
         {
-          from: 'node_modules/marked/marked.min.js',
+          from: 'node_modules/marked/lib/marked.umd.js',
           to: 'js/marked.min.js',
         },
         {
