@@ -21,14 +21,19 @@ package com.arcadedb.graph;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.BinaryTypes;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -413,41 +418,243 @@ public class GraphBatchImporter implements AutoCloseable {
   }
 
   /**
-   * Bulk-creates edge records by pre-serializing all edges, then writing them to the bucket
-   * in a single sequential pass. Bypasses per-record overhead (lock acquisition, validation,
-   * event callbacks, findAvailableSpace) that the standard createRecord path imposes.
+   * Pre-resolved metadata for serializing edges with the same set of property names.
+   * Eliminates per-edge dictionary lookups, type resolution, MutableEdge allocation,
+   * and HashMap operations.
+   */
+  private static class EdgeSerializationTemplate {
+    final String[] propertyNames;
+    final int[]    dictionaryIds;
+    final byte[]   typeFlags;        // pre-resolved from schema, or -1 if schema-less
+    final boolean  allTypesKnown;    // true if all types resolved from schema
+
+    EdgeSerializationTemplate(final String[] propertyNames, final int[] dictionaryIds,
+        final byte[] typeFlags, final boolean allTypesKnown) {
+      this.propertyNames = propertyNames;
+      this.dictionaryIds = dictionaryIds;
+      this.typeFlags = typeFlags;
+      this.allTypesKnown = allTypesKnown;
+    }
+  }
+
+  // Cache for edge serialization templates, keyed by property signature
+  private final Map<String, EdgeSerializationTemplate> templateCache = new HashMap<>();
+
+  /**
+   * Gets or creates a serialization template for edges with the given properties.
+   */
+  private EdgeSerializationTemplate getOrCreateTemplate(final Object[] props, final int edgeTypeBucketId) {
+    // Build signature from property names
+    final int propCount = props.length / 2;
+    final StringBuilder sig = new StringBuilder(edgeTypeBucketId);
+    for (int p = 0; p < propCount; p++) {
+      if (p > 0)
+        sig.append(',');
+      sig.append(props[p * 2]);
+    }
+    final String key = sig.toString();
+
+    EdgeSerializationTemplate template = templateCache.get(key);
+    if (template != null)
+      return template;
+
+    // Create new template
+    final Dictionary dictionary = database.getSchema().getDictionary();
+    final DocumentType edgeType = database.getSchema().getTypeByBucketId(edgeTypeBucketId);
+    final String[] names = new String[propCount];
+    final int[] dictIds = new int[propCount];
+    final byte[] types = new byte[propCount];
+    boolean allKnown = true;
+
+    for (int p = 0; p < propCount; p++) {
+      names[p] = (String) props[p * 2];
+      dictIds[p] = dictionary.getIdByName(names[p], true);
+      final Property schemaProp = edgeType.getPropertyIfExists(names[p]);
+      if (schemaProp != null)
+        types[p] = schemaProp.getType().getBinaryType();
+      else {
+        types[p] = -1;
+        allKnown = false;
+      }
+    }
+
+    template = new EdgeSerializationTemplate(names, dictIds, types, allKnown);
+    templateCache.put(key, template);
+    return template;
+  }
+
+  /**
+   * Serializes an edge directly into a Binary buffer using a pre-resolved template.
+   * Avoids MutableEdge allocation, HashMap operations, dictionary lookups, and type resolution.
+   */
+  private Binary serializeEdgeDirect(final int outBucket, final long outPos,
+      final int inBucket, final long inPos, final Object[] props,
+      final EdgeSerializationTemplate template) {
+    // Estimate buffer size: 1 (type) + ~10 (2 RIDs) + 4 (header size) + ~20 (header) + ~20 (content)
+    final int propCount = template.dictionaryIds.length;
+    final Binary buffer = new Binary(64 + propCount * 12);
+
+    // Record type
+    buffer.putByte(Edge.RECORD_TYPE);
+
+    // OUT and IN compressed RIDs
+    buffer.putNumber(outBucket);
+    buffer.putNumber(outPos);
+    buffer.putNumber(inBucket);
+    buffer.putNumber(inPos);
+
+    if (propCount == 0) {
+      // No properties — write empty header
+      buffer.putInt(buffer.position() + Binary.INT_SERIALIZED_SIZE);
+      buffer.putUnsignedNumber(0);
+      buffer.flip();
+      return buffer;
+    }
+
+    // --- Properties header + content (two-pass within the same buffer) ---
+    // Header: [4 bytes: headerEnd offset] [VLQ: propCount] [for each: VLQ dictId, VLQ contentOffset]
+    // Content: [for each: 1 byte type, serialized value]
+
+    // Write header placeholder for headerEnd
+    final int headerSizePos = buffer.position();
+    buffer.putInt(0);
+
+    // Property count
+    buffer.putUnsignedNumber(propCount);
+
+    // Write dictionary IDs and reserve space for content offsets
+    // We store the positions where content offsets need to be patched
+    final int[] offsetPatchPositions = new int[propCount];
+    for (int p = 0; p < propCount; p++) {
+      buffer.putUnsignedNumber(template.dictionaryIds[p]);
+      offsetPatchPositions[p] = buffer.position();
+      // Reserve max 3 bytes for content offset (supports offsets up to ~2M)
+      buffer.putByte((byte) 0);
+      buffer.putByte((byte) 0);
+      buffer.putByte((byte) 0);
+    }
+
+    // Update header end position
+    final int headerEnd = buffer.position();
+    buffer.putInt(headerSizePos, headerEnd);
+
+    // Write content and patch offsets
+    final int contentStart = headerEnd;
+    for (int p = 0; p < propCount; p++) {
+      final int contentOffset = buffer.position() - contentStart;
+
+      // Patch the content offset in the header (overwrite the 3 reserved bytes)
+      patchUnsignedNumber3(buffer, offsetPatchPositions[p], contentOffset);
+
+      // Resolve type
+      final Object value = props[p * 2 + 1];
+      byte type = template.typeFlags[p];
+      if (type == -1)
+        type = BinaryTypes.getTypeFromValue(value, null);
+
+      // Write type tag + value
+      buffer.putByte(type);
+      serializeValueDirect(buffer, type, value);
+    }
+
+    buffer.flip();
+    return buffer;
+  }
+
+  /**
+   * Writes a VLQ unsigned number into exactly 3 pre-reserved bytes.
+   * The number must fit in 21 bits (values up to 2,097,151).
+   */
+  private static void patchUnsignedNumber3(final Binary buffer, final int position, final int value) {
+    buffer.putByte(position, (byte) ((value & 0x7F) | 0x80));
+    buffer.putByte(position + 1, (byte) (((value >>> 7) & 0x7F) | 0x80));
+    buffer.putByte(position + 2, (byte) ((value >>> 14) & 0x7F));
+  }
+
+  /**
+   * Serializes a property value directly into a Binary buffer.
+   * Handles the most common types used in edge properties.
+   */
+  private void serializeValueDirect(final Binary buffer, final byte type, final Object value) {
+    if (value == null)
+      return;
+    switch (type) {
+    case BinaryTypes.TYPE_INT:
+      buffer.putNumber(((Number) value).intValue());
+      break;
+    case BinaryTypes.TYPE_LONG:
+      buffer.putNumber(((Number) value).longValue());
+      break;
+    case BinaryTypes.TYPE_SHORT:
+      buffer.putNumber(((Number) value).shortValue());
+      break;
+    case BinaryTypes.TYPE_FLOAT:
+      buffer.putNumber(Float.floatToIntBits(((Number) value).floatValue()));
+      break;
+    case BinaryTypes.TYPE_DOUBLE:
+      buffer.putNumber(Double.doubleToLongBits(((Number) value).doubleValue()));
+      break;
+    case BinaryTypes.TYPE_BYTE:
+      buffer.putByte((Byte) value);
+      break;
+    case BinaryTypes.TYPE_BOOLEAN:
+      buffer.putByte((byte) ((Boolean) value ? 1 : 0));
+      break;
+    case BinaryTypes.TYPE_STRING:
+      buffer.putString(value.toString());
+      break;
+    case BinaryTypes.TYPE_COMPRESSED_STRING:
+      buffer.putUnsignedNumber((Integer) value);
+      break;
+    case BinaryTypes.TYPE_COMPRESSED_RID:
+      final RID rid = ((Identifiable) value).getIdentity();
+      buffer.putNumber(rid.getBucketId());
+      buffer.putNumber(rid.getPosition());
+      break;
+    default:
+      // Fall back to the full serializer for complex types
+      database.getSerializer().serializeValue(database, buffer, type, value);
+      break;
+    }
+  }
+
+  /**
+   * Bulk-creates edge records using template-based serialization and sequential page writes.
+   * For each unique set of property names, a template is created once that pre-resolves
+   * dictionary IDs and type tags. Edges are then serialized directly into Binary buffers
+   * without MutableEdge allocation or HashMap operations.
    */
   private void createEdgeRecordsBulk(final RID[] edgeRIDs, final int nonLightCount) {
-    // Group edges by their target bucket for sequential page writes
-    // For simplicity, we handle one bucket at a time (most common: all edges go to the same bucket)
-
     // Collect indices of non-light edges
     final int[] nonLightIndices = new int[nonLightCount];
     int nlIdx = 0;
     for (int i = 0; i < edgeCount; i++)
-      if (edgeRIDs[i] == null) // null means not yet assigned = non-light
+      if (edgeRIDs[i] == null)
         nonLightIndices[nlIdx++] = i;
 
-    // Pre-serialize all edge records
-    final BinarySerializer serializer = database.getSerializer();
+    // Serialize all edge records using templates
     final Binary[] serializedBuffers = new Binary[nonLightCount];
 
     for (int k = 0; k < nonLightCount; k++) {
       final int i = nonLightIndices[k];
-      final EdgeType edgeType = (EdgeType) database.getSchema().getTypeByBucketId(edgeTypeBucketIds[i]);
-      final RID srcRID = new RID(database, edgeSrcBucketIds[i], edgeSrcPositions[i]);
-      final RID dstRID = new RID(database, edgeDstBucketIds[i], edgeDstPositions[i]);
+      final Object[] props = edgeProperties[i];
 
-      final MutableEdge edge = new MutableEdge(database, edgeType, srcRID, dstRID);
-      if (edgeHasProperties[i])
-        GraphEngine.setProperties(edge, edgeProperties[i]);
-
-      serializedBuffers[k] = serializer.serializeEdge(database, edge).copyOfContent();
+      if (props != null && props.length > 0) {
+        final EdgeSerializationTemplate template = getOrCreateTemplate(props, edgeTypeBucketIds[i]);
+        serializedBuffers[k] = serializeEdgeDirect(
+            edgeSrcBucketIds[i], edgeSrcPositions[i],
+            edgeDstBucketIds[i], edgeDstPositions[i],
+            props, template);
+      } else {
+        // No properties — serialize minimal edge
+        serializedBuffers[k] = serializeEdgeDirect(
+            edgeSrcBucketIds[i], edgeSrcPositions[i],
+            edgeDstBucketIds[i], edgeDstPositions[i],
+            null, new EdgeSerializationTemplate(new String[0], new int[0], new byte[0], true));
+      }
     }
 
     // Group by bucket and bulk-write
-    // Find the bucket for edge records (all edges of the same type go to the same bucket)
-    // Sort by bucket ID for sequential writes
     final int firstBucket = edgeTypeBucketIds[nonLightIndices[0]];
     boolean singleBucket = true;
     for (int k = 1; k < nonLightCount; k++) {
@@ -458,19 +665,16 @@ public class GraphBatchImporter implements AutoCloseable {
     }
 
     if (singleBucket) {
-      // Fast path: all edges go to the same bucket
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(firstBucket);
       final RID[] bulkRIDs = new RID[nonLightCount];
       bucket.createRecordsBulk(serializedBuffers, 0, nonLightCount, bulkRIDs);
 
-      // Map back to edgeRIDs
       for (int k = 0; k < nonLightCount; k++) {
         edgeRIDs[nonLightIndices[k]] = bulkRIDs[k];
-        // Update transaction cache
         database.getTransaction().updateBucketRecordDelta(firstBucket, +1);
       }
     } else {
-      // Slow path: multiple buckets — fall back to per-edge creation
+      // Multiple buckets — fall back to per-edge standard creation
       for (int k = 0; k < nonLightCount; k++) {
         final int i = nonLightIndices[k];
         final EdgeType edgeType = (EdgeType) database.getSchema().getTypeByBucketId(edgeTypeBucketIds[i]);
@@ -1603,9 +1807,9 @@ public class GraphBatchImporter implements AutoCloseable {
 
     /**
      * Hint for the expected total number of edges to import. When set and no explicit
-     * batch size is provided, the batch size is auto-tuned to {@code expectedEdgeCount / 5},
-     * clamped between 100K and 5M. This typically yields ~5 flush cycles, which benchmarks
-     * show is the optimal trade-off between sort overhead and flush frequency.
+     * batch size is provided, the batch size is auto-tuned to {@code expectedEdgeCount},
+     * clamped between 100K and 5M. Benchmarks show that a single flush (batch >= edgeCount)
+     * is optimal, with diminishing returns beyond the total edge count.
      */
     public Builder withExpectedEdgeCount(final int expectedEdgeCount) {
       if (expectedEdgeCount < 0)
@@ -1695,7 +1899,7 @@ public class GraphBatchImporter implements AutoCloseable {
     public GraphBatchImporter build() {
       int effectiveBatchSize = batchSize;
       if (!batchSizeExplicit && expectedEdgeCount > 0)
-        effectiveBatchSize = Math.max(MIN_BATCH_SIZE, Math.min(MAX_BATCH_SIZE, expectedEdgeCount / 5));
+        effectiveBatchSize = Math.max(MIN_BATCH_SIZE, Math.min(MAX_BATCH_SIZE, expectedEdgeCount));
 
       return new GraphBatchImporter(database, effectiveBatchSize, edgeListInitialSize, lightEdges,
           bidirectional, commitEvery, useWAL, walFlush, preAllocateEdgeChunks, parallelFlush);
