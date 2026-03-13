@@ -1781,7 +1781,7 @@ public class GraphBatchImporter implements AutoCloseable {
     private boolean            batchSizeExplicit    = false;
     private int                expectedEdgeCount    = 0;
     private int                edgeListInitialSize  = 2048;
-    private boolean            lightEdges           = true;
+    private boolean            lightEdges           = false;
     private boolean            bidirectional        = true;
     private int                commitEvery          = 50_000;
     private boolean            useWAL               = false;
