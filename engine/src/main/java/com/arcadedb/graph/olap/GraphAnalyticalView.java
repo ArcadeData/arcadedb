@@ -252,7 +252,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         registerChangeListeners();
     } catch (final Exception e) {
       this.buildError = e;
-      this.status = snapshot != null ? Status.READY : Status.NOT_BUILT;
+      this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
       throw e;
     } finally {
       latch.countDown();
@@ -283,8 +283,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             result.getBucketColumns(), null, System.currentTimeMillis(), durationMs);
         this.status = Status.READY;
 
-        if (deltaCollector == null)
-          registerChangeListeners();
+        synchronized (GraphAnalyticalView.this) {
+          if (deltaCollector == null)
+            registerChangeListeners();
+        }
       } catch (final Exception e) {
         this.buildError = e;
         this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
@@ -329,7 +331,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Shuts down this view without removing the schema definition.
    * Called during database close to release resources while preserving persistence.
    */
-  public void shutdown() {
+  public synchronized void shutdown() {
     unregisterChangeListeners();
     GraphTraversalProviderRegistry.unregister(database, this);
     if (name != null)
@@ -972,7 +974,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Called by the DeltaCollector (ASYNCHRONOUS/OFF mode) after a committed transaction affected
    * covered vertex/edge types. ASYNCHRONOUS triggers an async rebuild, OFF marks the view as STALE.
    */
-  void onRelevantCommit() {
+  synchronized void onRelevantCommit() {
     if (updateMode == UpdateMode.ASYNCHRONOUS) {
       if (!compacting.compareAndSet(false, true))
         return; // rebuild already in progress, it will pick up committed changes

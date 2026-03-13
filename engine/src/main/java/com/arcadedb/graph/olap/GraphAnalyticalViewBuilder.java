@@ -149,7 +149,12 @@ public class GraphAnalyticalViewBuilder {
    */
   public GraphAnalyticalView build() {
     final GraphAnalyticalView view = createView();
-    view.build();
+    try {
+      view.build();
+    } catch (final Exception e) {
+      view.shutdown();
+      throw e;
+    }
     return view;
   }
 
@@ -160,7 +165,12 @@ public class GraphAnalyticalViewBuilder {
    */
   public GraphAnalyticalView buildAsync() {
     final GraphAnalyticalView view = createView();
-    view.buildAsync();
+    try {
+      view.buildAsync();
+    } catch (final Exception e) {
+      view.shutdown();
+      throw e;
+    }
     return view;
   }
 
