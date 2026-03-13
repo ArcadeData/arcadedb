@@ -19,17 +19,13 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
-import java.util.BitSet;
-import java.util.Iterator;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -102,25 +98,35 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
     final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
 
-    // Build neighbor BitSets for fast intersection
-    final BitSet[] neighborSets = new BitSet[n];
-    for (int i = 0; i < n; i++) {
-      neighborSets[i] = new BitSet(n);
-      for (final int j : adj[i])
-        neighborSets[i].set(j);
-    }
+    // Sort adjacency lists for merge-based intersection (O(m log m) total)
+    for (int i = 0; i < n; i++)
+      Arrays.sort(adj[i]);
 
+    // Count triangles using sorted-merge intersection — O(m * sqrt(m)) time, O(m) memory
     final long[] triangles = new long[n];
     for (int u = 0; u < n; u++) {
-      long count = 0;
-      for (final int v : adj[u]) {
-        for (final int w : adj[v]) {
-          if (neighborSets[u].get(w))
-            count++;
+      final int[] neighborsU = adj[u];
+      for (final int v : neighborsU) {
+        // Count common neighbors of u and v via sorted merge
+        final int[] neighborsV = adj[v];
+        int iu = 0, iv = 0;
+        while (iu < neighborsU.length && iv < neighborsV.length) {
+          if (neighborsU[iu] < neighborsV[iv])
+            iu++;
+          else if (neighborsU[iu] > neighborsV[iv])
+            iv++;
+          else {
+            // Common neighbor found — triangle (u, v, w)
+            triangles[u]++;
+            iu++;
+            iv++;
+          }
         }
       }
-      triangles[u] = count / 2;
     }
+    // Each triangle is counted twice per node (once for each neighbor direction)
+    for (int u = 0; u < n; u++)
+      triangles[u] /= 2;
 
     return IntStream.range(0, n).mapToObj(i -> {
       final long deg = adj[i].length;
