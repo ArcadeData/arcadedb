@@ -294,6 +294,107 @@ public class GraphAlgorithmsTest extends TestHelper {
     assertThat(dists[cId]).isEqualTo(1); // shortcut: A->C is 1 hop
   }
 
+  @Test
+  void testShortestPathAllBothDirection() {
+    // A -> B -> C, verify BOTH direction finds reverse paths
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    final int bId = gav.getNodeId(b.getIdentity());
+    final int cId = gav.getNodeId(c.getIdentity());
+
+    // From C with BOTH: should reach A in 2 hops (C<-B<-A)
+    final int[] dists = GraphAlgorithms.shortestPathAll(gav, cId, Vertex.DIRECTION.BOTH, "LINK");
+    assertThat(dists[cId]).isEqualTo(0);
+    assertThat(dists[bId]).isEqualTo(1);
+    assertThat(dists[aId]).isEqualTo(2);
+  }
+
+  @Test
+  void testShortestPathAllInDirection() {
+    // A -> B -> C, from C with IN direction should traverse backward edges
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    final int bId = gav.getNodeId(b.getIdentity());
+    final int cId = gav.getNodeId(c.getIdentity());
+
+    // From C with IN: should follow incoming edges backward
+    final int[] dists = GraphAlgorithms.shortestPathAll(gav, cId, Vertex.DIRECTION.IN, "LINK");
+    assertThat(dists[cId]).isEqualTo(0);
+    assertThat(dists[bId]).isEqualTo(1);
+    assertThat(dists[aId]).isEqualTo(2);
+
+    // From A with IN: should NOT reach B or C (no incoming edges to A)
+    final int[] distsA = GraphAlgorithms.shortestPathAll(gav, aId, Vertex.DIRECTION.IN, "LINK");
+    assertThat(distsA[aId]).isEqualTo(0);
+    assertThat(distsA[bId]).isEqualTo(-1);
+    assertThat(distsA[cId]).isEqualTo(-1);
+  }
+
+  @Test
+  void testShortestPathAllLargeGraph() {
+    // Build a chain of 200 nodes to verify bitmap and pre-allocated frontier work on larger graphs
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    final int nodeCount = 200;
+    database.begin();
+    final MutableVertex[] nodes = new MutableVertex[nodeCount];
+    for (int i = 0; i < nodeCount; i++)
+      nodes[i] = database.newVertex("Node").set("name", "N" + i).save();
+    for (int i = 0; i < nodeCount - 1; i++)
+      nodes[i].newEdge("LINK", nodes[i + 1]);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int firstId = gav.getNodeId(nodes[0].getIdentity());
+    final int lastId = gav.getNodeId(nodes[nodeCount - 1].getIdentity());
+    final int midId = gav.getNodeId(nodes[100].getIdentity());
+
+    // Forward BFS from first node
+    final int[] dists = GraphAlgorithms.shortestPathAll(gav, firstId, Vertex.DIRECTION.OUT, "LINK");
+    assertThat(dists[firstId]).isEqualTo(0);
+    assertThat(dists[lastId]).isEqualTo(nodeCount - 1);
+    assertThat(dists[midId]).isEqualTo(100);
+
+    // Single-pair shortest path should agree
+    assertThat(GraphAlgorithms.shortestPath(gav, firstId, lastId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(nodeCount - 1);
+    assertThat(GraphAlgorithms.shortestPath(gav, firstId, midId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(100);
+  }
+
   // --- Label Propagation ---
 
   @Test

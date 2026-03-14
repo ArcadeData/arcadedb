@@ -22,7 +22,7 @@ import com.arcadedb.graph.Vertex;
 
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.function.BiConsumer;
 
 /**
@@ -288,53 +288,73 @@ public final class GraphAlgorithms {
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
-    final int[] dist = new int[n];
-    Arrays.fill(dist, -1);
-    dist[source] = 0;
+    // Pre-hoist CSR arrays and direction flags outside the BFS loop
+    final boolean useFwd = direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH;
+    final boolean useBwd = direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH;
+    final int typeCount = types.length;
+    final int[][] allFwdOffsets = new int[typeCount][];
+    final int[][] allFwdNeighbors = new int[typeCount][];
+    final int[][] allBwdOffsets = new int[typeCount][];
+    final int[][] allBwdNeighbors = new int[typeCount][];
+    for (int t = 0; t < typeCount; t++) {
+      final CSRAdjacencyIndex csr = view.getCSRIndex(types[t]);
+      if (csr == null)
+        continue;
+      if (useFwd) {
+        allFwdOffsets[t] = csr.getForwardOffsets();
+        allFwdNeighbors[t] = csr.getForwardNeighbors();
+      }
+      if (useBwd) {
+        allBwdOffsets[t] = csr.getBackwardOffsets();
+        allBwdNeighbors[t] = csr.getBackwardNeighbors();
+      }
+    }
 
-    int[] frontier = new int[Math.min(n, 1024)];
+    // Bitmap visited set: n/64 longs (~80KB for 633K nodes) fits in L2 cache
+    final long[] visited = new long[(n + 63) >>> 6];
+    visited[source >>> 6] |= 1L << (source & 63);
+
+    // Pre-allocate frontiers at full capacity, swap references between levels
+    int[] frontier = new int[n];
+    int[] nextFrontier = new int[n];
     frontier[0] = source;
     int frontierSize = 1;
+    int depth = 0;
 
     while (frontierSize > 0) {
+      depth++;
       int nextSize = 0;
-      int[] nextFrontier = new int[Math.min(n, frontierSize * 4)];
 
       for (int f = 0; f < frontierSize; f++) {
         final int u = frontier[f];
-        final int nextDist = dist[u] + 1;
 
-        for (final String edgeType : types) {
-          final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
-          if (csr == null)
-            continue;
-
-          if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-            final int[] fwdOffsets = csr.getForwardOffsets();
-            final int[] fwdNeighbors = csr.getForwardNeighbors();
-            for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
-              final int v = fwdNeighbors[j];
-              if (dist[v] < 0) {
-                dist[v] = nextDist;
+        for (int t = 0; t < typeCount; t++) {
+          if (useFwd && allFwdOffsets[t] != null) {
+            final int[] offsets = allFwdOffsets[t];
+            final int[] neighbors = allFwdNeighbors[t];
+            for (int j = offsets[u], end = offsets[u + 1]; j < end; j++) {
+              final int v = neighbors[j];
+              final int word = v >>> 6;
+              final long bit = 1L << (v & 63);
+              if ((visited[word] & bit) == 0) {
+                visited[word] |= bit;
                 if (v == target)
-                  return nextDist;
-                if (nextSize >= nextFrontier.length)
-                  nextFrontier = Arrays.copyOf(nextFrontier, Math.min(n, nextFrontier.length * 2));
+                  return depth;
                 nextFrontier[nextSize++] = v;
               }
             }
           }
-          if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-            final int[] bwdOffsets = csr.getBackwardOffsets();
-            final int[] bwdNeighbors = csr.getBackwardNeighbors();
-            for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
-              final int v = bwdNeighbors[j];
-              if (dist[v] < 0) {
-                dist[v] = nextDist;
+          if (useBwd && allBwdOffsets[t] != null) {
+            final int[] offsets = allBwdOffsets[t];
+            final int[] neighbors = allBwdNeighbors[t];
+            for (int j = offsets[u], end = offsets[u + 1]; j < end; j++) {
+              final int v = neighbors[j];
+              final int word = v >>> 6;
+              final long bit = 1L << (v & 63);
+              if ((visited[word] & bit) == 0) {
+                visited[word] |= bit;
                 if (v == target)
-                  return nextDist;
-                if (nextSize >= nextFrontier.length)
-                  nextFrontier = Arrays.copyOf(nextFrontier, Math.min(n, nextFrontier.length * 2));
+                  return depth;
                 nextFrontier[nextSize++] = v;
               }
             }
@@ -342,7 +362,10 @@ public final class GraphAlgorithms {
         }
       }
 
+      // Swap frontier references (zero-cost)
+      final int[] tmp = frontier;
       frontier = nextFrontier;
+      nextFrontier = tmp;
       frontierSize = nextSize;
     }
     return -1;
@@ -353,7 +376,7 @@ public final class GraphAlgorithms {
    * Unreachable nodes have distance -1.
    * <p>
    * Parallelizes frontier expansion when frontier exceeds threshold using
-   * AtomicIntegerArray CAS for thread-safe discovery and thread-local next-frontier buffers.
+   * AtomicLongArray bitmap CAS for thread-safe discovery and thread-local next-frontier buffers.
    */
   public static int[] shortestPathAll(final GraphAnalyticalView view, final int source,
       final Vertex.DIRECTION direction, final String... edgeTypes) {
@@ -366,21 +389,57 @@ public final class GraphAlgorithms {
     }
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
-    final AtomicIntegerArray dist = new AtomicIntegerArray(n);
-    for (int i = 0; i < n; i++)
-      dist.set(i, -1);
-    dist.set(source, 0);
 
-    int[] frontier = new int[] { source };
+    // Pre-hoist CSR arrays and direction flags outside the BFS loop
+    final boolean useFwd = direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH;
+    final boolean useBwd = direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH;
+    final int typeCount = types.length;
+    final int[][] allFwdOffsets = new int[typeCount][];
+    final int[][] allFwdNeighbors = new int[typeCount][];
+    final int[][] allBwdOffsets = new int[typeCount][];
+    final int[][] allBwdNeighbors = new int[typeCount][];
+    for (int t = 0; t < typeCount; t++) {
+      final CSRAdjacencyIndex csr = view.getCSRIndex(types[t]);
+      if (csr == null)
+        continue;
+      if (useFwd) {
+        allFwdOffsets[t] = csr.getForwardOffsets();
+        allFwdNeighbors[t] = csr.getForwardNeighbors();
+      }
+      if (useBwd) {
+        allBwdOffsets[t] = csr.getBackwardOffsets();
+        allBwdNeighbors[t] = csr.getBackwardNeighbors();
+      }
+    }
+
+    // dist[] for output, bitmap for fast visited check in hot loop
+    final int[] dist = new int[n];
+    Arrays.fill(dist, -1);
+    dist[source] = 0;
+
+    // Bitmap visited set: n/64 longs (~80KB for 633K nodes) fits in L2 cache
+    final long[] visited = new long[(n + 63) >>> 6];
+    visited[source >>> 6] |= 1L << (source & 63);
+
+    // Pre-allocate frontiers at full capacity, swap references between levels
+    int[] frontier = new int[n];
+    int[] nextFrontier = new int[n];
+    frontier[0] = source;
     int frontierSize = 1;
+    int depth = 0;
 
     while (frontierSize > 0) {
-      final int nextDist = dist.get(frontier[0]) + 1;
+      depth++;
 
       if (frontierSize > PARALLEL_BFS_THRESHOLD) {
-        // Parallel frontier expansion
+        // Parallel frontier expansion with AtomicLongArray bitmap for thread-safe CAS
+        final AtomicLongArray visitedAtomic = new AtomicLongArray(visited.length);
+        for (int i = 0; i < visited.length; i++)
+          visitedAtomic.set(i, visited[i]);
+
         final int fSize = frontierSize;
         final int[] currentFrontier = frontier;
+        final int currentDepth = depth;
         final int numThreads = Math.min(PARALLELISM, (fSize + PARALLEL_BFS_THRESHOLD - 1) / PARALLEL_BFS_THRESHOLD);
         final int chunkSize = (fSize + numThreads - 1) / numThreads;
         final int[][] localNexts = new int[numThreads][];
@@ -399,28 +458,43 @@ public final class GraphAlgorithms {
             int localSize = 0;
             for (int f = tStart; f < tEnd; f++) {
               final int u = currentFrontier[f];
-              for (final String edgeType : types) {
-                final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
-                if (csr == null)
-                  continue;
-                if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-                  final int[] fwdOffsets = csr.getForwardOffsets();
-                  final int[] fwdNeighbors = csr.getForwardNeighbors();
-                  for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
-                    final int v = fwdNeighbors[j];
-                    if (dist.compareAndSet(v, -1, nextDist)) {
+              for (int ti = 0; ti < typeCount; ti++) {
+                if (useFwd && allFwdOffsets[ti] != null) {
+                  final int[] offsets = allFwdOffsets[ti];
+                  final int[] neighbors = allFwdNeighbors[ti];
+                  for (int j = offsets[u], end = offsets[u + 1]; j < end; j++) {
+                    final int v = neighbors[j];
+                    final int word = v >>> 6;
+                    final long bit = 1L << (v & 63);
+                    long oldVal;
+                    do {
+                      oldVal = visitedAtomic.get(word);
+                      if ((oldVal & bit) != 0)
+                        break;
+                    } while (!visitedAtomic.compareAndSet(word, oldVal, oldVal | bit));
+                    if ((oldVal & bit) == 0) {
+                      dist[v] = currentDepth;
                       if (localSize >= localNext.length)
                         localNext = Arrays.copyOf(localNext, Math.min(n, localNext.length * 2));
                       localNext[localSize++] = v;
                     }
                   }
                 }
-                if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-                  final int[] bwdOffsets = csr.getBackwardOffsets();
-                  final int[] bwdNeighbors = csr.getBackwardNeighbors();
-                  for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
-                    final int v = bwdNeighbors[j];
-                    if (dist.compareAndSet(v, -1, nextDist)) {
+                if (useBwd && allBwdOffsets[ti] != null) {
+                  final int[] offsets = allBwdOffsets[ti];
+                  final int[] neighbors = allBwdNeighbors[ti];
+                  for (int j = offsets[u], end = offsets[u + 1]; j < end; j++) {
+                    final int v = neighbors[j];
+                    final int word = v >>> 6;
+                    final long bit = 1L << (v & 63);
+                    long oldVal;
+                    do {
+                      oldVal = visitedAtomic.get(word);
+                      if ((oldVal & bit) != 0)
+                        break;
+                    } while (!visitedAtomic.compareAndSet(word, oldVal, oldVal | bit));
+                    if ((oldVal & bit) == 0) {
+                      dist[v] = currentDepth;
                       if (localSize >= localNext.length)
                         localNext = Arrays.copyOf(localNext, Math.min(n, localNext.length * 2));
                       localNext[localSize++] = v;
@@ -437,68 +511,74 @@ public final class GraphAlgorithms {
         }
         joinThreads(threads, launched);
 
-        // Merge thread-local frontiers
+        // Copy atomic bitmap back to plain bitmap for next iteration
+        for (int i = 0; i < visited.length; i++)
+          visited[i] = visitedAtomic.get(i);
+
+        // Merge thread-local frontiers into pre-allocated nextFrontier
         int totalNext = 0;
         for (int t = 0; t < launched; t++)
           if (localNexts[t] != null)
             totalNext += localSizes[t];
-        frontier = new int[totalNext];
         int pos = 0;
         for (int t = 0; t < launched; t++)
           if (localNexts[t] != null && localSizes[t] > 0) {
-            System.arraycopy(localNexts[t], 0, frontier, pos, localSizes[t]);
+            System.arraycopy(localNexts[t], 0, nextFrontier, pos, localSizes[t]);
             pos += localSizes[t];
           }
+
+        // Swap frontier references
+        final int[] tmp = frontier;
+        frontier = nextFrontier;
+        nextFrontier = tmp;
         frontierSize = totalNext;
 
       } else {
-        // Sequential frontier expansion (small frontier)
+        // Sequential frontier expansion (small frontier) — uses plain long[] bitmap
         int nextSize = 0;
-        int[] nextFrontier = new int[Math.min(n, frontierSize * 4)];
         for (int f = 0; f < frontierSize; f++) {
           final int u = frontier[f];
-          for (final String edgeType : types) {
-            final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
-            if (csr == null)
-              continue;
-            if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-              final int[] fwdOffsets = csr.getForwardOffsets();
-              final int[] fwdNeighbors = csr.getForwardNeighbors();
-              for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
-                final int v = fwdNeighbors[j];
-                if (dist.get(v) < 0) {
-                  dist.set(v, nextDist);
-                  if (nextSize >= nextFrontier.length)
-                    nextFrontier = Arrays.copyOf(nextFrontier, Math.min(n, nextFrontier.length * 2));
+          for (int t = 0; t < typeCount; t++) {
+            if (useFwd && allFwdOffsets[t] != null) {
+              final int[] offsets = allFwdOffsets[t];
+              final int[] neighbors = allFwdNeighbors[t];
+              for (int j = offsets[u], end = offsets[u + 1]; j < end; j++) {
+                final int v = neighbors[j];
+                final int word = v >>> 6;
+                final long bit = 1L << (v & 63);
+                if ((visited[word] & bit) == 0) {
+                  visited[word] |= bit;
+                  dist[v] = depth;
                   nextFrontier[nextSize++] = v;
                 }
               }
             }
-            if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-              final int[] bwdOffsets = csr.getBackwardOffsets();
-              final int[] bwdNeighbors = csr.getBackwardNeighbors();
-              for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
-                final int v = bwdNeighbors[j];
-                if (dist.get(v) < 0) {
-                  dist.set(v, nextDist);
-                  if (nextSize >= nextFrontier.length)
-                    nextFrontier = Arrays.copyOf(nextFrontier, Math.min(n, nextFrontier.length * 2));
+            if (useBwd && allBwdOffsets[t] != null) {
+              final int[] offsets = allBwdOffsets[t];
+              final int[] neighbors = allBwdNeighbors[t];
+              for (int j = offsets[u], end = offsets[u + 1]; j < end; j++) {
+                final int v = neighbors[j];
+                final int word = v >>> 6;
+                final long bit = 1L << (v & 63);
+                if ((visited[word] & bit) == 0) {
+                  visited[word] |= bit;
+                  dist[v] = depth;
                   nextFrontier[nextSize++] = v;
                 }
               }
             }
           }
         }
+
+        // Swap frontier references
+        final int[] tmp = frontier;
         frontier = nextFrontier;
+        nextFrontier = tmp;
         frontierSize = nextSize;
       }
     }
 
-    // Copy AtomicIntegerArray to int[] result
-    final int[] result = new int[n];
-    for (int i = 0; i < n; i++)
-      result[i] = dist.get(i);
-    return result;
+    return dist;
   }
 
   // --- Dijkstra Single-Source Shortest Path (weighted) ---
