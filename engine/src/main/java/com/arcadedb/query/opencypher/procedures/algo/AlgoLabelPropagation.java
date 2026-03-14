@@ -20,8 +20,10 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -39,6 +41,10 @@ import java.util.stream.Stream;
  * Detects communities using the Label Propagation Algorithm (LPA). Each node adopts the
  * most common label among its neighbors in each iteration. Very fast and scalable; useful
  * for real-time community detection. Results may be non-deterministic due to tie-breaking.
+ * </p>
+ * <p>
+ * When a Graph Analytical View (GAV) is available, delegates to the CSR-native
+ * implementation in {@link GraphAlgorithms#labelPropagation} for maximum performance.
  * </p>
  * <p>
  * Config map parameters (all optional):
@@ -93,10 +99,41 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
         n.intValue() : 10;
-    final String directionStr = config != null && config.get("direction") instanceof String s ? s : "BOTH";
-    final Vertex.DIRECTION direction = parseDirection(directionStr);
 
     final Database db = context.getDatabase();
+
+    // Try CSR-accelerated path: delegate to native label propagation on CSR arrays
+    final GraphTraversalProvider provider = findProvider(db, null);
+    if (provider instanceof GraphAnalyticalView gav) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(gav, maxIterations);
+    }
+
+    // Fall back to OLTP path
+    final String directionStr = config != null && config.get("direction") instanceof String s ? s : "BOTH";
+    final Vertex.DIRECTION direction = parseDirection(directionStr);
+    return executeWithOLTP(db, maxIterations, direction);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final int maxIterations) {
+    final int n = gav.getNodeCount();
+    if (n == 0)
+      return Stream.empty();
+
+    final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations);
+
+    final List<Result> results = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      final ResultInternal result = new ResultInternal();
+      result.setProperty("node", gav.getRID(i).asVertex());
+      result.setProperty("communityId", labels[i]);
+      results.add(result);
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db, final int maxIterations,
+      final Vertex.DIRECTION direction) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> vertIter = getAllVertices(db, null);
     while (vertIter.hasNext())
@@ -162,5 +199,4 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     }
     return results.stream();
   }
-
 }

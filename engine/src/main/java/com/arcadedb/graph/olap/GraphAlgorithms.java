@@ -517,6 +517,7 @@ public final class GraphAlgorithms {
         maxDegree = deg;
     }
 
+    // Reusable buffer for collecting neighbor labels — O(maxDegree) memory only
     final int[] neighborLabels = new int[maxDegree];
 
     // Shuffle order for each iteration to avoid bias
@@ -538,23 +539,7 @@ public final class GraphAlgorithms {
       for (int idx = 0; idx < n; idx++) {
         final int u = order[idx];
 
-        // Count neighbor labels using a simple frequency approach
-        int bestLabel = labels[u];
-        int bestCount = 0;
-
-        // Collect all neighbor labels and find the most frequent
-        int totalNeighbors = 0;
-        for (final String edgeType : types) {
-          final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
-          if (csr == null)
-            continue;
-          totalNeighbors += csr.outDegree(u) + csr.inDegree(u);
-        }
-
-        if (totalNeighbors == 0)
-          continue;
-
-        // Fill reusable buffer with neighbor labels
+        // Collect neighbor labels into reusable buffer
         int pos = 0;
         for (final String edgeType : types) {
           final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
@@ -570,17 +555,20 @@ public final class GraphAlgorithms {
             neighborLabels[pos++] = labels[bwdNeighbors[j]];
         }
 
-        // Sort and count runs to find mode (O(d log d) but avoids HashMap allocation)
+        if (pos == 0)
+          continue;
+
+        // Sort and count runs to find mode — O(d log d) but uses only O(maxDegree) memory
         Arrays.sort(neighborLabels, 0, pos);
+        int bestLabel = neighborLabels[0];
+        int bestCount = 1;
         int currentLabel = neighborLabels[0];
         int currentCount = 1;
-        bestLabel = currentLabel;
-        bestCount = 1;
         for (int i = 1; i < pos; i++) {
           if (neighborLabels[i] == currentLabel) {
             currentCount++;
           } else {
-            if (currentCount > bestCount) {
+            if (currentCount > bestCount || (currentCount == bestCount && currentLabel < bestLabel)) {
               bestCount = currentCount;
               bestLabel = currentLabel;
             }
@@ -588,7 +576,7 @@ public final class GraphAlgorithms {
             currentCount = 1;
           }
         }
-        if (currentCount > bestCount)
+        if (currentCount > bestCount || (currentCount == bestCount && currentLabel < bestLabel))
           bestLabel = currentLabel;
 
         if (labels[u] != bestLabel) {
@@ -608,6 +596,140 @@ public final class GraphAlgorithms {
    */
   public static int[] labelPropagation(final GraphAnalyticalView view, final String... edgeTypes) {
     return labelPropagation(view, 100, edgeTypes);
+  }
+
+  // --- Local Clustering Coefficient ---
+
+  /**
+   * Computes the local clustering coefficient for every node in the graph.
+   * LCC(u) = 2 * triangles(u) / (deg(u) * (deg(u) - 1)), where deg is the undirected degree.
+   * Nodes with degree &lt; 2 receive a coefficient of 0.
+   * <p>
+   * Uses sorted-merge intersection on CSR arrays for efficient triangle counting.
+   * O(m * sqrt(m)) time, O(m) memory, zero object allocation in the hot loop.
+   *
+   * @param view      the analytical view (must be built)
+   * @param edgeTypes edge types to consider (null or empty = all)
+   * @return double[] of LCC values indexed by dense node ID
+   */
+  public static double[] localClusteringCoefficient(final GraphAnalyticalView view, final String... edgeTypes) {
+    final int n = view.getNodeMapping().size();
+    if (n == 0)
+      return new double[0];
+
+    final String[] types = resolveEdgeTypes(view, edgeTypes);
+
+    return lccBuildAndIntersect(view, types, n);
+  }
+
+  /**
+   * Builds a flat merged undirected adjacency from CSR arrays, then counts triangles via
+   * sorted-merge intersection. For single edge type, uses merge (O(d)) instead of sort (O(d log d))
+   * since CSR forward and backward arrays are already individually sorted.
+   */
+  private static double[] lccBuildAndIntersect(final GraphAnalyticalView view, final String[] types, final int n) {
+    final boolean singleType = types.length == 1;
+    // First pass: compute degree per node
+    final int[] degree = new int[n];
+    for (final String edgeType : types) {
+      final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
+      if (csr == null)
+        continue;
+      for (int u = 0; u < n; u++)
+        degree[u] += csr.outDegree(u) + csr.inDegree(u);
+    }
+
+    // Build offsets from degrees
+    final int[] offsets = new int[n + 1];
+    for (int i = 0; i < n; i++)
+      offsets[i + 1] = offsets[i] + degree[i];
+
+    final int totalEdges = offsets[n];
+    final int[] neighbors = new int[totalEdges];
+    final int[] pos = new int[n];
+    for (int i = 0; i < n; i++)
+      pos[i] = offsets[i];
+
+    if (singleType) {
+      // Single edge type: merge forward + backward (both already sorted) → O(d) per node
+      final CSRAdjacencyIndex csr = view.getCSRIndex(types[0]);
+      final int[] fwdOffsets = csr.getForwardOffsets();
+      final int[] fwdNeighbors = csr.getForwardNeighbors();
+      final int[] bwdOffsets = csr.getBackwardOffsets();
+      final int[] bwdNeighbors = csr.getBackwardNeighbors();
+      for (int u = 0; u < n; u++) {
+        int ia = fwdOffsets[u], aEnd = fwdOffsets[u + 1];
+        int ib = bwdOffsets[u], bEnd = bwdOffsets[u + 1];
+        int p = offsets[u];
+        while (ia < aEnd && ib < bEnd) {
+          if (fwdNeighbors[ia] <= bwdNeighbors[ib])
+            neighbors[p++] = fwdNeighbors[ia++];
+          else
+            neighbors[p++] = bwdNeighbors[ib++];
+        }
+        while (ia < aEnd)
+          neighbors[p++] = fwdNeighbors[ia++];
+        while (ib < bEnd)
+          neighbors[p++] = bwdNeighbors[ib++];
+      }
+    } else {
+      // Multiple edge types: copy all, then sort
+      for (final String edgeType : types) {
+        final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
+        if (csr == null)
+          continue;
+        final int[] fwdOffsets = csr.getForwardOffsets();
+        final int[] fwdNeighbors = csr.getForwardNeighbors();
+        for (int u = 0; u < n; u++)
+          for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++)
+            neighbors[pos[u]++] = fwdNeighbors[j];
+        final int[] bwdOffsets = csr.getBackwardOffsets();
+        final int[] bwdNeighbors = csr.getBackwardNeighbors();
+        for (int u = 0; u < n; u++)
+          for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
+            neighbors[pos[u]++] = bwdNeighbors[j];
+      }
+      // Sort each adjacency list for merge-based intersection
+      for (int u = 0; u < n; u++)
+        Arrays.sort(neighbors, offsets[u], offsets[u + 1]);
+    }
+
+    // Count triangles — parallel per vertex (each triangles[u] is independent)
+    final long[] triangles = new long[n];
+    final int[] finalNeighbors = neighbors;
+    final int[] finalOffsets = offsets;
+    java.util.stream.IntStream.range(0, n).parallel().forEach(u -> {
+      final int uStart = finalOffsets[u];
+      final int uEnd = finalOffsets[u + 1];
+      long count = 0;
+      for (int k = uStart; k < uEnd; k++) {
+        final int v = finalNeighbors[k];
+        final int vStart = finalOffsets[v];
+        final int vEnd = finalOffsets[v + 1];
+        int iu = uStart, iv = vStart;
+        while (iu < uEnd && iv < vEnd) {
+          if (finalNeighbors[iu] < finalNeighbors[iv])
+            iu++;
+          else if (finalNeighbors[iu] > finalNeighbors[iv])
+            iv++;
+          else {
+            count++;
+            iu++;
+            iv++;
+          }
+        }
+      }
+      triangles[u] = count;
+    });
+
+    // Each triangle counted twice per node
+    final double[] lcc = new double[n];
+    for (int u = 0; u < n; u++) {
+      final long deg = finalOffsets[u + 1] - finalOffsets[u];
+      if (deg >= 2)
+        lcc[u] = (double) triangles[u] / (double) (deg * (deg - 1));
+    }
+    return lcc;
   }
 
   // --- Helpers ---

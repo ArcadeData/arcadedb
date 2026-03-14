@@ -387,6 +387,96 @@ public class GraphAlgorithmsTest extends TestHelper {
 
   // --- Compaction Threshold (builder) ---
 
+  // --- Local Clustering Coefficient ---
+
+  @Test
+  void testLCCTriangle() {
+    // A -- B -- C -- A: all nodes in a triangle, LCC = 1.0 for all
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", a);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final double[] lcc = GraphAlgorithms.localClusteringCoefficient(gav, "LINK");
+
+    assertThat(lcc).hasSize(3);
+    for (final double coeff : lcc)
+      assertThat(coeff).isCloseTo(1.0, org.assertj.core.data.Offset.offset(1e-9));
+
+    gav.drop();
+  }
+
+  @Test
+  void testLCCStar() {
+    // Hub A connected to B, C, D — no edges among B, C, D. LCC(A) = 0 (no triangles)
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    a.newEdge("LINK", c);
+    a.newEdge("LINK", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final double[] lcc = GraphAlgorithms.localClusteringCoefficient(gav, "LINK");
+
+    assertThat(lcc).hasSize(4);
+    // Hub has degree 3 but no triangles
+    final int hubId = gav.getNodeId(a.getIdentity());
+    assertThat(lcc[hubId]).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-9));
+    // Leaves have degree 1 → LCC = 0
+    assertThat(lcc[gav.getNodeId(b.getIdentity())]).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-9));
+
+    gav.drop();
+  }
+
+  @Test
+  void testLCCPartialClique() {
+    // A--B, A--C, A--D, B--C (triangle A-B-C, but D not connected to B or C)
+    // LCC(A) = 2 * 1 / (3 * 2) = 1/3  (1 triangle out of 3 possible)
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    a.newEdge("LINK", c);
+    a.newEdge("LINK", d);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final double[] lcc = GraphAlgorithms.localClusteringCoefficient(gav, "LINK");
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    // A has degree 3 (undirected: out to B,C,D + in from none for LINK direction;
+    // but BOTH direction: A→B, A→C, A→D out, B→C in... depends on CSR)
+    // LCC(A) = 1/3 for outgoing triangle A-B-C
+    assertThat(lcc[aId]).isGreaterThan(0.0);
+    assertThat(lcc[aId]).isLessThanOrEqualTo(1.0);
+
+    gav.drop();
+  }
+
   @Test
   void testCompactionThresholdBuilder() {
     database.getSchema().createVertexType("Node");

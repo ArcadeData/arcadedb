@@ -29,6 +29,9 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -306,7 +309,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         }
       } catch (final Exception e) {
         this.buildError = e;
-        this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+        if (snapshot != null) {
+          this.status = Status.STALE;
+        } else {
+          this.status = Status.NOT_BUILT;
+          // Unregister failed GAV so the name can be reused for a fresh build
+          GraphTraversalProviderRegistry.unregister(database, this);
+          if (name != null)
+            GraphAnalyticalViewRegistry.unregister(database, name);
+        }
         LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
       } finally {
         BUILD_PERMITS.release();
@@ -359,24 +370,39 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public boolean coversVertexType(final String typeName) {
-    if (typeName == null)
-      return vertexTypes == null; // null = all types
+    if (typeName == null) {
+      if (vertexTypes == null)
+        return true; // built without filter = all types
+      // Check if explicit types cover all vertex types in the schema
+      for (final DocumentType dt : database.getSchema().getTypes())
+        if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()))
+          return false;
+      return true;
+    }
     if (vertexTypes == null)
       return true; // we include all vertex types
-    for (final String vt : vertexTypes)
-      if (vt.equals(typeName))
-        return true;
-    return false;
+    return containsType(vertexTypes, typeName);
   }
 
   @Override
   public boolean coversEdgeType(final String edgeTypeName) {
-    if (edgeTypeName == null)
-      return edgeTypes == null; // null = all types
+    if (edgeTypeName == null) {
+      if (edgeTypes == null)
+        return true; // built without filter = all types
+      // Check if explicit types cover all edge types in the schema
+      for (final DocumentType dt : database.getSchema().getTypes())
+        if (dt instanceof EdgeType && !containsType(edgeTypes, dt.getName()))
+          return false;
+      return true;
+    }
     if (edgeTypes == null)
       return true; // we include all edge types
-    for (final String et : edgeTypes)
-      if (et.equals(edgeTypeName))
+    return containsType(edgeTypes, edgeTypeName);
+  }
+
+  private static boolean containsType(final String[] types, final String typeName) {
+    for (final String t : types)
+      if (t.equals(typeName))
         return true;
     return false;
   }
@@ -511,7 +537,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         return ov.getOverflowRID(nodeId);
       return null;
     }
-    return snap.nodeMapping.getRID(nodeId);
+    return snap.nodeMapping.getRID(database, nodeId);
   }
 
   // --- Node type queries ---

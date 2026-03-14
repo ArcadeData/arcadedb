@@ -19,7 +19,10 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -35,6 +38,10 @@ import java.util.stream.Stream;
  * if there exists a path between them when all edges are treated as undirected. This is
  * fundamental for determining if a network is fully connected and for isolating disconnected
  * subgraphs.
+ * </p>
+ * <p>
+ * When a Graph Analytical View (GAV) is available, delegates to the CSR-native union-find
+ * implementation in {@link GraphAlgorithms#connectedComponents} for maximum performance.
  * </p>
  * <p>
  * Example Cypher usage:
@@ -81,7 +88,36 @@ public class AlgoWCC extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    final GraphData graph = loadGraph(db, null, null, context);
+    // Try CSR-accelerated path: delegate to native union-find on CSR arrays
+    final GraphTraversalProvider provider = findProvider(db, null);
+    if (provider instanceof GraphAnalyticalView gav) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(gav);
+    }
+
+    // Fall back to OLTP path
+    return executeWithOLTP(db);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav) {
+    final int n = gav.getNodeCount();
+    if (n == 0)
+      return Stream.empty();
+
+    final int[] componentId = GraphAlgorithms.connectedComponents(gav);
+
+    final List<Result> results = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      final ResultInternal result = new ResultInternal();
+      result.setProperty("node", gav.getRID(i).asVertex());
+      result.setProperty("componentId", componentId[i]);
+      results.add(result);
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db) {
+    final GraphData graph = loadGraph(db, null, null, null);
 
     final int n = graph.nodeCount;
     if (n == 0)
