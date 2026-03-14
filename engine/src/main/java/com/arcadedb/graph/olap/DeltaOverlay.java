@@ -132,7 +132,9 @@ class DeltaOverlay {
     final Map<String, Set<Long>> newDeletedEdges = new HashMap<>();
     for (final var entry : deletedEdgesPerType.entrySet())
       newDeletedEdges.put(entry.getKey(), new HashSet<>(entry.getValue()));
-    final Map<Integer, Map<String, Object>> newPropOverrides = new HashMap<>(propertyOverrides);
+    final Map<Integer, Map<String, Object>> newPropOverrides = new HashMap<>(propertyOverrides.size());
+    for (final var propEntry : propertyOverrides.entrySet())
+      newPropOverrides.put(propEntry.getKey(), new HashMap<>(propEntry.getValue()));
 
     int newOverflowCount = overflowCount;
     int newDeltaEdgeCount = deltaEdgeCount;

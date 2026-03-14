@@ -188,7 +188,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Incremental auto-update
   private DeltaCollector         deltaCollector;
   public static final int        DEFAULT_COMPACTION_THRESHOLD = 10_000;
-  private int                    compactionThreshold = DEFAULT_COMPACTION_THRESHOLD;
+  private volatile int           compactionThreshold = DEFAULT_COMPACTION_THRESHOLD;
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
 

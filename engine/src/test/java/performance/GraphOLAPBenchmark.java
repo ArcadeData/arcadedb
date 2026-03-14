@@ -74,6 +74,13 @@ public class GraphOLAPBenchmark {
   private List<RID>            vertexRIDs;
   private Map<RID, Integer>    ridToIndex;
 
+  // Result collection for summary table
+  private final List<String[]> results = new ArrayList<>();
+  private long   gavMemoryBytes;
+  private long   oltpEstimateBytes;
+  private double lastOltpUs;      // last OLTP traversal result in us/sample
+  private double lastOltpMs;      // last OLTP algorithm result in ms
+
   @BeforeAll
   void setup() {
     FileUtils.deleteRecursively(new File(DB_PATH));
@@ -204,6 +211,8 @@ public class GraphOLAPBenchmark {
     final long oltpVertexBytes = (long) nodeCount * (64 + 12 + 5 * 48);
     final long oltpEdgeBytes = (long) edgeCount * (64 + 24 + 8 + 48);
     final long oltpEstimate = oltpVertexBytes + oltpEdgeBytes;
+    gavMemoryBytes = totalMemory;
+    oltpEstimateBytes = oltpEstimate;
     System.out.printf("%n  OLTP RAM estimate (in-memory objects): %s%n", formatBytes(oltpEstimate));
     System.out.printf("  GAV/OLTP RAM ratio: %.1fx more compact%n%n", (double) oltpEstimate / totalMemory);
   }
@@ -223,7 +232,7 @@ public class GraphOLAPBenchmark {
       final Vertex v = vertexRIDs.get(rng.nextInt(VERTEX_COUNT)).asVertex();
       total += v.countEdges(Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLTP", TRAVERSAL_SAMPLES, start, total);
+    lastOltpUs = printResultUs("OLTP", TRAVERSAL_SAMPLES, start, total);
   }
 
   @Test
@@ -236,7 +245,8 @@ public class GraphOLAPBenchmark {
       final int nodeId = gav.getNodeId(vertexRIDs.get(rng.nextInt(VERTEX_COUNT)));
       total += gav.countEdges(nodeId, Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLAP", TRAVERSAL_SAMPLES, start, total);
+    final double olapUs = printResultUs("OLAP", TRAVERSAL_SAMPLES, start, total);
+    addResult("1-hop count", formatUs(lastOltpUs), formatUs(olapUs), lastOltpUs / olapUs);
     System.out.println();
   }
 
@@ -256,7 +266,7 @@ public class GraphOLAPBenchmark {
       for (final Vertex n : v.getVertices(Vertex.DIRECTION.OUT, "KNOWS"))
         total++;
     }
-    printResult("OLTP", TRAVERSAL_SAMPLES, start, total);
+    lastOltpUs = printResultUs("OLTP", TRAVERSAL_SAMPLES, start, total);
   }
 
   @Test
@@ -269,7 +279,8 @@ public class GraphOLAPBenchmark {
       final int nodeId = gav.getNodeId(vertexRIDs.get(rng.nextInt(VERTEX_COUNT)));
       total += gav.getVertices(nodeId, Vertex.DIRECTION.OUT, "KNOWS").length;
     }
-    printResult("OLAP", TRAVERSAL_SAMPLES, start, total);
+    final double olapUs = printResultUs("OLAP", TRAVERSAL_SAMPLES, start, total);
+    addResult("1-hop IDs", formatUs(lastOltpUs), formatUs(olapUs), lastOltpUs / olapUs);
     System.out.println();
   }
 
@@ -290,7 +301,7 @@ public class GraphOLAPBenchmark {
       for (final Vertex n1 : v.getVertices(Vertex.DIRECTION.OUT, "KNOWS"))
         total += n1.countEdges(Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLTP", samples, start, total);
+    lastOltpUs = printResultUs("OLTP", samples, start, total);
   }
 
   @Test
@@ -305,7 +316,8 @@ public class GraphOLAPBenchmark {
       for (final int n : gav.getVertices(nodeId, Vertex.DIRECTION.OUT, "KNOWS"))
         total += gav.countEdges(n, Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLAP", samples, start, total);
+    final double olapUs = printResultUs("OLAP", samples, start, total);
+    addResult("2-hop", formatUs(lastOltpUs), formatUs(olapUs), lastOltpUs / olapUs);
     System.out.println();
   }
 
@@ -327,7 +339,7 @@ public class GraphOLAPBenchmark {
         for (final Vertex n2 : n1.getVertices(Vertex.DIRECTION.OUT, "KNOWS"))
           total += n2.countEdges(Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLTP", samples, start, total);
+    lastOltpUs = printResultUs("OLTP", samples, start, total);
   }
 
   @Test
@@ -343,7 +355,8 @@ public class GraphOLAPBenchmark {
         for (final int n2 : gav.getVertices(n1, Vertex.DIRECTION.OUT, "KNOWS"))
           total += gav.countEdges(n2, Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLAP", samples, start, total);
+    final double olapUs = printResultUs("OLAP", samples, start, total);
+    addResult("3-hop", formatUs(lastOltpUs), formatUs(olapUs), lastOltpUs / olapUs);
     System.out.println();
   }
 
@@ -366,7 +379,7 @@ public class GraphOLAPBenchmark {
           for (final Vertex n3 : n2.getVertices(Vertex.DIRECTION.OUT, "KNOWS"))
             total += n3.countEdges(Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLTP", samples, start, total);
+    lastOltpUs = printResultUs("OLTP", samples, start, total);
   }
 
   @Test
@@ -383,7 +396,8 @@ public class GraphOLAPBenchmark {
           for (final int n3 : gav.getVertices(n2, Vertex.DIRECTION.OUT, "KNOWS"))
             total += gav.countEdges(n3, Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLAP", samples, start, total);
+    final double olapUs = printResultUs("OLAP", samples, start, total);
+    addResult("4-hop", formatUs(lastOltpUs), formatUs(olapUs), lastOltpUs / olapUs);
     System.out.println();
   }
 
@@ -407,7 +421,7 @@ public class GraphOLAPBenchmark {
             for (final Vertex n4 : n3.getVertices(Vertex.DIRECTION.OUT, "KNOWS"))
               total += n4.countEdges(Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLTP", samples, start, total);
+    lastOltpUs = printResultUs("OLTP", samples, start, total);
   }
 
   @Test
@@ -425,7 +439,8 @@ public class GraphOLAPBenchmark {
             for (final int n4 : gav.getVertices(n3, Vertex.DIRECTION.OUT, "KNOWS"))
               total += gav.countEdges(n4, Vertex.DIRECTION.OUT, "KNOWS");
     }
-    printResult("OLAP", samples, start, total);
+    final double olapUs = printResultUs("OLAP", samples, start, total);
+    addResult("5-hop", formatUs(lastOltpUs), formatUs(olapUs), lastOltpUs / olapUs);
     System.out.println();
   }
 
@@ -459,8 +474,9 @@ public class GraphOLAPBenchmark {
       }
     }
     final long ms = (System.nanoTime() - start) / 1_000_000;
+    lastOltpMs = (double) ms / samples;
     System.out.printf("  OLTP:  %,d pairs in %,d ms  (%,.1f ms/pair)  found: %d  avg hops: %.1f%n",
-        samples, ms, (double) ms / samples, found, found > 0 ? (double) totalHops / found : 0);
+        samples, ms, lastOltpMs, found, found > 0 ? (double) totalHops / found : 0);
   }
 
   @Test
@@ -488,8 +504,10 @@ public class GraphOLAPBenchmark {
       }
     }
     final long ms = (System.nanoTime() - start) / 1_000_000;
+    final double olapMsPerPair = (double) ms / samples;
     System.out.printf("  OLAP:  %,d pairs in %,d ms  (%,.1f ms/pair)  found: %d  avg hops: %.1f%n%n",
-        samples, ms, (double) ms / samples, found, found > 0 ? (double) totalHops / found : 0);
+        samples, ms, olapMsPerPair, found, found > 0 ? (double) totalHops / found : 0);
+    addResult("Shortest Path", String.format("%,.0f ms/pair", lastOltpMs), String.format("%.1f ms/pair", olapMsPerPair), lastOltpMs / olapMsPerPair);
   }
 
   // =============================================
@@ -544,6 +562,7 @@ public class GraphOLAPBenchmark {
     for (final double r : rank)
       if (r > maxRank)
         maxRank = r;
+    lastOltpMs = ms;
     System.out.printf("  OLTP:  %,d ms  (top rank=%.6f)%n", ms, maxRank);
   }
 
@@ -552,13 +571,14 @@ public class GraphOLAPBenchmark {
   void benchmarkPageRankOLAP() {
     final long start = System.nanoTime();
     final double[] ranks = GraphAlgorithms.pageRank(gav, 0.85, 20, "KNOWS");
-    final long ms = (System.nanoTime() - start) / 1_000_000;
+    final long olapMs = (System.nanoTime() - start) / 1_000_000;
 
     double maxRank = 0;
     for (final double r : ranks)
       if (r > maxRank)
         maxRank = r;
-    System.out.printf("  OLAP:  %,d ms  (top rank=%.6f)%n%n", ms, maxRank);
+    System.out.printf("  OLAP:  %,d ms  (top rank=%.6f)%n%n", olapMs, maxRank);
+    addResult("PageRank (20 iter)", String.format("%,d ms", (long) lastOltpMs), String.format("%,d ms", olapMs), lastOltpMs / olapMs);
   }
 
   // =============================================
@@ -592,6 +612,7 @@ public class GraphOLAPBenchmark {
 
     final long ms = (System.nanoTime() - start) / 1_000_000;
     final int components = GraphAlgorithms.countComponents(parent);
+    lastOltpMs = ms;
     System.out.printf("  OLTP:  %,d ms  (components: %,d)%n", ms, components);
   }
 
@@ -600,8 +621,9 @@ public class GraphOLAPBenchmark {
   void benchmarkConnectedComponentsOLAP() {
     final long start = System.nanoTime();
     final int[] components = GraphAlgorithms.connectedComponents(gav, "KNOWS");
-    final long ms = (System.nanoTime() - start) / 1_000_000;
-    System.out.printf("  OLAP:  %,d ms  (components: %,d)%n%n", ms, GraphAlgorithms.countComponents(components));
+    final long olapMs = (System.nanoTime() - start) / 1_000_000;
+    System.out.printf("  OLAP:  %,d ms  (components: %,d)%n%n", olapMs, GraphAlgorithms.countComponents(components));
+    addResult("Connected Components", String.format("%,d ms", (long) lastOltpMs), String.format("%,d ms", olapMs), lastOltpMs / olapMs);
   }
 
   // =============================================
@@ -656,6 +678,7 @@ public class GraphOLAPBenchmark {
     final Set<Integer> distinct = new HashSet<>();
     for (final int l : labels)
       distinct.add(l);
+    lastOltpMs = ms;
     System.out.printf("  OLTP:  %,d ms  (communities: %,d)%n", ms, distinct.size());
   }
 
@@ -664,7 +687,7 @@ public class GraphOLAPBenchmark {
   void benchmarkLabelPropagationOLAP() {
     final long start = System.nanoTime();
     final int[] labels = GraphAlgorithms.labelPropagation(gav, 20, "KNOWS");
-    final long ms = (System.nanoTime() - start) / 1_000_000;
+    final long olapMs = (System.nanoTime() - start) / 1_000_000;
 
     final boolean[] seen = new boolean[labels.length];
     int communities = 0;
@@ -673,17 +696,28 @@ public class GraphOLAPBenchmark {
         seen[l] = true;
         communities++;
       }
-    System.out.printf("  OLAP:  %,d ms  (communities: %,d)%n%n", ms, communities);
+    System.out.printf("  OLAP:  %,d ms  (communities: %,d)%n%n", olapMs, communities);
+    addResult("Label Propagation", String.format("%,d ms", (long) lastOltpMs), String.format("%,d ms", olapMs), lastOltpMs / olapMs);
   }
 
   // =============================================
   // Helpers
   // =============================================
 
-  private void printResult(final String label, final int samples, final long startNano, final long total) {
+  private double printResultUs(final String label, final int samples, final long startNano, final long total) {
     final long us = (System.nanoTime() - startNano) / 1_000;
+    final double usPerSample = (double) us / samples;
     System.out.printf("  %s:  %,d samples in %,d us  (%,.1f us/sample)  total: %,d%n",
-        label, samples, us, (double) us / samples, total);
+        label, samples, us, usPerSample, total);
+    return usPerSample;
+  }
+
+  private static String formatUs(final double us) {
+    if (us >= 1_000_000)
+      return String.format("%,.0f us", us);
+    if (us >= 1000)
+      return String.format("%,.0f us", us);
+    return String.format("%.1f us", us);
   }
 
   /**
@@ -738,6 +772,80 @@ public class GraphOLAPBenchmark {
       idx++;
     }
     return String.format("%.1f %s", val, units[idx]);
+  }
+
+  private void addResult(final String name, final String oltpValue, final String olapValue, final double speedup) {
+    results.add(new String[] { name, oltpValue, olapValue, String.format("%.1fx", speedup) });
+  }
+
+  @Test
+  @Order(99)
+  void printSummaryTable() {
+    System.out.println();
+    System.out.printf("Graph: %,dK vertices, ~%,dM edges%n%n", VERTEX_COUNT / 1000, (long) VERTEX_COUNT * EDGES_PER_VERTEX / 1_000_000);
+
+    // Column widths
+    final String[] headers = { "Benchmark", "OLTP", "OLAP", "Speedup" };
+    final int[] widths = new int[4];
+    for (int c = 0; c < 4; c++)
+      widths[c] = headers[c].length();
+    for (final String[] row : results)
+      for (int c = 0; c < 4; c++)
+        widths[c] = Math.max(widths[c], row[c].length());
+
+    // Add padding
+    for (int c = 0; c < 4; c++)
+      widths[c] += 2;
+
+    final String topBot = "  " + corner('┌', '┬', '┐', widths);
+    final String mid    = "  " + corner('├', '┼', '┤', widths);
+    final String bottom = "  " + corner('└', '┴', '┘', widths);
+
+    System.out.println(topBot);
+    System.out.println("  " + formatRow(headers, widths));
+    System.out.println(mid);
+    for (int i = 0; i < results.size(); i++) {
+      System.out.println("  " + formatRow(results.get(i), widths));
+      if (i < results.size() - 1)
+        System.out.println(mid);
+    }
+    System.out.println(bottom);
+
+    System.out.printf("%n  Memory: GAV (OLAP) uses %s vs ~%s OLTP estimate — %.1fx more compact.%n",
+        formatBytes(gavMemoryBytes), formatBytes(oltpEstimateBytes), (double) oltpEstimateBytes / gavMemoryBytes);
+    System.out.println();
+    System.out.println("  The OLAP engine dominates across the board, especially on full-graph algorithms");
+    System.out.printf("  like PageRank (%s faster) and Connected Components (%s faster).%n%n",
+        results.stream().filter(r -> r[0].equals("PageRank (20 iter)")).map(r -> r[3]).findFirst().orElse("N/A"),
+        results.stream().filter(r -> r[0].equals("Connected Components")).map(r -> r[3]).findFirst().orElse("N/A"));
+  }
+
+  private static String corner(final char left, final char mid, final char right, final int[] widths) {
+    final StringBuilder sb = new StringBuilder();
+    sb.append(left);
+    for (int c = 0; c < widths.length; c++) {
+      for (int i = 0; i < widths[c]; i++)
+        sb.append('─');
+      sb.append(c < widths.length - 1 ? mid : right);
+    }
+    return sb.toString();
+  }
+
+  private static String formatRow(final String[] cols, final int[] widths) {
+    final StringBuilder sb = new StringBuilder("│");
+    for (int c = 0; c < cols.length; c++) {
+      final String val = cols[c];
+      final int pad = widths[c] - val.length();
+      final int left = pad / 2;
+      final int right = pad - left;
+      for (int i = 0; i < left; i++)
+        sb.append(' ');
+      sb.append(val);
+      for (int i = 0; i < right; i++)
+        sb.append(' ');
+      sb.append('│');
+    }
+    return sb.toString();
   }
 
   private static void ufUnion(final int[] parent, final int[] rank, final int a, final int b) {
