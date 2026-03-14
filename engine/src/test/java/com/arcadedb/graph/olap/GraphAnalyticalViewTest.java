@@ -3807,26 +3807,18 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final long memWithout = gavNoEdgeProps.getMemoryUsageBytes();
     gavNoEdgeProps.drop();
 
-    // Build with edge properties (deferred — not yet materialized)
+    // Build with edge properties
     final GraphAnalyticalView gavWithEdgeProps = GraphAnalyticalView.builder(database)
         .withVertexTypes("Node").withEdgeTypes("LINK").withEdgeProperties("weight").build();
-    final long memDeferred = gavWithEdgeProps.getMemoryUsageBytes();
+    final long memWith = gavWithEdgeProps.getMemoryUsageBytes();
 
-    // Deferred data should use more memory than no edge properties
-    assertThat(memDeferred).isGreaterThan(memWithout);
+    // Memory should be higher when edge properties are stored
+    assertThat(memWith).isGreaterThan(memWithout);
 
-    // Stats should indicate deferred state before materialization
-    final java.util.Map<String, Object> deferredStats = gavWithEdgeProps.getStats();
-    assertThat(deferredStats.get("edgePropertiesDeferred")).isEqualTo(true);
-
-    // Trigger lazy materialization by accessing edge column store
-    assertThat(gavWithEdgeProps.getEdgeColumnStore("LINK")).isNotNull();
-
-    // After materialization, stats should include edge property info
+    // Stats should include edge property info
     final java.util.Map<String, Object> stats = gavWithEdgeProps.getStats();
     assertThat(stats.get("edgePropertyColumns")).isEqualTo(1);
     assertThat((long) stats.get("edgePropertyMemoryBytes")).isGreaterThan(0);
-    assertThat(stats.containsKey("edgePropertiesDeferred")).isFalse();
 
     gavWithEdgeProps.drop();
   }

@@ -212,12 +212,13 @@ public class CSRBuilder {
 
     // --- Phase C: Build CSR arrays per edge type from collected edge pairs ---
     final Map<String, CSRAdjacencyIndex> csrPerType = new HashMap<>();
-    // Deferred edge property data: insertion indices + edge RIDs stored for lazy materialization.
-    // Avoids allocating 6 temporary graph-scale arrays and per-edge lookupByRID during build.
-    final Map<String, int[]> deferredFwdInsertIdx = edgePropertyFilterSet != null ? new HashMap<>() : null;
-    final Map<String, int[]> deferredBwdInsertIdx = edgePropertyFilterSet != null ? new HashMap<>() : null;
-    final Map<String, long[]> deferredEdgeRids = edgePropertyFilterSet != null ? new HashMap<>() : null;
+    final Map<String, ColumnStore> edgeColumnStores = edgePropertyFilterSet != null ? new HashMap<>() : null;
+    final Map<String, int[]> bwdToFwdMap = edgePropertyFilterSet != null ? new HashMap<>() : null;
     int totalAllEdges = 0;
+
+    // Detect edge property types from schema if edge properties are requested
+    final Map<String, Column.Type> edgePropTypes = edgePropertyFilterSet != null
+        ? detectEdgePropertyTypesFromSchema(edgeTypes) : null;
 
     for (final Map.Entry<String, int[]> entry : outDegrees.entrySet()) {
       final String edgeTypeName = entry.getKey();
@@ -240,9 +241,10 @@ public class CSRBuilder {
       final int[] inCursors = new int[nodeCount];
 
       // When edge properties are requested, track insertion indices (CSR position -> pair index)
-      // directly during fill — avoids intermediate fwdWritePos/bwdWritePos arrays
-      final int[] fwdInsertIdx = edgePropertyFilterSet != null ? new int[edgeCount] : null;
-      final int[] bwdInsertIdx = edgePropertyFilterSet != null ? new int[edgeCount] : null;
+      // directly during fill — eliminates the intermediate fwdWritePos/bwdWritePos arrays used in v7
+      // (peak: 3 × int[E] vs v7's 6 × int[E])
+      int[] fwdInsertIdx = edgePropertyFilterSet != null ? new int[edgeCount] : null;
+      int[] bwdInsertIdx = edgePropertyFilterSet != null ? new int[edgeCount] : null;
 
       // Fill from collected edge pairs — no extra scan needed
       if (pairs != null) {
@@ -263,7 +265,7 @@ public class CSRBuilder {
       }
 
       // Sort neighbor lists for binary search and set intersection.
-      // When edge properties are requested, sort insertion indices in parallel for deferred bwdToFwd.
+      // When edge properties are requested, sort insertion indices in parallel to track permutations.
       if (fwdInsertIdx != null && edgeCount > 0) {
         for (int v = 0; v < nodeCount; v++) {
           final int fs = fwdOffsets[v], fe = fwdOffsets[v + 1];
@@ -275,9 +277,48 @@ public class CSRBuilder {
           if (be - bs > 1)
             parallelSort(bwdNeighbors, bwdInsertIdx, bs, be);
         }
-        deferredFwdInsertIdx.put(edgeTypeName, fwdInsertIdx);
-        deferredBwdInsertIdx.put(edgeTypeName, bwdInsertIdx);
-        deferredEdgeRids.put(edgeTypeName, Arrays.copyOf(pairs.edgeRids(), edgeCount));
+
+        // Build insertionToFwd: maps insertion index -> sorted forward CSR position
+        // Reuses fwdInsertIdx array slot (no longer needed after inversion)
+        final int[] insertionToFwd = new int[edgeCount];
+        for (int f = 0; f < edgeCount; f++)
+          insertionToFwd[fwdInsertIdx[f]] = f;
+        fwdInsertIdx = null; // help GC — no longer needed
+
+        // Build bwdToFwd: maps each backward CSR position to its forward CSR position
+        final int[] bwdToFwd = new int[edgeCount];
+        for (int b = 0; b < edgeCount; b++)
+          bwdToFwd[b] = insertionToFwd[bwdInsertIdx[b]];
+        bwdInsertIdx = null; // help GC
+        bwdToFwdMap.put(edgeTypeName, bwdToFwd);
+
+        // Extract edge properties into forward-aligned ColumnStore
+        final ColumnStore edgeColStore = new ColumnStore(edgeCount);
+        if (edgePropTypes != null)
+          for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet())
+            edgeColStore.createColumn(pt.getKey(), pt.getValue());
+
+        if (pairs != null && edgePropTypes != null && !edgePropTypes.isEmpty()) {
+          final long[] rids = pairs.edgeRids();
+          for (int i = 0; i < edgeCount; i++) {
+            final int fwdIdx = insertionToFwd[i];
+            final long packedRid = rids[i];
+            if (packedRid == 0)
+              continue; // no edge RID recorded
+
+            final RID edgeRid = unpackRid(packedRid);
+            if (edgeRid.getPosition() < 0)
+              continue; // lightweight edge — no properties
+
+            try {
+              final Document edgeDoc = (Document) database.lookupByRID(edgeRid, true);
+              fillEdgeProperties(edgeDoc, edgeColStore, fwdIdx, edgePropTypes);
+            } catch (final RecordNotFoundException e) {
+              // Edge deleted between scan and property extraction — leave as null
+            }
+          }
+        }
+        edgeColumnStores.put(edgeTypeName, edgeColStore);
       } else {
         // No edge properties — sort normally
         for (int i = 0; i < nodeCount; i++) {
@@ -304,13 +345,21 @@ public class CSRBuilder {
       totalMemory += cs.getMemoryUsageBytes();
       totalColumns += cs.getColumnCount();
     }
+    int edgePropColumns = 0;
+    if (edgeColumnStores != null)
+      for (final ColumnStore ecs : edgeColumnStores.values()) {
+        totalMemory += ecs.getMemoryUsageBytes();
+        edgePropColumns += ecs.getColumnCount();
+      }
+    if (bwdToFwdMap != null)
+      for (final int[] bwdToFwd : bwdToFwdMap.values())
+        totalMemory += (long) bwdToFwd.length * Integer.BYTES;
     LogManager.instance().log(this, Level.INFO,
-        "CSR built: %d nodes (%d buckets), %d edges (%d edge types), %d columns, %.1f MB, %d ms%s",
-        nodeCount, mapping.getNumBuckets(), totalAllEdges, csrPerType.size(), totalColumns,
-        totalMemory / (1024.0 * 1024.0), elapsedMs,
-        deferredEdgeRids != null ? " (edge properties deferred)" : "");
+        "CSR built: %d nodes (%d buckets), %d edges (%d edge types), %d columns (%d edge prop columns), %.1f MB, %d ms",
+        nodeCount, mapping.getNumBuckets(), totalAllEdges, csrPerType.size(), totalColumns, edgePropColumns,
+        totalMemory / (1024.0 * 1024.0), elapsedMs);
 
-    return new CSRResult(csrPerType, mapping, bucketColumns, deferredFwdInsertIdx, deferredBwdInsertIdx, deferredEdgeRids);
+    return new CSRResult(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwdMap);
   }
 
   private void registerVertexBuckets(final NodeIdMapping mapping, final String[] vertexTypes) {
@@ -648,36 +697,27 @@ public class CSRBuilder {
 
   /**
    * Result of CSR building.
-   * <p>
-   * Edge property data is stored as deferred insertion indices + edge RIDs rather than
-   * materialized ColumnStores. This avoids the expensive per-edge lookupByRID and index
-   * mapping computation during build — algorithms that don't use edge properties (BFS, CDLP, PR, WCC)
-   * pay zero overhead. The deferred data is materialized lazily on first access by
-   * {@link GraphAnalyticalView#ensureEdgePropertiesMaterialized()}.
    */
   public static class CSRResult {
     private final Map<String, CSRAdjacencyIndex> csrPerType;
     private final NodeIdMapping                  mapping;
     private final ColumnStore[]                  bucketColumns;
-    // Deferred edge property data (null if edge properties not configured)
-    private final Map<String, int[]>             deferredFwdInsertIdx; // sorted fwd CSR pos -> insertion index
-    private final Map<String, int[]>             deferredBwdInsertIdx; // sorted bwd CSR pos -> insertion index
-    private final Map<String, long[]>            deferredEdgeRids;     // insertion-order packed edge RIDs
+    private final Map<String, ColumnStore>       edgeColumnStores; // edgeType -> forward-aligned edge property columns
+    private final Map<String, int[]>             bwdToFwd;         // edgeType -> backward-to-forward index mapping
 
     public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping,
         final ColumnStore[] bucketColumns) {
-      this(csrPerType, mapping, bucketColumns, null, null, null);
+      this(csrPerType, mapping, bucketColumns, null, null);
     }
 
     public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping,
-        final ColumnStore[] bucketColumns, final Map<String, int[]> deferredFwdInsertIdx,
-        final Map<String, int[]> deferredBwdInsertIdx, final Map<String, long[]> deferredEdgeRids) {
+        final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
+        final Map<String, int[]> bwdToFwd) {
       this.csrPerType = csrPerType;
       this.mapping = mapping;
       this.bucketColumns = bucketColumns;
-      this.deferredFwdInsertIdx = deferredFwdInsertIdx;
-      this.deferredBwdInsertIdx = deferredBwdInsertIdx;
-      this.deferredEdgeRids = deferredEdgeRids;
+      this.edgeColumnStores = edgeColumnStores;
+      this.bwdToFwd = bwdToFwd;
     }
 
     public Map<String, CSRAdjacencyIndex> getCsrPerType() {
@@ -692,16 +732,12 @@ public class CSRBuilder {
       return bucketColumns;
     }
 
-    public Map<String, int[]> getDeferredFwdInsertIdx() {
-      return deferredFwdInsertIdx;
+    public Map<String, ColumnStore> getEdgeColumnStores() {
+      return edgeColumnStores;
     }
 
-    public Map<String, int[]> getDeferredBwdInsertIdx() {
-      return deferredBwdInsertIdx;
-    }
-
-    public Map<String, long[]> getDeferredEdgeRids() {
-      return deferredEdgeRids;
+    public Map<String, int[]> getBwdToFwd() {
+      return bwdToFwd;
     }
   }
 }
