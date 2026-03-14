@@ -50,6 +50,7 @@ public final class GraphAlgorithms {
   private static final int PARALLELISM           = Runtime.getRuntime().availableProcessors();
   private static final int PARALLEL_THRESHOLD     = 8192;
   private static final int PARALLEL_BFS_THRESHOLD = 4096;
+  private static final int PULL_DIRECTION_DIVISOR = 20; // switch to pull when frontier > n/20
 
   private GraphAlgorithms() {
   }
@@ -390,7 +391,9 @@ public final class GraphAlgorithms {
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
-    // Pre-hoist CSR arrays and direction flags outside the BFS loop
+    // Pre-hoist CSR arrays and direction flags outside the BFS loop.
+    // Both forward and backward arrays are always loaded because pull mode
+    // needs the reverse-direction arrays for early-break scanning.
     final boolean useFwd = direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH;
     final boolean useBwd = direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH;
     final int typeCount = types.length;
@@ -402,14 +405,10 @@ public final class GraphAlgorithms {
       final CSRAdjacencyIndex csr = view.getCSRIndex(types[t]);
       if (csr == null)
         continue;
-      if (useFwd) {
-        allFwdOffsets[t] = csr.getForwardOffsets();
-        allFwdNeighbors[t] = csr.getForwardNeighbors();
-      }
-      if (useBwd) {
-        allBwdOffsets[t] = csr.getBackwardOffsets();
-        allBwdNeighbors[t] = csr.getBackwardNeighbors();
-      }
+      allFwdOffsets[t] = csr.getForwardOffsets();
+      allFwdNeighbors[t] = csr.getForwardNeighbors();
+      allBwdOffsets[t] = csr.getBackwardOffsets();
+      allBwdNeighbors[t] = csr.getBackwardNeighbors();
     }
 
     // dist[] for output, bitmap for fast visited check in hot loop
@@ -428,11 +427,99 @@ public final class GraphAlgorithms {
     int frontierSize = 1;
     int depth = 0;
 
+    // Frontier bitmap for pull mode: tracks which nodes are in the CURRENT frontier
+    // (separate from visited bitmap which tracks all ever-seen nodes)
+    final long[] frontierBitmap = new long[(n + 63) >>> 6];
+    frontierBitmap[source >>> 6] |= 1L << (source & 63);
+
+    // Pre-hoist pull-mode CSR arrays: pull checks reverse direction neighbors
+    // OUT direction pull: check backward neighbors (who points to me?)
+    // IN direction pull: check forward neighbors (who do I point to?)
+    final int[][] pullOffsets1 = new int[typeCount][];
+    final int[][] pullNeighbors1 = new int[typeCount][];
+    final int[][] pullOffsets2 = new int[typeCount][]; // for BOTH direction, second set
+    final int[][] pullNeighbors2 = new int[typeCount][];
+    for (int t = 0; t < typeCount; t++) {
+      if (useFwd && allBwdOffsets[t] != null) {
+        pullOffsets1[t] = allBwdOffsets[t];
+        pullNeighbors1[t] = allBwdNeighbors[t];
+      }
+      if (useBwd && allFwdOffsets[t] != null) {
+        if (pullOffsets1[t] == null) {
+          pullOffsets1[t] = allFwdOffsets[t];
+          pullNeighbors1[t] = allFwdNeighbors[t];
+        } else {
+          pullOffsets2[t] = allFwdOffsets[t];
+          pullNeighbors2[t] = allFwdNeighbors[t];
+        }
+      }
+    }
+
+    // Pull mode only beneficial for large enough graphs and frontiers
+    final int pullThreshold = n >= PULL_DIRECTION_DIVISOR * 2 ? n / PULL_DIRECTION_DIVISOR : Integer.MAX_VALUE;
+
     while (frontierSize > 0) {
       depth++;
 
-      if (frontierSize > PARALLEL_BFS_THRESHOLD) {
-        // Parallel frontier expansion with AtomicLongArray bitmap for thread-safe CAS
+      if (frontierSize > pullThreshold) {
+        // PULL mode: scan ALL unvisited nodes, check if any reverse-neighbor is in frontier.
+        // Breaks early after finding one parent — skips rest of adjacency list.
+        // Advantage: for large frontiers, most neighbors are in the frontier, so early break
+        // avoids scanning thousands of already-visited neighbors per high-degree node.
+        int nextSize = 0;
+        for (int v = 0; v < n; v++) {
+          final int vWord = v >>> 6;
+          final long vBit = 1L << (v & 63);
+          if ((visited[vWord] & vBit) != 0)
+            continue; // already visited
+
+          boolean found = false;
+          for (int t = 0; t < typeCount && !found; t++) {
+            if (pullOffsets1[t] != null) {
+              final int[] offsets = pullOffsets1[t];
+              final int[] neighbors = pullNeighbors1[t];
+              for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
+                final int u = neighbors[j];
+                if ((frontierBitmap[u >>> 6] & (1L << (u & 63))) != 0) {
+                  found = true;
+                  break;
+                }
+              }
+            }
+            if (!found && pullOffsets2[t] != null) {
+              final int[] offsets = pullOffsets2[t];
+              final int[] neighbors = pullNeighbors2[t];
+              for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
+                final int u = neighbors[j];
+                if ((frontierBitmap[u >>> 6] & (1L << (u & 63))) != 0) {
+                  found = true;
+                  break;
+                }
+              }
+            }
+          }
+          if (found) {
+            visited[vWord] |= vBit;
+            dist[v] = depth;
+            nextFrontier[nextSize++] = v;
+          }
+        }
+
+        // Update frontier bitmap: clear old frontier, set new frontier
+        Arrays.fill(frontierBitmap, 0L);
+        for (int i = 0; i < nextSize; i++) {
+          final int v = nextFrontier[i];
+          frontierBitmap[v >>> 6] |= 1L << (v & 63);
+        }
+
+        // Swap frontier references
+        final int[] tmp = frontier;
+        frontier = nextFrontier;
+        nextFrontier = tmp;
+        frontierSize = nextSize;
+
+      } else if (frontierSize > PARALLEL_BFS_THRESHOLD) {
+        // PUSH mode (parallel): expand frontier outward using threads
         final AtomicLongArray visitedAtomic = new AtomicLongArray(visited.length);
         for (int i = 0; i < visited.length; i++)
           visitedAtomic.set(i, visited[i]);
@@ -527,6 +614,13 @@ public final class GraphAlgorithms {
             pos += localSizes[t];
           }
 
+        // Update frontier bitmap for potential pull mode next iteration
+        Arrays.fill(frontierBitmap, 0L);
+        for (int i = 0; i < totalNext; i++) {
+          final int v = nextFrontier[i];
+          frontierBitmap[v >>> 6] |= 1L << (v & 63);
+        }
+
         // Swap frontier references
         final int[] tmp = frontier;
         frontier = nextFrontier;
@@ -534,7 +628,7 @@ public final class GraphAlgorithms {
         frontierSize = totalNext;
 
       } else {
-        // Sequential frontier expansion (small frontier) — uses plain long[] bitmap
+        // PUSH mode (sequential): expand frontier outward — uses plain long[] bitmap
         int nextSize = 0;
         for (int f = 0; f < frontierSize; f++) {
           final int u = frontier[f];
@@ -568,6 +662,13 @@ public final class GraphAlgorithms {
               }
             }
           }
+        }
+
+        // Update frontier bitmap for potential pull mode next iteration
+        Arrays.fill(frontierBitmap, 0L);
+        for (int i = 0; i < nextSize; i++) {
+          final int v = nextFrontier[i];
+          frontierBitmap[v >>> 6] |= 1L << (v & 63);
         }
 
         // Swap frontier references

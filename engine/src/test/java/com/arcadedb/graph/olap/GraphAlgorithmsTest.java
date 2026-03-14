@@ -395,6 +395,48 @@ public class GraphAlgorithmsTest extends TestHelper {
     assertThat(GraphAlgorithms.shortestPath(gav, firstId, midId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(100);
   }
 
+  @Test
+  void testShortestPathAllPullMode() {
+    // Star graph: center node connected to 50 leaves. After first BFS level,
+    // frontier contains 50 nodes (> n/20 = 51/20 = 2), triggering pull mode.
+    // Then each leaf is connected to a "tail" node, testing pull mode correctness.
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    final int leafCount = 50;
+    database.begin();
+    final MutableVertex center = database.newVertex("Node").set("name", "center").save();
+    final MutableVertex[] leaves = new MutableVertex[leafCount];
+    final MutableVertex[] tails = new MutableVertex[leafCount];
+    for (int i = 0; i < leafCount; i++) {
+      leaves[i] = database.newVertex("Node").set("name", "leaf" + i).save();
+      tails[i] = database.newVertex("Node").set("name", "tail" + i).save();
+      center.newEdge("LINK", leaves[i]);
+      leaves[i].newEdge("LINK", tails[i]);
+    }
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int centerId = gav.getNodeId(center.getIdentity());
+    final int[] dists = GraphAlgorithms.shortestPathAll(gav, centerId, Vertex.DIRECTION.OUT, "LINK");
+    assertThat(dists[centerId]).isEqualTo(0);
+    for (int i = 0; i < leafCount; i++) {
+      assertThat(dists[gav.getNodeId(leaves[i].getIdentity())]).isEqualTo(1);
+      assertThat(dists[gav.getNodeId(tails[i].getIdentity())]).isEqualTo(2);
+    }
+
+    // BOTH direction from a tail should reach center in 2 hops
+    final int tailId = gav.getNodeId(tails[0].getIdentity());
+    final int[] distsFromTail = GraphAlgorithms.shortestPathAll(gav, tailId, Vertex.DIRECTION.BOTH, "LINK");
+    assertThat(distsFromTail[tailId]).isEqualTo(0);
+    assertThat(distsFromTail[gav.getNodeId(leaves[0].getIdentity())]).isEqualTo(1);
+    assertThat(distsFromTail[centerId]).isEqualTo(2);
+  }
+
   // --- Label Propagation ---
 
   @Test
