@@ -108,7 +108,6 @@ class ParameterTest {
 
     } finally {
       database.drop();
-      FileUtils.deleteRecursively(new File("./target/testparams_eq"));
     }
   }
 
@@ -245,5 +244,6 @@ class ParameterTest {
   @AfterEach
   void clean() {
     FileUtils.deleteRecursively(new File("./target/testparams"));
+    FileUtils.deleteRecursively(new File("./target/testparams_eq"));
   }
 }
