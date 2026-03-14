@@ -137,10 +137,20 @@ public class CSRBuilder {
         bucketColumns[bi].createColumn(e.getKey(), e.getValue());
     }
 
-    // --- Phase B: Single scan — degrees + edge pairs + property extraction ---
+    // Detect edge property types from schema before Phase B (so we can extract inline)
+    final Map<String, Column.Type> edgePropTypes = edgePropertyFilterSet != null
+        ? detectEdgePropertyTypesFromSchema(edgeTypes) : null;
+    final boolean inlineEdgeProps = edgePropTypes != null && !edgePropTypes.isEmpty();
+
+    // --- Phase B: Single scan — degrees + edge pairs + inline edge property extraction ---
+    // When edge properties are configured, edge documents are loaded during this scan
+    // (when pages are warm from the linked list traversal) and property values are stored
+    // in insertion-order growing arrays. This avoids a separate 34M lookupByRID pass later.
     final Map<String, int[]> outDegrees = new HashMap<>();
     final Map<String, int[]> inDegrees = new HashMap<>();
     final Map<String, IntPairList> edgePairs = new HashMap<>();
+    // Per edge type, per property: growing arrays in insertion order. Remapped to CSR order in Phase C.
+    final Map<String, Map<String, GrowingPropertyArray>> insertionOrderEdgeProps = inlineEdgeProps ? new HashMap<>() : null;
     int propertySampleCount = 0;
     boolean newTypesInLastSample = false;
 
@@ -194,11 +204,36 @@ public class CSRBuilder {
           outDegrees.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[globalId]++;
           inDegrees.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[targetGlobalId]++;
           final IntPairList pairList = edgePairs.computeIfAbsent(edgeTypeName,
-              k -> new IntPairList(edgePropertyFilterSet != null));
-          if (edgePropertyFilterSet != null)
-            pairList.add(globalId, targetGlobalId, packRid(entry.getFirst()));
-          else
-            pairList.add(globalId, targetGlobalId);
+              k -> new IntPairList(false));
+          pairList.add(globalId, targetGlobalId);
+
+          // Extract edge properties inline — page is warm from linked list traversal
+          if (insertionOrderEdgeProps != null) {
+            final Map<String, GrowingPropertyArray> propArrays = insertionOrderEdgeProps.computeIfAbsent(
+                edgeTypeName, k -> {
+                  final Map<String, GrowingPropertyArray> m = new HashMap<>();
+                  for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet())
+                    m.put(pt.getKey(), new GrowingPropertyArray(pt.getValue()));
+                  return m;
+                });
+            final RID edgeRid = entry.getFirst();
+            if (edgeRid.getPosition() >= 0) {
+              try {
+                final Document edgeDoc = (Document) database.lookupByRID(edgeRid, true);
+                for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet()) {
+                  final Object value = edgeDoc.get(pt.getKey());
+                  propArrays.get(pt.getKey()).add(value);
+                }
+              } catch (final RecordNotFoundException e) {
+                for (final GrowingPropertyArray arr : propArrays.values())
+                  arr.addNull();
+              }
+            } else {
+              // Lightweight edge — no properties
+              for (final GrowingPropertyArray arr : propArrays.values())
+                arr.addNull();
+            }
+          }
         }
       }
     }
@@ -210,13 +245,12 @@ public class CSRBuilder {
               + "excluded from the columnar store. Use withPropertySampleSize() to increase the sample size or define properties in the schema.",
           propertySampleSize, nodeCount);
 
-    // --- Phase C: Build CSR arrays per edge type from collected edge pairs ---
-    // The build path is identical regardless of edge properties — always plain Arrays.sort(),
-    // no satellite arrays, no insertion index tracking. Edge property work (bwdToFwd mapping,
-    // property extraction) is fully decoupled and runs in a background thread after build,
-    // using binary search on the sorted CSR to reconstruct the forward position mapping.
+    // --- Phase C: Build CSR arrays + remap edge properties to forward CSR order ---
+    // Always uses plain Arrays.sort (no satellite arrays). Edge properties extracted in Phase B
+    // are remapped from insertion order to sorted forward CSR order via binary search.
     final Map<String, CSRAdjacencyIndex> csrPerType = new HashMap<>();
-    final Map<String, long[]> deferredEdgeRids = edgePropertyFilterSet != null ? new HashMap<>() : null;
+    final Map<String, ColumnStore> edgeColumnStores = insertionOrderEdgeProps != null ? new HashMap<>() : null;
+    final Map<String, int[]> bwdToFwdMap = insertionOrderEdgeProps != null ? new HashMap<>() : null;
     int totalAllEdges = 0;
 
     for (final Map.Entry<String, int[]> entry : outDegrees.entrySet()) {
@@ -239,7 +273,7 @@ public class CSRBuilder {
       final int[] outCursors = new int[nodeCount];
       final int[] inCursors = new int[nodeCount];
 
-      // Fill from collected edge pairs — unconditional, no edge property tracking
+      // Fill from collected edge pairs
       if (pairs != null) {
         final int[] sources = pairs.sources();
         final int[] targets = pairs.targets();
@@ -261,11 +295,86 @@ public class CSRBuilder {
           Arrays.sort(bwdNeighbors, bs, be);
       }
 
-      // Store edge RIDs for deferred property materialization (if configured).
-      // Only the RIDs are needed — source/target node IDs are derived from the edge document
-      // during materialization, avoiding 272MB of deferred array storage.
-      if (deferredEdgeRids != null && pairs != null && pairs.edgeRids() != null && edgeCount > 0)
-        deferredEdgeRids.put(edgeTypeName, Arrays.copyOf(pairs.edgeRids(), edgeCount));
+      // Remap edge properties from insertion order to forward CSR order via binary search
+      if (insertionOrderEdgeProps != null && insertionOrderEdgeProps.containsKey(edgeTypeName) && edgeCount > 0) {
+        final Map<String, GrowingPropertyArray> tempProps = insertionOrderEdgeProps.get(edgeTypeName);
+        final int[] sources = pairs.sources();
+        final int[] targets = pairs.targets();
+
+        // Detect parallel edges for position matching
+        boolean hasParallelEdges = false;
+        for (int u = 0; u < nodeCount && !hasParallelEdges; u++)
+          for (int f = fwdOffsets[u] + 1; f < fwdOffsets[u + 1]; f++)
+            if (fwdNeighbors[f] == fwdNeighbors[f - 1]) {
+              hasParallelEdges = true;
+              break;
+            }
+        final boolean[] matched = hasParallelEdges ? new boolean[edgeCount] : null;
+
+        // Create final forward-aligned ColumnStore and remap each insertion-order entry
+        final ColumnStore finalStore = new ColumnStore(edgeCount);
+        for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet())
+          finalStore.createColumn(pt.getKey(), pt.getValue());
+
+        for (int i = 0; i < edgeCount; i++) {
+          int fwdPos = Arrays.binarySearch(fwdNeighbors, fwdOffsets[sources[i]], fwdOffsets[sources[i] + 1], targets[i]);
+          if (fwdPos < 0)
+            continue;
+          if (matched != null) {
+            while (fwdPos > fwdOffsets[sources[i]] && fwdNeighbors[fwdPos - 1] == targets[i])
+              fwdPos--;
+            while (matched[fwdPos])
+              fwdPos++;
+            matched[fwdPos] = true;
+          }
+          // Copy each property value from insertion-order position i to forward CSR position fwdPos
+          for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet()) {
+            final GrowingPropertyArray srcArr = tempProps.get(pt.getKey());
+            if (srcArr == null || srcArr.isNull(i))
+              continue;
+            final Column dstCol = finalStore.getColumn(pt.getKey());
+            if (dstCol == null)
+              continue;
+            switch (pt.getValue()) {
+            case INT:
+              dstCol.setInt(fwdPos, srcArr.getInt(i));
+              break;
+            case LONG:
+              dstCol.setLong(fwdPos, srcArr.getLong(i));
+              break;
+            case DOUBLE:
+              dstCol.setDouble(fwdPos, srcArr.getDouble(i));
+              break;
+            case STRING:
+              dstCol.setString(fwdPos, srcArr.getString(i));
+              break;
+            }
+          }
+        }
+        edgeColumnStores.put(edgeTypeName, finalStore);
+
+        // Build bwdToFwd via binary search on the sorted CSR
+        final int[] bwdToFwd = new int[edgeCount];
+        for (int u = 0; u < nodeCount; u++) {
+          int b = bwdOffsets[u];
+          final int bEnd = bwdOffsets[u + 1];
+          while (b < bEnd) {
+            final int src = bwdNeighbors[b];
+            int count = 1;
+            while (b + count < bEnd && bwdNeighbors[b + count] == src)
+              count++;
+            int fPos = Arrays.binarySearch(fwdNeighbors, fwdOffsets[src], fwdOffsets[src + 1], u);
+            if (fPos >= 0) {
+              while (fPos > fwdOffsets[src] && fwdNeighbors[fPos - 1] == u)
+                fPos--;
+              for (int k = 0; k < count; k++)
+                bwdToFwd[b + k] = fPos + k;
+            }
+            b += count;
+          }
+        }
+        bwdToFwdMap.put(edgeTypeName, bwdToFwd);
+      }
 
       csrPerType.put(edgeTypeName, new CSRAdjacencyIndex(fwdOffsets, fwdNeighbors, bwdOffsets, bwdNeighbors,
           nodeCount, edgeCount));
@@ -281,13 +390,21 @@ public class CSRBuilder {
       totalMemory += cs.getMemoryUsageBytes();
       totalColumns += cs.getColumnCount();
     }
+    int edgePropColumns = 0;
+    if (edgeColumnStores != null)
+      for (final ColumnStore ecs : edgeColumnStores.values()) {
+        totalMemory += ecs.getMemoryUsageBytes();
+        edgePropColumns += ecs.getColumnCount();
+      }
+    if (bwdToFwdMap != null)
+      for (final int[] bwdToFwd : bwdToFwdMap.values())
+        totalMemory += (long) bwdToFwd.length * Integer.BYTES;
     LogManager.instance().log(this, Level.INFO,
-        "CSR built: %d nodes (%d buckets), %d edges (%d edge types), %d columns, %.1f MB, %d ms%s",
-        nodeCount, mapping.getNumBuckets(), totalAllEdges, csrPerType.size(), totalColumns,
-        totalMemory / (1024.0 * 1024.0), elapsedMs,
-        deferredEdgeRids != null ? " (edge property materialization starting in background)" : "");
+        "CSR built: %d nodes (%d buckets), %d edges (%d edge types), %d columns (%d edge prop columns), %.1f MB, %d ms",
+        nodeCount, mapping.getNumBuckets(), totalAllEdges, csrPerType.size(), totalColumns, edgePropColumns,
+        totalMemory / (1024.0 * 1024.0), elapsedMs);
 
-    return new CSRResult(csrPerType, mapping, bucketColumns, deferredEdgeRids);
+    return new CSRResult(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwdMap);
   }
 
   private void registerVertexBuckets(final NodeIdMapping mapping, final String[] vertexTypes) {
@@ -624,35 +741,144 @@ public class CSRBuilder {
   }
 
   /**
-   * Result of CSR building.
-   * <p>
-   * Edge property data is stored as packed edge RIDs only. During background materialization,
-   * RIDs are sorted by (bucketId, position) for sequential page access, then each edge document
-   * is loaded to extract both topology (out/in vertex) and properties. The bwdToFwd mapping is
-   * built via binary search on the sorted CSR without any deferred topology data.
+   * Result of CSR building. Edge properties (if configured) are fully materialized during build.
    */
   public static class CSRResult {
     private final Map<String, CSRAdjacencyIndex> csrPerType;
     private final NodeIdMapping                  mapping;
     private final ColumnStore[]                  bucketColumns;
-    private final Map<String, long[]>            deferredEdgeRids; // packed edge RIDs for deferred property extraction
+    private final Map<String, ColumnStore>       edgeColumnStores;
+    private final Map<String, int[]>             bwdToFwd;
 
     public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping,
         final ColumnStore[] bucketColumns) {
-      this(csrPerType, mapping, bucketColumns, null);
+      this(csrPerType, mapping, bucketColumns, null, null);
     }
 
     public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping,
-        final ColumnStore[] bucketColumns, final Map<String, long[]> deferredEdgeRids) {
+        final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
+        final Map<String, int[]> bwdToFwd) {
       this.csrPerType = csrPerType;
       this.mapping = mapping;
       this.bucketColumns = bucketColumns;
-      this.deferredEdgeRids = deferredEdgeRids;
+      this.edgeColumnStores = edgeColumnStores;
+      this.bwdToFwd = bwdToFwd;
     }
 
     public Map<String, CSRAdjacencyIndex> getCsrPerType() { return csrPerType; }
     public NodeIdMapping getMapping() { return mapping; }
     public ColumnStore[] getBucketColumns() { return bucketColumns; }
-    public Map<String, long[]> getDeferredEdgeRids() { return deferredEdgeRids; }
+    public Map<String, ColumnStore> getEdgeColumnStores() { return edgeColumnStores; }
+    public Map<String, int[]> getBwdToFwd() { return bwdToFwd; }
+  }
+
+  /**
+   * Growing typed array for collecting edge property values during Phase B.
+   * Uses primitive arrays with doubling growth (like IntPairList) to avoid boxing.
+   */
+  static final class GrowingPropertyArray {
+    private final Column.Type type;
+    private int[]    intData;
+    private long[]   longData;
+    private double[] doubleData;
+    private String[] stringData;
+    private long[]   nullBitset;
+    private int      count;
+    private int      capacity;
+
+    GrowingPropertyArray(final Column.Type type) {
+      this.type = type;
+      this.capacity = 256;
+      this.nullBitset = new long[(capacity + 63) >>> 6];
+      Arrays.fill(nullBitset, ~0L); // all null initially
+      switch (type) {
+      case INT:
+        intData = new int[capacity];
+        break;
+      case LONG:
+        longData = new long[capacity];
+        break;
+      case DOUBLE:
+        doubleData = new double[capacity];
+        break;
+      case STRING:
+        stringData = new String[capacity];
+        break;
+      }
+    }
+
+    void add(final Object value) {
+      if (count == capacity)
+        grow();
+      if (value != null) {
+        switch (type) {
+        case INT:
+          if (value instanceof Number n) {
+            intData[count] = n.intValue();
+            clearNull(count);
+          }
+          break;
+        case LONG:
+          if (value instanceof Number n) {
+            longData[count] = n.longValue();
+            clearNull(count);
+          }
+          break;
+        case DOUBLE:
+          if (value instanceof Number n) {
+            doubleData[count] = n.doubleValue();
+            clearNull(count);
+          }
+          break;
+        case STRING:
+          stringData[count] = value.toString();
+          clearNull(count);
+          break;
+        }
+      }
+      count++;
+    }
+
+    void addNull() {
+      if (count == capacity)
+        grow();
+      count++; // null bit already set
+    }
+
+    boolean isNull(final int idx) {
+      return (nullBitset[idx >>> 6] & (1L << (idx & 63))) != 0;
+    }
+
+    int getInt(final int idx) { return intData[idx]; }
+    long getLong(final int idx) { return longData[idx]; }
+    double getDouble(final int idx) { return doubleData[idx]; }
+    String getString(final int idx) { return stringData[idx]; }
+
+    private void clearNull(final int idx) {
+      nullBitset[idx >>> 6] &= ~(1L << (idx & 63));
+    }
+
+    private void grow() {
+      final int newCap = capacity * 2;
+      nullBitset = Arrays.copyOf(nullBitset, (newCap + 63) >>> 6);
+      // Set new bits to null
+      for (int i = (capacity + 63) >>> 6; i < nullBitset.length; i++)
+        nullBitset[i] = ~0L;
+      switch (type) {
+      case INT:
+        intData = Arrays.copyOf(intData, newCap);
+        break;
+      case LONG:
+        longData = Arrays.copyOf(longData, newCap);
+        break;
+      case DOUBLE:
+        doubleData = Arrays.copyOf(doubleData, newCap);
+        break;
+      case STRING:
+        stringData = Arrays.copyOf(stringData, newCap);
+        break;
+      }
+      capacity = newCap;
+    }
   }
 }

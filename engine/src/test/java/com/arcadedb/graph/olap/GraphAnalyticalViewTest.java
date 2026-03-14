@@ -3807,18 +3807,15 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final long memWithout = gavNoEdgeProps.getMemoryUsageBytes();
     gavNoEdgeProps.drop();
 
-    // Build with edge properties (materialization runs in background)
+    // Build with edge properties
     final GraphAnalyticalView gavWithEdgeProps = GraphAnalyticalView.builder(database)
         .withVertexTypes("Node").withEdgeTypes("LINK").withEdgeProperties("weight").build();
     final long memWith = gavWithEdgeProps.getMemoryUsageBytes();
 
-    // Memory should be higher when edge properties are configured (deferred or materialized)
+    // Memory should be higher when edge properties are stored
     assertThat(memWith).isGreaterThan(memWithout);
 
-    // Trigger materialization by accessing edge column store (blocks until background completes)
-    assertThat(gavWithEdgeProps.getEdgeColumnStore("LINK")).isNotNull();
-
-    // After materialization, stats should include edge property info
+    // Stats should include edge property info
     final java.util.Map<String, Object> stats = gavWithEdgeProps.getStats();
     assertThat(stats.get("edgePropertyColumns")).isEqualTo(1);
     assertThat((long) stats.get("edgePropertyMemoryBytes")).isGreaterThan(0);
