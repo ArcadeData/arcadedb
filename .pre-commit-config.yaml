@@ -22,19 +22,19 @@ repos:
       - id: check-json
       - id: check-xml
   - repo: https://github.com/psf/black
-    rev: 25.12.0
+    rev: 26.3.1
     hooks:
       - id: black
         language_version: python3
         files: ^bindings/python/.*\.py$
   - repo: https://github.com/pycqa/isort
-    rev: 7.0.0
+    rev: 8.0.1
     hooks:
       - id: isort
         args: ["--profile", "black"]
         files: ^bindings/python/.*\.py$
   - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-    rev: v2.15.0
+    rev: v2.16.0
     hooks:
       - id: pretty-format-yaml
         args:
@@ -48,13 +48,13 @@ repos:
         args: ["-i", "4", "-ci", "-sr", "-w"]
         files: ^bindings/python/.*\.sh$
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: v3.7.4
+    rev: v3.8.1
     hooks:
       - id: prettier
         types: [ java, xml ]
         additional_dependencies:
-          - prettier@3.7.4
-          - prettier-plugin-java@2.7.7
+          - prettier@3.8.1
+          - prettier-plugin-java@2.8.1
           - prettier-plugin-xml
         args:
           - --write
