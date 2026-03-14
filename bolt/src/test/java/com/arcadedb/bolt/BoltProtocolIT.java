@@ -1338,4 +1338,63 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       }
     }
   }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3650
+   * Bolt: WHERE clause parameters not substituted — returns 0 results.
+   * Creates multiple vertices so that broken filtering (no filter = return all) is detectable.
+   */
+  @Test
+  void whereClauseParameterFiltering() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Create multiple vertices with different id values
+        session.run("CREATE (:WhereParamNode {id: 'A001', name: 'alpha'})");
+        session.run("CREATE (:WhereParamNode {id: 'B002', name: 'beta'})");
+        session.run("CREATE (:WhereParamNode {id: 'C003', name: 'gamma'})");
+
+        // Test 1: WHERE clause with string parameter returns exactly one matching vertex
+        final Result r1 = session.run(
+            "MATCH (t:WhereParamNode) WHERE t.id = $id RETURN t.name AS name",
+            Map.of("id", "A001"));
+        final List<Record> records1 = r1.list();
+        assertThat(records1).as("WHERE clause string parameter should return exactly 1 result").hasSize(1);
+        assertThat(records1.get(0).get("name").asString()).isEqualTo("alpha");
+
+        // Test 2: WHERE clause with different string parameter value
+        final Result r2 = session.run(
+            "MATCH (t:WhereParamNode) WHERE t.id = $id RETURN t.name AS name",
+            Map.of("id", "C003"));
+        final List<Record> records2 = r2.list();
+        assertThat(records2).as("WHERE clause string parameter should return exactly 1 result").hasSize(1);
+        assertThat(records2.get(0).get("name").asString()).isEqualTo("gamma");
+
+        // Test 3: WHERE clause with non-matching parameter returns 0 results
+        final Result r3 = session.run(
+            "MATCH (t:WhereParamNode) WHERE t.id = $id RETURN t.name AS name",
+            Map.of("id", "NONE"));
+        assertThat(r3.hasNext()).as("WHERE clause with non-matching parameter should return 0 results").isFalse();
+
+        // Test 4: WHERE clause with AND conditions and multiple parameters
+        final Result r4 = session.run(
+            "MATCH (t:WhereParamNode) WHERE t.id = $id AND t.name = $name RETURN t.id AS id",
+            Map.of("id", "B002", "name", "beta"));
+        final List<Record> records4 = r4.list();
+        assertThat(records4).as("WHERE clause with multiple parameters (AND) should return exactly 1 result").hasSize(1);
+        assertThat(records4.get(0).get("id").asString()).isEqualTo("B002");
+
+        // Test 5: WHERE clause with integer parameter
+        session.run("CREATE (:WhereParamNode {id: 'D004', seq: 42, name: 'delta'})");
+        final Result r5 = session.run(
+            "MATCH (t:WhereParamNode) WHERE t.seq = $seq RETURN t.name AS name",
+            Map.of("seq", 42));
+        final List<Record> records5 = r5.list();
+        assertThat(records5).as("WHERE clause integer parameter should return exactly 1 result").hasSize(1);
+        assertThat(records5.get(0).get("name").asString()).isEqualTo("delta");
+
+        // Clean up
+        session.run("MATCH (t:WhereParamNode) DELETE t");
+      }
+    }
+  }
 }
