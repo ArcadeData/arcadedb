@@ -18,20 +18,21 @@
  */
 package com.arcadedb.function.sql.graph;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
 import com.arcadedb.utility.FileUtils;
+
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 03/01/17.
  */
 public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements SQLFunctionFiltered {
-
-  protected static int supernodeThreshold = 1000; // move to some configuration
 
   protected SQLFunctionMoveFiltered(final String name) {
     super(name);
@@ -46,11 +47,46 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
     else
       labels = null;
 
-    return SQLQueryEngine.foreachRecord(
-        iArgument -> move(context.getDatabase(), iArgument, labels, iPossibleResults, context), self, context);
+    final Set<RID> possibleRIDs = buildRIDSet(iPossibleResults);
+
+    return SQLQueryEngine.foreachRecord(iArgument -> {
+      if (possibleRIDs != null && possibleRIDs.isEmpty())
+        return Collections.emptyList();
+
+      final Object result = move(context.getDatabase(), iArgument, labels, context);
+      if (result == null || possibleRIDs == null)
+        return result;
+
+      return filterByRIDs(result, possibleRIDs);
+    }, self, context);
   }
 
-  protected abstract Object move(Database graph, Identifiable iArgument, String[] labels,
-      Iterable<Identifiable> iPossibleResults, CommandContext context);
+  private static Set<RID> buildRIDSet(final Iterable<?> iPossibleResults) {
+    if (iPossibleResults == null)
+      return null;
+    final Set<RID> rids = new HashSet<>();
+    for (final Object item : iPossibleResults) {
+      if (item instanceof Identifiable id)
+        rids.add(id.getIdentity());
+      else if (item instanceof Result r) {
+        final Optional<RID> rid = r.getIdentity();
+        rid.ifPresent(rids::add);
+      }
+    }
+    return rids;
+  }
 
+  private static Object filterByRIDs(final Object result, final Set<RID> possibleRIDs) {
+    if (result instanceof Iterable<?> iterable) {
+      final List<Object> filtered = new ArrayList<>();
+      for (final Object item : iterable) {
+        if (item instanceof Identifiable id && possibleRIDs.contains(id.getIdentity()))
+          filtered.add(item);
+      }
+      return filtered;
+    }
+    if (result instanceof Identifiable id)
+      return possibleRIDs.contains(id.getIdentity()) ? result : null;
+    return result;
+  }
 }

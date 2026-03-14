@@ -23,8 +23,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
-
 /**
  * Created by luigidellaquila on 03/01/17.
  */
@@ -38,18 +36,6 @@ public class SQLFunctionInE extends SQLFunctionMoveFiltered {
   @Override
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
       final CommandContext context) {
-    return v2e(iRecord, Vertex.DIRECTION.IN, iLabels);
-  }
-
-  @Override
-  protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
-      final Iterable<Identifiable> iPossibleResults, final CommandContext context) {
-    if (iPossibleResults == null)
-      return v2e(iRecord, Vertex.DIRECTION.IN, iLabels);
-
-    if (!iPossibleResults.iterator().hasNext())
-      return Collections.emptyList();
-
     return v2e(iRecord, Vertex.DIRECTION.IN, iLabels);
   }
 }
