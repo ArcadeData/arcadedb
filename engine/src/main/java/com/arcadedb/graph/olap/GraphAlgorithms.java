@@ -568,7 +568,7 @@ public final class GraphAlgorithms {
           if (neighborLabels[i] == currentLabel) {
             currentCount++;
           } else {
-            if (currentCount > bestCount || (currentCount == bestCount && currentLabel < bestLabel)) {
+            if (currentCount > bestCount) {
               bestCount = currentCount;
               bestLabel = currentLabel;
             }
@@ -576,7 +576,7 @@ public final class GraphAlgorithms {
             currentCount = 1;
           }
         }
-        if (currentCount > bestCount || (currentCount == bestCount && currentLabel < bestLabel))
+        if (currentCount > bestCount)
           bestLabel = currentLabel;
 
         if (labels[u] != bestLabel) {

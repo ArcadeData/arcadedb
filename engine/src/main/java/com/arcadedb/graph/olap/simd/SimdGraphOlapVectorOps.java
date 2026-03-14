@@ -141,11 +141,13 @@ public final class SimdGraphOlapVectorOps implements GraphOlapVectorOps {
     final int lanes = INT_SPECIES.length();
     long s = 0;
     int i = 0;
+    final int longLanes = LONG_SPECIES.length();
+    final int parts = (lanes + longLanes - 1) / longLanes;
     for (; i + lanes <= length; i += lanes) {
       final IntVector v = IntVector.fromArray(INT_SPECIES, data, offset + i);
-      // Extract lanes individually to avoid int overflow in reduceLanes
-      for (int j = 0; j < lanes; j++)
-        s += v.lane(j);
+      // Widen int lanes to long before reducing to avoid int overflow
+      for (int p = 0; p < parts; p++)
+        s += ((LongVector) v.convertShape(VectorOperators.I2L, LONG_SPECIES, p)).reduceLanes(VectorOperators.ADD);
     }
     for (; i < length; i++)
       s += data[offset + i];

@@ -203,9 +203,7 @@ public class CSRBuilder {
 
           outDegrees.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[globalId]++;
           inDegrees.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[targetGlobalId]++;
-          final IntPairList pairList = edgePairs.computeIfAbsent(edgeTypeName,
-              k -> new IntPairList(false));
-          pairList.add(globalId, targetGlobalId);
+          edgePairs.computeIfAbsent(edgeTypeName, k -> new IntPairList()).add(globalId, targetGlobalId);
 
           // Extract edge properties inline — page is warm from linked list traversal
           if (insertionOrderEdgeProps != null) {
@@ -699,9 +697,13 @@ public class CSRBuilder {
     private long[] edgeRids; // only allocated when edge properties are requested
     private int    count;
 
-    IntPairList(final boolean trackEdgeRids) {
+    IntPairList() {
       src = new int[256];
       tgt = new int[256];
+    }
+
+    IntPairList(final boolean trackEdgeRids) {
+      this();
       if (trackEdgeRids)
         edgeRids = new long[256];
     }
@@ -711,8 +713,6 @@ public class CSRBuilder {
         final int newLen = src.length * 2;
         src = Arrays.copyOf(src, newLen);
         tgt = Arrays.copyOf(tgt, newLen);
-        if (edgeRids != null)
-          edgeRids = Arrays.copyOf(edgeRids, newLen);
       }
       src[count] = source;
       tgt[count] = target;
