@@ -108,6 +108,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * for in-progress builds to complete, then forcibly terminates remaining tasks.
    * Called when the last database instance is closed (alongside {@code PageManager.INSTANCE.close()}).
    * The executor is lazily re-created if a new database is opened later.
+   *
+   * <p><b>Multi-database note:</b> The executor is shared across all databases in the JVM.
+   * When an individual database closes, {@link GraphAnalyticalViewRegistry#shutdownAll} unregisters
+   * its GAV listeners and traversal providers, but any already-submitted async build tasks remain
+   * on the executor until all databases close. Those orphaned tasks self-terminate with
+   * {@code DatabaseIsClosedException} when they attempt to access the closed database — no data
+   * loss or corruption occurs. The 30-second drain timeout applies to all pending work from all
+   * databases simultaneously.</p>
    */
   public static void closeExecutor() {
     synchronized (GraphAnalyticalView.class) {
