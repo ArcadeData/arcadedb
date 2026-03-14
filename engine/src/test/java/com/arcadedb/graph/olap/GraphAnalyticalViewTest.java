@@ -3497,10 +3497,13 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
     assertThat(gav.getNodeCount()).isEqualTo(3);
     assertThat(gav.getEdgeCount()).isEqualTo(1);
+    // Re-fetch IDs after rebuild (BFS reordering may assign different dense IDs)
+    final int newAliceId = gav.getNodeId(alice.getIdentity());
+    final int newBobId = gav.getNodeId(bob.getIdentity());
     final int charlieId = gav.getNodeId(charlie.getIdentity());
     assertThat(charlieId).isGreaterThanOrEqualTo(0);
-    assertThat(gav.isConnectedTo(aliceId, charlieId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
-    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+    assertThat(gav.isConnectedTo(newAliceId, charlieId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(newAliceId, newBobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
 
     gav.drop();
   }

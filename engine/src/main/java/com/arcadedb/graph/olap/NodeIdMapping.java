@@ -58,6 +58,10 @@ public class NodeIdMapping {
   private       int                   totalSize;
   private       int                   numBuckets;
 
+  // Optional BFS reordering permutation (set after CSR build for cache locality)
+  private       int[]                 oldToNew;  // naturalId → reorderedId
+  private       int[]                 newToOld;  // reorderedId → naturalId
+
   // Building phase: temporary lists before compact()
   private       long[][]              positionsBuilder;
   private       int[]                 builderSizes;
@@ -153,6 +157,7 @@ public class NodeIdMapping {
 
   /**
    * Returns the global dense ID for a RID, or -1 if not mapped.
+   * If BFS reordering is applied, returns the reordered ID.
    */
   public int getGlobalId(final RID rid) {
     final Integer bucketIdx = bucketIdToIdx.get(rid.getBucketId());
@@ -161,7 +166,8 @@ public class NodeIdMapping {
     final int localId = Arrays.binarySearch(positions[bucketIdx], rid.getPosition());
     if (localId < 0)
       return -1;
-    return bucketBase[bucketIdx] + localId;
+    final int naturalId = bucketBase[bucketIdx] + localId;
+    return oldToNew != null ? oldToNew[naturalId] : naturalId;
   }
 
   /**
@@ -174,25 +180,32 @@ public class NodeIdMapping {
 
   /**
    * Returns the bucket index for a global dense ID.
+   * If BFS reordering is applied, translates through the permutation first.
    */
   public int getBucketIdx(final int globalId) {
-    // Binary search on bucketBase to find which bucket this ID falls in
+    final int naturalId = newToOld != null ? newToOld[globalId] : globalId;
+    return bucketIdxForNaturalId(naturalId);
+  }
+
+  /**
+   * Returns the local ID within a bucket for a global dense ID.
+   * If BFS reordering is applied, translates through the permutation first.
+   */
+  public int getLocalId(final int globalId) {
+    final int naturalId = newToOld != null ? newToOld[globalId] : globalId;
+    return naturalId - bucketBase[bucketIdxForNaturalId(naturalId)];
+  }
+
+  private int bucketIdxForNaturalId(final int naturalId) {
     int lo = 0, hi = numBuckets - 1;
     while (lo < hi) {
       final int mid = (lo + hi + 1) >>> 1;
-      if (bucketBase[mid] <= globalId)
+      if (bucketBase[mid] <= naturalId)
         lo = mid;
       else
         hi = mid - 1;
     }
     return lo;
-  }
-
-  /**
-   * Returns the local ID within a bucket for a global dense ID.
-   */
-  public int getLocalId(final int globalId) {
-    return globalId - bucketBase[getBucketIdx(globalId)];
   }
 
   /**
@@ -223,18 +236,22 @@ public class NodeIdMapping {
    * Returns the RID for a given global dense ID, with an explicit database reference.
    * Passing the database avoids reliance on thread-local context (which can be null
    * when multiple databases are open in tests or concurrent scenarios).
+   * If BFS reordering is applied, translates through the permutation first.
    */
   public RID getRID(final BasicDatabase database, final int globalId) {
-    final int bucketIdx = getBucketIdx(globalId);
-    final int localId = globalId - bucketBase[bucketIdx];
+    final int naturalId = newToOld != null ? newToOld[globalId] : globalId;
+    final int bucketIdx = bucketIdxForNaturalId(naturalId);
+    final int localId = naturalId - bucketBase[bucketIdx];
     return new RID(database, bucketIds[bucketIdx], positions[bucketIdx][localId]);
   }
 
   /**
    * Returns the vertex type name for a given global dense ID.
+   * If BFS reordering is applied, translates through the permutation first.
    */
   public String getTypeName(final int globalId) {
-    return bucketTypeNames[getBucketIdx(globalId)];
+    final int naturalId = newToOld != null ? newToOld[globalId] : globalId;
+    return bucketTypeNames[bucketIdxForNaturalId(naturalId)];
   }
 
   /**
@@ -280,6 +297,26 @@ public class NodeIdMapping {
   }
 
   /**
+   * Applies a BFS-based vertex reordering for improved cache locality.
+   * After this call, all global IDs returned by this mapping are BFS-ordered.
+   *
+   * @param oldToNewMapping naturalId → reorderedId permutation
+   */
+  public void applyReordering(final int[] oldToNewMapping) {
+    this.oldToNew = oldToNewMapping;
+    this.newToOld = new int[oldToNewMapping.length];
+    for (int i = 0; i < oldToNewMapping.length; i++)
+      newToOld[oldToNewMapping[i]] = i;
+  }
+
+  /**
+   * Returns true if BFS vertex reordering has been applied.
+   */
+  public boolean isReordered() {
+    return oldToNew != null;
+  }
+
+  /**
    * Returns the estimated memory footprint in bytes.
    */
   public long getMemoryUsageBytes() {
@@ -300,6 +337,11 @@ public class NodeIdMapping {
     bytes += (long) bucketIdToIdx.size() * 48;
     // bucketTypeNames: reference array + rough estimate for String objects
     bytes += (long) numBuckets * 8; // references
+    // BFS reordering permutation arrays
+    if (oldToNew != null)
+      bytes += (long) oldToNew.length * Integer.BYTES;
+    if (newToOld != null)
+      bytes += (long) newToOld.length * Integer.BYTES;
     return bytes;
   }
 

@@ -379,6 +379,94 @@ public class CSRBuilder {
       totalAllEdges += edgeCount;
     }
 
+    // --- Phase D: BFS vertex reordering for cache locality ---
+    // Renumber dense IDs using BFS from the highest-degree node so that graph-nearby
+    // nodes get nearby IDs. This improves cache locality for ALL subsequent algorithms.
+    if (nodeCount > 1 && !csrPerType.isEmpty()) {
+      final int[] oldToNew = computeBfsOrdering(nodeCount, csrPerType);
+
+      // Build inverse mapping
+      final int[] newToOld = new int[nodeCount];
+      for (int i = 0; i < nodeCount; i++)
+        newToOld[oldToNew[i]] = i;
+
+      // Reorder each CSR and remap edge properties + bwdToFwd
+      for (final Map.Entry<String, CSRAdjacencyIndex> csrEntry : new HashMap<>(csrPerType).entrySet()) {
+        final String edgeTypeName = csrEntry.getKey();
+        final boolean hasEdgePropsForType = edgeColumnStores != null && edgeColumnStores.containsKey(edgeTypeName);
+        final ReorderedCSR reordered = reorderCSR(csrEntry.getValue(), oldToNew, newToOld, nodeCount, hasEdgePropsForType);
+        csrPerType.put(edgeTypeName, reordered.csr);
+
+        // Remap edge property ColumnStore if present using satellite array
+        if (hasEdgePropsForType && reordered.oldPosAtNewPos != null) {
+          final ColumnStore oldStore = edgeColumnStores.get(edgeTypeName);
+          final int edgeCount = reordered.csr.getEdgeCount();
+          final ColumnStore newStore = new ColumnStore(edgeCount);
+          for (final String colName : oldStore.getPropertyNames()) {
+            final Column oldCol = oldStore.getColumn(colName);
+            newStore.createColumn(colName, oldCol.getType());
+            final Column newCol = newStore.getColumn(colName);
+            // oldPosAtNewPos[newPos] = oldPos: copy old value at oldPos to newPos
+            for (int newPos = 0; newPos < edgeCount; newPos++) {
+              final int oldPos = reordered.oldPosAtNewPos[newPos];
+              switch (oldCol.getType()) {
+              case INT:
+                if (!oldCol.isNull(oldPos))
+                  newCol.setInt(newPos, oldCol.getInt(oldPos));
+                break;
+              case LONG:
+                if (!oldCol.isNull(oldPos))
+                  newCol.setLong(newPos, oldCol.getLong(oldPos));
+                break;
+              case DOUBLE:
+                if (!oldCol.isNull(oldPos))
+                  newCol.setDouble(newPos, oldCol.getDouble(oldPos));
+                break;
+              case STRING:
+                if (!oldCol.isNull(oldPos))
+                  newCol.setString(newPos, oldCol.getString(oldPos));
+                break;
+              }
+            }
+          }
+          edgeColumnStores.put(edgeTypeName, newStore);
+        }
+
+        // Rebuild bwdToFwd mapping for reordered CSR
+        if (bwdToFwdMap != null && bwdToFwdMap.containsKey(edgeTypeName)) {
+          final CSRAdjacencyIndex newCSR = reordered.csr;
+          final int[] newFwdOffsets = newCSR.getForwardOffsets();
+          final int[] newFwdNeighbors = newCSR.getForwardNeighbors();
+          final int[] newBwdOffsets = newCSR.getBackwardOffsets();
+          final int[] newBwdNeighbors = newCSR.getBackwardNeighbors();
+          final int edgeCount = newCSR.getEdgeCount();
+          final int[] newBwdToFwd = new int[edgeCount];
+          for (int u = 0; u < nodeCount; u++) {
+            int b = newBwdOffsets[u];
+            final int bEnd = newBwdOffsets[u + 1];
+            while (b < bEnd) {
+              final int src = newBwdNeighbors[b];
+              int count = 1;
+              while (b + count < bEnd && newBwdNeighbors[b + count] == src)
+                count++;
+              int fPos = Arrays.binarySearch(newFwdNeighbors, newFwdOffsets[src], newFwdOffsets[src + 1], u);
+              if (fPos >= 0) {
+                while (fPos > newFwdOffsets[src] && newFwdNeighbors[fPos - 1] == u)
+                  fPos--;
+                for (int k = 0; k < count; k++)
+                  newBwdToFwd[b + k] = fPos + k;
+              }
+              b += count;
+            }
+          }
+          bwdToFwdMap.put(edgeTypeName, newBwdToFwd);
+        }
+      }
+
+      // Apply permutation to NodeIdMapping (transparent to all lookups)
+      mapping.applyReordering(oldToNew);
+    }
+
     final long elapsedMs = System.currentTimeMillis() - startTime;
     long totalMemory = 0;
     int totalColumns = 0;
@@ -663,6 +751,166 @@ public class CSRBuilder {
       tmpSat[i] = satellite[from + origIdx];
     }
     System.arraycopy(tmpSat, 0, satellite, from, len);
+  }
+
+  /**
+   * Computes a BFS-order vertex renumbering from the highest-degree node.
+   * After renumbering, graph-nearby nodes have nearby dense IDs,
+   * dramatically improving cache locality for all graph algorithms.
+   *
+   * @return oldToNew mapping: oldToNew[oldId] = newId
+   */
+  static int[] computeBfsOrdering(final int nodeCount, final Map<String, CSRAdjacencyIndex> csrPerType) {
+    final int[] oldToNew = new int[nodeCount];
+    Arrays.fill(oldToNew, -1);
+
+    // Build combined degree for all edge types to find the best root
+    int root = 0;
+    int maxDeg = 0;
+    for (final CSRAdjacencyIndex csr : csrPerType.values()) {
+      final int[] fwdOffsets = csr.getForwardOffsets();
+      final int[] bwdOffsets = csr.getBackwardOffsets();
+      for (int u = 0; u < nodeCount; u++) {
+        final int deg = (fwdOffsets[u + 1] - fwdOffsets[u]) + (bwdOffsets[u + 1] - bwdOffsets[u]);
+        if (deg > maxDeg) {
+          maxDeg = deg;
+          root = u;
+        }
+      }
+    }
+
+    // BFS renumbering from highest-degree root
+    int nextId = 0;
+    final int[] queue = new int[nodeCount];
+    int head = 0, tail = 0;
+    oldToNew[root] = nextId++;
+    queue[tail++] = root;
+
+    while (head < tail) {
+      final int u = queue[head++];
+      for (final CSRAdjacencyIndex csr : csrPerType.values()) {
+        // Traverse forward neighbors
+        final int[] fwdOffsets = csr.getForwardOffsets();
+        final int[] fwdNeighbors = csr.getForwardNeighbors();
+        for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
+          final int v = fwdNeighbors[j];
+          if (oldToNew[v] < 0) {
+            oldToNew[v] = nextId++;
+            queue[tail++] = v;
+          }
+        }
+        // Traverse backward neighbors (for directed graphs, reach "parent" nodes too)
+        final int[] bwdOffsets = csr.getBackwardOffsets();
+        final int[] bwdNeighbors = csr.getBackwardNeighbors();
+        for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
+          final int v = bwdNeighbors[j];
+          if (oldToNew[v] < 0) {
+            oldToNew[v] = nextId++;
+            queue[tail++] = v;
+          }
+        }
+      }
+    }
+
+    // Assign remaining disconnected nodes
+    for (int u = 0; u < nodeCount; u++)
+      if (oldToNew[u] < 0)
+        oldToNew[u] = nextId++;
+
+    return oldToNew;
+  }
+
+  /**
+   * Rebuilds a CSR adjacency index with remapped node IDs.
+   * Creates new offsets based on the reordered node IDs, copies and translates
+   * neighbor references, and re-sorts neighbor lists. Uses a satellite array to
+   * track old edge positions through the sort (for edge property remapping).
+   *
+   * @param oldCSR       the original CSR
+   * @param oldToNew     oldId → newId permutation
+   * @param newToOld     newId → oldId permutation
+   * @param nodeCount    total number of nodes
+   * @param hasEdgeProps whether edge properties exist and need position tracking
+   *
+   * @return the reordered CSR with remapped IDs and a mapping from old to new edge positions
+   */
+  static ReorderedCSR reorderCSR(final CSRAdjacencyIndex oldCSR, final int[] oldToNew,
+      final int[] newToOld, final int nodeCount, final boolean hasEdgeProps) {
+    final int edgeCount = oldCSR.getEdgeCount();
+    final int[] oldFwdOffsets = oldCSR.getForwardOffsets();
+    final int[] oldFwdNeighbors = oldCSR.getForwardNeighbors();
+    final int[] oldBwdOffsets = oldCSR.getBackwardOffsets();
+    final int[] oldBwdNeighbors = oldCSR.getBackwardNeighbors();
+
+    // Build new forward CSR: iterate in new ID order, copy old edges with translated IDs
+    final int[] newFwdOffsets = new int[nodeCount + 1];
+    for (int newId = 0; newId < nodeCount; newId++) {
+      final int oldId = newToOld[newId];
+      newFwdOffsets[newId + 1] = newFwdOffsets[newId] + (oldFwdOffsets[oldId + 1] - oldFwdOffsets[oldId]);
+    }
+
+    final int[] newFwdNeighbors = new int[edgeCount];
+    // Satellite array: tracks which old edge position each new position came from.
+    // Used to remap edge properties after the sort changes positions.
+    final int[] oldPosAtNewPos = hasEdgeProps && edgeCount > 0 ? new int[edgeCount] : null;
+    for (int newId = 0; newId < nodeCount; newId++) {
+      final int oldId = newToOld[newId];
+      final int oldStart = oldFwdOffsets[oldId];
+      final int oldEnd = oldFwdOffsets[oldId + 1];
+      final int newStart = newFwdOffsets[newId];
+      for (int j = oldStart; j < oldEnd; j++) {
+        final int newPos = newStart + (j - oldStart);
+        newFwdNeighbors[newPos] = oldToNew[oldFwdNeighbors[j]];
+        if (oldPosAtNewPos != null)
+          oldPosAtNewPos[newPos] = j;
+      }
+      // Re-sort neighbor list after ID translation, carrying satellite data along
+      final int newEnd = newFwdOffsets[newId + 1];
+      if (newEnd - newStart > 1) {
+        if (oldPosAtNewPos != null)
+          parallelSort(newFwdNeighbors, oldPosAtNewPos, newStart, newEnd);
+        else
+          Arrays.sort(newFwdNeighbors, newStart, newEnd);
+      }
+    }
+
+    // Build new backward CSR the same way
+    final int[] newBwdOffsets = new int[nodeCount + 1];
+    for (int newId = 0; newId < nodeCount; newId++) {
+      final int oldId = newToOld[newId];
+      newBwdOffsets[newId + 1] = newBwdOffsets[newId] + (oldBwdOffsets[oldId + 1] - oldBwdOffsets[oldId]);
+    }
+
+    final int[] newBwdNeighbors = new int[edgeCount];
+    for (int newId = 0; newId < nodeCount; newId++) {
+      final int oldId = newToOld[newId];
+      final int oldStart = oldBwdOffsets[oldId];
+      final int oldEnd = oldBwdOffsets[oldId + 1];
+      final int newStart = newBwdOffsets[newId];
+      for (int j = oldStart; j < oldEnd; j++)
+        newBwdNeighbors[newStart + (j - oldStart)] = oldToNew[oldBwdNeighbors[j]];
+      final int newEnd = newBwdOffsets[newId + 1];
+      if (newEnd - newStart > 1)
+        Arrays.sort(newBwdNeighbors, newStart, newEnd);
+    }
+
+    return new ReorderedCSR(
+        new CSRAdjacencyIndex(newFwdOffsets, newFwdNeighbors, newBwdOffsets, newBwdNeighbors, nodeCount, edgeCount),
+        oldPosAtNewPos);
+  }
+
+  /**
+   * Result of CSR reordering: the new CSR plus the satellite array mapping
+   * new forward edge positions back to old forward edge positions (for edge property remapping).
+   */
+  static final class ReorderedCSR {
+    final CSRAdjacencyIndex csr;
+    final int[]             oldPosAtNewPos; // newFwdPos → oldFwdPos
+
+    ReorderedCSR(final CSRAdjacencyIndex csr, final int[] oldPosAtNewPos) {
+      this.csr = csr;
+      this.oldPosAtNewPos = oldPosAtNewPos;
+    }
   }
 
   static long packRid(final RID rid) {
