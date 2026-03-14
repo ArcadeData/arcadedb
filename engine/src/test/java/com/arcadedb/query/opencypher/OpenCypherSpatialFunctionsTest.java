@@ -30,13 +30,8 @@ import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Test for GitHub issue #3402: java.lang.NumberFormatException on spatial functions usage (distance).
- * When using point() function to create spatial data and then querying with distance() function,
- * the system throws NumberFormatException because points are serialized as WKT strings but
- * distance() expects them to be Point objects or individual coordinates.
- */
-class Issue3402Test {
+/** Cypher spatial functions (point, distance). See issue #3402 */
+class OpenCypherSpatialFunctionsTest {
   private Database database;
   private static final String DB_PATH = "./target/databases/test-issue3402";
 

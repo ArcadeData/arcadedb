@@ -6,6 +6,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -177,5 +178,97 @@ public class OpenCypherStringEscapeTest {
     final Result r = verify.next();
     final String text = r.getProperty("text");
     assertThat(text).isEqualTo("hello\nworld");
+  }
+
+  /** See issue #3333 */
+  @Nested
+  class StringMatchingInReturnRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      database = new DatabaseFactory("./target/databases/test-issue3333").create();
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    @Test
+    void stringMatchingInReturn() {
+      // Exact scenario from issue #3333
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          WITH 'Hello World' AS txt \
+          RETURN txt STARTS WITH 'He' AS a, \
+          txt CONTAINS 'lo' AS b, \
+          txt ENDS WITH 'rld' AS c""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat(row.<Boolean>getProperty("a")).isTrue();
+        assertThat(row.<Boolean>getProperty("b")).isTrue();
+        assertThat(row.<Boolean>getProperty("c")).isTrue();
+        assertThat(rs.hasNext()).isFalse();
+      }
+    }
+
+    @Test
+    void stringMatchingInReturnFalse() {
+      // Test that false results are returned correctly too
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          WITH 'Hello World' AS txt \
+          RETURN txt STARTS WITH 'Xyz' AS a, \
+          txt CONTAINS 'xyz' AS b, \
+          txt ENDS WITH 'xyz' AS c""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat(row.<Boolean>getProperty("a")).isFalse();
+        assertThat(row.<Boolean>getProperty("b")).isFalse();
+        assertThat(row.<Boolean>getProperty("c")).isFalse();
+        assertThat(rs.hasNext()).isFalse();
+      }
+    }
+
+    @Test
+    void stringMatchingWithPropertyInReturn() {
+      // Test with node property access
+      database.getSchema().createVertexType("Person");
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (:Person {name: 'Alice Johnson'})");
+      });
+
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (p:Person) \
+          RETURN p.name STARTS WITH 'Ali' AS startsWithAli, \
+          p.name CONTAINS 'John' AS containsJohn, \
+          p.name ENDS WITH 'son' AS endsWithSon""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat(row.<Boolean>getProperty("startsWithAli")).isTrue();
+        assertThat(row.<Boolean>getProperty("containsJohn")).isTrue();
+        assertThat(row.<Boolean>getProperty("endsWithSon")).isTrue();
+        assertThat(rs.hasNext()).isFalse();
+      }
+    }
+
+    @Test
+    void regexInReturn() {
+      // Test that regex (=~) also works in RETURN
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          WITH 'Hello World' AS txt \
+          RETURN txt =~ 'Hello.*' AS matchesRegex""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat(row.<Boolean>getProperty("matchesRegex")).isTrue();
+        assertThat(rs.hasNext()).isFalse();
+      }
+    }
   }
 }

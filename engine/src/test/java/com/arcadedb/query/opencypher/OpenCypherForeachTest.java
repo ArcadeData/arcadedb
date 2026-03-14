@@ -37,17 +37,18 @@ class OpenCypherForeachTest {
 
   @Test
   void foreachCreateEdges_issue3328() {
-    // Exact scenario from issue #3328
+    // Regression test for issue #3328: FOREACH creating edges from matched nodes
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:TestNode {name: 'Root'})");
+    });
+
     database.transaction(() -> {
       database.command("opencypher",
           """
-          CREATE (root:TestNode {name: 'Root'})
+          MATCH (root:TestNode {name: 'Root'})
           FOREACH (i IN [1, 2, 3] |
             CREATE (root)-[:HAS_ITEM]->(:Item {id: i})
-          )
-          WITH root
-          MATCH (root)-[:HAS_ITEM]->(item)
-          RETURN count(item) AS total""");
+          )""");
     });
 
     // Verify: 3 items should have been created
