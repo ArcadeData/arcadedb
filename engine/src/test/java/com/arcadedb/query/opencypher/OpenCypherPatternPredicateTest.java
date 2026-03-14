@@ -24,7 +24,10 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -213,5 +216,120 @@ class OpenCypherPatternPredicateTest {
     assertThat(result.hasNext()).isTrue();
     assertThat((String) result.next().getProperty("name")).isEqualTo("Alice");
     assertThat(result.hasNext()).isFalse();
+  }
+
+  /** See issue #3331 */
+  @Nested
+  class PatternComprehensionReturnTypeRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      database = new DatabaseFactory("./target/databases/test-issue3331").create();
+      database.getSchema().createVertexType("Person");
+      database.getSchema().createEdgeType("KNOWS");
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    @Test
+    void patternComprehensionFromIssue() {
+      // Exact scenario from issue #3331
+      database.transaction(() -> {
+        database.command("opencypher",
+            """
+            CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
+            (a)-[:KNOWS]->(:Person {name:'C'})""");
+      });
+
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (a:Person {name: 'A'}) \
+          RETURN [(a)-->(friend) WHERE friend.name <> 'B' | friend.name] AS result""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        final Object resultObj = row.getProperty("result");
+        assertThat(resultObj).isInstanceOf(List.class);
+        @SuppressWarnings("unchecked")
+        final List<Object> resultList = (List<Object>) resultObj;
+        assertThat(resultList).containsExactly("C");
+      }
+    }
+
+    @Test
+    void patternComprehensionNoFilter() {
+      // Pattern comprehension without WHERE clause
+      database.transaction(() -> {
+        database.command("opencypher",
+            """
+            CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
+            (a)-[:KNOWS]->(:Person {name:'C'})""");
+      });
+
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (a:Person {name: 'A'}) \
+          RETURN [(a)-->(friend) | friend.name] AS result""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        final Object resultObj = row.getProperty("result");
+        assertThat(resultObj).isInstanceOf(List.class);
+        @SuppressWarnings("unchecked")
+        final List<Object> resultList = (List<Object>) resultObj;
+        assertThat(resultList).containsExactlyInAnyOrder("B", "C");
+      }
+    }
+
+    @Test
+    void patternComprehensionWithRelType() {
+      // Pattern comprehension with specific relationship type
+      database.transaction(() -> {
+        database.command("opencypher",
+            """
+            CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
+            (a)-[:LIKES]->(:Person {name:'C'})""");
+      });
+
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (a:Person {name: 'A'}) \
+          RETURN [(a)-[:KNOWS]->(friend) | friend.name] AS result""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        final Object resultObj = row.getProperty("result");
+        assertThat(resultObj).isInstanceOf(List.class);
+        @SuppressWarnings("unchecked")
+        final List<Object> resultList = (List<Object>) resultObj;
+        assertThat(resultList).containsExactly("B");
+      }
+    }
+
+    @Test
+    void patternComprehensionEmptyResult() {
+      // Pattern comprehension that matches nothing
+      database.transaction(() -> {
+        database.command("opencypher",
+            "CREATE (:Person {name:'A'})");
+      });
+
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (a:Person {name: 'A'}) \
+          RETURN [(a)-->(friend) | friend.name] AS result""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        final Object resultObj = row.getProperty("result");
+        assertThat(resultObj).isInstanceOf(List.class);
+        @SuppressWarnings("unchecked")
+        final List<Object> resultList = (List<Object>) resultObj;
+        assertThat(resultList).isEmpty();
+      }
+    }
   }
 }

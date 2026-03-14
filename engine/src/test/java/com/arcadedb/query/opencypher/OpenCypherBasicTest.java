@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -89,5 +90,58 @@ public class OpenCypherBasicTest {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) WHERE n.age > 25 RETURN n");
 
     assertThat((Object) result).isNotNull();
+  }
+
+  /** See issue #3415 */
+  @Nested
+  class CreatePathVariableRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      database = new DatabaseFactory("./target/databases/issue3415-test").create();
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    @Test
+    void createPathVariableWithLengthFunction() {
+      final ResultSet rs = database.command("opencypher",
+          "CREATE p=(:CP1)-[:Rel]->(:CP2) RETURN length(p) as l");
+
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.<Long>getProperty("l")).isEqualTo(1L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    @Test
+    void createPathVariableReturnsPath() {
+      final ResultSet rs = database.command("opencypher",
+          "CREATE p=(:CP1)-[:Rel]->(:CP2) RETURN p");
+
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      final Object p = result.getProperty("p");
+      assertThat(p).isNotNull();
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    @Test
+    void createMultiHopPathVariableWithLength() {
+      final ResultSet rs = database.command("opencypher",
+          "CREATE p=(:A)-[:R1]->(:B)-[:R2]->(:C) RETURN length(p) as l");
+
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.<Long>getProperty("l")).isEqualTo(2L);
+      assertThat(rs.hasNext()).isFalse();
+    }
   }
 }

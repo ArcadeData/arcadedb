@@ -18,8 +18,17 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.function.math.*;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+
+import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -238,5 +247,82 @@ class OpenCypherMathFunctionsTest {
     final double sinhX = (Double) sinhFn.execute(new Object[]{x}, null);
 
     assertThat(tanhX).isCloseTo(sinhX / coshX, within(0.0001));
+  }
+
+  /** See issue #3417 */
+  @Nested
+  class RoundWithPrecisionRegression {
+    private Database database;
+    private static final String DB_PATH = "./target/databases/test-issue3417";
+
+    @BeforeEach
+    void setUp() {
+      new File(DB_PATH).mkdirs();
+      database = new DatabaseFactory(DB_PATH).create();
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    @Test
+    void roundWithPrecision() {
+      // Exact query from the issue
+      try (final ResultSet rs = database.command("opencypher", "RETURN round(3.141592, 2) as result")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat((Double) row.getProperty("result")).isCloseTo(3.14, within(0.0001));
+      }
+    }
+
+    @Test
+    void roundWithoutPrecision() {
+      try (final ResultSet rs = database.command("opencypher", "RETURN round(3.141592) as result")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        // round(3.141592) should return 3.0
+        assertThat((Double) row.getProperty("result")).isCloseTo(3.0, within(0.0001));
+      }
+    }
+
+    @Test
+    void roundWithZeroPrecision() {
+      try (final ResultSet rs = database.command("opencypher", "RETURN round(3.7, 0) as result")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat((Double) row.getProperty("result")).isCloseTo(4.0, within(0.0001));
+      }
+    }
+
+    @Test
+    void roundWithHighPrecision() {
+      try (final ResultSet rs = database.command("opencypher", "RETURN round(3.141592, 4) as result")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat((Double) row.getProperty("result")).isCloseTo(3.1416, within(0.00001));
+      }
+    }
+
+    @Test
+    void roundNegativeNumber() {
+      try (final ResultSet rs = database.command("opencypher", "RETURN round(-2.555, 2) as result")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat((Double) row.getProperty("result")).isCloseTo(-2.56, within(0.0001));
+      }
+    }
+
+    @Test
+    void roundNull() {
+      try (final ResultSet rs = database.command("opencypher", "RETURN round(null) as result")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat((Object) row.getProperty("result")).isNull();
+      }
+    }
   }
 }

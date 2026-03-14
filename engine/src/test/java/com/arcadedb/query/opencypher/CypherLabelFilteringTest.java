@@ -24,9 +24,13 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
 
 import java.util.List;
 import java.util.Map;
@@ -261,5 +265,133 @@ class CypherLabelFilteringTest {
       // nerOnes should contain exactly 3 NER vertices
       assertThat(nerOnes.size()).as("Expected 3 NER in nerOnes").isEqualTo(3);
     });
+  }
+
+  /** See issue #3412 */
+  @Nested
+  class ParentTypeLabelPolymorphismRegression {
+    private Database database;
+    private String chunkRid;
+
+    @BeforeEach
+    void setUp() {
+      database = new DatabaseFactory("./target/databases/issue3412-test").create();
+
+      // Create type hierarchy: CHUNK_EMBEDDING extends EMBEDDING
+      database.getSchema().createVertexType("CHUNK");
+      database.getSchema().createVertexType("EMBEDDING");
+      final VertexType chunkEmbedding = database.getSchema().createVertexType("CHUNK_EMBEDDING");
+      chunkEmbedding.addSuperType("EMBEDDING");
+      database.getSchema().createEdgeType("HAS_EMBEDDING");
+
+      // Create test data
+      database.transaction(() -> {
+        final MutableVertex chunk = database.newVertex("CHUNK").set("name", "chunk1").save();
+        chunkRid = chunk.getIdentity().toString();
+
+        final MutableVertex emb1 = database.newVertex("CHUNK_EMBEDDING").set("name", "emb1").save();
+        final MutableVertex emb2 = database.newVertex("CHUNK_EMBEDDING").set("name", "emb2").save();
+
+        chunk.newEdge("HAS_EMBEDDING", emb1, true, (Object[]) null);
+        chunk.newEdge("HAS_EMBEDDING", emb2, true, (Object[]) null);
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    /**
+     * Matching with child type should return results (baseline).
+     */
+    @Test
+    void matchWithChildTypeShouldReturnResults() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:CHUNK)--(b:CHUNK_EMBEDDING) WHERE ID(n) = \"" + chunkRid + "\" RETURN n, b");
+
+      final List<Result> results = new ArrayList<>();
+      while (rs.hasNext())
+        results.add(rs.next());
+
+      assertThat(results).hasSize(2);
+    }
+
+    /**
+     * Matching with parent type should also return child type vertices (polymorphism).
+     * This is the core of issue #3412.
+     */
+    @Test
+    void matchWithParentTypeShouldReturnChildVertices() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:CHUNK)--(b:EMBEDDING) WHERE ID(n) = \"" + chunkRid + "\" RETURN n, b");
+
+      final List<Result> results = new ArrayList<>();
+      while (rs.hasNext())
+        results.add(rs.next());
+
+      // Should return 2 results because CHUNK_EMBEDDING extends EMBEDDING
+      assertThat(results).hasSize(2);
+      for (final Result result : results) {
+        final Vertex b = result.getProperty("b");
+        assertThat(b.getType().instanceOf("EMBEDDING")).isTrue();
+      }
+    }
+
+    /**
+     * Matching with parent type without WHERE ID filter should also work polymorphically.
+     */
+    @Test
+    void matchWithParentTypeNoIdFilter() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:CHUNK)--(b:EMBEDDING) RETURN n, b");
+
+      final List<Result> results = new ArrayList<>();
+      while (rs.hasNext())
+        results.add(rs.next());
+
+      assertThat(results).hasSize(2);
+    }
+
+    /**
+     * Matching with parent type using a directed relationship.
+     */
+    @Test
+    void matchWithParentTypeDirected() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:CHUNK)-->(b:EMBEDDING) RETURN n, b");
+
+      final List<Result> results = new ArrayList<>();
+      while (rs.hasNext())
+        results.add(rs.next());
+
+      assertThat(results).hasSize(2);
+    }
+
+    /**
+     * Also test with a mix of parent and child type vertices.
+     */
+    @Test
+    void matchWithParentTypeIncludesBothParentAndChildVertices() {
+      // Add a vertex of the parent type directly
+      database.transaction(() -> {
+        final MutableVertex chunk = database.iterateType("CHUNK", false).next().asVertex().modify();
+        final MutableVertex parentEmb = database.newVertex("EMBEDDING").set("name", "parent_emb").save();
+        chunk.newEdge("HAS_EMBEDDING", parentEmb, true, (Object[]) null);
+      });
+
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:CHUNK)--(b:EMBEDDING) RETURN n, b");
+
+      final List<Result> results = new ArrayList<>();
+      while (rs.hasNext())
+        results.add(rs.next());
+
+      // 2 CHUNK_EMBEDDING + 1 EMBEDDING = 3 results
+      assertThat(results).hasSize(3);
+    }
   }
 }
