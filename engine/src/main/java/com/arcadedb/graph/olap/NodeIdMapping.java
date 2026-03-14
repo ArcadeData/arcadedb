@@ -101,6 +101,8 @@ public class NodeIdMapping {
    * @return the local ID within the bucket
    */
   public int addNode(final int bucketIdx, final long ridPosition) {
+    if (positionsBuilder == null)
+      throw new IllegalStateException("NodeIdMapping has been compacted; addNode() is not allowed");
     final int localId = builderSizes[bucketIdx];
     if (localId >= positionsBuilder[bucketIdx].length) {
       final long[] old = positionsBuilder[bucketIdx];

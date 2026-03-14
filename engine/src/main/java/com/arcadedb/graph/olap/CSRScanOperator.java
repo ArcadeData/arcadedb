@@ -50,9 +50,11 @@ public class CSRScanOperator {
     if (direction == Vertex.DIRECTION.OUT) {
       this.cursor = csr.outOffset(nodeId);
       this.end = csr.outOffsetEnd(nodeId);
-    } else {
+    } else if (direction == Vertex.DIRECTION.IN) {
       this.cursor = csr.inOffset(nodeId);
       this.end = csr.inOffsetEnd(nodeId);
+    } else {
+      throw new IllegalArgumentException("CSRScanOperator does not support BOTH — use NeighborView for merged traversal");
     }
   }
 

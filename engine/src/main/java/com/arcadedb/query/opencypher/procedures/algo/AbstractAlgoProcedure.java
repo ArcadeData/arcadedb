@@ -180,12 +180,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     if (provider != null && provider.coversVertexType(null))
       return provider;
 
-    // For whole-graph algorithms (null/empty relTypes), accept any ready provider.
-    // A GAV built with specific types (e.g., "KNOWS") still accelerates whole-graph
-    // algorithms — the algorithm processes all edges the CSR contains.
+    // For whole-graph algorithms (null/empty relTypes), accept any ready provider that covers
+    // all edge types. A partial-coverage provider would silently produce wrong results.
     if (relTypes == null || relTypes.length == 0) {
       for (final GraphTraversalProvider p : GraphTraversalProviderRegistry.getProviders(db))
-        if (p.isReady())
+        if (p.isReady() && p.coversEdgeType(null))
           return p;
     }
     return null;

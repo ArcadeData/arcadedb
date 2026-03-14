@@ -670,16 +670,19 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    */
   private GraphTraversalProvider resolveGavProvider(final String[] edgeTypes) {
     if (!gavProviderResolved) {
-      gavProviderResolved = true;
       final Database db = context.getDatabase();
-      gavProvider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
-      if (gavProvider == null && context.isProfiling()) {
+      final GraphTraversalProvider resolved = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+      if (resolved == null && context.isProfiling()) {
         final List<GraphTraversalProvider> allProviders = GraphTraversalProviderRegistry.getProviders(db);
         gavProviderDebug = "db=" + db.getClass().getSimpleName() + ", providers=" + allProviders.size();
         if (!allProviders.isEmpty())
           gavProviderDebug += " [ready=" + allProviders.stream().filter(GraphTraversalProvider::isReady).count()
               + ", edgeTypes=" + java.util.Arrays.toString(edgeTypes) + "]";
       }
+      // Assign provider before setting resolved flag to prevent another thread from seeing
+      // resolved=true with gavProvider still null
+      gavProvider = resolved;
+      gavProviderResolved = true;
     }
     return gavProvider;
   }

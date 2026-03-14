@@ -3807,15 +3807,18 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final long memWithout = gavNoEdgeProps.getMemoryUsageBytes();
     gavNoEdgeProps.drop();
 
-    // Build with edge properties
+    // Build with edge properties (materialization runs in background)
     final GraphAnalyticalView gavWithEdgeProps = GraphAnalyticalView.builder(database)
         .withVertexTypes("Node").withEdgeTypes("LINK").withEdgeProperties("weight").build();
     final long memWith = gavWithEdgeProps.getMemoryUsageBytes();
 
-    // Memory should be higher when edge properties are stored
+    // Memory should be higher when edge properties are configured (deferred or materialized)
     assertThat(memWith).isGreaterThan(memWithout);
 
-    // Stats should include edge property info
+    // Trigger materialization by accessing edge column store (blocks until background completes)
+    assertThat(gavWithEdgeProps.getEdgeColumnStore("LINK")).isNotNull();
+
+    // After materialization, stats should include edge property info
     final java.util.Map<String, Object> stats = gavWithEdgeProps.getStats();
     assertThat(stats.get("edgePropertyColumns")).isEqualTo(1);
     assertThat((long) stats.get("edgePropertyMemoryBytes")).isGreaterThan(0);
@@ -3846,6 +3849,41 @@ public class GraphAnalyticalViewTest extends TestHelper {
     final var def = extension.getJSONObject("epView");
     assertThat(def.getJSONArray("edgePropertyFilter").length()).isEqualTo(1);
     assertThat(def.getJSONArray("edgePropertyFilter").getString(0)).isEqualTo("weight");
+
+    gav.drop();
+  }
+
+  @Test
+  void testSelfLoopWithGAVBothDirection() {
+    database.getSchema().createVertexType("SLNode");
+    database.getSchema().createEdgeType("SELF_REL");
+
+    database.begin();
+    final MutableVertex node = database.newVertex("SLNode").set("name", "self").save();
+    node.newEdge("SELF_REL", node); // self-loop
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("selfLoopView")
+        .withVertexTypes("SLNode")
+        .withEdgeTypes("SELF_REL")
+        .build();
+
+    final int nodeId = gav.getNodeId(node.getIdentity());
+
+    // OUT direction: self-loop should return the node itself as neighbor
+    assertThat(gav.countEdges(nodeId, Vertex.DIRECTION.OUT, "SELF_REL")).isEqualTo(1);
+    final int[] outNeighbors = gav.getNeighborIds(nodeId, Vertex.DIRECTION.OUT, "SELF_REL");
+    assertThat(outNeighbors).containsExactly(nodeId);
+
+    // IN direction: same
+    assertThat(gav.countEdges(nodeId, Vertex.DIRECTION.IN, "SELF_REL")).isEqualTo(1);
+    final int[] inNeighbors = gav.getNeighborIds(nodeId, Vertex.DIRECTION.IN, "SELF_REL");
+    assertThat(inNeighbors).containsExactly(nodeId);
+
+    // BOTH direction: should return the node (deduplicated or not, depending on API contract)
+    final int[] bothNeighbors = gav.getNeighborIds(nodeId, Vertex.DIRECTION.BOTH, "SELF_REL");
+    assertThat(bothNeighbors).contains(nodeId);
 
     gav.drop();
   }
