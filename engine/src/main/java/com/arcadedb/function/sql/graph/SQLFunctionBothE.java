@@ -25,7 +25,7 @@ import com.arcadedb.graph.Vertex;
 /**
  * Created by luigidellaquila on 03/01/17.
  */
-public class SQLFunctionBothE extends SQLFunctionMove {
+public class SQLFunctionBothE extends SQLFunctionMoveFiltered {
   public static final String NAME = "bothE";
 
   public SQLFunctionBothE() {
