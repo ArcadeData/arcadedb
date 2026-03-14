@@ -20,7 +20,9 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
@@ -31,6 +33,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
@@ -39,6 +42,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -141,21 +145,30 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Map<String, CSRAdjacencyIndex> csrPerType;
     final NodeIdMapping                  nodeMapping;
     final ColumnStore[]                  bucketColumns;
-    final Map<String, ColumnStore>       edgeColumnStores; // edgeType -> forward-aligned edge prop columns (null if not configured)
-    final Map<String, int[]>             bwdToFwd;         // edgeType -> backward-to-forward CSR index mapping (null if not configured)
+    // Materialized edge property data — null until lazily materialized from deferred data
+    final Map<String, ColumnStore>       edgeColumnStores;
+    final Map<String, int[]>             bwdToFwd;
+    // Deferred edge property data — non-null when edge props configured but not yet materialized
+    final Map<String, int[]>             deferredFwdInsertIdx;
+    final Map<String, int[]>             deferredBwdInsertIdx;
+    final Map<String, long[]>            deferredEdgeRids;
     final DeltaOverlay                   overlay;
     final long                           buildTimestamp;
     final long                           buildDurationMs;
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
-        final Map<String, int[]> bwdToFwd, final DeltaOverlay overlay, final long buildTimestamp,
-        final long buildDurationMs) {
+        final Map<String, int[]> bwdToFwd, final Map<String, int[]> deferredFwdInsertIdx,
+        final Map<String, int[]> deferredBwdInsertIdx, final Map<String, long[]> deferredEdgeRids,
+        final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs) {
       this.csrPerType = csrPerType;
       this.nodeMapping = nodeMapping;
       this.bucketColumns = bucketColumns;
       this.edgeColumnStores = edgeColumnStores;
       this.bwdToFwd = bwdToFwd;
+      this.deferredFwdInsertIdx = deferredFwdInsertIdx;
+      this.deferredBwdInsertIdx = deferredBwdInsertIdx;
+      this.deferredEdgeRids = deferredEdgeRids;
       this.overlay = overlay;
       this.buildTimestamp = buildTimestamp;
       this.buildDurationMs = buildDurationMs;
@@ -164,7 +177,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     /** Returns a new snapshot with a different overlay, keeping everything else unchanged. */
     Snapshot withOverlay(final DeltaOverlay newOverlay) {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
+          deferredFwdInsertIdx, deferredBwdInsertIdx, deferredEdgeRids,
           newOverlay, buildTimestamp, buildDurationMs);
+    }
+
+    boolean hasDeferredEdgeProperties() {
+      return deferredFwdInsertIdx != null;
     }
   }
 
@@ -255,9 +273,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final long durationMs = System.currentTimeMillis() - buildStart;
 
       // Atomic swap — readers see all-or-nothing
-      this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-          result.getBucketColumns(), result.getEdgeColumnStores(), result.getBwdToFwd(),
-          null, System.currentTimeMillis(), durationMs);
+      this.snapshot = snapshotFromResult(result, durationMs);
       this.status = Status.READY;
 
       if (deltaCollector == null)
@@ -294,9 +310,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
           final long durationMs = System.currentTimeMillis() - buildStart;
 
-          this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-              result.getBucketColumns(), result.getEdgeColumnStores(), result.getBwdToFwd(),
-              null, System.currentTimeMillis(), durationMs);
+          this.snapshot = snapshotFromResult(result, durationMs);
           this.status = Status.READY;
 
           synchronized (GraphAnalyticalView.this) {
@@ -886,14 +900,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public boolean hasEdgeProperties() {
-    final Snapshot snap = this.snapshot;
-    return snap != null && snap.edgeColumnStores != null && !snap.edgeColumnStores.isEmpty();
+    return edgePropertyFilter != null && edgePropertyFilter.length > 0;
   }
 
   @Override
   public Object getEdgeProperty(final int nodeId, final int neighborIndex,
       final Vertex.DIRECTION direction, final String edgeType, final String propertyName) {
-    final Snapshot snap = checkBuilt();
+    final Snapshot snap = ensureEdgePropertiesMaterialized();
     if (snap.edgeColumnStores == null)
       return null;
     final ColumnStore edgeColStore = snap.edgeColumnStores.get(edgeType);
@@ -922,17 +935,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * Returns the edge column store for a given edge type (forward-aligned), or null if not configured.
+   * Triggers lazy materialization of edge properties on first access.
    */
   public ColumnStore getEdgeColumnStore(final String edgeType) {
-    final Snapshot snap = checkBuilt();
+    final Snapshot snap = ensureEdgePropertiesMaterialized();
     return snap.edgeColumnStores != null ? snap.edgeColumnStores.get(edgeType) : null;
   }
 
   /**
    * Returns the backward-to-forward index mapping for a given edge type, or null if not configured.
+   * Triggers lazy materialization of edge properties on first access.
    */
   public int[] getBwdToFwdMapping(final String edgeType) {
-    final Snapshot snap = checkBuilt();
+    final Snapshot snap = ensureEdgePropertiesMaterialized();
     return snap.bwdToFwd != null ? snap.bwdToFwd.get(edgeType) : null;
   }
 
@@ -974,6 +989,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (snap.bwdToFwd != null)
       for (final int[] mapping : snap.bwdToFwd.values())
         total += (long) mapping.length * Integer.BYTES;
+    // Deferred edge property data (not yet materialized)
+    if (snap.deferredFwdInsertIdx != null)
+      for (final int[] idx : snap.deferredFwdInsertIdx.values())
+        total += (long) idx.length * Integer.BYTES;
+    if (snap.deferredBwdInsertIdx != null)
+      for (final int[] idx : snap.deferredBwdInsertIdx.values())
+        total += (long) idx.length * Integer.BYTES;
+    if (snap.deferredEdgeRids != null)
+      for (final long[] rids : snap.deferredEdgeRids.values())
+        total += (long) rids.length * Long.BYTES;
     return total;
   }
 
@@ -1052,6 +1077,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (snap.bwdToFwd != null)
       for (final int[] mapping : snap.bwdToFwd.values())
         edgePropMemory += (long) mapping.length * Integer.BYTES;
+    if (snap.hasDeferredEdgeProperties()) {
+      stats.put("edgePropertiesDeferred", true);
+      long deferredMemory = 0;
+      for (final int[] idx : snap.deferredFwdInsertIdx.values())
+        deferredMemory += (long) idx.length * Integer.BYTES;
+      for (final int[] idx : snap.deferredBwdInsertIdx.values())
+        deferredMemory += (long) idx.length * Integer.BYTES;
+      for (final long[] rids : snap.deferredEdgeRids.values())
+        deferredMemory += (long) rids.length * Long.BYTES;
+      stats.put("edgePropertyDeferredMemoryBytes", deferredMemory);
+    }
     if (edgePropMemory > 0) {
       stats.put("edgePropertyMemoryBytes", edgePropMemory);
       stats.put("edgePropertyColumns", edgePropColumns);
@@ -1075,6 +1111,166 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   // --- Private helpers ---
+
+  private static Snapshot snapshotFromResult(final CSRBuilder.CSRResult result, final long durationMs) {
+    return new Snapshot(result.getCsrPerType(), result.getMapping(), result.getBucketColumns(),
+        null, null, result.getDeferredFwdInsertIdx(), result.getDeferredBwdInsertIdx(), result.getDeferredEdgeRids(),
+        null, System.currentTimeMillis(), durationMs);
+  }
+
+  /**
+   * Lazily materializes edge properties on first access. If the snapshot already has materialized
+   * edge properties or no edge properties are configured, returns the current snapshot immediately.
+   * Otherwise, builds bwdToFwd mappings and extracts edge properties via lookupByRID, then swaps
+   * in a new snapshot with the materialized data.
+   */
+  private Snapshot ensureEdgePropertiesMaterialized() {
+    Snapshot snap = checkBuilt();
+    if (!snap.hasDeferredEdgeProperties())
+      return snap; // already materialized or not configured
+
+    synchronized (this) {
+      // Double-check under lock — another thread may have materialized
+      snap = this.snapshot;
+      if (snap == null || !snap.hasDeferredEdgeProperties())
+        return snap;
+
+      final long start = System.currentTimeMillis();
+
+      // Detect edge property types from schema
+      final Set<String> edgePropFilter = new HashSet<>(Arrays.asList(edgePropertyFilter));
+      final Map<String, Column.Type> edgePropTypes = new HashMap<>();
+      if (edgeTypes == null || edgeTypes.length == 0) {
+        for (final DocumentType dt : database.getSchema().getTypes())
+          if (dt instanceof EdgeType)
+            collectEdgeSchemaProperties(dt, edgePropFilter, edgePropTypes);
+      } else {
+        for (final String typeName : edgeTypes)
+          collectEdgeSchemaProperties(database.getSchema().getType(typeName), edgePropFilter, edgePropTypes);
+      }
+
+      final Map<String, ColumnStore> edgeColumnStores = new HashMap<>();
+      final Map<String, int[]> bwdToFwdMap = new HashMap<>();
+
+      for (final Map.Entry<String, int[]> entry : snap.deferredFwdInsertIdx.entrySet()) {
+        final String edgeTypeName = entry.getKey();
+        final int[] fwdInsertIdx = entry.getValue();
+        final int[] bwdInsertIdx = snap.deferredBwdInsertIdx.get(edgeTypeName);
+        final long[] edgeRids = snap.deferredEdgeRids.get(edgeTypeName);
+        final int edgeCount = fwdInsertIdx.length;
+
+        // Build insertionToFwd: maps insertion index -> sorted forward CSR position
+        final int[] insertionToFwd = new int[edgeCount];
+        for (int f = 0; f < edgeCount; f++)
+          insertionToFwd[fwdInsertIdx[f]] = f;
+
+        // Build bwdToFwd: maps each backward CSR position to its forward CSR position
+        final int[] bwdToFwd = new int[edgeCount];
+        for (int b = 0; b < edgeCount; b++)
+          bwdToFwd[b] = insertionToFwd[bwdInsertIdx[b]];
+        bwdToFwdMap.put(edgeTypeName, bwdToFwd);
+
+        // Extract edge properties into forward-aligned ColumnStore
+        final ColumnStore edgeColStore = new ColumnStore(edgeCount);
+        for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet())
+          edgeColStore.createColumn(pt.getKey(), pt.getValue());
+
+        if (!edgePropTypes.isEmpty() && edgeRids != null) {
+          database.begin();
+          try {
+            for (int i = 0; i < edgeCount; i++) {
+              final int fwdIdx = insertionToFwd[i];
+              final long packedRid = edgeRids[i];
+              if (packedRid == 0)
+                continue;
+              final RID edgeRid = CSRBuilder.unpackRid(packedRid);
+              if (edgeRid.getPosition() < 0)
+                continue; // lightweight edge
+              try {
+                final Document edgeDoc = (Document) database.lookupByRID(edgeRid, true);
+                fillEdgeProperties(edgeDoc, edgeColStore, fwdIdx, edgePropTypes);
+              } catch (final RecordNotFoundException e) {
+                // Edge deleted — leave as null
+              }
+            }
+          } finally {
+            if (database.isTransactionActive())
+              database.rollback();
+          }
+        }
+        edgeColumnStores.put(edgeTypeName, edgeColStore);
+      }
+
+      // Swap snapshot: materialized data in, deferred data out
+      final Snapshot materialized = new Snapshot(snap.csrPerType, snap.nodeMapping, snap.bucketColumns,
+          edgeColumnStores, bwdToFwdMap, null, null, null,
+          snap.overlay, snap.buildTimestamp, snap.buildDurationMs);
+      this.snapshot = materialized;
+
+      final long elapsed = System.currentTimeMillis() - start;
+      LogManager.instance().log(this, Level.INFO,
+          "Edge properties materialized for GraphAnalyticalView '%s': %d edge types, %d ms",
+          name, edgeColumnStores.size(), elapsed);
+
+      return materialized;
+    }
+  }
+
+  private static void collectEdgeSchemaProperties(final DocumentType type, final Set<String> filter,
+      final Map<String, Column.Type> result) {
+    for (final Property prop : type.getProperties()) {
+      if (!filter.contains(prop.getName()))
+        continue;
+      final Column.Type colType = schemaTypeToColumnType(prop.getType());
+      if (colType != null)
+        result.putIfAbsent(prop.getName(), colType);
+    }
+  }
+
+  private static Column.Type schemaTypeToColumnType(final com.arcadedb.schema.Type schemaType) {
+    return switch (schemaType) {
+      case INTEGER, SHORT, BYTE -> Column.Type.INT;
+      case LONG -> Column.Type.LONG;
+      case DOUBLE, FLOAT -> Column.Type.DOUBLE;
+      case STRING -> Column.Type.STRING;
+      default -> null;
+    };
+  }
+
+  private static void fillEdgeProperties(final Document edgeDoc, final ColumnStore store, final int edgeIdx,
+      final Map<String, Column.Type> detectedTypes) {
+    for (final Map.Entry<String, Column.Type> entry : detectedTypes.entrySet()) {
+      final String propName = entry.getKey();
+      final Object value = edgeDoc.get(propName);
+      if (value == null)
+        continue;
+      final Column column = store.getColumn(propName);
+      if (column == null)
+        continue;
+      switch (entry.getValue()) {
+      case INT:
+      case LONG:
+      case DOUBLE:
+        if (!(value instanceof Number))
+          continue;
+        break;
+      }
+      switch (entry.getValue()) {
+      case INT:
+        column.setInt(edgeIdx, ((Number) value).intValue());
+        break;
+      case LONG:
+        column.setLong(edgeIdx, ((Number) value).longValue());
+        break;
+      case DOUBLE:
+        column.setDouble(edgeIdx, ((Number) value).doubleValue());
+        break;
+      case STRING:
+        column.setString(edgeIdx, value.toString());
+        break;
+      }
+    }
+  }
 
   private void registerChangeListeners() {
     deltaCollector = new DeltaCollector(this);
@@ -1114,9 +1310,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
             final long durationMs = System.currentTimeMillis() - buildStart;
             // Atomic swap — readers see all-or-nothing
-            this.snapshot = new Snapshot(result.getCsrPerType(), result.getMapping(),
-                result.getBucketColumns(), result.getEdgeColumnStores(), result.getBwdToFwd(),
-                null, System.currentTimeMillis(), durationMs);
+            this.snapshot = snapshotFromResult(result, durationMs);
             this.status = Status.READY;
           } finally {
             if (database.isTransactionActive())
@@ -1186,9 +1380,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               final List<TxDelta> buffered = pendingDeltas;
               pendingDeltas = null;
 
-              Snapshot fresh = new Snapshot(result.getCsrPerType(), result.getMapping(),
-                  result.getBucketColumns(), result.getEdgeColumnStores(), result.getBwdToFwd(),
-                  null, System.currentTimeMillis(), durationMs);
+              Snapshot fresh = snapshotFromResult(result, durationMs);
 
               // Re-apply any deltas that arrived during the rebuild.
               // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
