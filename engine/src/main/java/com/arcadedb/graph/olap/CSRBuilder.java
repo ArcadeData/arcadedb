@@ -610,26 +610,24 @@ public class CSRBuilder {
 
   /**
    * Sorts keys[from..to) while applying the same permutation to satellite[from..to).
-   * Uses an index-based approach: sort indices by key values, then apply the permutation.
+   * Zero GC pressure: encodes key|index into a primitive long[], sorts, then unpacks.
    */
   static void parallelSort(final int[] keys, final int[] satellite, final int from, final int to) {
     final int len = to - from;
-    // Create index array
-    final Integer[] idx = new Integer[len];
+    // Pack key (high 32 bits) | original index (low 32 bits) into long[] for primitive sort
+    final long[] encoded = new long[len];
     for (int i = 0; i < len; i++)
-      idx[i] = i;
+      encoded[i] = ((long) keys[from + i] << 32) | (i & 0xFFFFFFFFL);
 
-    // Sort indices by key values
-    Arrays.sort(idx, (a, b) -> Integer.compare(keys[from + a], keys[from + b]));
+    Arrays.sort(encoded);
 
-    // Apply permutation to both arrays via temp copies
-    final int[] tmpKeys = new int[len];
+    // Unpack sorted order into both arrays
     final int[] tmpSat = new int[len];
     for (int i = 0; i < len; i++) {
-      tmpKeys[i] = keys[from + idx[i]];
-      tmpSat[i] = satellite[from + idx[i]];
+      final int origIdx = (int) encoded[i];
+      keys[from + i] = (int) (encoded[i] >>> 32);
+      tmpSat[i] = satellite[from + origIdx];
     }
-    System.arraycopy(tmpKeys, 0, keys, from, len);
     System.arraycopy(tmpSat, 0, satellite, from, len);
   }
 
