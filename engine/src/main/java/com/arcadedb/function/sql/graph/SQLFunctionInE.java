@@ -25,7 +25,7 @@ import com.arcadedb.graph.Vertex;
 /**
  * Created by luigidellaquila on 03/01/17.
  */
-public class SQLFunctionInE extends SQLFunctionMove {
+public class SQLFunctionInE extends SQLFunctionMoveFiltered {
   public static final String NAME = "inE";
 
   public SQLFunctionInE() {
@@ -36,5 +36,4 @@ public class SQLFunctionInE extends SQLFunctionMove {
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels) {
     return v2e(iRecord, Vertex.DIRECTION.IN, iLabels);
   }
-
 }

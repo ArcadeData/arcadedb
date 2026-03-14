@@ -22,8 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
 
-import java.util.*;
-
 /**
  * Created by luigidellaquila on 03/01/17.
  */
@@ -36,17 +34,6 @@ public class SQLFunctionOut extends SQLFunctionMoveFiltered {
 
   @Override
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels) {
-    return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels);
-  }
-
-  protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
-      final Iterable<Identifiable> iPossibleResults) {
-    if (iPossibleResults == null)
-      return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels);
-
-    if (!iPossibleResults.iterator().hasNext())
-      return Collections.emptyList();
-
     return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels);
   }
 }

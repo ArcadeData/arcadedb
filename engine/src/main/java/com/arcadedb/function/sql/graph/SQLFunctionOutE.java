@@ -25,7 +25,7 @@ import com.arcadedb.graph.Vertex;
 /**
  * Created by luigidellaquila on 03/01/17.
  */
-public class SQLFunctionOutE extends SQLFunctionMove {
+public class SQLFunctionOutE extends SQLFunctionMoveFiltered {
   public static final String NAME = "outE";
 
   public SQLFunctionOutE() {
