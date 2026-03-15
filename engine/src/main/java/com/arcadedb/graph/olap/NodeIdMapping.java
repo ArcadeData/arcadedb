@@ -22,6 +22,7 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.RID;
 
 import java.util.Arrays;
+import java.util.HashMap;
 
 /**
  * Per-bucket bidirectional mapping between ArcadeDB RIDs and dense integer IDs.
@@ -41,10 +42,15 @@ import java.util.Arrays;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class NodeIdMapping {
+  // Maximum bucket ID for direct array lookup. Beyond this, a HashMap spillover is used
+  // to avoid allocating multi-MB arrays for databases with sparse bucket IDs.
+  private static final int            MAX_DIRECT_BUCKET_ID = 4096;
+
   // Compact bucket index: maps ArcadeDB bucketId → bucketIdx (0..numBuckets-1)
   // Uses a flat int[] lookup table instead of HashMap to avoid autoboxing on every getGlobalId() call.
   // Bucket IDs in ArcadeDB are small contiguous integers (typically < 100), so the array is compact.
-  private       int[]                 bucketIdToIdx; // bucketId → bucketIdx, -1 = unmapped
+  private       int[]                 bucketIdToIdx; // bucketId → bucketIdx, -1 = unmapped (for IDs < MAX_DIRECT_BUCKET_ID)
+  private       HashMap<Integer, Integer> bucketIdToIdxSparse; // spillover for bucket IDs >= MAX_DIRECT_BUCKET_ID
   private       int[]                 bucketIds;     // bucketIdx → ArcadeDB bucketId
   private       String[]              bucketTypeNames; // bucketIdx → vertex type name
 
@@ -84,17 +90,28 @@ public class NodeIdMapping {
    * @return the compact bucket index
    */
   public int registerBucket(final int bucketId, final String typeName, final int estimatedSize) {
-    if (bucketId < bucketIdToIdx.length) {
-      final int existing = bucketIdToIdx[bucketId];
-      if (existing >= 0)
-        return existing;
+    if (bucketId < MAX_DIRECT_BUCKET_ID) {
+      // Direct array path (fast, no autoboxing)
+      if (bucketId < bucketIdToIdx.length) {
+        final int existing = bucketIdToIdx[bucketId];
+        if (existing >= 0)
+          return existing;
+      } else {
+        // Grow the lookup table, capped at MAX_DIRECT_BUCKET_ID
+        final int newLen = Math.min(Math.max(bucketId + 1, bucketIdToIdx.length * 2), MAX_DIRECT_BUCKET_ID);
+        final int[] grown = new int[newLen];
+        System.arraycopy(bucketIdToIdx, 0, grown, 0, bucketIdToIdx.length);
+        Arrays.fill(grown, bucketIdToIdx.length, newLen, -1);
+        bucketIdToIdx = grown;
+      }
     } else {
-      // Grow the lookup table to accommodate the bucket ID
-      final int newLen = Math.max(bucketId + 1, bucketIdToIdx.length * 2);
-      final int[] grown = new int[newLen];
-      System.arraycopy(bucketIdToIdx, 0, grown, 0, bucketIdToIdx.length);
-      Arrays.fill(grown, bucketIdToIdx.length, newLen, -1);
-      bucketIdToIdx = grown;
+      // Sparse bucket ID — use HashMap spillover to avoid multi-MB array allocation
+      if (bucketIdToIdxSparse != null) {
+        final Integer existing = bucketIdToIdxSparse.get(bucketId);
+        if (existing != null)
+          return existing;
+      } else
+        bucketIdToIdxSparse = new HashMap<>();
     }
 
     final int idx = numBuckets++;
@@ -105,7 +122,11 @@ public class NodeIdMapping {
     bucketTypeNames[idx] = typeName;
     positionsBuilder[idx] = new long[Math.max(estimatedSize, 64)];
     builderSizes[idx] = 0;
-    bucketIdToIdx[bucketId] = idx;
+
+    if (bucketId < MAX_DIRECT_BUCKET_ID)
+      bucketIdToIdx[bucketId] = idx;
+    else
+      bucketIdToIdxSparse.put(bucketId, idx);
     return idx;
   }
 
@@ -115,15 +136,17 @@ public class NodeIdMapping {
    * @return the local ID within the bucket
    */
   public int addNode(final int bucketIdx, final long ridPosition) {
-    if (positionsBuilder == null)
+    // Capture into local variable to prevent race with compact() setting it to null
+    final long[][] builder = positionsBuilder;
+    if (builder == null)
       throw new IllegalStateException("NodeIdMapping has been compacted; addNode() is not allowed");
     final int localId = builderSizes[bucketIdx];
-    if (localId >= positionsBuilder[bucketIdx].length) {
-      final long[] old = positionsBuilder[bucketIdx];
-      positionsBuilder[bucketIdx] = new long[old.length * 2];
-      System.arraycopy(old, 0, positionsBuilder[bucketIdx], 0, localId);
+    if (localId >= builder[bucketIdx].length) {
+      final long[] old = builder[bucketIdx];
+      builder[bucketIdx] = new long[old.length * 2];
+      System.arraycopy(old, 0, builder[bucketIdx], 0, localId);
     }
-    positionsBuilder[bucketIdx][localId] = ridPosition;
+    builder[bucketIdx][localId] = ridPosition;
     builderSizes[bucketIdx] = localId + 1;
     return localId;
   }
@@ -171,9 +194,16 @@ public class NodeIdMapping {
    */
   public int getGlobalId(final RID rid) {
     final int bucketId = rid.getBucketId();
-    if (bucketId < 0 || bucketId >= bucketIdToIdx.length)
+    final int bucketIdx;
+    if (bucketId >= 0 && bucketId < bucketIdToIdx.length)
+      bucketIdx = bucketIdToIdx[bucketId];
+    else if (bucketIdToIdxSparse != null) {
+      final Integer idx = bucketIdToIdxSparse.get(bucketId);
+      if (idx == null)
+        return -1;
+      bucketIdx = idx;
+    } else
       return -1;
-    final int bucketIdx = bucketIdToIdx[bucketId];
     if (bucketIdx < 0)
       return -1;
     final int localId = Arrays.binarySearch(positions[bucketIdx], rid.getPosition());
@@ -255,9 +285,14 @@ public class NodeIdMapping {
    * Returns the bucket index for an ArcadeDB bucket ID, or -1 if not registered.
    */
   public int getBucketIdxForBucketId(final int bucketId) {
-    if (bucketId < 0 || bucketId >= bucketIdToIdx.length)
-      return -1;
-    return bucketIdToIdx[bucketId];
+    if (bucketId >= 0 && bucketId < bucketIdToIdx.length)
+      return bucketIdToIdx[bucketId];
+    if (bucketIdToIdxSparse != null) {
+      final Integer idx = bucketIdToIdxSparse.get(bucketId);
+      if (idx != null)
+        return idx;
+    }
+    return -1;
   }
 
   /**
@@ -340,10 +375,23 @@ public class NodeIdMapping {
    * @param oldToNewMapping naturalId → reorderedId permutation
    */
   public void applyReordering(final int[] oldToNewMapping) {
+    if (oldToNewMapping.length != totalSize)
+      throw new IllegalArgumentException(
+          "Permutation length " + oldToNewMapping.length + " does not match totalSize " + totalSize);
+
     this.oldToNew = oldToNewMapping;
     this.newToOld = new int[oldToNewMapping.length];
-    for (int i = 0; i < oldToNewMapping.length; i++)
-      newToOld[oldToNewMapping[i]] = i;
+    Arrays.fill(newToOld, -1);
+    for (int i = 0; i < oldToNewMapping.length; i++) {
+      final int mapped = oldToNewMapping[i];
+      if (mapped < 0 || mapped >= totalSize)
+        throw new IllegalArgumentException(
+            "Permutation value out of range at index " + i + ": " + mapped + " (totalSize=" + totalSize + ")");
+      if (newToOld[mapped] != -1)
+        throw new IllegalArgumentException(
+            "Duplicate permutation target " + mapped + " at indices " + newToOld[mapped] + " and " + i);
+      newToOld[mapped] = i;
+    }
   }
 
   /**
@@ -372,6 +420,9 @@ public class NodeIdMapping {
     }
     // bucketIdToIdx int[] lookup table
     bytes += (long) bucketIdToIdx.length * Integer.BYTES;
+    // bucketIdToIdxSparse HashMap (rough estimate: ~48 bytes per entry for boxed Integer key+value + Entry overhead)
+    if (bucketIdToIdxSparse != null)
+      bytes += (long) bucketIdToIdxSparse.size() * 48;
     // bucketTypeNames: reference array + rough estimate for String objects
     bytes += (long) numBuckets * 8; // references
     // BFS reordering permutation arrays

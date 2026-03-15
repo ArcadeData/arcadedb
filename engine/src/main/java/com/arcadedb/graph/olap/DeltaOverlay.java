@@ -87,6 +87,9 @@ class DeltaOverlay {
     this.deltaEdgeCount = 0;
   }
 
+  // The private constructor takes ownership of all passed collections — callers MUST NOT
+  // retain or mutate them after construction. The merge() method satisfies this contract
+  // by building fresh collections that are not referenced elsewhere.
   @SuppressWarnings("unchecked")
   private DeltaOverlay(final int baseNodeCount,
       final Map<RID, Integer> overflowNodeIds, final RID[] overflowIdToRID,
@@ -339,9 +342,9 @@ class DeltaOverlay {
 
   /**
    * Builds a secondary index: edgeType -> nodeId -> int[] neighbors, for O(1) lookup.
-   * The fill count is stored in {@code arr[0]} of each growable array to avoid a separate
-   * autoboxing-heavy {@code Map<Integer, Integer>} for size tracking. Data occupies
-   * {@code arr[1..size]}, then is trimmed into a clean {@code int[size]} at the end.
+   * Uses a two-pass approach: first counts the degree per node to allocate exact-size arrays,
+   * then fills them in a second pass. This avoids repeated doubling and trimming allocations
+   * that would occur with a growable-array approach for high-degree nodes.
    */
   private static Map<String, Map<Integer, int[]>> buildNeighborIndex(
       final Map<String, List<long[]>> addedEdges, final boolean outgoing) {
@@ -349,33 +352,30 @@ class DeltaOverlay {
       return Collections.emptyMap();
     final Map<String, Map<Integer, int[]>> result = new HashMap<>();
     for (final var entry : addedEdges.entrySet()) {
-      final Map<Integer, int[]> perNode = new HashMap<>();
-      for (final long[] pair : entry.getValue()) {
+      final List<long[]> edges = entry.getValue();
+
+      // Pass 1: count neighbors per node
+      final HashMap<Integer, Integer> counts = new HashMap<>();
+      for (final long[] pair : edges) {
+        final int key = (int) (outgoing ? pair[0] : pair[1]);
+        counts.merge(key, 1, Integer::sum);
+      }
+
+      // Allocate exact-size arrays
+      final Map<Integer, int[]> perNode = new HashMap<>(counts.size());
+      for (final var e : counts.entrySet())
+        perNode.put(e.getKey(), new int[e.getValue()]);
+
+      // Pass 2: fill arrays (reuse counts map as fill-position tracker)
+      counts.replaceAll((k, v) -> 0);
+      for (final long[] pair : edges) {
         final int key = (int) (outgoing ? pair[0] : pair[1]);
         final int neighbor = (int) (outgoing ? pair[1] : pair[0]);
-        int[] arr = perNode.get(key);
-        if (arr == null) {
-          arr = new int[5]; // arr[0] = fill count, arr[1..4] = data slots
-          perNode.put(key, arr);
-        }
-        final int size = arr[0];
-        if (size + 1 == arr.length) {
-          final int[] grown = new int[arr.length * 2];
-          System.arraycopy(arr, 0, grown, 0, size + 1);
-          arr = grown;
-          perNode.put(key, arr);
-        }
-        arr[size + 1] = neighbor;
-        arr[0] = size + 1;
+        final int[] arr = perNode.get(key);
+        arr[counts.merge(key, 1, Integer::sum) - 1] = neighbor;
       }
-      // Trim: extract arr[1..size] into a clean int[size]
-      final Map<Integer, int[]> frozen = new HashMap<>(perNode.size());
-      for (final var e : perNode.entrySet()) {
-        final int[] arr = e.getValue();
-        final int size = arr[0];
-        frozen.put(e.getKey(), Arrays.copyOfRange(arr, 1, size + 1));
-      }
-      result.put(entry.getKey(), frozen);
+
+      result.put(entry.getKey(), perNode);
     }
     return result;
   }
@@ -401,8 +401,11 @@ class DeltaOverlay {
     return result;
   }
 
+  // Mask to zero-extend a signed int to 64 bits, preventing sign-extension from corrupting the upper 32 bits
+  private static final long UNSIGNED_INT_MASK = 0xFFFFFFFFL;
+
   private static long packEdge(final int src, final int tgt) {
-    return ((long) src << 32) | (tgt & 0xFFFFFFFFL);
+    return ((long) src << 32) | (tgt & UNSIGNED_INT_MASK);
   }
 
   static final Object UNSET = new Object();
