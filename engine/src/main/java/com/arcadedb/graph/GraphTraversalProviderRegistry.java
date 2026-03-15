@@ -49,6 +49,11 @@ public class GraphTraversalProviderRegistry {
 
   // Fast-path flag: when false, findProvider() returns null without acquiring the lock.
   // Updated under synchronized(REGISTRY) on every register/unregister/clearAll.
+  // TOCTOU note: the volatile read in findProvider() can be transiently stale (e.g., a provider
+  // was just registered but hasAnyProviders still reads false). This is acceptable because the
+  // consequence is a missed optimization opportunity for a single query, not a correctness issue —
+  // the next query will see the updated flag. The alternative (always locking) would add contention
+  // on every query plan compilation across all databases, even when no providers exist.
   private static volatile boolean hasAnyProviders = false;
 
   /**
