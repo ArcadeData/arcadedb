@@ -92,21 +92,18 @@ public class AlgoClique extends AbstractAlgoProcedure {
     final int minSize       = args.length > 1 ? ((Number) args[1]).intValue() : 3;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-
     // Build undirected adjacency as BitSet[] for fast set operations
     // Treat graph as undirected: merge OUT and IN edges
-    final int[][] adjOut = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
-    final int[][] adjIn  = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.IN,  relTypes);
+    final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
+    final int[][] adjIn  = graph.adjacency(Vertex.DIRECTION.IN,  relTypes);
 
     final BitSet[] adj = new BitSet[n];
     for (int i = 0; i < n; i++) {
@@ -141,7 +138,7 @@ public class AlgoClique extends AbstractAlgoProcedure {
         if (size >= minSize) {
           final List<RID> clique = new ArrayList<>(size);
           for (int i = frame.R.nextSetBit(0); i >= 0; i = frame.R.nextSetBit(i + 1))
-            clique.add(vertices.get(i).getIdentity());
+            clique.add(graph.getRID(i));
           final ResultInternal r = new ResultInternal();
           r.setProperty("clique", clique);
           r.setProperty("size", size);

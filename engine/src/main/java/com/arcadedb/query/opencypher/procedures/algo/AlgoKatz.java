@@ -93,18 +93,15 @@ public class AlgoKatz extends AbstractAlgoProcedure {
     final double tolerance     = args.length > 3 ? ((Number) args[3]).doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
     // Use IN adjacency to compute: k[i] += alpha * k[j] for each j that points to i
-    final int[][] adjIn = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.IN, relTypes);
+    final int[][] adjIn = graph.adjacency(Vertex.DIRECTION.IN, relTypes);
 
     double[] scores    = new double[n];
     double[] newScores = new double[n];
@@ -146,7 +143,7 @@ public class AlgoKatz extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", vertices.get(i).getIdentity());
+      r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("score", finalScores[i] / finalMax);
       return (Result) r;
     });

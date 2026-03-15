@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -87,9 +88,10 @@ class GraphBenchmark {
   private static final int AVG_MEMBERS_PER_FORUM    = 20;
 
   // Runtime config
-  private static final int    PARALLEL     = 4;
-  private static final int    COMMIT_EVERY = 5_000;
-  private static final String DB_PATH      = "target/databases/graph-benchmark";
+  private static final int     PARALLEL       = 4;
+  private static final int     COMMIT_EVERY   = 5_000;
+  private static final String  DB_PATH        = "target/databases/graph-benchmark";
+  private static final boolean USE_GRAPH_OLAP = Boolean.getBoolean("arcadedb.benchmark.graphOlap");
 
   // Benchmark iterations
   private static final int WARMUP_ITERATIONS            = 5;
@@ -137,6 +139,9 @@ class GraphBenchmark {
   private String[] sampleCityNames;
   private String[] sampleFirstNames;
 
+  // Graph OLAP (GAV)
+  private GraphAnalyticalView gav;
+
   // Benchmark results storage
   private final List<String[]> reportRows = new ArrayList<>();
 
@@ -161,6 +166,17 @@ class GraphBenchmark {
     }
 
     prepareSampleIds();
+
+    if (USE_GRAPH_OLAP) {
+      System.out.print("Building Graph Analytical View (GAV)...");
+      final long gavStart = System.currentTimeMillis();
+      gav = GraphAnalyticalView.builder(database)
+          .withName("ldbc-benchmark")
+          .build();
+      System.out.printf(" done (%,d ms)%n", System.currentTimeMillis() - gavStart);
+      System.out.println(gav.getStats());
+    }
+
     printDatasetStats();
   }
 
@@ -1039,6 +1055,7 @@ class GraphBenchmark {
     System.out.println("  Place: " + database.countType("Place", false));
     System.out.println("  Organisation: " + database.countType("Organisation", false));
     System.out.println("Freshly created: " + freshlyCreated);
+    System.out.println("Graph OLAP (GAV): " + (USE_GRAPH_OLAP ? "ENABLED" : "disabled"));
 
     if (freshlyCreated) {
       final Timer creationTimer = registry.find("benchmark.creation").timer();

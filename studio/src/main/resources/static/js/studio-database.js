@@ -2684,10 +2684,16 @@ function displaySchema() {
       html += "</div></div>";
     }
 
-    // Fetch materialized views and append to sidebar
+    // Fetch OLAP views (materialized views + graph analytical views) and append to sidebar
     fetchMaterializedViews(function (views) {
-      html += renderMaterializedViewsSidebarSection(views || [], false);
-      $("#dbTypeBadges").html(html);
+      fetchGraphAnalyticalViews(function (gavs) {
+        html += "<div class='sidebar-section'>";
+        html += "<div class='sidebar-section-header'><i class='fa fa-cube'></i> OLAP</div>";
+        html += renderMaterializedViewsSidebarBadges(views || [], false);
+        html += renderGavSidebarBadges(gavs || [], false);
+        html += "</div>";
+        $("#dbTypeBadges").html(html);
+      });
     });
 
     // Reset detail panel
@@ -2957,12 +2963,19 @@ function populateQuerySidebar() {
     html += "</div></div>";
   }
 
-  // Fetch materialized views and append section, then render
+  // Fetch OLAP views (materialized views + graph analytical views) for query sidebar
   fetchMaterializedViews(function(views) {
-    let finalHtml = html;
-    if (views && views.length > 0)
-      finalHtml += renderMaterializedViewsSidebarSection(views, true);
-    container.html(finalHtml);
+    fetchGraphAnalyticalViews(function(gavs) {
+      let finalHtml = html;
+      if ((views && views.length > 0) || (gavs && gavs.length > 0)) {
+        finalHtml += "<div class='sidebar-section'>";
+        finalHtml += "<div class='sidebar-section-header'><i class='fa fa-cube'></i> OLAP</div>";
+        finalHtml += renderMaterializedViewsSidebarBadges(views || [], true);
+        finalHtml += renderGavSidebarBadges(gavs || [], true);
+        finalHtml += "</div>";
+      }
+      container.html(finalHtml);
+    });
   });
 }
 
@@ -3437,9 +3450,628 @@ function renderMaterializedViewsSidebarSection(views, isQuerySidebar) {
   return html;
 }
 
+/**
+ * Renders MV badges without the section wrapper (for use inside the OLAP section).
+ */
+function renderMaterializedViewsSidebarBadges(views, isQuerySidebar) {
+  let html = "";
+  let count = (views && views.length) || 0;
+  let palette = sidebarBadgeColors.materializedView;
+
+  html += "<div class='sidebar-subsection-header'><i class='fa fa-layer-group'></i> Materialized Views <span class='sidebar-count'>(" + count + ")</span>";
+  if (!isQuerySidebar)
+    html += "<span class='sidebar-section-header-actions'><button onclick='createMaterializedView(); return false;' title='Create materialized view'><i class='fa fa-plus'></i></button></span>";
+  html += "</div>";
+
+  if (count === 0) return html;
+
+  html += "<div class='sidebar-badges'>";
+
+  for (let j = 0; j < views.length; j++) {
+    let view = views[j];
+    let color = palette[j % palette.length];
+    let name = escapeHtml(view.name);
+    let statusClass = "mv-status-dot-" + (view.status || "valid").toLowerCase();
+
+    if (isQuerySidebar) {
+      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+      html += "onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\"); return false;' ";
+      html += "title='" + name + " (Materialized View)'>";
+      html += "<span class='mv-status-dot " + statusClass + "'></span>";
+      html += "<span class='sidebar-badge-name'>" + name + "</span>";
+      html += "</a>";
+    } else {
+      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+      html += "onclick='showMaterializedViewDetail(\"" + view.name.replace(/"/g, "&quot;") + "\"); return false;' ";
+      html += "title='" + name + " (Materialized View)'>";
+      html += "<span class='mv-status-dot " + statusClass + "'></span>";
+      html += "<span class='sidebar-badge-name'>" + name + "</span>";
+      html += "</a>";
+    }
+  }
+
+  html += "</div>";
+  return html;
+}
+
+// ===== Graph Analytical Views =====
+
+function fetchGraphAnalyticalViews(callback) {
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
+    if (callback) callback([]);
+    return;
+  }
+
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/query/" + database,
+      data: JSON.stringify({
+        language: "sql",
+        command: "select from schema:graphAnalyticalViews",
+      }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      window._schemaGraphAnalyticalViews = data.result || [];
+      if (callback) callback(data.result || []);
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      window._schemaGraphAnalyticalViews = [];
+      if (callback) callback([]);
+    });
+}
+
+function renderGavSidebarBadges(gavs, isQuerySidebar) {
+  let html = "";
+  let count = (gavs && gavs.length) || 0;
+  let palette = ["#0ea5e9", "#0284c7", "#0369a1", "#38bdf8", "#7dd3fc", "#0c4a6e"];
+
+  html += "<div class='sidebar-subsection-header'><i class='fa fa-project-diagram'></i> Graph Analytical Views <span class='sidebar-count'>(" + count + ")</span>";
+  if (!isQuerySidebar)
+    html += "<span class='sidebar-section-header-actions'><button onclick='createGraphAnalyticalView(); return false;' title='Create graph analytical view'><i class='fa fa-plus'></i></button></span>";
+  html += "</div>";
+
+  if (count === 0) return html;
+
+  html += "<div class='sidebar-badges'>";
+
+  for (let j = 0; j < gavs.length; j++) {
+    let gav = gavs[j];
+    let color = palette[j % palette.length];
+    let name = escapeHtml(gav.name);
+    let statusClass = mvStatusDotClass(gav.status);
+
+    html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+    if (!isQuerySidebar)
+      html += "onclick='showGavDetail(\"" + gav.name.replace(/"/g, "&quot;") + "\"); return false;' ";
+    html += "title='" + name + " (Graph Analytical View)'>";
+    html += "<span class='mv-status-dot " + statusClass + "'></span>";
+    html += "<span class='sidebar-badge-name'>" + name + "</span>";
+    html += "</a>";
+  }
+
+  html += "</div>";
+  return html;
+}
+
+function showGavDetail(gavName) {
+  let gavs = window._schemaGraphAnalyticalViews;
+  if (!gavs) return;
+
+  let gav = null;
+  for (let i = 0; i < gavs.length; i++) {
+    if (gavs[i].name === gavName) {
+      gav = gavs[i];
+      break;
+    }
+  }
+  if (!gav) return;
+
+  let html = "<div class='mv-detail-panel'>";
+  html += "<h5><i class='fa fa-project-diagram'></i> " + escapeHtml(gav.name) + "</h5>";
+
+  // Status badge
+  let statusClass = mvStatusBadgeClass(gav.status);
+  html += "<p><span class='mv-status-badge " + statusClass + "'>" + escapeHtml(gav.status || "UNKNOWN") + "</span></p>";
+
+  // Configuration info
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Vertex Types:</span> ";
+  if (gav.vertexTypes && gav.vertexTypes.length > 0)
+    html += escapeHtml(gav.vertexTypes.join(", "));
+  else
+    html += "<em>All types</em>";
+  html += "</div>";
+
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Edge Types:</span> ";
+  if (gav.edgeTypes && gav.edgeTypes.length > 0)
+    html += escapeHtml(gav.edgeTypes.join(", "));
+  else
+    html += "<em>All types</em>";
+  html += "</div>";
+
+  if (gav.propertyFilter && gav.propertyFilter.length > 0)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Properties:</span> " + escapeHtml(gav.propertyFilter.join(", ")) + "</div>";
+
+  if (gav.edgePropertyFilter && gav.edgePropertyFilter.length > 0)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Edge Properties:</span> " + escapeHtml(gav.edgePropertyFilter.join(", ")) + "</div>";
+
+  let safeName = gav.name.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
+  let currentMode = escapeHtml(gav.updateMode || "OFF");
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Update Mode:</span> ";
+  html += "<select class='form-select form-select-sm d-inline-block' style='width:auto;' id='gavUpdateModeSelect' onchange='alterGavUpdateMode(\"" + safeName + "\", this.value)'>";
+  let modes = ["OFF", "SYNCHRONOUS", "ASYNCHRONOUS"];
+  for (let m = 0; m < modes.length; m++)
+    html += "<option value='" + modes[m] + "'" + (modes[m] === currentMode ? " selected" : "") + ">" + modes[m] + "</option>";
+  html += "</select>";
+  html += "</div>";
+
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Compaction:</span> " + (gav.compactionThreshold || 10000).toLocaleString() + "</div>";
+
+  if (gav.nodeCount !== undefined)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Nodes:</span> " + (gav.nodeCount || 0).toLocaleString() + "</div>";
+  if (gav.edgeCount !== undefined)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Edges:</span> " + (gav.edgeCount || 0).toLocaleString() + "</div>";
+  if (gav.memoryUsageBytes !== undefined)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Memory:</span> " + formatBytes(gav.memoryUsageBytes) + "</div>";
+  if (gav.buildDurationMs !== undefined && gav.buildDurationMs > 0)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Last Build Time:</span> " + formatDuration(gav.buildDurationMs) + "</div>";
+
+  // Actions
+  html += "<div class='mt-3 d-flex gap-2'>";
+  html += "<button class='btn btn-sm btn-outline-primary' onclick='rebuildGav(\"" + safeName + "\")'><i class='fa fa-sync'></i> Rebuild</button>";
+  html += "<button class='btn btn-sm btn-outline-danger' onclick='dropGav(\"" + safeName + "\")'><i class='fa fa-trash'></i> Drop</button>";
+  html += "</div>";
+
+  html += "</div>";
+  $("#dbTypeDetail").html(html);
+}
+
+function createGraphAnalyticalView() {
+  // Collect vertex and edge types from the schema with record counts
+  let vertexTypes = [];
+  let edgeTypes = [];
+  let typeCounts = {}; // name -> count
+  let typeProperties = {}; // name -> number of properties
+  if (window._schemaTypes) {
+    for (let i in window._schemaTypes) {
+      let t = window._schemaTypes[i];
+      typeCounts[t.name] = t.records || 0;
+      typeProperties[t.name] = (t.properties && t.properties.length) || 0;
+      if (t.type === "vertex")
+        vertexTypes.push(t.name);
+      else if (t.type === "edge")
+        edgeTypes.push(t.name);
+    }
+    vertexTypes.sort(function (a, b) { return a.localeCompare(b); });
+    edgeTypes.sort(function (a, b) { return a.localeCompare(b); });
+  }
+
+  // Store for RAM estimation
+  window._gavCreateTypeCounts = typeCounts;
+  window._gavCreateTypeProperties = typeProperties;
+  window._gavCreateVertexTypes = vertexTypes;
+  window._gavCreateEdgeTypes = edgeTypes;
+
+  let html = "";
+
+  // -- RAM estimation bar (top, always visible) --
+  html += "<div id='gavRamEstimate' class='gav-ram-panel'>";
+  html += "<div class='gav-ram-header'><i class='fa fa-memory'></i> Estimated RAM Usage</div>";
+  html += "<div class='gav-ram-bar-container'><div class='gav-ram-bar' id='gavRamBar' style='width:0%'></div></div>";
+  html += "<div class='gav-ram-value' id='gavRamValue'>Calculating...</div>";
+  html += "<div class='gav-ram-breakdown' id='gavRamBreakdown'></div>";
+  html += "</div>";
+
+  // -- View name --
+  html += "<label for='inputGavName'>View name <span style='color:#dc3545'>*</span></label>";
+  html += "<input class='form-control mt-1' id='inputGavName' placeholder='e.g. socialGraph'>";
+  html += "<div id='gavNameFeedback' style='font-size:0.78rem;min-height:20px;margin-bottom:8px;'></div>";
+
+  // -- Vertex types multi-select --
+  html += "<label>Vertex Types <small class='text-muted'>(optional, leave empty for all)</small></label>";
+  html += "<select class='form-select mt-1 mb-2' id='inputGavVertexTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
+  for (let i = 0; i < vertexTypes.length; i++) {
+    let cnt = typeCounts[vertexTypes[i]] || 0;
+    html += "<option value='" + escapeHtml(vertexTypes[i]) + "'>" + escapeHtml(vertexTypes[i]) + " (" + cnt.toLocaleString() + ")</option>";
+  }
+  html += "</select>";
+  if (vertexTypes.length === 0)
+    html += "<small class='text-muted' style='display:block;margin-top:-4px;margin-bottom:10px;'>No vertex types defined yet.</small>";
+
+  // -- Edge types multi-select --
+  html += "<label>Edge Types <small class='text-muted'>(optional, leave empty for all)</small></label>";
+  html += "<select class='form-select mt-1 mb-2' id='inputGavEdgeTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
+  for (let i = 0; i < edgeTypes.length; i++) {
+    let cnt = typeCounts[edgeTypes[i]] || 0;
+    html += "<option value='" + escapeHtml(edgeTypes[i]) + "'>" + escapeHtml(edgeTypes[i]) + " (" + cnt.toLocaleString() + ")</option>";
+  }
+  html += "</select>";
+  if (edgeTypes.length === 0)
+    html += "<small class='text-muted' style='display:block;margin-top:-4px;margin-bottom:10px;'>No edge types defined yet.</small>";
+
+  // -- Vertex Properties filter --
+  html += "<label for='inputGavProperties'>Vertex Properties <small class='text-muted'>(optional, comma-separated)</small></label>";
+  html += "<input class='form-control mt-1 mb-1' id='inputGavProperties' placeholder='e.g. name, age, score'>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:10px;'>Materialized in columnar storage for fast analytical scans. Leave empty for all.</small>";
+
+  // -- Edge Properties (new) --
+  html += "<div class='gav-section-header'><label for='inputGavEdgeProperties'>Edge Properties</label>";
+  html += " <span class='gav-info-toggle' id='gavEdgePropToggle' title='Show details'><i class='fa fa-circle-info'></i></span></div>";
+  html += "<input class='form-control mt-1 mb-1' id='inputGavEdgeProperties' placeholder='e.g. weight, distance'>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:6px;'>Stored alongside CSR for weighted algorithms. Leave empty for none (default).</small>";
+  html += "<div id='gavEdgePropInfo' class='gav-info-box' style='display:none;'>";
+  html += "<b>When to use:</b> Enable edge properties when algorithms need edge weights (e.g., Dijkstra SSSP, weighted PageRank).<br>";
+  html += "<b>Pros:</b> Zero OLTP access for weighted algorithms, columnar storage aligned with CSR for cache-friendly access.<br>";
+  html += "<b>Cons:</b> Increases RAM by ~8 bytes per edge per numeric property. For large graphs with many edge properties, this can be significant.<br>";
+  html += "<b>Recommendation:</b> Only include properties you actually need for graph algorithms. Leave empty if using only unweighted algorithms (BFS, PageRank, WCC, LCC, Label Propagation).";
+  html += "</div>";
+
+  // -- Update mode --
+  html += "<label for='inputGavUpdateMode' class='mt-2'>Update Mode</label>";
+  html += "<select class='form-select mt-1 mb-1' id='inputGavUpdateMode'>";
+  html += "<option value='OFF'>OFF — manual rebuild only</option>";
+  html += "<option value='SYNCHRONOUS' selected>SYNCHRONOUS — overlay on commit (no stale window)</option>";
+  html += "<option value='ASYNCHRONOUS'>ASYNCHRONOUS — async rebuild on commit</option>";
+  html += "</select>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:10px;' id='gavUpdateModeHelp'>Changes are applied as an overlay on each commit. No stale window, but slightly more RAM for the overlay buffer.</small>";
+
+  // -- Advanced settings (collapsed) --
+  html += "<div class='gav-advanced-toggle' id='gavAdvancedToggle'><i class='fa fa-chevron-right'></i> Advanced Settings</div>";
+  html += "<div id='gavAdvancedPanel' style='display:none;'>";
+
+  // Compaction threshold
+  html += "<label for='inputGavCompactionThreshold'>Compaction Threshold <small class='text-muted'>(default 10,000)</small></label>";
+  html += "<input class='form-control mt-1 mb-1' id='inputGavCompactionThreshold' type='number' min='0' placeholder='10000'>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:10px;'>Number of delta edges before triggering a full CSR rebuild. Only used with SYNCHRONOUS mode. Set to 0 to disable.</small>";
+
+  // If not exists
+  html += "<div class='form-check mt-2'>";
+  html += "<input class='form-check-input' type='checkbox' id='inputGavIfNotExists'>";
+  html += "<label class='form-check-label' for='inputGavIfNotExists'>If not exists (skip if view already exists)</label>";
+  html += "</div>";
+
+  html += "</div>"; // end advanced panel
+
+  globalPrompt("Create Graph Analytical View", html, "Create", function () {
+    let name = $("#inputGavName").val().trim();
+    if (!name) {
+      globalNotify("Error", "View name is required", "danger");
+      return;
+    }
+
+    let command = "CREATE GRAPH ANALYTICAL VIEW";
+    if ($("#inputGavIfNotExists").prop("checked"))
+      command += " IF NOT EXISTS";
+    command += " `" + name + "`";
+
+    let vt = $("#inputGavVertexTypes").val();
+    if (vt && vt.length > 0)
+      command += " VERTEX TYPES (" + vt.map(function (v) { return "`" + v + "`"; }).join(", ") + ")";
+
+    let et = $("#inputGavEdgeTypes").val();
+    if (et && et.length > 0)
+      command += " EDGE TYPES (" + et.map(function (e) { return "`" + e + "`"; }).join(", ") + ")";
+
+    let props = $("#inputGavProperties").val().trim();
+    if (props) {
+      let propList = props.split(",").map(function (p) { return "`" + p.trim() + "`"; }).filter(function (p) { return p !== "``"; });
+      if (propList.length > 0)
+        command += " PROPERTIES (" + propList.join(", ") + ")";
+    }
+
+    let edgeProps = $("#inputGavEdgeProperties").val().trim();
+    if (edgeProps) {
+      let edgePropList = edgeProps.split(",").map(function (p) { return "`" + p.trim() + "`"; }).filter(function (p) { return p !== "``"; });
+      if (edgePropList.length > 0)
+        command += " EDGE PROPERTIES (" + edgePropList.join(", ") + ")";
+    }
+
+    let updateMode = $("#inputGavUpdateMode").val();
+    if (updateMode && updateMode !== "OFF")
+      command += " UPDATE MODE " + updateMode;
+
+    let compThreshold = $("#inputGavCompactionThreshold").val();
+    if (compThreshold && parseInt(compThreshold) > 0)
+      command += " COMPACTION THRESHOLD " + parseInt(compThreshold);
+
+    let database = getCurrentDatabase();
+    if (database === "") {
+      globalNotify("Error", "Database not selected", "danger");
+      return;
+    }
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + database,
+      data: JSON.stringify({
+        language: "sql",
+        command: command,
+        serializer: "record",
+      }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function () {
+      globalNotify("Success", "Graph Analytical View '" + escapeHtml(name) + "' created.", "success");
+      displaySchema();
+    })
+    .fail(function (jqXHR) {
+      globalNotifyError(jqXHR.responseText);
+    });
+  });
+
+  // Wire up interactive behaviors after the modal renders
+  setTimeout(function () {
+    // Name validation
+    $("#inputGavName").on("input", function () {
+      let name = $(this).val().trim();
+      let feedback = $("#gavNameFeedback");
+      if (name === "") {
+        feedback.html("");
+        $(this).removeClass("is-invalid is-valid");
+        return;
+      }
+      if (/[^a-zA-Z0-9_]/.test(name)) {
+        feedback.html("<span style='color:#dc3545;'><i class='fa fa-circle-exclamation'></i> Only letters, digits and underscores allowed</span>");
+        $(this).addClass("is-invalid").removeClass("is-valid");
+      } else {
+        feedback.html("<span style='color:#198754;'><i class='fa fa-circle-check'></i> Valid</span>");
+        $(this).addClass("is-valid").removeClass("is-invalid");
+      }
+    });
+
+    // Update mode help text
+    $("#inputGavUpdateMode").on("change", function () {
+      let mode = $(this).val();
+      let helpTexts = {
+        "OFF": "The view must be rebuilt manually after data changes.",
+        "SYNCHRONOUS": "Changes are applied as an overlay on each commit. No stale window, but slightly more RAM for the overlay buffer.",
+        "ASYNCHRONOUS": "A full rebuild is triggered asynchronously after each commit. Brief BUILDING window during rebuild."
+      };
+      $("#gavUpdateModeHelp").text(helpTexts[mode] || "");
+      gavUpdateRamEstimate();
+    });
+
+    // Edge property info toggle
+    $("#gavEdgePropToggle").on("click", function () {
+      $("#gavEdgePropInfo").slideToggle(150);
+    });
+
+    // Advanced settings toggle
+    $("#gavAdvancedToggle").on("click", function () {
+      let panel = $("#gavAdvancedPanel");
+      let icon = $(this).find("i");
+      panel.slideToggle(150);
+      icon.toggleClass("fa-chevron-right fa-chevron-down");
+    });
+
+    // Live RAM estimation on any input change
+    $("#inputGavVertexTypes, #inputGavEdgeTypes").on("change", gavUpdateRamEstimate);
+    $("#inputGavProperties, #inputGavEdgeProperties").on("input", gavUpdateRamEstimate);
+    $("#inputGavUpdateMode").on("change", gavUpdateRamEstimate);
+
+    // Initial estimate
+    gavUpdateRamEstimate();
+  }, 100);
+}
+
+/**
+ * Estimates RAM usage for a GAV based on current form selections and updates the UI in real time.
+ *
+ * Estimation model (per CSR documentation):
+ *   CSR topology:      ~8 bytes/node (offsets) + ~4 bytes/edge (neighbors), doubled for forward+backward
+ *   Node ID mapping:   ~8 bytes/node
+ *   Vertex properties:  ~8 bytes/node/property (columnar)
+ *   Edge properties:    ~8 bytes/edge/property (columnar + null bitset)
+ *   Overlay (SYNC):    ~10% overhead on base CSR
+ */
+function gavUpdateRamEstimate() {
+  let typeCounts = window._gavCreateTypeCounts || {};
+  let typeProperties = window._gavCreateTypeProperties || {};
+  let allVertexTypes = window._gavCreateVertexTypes || [];
+  let allEdgeTypes = window._gavCreateEdgeTypes || [];
+
+  // Selected types (empty = all)
+  let selectedVT = $("#inputGavVertexTypes").val();
+  let selectedET = $("#inputGavEdgeTypes").val();
+  let vtList = (selectedVT && selectedVT.length > 0) ? selectedVT : allVertexTypes;
+  let etList = (selectedET && selectedET.length > 0) ? selectedET : allEdgeTypes;
+
+  // Count nodes and edges
+  let totalNodes = 0;
+  for (let i = 0; i < vtList.length; i++)
+    totalNodes += typeCounts[vtList[i]] || 0;
+  let totalEdges = 0;
+  for (let i = 0; i < etList.length; i++)
+    totalEdges += typeCounts[etList[i]] || 0;
+
+  // Count properties
+  let vertexPropInput = ($("#inputGavProperties").val() || "").trim();
+  let numVertexProps = 0;
+  if (vertexPropInput) {
+    numVertexProps = vertexPropInput.split(",").filter(function (p) { return p.trim() !== ""; }).length;
+  } else {
+    // All properties — estimate from schema
+    for (let i = 0; i < vtList.length; i++)
+      numVertexProps = Math.max(numVertexProps, typeProperties[vtList[i]] || 0);
+  }
+
+  let edgePropInput = ($("#inputGavEdgeProperties").val() || "").trim();
+  let numEdgeProps = 0;
+  if (edgePropInput)
+    numEdgeProps = edgePropInput.split(",").filter(function (p) { return p.trim() !== ""; }).length;
+
+  let updateMode = $("#inputGavUpdateMode").val();
+
+  // Calculate RAM components
+  let csrBytes = totalNodes * 16 + totalEdges * 8;   // fwd+bwd offsets (2*4 bytes * N+1) + fwd+bwd neighbors (2*4 bytes * E)
+  let mappingBytes = totalNodes * 8;                   // NodeIdMapping (~8 bytes/node)
+  let vertexPropBytes = totalNodes * numVertexProps * 8; // columnar arrays
+  let edgePropBytes = totalEdges * numEdgeProps * 9;   // 8 bytes data + ~1 byte null bitset per edge per property
+  let overlayBytes = 0;
+  if (updateMode === "SYNCHRONOUS")
+    overlayBytes = Math.ceil((csrBytes + mappingBytes) * 0.1); // ~10% for overlay structures
+
+  let totalBytes = csrBytes + mappingBytes + vertexPropBytes + edgePropBytes + overlayBytes;
+
+  // Update the UI
+  let barEl = $("#gavRamBar");
+  let valueEl = $("#gavRamValue");
+  let breakdownEl = $("#gavRamBreakdown");
+
+  if (totalNodes === 0 && totalEdges === 0) {
+    valueEl.html("<span class='text-muted'>No data yet — create vertex and edge types with data first</span>");
+    barEl.css("width", "0%");
+    breakdownEl.html("");
+    return;
+  }
+
+  valueEl.html("<b>" + formatBytes(totalBytes) + "</b> estimated");
+
+  // Color the bar based on size
+  let pct = Math.min(100, Math.max(3, totalBytes / (512 * 1024 * 1024) * 100)); // scale to 512MB
+  let barColor = totalBytes < 50 * 1024 * 1024 ? "#22c55e" :
+                 totalBytes < 200 * 1024 * 1024 ? "#eab308" :
+                 totalBytes < 500 * 1024 * 1024 ? "#f97316" : "#ef4444";
+  barEl.css({ "width": pct + "%", "background-color": barColor });
+
+  // Breakdown
+  let bd = "";
+  bd += "<div class='gav-ram-row'><span>CSR topology (fwd + bwd)</span><span>" + formatBytes(csrBytes) + "</span></div>";
+  bd += "<div class='gav-ram-row'><span>Node ID mapping</span><span>" + formatBytes(mappingBytes) + "</span></div>";
+  if (vertexPropBytes > 0)
+    bd += "<div class='gav-ram-row'><span>Vertex properties (" + numVertexProps + " col" + (numVertexProps > 1 ? "s" : "") + ")</span><span>" + formatBytes(vertexPropBytes) + "</span></div>";
+  if (edgePropBytes > 0)
+    bd += "<div class='gav-ram-row'><span>Edge properties (" + numEdgeProps + " col" + (numEdgeProps > 1 ? "s" : "") + ")</span><span>" + formatBytes(edgePropBytes) + "</span></div>";
+  if (overlayBytes > 0)
+    bd += "<div class='gav-ram-row'><span>Sync overlay buffer</span><span>~" + formatBytes(overlayBytes) + "</span></div>";
+  bd += "<div class='gav-ram-row gav-ram-total'><span>Total (" + totalNodes.toLocaleString() + " nodes, " + totalEdges.toLocaleString() + " edges)</span><span>" + formatBytes(totalBytes) + "</span></div>";
+  breakdownEl.html(bd);
+}
+
+function dropGav(gavName) {
+  globalConfirm("Drop Graph Analytical View",
+    "Are you sure you want to drop Graph Analytical View '" + escapeHtml(gavName) + "'?",
+    "warning",
+    function () {
+      let database = getCurrentDatabase();
+      jQuery.ajax({
+        type: "POST",
+        url: "api/v1/command/" + database,
+        data: JSON.stringify({
+          language: "sql",
+          command: "DROP GRAPH ANALYTICAL VIEW `" + gavName + "`"
+        }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function () {
+        globalNotify("Success", "Graph Analytical View '" + escapeHtml(gavName) + "' dropped.", "success");
+        $("#dbTypeDetail").html("");
+        displaySchema();
+      })
+      .fail(function (jqXHR) {
+        globalNotifyError(jqXHR.responseText);
+      });
+    }
+  );
+}
+
+function alterGavUpdateMode(gavName, newMode) {
+  let database = getCurrentDatabase();
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/command/" + database,
+    data: JSON.stringify({
+      language: "sql",
+      command: "ALTER GRAPH ANALYTICAL VIEW `" + gavName + "` UPDATE MODE " + newMode
+    }),
+    beforeSend: function (xhr) {
+      xhr.setRequestHeader("Authorization", globalCredentials);
+    },
+  })
+  .done(function () {
+    globalNotify("Success", "Update mode changed to " + newMode, "success");
+    displaySchema();
+  })
+  .fail(function (jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
+}
+
+function rebuildGav(gavName) {
+  let database = getCurrentDatabase();
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/command/" + database,
+    data: JSON.stringify({
+      language: "sql",
+      command: "REBUILD GRAPH ANALYTICAL VIEW `" + gavName + "`"
+    }),
+    beforeSend: function (xhr) {
+      xhr.setRequestHeader("Authorization", globalCredentials);
+    },
+  })
+  .done(function () {
+    globalNotify("Success", "Rebuild started for '" + escapeHtml(gavName) + "'", "success");
+    displaySchema();
+  })
+  .fail(function (jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return "0 B";
+  let k = 1024;
+  let sizes = ["B", "KB", "MB", "GB"];
+  let i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function formatDuration(ms) {
+  if (ms < 1000) return ms + " ms";
+  if (ms < 60000) return (ms / 1000).toFixed(1) + " s";
+  let minutes = Math.floor(ms / 60000);
+  let seconds = ((ms % 60000) / 1000).toFixed(0);
+  return minutes + " min " + seconds + " s";
+}
+
+function displayGavHealth(gavs) {
+  let container = jQuery("#dbMetricsGavContainer");
+  if (!gavs || gavs.length === 0) {
+    container.html("<p class='text-muted'>No graph analytical views found.</p>");
+    return;
+  }
+
+  let html = "<table class='table table-sm table-striped'>";
+  html += "<thead><tr><th>Name</th><th>Status</th><th>Nodes</th><th>Edges</th><th>Memory</th><th>Update Mode</th></tr></thead>";
+  html += "<tbody>";
+  for (let i = 0; i < gavs.length; i++) {
+    let g = gavs[i];
+    let statusClass = mvStatusBadgeClass(g.status);
+    html += "<tr>";
+    html += "<td>" + escapeHtml(g.name) + "</td>";
+    html += "<td><span class='mv-status-badge " + statusClass + "'>" + escapeHtml(g.status || "UNKNOWN") + "</span></td>";
+    html += "<td>" + (g.nodeCount || "-").toLocaleString() + "</td>";
+    html += "<td>" + (g.edgeCount || "-").toLocaleString() + "</td>";
+    html += "<td>" + (g.memoryUsageBytes !== undefined ? formatBytes(g.memoryUsageBytes) : "-") + "</td>";
+    html += "<td>" + escapeHtml(g.updateMode || "OFF") + "</td>";
+    html += "</tr>";
+  }
+  html += "</tbody></table>";
+  container.html(html);
+}
+
 function mvStatusDotClass(status) {
   let s = (status || "VALID").toUpperCase();
-  if (s == "VALID") return "mv-status-dot-valid";
+  if (s == "VALID" || s == "READY") return "mv-status-dot-valid";
   if (s == "BUILDING") return "mv-status-dot-building";
   if (s == "STALE") return "mv-status-dot-stale";
   if (s == "ERROR") return "mv-status-dot-error";
@@ -3448,7 +4080,7 @@ function mvStatusDotClass(status) {
 
 function mvStatusBadgeClass(status) {
   let s = (status || "VALID").toUpperCase();
-  if (s == "VALID") return "mv-status-badge-valid";
+  if (s == "VALID" || s == "READY") return "mv-status-badge-valid";
   if (s == "BUILDING") return "mv-status-badge-building";
   if (s == "STALE") return "mv-status-badge-stale";
   if (s == "ERROR") return "mv-status-badge-error";
@@ -4022,6 +4654,10 @@ function loadDatabaseMetrics() {
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function (data) {
     displayMvHealth(data.result || []);
+  });
+
+  fetchGraphAnalyticalViews(function (gavs) {
+    displayGavHealth(gavs || []);
   });
 }
 

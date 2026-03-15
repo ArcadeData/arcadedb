@@ -19,17 +19,16 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -40,6 +39,10 @@ import java.util.stream.Stream;
  * coefficient of a node {@code u} measures the density of connections among its neighbours:
  * {@code LCC(u) = 2 * t(u) / (deg(u) * (deg(u) - 1))}, where {@code t(u)} is the number of
  * triangles that {@code u} participates in.
+ * </p>
+ * <p>
+ * When a Graph Analytical View (GAV) is available, delegates to the CSR-native implementation
+ * in {@link GraphAlgorithms#localClusteringCoefficient} for maximum performance.
  * </p>
  * <p>
  * Nodes with degree &lt; 2 receive a coefficient of 0.
@@ -90,17 +93,42 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    // Try CSR-accelerated path
+    final GraphTraversalProvider provider = findProvider(db, relTypes);
+    if (provider instanceof GraphAnalyticalView gav) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(gav, relTypes);
+    }
+
+    // Fall back to OLTP path
+    return executeWithOLTP(db, relTypes, context);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final String[] relTypes) {
+    final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
+    final double[] lcc = relTypes != null ?
+        GraphAlgorithms.localClusteringCoefficient(gav, relTypes) :
+        GraphAlgorithms.localClusteringCoefficient(gav);
+
+    return IntStream.range(0, n).mapToObj(i -> {
+      final ResultInternal r = new ResultInternal();
+      r.setProperty("node", gav.getRID(i).asVertex());
+      r.setProperty("localClusteringCoefficient", lcc[i]);
+      return (Result) r;
+    });
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db, final String[] relTypes, final CommandContext context) {
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+    final int n = graph.nodeCount;
+    if (n == 0)
+      return Stream.empty();
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     // Sort adjacency lists for merge-based intersection (O(m log m) total)
     for (int i = 0; i < n; i++)
@@ -120,7 +148,6 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
           else if (neighborsU[iu] > neighborsV[iv])
             iv++;
           else {
-            // Common neighbor found — triangle (u, v, w)
             triangles[u]++;
             iu++;
             iv++;
@@ -128,7 +155,7 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
         }
       }
     }
-    // Each triangle is counted twice per node (once for each neighbor direction)
+    // Each triangle counted twice per node (once per neighbor direction)
     for (int u = 0; u < n; u++)
       triangles[u] /= 2;
 
@@ -136,7 +163,7 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
       final long deg = adj[i].length;
       final double coeff = deg < 2 ? 0.0 : (2.0 * triangles[i]) / (double) (deg * (deg - 1));
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("localClusteringCoefficient", coeff);
       return (Result) r;
     });

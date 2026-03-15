@@ -1,0 +1,4123 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.graph.olap;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Tests for the Graph OLAP module — CSR building, columnar storage, vectorized scan, and analytical operations.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class GraphAnalyticalViewTest extends TestHelper {
+
+  @Test
+  void testEmptyGraph() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+
+    assertThat(gav.getNodeCount()).isEqualTo(0);
+    assertThat(gav.getEdgeCount()).isEqualTo(0);
+    assertThat(gav.isBuilt()).isTrue();
+    assertThat(gav.getEdgeTypes()).isEmpty();
+  }
+
+  @Test
+  void testNotBuiltThrows() {
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    assertThatThrownBy(() -> gav.getNodeCount()).isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void testSimpleChain() {
+    // A -> B -> C
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex c = database.newVertex("Person").set("name", "Charlie").save();
+    a.newEdge("FOLLOWS", b);
+    b.newEdge("FOLLOWS", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount("FOLLOWS")).isEqualTo(2);
+    assertThat(gav.getEdgeTypes()).containsExactly("FOLLOWS");
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+    final int idC = gav.getNodeId(c.getIdentity());
+
+    assertThat(idA).isGreaterThanOrEqualTo(0);
+    assertThat(idB).isGreaterThanOrEqualTo(0);
+    assertThat(idC).isGreaterThanOrEqualTo(0);
+
+    // Degrees
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+
+    // Cross-type and BOTH
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT)).isEqualTo(1);
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.IN)).isEqualTo(1);
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.BOTH, "FOLLOWS")).isEqualTo(2);
+
+    // Connectivity
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(idA, idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+    assertThat(gav.isConnectedTo(idB, idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT)).isTrue();
+    assertThat(gav.isConnectedTo(idB, idA, Vertex.DIRECTION.IN)).isTrue();
+
+    // Neighbor arrays
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).containsExactly(idB);
+    assertThat(gav.getVertices(idB, Vertex.DIRECTION.OUT, "FOLLOWS")).containsExactly(idC);
+    assertThat(gav.getVertices(idC, Vertex.DIRECTION.OUT, "FOLLOWS")).isEmpty();
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT)).containsExactly(idB);
+    assertThat(gav.getVertices(idC, Vertex.DIRECTION.IN)).containsExactly(idB);
+
+    // Property access
+    assertThat(gav.getProperty(idA, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idB, "name")).isEqualTo("Bob");
+    assertThat(gav.getProperty(idC, "name")).isEqualTo("Charlie");
+  }
+
+  @Test
+  void testStarTopology() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex hub = database.newVertex("Person").set("name", "Hub").save();
+    final List<RID> spokeRIDs = new ArrayList<>();
+    for (int i = 0; i < 10; i++) {
+      final MutableVertex spoke = database.newVertex("Person").set("name", "Spoke_" + i).save();
+      hub.newEdge("FOLLOWS", spoke);
+      spokeRIDs.add(spoke.getIdentity());
+    }
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+
+    assertThat(gav.getNodeCount()).isEqualTo(11);
+    assertThat(gav.getEdgeCount()).isEqualTo(10);
+
+    final int hubId = gav.getNodeId(hub.getIdentity());
+    assertThat(gav.countEdges(hubId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(10);
+    assertThat(gav.countEdges(hubId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+
+    for (final RID spokeRID : spokeRIDs) {
+      final int spokeId = gav.getNodeId(spokeRID);
+      assertThat(gav.countEdges(spokeId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
+      assertThat(gav.countEdges(spokeId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+      assertThat(gav.isConnectedTo(hubId, spokeId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    }
+  }
+
+  @Test
+  void testVectorizedScan() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex hub = database.newVertex("Node").set("id", 0).save();
+    for (int i = 0; i < 100; i++) {
+      final MutableVertex target = database.newVertex("Node").set("id", i + 1).save();
+      hub.newEdge("LINK", target);
+    }
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Node" }, new String[] { "LINK" });
+
+    final int hubId = gav.getNodeId(hub.getIdentity());
+    final CSRScanOperator scan = gav.scanNeighbors(hubId, Vertex.DIRECTION.OUT, "LINK");
+    final DataVector batch = new DataVector(DataVector.Type.INT);
+
+    int totalScanned = 0;
+    while (scan.getNextBatch(batch))
+      totalScanned += batch.getSize();
+
+    assertThat(totalScanned).isEqualTo(100);
+    assertThat(scan.totalNeighbors()).isEqualTo(100);
+  }
+
+  @Test
+  void testCommonNeighbors() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Person").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Person").set("name", "D").save();
+    final MutableVertex e = database.newVertex("Person").set("name", "E").save();
+    a.newEdge("KNOWS", c);
+    a.newEdge("KNOWS", d);
+    b.newEdge("KNOWS", c);
+    b.newEdge("KNOWS", d);
+    b.newEdge("KNOWS", e);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "KNOWS" });
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+
+    assertThat(gav.countCommonNeighbors(idA, idB, Vertex.DIRECTION.OUT, "KNOWS")).isEqualTo(2);
+    assertThat(gav.countCommonNeighbors(idA, idB, Vertex.DIRECTION.OUT)).isEqualTo(2);
+  }
+
+  @Test
+  void testMultipleEdgeTypes() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("LIKES");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Person").set("name", "C").save();
+    a.newEdge("FOLLOWS", b);
+    a.newEdge("LIKES", b);
+    a.newEdge("FOLLOWS", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, null);
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+    final int idC = gav.getNodeId(c.getIdentity());
+
+    assertThat(gav.getEdgeTypes()).containsExactlyInAnyOrder("FOLLOWS", "LIKES");
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(2);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "LIKES")).isEqualTo(1);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT)).isEqualTo(3);
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.IN)).isEqualTo(2);
+
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "LIKES")).isTrue();
+    assertThat(gav.isConnectedTo(idA, idC, Vertex.DIRECTION.OUT, "LIKES")).isFalse();
+
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).containsExactlyInAnyOrder(idB, idC);
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT, "LIKES")).containsExactly(idB);
+
+    final int[] allOut = gav.getVertices(idA, Vertex.DIRECTION.OUT);
+    assertThat(allOut).hasSize(3);
+
+    assertThat(gav.getEdgeCount("FOLLOWS")).isEqualTo(2);
+    assertThat(gav.getEdgeCount("LIKES")).isEqualTo(1);
+    assertThat(gav.getEdgeCount()).isEqualTo(3);
+  }
+
+  @Test
+  void testMultipleVertexTypes() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createVertexType("Company");
+    database.getSchema().createEdgeType("WORKS_AT");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex acme = database.newVertex("Company").set("name", "ACME").save();
+    alice.newEdge("WORKS_AT", acme);
+    bob.newEdge("WORKS_AT", acme);
+    alice.newEdge("KNOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(null, null);
+
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+
+    final int idAlice = gav.getNodeId(alice.getIdentity());
+    final int idBob = gav.getNodeId(bob.getIdentity());
+    final int idAcme = gav.getNodeId(acme.getIdentity());
+
+    assertThat(gav.getNodeTypeName(idAlice)).isEqualTo("Person");
+    assertThat(gav.getNodeTypeName(idAcme)).isEqualTo("Company");
+
+    assertThat(gav.countEdges(idAlice, Vertex.DIRECTION.OUT, "WORKS_AT")).isEqualTo(1);
+    assertThat(gav.countEdges(idAlice, Vertex.DIRECTION.OUT, "KNOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idAlice, Vertex.DIRECTION.OUT)).isEqualTo(2);
+    assertThat(gav.countEdges(idAcme, Vertex.DIRECTION.IN, "WORKS_AT")).isEqualTo(2);
+
+    assertThat(gav.isConnectedTo(idAlice, idAcme, Vertex.DIRECTION.OUT, "WORKS_AT")).isTrue();
+    assertThat(gav.isConnectedTo(idAlice, idBob, Vertex.DIRECTION.OUT, "KNOWS")).isTrue();
+
+    assertThat(gav.countCommonNeighbors(idAlice, idBob, Vertex.DIRECTION.OUT, "WORKS_AT")).isEqualTo(1);
+
+    assertThat(gav.getProperty(idAlice, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idAcme, "name")).isEqualTo("ACME");
+  }
+
+  @Test
+  void testSelectiveEdgeTypeBuild() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("LIKES");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    a.newEdge("FOLLOWS", b);
+    a.newEdge("LIKES", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.getEdgeTypes()).containsExactly("FOLLOWS");
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "LIKES")).isEqualTo(0);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT)).isEqualTo(1);
+  }
+
+  @Test
+  void testNonexistentEdgeTypeReturnsZero() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(null, null);
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "NONEXISTENT")).isEqualTo(0);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.IN, "NONEXISTENT")).isEqualTo(0);
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.OUT, "NONEXISTENT")).isEmpty();
+    assertThat(gav.getVertices(idA, Vertex.DIRECTION.IN, "NONEXISTENT")).isEmpty();
+    assertThat(gav.isConnectedTo(idA, 0, Vertex.DIRECTION.OUT, "NONEXISTENT")).isFalse();
+    assertThat(gav.getEdgeCount("NONEXISTENT")).isEqualTo(0);
+  }
+
+  @Test
+  void testRIDRoundTrip() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    a.newEdge("KNOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "KNOWS" });
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final RID ridA = gav.getRID(idA);
+    assertThat(ridA.getBucketId()).isEqualTo(a.getIdentity().getBucketId());
+    assertThat(ridA.getPosition()).isEqualTo(a.getIdentity().getPosition());
+  }
+
+  @Test
+  void testNodeIdMappingPerBucket() {
+    final NodeIdMapping mapping = new NodeIdMapping(4);
+
+    // Register two buckets
+    final int b0 = mapping.registerBucket(10, "Person", 4);
+    final int b1 = mapping.registerBucket(20, "Company", 4);
+
+    assertThat(b0).isEqualTo(0);
+    assertThat(b1).isEqualTo(1);
+
+    // Add nodes
+    mapping.addNode(b0, 100L);
+    mapping.addNode(b0, 200L);
+    mapping.addNode(b0, 300L);
+    mapping.addNode(b1, 50L);
+    mapping.addNode(b1, 150L);
+
+    mapping.compact();
+
+    assertThat(mapping.size()).isEqualTo(5);
+    assertThat(mapping.getNumBuckets()).isEqualTo(2);
+    assertThat(mapping.getBucketSize(b0)).isEqualTo(3);
+    assertThat(mapping.getBucketSize(b1)).isEqualTo(2);
+
+    // Global IDs: bucket 0 gets [0,1,2], bucket 1 gets [3,4]
+    assertThat(mapping.getBucketBase(b0)).isEqualTo(0);
+    assertThat(mapping.getBucketBase(b1)).isEqualTo(3);
+
+    // RID → globalId
+    assertThat(mapping.getGlobalId(new RID(10, 100))).isEqualTo(0);
+    assertThat(mapping.getGlobalId(new RID(10, 200))).isEqualTo(1);
+    assertThat(mapping.getGlobalId(new RID(10, 300))).isEqualTo(2);
+    assertThat(mapping.getGlobalId(new RID(20, 50))).isEqualTo(3);
+    assertThat(mapping.getGlobalId(new RID(20, 150))).isEqualTo(4);
+    assertThat(mapping.getGlobalId(new RID(99, 0))).isEqualTo(-1);
+
+    // globalId → bucketIdx
+    assertThat(mapping.getBucketIdx(0)).isEqualTo(b0);
+    assertThat(mapping.getBucketIdx(2)).isEqualTo(b0);
+    assertThat(mapping.getBucketIdx(3)).isEqualTo(b1);
+    assertThat(mapping.getBucketIdx(4)).isEqualTo(b1);
+
+    // globalId → localId
+    assertThat(mapping.getLocalId(0)).isEqualTo(0);
+    assertThat(mapping.getLocalId(2)).isEqualTo(2);
+    assertThat(mapping.getLocalId(3)).isEqualTo(0);
+    assertThat(mapping.getLocalId(4)).isEqualTo(1);
+
+    // Type names
+    assertThat(mapping.getTypeName(0)).isEqualTo("Person");
+    assertThat(mapping.getTypeName(3)).isEqualTo("Company");
+    assertThat(mapping.getBucketTypeName(b0)).isEqualTo("Person");
+    assertThat(mapping.getBucketTypeName(b1)).isEqualTo("Company");
+  }
+
+  @Test
+  void testDataVector() {
+    final DataVector vec = new DataVector(DataVector.Type.INT);
+    assertThat(vec.getType()).isEqualTo(DataVector.Type.INT);
+    assertThat(vec.getSize()).isEqualTo(0);
+
+    vec.setInt(0, 42);
+    vec.setInt(1, 99);
+    vec.setSize(2);
+
+    assertThat(vec.getInt(0)).isEqualTo(42);
+    assertThat(vec.getInt(1)).isEqualTo(99);
+    assertThat(vec.isNull(0)).isFalse();
+
+    vec.setNull(2);
+    assertThat(vec.isNull(2)).isTrue();
+
+    vec.setFlat(true, 0);
+    assertThat(vec.isFlat()).isTrue();
+    assertThat(vec.getInt(0)).isEqualTo(42);
+    assertThat(vec.getInt(1)).isEqualTo(42);
+    assertThat(vec.getInt(999)).isEqualTo(42);
+
+    vec.reset();
+    assertThat(vec.getSize()).isEqualTo(0);
+    assertThat(vec.isFlat()).isFalse();
+  }
+
+  @Test
+  void testMemoryUsage() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex hub = database.newVertex("Node").save();
+    for (int i = 0; i < 50; i++) {
+      final MutableVertex target = database.newVertex("Node").save();
+      hub.newEdge("LINK", target);
+    }
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(null, null);
+
+    assertThat(gav.getMemoryUsageBytes()).isGreaterThan(0);
+    assertThat(gav.getBuildTimestamp()).isGreaterThan(0);
+  }
+
+  @Test
+  void testLightEdges() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    a.newLightEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+  }
+
+  @Test
+  void testSortedNeighbors() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex hub = database.newVertex("Node").save();
+    final List<MutableVertex> targets = new ArrayList<>();
+    for (int i = 0; i < 20; i++)
+      targets.add(database.newVertex("Node").save());
+    for (int i = targets.size() - 1; i >= 0; i--)
+      hub.newEdge("LINK", targets.get(i));
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(null, null);
+
+    final int hubId = gav.getNodeId(hub.getIdentity());
+    final int[] neighbors = gav.getVertices(hubId, Vertex.DIRECTION.OUT, "LINK");
+    for (int i = 1; i < neighbors.length; i++)
+      assertThat(neighbors[i]).isGreaterThanOrEqualTo(neighbors[i - 1]);
+  }
+
+  // --- Builder tests ---
+
+  @Test
+  void testBuilderBasic() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").set("age", 30).save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").set("age", 25).save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.isBuilt()).isTrue();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.getProperty(idA, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idA, "age")).isEqualTo(30);
+  }
+
+  @Test
+  void testBuilderPropertyFilter() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").set("age", 30).save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").set("age", 25).save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    // Only materialize "name", skip "age"
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .build();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.getProperty(idA, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idA, "age")).isNull(); // not materialized
+  }
+
+  @Test
+  void testBuilderNoProperties() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    // Skip all properties
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties() // empty = no properties
+        .build();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.getProperty(idA, "name")).isNull();
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+  }
+
+  @Test
+  void testAutoUpdate() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.isAutoUpdate()).isTrue();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Add a new vertex and edge
+    database.begin();
+    final MutableVertex c = database.newVertex("Person").set("name", "Charlie").save();
+    b.newEdge("FOLLOWS", c);
+    database.commit();
+
+    // SYNCHRONOUS: overlay applied immediately after commit
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+
+    final int idC = gav.getNodeId(c.getIdentity());
+    assertThat(idC).isGreaterThanOrEqualTo(0);
+    assertThat(gav.getProperty(idC, "name")).isEqualTo("Charlie");
+
+    gav.drop();
+  }
+
+  // --- Status and async build tests ---
+
+  @Test
+  void testStatusLifecycle() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .buildAsync();
+
+    // Initial status before build completes
+    assertThat(gav.getStatus()).isIn(GraphAnalyticalView.Status.BUILDING, GraphAnalyticalView.Status.READY);
+
+    // Wait for build to complete
+    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.getNodeCount()).isEqualTo(0);
+
+    gav.drop();
+  }
+
+  @Test
+  void testAsyncBuildWithData() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .buildAsync();
+
+    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    assertThat(gav.getProperty(idA, "name")).isEqualTo("Alice");
+
+    gav.drop();
+  }
+
+  @Test
+  void testStatusNotBuilt() {
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.NOT_BUILT);
+  }
+
+  @Test
+  void testSyncBuildSetsReady() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+  }
+
+  @Test
+  void testAsyncAutoUpdate() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .buildAsync();
+
+    assertThat(gav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+
+    // Add more data — SYNCHRONOUS mode applies overlay immediately
+    database.begin();
+    final MutableVertex c = database.newVertex("Person").set("name", "Charlie").save();
+    b.newEdge("FOLLOWS", c);
+    database.commit();
+
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+
+    gav.drop();
+  }
+
+  // --- Registry tests ---
+
+  @Test
+  void testRegistryRegisterAndGet() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("social-graph")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(GraphAnalyticalViewRegistry.get(database, "social-graph")).isSameAs(gav);
+    assertThat(GraphAnalyticalViewRegistry.getAll(database)).hasSize(1);
+
+    gav.drop();
+    assertThat(GraphAnalyticalViewRegistry.get(database, "social-graph")).isNull();
+  }
+
+  @Test
+  void testRegistryMultipleViews() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("BLOCKS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    a.newEdge("BLOCKS", b);
+    database.commit();
+
+    final GraphAnalyticalView follows = GraphAnalyticalView.builder(database)
+        .withName("follows-view")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    final GraphAnalyticalView blocks = GraphAnalyticalView.builder(database)
+        .withName("blocks-view")
+        .withVertexTypes("Person")
+        .withEdgeTypes("BLOCKS")
+        .build();
+
+    assertThat(GraphAnalyticalViewRegistry.getAll(database)).hasSize(2);
+    assertThat(GraphAnalyticalViewRegistry.get(database, "follows-view")).isSameAs(follows);
+    assertThat(GraphAnalyticalViewRegistry.get(database, "blocks-view")).isSameAs(blocks);
+    assertThat(follows.getEdgeCount("FOLLOWS")).isEqualTo(1);
+    assertThat(blocks.getEdgeCount("BLOCKS")).isEqualTo(1);
+
+    follows.drop();
+    blocks.drop();
+  }
+
+  @Test
+  void testGavName() {
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("test-view")
+        .build();
+
+    assertThat(gav.getName()).isEqualTo("test-view");
+    gav.drop();
+  }
+
+  @Test
+  void testGavConfigAccessors() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("config-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name", "age")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getName()).isEqualTo("config-test");
+    assertThat(gav.getVertexTypes()).containsExactly("Person");
+    assertThat(gav.getEdgeTypeFilter()).containsExactly("FOLLOWS");
+    assertThat(gav.getPropertyFilter()).containsExactly("name", "age");
+    assertThat(gav.isAutoUpdate()).isTrue();
+
+    gav.drop();
+  }
+
+  // --- Schema persistence tests ---
+
+  @Test
+  void testPersistenceRoundTrip() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    // Create a named GAV — should auto-save to schema
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("social-persist")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    // Verify it's persisted in schema extensions
+    final com.arcadedb.serializer.json.JSONObject ext = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(ext).isNotNull();
+    assertThat(ext.has("social-persist")).isTrue();
+
+    final com.arcadedb.serializer.json.JSONObject gavDef = ext.getJSONObject("social-persist");
+    assertThat(gavDef.getString("name")).isEqualTo("social-persist");
+    assertThat(gavDef.getString("updateMode")).isEqualTo("SYNCHRONOUS");
+
+    // Close removes from schema
+    gav.drop();
+    final com.arcadedb.serializer.json.JSONObject extAfter = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(extAfter).isNull();
+  }
+
+  @Test
+  void testRestoreFromSchema() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final var alice = database.newVertex("Person").set("name", "Alice").save();
+    final var bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    // Create a named GAV
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("restore-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+
+    // Simulate "unload" — close without removing from schema
+    GraphTraversalProviderRegistry.clearAll(database);
+    GraphAnalyticalViewRegistry.unregister(database, "restore-test");
+
+    // Restore from schema — should rebuild asynchronously
+    final int restored = GraphAnalyticalViewPersistence.restoreAll(database);
+    assertThat(restored).isEqualTo(1);
+
+    // Wait for async rebuild
+    final GraphAnalyticalView restoredGav = GraphAnalyticalViewRegistry.get(database, "restore-test");
+    assertThat(restoredGav).isNotNull();
+    assertThat(restoredGav.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(restoredGav.getNodeCount()).isEqualTo(2);
+    assertThat(restoredGav.getEdgeCount()).isEqualTo(1);
+
+    // Clean up both
+    restoredGav.drop();
+  }
+
+  @Test
+  void testSchemaExtensionGeneric() {
+    // Test the generic extension mechanism
+    assertThat(database.getSchema().getExtension("nonexistent")).isNull();
+
+    final com.arcadedb.serializer.json.JSONObject testExt = new com.arcadedb.serializer.json.JSONObject();
+    testExt.put("key", "value");
+    database.getSchema().setExtension("testModule", testExt);
+
+    final com.arcadedb.serializer.json.JSONObject loaded = database.getSchema().getExtension("testModule");
+    assertThat(loaded).isNotNull();
+    assertThat(loaded.getString("key")).isEqualTo("value");
+
+    // Remove
+    database.getSchema().setExtension("testModule", null);
+    assertThat(database.getSchema().getExtension("testModule")).isNull();
+  }
+
+  // --- Traversal provider integration tests ---
+
+  @Test
+  void testTraversalProviderRegistration() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // Clear any providers left by previous tests
+    GraphTraversalProviderRegistry.clearAll(database);
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    // GAV should auto-register as a traversal provider
+    assertThat(GraphTraversalProviderRegistry.getProviders(database)).hasSize(1);
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isSameAs(gav);
+
+    // Provider should report correct coverage
+    assertThat(gav.coversVertexType("Person")).isTrue();
+    assertThat(gav.coversVertexType("Company")).isFalse();
+    assertThat(gav.coversEdgeType("FOLLOWS")).isTrue();
+    assertThat(gav.coversEdgeType("BLOCKS")).isFalse();
+
+    gav.drop();
+    assertThat(GraphTraversalProviderRegistry.getProviders(database)).isEmpty();
+  }
+
+  @Test
+  void testCoversAllTypesWhenExplicitTypesMatchSchema() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    GraphTraversalProviderRegistry.clearAll(database);
+
+    // GAV built with explicit types that cover ALL vertex/edge types in the schema
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    // coversVertexType(null) and coversEdgeType(null) should return true
+    // because the explicit types cover everything in the schema
+    assertThat(gav.coversVertexType(null)).isTrue();
+    assertThat(gav.coversEdgeType(null)).isTrue();
+
+    // findProvider with null edge types should also find the GAV
+    assertThat(GraphTraversalProviderRegistry.findProvider(database)).isSameAs(gav);
+
+    gav.drop();
+  }
+
+  @Test
+  void testDoesNotCoverAllTypesWhenSchemaHasMore() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createVertexType("Company");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("WORKS_AT");
+
+    GraphTraversalProviderRegistry.clearAll(database);
+
+    // GAV built with only a subset of types
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    // coversVertexType(null) should be false — Company is not covered
+    assertThat(gav.coversVertexType(null)).isFalse();
+    // coversEdgeType(null) should be false — WORKS_AT is not covered
+    assertThat(gav.coversEdgeType(null)).isFalse();
+
+    // findProvider with null should NOT find this GAV
+    assertThat(GraphTraversalProviderRegistry.findProvider(database)).isNull();
+
+    // But findProvider with specific types should still work
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isSameAs(gav);
+
+    gav.drop();
+  }
+
+  @Test
+  void testTraversalProviderAllTypes() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // GAV with no type filters (covers all types)
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).build();
+
+    assertThat(gav.coversVertexType(null)).isTrue();
+    assertThat(gav.coversVertexType("Person")).isTrue();
+    assertThat(gav.coversVertexType("Anything")).isTrue();
+    assertThat(gav.coversEdgeType(null)).isTrue();
+    assertThat(gav.coversEdgeType("FOLLOWS")).isTrue();
+
+    gav.drop();
+  }
+
+  @Test
+  void testCypherQueryWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    // Build GAV covering KNOWS edges
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("social")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Run a Cypher query — the optimizer should use GAVExpandAll when edge variable is not captured
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target ORDER BY source, target");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("source") + "->" + r.getProperty("target"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice->Bob", "Bob->Charlie");
+
+    gav.drop();
+  }
+
+  @Test
+  void testCypherQueryWithEdgeVariable() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("KNOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("social2")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // When edge variable is captured [r:KNOWS], GAV can't be used (no edge objects in CSR)
+    // Query should still work correctly via standard OLTP path
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("source") + "->" + r.getProperty("target"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice->Bob");
+
+    gav.drop();
+  }
+
+  @Test
+  void testCypherTraditionalPathUsesGAV() {
+    // Queries with aggregation disable the optimizer, falling back to the traditional path.
+    // The traditional path's MatchRelationshipStep should still use GAV for fast neighbor lookup.
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("socialAgg")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // This query has aggregation (collect) which disables the optimizer,
+    // but GAV should still be used in the traditional path via MatchRelationshipStep
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS person, collect(b.name) AS friends ORDER BY person");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      final List<String> friends = r.getProperty("friends");
+      final List<String> sorted = new ArrayList<>(friends);
+      Collections.sort(sorted);
+      results.add(r.getProperty("person") + "->" + sorted);
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice->[Bob, Charlie]", "Bob->[Charlie]");
+
+    gav.drop();
+  }
+
+  @Test
+  void testCypherTraditionalPathWithWhereAndGAV() {
+    // Test GAV usage in traditional path with WHERE clause and property constraints
+    database.getSchema().createVertexType("Session");
+    database.getSchema().createVertexType("Resource");
+    database.getSchema().createEdgeType("ACCESSED");
+
+    database.begin();
+    final MutableVertex s1 = database.newVertex("Session").set("sessionId", "s1").set("duration", 500).save();
+    final MutableVertex s2 = database.newVertex("Session").set("sessionId", "s2").set("duration", 100).save();
+    final MutableVertex r1 = database.newVertex("Resource").set("name", "file1").save();
+    final MutableVertex r2 = database.newVertex("Resource").set("name", "file2").save();
+    s1.newEdge("ACCESSED", r1);
+    s1.newEdge("ACCESSED", r2);
+    s2.newEdge("ACCESSED", r1);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sessionGraph")
+        .withEdgeTypes("ACCESSED")
+        .build();
+
+    // Query similar to user's real use case: property constraint + aggregation
+    final ResultSet rs = database.command("cypher",
+        "MATCH (s:Session)-[:ACCESSED]->(r:Resource) WHERE s.duration > 300 " +
+            "RETURN s.sessionId AS sid, collect(r.name) AS resources ORDER BY sid");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      final List<String> resources = r.getProperty("resources");
+      final List<String> sorted = new ArrayList<>(resources);
+      Collections.sort(sorted);
+      results.add(r.getProperty("sid") + "->" + sorted);
+    }
+    rs.close();
+
+    // Only s1 (duration=500 > 300) should appear, with both resources
+    assertThat(results).containsExactly("s1->[file1, file2]");
+
+    gav.drop();
+  }
+
+  // --- Columnar storage tests ---
+
+  @Test
+  void testColumnStoreBasics() {
+    final ColumnStore store = new ColumnStore(5);
+
+    final Column intCol = store.createColumn("age", Column.Type.INT);
+    final Column strCol = store.createColumn("name", Column.Type.STRING);
+    final Column dblCol = store.createColumn("score", Column.Type.DOUBLE);
+
+    assertThat(store.getColumnCount()).isEqualTo(3);
+    assertThat(store.getPropertyNames()).containsExactlyInAnyOrder("age", "name", "score");
+
+    assertThat(intCol.isNull(0)).isTrue();
+    assertThat(intCol.countNonNull()).isEqualTo(0);
+
+    intCol.setInt(0, 30);
+    intCol.setInt(2, 25);
+    strCol.setString(0, "Alice");
+    strCol.setString(1, "Bob");
+    strCol.setString(2, "Alice");
+    dblCol.setDouble(0, 9.5);
+
+    assertThat(intCol.getInt(0)).isEqualTo(30);
+    assertThat(intCol.isNull(0)).isFalse();
+    assertThat(intCol.isNull(1)).isTrue();
+    assertThat(intCol.countNonNull()).isEqualTo(2);
+
+    assertThat(strCol.getString(0)).isEqualTo("Alice");
+    assertThat(strCol.getString(1)).isEqualTo("Bob");
+    assertThat(strCol.getString(2)).isEqualTo("Alice");
+
+    assertThat(store.getValue(0, "age")).isEqualTo(30);
+    assertThat(store.getValue(0, "name")).isEqualTo("Alice");
+    assertThat(store.getValue(1, "age")).isNull();
+    assertThat(store.getValue(0, "nonexistent")).isNull();
+  }
+
+  @Test
+  void testDictionaryEncoding() {
+    final DictionaryEncoding dict = new DictionaryEncoding();
+    assertThat(dict.size()).isEqualTo(0);
+
+    final int codeA = dict.encode("Alice");
+    final int codeB = dict.encode("Bob");
+    final int codeA2 = dict.encode("Alice");
+
+    assertThat(codeA).isEqualTo(0);
+    assertThat(codeB).isEqualTo(1);
+    assertThat(codeA2).isEqualTo(0);
+
+    assertThat(dict.size()).isEqualTo(2);
+    assertThat(dict.decode(0)).isEqualTo("Alice");
+    assertThat(dict.decode(1)).isEqualTo("Bob");
+    assertThat(dict.getCode("Unknown")).isEqualTo(-1);
+  }
+
+  @Test
+  void testColumnScanOperatorFullScan() {
+    final Column col = new Column("age", Column.Type.INT, 5);
+    col.setInt(0, 30);
+    col.setInt(1, 25);
+    col.setInt(3, 40);
+    col.setInt(4, 35);
+
+    final ColumnScanOperator scan = new ColumnScanOperator(col);
+    final DataVector batch = new DataVector(DataVector.Type.INT);
+
+    assertThat(scan.getNextBatch(batch)).isTrue();
+    assertThat(batch.getSize()).isEqualTo(5);
+    assertThat(batch.getIntData()[0]).isEqualTo(30);
+    assertThat(batch.isNull(0)).isFalse();
+    assertThat(batch.isNull(2)).isTrue();
+
+    assertThat(scan.getNextBatch(batch)).isFalse();
+
+    scan.reset();
+    assertThat(scan.getNextBatch(batch)).isTrue();
+  }
+
+  @Test
+  void testColumnScanOperatorSelective() {
+    final Column col = new Column("score", Column.Type.DOUBLE, 10);
+    for (int i = 0; i < 10; i++)
+      col.setDouble(i, i * 1.5);
+
+    final int[] selection = { 2, 5, 7 };
+    final ColumnScanOperator scan = new ColumnScanOperator(col, selection);
+    final DataVector batch = new DataVector(DataVector.Type.DOUBLE);
+
+    assertThat(scan.getNextBatch(batch)).isTrue();
+    assertThat(batch.getSize()).isEqualTo(3);
+    assertThat(batch.getDoubleData()[0]).isEqualTo(3.0);
+    assertThat(batch.getDoubleData()[1]).isEqualTo(7.5);
+    assertThat(batch.getDoubleData()[2]).isEqualTo(10.5);
+
+    assertThat(scan.getNextBatch(batch)).isFalse();
+  }
+
+  @Test
+  void testColumnarPropertyIntegration() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").set("age", 30).save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").set("age", 25).save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(null, null);
+
+    final int idAlice = gav.getNodeId(alice.getIdentity());
+    final int idBob = gav.getNodeId(bob.getIdentity());
+    final int idCharlie = gav.getNodeId(charlie.getIdentity());
+
+    assertThat(gav.getProperty(idAlice, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(idBob, "name")).isEqualTo("Bob");
+    assertThat(gav.getProperty(idCharlie, "name")).isEqualTo("Charlie");
+
+    assertThat(gav.getProperty(idAlice, "age")).isEqualTo(30);
+    assertThat(gav.getProperty(idBob, "age")).isEqualTo(25);
+    assertThat(gav.getProperty(idCharlie, "age")).isNull();
+  }
+
+  @Test
+  void testColumnarMultipleTypes() {
+    database.getSchema().createVertexType("Item");
+    database.getSchema().createEdgeType("RELATED");
+
+    database.begin();
+    final MutableVertex v1 = database.newVertex("Item")
+        .set("name", "Widget").set("price", 19.99).set("quantity", 100).set("sku", 12345L).save();
+    final MutableVertex v2 = database.newVertex("Item")
+        .set("name", "Gadget").set("price", 29.99).set("quantity", 50).set("sku", 67890L).save();
+    v1.newEdge("RELATED", v2);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(null, null);
+
+    final int id1 = gav.getNodeId(v1.getIdentity());
+    final int id2 = gav.getNodeId(v2.getIdentity());
+
+    assertThat(gav.getProperty(id1, "name")).isEqualTo("Widget");
+    assertThat(gav.getProperty(id1, "price")).isEqualTo(19.99);
+    assertThat(gav.getProperty(id1, "quantity")).isEqualTo(100);
+    assertThat(gav.getProperty(id1, "sku")).isEqualTo(12345L);
+
+    assertThat(gav.getProperty(id2, "name")).isEqualTo("Gadget");
+    assertThat(gav.getProperty(id2, "price")).isEqualTo(29.99);
+  }
+
+  @Test
+  void testNullBitset() {
+    final Column col = new Column("val", Column.Type.INT, 128);
+
+    for (int i = 0; i < 128; i++)
+      assertThat(col.isNull(i)).isTrue();
+    assertThat(col.countNonNull()).isEqualTo(0);
+
+    for (int i = 0; i < 128; i += 2)
+      col.setInt(i, i);
+
+    assertThat(col.countNonNull()).isEqualTo(64);
+    assertThat(col.isNull(0)).isFalse();
+    assertThat(col.isNull(1)).isTrue();
+
+    col.setNull(0);
+    assertThat(col.isNull(0)).isTrue();
+    assertThat(col.countNonNull()).isEqualTo(63);
+  }
+
+  // --- SQL integration tests (Phase 6) ---
+
+  @Test
+  void testSqlOutWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-out-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // SQL out() should be accelerated by GAV
+    final ResultSet rs = database.query("sql", "SELECT name, out('KNOWS').size() AS friends FROM Person ORDER BY name");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("name") + ":" + r.getProperty("friends"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice:2", "Bob:1", "Charlie:0");
+
+    // Verify CSR acceleration is visible in PROFILE output
+    final ResultSet profileRs = database.command("sql",
+        "PROFILE SELECT name, out('KNOWS').size() AS friends FROM Person ORDER BY name");
+    assertThat(profileRs.getExecutionPlan().isPresent()).isTrue();
+    final String prettyPrint = profileRs.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(prettyPrint).contains("CSR-accelerated");
+    profileRs.close();
+
+    gav.drop();
+  }
+
+  @Test
+  void testSqlInWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-in-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // SQL in() should be accelerated by GAV
+    final ResultSet rs = database.query("sql", "SELECT name, in('KNOWS').size() AS inbound FROM Person ORDER BY name");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("name") + ":" + r.getProperty("inbound"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice:0", "Bob:1", "Charlie:2");
+
+    gav.drop();
+  }
+
+  @Test
+  void testSqlBothWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-both-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // SQL both() should return neighbors in both directions
+    final ResultSet rs = database.query("sql", "SELECT name, both('KNOWS').size() AS neighbors FROM Person ORDER BY name");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("name") + ":" + r.getProperty("neighbors"));
+    }
+    rs.close();
+
+    // Alice->Bob, Bob->Charlie: Alice has 1 (Bob), Bob has 2 (Alice+Charlie), Charlie has 1 (Bob)
+    assertThat(results).containsExactly("Alice:1", "Bob:2", "Charlie:1");
+
+    gav.drop();
+  }
+
+  @Test
+  void testSqlOutWithEdgeTypeFilter() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+    database.getSchema().createEdgeType("WORKS_WITH");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("WORKS_WITH", charlie);
+    database.commit();
+
+    // GAV covers only KNOWS
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-filter-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Query for KNOWS — should use GAV
+    ResultSet rs = database.query("sql", "SELECT name, out('KNOWS').size() AS cnt FROM Person WHERE name = 'Alice'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((int) rs.next().getProperty("cnt")).isEqualTo(1);
+    rs.close();
+
+    // Query for WORKS_WITH — GAV doesn't cover this, falls back to OLTP
+    rs = database.query("sql", "SELECT name, out('WORKS_WITH').size() AS cnt FROM Person WHERE name = 'Alice'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((int) rs.next().getProperty("cnt")).isEqualTo(1);
+    rs.close();
+
+    gav.drop();
+  }
+
+  @Test
+  void testSqlOutENotAccelerated() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("KNOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sql-oute-test")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // outE() returns edges, which CSR doesn't store — should still work via OLTP path
+    final ResultSet rs = database.query("sql", "SELECT outE('KNOWS').size() AS cnt FROM Person WHERE name = 'Alice'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((int) rs.next().getProperty("cnt")).isEqualTo(1);
+    rs.close();
+
+    gav.drop();
+  }
+
+  @Test
+  void testSqlTraversalWithoutGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("KNOWS", bob);
+    database.commit();
+
+    // No GAV built — standard OLTP path should work fine
+    final ResultSet rs = database.query("sql", "SELECT name, out('KNOWS').size() AS cnt FROM Person ORDER BY name");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("name") + ":" + r.getProperty("cnt"));
+    }
+    rs.close();
+
+    assertThat(results).containsExactly("Alice:1", "Bob:0");
+  }
+
+  // --- Algorithm CSR acceleration tests ---
+
+  @Test
+  void testPageRankWithGAV() {
+    database.getSchema().createVertexType("Page");
+    database.getSchema().createEdgeType("LINKS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Page").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Page").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Page").set("name", "C").save();
+    a.newEdge("LINKS", b);
+    a.newEdge("LINKS", c);
+    b.newEdge("LINKS", c);
+    c.newEdge("LINKS", a);
+    database.commit();
+
+    // Build GAV covering all types (no filter) — algorithms should use CSR path
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("pagerank-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank() YIELD node, score RETURN node.name AS name, score ORDER BY score DESC");
+
+    final List<String> names = new ArrayList<>();
+    double totalScore = 0;
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      names.add((String) r.getProperty("name"));
+      totalScore += ((Number) r.getProperty("score")).doubleValue();
+    }
+    rs.close();
+
+    assertThat(names).hasSize(3);
+    // C has most incoming links (from A and B), should rank highest
+    assertThat(names.getFirst()).isEqualTo("C");
+    // Scores should sum to ~1.0
+    assertThat(totalScore).isBetween(0.9, 1.1);
+
+    // Verify CSR acceleration is visible in PROFILE output
+    final ResultSet profileRs = database.command("opencypher",
+        "PROFILE CALL algo.pagerank() YIELD node, score RETURN node.name AS name, score");
+    assertThat(profileRs.getExecutionPlan().isPresent()).isTrue();
+    final String prettyPrint = profileRs.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(prettyPrint).contains("CSR-accelerated");
+    profileRs.close();
+
+    gav.drop();
+  }
+
+  @Test
+  void testArticleRankWithGAV() {
+    database.getSchema().createVertexType("Page");
+    database.getSchema().createEdgeType("LINKS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Page").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Page").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Page").set("name", "C").save();
+    a.newEdge("LINKS", b);
+    a.newEdge("LINKS", c);
+    b.newEdge("LINKS", c);
+    c.newEdge("LINKS", a);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("articlerank-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.articlerank() YIELD node, score RETURN node.name AS name, score ORDER BY score DESC");
+
+    final List<String> names = new ArrayList<>();
+    while (rs.hasNext())
+      names.add((String) rs.next().getProperty("name"));
+    rs.close();
+
+    assertThat(names).hasSize(3);
+    // C has most incoming links, should rank highest (same topology as PageRank)
+    assertThat(names.getFirst()).isEqualTo("C");
+
+    gav.drop();
+  }
+
+  @Test
+  void testPersonalizedPageRankWithGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    charlie.newEdge("KNOWS", alice);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("ppr-test")
+        .build();
+
+    // PPR from Alice: Alice should have highest score (source node)
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (s:Person {name:'Alice'}) CALL algo.personalizedPageRank(s) YIELD nodeId, score RETURN nodeId, score ORDER BY score DESC");
+
+    final List<Double> scores = new ArrayList<>();
+    while (rs.hasNext())
+      scores.add(((Number) rs.next().getProperty("score")).doubleValue());
+    rs.close();
+
+    assertThat(scores).hasSize(3);
+    // Source node should have highest PPR score
+    assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
+
+    gav.drop();
+  }
+
+  @Test
+  void testPageRankWithPartialGAVFallsBackToOLTP() {
+    database.getSchema().createVertexType("Page");
+    database.getSchema().createEdgeType("LINKS");
+    database.getSchema().createEdgeType("CITES");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Page").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Page").set("name", "B").save();
+    a.newEdge("LINKS", b);
+    a.newEdge("CITES", b);
+    database.commit();
+
+    // GAV only covers LINKS, not all types — algorithms should fall back to OLTP
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("partial-test")
+        .withEdgeTypes("LINKS")
+        .build();
+
+    // Should still produce correct results via OLTP path
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank() YIELD node, score RETURN node.name AS name, score");
+
+    int count = 0;
+    while (rs.hasNext()) {
+      rs.next();
+      count++;
+    }
+    rs.close();
+
+    assertThat(count).isEqualTo(2);
+
+    gav.drop();
+  }
+
+  // --- SQL shortestPath CSR acceleration ---
+
+  @Test
+  void testSqlShortestPathWithGAV() {
+    database.getSchema().createVertexType("City");
+    database.getSchema().createEdgeType("ROAD");
+
+    // Chain: A → B → C → D
+    database.begin();
+    final MutableVertex a = database.newVertex("City").set("name", "A").save();
+    final MutableVertex b = database.newVertex("City").set("name", "B").save();
+    final MutableVertex c = database.newVertex("City").set("name", "C").save();
+    final MutableVertex d = database.newVertex("City").set("name", "D").save();
+    a.newEdge("ROAD", b);
+    b.newEdge("ROAD", c);
+    c.newEdge("ROAD", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("shortest-path-test")
+        .build();
+
+    // shortestPath should find path A → B → C → D (length 4 vertices including endpoints)
+    final ResultSet rs = database.query("sql",
+        "SELECT shortestPath(" + a.getIdentity() + ", " + d.getIdentity() + ", 'OUT', 'ROAD') AS path");
+
+    assertThat(rs.hasNext()).isTrue();
+    final List<?> path = rs.next().getProperty("path");
+    rs.close();
+
+    assertThat(path).hasSize(4); // A, B, C, D
+    assertThat(path.get(0)).isEqualTo(a.getIdentity());
+    assertThat(path.get(3)).isEqualTo(d.getIdentity());
+
+    // Verify CSR acceleration is visible in PROFILE output
+    final ResultSet profileRs = database.command("sql",
+        "PROFILE SELECT shortestPath(" + a.getIdentity() + ", " + d.getIdentity() + ", 'OUT', 'ROAD') AS path");
+    assertThat(profileRs.hasNext()).isTrue();
+    assertThat(profileRs.getExecutionPlan().isPresent()).isTrue();
+    final String prettyPrint = profileRs.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(prettyPrint).contains("CSR-accelerated");
+    profileRs.close();
+
+    gav.drop();
+  }
+
+  // --- Algorithm CSR acceleration tests (additional algorithms) ---
+
+  @Test
+  void testBetweennessCentralityWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Star topology with bidirectional edges: center has highest betweenness
+    database.begin();
+    final MutableVertex center = database.newVertex("Node").set("name", "Center").save();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    center.newEdge("LINK", a); a.newEdge("LINK", center);
+    center.newEdge("LINK", b); b.newEdge("LINK", center);
+    center.newEdge("LINK", c); c.newEdge("LINK", center);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("betweenness-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.betweenness() YIELD node, score RETURN node, score ORDER BY score DESC");
+
+    final List<Double> scores = new ArrayList<>();
+    while (rs.hasNext())
+      scores.add(((Number) rs.next().getProperty("score")).doubleValue());
+    rs.close();
+
+    assertThat(scores).hasSize(4);
+    // Center node should have highest betweenness (it mediates all paths)
+    assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
+
+    gav.drop();
+  }
+
+  @Test
+  void testWCCWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Two disconnected components: {A,B} and {C,D}
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    c.newEdge("LINK", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("wcc-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.wcc() YIELD nodeId, componentId RETURN nodeId, componentId");
+
+    final List<Integer> componentIds = new ArrayList<>();
+    while (rs.hasNext())
+      componentIds.add(((Number) rs.next().getProperty("componentId")).intValue());
+    rs.close();
+
+    assertThat(componentIds).hasSize(4);
+    // Should have exactly 2 distinct components
+    assertThat(componentIds.stream().distinct().count()).isEqualTo(2);
+
+    gav.drop();
+  }
+
+  @Test
+  void testTriangleCountWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Triangle: A-B-C-A
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", a);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("triangle-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.triangleCount() YIELD nodeId, triangles RETURN nodeId, triangles");
+
+    int totalTriangles = 0;
+    int nodeCount = 0;
+    while (rs.hasNext()) {
+      totalTriangles += ((Number) rs.next().getProperty("triangles")).intValue();
+      nodeCount++;
+    }
+    rs.close();
+
+    assertThat(nodeCount).isEqualTo(3);
+    // Each node participates in 1 triangle, sum = 3, total unique = 3/3 = 1
+    assertThat(totalTriangles).isEqualTo(3);
+
+    gav.drop();
+  }
+
+  @Test
+  void testLouvainWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Two dense clusters with weak bridge
+    database.begin();
+    final MutableVertex a1 = database.newVertex("Node").set("name", "A1").save();
+    final MutableVertex a2 = database.newVertex("Node").set("name", "A2").save();
+    final MutableVertex a3 = database.newVertex("Node").set("name", "A3").save();
+    final MutableVertex b1 = database.newVertex("Node").set("name", "B1").save();
+    final MutableVertex b2 = database.newVertex("Node").set("name", "B2").save();
+    final MutableVertex b3 = database.newVertex("Node").set("name", "B3").save();
+    // Cluster A: fully connected
+    a1.newEdge("LINK", a2); a2.newEdge("LINK", a1);
+    a1.newEdge("LINK", a3); a3.newEdge("LINK", a1);
+    a2.newEdge("LINK", a3); a3.newEdge("LINK", a2);
+    // Cluster B: fully connected
+    b1.newEdge("LINK", b2); b2.newEdge("LINK", b1);
+    b1.newEdge("LINK", b3); b3.newEdge("LINK", b1);
+    b2.newEdge("LINK", b3); b3.newEdge("LINK", b2);
+    // Bridge
+    a3.newEdge("LINK", b1); b1.newEdge("LINK", a3);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("louvain-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.louvain() YIELD node, communityId, modularity RETURN node, communityId");
+
+    final List<Integer> communities = new ArrayList<>();
+    while (rs.hasNext())
+      communities.add(((Number) rs.next().getProperty("communityId")).intValue());
+    rs.close();
+
+    assertThat(communities).hasSize(6);
+    // Should detect at least 2 communities
+    assertThat(communities.stream().distinct().count()).isGreaterThanOrEqualTo(2);
+
+    gav.drop();
+  }
+
+  @Test
+  void testBFSWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("bfs-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (s:Node {name:'A'}) CALL algo.bfs(s) YIELD node, depth RETURN node, depth ORDER BY depth");
+
+    final List<Integer> depths = new ArrayList<>();
+    while (rs.hasNext())
+      depths.add(((Number) rs.next().getProperty("depth")).intValue());
+    rs.close();
+
+    // BFS does not include the start node itself, so depths start at 1
+    assertThat(depths).containsExactly(1, 2);
+
+    gav.drop();
+  }
+
+  @Test
+  void testSCCWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Cycle A→B→C→A forms one SCC, D is separate
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", a);
+    a.newEdge("LINK", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("scc-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.scc() YIELD node, componentId RETURN node, componentId");
+
+    final List<Integer> components = new ArrayList<>();
+    while (rs.hasNext())
+      components.add(((Number) rs.next().getProperty("componentId")).intValue());
+    rs.close();
+
+    assertThat(components).hasSize(4);
+    // Should have 2 SCCs: {A,B,C} and {D}
+    assertThat(components.stream().distinct().count()).isEqualTo(2);
+
+    gav.drop();
+  }
+
+  @Test
+  void testEigenvectorCentralityWithGAV() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b); b.newEdge("LINK", a);
+    a.newEdge("LINK", c); c.newEdge("LINK", a);
+    b.newEdge("LINK", c); c.newEdge("LINK", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("eigenvector-test")
+        .build();
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.eigenvector() YIELD node, score RETURN node, score");
+
+    int count = 0;
+    while (rs.hasNext()) {
+      final double score = ((Number) rs.next().getProperty("score")).doubleValue();
+      assertThat(score).isGreaterThan(0.0);
+      count++;
+    }
+    rs.close();
+
+    assertThat(count).isEqualTo(3);
+
+    gav.drop();
+  }
+
+  // ── SQL DDL Tests ────────────────────────────────────────────────────────
+
+  @Test
+  void testCreateGraphAnalyticalViewSQL() {
+    database.getSchema().createVertexType("City");
+    database.getSchema().createEdgeType("ROAD");
+    database.begin();
+    final MutableVertex a = database.newVertex("City").set("name", "Rome").save();
+    final MutableVertex b = database.newVertex("City").set("name", "Milan").save();
+    a.newEdge("ROAD", b);
+    database.commit();
+
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW cityRoads VERTEX TYPES (City) EDGE TYPES (ROAD)");
+
+    // Verify it's persisted in schema
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(extension).isNotNull();
+    assertThat(extension.has("cityRoads")).isTrue();
+    assertThat(extension.getJSONObject("cityRoads").getString("name")).isEqualTo("cityRoads");
+
+    // Verify it shows up in schema:graphAnalyticalViews
+    final ResultSet rs = database.query("sql", "SELECT FROM schema:graphAnalyticalViews");
+    boolean found = false;
+    while (rs.hasNext()) {
+      final var result = rs.next();
+      if ("cityRoads".equals(result.getProperty("name"))) {
+        found = true;
+        break;
+      }
+    }
+    rs.close();
+    assertThat(found).isTrue();
+
+    // Clean up
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW cityRoads");
+    final var afterDrop = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(afterDrop).isNull();
+  }
+
+  @Test
+  void testCreateGraphAnalyticalViewWithUpdateMode() {
+    database.getSchema().createVertexType("Sensor");
+    database.getSchema().createEdgeType("FEEDS");
+    database.begin();
+    database.newVertex("Sensor").set("name", "S1").save();
+    database.commit();
+
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW sensorNet VERTEX TYPES (Sensor) EDGE TYPES (FEEDS) UPDATE MODE SYNCHRONOUS");
+
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(extension.getJSONObject("sensorNet").getString("updateMode")).isEqualTo("SYNCHRONOUS");
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW sensorNet");
+  }
+
+  @Test
+  void testCreateGraphAnalyticalViewIfNotExists() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW testView");
+
+    // Second creation with IF NOT EXISTS should not throw
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW IF NOT EXISTS testView");
+
+    // Cleanup
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW testView");
+  }
+
+  @Test
+  void testDropGraphAnalyticalViewIfExists() {
+    // Drop non-existent with IF EXISTS should not throw
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW IF EXISTS nonExistentView");
+  }
+
+  @Test
+  void testCreateGraphAnalyticalViewWithProperties() {
+    database.getSchema().createVertexType("Product");
+    database.getSchema().createEdgeType("SIMILAR");
+    database.begin();
+    database.newVertex("Product").set("name", "Widget").set("price", 9.99).save();
+    database.commit();
+
+
+    database.command("sql",
+        "CREATE GRAPH ANALYTICAL VIEW productGraph VERTEX TYPES (Product) EDGE TYPES (SIMILAR) PROPERTIES (name, price)");
+
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    final var def = extension.getJSONObject("productGraph");
+    assertThat(def.getJSONArray("propertyFilter").length()).isEqualTo(2);
+    assertThat(def.getJSONArray("propertyFilter").getString(0)).isEqualTo("name");
+    assertThat(def.getJSONArray("propertyFilter").getString(1)).isEqualTo("price");
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW productGraph");
+  }
+
+  @Test
+  void testSchemaGraphAnalyticalViewsQuery() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW socialGraph VERTEX TYPES (Person) EDGE TYPES (KNOWS) UPDATE MODE SYNCHRONOUS");
+
+    final ResultSet rs = database.query("sql", "SELECT FROM schema:graphAnalyticalViews WHERE name = 'socialGraph'");
+    assertThat(rs.hasNext()).isTrue();
+    final var result = rs.next();
+    assertThat((String) result.getProperty("name")).isEqualTo("socialGraph");
+    assertThat((String) result.getProperty("updateMode")).isEqualTo("SYNCHRONOUS");
+    rs.close();
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW socialGraph");
+  }
+
+  @Test
+  void testGavRestoredOnDatabaseReopen() {
+    // Setup: create types and data
+    database.getSchema().createVertexType("City");
+    database.getSchema().createEdgeType("ROAD");
+    database.begin();
+    final MutableVertex a = database.newVertex("City").set("name", "Rome").save();
+    final MutableVertex b = database.newVertex("City").set("name", "Milan").save();
+    a.newEdge("ROAD", b);
+    database.commit();
+
+    // Create GAV via SQL (persists definition to schema extensions)
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW cityRoads VERTEX TYPES (City) EDGE TYPES (ROAD)");
+
+    // Verify schema extension was persisted
+    assertThat(database.getSchema().getExtension("graphAnalyticalViews")).isNotNull();
+
+    // Close database
+    final String dbPath = database.getDatabasePath();
+    database.close();
+
+    // Reopen database — restoreAll is called during open()
+    final DatabaseFactory factory2 = new DatabaseFactory(dbPath);
+    final Database db2 = factory2.open();
+    try {
+      // Verify the GAV was restored in the in-memory registry (async build)
+      final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db2, "cityRoads");
+      assertThat(restored).isNotNull();
+      assertThat(restored.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+      assertThat(restored.getNodeCount()).isEqualTo(2);
+      assertThat(restored.getEdgeCount()).isEqualTo(1);
+
+      // Clean up
+      db2.command("sql", "DROP GRAPH ANALYTICAL VIEW cityRoads");
+    } finally {
+      db2.close();
+    }
+
+    // Reopen database with the original factory for TestHelper cleanup
+    database = new DatabaseFactory(dbPath).open();
+  }
+
+  // --- Incremental update (delta overlay) tests ---
+
+  @Test
+  void testIncrementalAddVertexAndEdge() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-add-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Add a new vertex + edge in a new transaction
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    bob.asVertex().modify().newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    // SYNCHRONOUS: overlay applied immediately, no wait needed
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+
+    // The new vertex should be resolvable
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+    assertThat(charlieId).isGreaterThanOrEqualTo(0);
+
+    // Bob should now have Charlie as an out-neighbor
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int[] bobOutNeighbors = gav.getVertices(bobId, Vertex.DIRECTION.OUT, "FOLLOWS");
+    assertThat(bobOutNeighbors).contains(charlieId);
+
+    gav.drop();
+  }
+
+  @Test
+  void testIncrementalPropertyUpdate() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").set("age", 30).save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-prop-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name", "age")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    assertThat(gav.getProperty(aliceId, "name")).isEqualTo("Alice");
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(30);
+
+    // Update property in a new transaction
+    database.begin();
+    alice.asVertex().modify().set("age", 31).save();
+    database.commit();
+
+    // SYNCHRONOUS: property updated via overlay immediately
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(31);
+    assertThat(gav.getProperty(aliceId, "name")).isEqualTo("Alice"); // unchanged
+
+    gav.drop();
+  }
+
+  @Test
+  void testIncrementalMultipleTransactions() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-multi-tx")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // First incremental tx
+    database.begin();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.asVertex().modify().newEdge("FOLLOWS", bob);
+    database.commit();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Second incremental tx
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    bob.asVertex().modify().newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+
+    // Verify connectivity
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.getVertices(bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).contains(charlieId);
+    assertThat(gav.getVertices(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).contains(bobId);
+
+    gav.drop();
+  }
+
+  @Test
+  void testIncrementalDeleteEdge() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-del-edge")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Delete the edge
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> e.delete());
+    database.commit();
+
+    // SYNCHRONOUS: overlay reflects deletion immediately
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.BOTH, "FOLLOWS")).isEqualTo(0);
+
+    gav.drop();
+  }
+
+  @Test
+  void testIncrementalDeleteEdgeInDirection() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-del-edge-in")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+
+    // Before deletion: bob has an IN edge from alice
+    assertThat(gav.isConnectedTo(bobId, aliceId, Vertex.DIRECTION.IN, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+
+    // Delete the edge
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> e.delete());
+    database.commit();
+
+    // SYNCHRONOUS: overlay reflects deletion for IN direction
+    assertThat(gav.isConnectedTo(bobId, aliceId, Vertex.DIRECTION.IN, "FOLLOWS")).isFalse();
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
+
+    gav.drop();
+  }
+
+  @Test
+  void testCountEdgesAfterEdgeDeletionSynchronous() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("FOLLOWS", bob);
+    alice.newEdge("FOLLOWS", charlie);
+    bob.newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("count-del-edge")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+
+    // Before deletion
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(2);
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(2);
+
+    // Delete one edge: alice -> bob
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> {
+      if (e.getIn().equals(bob.getIdentity()))
+        e.delete();
+    });
+    database.commit();
+
+    // After deletion, countEdges must reflect the removal
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(2);
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.BOTH, "FOLLOWS")).isEqualTo(1);
+
+    gav.drop();
+  }
+
+  @Test
+  void testIncrementalDeleteVertex() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-del-vertex")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+
+    // Delete bob (cascade deletes edge too)
+    database.begin();
+    bob.getIdentity().asVertex().delete();
+    database.commit();
+
+    // SYNCHRONOUS: overlay reflects deletion immediately
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    gav.drop();
+  }
+
+  @Test
+  void testIncrementalNewVertexProperties() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("inc-new-props")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    // Add new vertex with properties via incremental update
+    database.begin();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    // SYNCHRONOUS: overlay reflects new vertex immediately
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    assertThat(bobId).isGreaterThanOrEqualTo(0);
+
+    // Property of overflow node should be accessible
+    assertThat(gav.getProperty(bobId, "name")).isEqualTo("Bob");
+
+    gav.drop();
+  }
+
+  // --- Delta correctness and compaction tests ---
+
+  @Test
+  void testDeltaEdgeCorrectnessAfterCommit() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("LIKES");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("FOLLOWS", bob);
+    bob.newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("delta-correctness")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS", "LIKES")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(bobId, charlieId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(aliceId, charlieId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+
+    // Add edges of different type + new vertex in single transaction
+    database.begin();
+    final MutableVertex dave = database.newVertex("Person").set("name", "Dave").save();
+    alice.getIdentity().asVertex().modify().newEdge("LIKES", charlie);
+    charlie.getIdentity().asVertex().modify().newEdge("FOLLOWS", dave);
+    database.commit();
+
+    // Delta should correctly reflect multi-type additions
+    assertThat(gav.getNodeCount()).isEqualTo(4);
+    assertThat(gav.getEdgeCount()).isEqualTo(4);
+
+    final int daveId = gav.getNodeId(dave.getIdentity());
+    assertThat(gav.isConnectedTo(aliceId, charlieId, Vertex.DIRECTION.OUT, "LIKES")).isTrue();
+    assertThat(gav.isConnectedTo(charlieId, daveId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+
+    // Verify reverse direction
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "LIKES")).isEqualTo(1);
+    assertThat(gav.countEdges(daveId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+
+    gav.drop();
+  }
+
+  @Test
+  void testDeltaPropertyUpdatesInColumnarStore() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").set("age", 30).set("score", 100.0).save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").set("age", 25).set("score", 85.5).save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("delta-props")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name", "age", "score")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+
+    // Verify initial values
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(30);
+    assertThat(gav.getProperty(bobId, "score")).isEqualTo(85.5);
+
+    // Update multiple properties in a single transaction
+    database.begin();
+    alice.getIdentity().asVertex().modify().set("age", 31).set("score", 105.0).save();
+    bob.getIdentity().asVertex().modify().set("name", "Robert").save();
+    database.commit();
+
+    // All updates should be reflected in the overlay immediately
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(31);
+    assertThat(gav.getProperty(aliceId, "score")).isEqualTo(105.0);
+    assertThat(gav.getProperty(aliceId, "name")).isEqualTo("Alice"); // unchanged
+    assertThat(gav.getProperty(bobId, "name")).isEqualTo("Robert");
+    assertThat(gav.getProperty(bobId, "age")).isEqualTo(25); // unchanged
+
+    // Second transaction: update again
+    database.begin();
+    alice.getIdentity().asVertex().modify().set("age", 32).save();
+    database.commit();
+
+    // Latest value should be visible
+    assertThat(gav.getProperty(aliceId, "age")).isEqualTo(32);
+
+    gav.drop();
+  }
+
+  @Test
+  void testCompactionTriggersFullRebuild() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // Set a very low compaction threshold to trigger compaction quickly
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("compaction-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .withCompactionThreshold(5)
+        .build();
+
+    assertThat(gav.getCompactionThreshold()).isEqualTo(5);
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Add enough edges to exceed the compaction threshold (5)
+    // This should trigger a full rebuild after the threshold is exceeded
+    database.begin();
+    MutableVertex prev = alice;
+    for (int i = 0; i < 8; i++) {
+      final MutableVertex next = database.newVertex("Person").set("name", "P" + i).save();
+      prev.getIdentity().asVertex().modify().newEdge("FOLLOWS", next);
+      prev = next;
+    }
+    database.commit();
+
+    // After compaction/rebuild, the view should still be correct
+    // Wait a bit for async compaction to complete
+    gav.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+
+    assertThat(gav.getNodeCount()).isEqualTo(9);
+    assertThat(gav.getEdgeCount()).isEqualTo(8);
+
+    // Verify the chain is intact
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+
+    gav.drop();
+  }
+
+  @Test
+  void testCompactionThresholdViaDDL() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // Create GAV with compaction threshold via SQL DDL
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW compThresholdTest " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500");
+
+    // Verify persisted definition contains the threshold
+    final JSONObject allGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(allGavs).isNotNull();
+    assertThat(allGavs.has("compThresholdTest")).isTrue();
+    assertThat(allGavs.getJSONObject("compThresholdTest").getInt("compactionThreshold", -1)).isEqualTo(500);
+
+    // Verify the live view has the threshold
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "compThresholdTest");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(500);
+
+    // ALTER the compaction threshold
+    database.command("sql", "ALTER GRAPH ANALYTICAL VIEW compThresholdTest COMPACTION THRESHOLD 2000");
+
+    // Verify persisted definition is updated
+    final JSONObject updatedGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(updatedGavs.getJSONObject("compThresholdTest").getInt("compactionThreshold", -1)).isEqualTo(2000);
+
+    // Verify live view is updated
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(2000);
+
+    liveView.drop();
+  }
+
+  // --- STALE status tests ---
+
+  @Test
+  void testStaleStatusOnNonAutoUpdateGAV() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // Build without autoUpdate
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("stale-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.isStale()).isFalse();
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Modify the graph — GAV should become STALE
+    database.begin();
+    database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+    assertThat(gav.isStale()).isTrue();
+    // Data is still accessible (stale but usable)
+    assertThat(gav.getNodeCount()).isEqualTo(1); // still reflects old state
+
+    // Rebuild to clear stale status
+    gav.build();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.isStale()).isFalse();
+    assertThat(gav.getNodeCount()).isEqualTo(2); // now reflects new state
+
+    gav.drop();
+  }
+
+  @Test
+  void testStaleNotTriggeredForUnrelatedTypes() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createVertexType("Product");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // GAV only covers Person/FOLLOWS
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("stale-unrelated")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    // Modify an unrelated type — GAV should NOT become stale
+    database.begin();
+    database.newVertex("Product").set("name", "Widget").save();
+    database.commit();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.isStale()).isFalse();
+
+    gav.drop();
+  }
+
+  @Test
+  void testAlterGraphAnalyticalViewUpdateMode() {
+    database.getSchema().createVertexType("Device");
+    database.getSchema().createEdgeType("CONNECTS");
+    database.begin();
+    database.newVertex("Device").set("name", "D1").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW deviceNet VERTEX TYPES (Device) EDGE TYPES (CONNECTS) UPDATE MODE OFF");
+
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(extension.getJSONObject("deviceNet").getString("updateMode")).isEqualTo("OFF");
+
+    database.command("sql", "ALTER GRAPH ANALYTICAL VIEW deviceNet UPDATE MODE SYNCHRONOUS");
+
+    final var updatedExtension = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(updatedExtension.getJSONObject("deviceNet").getString("updateMode")).isEqualTo("SYNCHRONOUS");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "deviceNet");
+    assertThat(liveView).isNotNull();
+    assertThat(liveView.getUpdateMode()).isEqualTo(GraphAnalyticalView.UpdateMode.SYNCHRONOUS);
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW deviceNet");
+  }
+
+  @Test
+  void testRebuildGraphAnalyticalView() {
+    database.getSchema().createVertexType("Machine");
+    database.getSchema().createEdgeType("POWERS");
+    database.begin();
+    final MutableVertex m1 = database.newVertex("Machine").set("name", "M1").save();
+    final MutableVertex m2 = database.newVertex("Machine").set("name", "M2").save();
+    m1.newEdge("POWERS", m2);
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW machineNet VERTEX TYPES (Machine) EDGE TYPES (POWERS)");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "machineNet");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    assertThat(liveView.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    // Add more data
+    database.begin();
+    final MutableVertex m3 = database.newVertex("Machine").set("name", "M3").save();
+    m2.asVertex().modify().newEdge("POWERS", m3);
+    database.commit();
+
+    // Rebuild via SQL
+    final ResultSet rs = database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW machineNet");
+    assertThat(rs.hasNext()).isTrue();
+    final var result = rs.next();
+    assertThat((String) result.getProperty("operation")).isEqualTo("rebuild graph analytical view");
+    assertThat((String) result.getProperty("name")).isEqualTo("machineNet");
+
+    assertThat(liveView.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW machineNet");
+  }
+
+  // --- Regression tests for PR review findings ---
+
+  @Test
+  void testConcurrentApplyDeltaNoLostUpdates() throws Exception {
+    // Each thread gets its own vertex type to avoid page contention entirely.
+    // This isolates the test to exercise concurrent applyDelta, not CME retry behavior.
+    final int threadCount = 4;
+    final int edgesPerThread = 20;
+
+    final String[] vTypes = new String[threadCount];
+    final String[] eTypes = new String[threadCount];
+    for (int t = 0; t < threadCount; t++) {
+      vTypes[t] = "V" + t;
+      eTypes[t] = "LINK" + t;
+      database.getSchema().createVertexType(vTypes[t]);
+      database.getSchema().createEdgeType(eTypes[t]);
+    }
+
+    // Build SYNCHRONOUS GAV covering all types
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes(vTypes)
+        .withEdgeTypes(eTypes)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(0);
+
+    // Each thread creates vertices in its own type (separate pages, no CME).
+    // Concurrent applyDelta calls all merge into the same overlay.
+    final java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(threadCount);
+    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+
+    final Thread[] threads = new Thread[threadCount];
+    for (int t = 0; t < threadCount; t++) {
+      final int threadIdx = t;
+      threads[t] = new Thread(() -> {
+        try {
+          barrier.await(5, TimeUnit.SECONDS);
+          for (int i = 0; i < edgesPerThread; i++) {
+            database.begin();
+            final MutableVertex src = database.newVertex("V" + threadIdx)
+                .set("name", "src_" + threadIdx + "_" + i).save();
+            final MutableVertex tgt = database.newVertex("V" + threadIdx)
+                .set("name", "tgt_" + threadIdx + "_" + i).save();
+            src.newEdge("LINK" + threadIdx, tgt);
+            database.commit();
+          }
+        } catch (final Exception e) {
+          e.printStackTrace();
+          errors.incrementAndGet();
+        }
+      });
+      threads[t].start();
+    }
+
+    for (final Thread thread : threads)
+      thread.join(30_000);
+
+    assertThat(errors.get()).as("Thread errors").isEqualTo(0);
+
+    // Every thread committed exactly edgesPerThread edges — none lost
+    final int expectedVertices = threadCount * edgesPerThread * 2; // src + tgt per edge
+    final int expectedEdges = threadCount * edgesPerThread;
+    assertThat(gav.getNodeCount()).isEqualTo(expectedVertices);
+    assertThat(gav.getEdgeCount()).isEqualTo(expectedEdges);
+
+    gav.drop();
+  }
+
+  @Test
+  void testGAVExpandAllWithStaleVertex() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    database.commit();
+
+    // Build GAV — all 3 vertices are in the CSR
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("staleTest")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+
+    // Delete Bob in OLTP (but GAV is NOT rebuilt — CSR is now stale)
+    database.begin();
+    database.deleteRecord(bob.getIdentity().asVertex());
+    database.commit();
+
+    // Cypher query via GAVExpandAll should skip the stale vertex, not throw NPE/RecordNotFound
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.name = 'Alice' RETURN b.name AS target ORDER BY target");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next().getProperty("target"));
+    rs.close();
+
+    // Only Charlie should be returned — Bob was deleted
+    assertThat(results).containsExactly("Charlie");
+
+    gav.drop();
+  }
+
+  @Test
+  void testNeighborViewBoundaryLastNode() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Create a chain: N0 -> N1 -> N2 -> N3 (last node has edges only inbound)
+    database.begin();
+    final MutableVertex n0 = database.newVertex("Node").set("idx", 0).save();
+    final MutableVertex n1 = database.newVertex("Node").set("idx", 1).save();
+    final MutableVertex n2 = database.newVertex("Node").set("idx", 2).save();
+    final MutableVertex n3 = database.newVertex("Node").set("idx", 3).save();
+    n0.newEdge("LINK", n1);
+    n1.newEdge("LINK", n2);
+    n2.newEdge("LINK", n3);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Node" }, new String[] { "LINK" });
+
+    final int nodeCount = gav.getNodeCount();
+    assertThat(nodeCount).isEqualTo(4);
+
+    // Test NeighborView for OUT direction — last node should have degree 0
+    final com.arcadedb.graph.NeighborView outView = gav.getNeighborView(Vertex.DIRECTION.OUT, "LINK");
+    assertThat(outView).isNotNull();
+    assertThat(outView.nodeCount()).isEqualTo(nodeCount);
+
+    // Verify degree() works for every node including the last one (offsets[nodeCount] must be in bounds)
+    int totalOutDegree = 0;
+    for (int i = 0; i < nodeCount; i++) {
+      final int deg = outView.degree(i);
+      assertThat(deg).isGreaterThanOrEqualTo(0);
+      totalOutDegree += deg;
+      // Verify offset/offsetEnd are consistent
+      assertThat(outView.offsetEnd(i) - outView.offset(i)).isEqualTo(deg);
+    }
+    assertThat(totalOutDegree).isEqualTo(3); // 3 edges total
+
+    // Test NeighborView for IN direction — first node should have degree 0
+    final com.arcadedb.graph.NeighborView inView = gav.getNeighborView(Vertex.DIRECTION.IN, "LINK");
+    assertThat(inView).isNotNull();
+
+    int totalInDegree = 0;
+    for (int i = 0; i < nodeCount; i++) {
+      final int deg = inView.degree(i);
+      assertThat(deg).isGreaterThanOrEqualTo(0);
+      totalInDegree += deg;
+      assertThat(inView.offsetEnd(i) - inView.offset(i)).isEqualTo(deg);
+    }
+    assertThat(totalInDegree).isEqualTo(3);
+
+    // Test BOTH direction — verify merged view handles last node correctly
+    final com.arcadedb.graph.NeighborView bothView = gav.getNeighborView(Vertex.DIRECTION.BOTH, "LINK");
+    assertThat(bothView).isNotNull();
+    assertThat(bothView.nodeCount()).isEqualTo(nodeCount);
+
+    // Last node: 0 out + 1 in = degree 1 in BOTH
+    final int lastNodeId = gav.getNodeId(n3.getIdentity());
+    assertThat(bothView.degree(lastNodeId)).isEqualTo(1);
+    // First node: 1 out + 0 in = degree 1 in BOTH
+    final int firstNodeId = gav.getNodeId(n0.getIdentity());
+    assertThat(bothView.degree(firstNodeId)).isEqualTo(1);
+
+    // Verify edge count for the merged BOTH view
+    assertThat(bothView.edgeCount()).isEqualTo(6); // 3 out + 3 in
+  }
+
+  @Test
+  void testCSRVertexIterableSkipsDeletedNodes() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    alice.newEdge("KNOWS", charlie);
+    database.commit();
+
+    // Build GAV — all 3 vertices in CSR
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("csrIterTest")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Delete Bob in OLTP without rebuilding GAV — CSR is stale
+    database.begin();
+    database.deleteRecord(bob.getIdentity().asVertex());
+    database.commit();
+
+    // SQL out() function uses CSRVertexIterable — should skip deleted vertex, not throw NPE
+    final ResultSet rs = database.query("sql",
+        "SELECT out('KNOWS').name AS targets FROM " + alice.getIdentity());
+    assertThat(rs.hasNext()).isTrue();
+    final var targets = (List<?>) rs.next().getProperty("targets");
+    // Bob is deleted — only Charlie should appear
+    assertThat(targets).hasSize(1);
+    assertThat(targets.get(0).toString()).isEqualTo("Charlie");
+    rs.close();
+
+    gav.drop();
+  }
+
+  @Test
+  void testAlterPersistsBeforeUpdatingLiveView() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "A").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW alterOrderTest VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE OFF");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "alterOrderTest");
+    assertThat(liveView).isNotNull();
+    assertThat(liveView.getUpdateMode()).isEqualTo(GraphAnalyticalView.UpdateMode.OFF);
+
+    // Alter to SYNCHRONOUS
+    database.command("sql", "ALTER GRAPH ANALYTICAL VIEW alterOrderTest UPDATE MODE SYNCHRONOUS");
+
+    // Both schema and live view should be consistent
+    final var ext = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(ext.getJSONObject("alterOrderTest").getString("updateMode")).isEqualTo("SYNCHRONOUS");
+    assertThat(liveView.getUpdateMode()).isEqualTo(GraphAnalyticalView.UpdateMode.SYNCHRONOUS);
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW alterOrderTest");
+  }
+
+  @Test
+  void testDropCleansUpOrphanedTraversalProvider() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    // Create via builder and register as traversal provider
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("orphanTest")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .build();
+    gav.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+
+    // Verify provider is registered
+    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+
+    // Remove from the in-memory registry so the DROP goes through the else branch
+    GraphAnalyticalViewRegistry.unregister(database, "orphanTest");
+    assertThat(GraphAnalyticalViewRegistry.get(database, "orphanTest")).isNull();
+
+    // The traversal provider should still be registered at this point
+    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+
+    // DROP should clean up both schema AND the orphaned traversal provider
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW orphanTest");
+
+    // Traversal provider must be unregistered
+    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+
+    // Schema must be clean
+    final var ext = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(ext == null || !ext.has("orphanTest")).isTrue();
+  }
+
+  // --- Bug 16: COMPACTION THRESHOLD validation ---
+
+  @Test
+  void testCompactionThresholdNegativeRejected() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    assertThatThrownBy(() ->
+        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW negThresh " +
+            "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) COMPACTION THRESHOLD -5"))
+        .hasMessageContaining("COMPACTION THRESHOLD");
+  }
+
+  @Test
+  void testCompactionThresholdOneRejected() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    assertThatThrownBy(() ->
+        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW oneThresh " +
+            "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) COMPACTION THRESHOLD 1"))
+        .hasMessageContaining("COMPACTION THRESHOLD");
+  }
+
+  @Test
+  void testCompactionThresholdZeroDisablesCompaction() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW zeroThresh " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 0");
+
+    final JSONObject allGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(allGavs).isNotNull();
+    assertThat(allGavs.getJSONObject("zeroThresh").getInt("compactionThreshold", -1)).isEqualTo(0);
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "zeroThresh");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, TimeUnit.SECONDS);
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(0);
+
+    liveView.shutdown();
+  }
+
+  @Test
+  void testAlterCompactionThresholdToZero() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW alterZero " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "alterZero");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, TimeUnit.SECONDS);
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(500);
+
+    // ALTER to 0 to disable compaction
+    database.command("sql", "ALTER GRAPH ANALYTICAL VIEW alterZero COMPACTION THRESHOLD 0");
+
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(0);
+    final JSONObject updatedGavs = database.getSchema().getExtension("graphAnalyticalViews");
+    assertThat(updatedGavs.getJSONObject("alterZero").getInt("compactionThreshold", -1)).isEqualTo(0);
+
+    liveView.shutdown();
+  }
+
+  @Test
+  void testAlterCompactionThresholdOneRejected() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW alterOneThresh " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "alterOneThresh");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, TimeUnit.SECONDS);
+
+    assertThatThrownBy(() ->
+        database.command("sql", "ALTER GRAPH ANALYTICAL VIEW alterOneThresh COMPACTION THRESHOLD 1"))
+        .hasMessageContaining("COMPACTION THRESHOLD");
+
+    // Value should remain unchanged
+    assertThat(liveView.getCompactionThreshold()).isEqualTo(500);
+
+    liveView.shutdown();
+  }
+
+  // --- Bug 17: UpdateMode.valueOf() throws IllegalArgumentException for invalid mode strings ---
+
+  @Test
+  void testCreateWithInvalidUpdateModeThrowsCommandExecutionException() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    assertThatThrownBy(() ->
+        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW invalidMode " +
+            "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE BANANA"))
+        .hasMessageContaining("Unknown update mode")
+        .hasMessageContaining("BANANA");
+  }
+
+  @Test
+  void testAlterWithInvalidUpdateModeThrowsCommandExecutionException() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW modeTest " +
+        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE OFF");
+
+    final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "modeTest");
+    assertThat(liveView).isNotNull();
+    liveView.awaitReady(10, TimeUnit.SECONDS);
+
+    assertThatThrownBy(() ->
+        database.command("sql", "ALTER GRAPH ANALYTICAL VIEW modeTest UPDATE MODE INVALID"))
+        .hasMessageContaining("Unknown update mode")
+        .hasMessageContaining("INVALID");
+
+    // Original mode should remain unchanged
+    assertThat(liveView.getUpdateMode()).isEqualTo(GraphAnalyticalView.UpdateMode.OFF);
+
+    liveView.shutdown();
+  }
+
+  // --- Bug 18: buildAsync() failure silently marks view READY with no error surface ---
+
+  @Test
+  void testAwaitReadyReturnsFalseOnBuildFailure() {
+    // Create a view that references a non-existent vertex type to force build failure
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("failView")
+        .withVertexTypes("NonExistentType")
+        .withEdgeTypes("AlsoNonExistent")
+        .buildAsync();
+
+    // awaitReady should return false since the build will fail
+    final boolean ready = view.awaitReady(10, TimeUnit.SECONDS);
+    assertThat(ready).isFalse();
+
+    // Status should NOT be READY
+    assertThat(view.getStatus()).isNotEqualTo(GraphAnalyticalView.Status.READY);
+
+    // Build error should be surfaced
+    assertThat(view.getBuildError()).isNotNull();
+
+    view.shutdown();
+  }
+
+  // --- Bug 21: SYNCHRONOUS mode with mixed additions and deletions ---
+
+  @Test
+  void testCountEdgesWithMixedAdditionsAndDeletionsSynchronous() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("BLOCKS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("FOLLOWS", bob);
+    alice.newEdge("FOLLOWS", charlie);
+    bob.newEdge("FOLLOWS", charlie);
+    alice.newEdge("BLOCKS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("mixed-delta")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS", "BLOCKS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+
+    // Before any changes — verify baseline
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(2);
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "BLOCKS")).isEqualTo(1);
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(2);
+
+    // Transaction 1: delete Alice->Bob FOLLOWS, add Bob->Alice FOLLOWS
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> {
+      if (e.getIn().equals(bob.getIdentity()))
+        e.delete();
+    });
+    bob.getIdentity().asVertex().modify().newEdge("FOLLOWS", alice.getIdentity().asVertex());
+    database.commit();
+
+    // Alice: OUT FOLLOWS went from 2 to 1 (deleted Alice->Bob, kept Alice->Charlie)
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+    // Alice: IN FOLLOWS is now 1 (new Bob->Alice)
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(1);
+    // Alice: BOTH FOLLOWS = 1 OUT + 1 IN = 2
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.BOTH, "FOLLOWS")).isEqualTo(2);
+    // Bob: IN FOLLOWS went from 1 to 0 (deleted Alice->Bob)
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    // Bob: OUT FOLLOWS went from 1 to 2 (kept Bob->Charlie, added Bob->Alice)
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(2);
+    // BLOCKS edge is unaffected
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "BLOCKS")).isEqualTo(1);
+    // Charlie: IN FOLLOWS unchanged at 2 (Alice->Charlie, Bob->Charlie)
+    assertThat(gav.countEdges(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(2);
+
+    gav.drop();
+  }
+
+  // --- Bug 22: compaction actually triggers and clears overlay ---
+
+  @Test
+  void testCompactionClearsOverlay() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex root = database.newVertex("Person").set("name", "Root").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("compact-overlay")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .withCompactionThreshold(3)
+        .build();
+
+    // Record the initial build timestamp for comparison after compaction
+    final long initialBuildTimestamp = gav.getBuildTimestamp();
+
+    // Add 5 edges in a single transaction — exceeds threshold of 3, should trigger compaction
+    database.begin();
+    MutableVertex prev = root;
+    for (int i = 0; i < 5; i++) {
+      final MutableVertex next = database.newVertex("Person").set("name", "P" + i).save();
+      prev.getIdentity().asVertex().modify().newEdge("FOLLOWS", next);
+      prev = next;
+    }
+    database.commit();
+
+    // Wait for async compaction to complete (compaction runs in background, no latch to await)
+    final long deadline = System.currentTimeMillis() + 10_000;
+    while ((Boolean) gav.getStats().get("overlayActive") && System.currentTimeMillis() < deadline) {
+      try {
+        Thread.sleep(50);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+
+    // After compaction: overlay should be cleared (fresh CSR rebuilt), all data in base CSR
+    assertThat((Boolean) gav.getStats().get("overlayActive")).isFalse();
+    assertThat(gav.getNodeCount()).isEqualTo(6);
+    assertThat(gav.getEdgeCount()).isEqualTo(5);
+
+    // Build timestamp should have changed, proving a rebuild happened
+    assertThat(gav.getBuildTimestamp()).isGreaterThan(initialBuildTimestamp);
+
+    gav.drop();
+  }
+
+  @Test
+  void testDeletedOverflowVertexNotDangling() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // Build GAV with initial data
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("del-overflow")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Add an overflow vertex (not in base CSR)
+    database.begin();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    assertThat(bobId).isGreaterThanOrEqualTo(0);
+
+    // Delete the overflow vertex
+    database.begin();
+    bob.getIdentity().asVertex().delete();
+    database.commit();
+
+    // Node count must reflect deletion
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Deleted overflow vertex should not be resolvable
+    assertThat(gav.getNodeId(bob.getIdentity())).isEqualTo(-1);
+
+    // getRID for the stale ID should return null (not the deleted vertex's RID)
+    assertThat(gav.getRID(bobId)).isNull();
+
+    gav.drop();
+  }
+
+  @Test
+  void testUseWhenStaleFalseExcludesFromQueryPlanner() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    // Build with useWhenStale=false and OFF update mode (goes STALE on commit)
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("stale-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUseWhenStale(false)
+        .build();
+
+    assertThat(gav.isReady()).isTrue();
+    assertThat(gav.isStale()).isFalse();
+
+    // Commit a change — OFF mode marks the view as STALE
+    database.begin();
+    database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    assertThat(gav.isStale()).isTrue();
+
+    // With useWhenStale=false, isReady() should return false for STALE status
+    assertThat(gav.isReady()).isFalse();
+
+    // Query planner should NOT find this provider when stale
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, new String[] { "FOLLOWS" })).isNull();
+
+    // Toggle to true — query planner should find it again
+    gav.setUseWhenStale(true);
+    assertThat(gav.isReady()).isTrue();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, new String[] { "FOLLOWS" })).isNotNull();
+
+    gav.drop();
+  }
+
+  // ── Robustness tests ────────────────────────────────────────────────────
+
+  @Test
+  void testStaleGAVReturnsDeterministicApproximateResults() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // Build initial graph: Alice -> Bob
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    // Build GAV in OFF mode (no auto-update) with useWhenStale=true
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("stale-approx")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .withUseWhenStale(true)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+
+    // Mutate the graph: add Charlie, edge Alice -> Charlie, delete edge Alice -> Bob
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.getIdentity().asVertex().newEdge("FOLLOWS", charlie);
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> {
+      if (e.getIn().equals(bob.getIdentity()))
+        e.delete();
+    });
+    database.commit();
+
+    // GAV should be STALE but still ready (useWhenStale=true)
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+    assertThat(gav.isReady()).isTrue();
+
+    // Stale results must be deterministic: they reflect the OLD snapshot, not a mix
+    // The stale GAV should still see 2 nodes (Alice, Bob) — not Charlie
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+    // Alice -> Bob should still appear connected in the stale view
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    // Charlie should not be in the stale view
+    assertThat(gav.getNodeId(charlie.getIdentity())).isEqualTo(-1);
+
+    // Query multiple times to verify determinism — results must be stable
+    for (int i = 0; i < 10; i++) {
+      assertThat(gav.getNodeCount()).isEqualTo(2);
+      assertThat(gav.getEdgeCount()).isEqualTo(1);
+      assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    }
+
+    // Verify the query planner can find the stale provider
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+
+    // Rebuild and verify the new state is correct
+    gav.build();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+    // Re-fetch IDs after rebuild (BFS reordering may assign different dense IDs)
+    final int newAliceId = gav.getNodeId(alice.getIdentity());
+    final int newBobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+    assertThat(charlieId).isGreaterThanOrEqualTo(0);
+    assertThat(gav.isConnectedTo(newAliceId, charlieId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(gav.isConnectedTo(newAliceId, newBobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+
+    gav.drop();
+  }
+
+  @Test
+  void testConcurrentWriteAndReadUnderSynchronousOverlay() throws Exception {
+    // Each writer gets its own vertex/edge type to avoid page contention.
+    // This isolates the test to exercise concurrent overlay merges + reads.
+    final int writerCount = 2;
+    final int edgesPerWriter = 30;
+    final int readerIterations = 200;
+
+    final String[] vTypes = new String[writerCount];
+    final String[] eTypes = new String[writerCount];
+    for (int t = 0; t < writerCount; t++) {
+      vTypes[t] = "W" + t;
+      eTypes[t] = "LINK" + t;
+      database.getSchema().createVertexType(vTypes[t]);
+      database.getSchema().createEdgeType(eTypes[t]);
+    }
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("concurrent-rw")
+        .withVertexTypes(vTypes)
+        .withEdgeTypes(eTypes)
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(0);
+
+    final java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(writerCount + 1);
+    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+
+    // Writer threads: each creates vertices/edges in its own type
+    final Thread[] writers = new Thread[writerCount];
+    for (int t = 0; t < writerCount; t++) {
+      final int threadIdx = t;
+      writers[t] = new Thread(() -> {
+        try {
+          barrier.await(5, TimeUnit.SECONDS);
+          for (int i = 0; i < edgesPerWriter; i++) {
+            database.begin();
+            final MutableVertex src = database.newVertex("W" + threadIdx)
+                .set("name", "src_" + threadIdx + "_" + i).save();
+            final MutableVertex tgt = database.newVertex("W" + threadIdx)
+                .set("name", "tgt_" + threadIdx + "_" + i).save();
+            src.newEdge("LINK" + threadIdx, tgt);
+            database.commit();
+          }
+        } catch (final Exception e) {
+          e.printStackTrace();
+          errors.incrementAndGet();
+        }
+      });
+      writers[t].start();
+    }
+
+    // Reader thread: continuously query GAV and verify overlay consistency.
+    // getNodeCount() and getEdgeCount() are separate snapshot reads, so we verify
+    // weaker but sufficient invariants: counts are non-negative and non-decreasing.
+    final Thread reader = new Thread(() -> {
+      try {
+        barrier.await(5, TimeUnit.SECONDS);
+        int prevNodeCount = 0;
+        int prevEdgeCount = 0;
+        for (int i = 0; i < readerIterations; i++) {
+          final int nodeCount = gav.getNodeCount();
+          final int edgeCount = gav.getEdgeCount();
+
+          assertThat(nodeCount).as("nodeCount iteration " + i).isGreaterThanOrEqualTo(0);
+          assertThat(edgeCount).as("edgeCount iteration " + i).isGreaterThanOrEqualTo(0);
+
+          // Monotonicity: counts never decrease under SYNCHRONOUS mode
+          assertThat(nodeCount).as("nodeCount monotonic at iteration " + i)
+              .isGreaterThanOrEqualTo(prevNodeCount);
+          assertThat(edgeCount).as("edgeCount monotonic at iteration " + i)
+              .isGreaterThanOrEqualTo(prevEdgeCount);
+
+          prevNodeCount = nodeCount;
+          prevEdgeCount = edgeCount;
+        }
+      } catch (final Exception e) {
+        e.printStackTrace();
+        errors.incrementAndGet();
+      }
+    });
+    reader.start();
+
+    for (final Thread w : writers)
+      w.join(30_000);
+    reader.join(30_000);
+
+    assertThat(errors.get()).as("Thread errors").isEqualTo(0);
+
+    // Final state: all edges committed
+    final int expectedEdges = writerCount * edgesPerWriter;
+    final int expectedNodes = 2 * expectedEdges; // 2 vertices per edge
+    assertThat(gav.getNodeCount()).isEqualTo(expectedNodes);
+    assertThat(gav.getEdgeCount()).isEqualTo(expectedEdges);
+
+    gav.drop();
+  }
+
+  @Test
+  void testDroppedGAVQueriesFailGracefully() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("drop-graceful")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    // Verify the GAV is working and query planner finds it
+    assertThat(gav.isReady()).isTrue();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+
+    // Simulate what happens when a plan captures a provider reference, then the GAV is dropped.
+    // Save a direct reference to the provider (as the optimizer would at plan-build time).
+    final var capturedProvider = GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS");
+    assertThat(capturedProvider).isNotNull();
+
+    final int aliceId = capturedProvider.getNodeId(alice.getIdentity());
+    assertThat(aliceId).isGreaterThanOrEqualTo(0);
+
+    // Drop the GAV — unregisters from all registries
+    gav.drop();
+
+    // The registry should no longer find a provider
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+
+    // The captured provider reference still has a valid snapshot (not nulled on drop).
+    // Operations on the stale reference should either succeed with old data or fail gracefully
+    // (no NPE, no ArrayIndexOutOfBounds, no corrupted state).
+    assertThat(capturedProvider.getNodeId(alice.getIdentity())).isEqualTo(aliceId);
+    assertThat(capturedProvider.getRID(aliceId)).isEqualTo(alice.getIdentity());
+    assertThat(capturedProvider.getNeighborIds(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isNotNull();
+    assertThat(capturedProvider.isConnectedTo(aliceId,
+        capturedProvider.getNodeId(bob.getIdentity()), Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+    assertThat(capturedProvider.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(1);
+
+    // New queries should NOT find the provider and should fall back to OLTP
+    try (final ResultSet rs = database.query("cypher",
+        "MATCH (a:Person)-[:FOLLOWS]->(b:Person) RETURN a.name AS src, b.name AS tgt")) {
+      assertThat(rs.hasNext()).isTrue();
+      final var row = rs.next();
+      assertThat((String) row.getProperty("src")).isEqualTo("Alice");
+      assertThat((String) row.getProperty("tgt")).isEqualTo("Bob");
+    }
+  }
+
+  // === Edge Property Tests ===
+
+  @Test
+  void testEdgePropertyBasic() {
+    // A -[weight:1.0]-> B -[weight:2.5]-> C
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("ROAD").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("ROAD", b, "weight", 1.0);
+    b.newEdge("ROAD", c, "weight", 2.5);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("ROAD")
+        .withEdgeProperties("weight")
+        .build();
+
+    assertThat(gav.hasEdgeProperties()).isTrue();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+    final int idC = gav.getNodeId(c.getIdentity());
+
+    // Forward (OUT) edge properties
+    // A has 1 outgoing edge to B with weight 1.0
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "ROAD")).isEqualTo(1);
+    final Object weightAB = gav.getEdgeProperty(idA, 0, Vertex.DIRECTION.OUT, "ROAD", "weight");
+    assertThat(weightAB).isInstanceOf(Double.class);
+    assertThat((Double) weightAB).isEqualTo(1.0);
+
+    // B has 1 outgoing edge to C with weight 2.5
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.OUT, "ROAD")).isEqualTo(1);
+    final Object weightBC = gav.getEdgeProperty(idB, 0, Vertex.DIRECTION.OUT, "ROAD", "weight");
+    assertThat((Double) weightBC).isEqualTo(2.5);
+
+    // Backward (IN) edge properties — should resolve via bwdToFwd indirection
+    // B has 1 incoming edge from A with weight 1.0
+    assertThat(gav.countEdges(idB, Vertex.DIRECTION.IN, "ROAD")).isEqualTo(1);
+    final Object weightBA = gav.getEdgeProperty(idB, 0, Vertex.DIRECTION.IN, "ROAD", "weight");
+    assertThat((Double) weightBA).isEqualTo(1.0);
+
+    // C has 1 incoming edge from B with weight 2.5
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.IN, "ROAD")).isEqualTo(1);
+    final Object weightCB = gav.getEdgeProperty(idC, 0, Vertex.DIRECTION.IN, "ROAD", "weight");
+    assertThat((Double) weightCB).isEqualTo(2.5);
+
+    // C has no outgoing edges
+    assertThat(gav.countEdges(idC, Vertex.DIRECTION.OUT, "ROAD")).isEqualTo(0);
+
+    gav.drop();
+  }
+
+  @Test
+  void testEdgePropertyNoConfig() {
+    // Default: no edge properties — zero overhead
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("ROAD").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    a.newEdge("ROAD", b, "weight", 3.0);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("ROAD")
+        .build();
+
+    assertThat(gav.hasEdgeProperties()).isFalse();
+    final int idA = gav.getNodeId(a.getIdentity());
+    // getEdgeProperty should return null gracefully
+    assertThat(gav.getEdgeProperty(idA, 0, Vertex.DIRECTION.OUT, "ROAD", "weight")).isNull();
+
+    gav.drop();
+  }
+
+  @Test
+  void testEdgePropertyStarTopology() {
+    // Hub -> spoke1, spoke2, spoke3, spoke4, spoke5 with distinct weights
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK").createProperty("cost", com.arcadedb.schema.Type.DOUBLE);
+
+    database.begin();
+    final MutableVertex hub = database.newVertex("Node").set("name", "hub").save();
+    final MutableVertex[] spokes = new MutableVertex[5];
+    final double[] expectedWeights = { 0.1, 0.2, 0.3, 0.4, 0.5 };
+    for (int i = 0; i < 5; i++) {
+      spokes[i] = database.newVertex("Node").set("name", "spoke" + i).save();
+      hub.newEdge("LINK", spokes[i], "cost", expectedWeights[i]);
+    }
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .withEdgeProperties("cost")
+        .build();
+
+    assertThat(gav.hasEdgeProperties()).isTrue();
+    final int hubId = gav.getNodeId(hub.getIdentity());
+    assertThat(gav.countEdges(hubId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(5);
+
+    // Verify all 5 edge properties are correct (order may differ due to CSR sorting)
+    final int[] neighbors = gav.getNeighborIds(hubId, Vertex.DIRECTION.OUT, "LINK");
+    final java.util.Set<Double> retrievedWeights = new java.util.HashSet<>();
+    for (int i = 0; i < neighbors.length; i++) {
+      final Object cost = gav.getEdgeProperty(hubId, i, Vertex.DIRECTION.OUT, "LINK", "cost");
+      assertThat(cost).isNotNull();
+      retrievedWeights.add((Double) cost);
+    }
+    assertThat(retrievedWeights).containsExactlyInAnyOrder(0.1, 0.2, 0.3, 0.4, 0.5);
+
+    // Verify backward access from each spoke
+    for (int i = 0; i < 5; i++) {
+      final int spokeId = gav.getNodeId(spokes[i].getIdentity());
+      assertThat(gav.countEdges(spokeId, Vertex.DIRECTION.IN, "LINK")).isEqualTo(1);
+      final Object cost = gav.getEdgeProperty(spokeId, 0, Vertex.DIRECTION.IN, "LINK", "cost");
+      assertThat(cost).isNotNull();
+      assertThat(expectedWeights).contains((Double) cost);
+    }
+
+    gav.drop();
+  }
+
+  @Test
+  void testEdgePropertyMemoryAccounted() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    a.newEdge("LINK", b, "weight", 1.0);
+    database.commit();
+
+    // Build without edge properties
+    final GraphAnalyticalView gavNoEdgeProps = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final long memWithout = gavNoEdgeProps.getMemoryUsageBytes();
+    gavNoEdgeProps.drop();
+
+    // Build with edge properties
+    final GraphAnalyticalView gavWithEdgeProps = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").withEdgeProperties("weight").build();
+    final long memWith = gavWithEdgeProps.getMemoryUsageBytes();
+
+    // Memory should be higher when edge properties are stored
+    assertThat(memWith).isGreaterThan(memWithout);
+
+    // Stats should include edge property info
+    final java.util.Map<String, Object> stats = gavWithEdgeProps.getStats();
+    assertThat(stats.get("edgePropertyColumns")).isEqualTo(1);
+    assertThat((long) stats.get("edgePropertyMemoryBytes")).isGreaterThan(0);
+
+    gavWithEdgeProps.drop();
+  }
+
+  // --- Edge Properties SQL Tests ---
+
+  @Test
+  void testEdgePropertiesSQL() {
+    database.getSchema().createVertexType("EPNode");
+    database.getSchema().createEdgeType("EPLINK");
+    database.begin();
+    final MutableVertex a = database.newVertex("EPNode").set("name", "A").save();
+    final MutableVertex b = database.newVertex("EPNode").set("name", "B").save();
+    a.newEdge("EPLINK", b, "weight", 3.14);
+    database.commit();
+
+    database.command("sql",
+        "CREATE GRAPH ANALYTICAL VIEW epView VERTEX TYPES (EPNode) EDGE TYPES (EPLINK) EDGE PROPERTIES (weight)");
+
+    final GraphAnalyticalView gav = GraphAnalyticalViewRegistry.get(database, "epView");
+    assertThat(gav).isNotNull();
+
+    // Verify edge properties persisted
+    final var extension = database.getSchema().getExtension("graphAnalyticalViews");
+    final var def = extension.getJSONObject("epView");
+    assertThat(def.getJSONArray("edgePropertyFilter").length()).isEqualTo(1);
+    assertThat(def.getJSONArray("edgePropertyFilter").getString(0)).isEqualTo("weight");
+
+    gav.drop();
+  }
+
+  @Test
+  void testSelfLoopWithGAVBothDirection() {
+    database.getSchema().createVertexType("SLNode");
+    database.getSchema().createEdgeType("SELF_REL");
+
+    database.begin();
+    final MutableVertex node = database.newVertex("SLNode").set("name", "self").save();
+    node.newEdge("SELF_REL", node); // self-loop
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("selfLoopView")
+        .withVertexTypes("SLNode")
+        .withEdgeTypes("SELF_REL")
+        .build();
+
+    final int nodeId = gav.getNodeId(node.getIdentity());
+
+    // OUT direction: self-loop should return the node itself as neighbor
+    assertThat(gav.countEdges(nodeId, Vertex.DIRECTION.OUT, "SELF_REL")).isEqualTo(1);
+    final int[] outNeighbors = gav.getNeighborIds(nodeId, Vertex.DIRECTION.OUT, "SELF_REL");
+    assertThat(outNeighbors).containsExactly(nodeId);
+
+    // IN direction: same
+    assertThat(gav.countEdges(nodeId, Vertex.DIRECTION.IN, "SELF_REL")).isEqualTo(1);
+    final int[] inNeighbors = gav.getNeighborIds(nodeId, Vertex.DIRECTION.IN, "SELF_REL");
+    assertThat(inNeighbors).containsExactly(nodeId);
+
+    // BOTH direction: should return the node (deduplicated or not, depending on API contract)
+    final int[] bothNeighbors = gav.getNeighborIds(nodeId, Vertex.DIRECTION.BOTH, "SELF_REL");
+    assertThat(bothNeighbors).contains(nodeId);
+
+    gav.drop();
+  }
+
+  // ── ASYNCHRONOUS update mode tests ──────────────────────────────────────
+
+  @Test
+  void testAsynchronousUpdateModeRebuildsAfterCommit() throws InterruptedException {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // Build initial graph: Alice -> Bob
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("async-update")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS)
+        .build();
+
+    assertThat(gav.isReady()).isTrue();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Add a new vertex and edge — ASYNCHRONOUS mode triggers a background rebuild
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    bob.newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    // Wait for the async rebuild to complete
+    assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+
+    // After rebuild, the view should reflect the new data
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+    assertThat(gav.getNodeId(charlie.getIdentity())).isGreaterThanOrEqualTo(0);
+
+    gav.drop();
+  }
+
+  @Test
+  void testAsynchronousUpdateModeMultipleCommits() throws InterruptedException {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("async-multi")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Rapid-fire commits — some may coalesce into a single rebuild
+    for (int i = 0; i < 5; i++) {
+      database.begin();
+      final MutableVertex v = database.newVertex("Person").set("name", "P" + i).save();
+      alice.newEdge("FOLLOWS", v);
+      database.commit();
+    }
+
+    // Wait for the final rebuild to settle
+    assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+
+    // All 6 vertices (Alice + P0..P4) and 5 edges should be visible
+    assertThat(gav.getNodeCount()).isEqualTo(6);
+    assertThat(gav.getEdgeCount()).isEqualTo(5);
+
+    gav.drop();
+  }
+
+  @Test
+  void testAsynchronousUpdateModeStatusTransitions() throws InterruptedException {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("async-status")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    // Commit triggers async rebuild — status should transition through BUILDING back to READY
+    database.begin();
+    database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.isStale()).isFalse();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+
+    gav.drop();
+  }
+
+  // ---- GAVExpandInto tests ----
+
+  @Test
+  void testGAVExpandIntoCSRFastPath() {
+    // Triangle: A->B->C->A — the last relationship triggers ExpandInto (both endpoints bound)
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    charlie.newEdge("KNOWS", alice);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("expandIntoCSR")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Triangle query: third relationship uses ExpandInto (both a and c already bound)
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) " +
+            "RETURN a.name AS a, b.name AS b, c.name AS c ORDER BY a");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("a") + "->" + r.getProperty("b") + "->" + r.getProperty("c"));
+    }
+    rs.close();
+
+    assertThat(results).hasSize(3);
+    assertThat(results).contains("Alice->Bob->Charlie", "Bob->Charlie->Alice", "Charlie->Alice->Bob");
+
+    gav.drop();
+  }
+
+  @Test
+  void testGAVExpandIntoOLTPFallback() {
+    // Build GAV, then add a new vertex+edge outside GAV mapping — forces OLTP fallback
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", alice);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("expandIntoFallback")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Add new vertex after GAV build — not in CSR mapping
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    charlie.newEdge("KNOWS", alice);
+    alice.newEdge("KNOWS", charlie);
+    database.commit();
+
+    // Triangle query: Charlie is not in GAV, so OLTP fallback kicks in for connectivity check
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(a) " +
+            "RETURN a.name AS a, b.name AS b ORDER BY a, b");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("a") + "->" + r.getProperty("b"));
+    }
+    rs.close();
+
+    // Alice<->Bob and Alice<->Charlie are mutual — all form 2-cycles
+    assertThat(results).contains("Alice->Bob", "Bob->Alice", "Alice->Charlie", "Charlie->Alice");
+
+    gav.drop();
+  }
+
+  @Test
+  void testGAVExpandIntoBothDirection() {
+    // Test BOTH direction with undirected pattern matching
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    // A->B, B->C, C->A (directed triangle)
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    charlie.newEdge("KNOWS", alice);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("expandIntoBoth")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Undirected triangle: (a)-[:KNOWS]-(b)-[:KNOWS]-(c)-[:KNOWS]-(a) — BOTH direction for expand-into
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]-(b:Person)-[:KNOWS]-(c:Person)-[:KNOWS]-(a) " +
+            "WHERE a.name < b.name AND b.name < c.name " +
+            "RETURN a.name AS a, b.name AS b, c.name AS c");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("a") + "-" + r.getProperty("b") + "-" + r.getProperty("c"));
+    }
+    rs.close();
+
+    // With undirected edges and the ordering constraint, should find exactly one triangle
+    assertThat(results).hasSize(1);
+    assertThat(results).containsExactly("Alice-Bob-Charlie");
+
+    gav.drop();
+  }
+}

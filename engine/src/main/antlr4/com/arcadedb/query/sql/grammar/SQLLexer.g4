@@ -60,6 +60,7 @@ SET: S E T;
 ADD: A D D;
 PUT: P U T;
 MERGE: M E R G E;
+MODE: M O D E;
 CONTENT: C O N T E N T;
 REMOVE: R E M O V E;
 INCREMENT: I N C R E M E N T;
@@ -245,6 +246,12 @@ POLICY: P O L I C Y;
 GRANULARITY: G R A N U L A R I T Y;
 CONTINUOUS: C O N T I N U O U S;
 AGGREGATE: A G G R E G A T E;
+GRAPH: G R A P H;
+ANALYTICAL: A N A L Y T I C A L;
+AUTO: A U T O;
+PROPERTIES: P R O P E R T I E S;
+COMPACTION: C O M P A C T I O N;
+THRESHOLD: T H R E S H O L D;
 
 // ============================================================================
 // COMPARISON OPERATORS

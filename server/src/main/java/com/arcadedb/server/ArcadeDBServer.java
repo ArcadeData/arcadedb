@@ -168,7 +168,7 @@ public class ArcadeDBServer {
         LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");
         Metrics.addRegistry(new LoggingMeterRegistry());
       }
-      LogManager.instance().log(this, Level.INFO, "- Metrics Collection Started...");
+      LogManager.instance().log(this, Level.INFO, "Metrics Collection Started");
     }
 
     security = new ServerSecurity(this, configuration, serverRootPath + "/config");
@@ -241,10 +241,11 @@ public class ArcadeDBServer {
 
   private void createDirectories() {
 
-    LogManager.instance().log(this, Level.INFO, "Server root path: %s",
-        configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH));
-    LogManager.instance().log(this, Level.INFO, "Databases directory: %s",
-        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    LogManager.instance().log(this, Level.INFO, "Paths - server root: %s - databases: %s - backups: %s",
+        configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH),
+        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
+
     final File databaseDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     if (!databaseDir.exists()) {
       if (!databaseDir.mkdirs()) {
@@ -254,8 +255,6 @@ public class ArcadeDBServer {
       }
     }
 
-    LogManager.instance().log(this, Level.INFO, "Backups directory: %s",
-        configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
     final File backupsDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
     if (!backupsDir.exists()) {
       if (!backupsDir.mkdirs()) {
