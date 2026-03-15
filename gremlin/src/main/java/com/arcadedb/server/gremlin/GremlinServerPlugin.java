@@ -19,6 +19,7 @@
 package com.arcadedb.server.gremlin;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
@@ -88,12 +89,81 @@ public class GremlinServerPlugin implements ServerPlugin {
       }
     }
 
+    // Ensure databases referenced in the graphs section of gremlin-server.yaml are created/opened.
+    // This restores the pre-2026.2.1 behaviour where a static `graphs:` entry in gremlin-server.yaml
+    // would cause ArcadeGraph to create the database on first access (issue #3661).
+    initPreConfiguredDatabases(settings);
+
     gremlinServer = new GremlinServer(settings);
     try {
       gremlinServer.start();
     } catch (final Exception e) {
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
+  }
+
+  /**
+   * For every graph declared in the Gremlin settings' {@code graphs} section, reads the matching
+   * {@code .properties} file, extracts {@value ArcadeGraph#CONFIG_DIRECTORY}, and makes sure the
+   * database is registered with (and, if absent, created by) ArcadeDBServer before the Gremlin
+   * server starts.
+   */
+  private void initPreConfiguredDatabases(final Settings settings) {
+    if (settings.graphs == null || settings.graphs.isEmpty())
+      return;
+
+    for (final Map.Entry<String, String> entry : settings.graphs.entrySet()) {
+      final String graphName = entry.getKey();
+      final String propertiesPath = entry.getValue();
+
+      try {
+        final String resolvedPath = resolveConfigPath(server.getRootPath(), propertiesPath);
+        final File propertiesFile = new File(resolvedPath);
+        if (!propertiesFile.exists()) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Gremlin graph '%s': properties file '%s' not found — skipping database init", graphName, resolvedPath);
+          continue;
+        }
+
+        final Properties props = new Properties();
+        try (final FileInputStream fis = new FileInputStream(propertiesFile)) {
+          props.load(fis);
+        }
+
+        final String dbDirectory = props.getProperty(ArcadeGraph.CONFIG_DIRECTORY);
+        if (dbDirectory == null) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Gremlin graph '%s': property '%s' not found in '%s' — skipping database init",
+              graphName, ArcadeGraph.CONFIG_DIRECTORY, resolvedPath);
+          continue;
+        }
+
+        // Derive the database name from the last path component (e.g. "./databases/graph" → "graph")
+        final String dbName = new File(dbDirectory.replaceAll("/+$", "")).getName();
+        if (dbName.isEmpty()) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Gremlin graph '%s': cannot derive database name from directory '%s' — skipping",
+              graphName, dbDirectory);
+          continue;
+        }
+
+        if (!server.existsDatabase(dbName)) {
+          // createIfNotExists=true: creates the database if it doesn't exist yet
+          server.getDatabase(dbName, true, true);
+          LogManager.instance().log(this, Level.INFO,
+              "Gremlin graph '%s': created/opened database '%s'", graphName, dbName);
+        }
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Gremlin graph '%s': error initializing database", e, graphName);
+      }
+    }
+  }
+
+  private static String resolveConfigPath(final String rootPath, final String path) {
+    final File f = new File(path);
+    if (f.isAbsolute())
+      return path;
+    return new File(rootPath, path).getPath();
   }
 
   @Override
