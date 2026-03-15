@@ -98,7 +98,7 @@ ArcadeDB key capabilities:
 - **70+ Built-in Graph Algorithms** — Pathfinding, centrality, community detection, link prediction, graph embeddings, and more — all available out of the box
 - **Parallel Query Execution** — SQL queries leverage multiple CPU cores for faster execution on large datasets
 - **Materialized Views** — Pre-computed query results stored and automatically maintained
-- **MCP Server** — Built-in [Model Context Protocol](https://docs.arcadedb.com/#mcp) server for AI assistant and LLM integration
+- **MCP Server** — Built-in [Model Context Protocol](https://docs.arcadedb.com/#mcp-server) server for AI assistant and LLM integration
 - **AI Assistant** — Integrated AI assistant in Studio (Beta) for query help and database management
 - **Geospatial Indexing** — Native spatial queries and proximity searches with `geo.*` SQL functions
 - **TimeSeries** — Columnar storage with Gorilla/Delta-of-Delta compression, InfluxDB/Prometheus ingestion, PromQL queries, Grafana integration
@@ -112,7 +112,7 @@ ArcadeDB can be used as:
 - Remotely by using a [Postgres driver](https://docs.arcadedb.com#postgres-driver) (ArcadeDB implements Postgres Wire protocol)
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#redis-query-language) (only a subset of the operations are implemented)
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com#mongodb-query-language) (only a subset of the operations are implemented)
-- By AI assistants via the built-in [MCP Server](https://docs.arcadedb.com/#mcp) (Model Context Protocol)
+- By AI assistants via the built-in [MCP Server](https://docs.arcadedb.com/#mcp-server) (Model Context Protocol)
 
 For more information, see the [documentation](https://docs.arcadedb.com).
 
