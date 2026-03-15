@@ -631,6 +631,13 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     // This is semantically equivalent to the CSR path's deduplicateSelfLoops(),
     // which removes selfLoopCount/2 entries from the neighbor array — both rely
     // on the invariant that each self-loop produces exactly 2 entries.
+    //
+    // Structural invariant: ArcadeDB stores each edge in exactly two edge lists
+    // (one OUT, one IN) — see GraphEngine.getVertices() BOTH case which concatenates
+    // outEdges.vertexIterator() + inEdges.vertexIterator(). A self-loop edge (src==tgt)
+    // therefore appears once in each list, producing exactly 2 entries in the merged
+    // iterator. This invariant holds as long as the storage model uses separate
+    // per-direction edge linked lists (EdgeLinkedList).
     if (direction == Direction.BOTH) {
       final RID sourceRid = vertex.getIdentity();
       return new Iterator<>() {
@@ -871,7 +878,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * neighbor list — whether from base CSR or from the delta overlay (which adds to both
    * ovOut and ovIn). This mirrors the OLTP path's skip-every-other deduplication in
    * {@link #getVertices(Vertex)}, which also relies on the OUT+IN iterator concatenation
-   * producing exactly 2 entries per self-loop edge.
+   * producing exactly 2 entries per self-loop edge. See
+   * {@code GraphEngine.getVertices()} BOTH case for the structural guarantee.
    */
   private static int[] deduplicateSelfLoops(final int[] neighborIds, final int sourceNodeId) {
     int selfLoopCount = 0;

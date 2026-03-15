@@ -22,8 +22,6 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.RID;
 
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * Per-bucket bidirectional mapping between ArcadeDB RIDs and dense integer IDs.
@@ -44,7 +42,9 @@ import java.util.Map;
  */
 public class NodeIdMapping {
   // Compact bucket index: maps ArcadeDB bucketId → bucketIdx (0..numBuckets-1)
-  private final Map<Integer, Integer> bucketIdToIdx;
+  // Uses a flat int[] lookup table instead of HashMap to avoid autoboxing on every getGlobalId() call.
+  // Bucket IDs in ArcadeDB are small contiguous integers (typically < 100), so the array is compact.
+  private       int[]                 bucketIdToIdx; // bucketId → bucketIdx, -1 = unmapped
   private       int[]                 bucketIds;     // bucketIdx → ArcadeDB bucketId
   private       String[]              bucketTypeNames; // bucketIdx → vertex type name
 
@@ -67,7 +67,8 @@ public class NodeIdMapping {
   private       int[]                 builderSizes;
 
   public NodeIdMapping(final int expectedBuckets) {
-    this.bucketIdToIdx = new HashMap<>(expectedBuckets);
+    this.bucketIdToIdx = new int[Math.max(expectedBuckets, 16)];
+    Arrays.fill(this.bucketIdToIdx, -1);
     this.bucketIds = new int[expectedBuckets];
     this.bucketTypeNames = new String[expectedBuckets];
     this.positionsBuilder = new long[expectedBuckets][];
@@ -83,11 +84,20 @@ public class NodeIdMapping {
    * @return the compact bucket index
    */
   public int registerBucket(final int bucketId, final String typeName, final int estimatedSize) {
-    Integer idx = bucketIdToIdx.get(bucketId);
-    if (idx != null)
-      return idx;
+    if (bucketId < bucketIdToIdx.length) {
+      final int existing = bucketIdToIdx[bucketId];
+      if (existing >= 0)
+        return existing;
+    } else {
+      // Grow the lookup table to accommodate the bucket ID
+      final int newLen = Math.max(bucketId + 1, bucketIdToIdx.length * 2);
+      final int[] grown = new int[newLen];
+      System.arraycopy(bucketIdToIdx, 0, grown, 0, bucketIdToIdx.length);
+      Arrays.fill(grown, bucketIdToIdx.length, newLen, -1);
+      bucketIdToIdx = grown;
+    }
 
-    idx = numBuckets++;
+    final int idx = numBuckets++;
     if (idx >= bucketIds.length)
       growBucketArrays();
 
@@ -95,7 +105,7 @@ public class NodeIdMapping {
     bucketTypeNames[idx] = typeName;
     positionsBuilder[idx] = new long[Math.max(estimatedSize, 64)];
     builderSizes[idx] = 0;
-    bucketIdToIdx.put(bucketId, idx);
+    bucketIdToIdx[bucketId] = idx;
     return idx;
   }
 
@@ -160,8 +170,11 @@ public class NodeIdMapping {
    * If BFS reordering is applied, returns the reordered ID.
    */
   public int getGlobalId(final RID rid) {
-    final Integer bucketIdx = bucketIdToIdx.get(rid.getBucketId());
-    if (bucketIdx == null)
+    final int bucketId = rid.getBucketId();
+    if (bucketId < 0 || bucketId >= bucketIdToIdx.length)
+      return -1;
+    final int bucketIdx = bucketIdToIdx[bucketId];
+    if (bucketIdx < 0)
       return -1;
     final int localId = Arrays.binarySearch(positions[bucketIdx], rid.getPosition());
     if (localId < 0)
@@ -242,8 +255,9 @@ public class NodeIdMapping {
    * Returns the bucket index for an ArcadeDB bucket ID, or -1 if not registered.
    */
   public int getBucketIdxForBucketId(final int bucketId) {
-    final Integer idx = bucketIdToIdx.get(bucketId);
-    return idx != null ? idx : -1;
+    if (bucketId < 0 || bucketId >= bucketIdToIdx.length)
+      return -1;
+    return bucketIdToIdx[bucketId];
   }
 
   /**
@@ -356,8 +370,8 @@ public class NodeIdMapping {
         if (positions[i] != null)
           bytes += (long) positions[i].length * Long.BYTES;
     }
-    // bucketIdToIdx HashMap: ~48 bytes per entry (key Integer 16B + value Integer 16B + Entry 32B)
-    bytes += (long) bucketIdToIdx.size() * 48;
+    // bucketIdToIdx int[] lookup table
+    bytes += (long) bucketIdToIdx.length * Integer.BYTES;
     // bucketTypeNames: reference array + rough estimate for String objects
     bytes += (long) numBuckets * 8; // references
     // BFS reordering permutation arrays

@@ -25,18 +25,16 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.WeakHashMap;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Registry that associates named {@link GraphAnalyticalView} instances with databases.
  * <p>
  * Uses a {@link WeakHashMap} keyed by {@link Database}, so GAV references are automatically
  * cleaned up when the database is garbage-collected. Within each database, views are stored
- * in a {@link ConcurrentHashMap} keyed by name for thread-safe access.
+ * in a {@link HashMap} keyed by name.
  * <p>
- * All compound operations are synchronized on the {@code REGISTRY} lock to ensure atomicity.
- * Simple reads on the inner ConcurrentHashMap are safe outside the lock once the map reference
- * is obtained under the lock.
+ * All operations are synchronized on the {@code REGISTRY} lock to ensure atomicity and
+ * thread-safety, so the inner maps do not need to be concurrent.
  * <p>
  * The registry is used by the builder when a name is specified, and by the query planner
  * to discover available GAVs for a database.
@@ -44,7 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphAnalyticalViewRegistry {
-  private static final WeakHashMap<Database, ConcurrentHashMap<String, GraphAnalyticalView>> REGISTRY = new WeakHashMap<>();
+  private static final WeakHashMap<Database, HashMap<String, GraphAnalyticalView>> REGISTRY = new WeakHashMap<>();
 
   /**
    * Registers a named GAV for a database.
@@ -53,8 +51,8 @@ public class GraphAnalyticalViewRegistry {
    */
   public static void register(final Database database, final String name, final GraphAnalyticalView view) {
     synchronized (REGISTRY) {
-      final ConcurrentHashMap<String, GraphAnalyticalView> views =
-          REGISTRY.computeIfAbsent(unwrap(database), k -> new ConcurrentHashMap<>());
+      final HashMap<String, GraphAnalyticalView> views =
+          REGISTRY.computeIfAbsent(unwrap(database), k -> new HashMap<>());
       final GraphAnalyticalView existing = views.putIfAbsent(name, view);
       if (existing != null)
         throw new IllegalArgumentException("GraphAnalyticalView '" + name + "' is already registered");
@@ -66,7 +64,7 @@ public class GraphAnalyticalViewRegistry {
    */
   public static GraphAnalyticalView get(final Database database, final String name) {
     synchronized (REGISTRY) {
-      final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
+      final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
       return views != null ? views.get(name) : null;
     }
   }
@@ -76,7 +74,7 @@ public class GraphAnalyticalViewRegistry {
    */
   public static Map<String, GraphAnalyticalView> getAll(final Database database) {
     synchronized (REGISTRY) {
-      final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
+      final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
       return views != null ? Collections.unmodifiableMap(views) : Collections.emptyMap();
     }
   }
@@ -86,7 +84,7 @@ public class GraphAnalyticalViewRegistry {
    */
   public static Map<String, GraphAnalyticalView> getReady(final Database database) {
     synchronized (REGISTRY) {
-      final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
+      final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
       if (views == null)
         return Collections.emptyMap();
       final Map<String, GraphAnalyticalView> ready = new HashMap<>();
@@ -103,7 +101,7 @@ public class GraphAnalyticalViewRegistry {
   public static void unregister(final Database database, final String name) {
     synchronized (REGISTRY) {
       final Database unwrapped = unwrap(database);
-      final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrapped);
+      final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrapped);
       if (views != null) {
         views.remove(name);
         if (views.isEmpty())
@@ -117,7 +115,7 @@ public class GraphAnalyticalViewRegistry {
    * Called during database close to release resources while preserving persistence for next open.
    */
   public static void shutdownAll(final Database database) {
-    final ConcurrentHashMap<String, GraphAnalyticalView> views;
+    final HashMap<String, GraphAnalyticalView> views;
     synchronized (REGISTRY) {
       views = REGISTRY.remove(unwrap(database));
     }
@@ -130,7 +128,7 @@ public class GraphAnalyticalViewRegistry {
    * Drops all GAVs for a database, including their schema definitions.
    */
   public static void dropAll(final Database database) {
-    final ConcurrentHashMap<String, GraphAnalyticalView> views;
+    final HashMap<String, GraphAnalyticalView> views;
     synchronized (REGISTRY) {
       views = REGISTRY.remove(unwrap(database));
     }

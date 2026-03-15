@@ -291,46 +291,54 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     readyLatch = latch;
     status = Status.BUILDING;
     buildError = null;
-    getExecutor().execute(() -> {
-      BUILD_PERMITS.acquireUninterruptibly();
-      try {
-        // The build thread needs its own read transaction for database iteration
-        database.begin();
+    try {
+      getExecutor().execute(() -> {
+        BUILD_PERMITS.acquireUninterruptibly();
         try {
-          final long buildStart = System.currentTimeMillis();
-          final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
-          final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
-          final long durationMs = System.currentTimeMillis() - buildStart;
+          // The build thread needs its own read transaction for database iteration
+          database.begin();
+          try {
+            final long buildStart = System.currentTimeMillis();
+            final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+            final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+            final long durationMs = System.currentTimeMillis() - buildStart;
 
-          this.snapshot = snapshotFromResult(result, durationMs);
-          this.status = Status.READY;
+            this.snapshot = snapshotFromResult(result, durationMs);
+            this.status = Status.READY;
 
-          synchronized (GraphAnalyticalView.this) {
-            if (deltaCollector == null)
-              registerChangeListeners();
+            synchronized (GraphAnalyticalView.this) {
+              if (deltaCollector == null)
+                registerChangeListeners();
+            }
+          } finally {
+            if (database.isTransactionActive())
+              database.rollback();
           }
+        } catch (final Exception e) {
+          this.buildError = e;
+          if (snapshot != null) {
+            this.status = Status.STALE;
+          } else {
+            this.status = Status.NOT_BUILT;
+            // Unregister failed GAV so the name can be reused for a fresh build
+            GraphTraversalProviderRegistry.unregister(database, this);
+            if (name != null)
+              GraphAnalyticalViewRegistry.unregister(database, name);
+          }
+          LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
         } finally {
-          if (database.isTransactionActive())
-            database.rollback();
+          BUILD_PERMITS.release();
+          buildQueued.set(false);
+          latch.countDown();
         }
-      } catch (final Exception e) {
-        this.buildError = e;
-        if (snapshot != null) {
-          this.status = Status.STALE;
-        } else {
-          this.status = Status.NOT_BUILT;
-          // Unregister failed GAV so the name can be reused for a fresh build
-          GraphTraversalProviderRegistry.unregister(database, this);
-          if (name != null)
-            GraphAnalyticalViewRegistry.unregister(database, name);
-        }
-        LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
-      } finally {
-        BUILD_PERMITS.release();
-        buildQueued.set(false);
-        latch.countDown();
-      }
-    });
+      });
+    } catch (final java.util.concurrent.RejectedExecutionException e) {
+      this.buildError = e;
+      this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      buildQueued.set(false);
+      latch.countDown();
+      LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async build rejected (executor shut down)", name);
+    }
   }
 
   /**
@@ -1114,33 +1122,40 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final CountDownLatch latch = new CountDownLatch(1);
       this.readyLatch = latch;
       this.status = Status.BUILDING;
-      getExecutor().execute(() -> {
-        BUILD_PERMITS.acquireUninterruptibly();
-        try {
-          database.begin();
+      try {
+        getExecutor().execute(() -> {
+          BUILD_PERMITS.acquireUninterruptibly();
           try {
-            final long buildStart = System.currentTimeMillis();
-            final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
-            final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
-            final long durationMs = System.currentTimeMillis() - buildStart;
-            // Atomic swap — readers see all-or-nothing
-            this.snapshot = snapshotFromResult(result, durationMs);
-            this.status = Status.READY;
+            database.begin();
+            try {
+              final long buildStart = System.currentTimeMillis();
+              final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+              final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+              final long durationMs = System.currentTimeMillis() - buildStart;
+              // Atomic swap — readers see all-or-nothing
+              this.snapshot = snapshotFromResult(result, durationMs);
+              this.status = Status.READY;
 
+            } finally {
+              if (database.isTransactionActive())
+                database.rollback();
+            }
+          } catch (final Exception e) {
+            this.buildError = e;
+            this.status = Status.STALE;
+            LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
           } finally {
-            if (database.isTransactionActive())
-              database.rollback();
+            BUILD_PERMITS.release();
+            compacting.set(false);
+            latch.countDown();
           }
-        } catch (final Exception e) {
-          this.buildError = e;
-          this.status = Status.STALE;
-          LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
-        } finally {
-          BUILD_PERMITS.release();
-          compacting.set(false);
-          latch.countDown();
-        }
-      });
+        });
+      } catch (final java.util.concurrent.RejectedExecutionException e) {
+        this.status = Status.STALE;
+        compacting.set(false);
+        latch.countDown();
+        LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async rebuild rejected (executor shut down)", name);
+      }
     } else {
       this.status = Status.STALE;
     }
@@ -1190,58 +1205,64 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Start buffering raw deltas for re-application after the swap
       pendingDeltas = new ArrayList<>();
 
-      getExecutor().execute(() -> {
-        BUILD_PERMITS.acquireUninterruptibly();
-        try {
-          database.begin();
+      try {
+        getExecutor().execute(() -> {
+          BUILD_PERMITS.acquireUninterruptibly();
           try {
-            final long buildStart = System.currentTimeMillis();
-            final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
-            final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
-            final long durationMs = System.currentTimeMillis() - buildStart;
+            database.begin();
+            try {
+              final long buildStart = System.currentTimeMillis();
+              final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+              final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
+              final long durationMs = System.currentTimeMillis() - buildStart;
 
-            // Synchronized swap: capture buffered deltas and re-apply against the new mapping
-            synchronized (GraphAnalyticalView.this) {
-              final List<TxDelta> buffered = pendingDeltas;
-              pendingDeltas = null;
+              // Synchronized swap: capture buffered deltas and re-apply against the new mapping
+              synchronized (GraphAnalyticalView.this) {
+                final List<TxDelta> buffered = pendingDeltas;
+                pendingDeltas = null;
 
-              if (buffered == null) {
-                // Buffer was aborted (overflow) — keep the current snapshot with its overlay.
-                // The current overlay is still valid and already has all deltas merged.
-                LogManager.instance().log(this, Level.INFO,
-                    "GraphAnalyticalView '%s': compaction result discarded (delta buffer overflowed during rebuild)", name);
-              } else {
-                Snapshot fresh = snapshotFromResult(result, durationMs);
+                if (buffered == null) {
+                  // Buffer was aborted (overflow) — keep the current snapshot with its overlay.
+                  // The current overlay is still valid and already has all deltas merged.
+                  LogManager.instance().log(this, Level.INFO,
+                      "GraphAnalyticalView '%s': compaction result discarded (delta buffer overflowed during rebuild)", name);
+                } else {
+                  Snapshot fresh = snapshotFromResult(result, durationMs);
 
-                // Re-apply any deltas that arrived during the rebuild.
-                // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
-                // Merging against the new mapping resolves RIDs to correct dense IDs.
-                if (!buffered.isEmpty()) {
-                  DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
-                  for (final TxDelta d : buffered)
-                    overlay = overlay.merge(d, result.getMapping());
-                  if (overlay.hasChanges())
-                    fresh = fresh.withOverlay(overlay);
+                  // Re-apply any deltas that arrived during the rebuild.
+                  // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
+                  // Merging against the new mapping resolves RIDs to correct dense IDs.
+                  if (!buffered.isEmpty()) {
+                    DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
+                    for (final TxDelta d : buffered)
+                      overlay = overlay.merge(d, result.getMapping());
+                    if (overlay.hasChanges())
+                      fresh = fresh.withOverlay(overlay);
+                  }
+
+                  this.snapshot = fresh;
                 }
-
-                this.snapshot = fresh;
               }
-            }
 
+            } finally {
+              if (database.isTransactionActive())
+                database.rollback();
+            }
+          } catch (final Exception e) {
+            synchronized (GraphAnalyticalView.this) {
+              pendingDeltas = null;
+            }
+            LogManager.instance().log(this, Level.WARNING, "Failed to compact GraphAnalyticalView '%s'", e, name);
           } finally {
-            if (database.isTransactionActive())
-              database.rollback();
+            BUILD_PERMITS.release();
+            compacting.set(false);
           }
-        } catch (final Exception e) {
-          synchronized (GraphAnalyticalView.this) {
-            pendingDeltas = null;
-          }
-          LogManager.instance().log(this, Level.WARNING, "Failed to compact GraphAnalyticalView '%s'", e, name);
-        } finally {
-          BUILD_PERMITS.release();
-          compacting.set(false);
-        }
-      });
+        });
+      } catch (final java.util.concurrent.RejectedExecutionException e) {
+        pendingDeltas = null;
+        compacting.set(false);
+        LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': compaction rejected (executor shut down)", name);
+      }
     }
   }
 
