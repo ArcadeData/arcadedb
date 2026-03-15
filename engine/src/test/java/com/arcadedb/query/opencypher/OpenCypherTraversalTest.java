@@ -27,8 +27,11 @@ import com.arcadedb.query.opencypher.traversal.BreadthFirstTraverser;
 import com.arcadedb.query.opencypher.traversal.DepthFirstTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -36,8 +39,6 @@ import java.util.Iterator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
-;
 
 /**
  * Tests for graph traversal implementations.
@@ -262,6 +263,165 @@ public class OpenCypherTraversalTest {
       assertThat(path.containsVertex(bob)).isTrue();
       assertThat(path.containsVertex(charlie)).isTrue();
       assertThat(path.containsVertex(david)).isTrue();
+    }
+  }
+
+  /** See issue #3285 */
+  @Nested
+  class MultiHopTraversalRegression {
+    private Database nestedDatabase;
+
+    @BeforeEach
+    void setUp() {
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-issue-3285");
+      if (factory.exists())
+        factory.open().drop();
+      nestedDatabase = factory.create();
+
+      // Create schema matching the issue description
+      nestedDatabase.getSchema().createVertexType("A");
+      nestedDatabase.getSchema().createEdgeType("EDG");
+
+      // Create test data: one -> two -> three
+      nestedDatabase.transaction(() -> {
+        final Vertex one = nestedDatabase.newVertex("A").set("name", "one").save();
+        final Vertex two = nestedDatabase.newVertex("A").set("name", "two").save();
+        final Vertex three = nestedDatabase.newVertex("A").set("name", "three").save();
+
+        one.newEdge("EDG", two, true, (Object[]) null).save();
+        two.newEdge("EDG", three, true, (Object[]) null).save();
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (nestedDatabase != null) {
+        nestedDatabase.drop();
+        nestedDatabase = null;
+      }
+    }
+
+    @Test
+    void exactQueryFromIssue() {
+      // This is the EXACT query string from the issue (no spaces, lowercase 'return')
+      final ResultSet result = nestedDatabase.query("opencypher",
+          "MATCH(a:A {name:'one'})-[:EDG]->(aa:A)-[:EDG]->(aaa:A) return aaa");
+
+      assertThat(result.hasNext()).as("Should have at least one result").isTrue();
+      final Result row = result.next();
+
+      // Single variable returns are returned as elements via toElement()
+      Vertex aaa;
+      if (row.isElement()) {
+        aaa = (Vertex) row.toElement();
+      } else {
+        aaa = (Vertex) row.getProperty("aaa");
+      }
+      assertThat(aaa).as("Variable 'aaa' should not be null").isNotNull();
+
+      // The issue reports that this returns 'two' instead of 'three'
+      assertThat((String) aaa.get("name")).isEqualTo("three");
+      assertThat(result.hasNext()).isFalse();
+    }
+
+    @Test
+    void multiHopChainedPatternReturnsCorrectVertex() {
+      // Same query with standard formatting
+      final ResultSet result = nestedDatabase.query("opencypher",
+          "MATCH (a:A {name:'one'})-[:EDG]->(aa:A)-[:EDG]->(aaa:A) RETURN aaa");
+
+      assertThat(result.hasNext()).as("Should have at least one result").isTrue();
+      final Result row = result.next();
+
+      // Single variable returns are returned as elements via toElement()
+      Vertex aaa;
+      if (row.isElement()) {
+        aaa = (Vertex) row.toElement();
+      } else {
+        aaa = (Vertex) row.getProperty("aaa");
+      }
+      assertThat(aaa).as("Variable 'aaa' should not be null").isNotNull();
+
+      // Verify correct vertex is returned at the end of the 2-hop chain
+      assertThat((String) aaa.get("name")).isEqualTo("three");
+      assertThat(result.hasNext()).isFalse();
+    }
+
+    @Test
+    void multiHopChainedPatternReturnsAllVariables() {
+      // Test returning all three variables to ensure correct binding
+      final ResultSet result = nestedDatabase.query("opencypher",
+          "MATCH (a:A {name:'one'})-[:EDG]->(aa:A)-[:EDG]->(aaa:A) RETURN a, aa, aaa");
+
+      assertThat(result.hasNext()).as("Should have at least one result").isTrue();
+      final Result row = result.next();
+
+      final Vertex a = (Vertex) row.getProperty("a");
+      final Vertex aa = (Vertex) row.getProperty("aa");
+      final Vertex aaa = (Vertex) row.getProperty("aaa");
+
+      assertThat(a).isNotNull();
+      assertThat(aa).isNotNull();
+      assertThat(aaa).isNotNull();
+
+      assertThat((String) a.get("name")).isEqualTo("one");
+      assertThat((String) aa.get("name")).isEqualTo("two");
+      assertThat((String) aaa.get("name")).isEqualTo("three");
+
+      assertThat(result.hasNext()).isFalse();
+    }
+
+    @Test
+    void singleHopPattern() {
+      // Verify single hop works correctly
+      final ResultSet result = nestedDatabase.query("opencypher",
+          "MATCH (a:A {name:'one'})-[:EDG]->(aa:A) RETURN aa");
+
+      assertThat(result.hasNext()).isTrue();
+      final Result row = result.next();
+
+      // Single variable returns are returned as elements via toElement()
+      Vertex aa;
+      if (row.isElement()) {
+        aa = (Vertex) row.toElement();
+      } else {
+        aa = (Vertex) row.getProperty("aa");
+      }
+
+      assertThat((String) aa.get("name")).isEqualTo("two");
+      assertThat(result.hasNext()).isFalse();
+    }
+
+    @Test
+    void threeHopChainedPattern() {
+      // Add a fourth vertex to test longer chains
+      nestedDatabase.transaction(() -> {
+        final ResultSet findThree = nestedDatabase.query("opencypher", "MATCH (v:A {name:'three'}) RETURN v");
+        final Result threeResult = findThree.next();
+        // Single variable returns are returned as elements
+        final Vertex three = threeResult.isElement() ? (Vertex) threeResult.toElement() : (Vertex) threeResult.getProperty("v");
+        final Vertex four = nestedDatabase.newVertex("A").set("name", "four").save();
+        three.newEdge("EDG", four, true, (Object[]) null).save();
+      });
+
+      // Test 3-hop chain
+      final ResultSet result = nestedDatabase.query("opencypher",
+          "MATCH (a:A {name:'one'})-[:EDG]->(b:A)-[:EDG]->(c:A)-[:EDG]->(d:A) RETURN a, b, c, d");
+
+      assertThat(result.hasNext()).isTrue();
+      final Result row = result.next();
+
+      final Vertex a = (Vertex) row.getProperty("a");
+      final Vertex b = (Vertex) row.getProperty("b");
+      final Vertex c = (Vertex) row.getProperty("c");
+      final Vertex d = (Vertex) row.getProperty("d");
+
+      assertThat((String) a.get("name")).isEqualTo("one");
+      assertThat((String) b.get("name")).isEqualTo("two");
+      assertThat((String) c.get("name")).isEqualTo("three");
+      assertThat((String) d.get("name")).isEqualTo("four");
+
+      assertThat(result.hasNext()).isFalse();
     }
   }
 }
