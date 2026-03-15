@@ -88,12 +88,11 @@ public class AlgoModularityScore extends AbstractAlgoProcedure {
     final String[] relTypes        = args.length > 1 ? extractRelTypes(args[1]) : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0) {
       final ResultInternal r = new ResultInternal();
       r.setProperty("modularity", 0.0);
@@ -101,9 +100,7 @@ public class AlgoModularityScore extends AbstractAlgoProcedure {
       r.setProperty("edgeCount", 0L);
       return Stream.of(r);
     }
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adjOut = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
+    final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
     // Map community label (Object) to a compact integer index
     final Map<Object, Integer> communityToIdx = new HashMap<>();
@@ -111,7 +108,7 @@ public class AlgoModularityScore extends AbstractAlgoProcedure {
     int numCommunities = 0;
 
     for (int i = 0; i < n; i++) {
-      final Object communityLabel = vertices.get(i).get(communityProperty);
+      final Object communityLabel = graph.getVertex(i).get(communityProperty);
       final Object key = communityLabel != null ? communityLabel : "__null__";
       Integer idx = communityToIdx.get(key);
       if (idx == null) {

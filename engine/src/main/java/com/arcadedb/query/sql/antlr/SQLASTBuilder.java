@@ -6158,6 +6158,78 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
+  // ── Graph Analytical View ─────────────────────────────────────────────
+
+  @Override
+  public CreateGraphAnalyticalViewStatement visitCreateGraphAnalyticalViewStmt(
+      final SQLParser.CreateGraphAnalyticalViewStmtContext ctx) {
+    final CreateGraphAnalyticalViewStatement stmt = new CreateGraphAnalyticalViewStatement(-1);
+    final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx = ctx.createGraphAnalyticalViewBody();
+
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+    stmt.name = (Identifier) visit(bodyCtx.viewName);
+
+    if (bodyCtx.vertexTypeList != null)
+      stmt.vertexTypes = visitIdentifierList(bodyCtx.vertexTypeList.identifier());
+
+    if (bodyCtx.edgeTypeList != null)
+      stmt.edgeTypes = visitIdentifierList(bodyCtx.edgeTypeList.identifier());
+
+    if (bodyCtx.propertyList != null)
+      stmt.properties = visitIdentifierList(bodyCtx.propertyList.identifier());
+
+    if (bodyCtx.edgePropertyList != null)
+      stmt.edgeProperties = visitIdentifierList(bodyCtx.edgePropertyList.identifier());
+
+    if (bodyCtx.updateModeName != null)
+      stmt.updateModeStr = bodyCtx.updateModeName.getText();
+
+    if (bodyCtx.COMPACTION() != null && bodyCtx.THRESHOLD() != null)
+      stmt.compactionThreshold = parseCompactionThreshold(bodyCtx.INTEGER_LITERAL().getText());
+
+    return stmt;
+  }
+
+  private Identifier[] visitIdentifierList(final List<SQLParser.IdentifierContext> identifiers) {
+    final Identifier[] result = new Identifier[identifiers.size()];
+    for (int i = 0; i < identifiers.size(); i++)
+      result[i] = (Identifier) visit(identifiers.get(i));
+    return result;
+  }
+
+  @Override
+  public DropGraphAnalyticalViewStatement visitDropGraphAnalyticalViewStmt(
+      final SQLParser.DropGraphAnalyticalViewStmtContext ctx) {
+    final DropGraphAnalyticalViewStatement stmt = new DropGraphAnalyticalViewStatement(-1);
+    final SQLParser.DropGraphAnalyticalViewBodyContext bodyCtx = ctx.dropGraphAnalyticalViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+    return stmt;
+  }
+
+  @Override
+  public AlterGraphAnalyticalViewStatement visitAlterGraphAnalyticalViewStmt(
+      final SQLParser.AlterGraphAnalyticalViewStmtContext ctx) {
+    final AlterGraphAnalyticalViewStatement stmt = new AlterGraphAnalyticalViewStatement(-1);
+    final SQLParser.AlterGraphAnalyticalViewBodyContext bodyCtx = ctx.alterGraphAnalyticalViewBody();
+    final var identifiers = bodyCtx.identifier();
+    stmt.name = (Identifier) visit(identifiers.get(0));
+    if (bodyCtx.MODE() != null && identifiers.size() > 1)
+      stmt.updateModeStr = identifiers.get(1).getText();
+    if (bodyCtx.COMPACTION() != null && bodyCtx.THRESHOLD() != null)
+      stmt.compactionThreshold = parseCompactionThreshold(bodyCtx.INTEGER_LITERAL().getText());
+    return stmt;
+  }
+
+  @Override
+  public RebuildGraphAnalyticalViewStatement visitRebuildGraphAnalyticalViewStmt(
+      final SQLParser.RebuildGraphAnalyticalViewStmtContext ctx) {
+    final RebuildGraphAnalyticalViewStatement stmt = new RebuildGraphAnalyticalViewStatement(-1);
+    final SQLParser.RebuildGraphAnalyticalViewBodyContext bodyCtx = ctx.rebuildGraphAnalyticalViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    return stmt;
+  }
+
   /**
    * Visit trigger timing (BEFORE or AFTER).
    */
@@ -7284,6 +7356,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         return Collections.emptyList();
       }
     };
+  }
+
+  private static int parseCompactionThreshold(final String text) {
+    final int value;
+    try {
+      value = Integer.parseInt(text);
+    } catch (final NumberFormatException e) {
+      throw new CommandSQLParsingException("Invalid COMPACTION THRESHOLD value: '" + text + "' (must be a valid integer)");
+    }
+    if (value < 0)
+      throw new CommandSQLParsingException("COMPACTION THRESHOLD must be >= 0 (0 = disabled), got: " + value);
+    if (value == 1)
+      throw new CommandSQLParsingException("COMPACTION THRESHOLD = 1 is not allowed (would trigger compaction after every delta). Use 0 to disable or >= 2 for a valid threshold");
+    return value;
   }
 
 }

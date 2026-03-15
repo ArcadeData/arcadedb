@@ -97,6 +97,7 @@ statement
     | CREATE MATERIALIZED VIEW createMaterializedViewBody   # createMaterializedViewStmt
     | CREATE TIMESERIES TYPE createTimeSeriesTypeBody       # createTimeSeriesTypeStmt
     | CREATE CONTINUOUS AGGREGATE createContinuousAggregateBody  # createContinuousAggregateStmt
+    | CREATE GRAPH ANALYTICAL VIEW createGraphAnalyticalViewBody  # createGraphAnalyticalViewStmt
 
     // DDL Statements - ALTER variants
     | ALTER TYPE alterTypeBody                       # alterTypeStmt
@@ -105,6 +106,7 @@ statement
     | ALTER DATABASE alterDatabaseBody               # alterDatabaseStmt
     | ALTER MATERIALIZED VIEW alterMaterializedViewBody     # alterMaterializedViewStmt
     | ALTER TIMESERIES TYPE alterTimeSeriesTypeBody        # alterTimeSeriesTypeStmt
+    | ALTER GRAPH ANALYTICAL VIEW alterGraphAnalyticalViewBody  # alterGraphAnalyticalViewStmt
 
     // DDL Statements - DROP variants
     | DROP TYPE dropTypeBody                         # dropTypeStmt
@@ -114,6 +116,7 @@ statement
     | DROP TRIGGER dropTriggerBody                   # dropTriggerStmt
     | DROP MATERIALIZED VIEW dropMaterializedViewBody       # dropMaterializedViewStmt
     | DROP CONTINUOUS AGGREGATE dropContinuousAggregateBody # dropContinuousAggregateStmt
+    | DROP GRAPH ANALYTICAL VIEW dropGraphAnalyticalViewBody   # dropGraphAnalyticalViewStmt
 
     // DDL Statements - TRUNCATE variants
     | TRUNCATE TYPE truncateTypeBody                 # truncateTypeStmt
@@ -125,6 +128,9 @@ statement
 
     // Continuous Aggregate Refresh
     | REFRESH CONTINUOUS AGGREGATE refreshContinuousAggregateBody # refreshContinuousAggregateStmt
+
+    // Graph Analytical View Rebuild
+    | REBUILD GRAPH ANALYTICAL VIEW rebuildGraphAnalyticalViewBody # rebuildGraphAnalyticalViewStmt
 
     // Index Management
     | rebuildIndexStatement                          # rebuildIndexStmt
@@ -763,6 +769,57 @@ dropContinuousAggregateBody
  * Syntax: REFRESH CONTINUOUS AGGREGATE name
  */
 refreshContinuousAggregateBody
+    : identifier
+    ;
+
+// ============================================================================
+// DDL STATEMENTS - GRAPH ANALYTICAL VIEW
+// ============================================================================
+
+/**
+ * CREATE GRAPH ANALYTICAL VIEW statement
+ * Syntax: CREATE GRAPH ANALYTICAL VIEW [IF NOT EXISTS] name
+ *         [VERTEX TYPES (type1, type2, ...)]
+ *         [EDGE TYPES (type1, type2, ...)]
+ *         [PROPERTIES (prop1, prop2, ...)]
+ *         [EDGE PROPERTIES (prop1, prop2, ...)]
+ *         [UPDATE MODE OFF|SYNCHRONOUS|ASYNCHRONOUS]
+ *         [COMPACTION THRESHOLD n]
+ */
+createGraphAnalyticalViewBody
+    : (IF NOT EXISTS)? viewName=identifier
+      (VERTEX TYPES LPAREN vertexTypeList=gavTypeList RPAREN)?
+      (EDGE TYPES LPAREN edgeTypeList=gavTypeList RPAREN)?
+      (PROPERTIES LPAREN propertyList=gavTypeList RPAREN)?
+      (EDGE PROPERTIES LPAREN edgePropertyList=gavTypeList RPAREN)?
+      (UPDATE MODE updateModeName=identifier)?
+      (COMPACTION THRESHOLD INTEGER_LITERAL)?
+    ;
+
+gavTypeList: identifier (COMMA identifier)*;
+
+/**
+ * ALTER GRAPH ANALYTICAL VIEW statement
+ * Syntax: ALTER GRAPH ANALYTICAL VIEW name UPDATE MODE OFF|SYNCHRONOUS|ASYNCHRONOUS
+ *         ALTER GRAPH ANALYTICAL VIEW name COMPACTION THRESHOLD <n>
+ */
+alterGraphAnalyticalViewBody
+    : identifier (UPDATE MODE identifier | COMPACTION THRESHOLD INTEGER_LITERAL)
+    ;
+
+/**
+ * DROP GRAPH ANALYTICAL VIEW statement
+ * Syntax: DROP GRAPH ANALYTICAL VIEW [IF EXISTS] name
+ */
+dropGraphAnalyticalViewBody
+    : (IF EXISTS)? identifier
+    ;
+
+/**
+ * REBUILD GRAPH ANALYTICAL VIEW statement
+ * Syntax: REBUILD GRAPH ANALYTICAL VIEW name
+ */
+rebuildGraphAnalyticalViewBody
     : identifier
     ;
 
@@ -1483,4 +1540,11 @@ identifier
     // (e.g. "WHERE tags CONTAINS 'value'") without introducing a grammar conflict. Any such operator
     // would need a distinct keyword or a separate production rule.
     | CONTAINS
+    | MODE
+    | GRAPH
+    | ANALYTICAL
+    | AUTO
+    | PROPERTIES
+    | COMPACTION
+    | THRESHOLD
     ;

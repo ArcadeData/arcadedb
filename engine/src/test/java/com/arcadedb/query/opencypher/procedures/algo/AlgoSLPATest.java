@@ -112,4 +112,28 @@ class AlgoSLPATest {
     }
     assertThat(count).isEqualTo(6);
   }
+
+  @Test
+  void slpaWithRelTypesFilter() {
+    // Add a second edge type that should be ignored
+    database.getSchema().createEdgeType("WORKS_WITH");
+    database.transaction(() -> {
+      final ResultSet findA = database.query("opencypher", "MATCH (a:Person {name: 'A'}) RETURN a");
+      final ResultSet findF = database.query("opencypher", "MATCH (f:Person {name: 'F'}) RETURN f");
+      final var a = (com.arcadedb.graph.Vertex) findA.next().getProperty("a");
+      final var f = (com.arcadedb.graph.Vertex) findF.next().getProperty("f");
+      a.asVertex().modify().newEdge("WORKS_WITH", f, true, (Object[]) null).save();
+    });
+
+    // With relTypes filter, only KNOWS edges should be traversed
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.slpa({iterations: 10, threshold: 0.1, seed: 42, relTypes: 'KNOWS'}) YIELD node, communities RETURN node, communities");
+
+    final List<Result> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next());
+
+    // All 6 nodes should still appear in results
+    assertThat(results).hasSize(6);
+  }
 }

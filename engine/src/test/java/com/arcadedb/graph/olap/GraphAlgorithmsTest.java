@@ -1,0 +1,638 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.graph.olap;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Tests for graph algorithms operating on the CSR-based GraphAnalyticalView.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class GraphAlgorithmsTest extends TestHelper {
+
+  // --- PageRank ---
+
+  @Test
+  void testPageRankSimpleChain() {
+    // A -> B -> C: C should have the highest rank
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final double[] ranks = GraphAlgorithms.pageRank(gav, "LINK");
+
+    assertThat(ranks).hasSize(3);
+    final int aId = gav.getNodeId(a.getIdentity());
+    final int bId = gav.getNodeId(b.getIdentity());
+    final int cId = gav.getNodeId(c.getIdentity());
+
+    // C (sink node, receives from B) should have highest rank
+    assertThat(ranks[cId]).isGreaterThan(ranks[bId]);
+    assertThat(ranks[bId]).isGreaterThan(ranks[aId]);
+
+    // Ranks should sum to approximately 1.0
+    double sum = 0;
+    for (final double r : ranks)
+      sum += r;
+    assertThat(sum).isCloseTo(1.0, org.assertj.core.data.Offset.offset(0.01));
+  }
+
+  @Test
+  void testPageRankStarGraph() {
+    // Hub -> spoke1, spoke2, spoke3
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex hub = database.newVertex("Node").set("name", "Hub").save();
+    final MutableVertex s1 = database.newVertex("Node").set("name", "S1").save();
+    final MutableVertex s2 = database.newVertex("Node").set("name", "S2").save();
+    final MutableVertex s3 = database.newVertex("Node").set("name", "S3").save();
+    hub.newEdge("LINK", s1);
+    hub.newEdge("LINK", s2);
+    hub.newEdge("LINK", s3);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final double[] ranks = GraphAlgorithms.pageRank(gav, "LINK");
+
+    final int hubId = gav.getNodeId(hub.getIdentity());
+    final int s1Id = gav.getNodeId(s1.getIdentity());
+    final int s2Id = gav.getNodeId(s2.getIdentity());
+
+    // All spokes should have equal rank
+    assertThat(ranks[s1Id]).isCloseTo(ranks[s2Id], org.assertj.core.data.Offset.offset(0.001));
+  }
+
+  @Test
+  void testPageRankEmptyGraph() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final double[] ranks = GraphAlgorithms.pageRank(gav, "LINK");
+    assertThat(ranks).isEmpty();
+  }
+
+  // --- Connected Components ---
+
+  @Test
+  void testConnectedComponentsSingleComponent() {
+    // A -- B -- C (all connected)
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int[] components = GraphAlgorithms.connectedComponents(gav, "LINK");
+
+    assertThat(components).hasSize(3);
+    // All nodes in the same component
+    assertThat(components[gav.getNodeId(a.getIdentity())])
+        .isEqualTo(components[gav.getNodeId(b.getIdentity())])
+        .isEqualTo(components[gav.getNodeId(c.getIdentity())]);
+    assertThat(GraphAlgorithms.countComponents(components)).isEqualTo(1);
+  }
+
+  @Test
+  void testConnectedComponentsTwoComponents() {
+    // {A -> B} and {C -> D} — two separate components
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    c.newEdge("LINK", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int[] components = GraphAlgorithms.connectedComponents(gav, "LINK");
+
+    assertThat(GraphAlgorithms.countComponents(components)).isEqualTo(2);
+    // A and B in same component
+    assertThat(components[gav.getNodeId(a.getIdentity())])
+        .isEqualTo(components[gav.getNodeId(b.getIdentity())]);
+    // C and D in same component
+    assertThat(components[gav.getNodeId(c.getIdentity())])
+        .isEqualTo(components[gav.getNodeId(d.getIdentity())]);
+    // Different components
+    assertThat(components[gav.getNodeId(a.getIdentity())])
+        .isNotEqualTo(components[gav.getNodeId(c.getIdentity())]);
+  }
+
+  @Test
+  void testConnectedComponentsIsolatedNodes() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    database.newVertex("Node").set("name", "A").save();
+    database.newVertex("Node").set("name", "B").save();
+    database.newVertex("Node").set("name", "C").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int[] components = GraphAlgorithms.connectedComponents(gav, "LINK");
+    assertThat(GraphAlgorithms.countComponents(components)).isEqualTo(3);
+  }
+
+  // --- Shortest Path ---
+
+  @Test
+  void testShortestPathDirect() {
+    // A -> B -> C -> D
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    final int bId = gav.getNodeId(b.getIdentity());
+    final int cId = gav.getNodeId(c.getIdentity());
+    final int dId = gav.getNodeId(d.getIdentity());
+
+    assertThat(GraphAlgorithms.shortestPath(gav, aId, aId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(0);
+    assertThat(GraphAlgorithms.shortestPath(gav, aId, bId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(1);
+    assertThat(GraphAlgorithms.shortestPath(gav, aId, cId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(2);
+    assertThat(GraphAlgorithms.shortestPath(gav, aId, dId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(3);
+
+    // Reverse direction should not find path (directed edges)
+    assertThat(GraphAlgorithms.shortestPath(gav, dId, aId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(-1);
+
+    // BOTH direction should find path in reverse too
+    assertThat(GraphAlgorithms.shortestPath(gav, dId, aId, Vertex.DIRECTION.BOTH, "LINK")).isEqualTo(3);
+  }
+
+  @Test
+  void testShortestPathNoPath() {
+    // A -> B, C (disconnected from A)
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    final int cId = gav.getNodeId(c.getIdentity());
+    assertThat(GraphAlgorithms.shortestPath(gav, aId, cId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(-1);
+  }
+
+  @Test
+  void testShortestPathAll() {
+    // A -> B -> C, A -> C (shortcut)
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    a.newEdge("LINK", c); // shortcut
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    final int bId = gav.getNodeId(b.getIdentity());
+    final int cId = gav.getNodeId(c.getIdentity());
+
+    final int[] dists = GraphAlgorithms.shortestPathAll(gav, aId, Vertex.DIRECTION.OUT, "LINK");
+    assertThat(dists[aId]).isEqualTo(0);
+    assertThat(dists[bId]).isEqualTo(1);
+    assertThat(dists[cId]).isEqualTo(1); // shortcut: A->C is 1 hop
+  }
+
+  @Test
+  void testShortestPathAllBothDirection() {
+    // A -> B -> C, verify BOTH direction finds reverse paths
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    final int bId = gav.getNodeId(b.getIdentity());
+    final int cId = gav.getNodeId(c.getIdentity());
+
+    // From C with BOTH: should reach A in 2 hops (C<-B<-A)
+    final int[] dists = GraphAlgorithms.shortestPathAll(gav, cId, Vertex.DIRECTION.BOTH, "LINK");
+    assertThat(dists[cId]).isEqualTo(0);
+    assertThat(dists[bId]).isEqualTo(1);
+    assertThat(dists[aId]).isEqualTo(2);
+  }
+
+  @Test
+  void testShortestPathAllInDirection() {
+    // A -> B -> C, from C with IN direction should traverse backward edges
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    final int bId = gav.getNodeId(b.getIdentity());
+    final int cId = gav.getNodeId(c.getIdentity());
+
+    // From C with IN: should follow incoming edges backward
+    final int[] dists = GraphAlgorithms.shortestPathAll(gav, cId, Vertex.DIRECTION.IN, "LINK");
+    assertThat(dists[cId]).isEqualTo(0);
+    assertThat(dists[bId]).isEqualTo(1);
+    assertThat(dists[aId]).isEqualTo(2);
+
+    // From A with IN: should NOT reach B or C (no incoming edges to A)
+    final int[] distsA = GraphAlgorithms.shortestPathAll(gav, aId, Vertex.DIRECTION.IN, "LINK");
+    assertThat(distsA[aId]).isEqualTo(0);
+    assertThat(distsA[bId]).isEqualTo(-1);
+    assertThat(distsA[cId]).isEqualTo(-1);
+  }
+
+  @Test
+  void testShortestPathAllLargeGraph() {
+    // Build a chain of 200 nodes to verify bitmap and pre-allocated frontier work on larger graphs
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    final int nodeCount = 200;
+    database.begin();
+    final MutableVertex[] nodes = new MutableVertex[nodeCount];
+    for (int i = 0; i < nodeCount; i++)
+      nodes[i] = database.newVertex("Node").set("name", "N" + i).save();
+    for (int i = 0; i < nodeCount - 1; i++)
+      nodes[i].newEdge("LINK", nodes[i + 1]);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int firstId = gav.getNodeId(nodes[0].getIdentity());
+    final int lastId = gav.getNodeId(nodes[nodeCount - 1].getIdentity());
+    final int midId = gav.getNodeId(nodes[100].getIdentity());
+
+    // Forward BFS from first node
+    final int[] dists = GraphAlgorithms.shortestPathAll(gav, firstId, Vertex.DIRECTION.OUT, "LINK");
+    assertThat(dists[firstId]).isEqualTo(0);
+    assertThat(dists[lastId]).isEqualTo(nodeCount - 1);
+    assertThat(dists[midId]).isEqualTo(100);
+
+    // Single-pair shortest path should agree
+    assertThat(GraphAlgorithms.shortestPath(gav, firstId, lastId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(nodeCount - 1);
+    assertThat(GraphAlgorithms.shortestPath(gav, firstId, midId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(100);
+  }
+
+  @Test
+  void testShortestPathAllPullMode() {
+    // Star graph: center node connected to 50 leaves. After first BFS level,
+    // frontier contains 50 nodes (> n/20 = 51/20 = 2), triggering pull mode.
+    // Then each leaf is connected to a "tail" node, testing pull mode correctness.
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    final int leafCount = 50;
+    database.begin();
+    final MutableVertex center = database.newVertex("Node").set("name", "center").save();
+    final MutableVertex[] leaves = new MutableVertex[leafCount];
+    final MutableVertex[] tails = new MutableVertex[leafCount];
+    for (int i = 0; i < leafCount; i++) {
+      leaves[i] = database.newVertex("Node").set("name", "leaf" + i).save();
+      tails[i] = database.newVertex("Node").set("name", "tail" + i).save();
+      center.newEdge("LINK", leaves[i]);
+      leaves[i].newEdge("LINK", tails[i]);
+    }
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int centerId = gav.getNodeId(center.getIdentity());
+    final int[] dists = GraphAlgorithms.shortestPathAll(gav, centerId, Vertex.DIRECTION.OUT, "LINK");
+    assertThat(dists[centerId]).isEqualTo(0);
+    for (int i = 0; i < leafCount; i++) {
+      assertThat(dists[gav.getNodeId(leaves[i].getIdentity())]).isEqualTo(1);
+      assertThat(dists[gav.getNodeId(tails[i].getIdentity())]).isEqualTo(2);
+    }
+
+    // BOTH direction from a tail should reach center in 2 hops
+    final int tailId = gav.getNodeId(tails[0].getIdentity());
+    final int[] distsFromTail = GraphAlgorithms.shortestPathAll(gav, tailId, Vertex.DIRECTION.BOTH, "LINK");
+    assertThat(distsFromTail[tailId]).isEqualTo(0);
+    assertThat(distsFromTail[gav.getNodeId(leaves[0].getIdentity())]).isEqualTo(1);
+    assertThat(distsFromTail[centerId]).isEqualTo(2);
+  }
+
+  // --- Label Propagation ---
+
+  @Test
+  void testLabelPropagationTwoCommunities() {
+    // Community 1: A -- B -- C (fully connected)
+    // Community 2: D -- E -- F (fully connected)
+    // Single bridge: C -> D
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    final MutableVertex e = database.newVertex("Node").set("name", "E").save();
+    final MutableVertex f = database.newVertex("Node").set("name", "F").save();
+
+    // Community 1: dense internal connections
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", a);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", b);
+    a.newEdge("LINK", c);
+    c.newEdge("LINK", a);
+
+    // Community 2: dense internal connections
+    d.newEdge("LINK", e);
+    e.newEdge("LINK", d);
+    e.newEdge("LINK", f);
+    f.newEdge("LINK", e);
+    d.newEdge("LINK", f);
+    f.newEdge("LINK", d);
+
+    // Weak bridge
+    c.newEdge("LINK", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int[] labels = GraphAlgorithms.labelPropagation(gav, "LINK");
+
+    assertThat(labels).hasSize(6);
+    final int aId = gav.getNodeId(a.getIdentity());
+    final int bId = gav.getNodeId(b.getIdentity());
+    final int cId = gav.getNodeId(c.getIdentity());
+    final int dId = gav.getNodeId(d.getIdentity());
+    final int eId = gav.getNodeId(e.getIdentity());
+    final int fId = gav.getNodeId(f.getIdentity());
+
+    // Nodes in the same community should share the same label
+    assertThat(labels[aId]).isEqualTo(labels[bId]).isEqualTo(labels[cId]);
+    assertThat(labels[dId]).isEqualTo(labels[eId]).isEqualTo(labels[fId]);
+  }
+
+  @Test
+  void testLabelPropagationSingleNode() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int[] labels = GraphAlgorithms.labelPropagation(gav, "LINK");
+    assertThat(labels).hasSize(1);
+    assertThat(labels[0]).isEqualTo(gav.getNodeId(a.getIdentity()));
+  }
+
+  @Test
+  void testLabelPropagationEmptyGraph() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int[] labels = GraphAlgorithms.labelPropagation(gav, "LINK");
+    assertThat(labels).isEmpty();
+  }
+
+  // --- Compaction Threshold (builder) ---
+
+  // --- Local Clustering Coefficient ---
+
+  @Test
+  void testLCCTriangle() {
+    // A -- B -- C -- A: all nodes in a triangle, LCC = 1.0 for all
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", a);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final double[] lcc = GraphAlgorithms.localClusteringCoefficient(gav, "LINK");
+
+    assertThat(lcc).hasSize(3);
+    for (final double coeff : lcc)
+      assertThat(coeff).isCloseTo(1.0, org.assertj.core.data.Offset.offset(1e-9));
+
+    gav.drop();
+  }
+
+  @Test
+  void testLCCStar() {
+    // Hub A connected to B, C, D — no edges among B, C, D. LCC(A) = 0 (no triangles)
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    a.newEdge("LINK", c);
+    a.newEdge("LINK", d);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final double[] lcc = GraphAlgorithms.localClusteringCoefficient(gav, "LINK");
+
+    assertThat(lcc).hasSize(4);
+    // Hub has degree 3 but no triangles
+    final int hubId = gav.getNodeId(a.getIdentity());
+    assertThat(lcc[hubId]).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-9));
+    // Leaves have degree 1 → LCC = 0
+    assertThat(lcc[gav.getNodeId(b.getIdentity())]).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-9));
+
+    gav.drop();
+  }
+
+  @Test
+  void testLCCPartialClique() {
+    // A--B, A--C, A--D, B--C (triangle A-B-C, but D not connected to B or C)
+    // LCC(A) = 2 * 1 / (3 * 2) = 1/3  (1 triangle out of 3 possible)
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    a.newEdge("LINK", c);
+    a.newEdge("LINK", d);
+    b.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final double[] lcc = GraphAlgorithms.localClusteringCoefficient(gav, "LINK");
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    // A has degree 3 (undirected: out to B,C,D + in from none for LINK direction;
+    // but BOTH direction: A→B, A→C, A→D out, B→C in... depends on CSR)
+    // LCC(A) = 1/3 for outgoing triangle A-B-C
+    assertThat(lcc[aId]).isGreaterThan(0.0);
+    assertThat(lcc[aId]).isLessThanOrEqualTo(1.0);
+
+    gav.drop();
+  }
+
+  @Test
+  void testCompactionThresholdBuilder() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .withCompactionThreshold(5000)
+        .build();
+
+    assertThat(gav.getCompactionThreshold()).isEqualTo(5000);
+    gav.drop();
+  }
+}

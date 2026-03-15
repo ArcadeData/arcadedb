@@ -87,17 +87,14 @@ public class AlgoEccentricity extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = args.length > 1 ? parseDirection(extractString(args[1], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
     final int[] ecc = new int[n];
     final int[] queue = new int[n];
@@ -141,7 +138,7 @@ public class AlgoEccentricity extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("eccentricity", ecc[i]);
       r.setProperty("isCenter", ecc[i] > 0 && ecc[i] == finalRadius);
       r.setProperty("isPeripheral", ecc[i] == finalDiameter);

@@ -26,6 +26,7 @@ import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.*;
@@ -437,6 +438,19 @@ public interface Schema {
    * @throws IllegalArgumentException if the library or the function is not defined
    */
   FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException;
+
+  /**
+   * Returns a defensive copy of a named schema extension (module-specific configuration stored in schema.json).
+   * Returns null if the extension is not set. Callers must call {@link #setExtension(String, JSONObject)}
+   * to persist any changes.
+   */
+  JSONObject getExtension(String name);
+
+  /**
+   * Sets a named schema extension. Pass null to remove the extension.
+   * Changes are persisted to schema.json.
+   */
+  void setExtension(String name, JSONObject value);
 
   enum INDEX_TYPE {
     LSM_TREE, FULL_TEXT, LSM_VECTOR, GEOSPATIAL, HASH

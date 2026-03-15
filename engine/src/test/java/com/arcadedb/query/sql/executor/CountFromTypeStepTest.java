@@ -20,8 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.executor.ResultSet;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.*;
@@ -46,6 +46,26 @@ class CountFromTypeStepTest {
       final ResultSet result = step.syncPull(context, 20);
       assertThat((long) result.next().getProperty(ALIAS)).isEqualTo(20);
       assertThat(result.hasNext()).isFalse();
+    });
+  }
+
+  @Test
+  void countStarWithLimitShouldUseOptimizedPlan() throws Exception {
+    TestHelper.executeInNewDatabase((db) -> {
+      final String className = TestHelper.createRandomType(db).getName();
+      for (int i = 0; i < 100; i++)
+        db.newDocument(className).save();
+
+      // This simulates what Studio does: SELECT count(*) FROM Type limit 2000
+      final ResultSet rs = db.query("sql", "SELECT count(*) FROM " + className + " limit 2000");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((long) row.getProperty("count(*)")).isEqualTo(100);
+
+      // Verify the execution plan uses CountFromTypeStep (CALCULATE USERTYPE SIZE), not FETCH FROM TYPE
+      final String plan = rs.getExecutionPlan().map(p -> p.prettyPrint(0, 2)).orElse("");
+      assertThat(plan).contains("CALCULATE USERTYPE SIZE");
+      assertThat(plan).doesNotContain("FETCH FROM TYPE");
     });
   }
 }

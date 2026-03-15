@@ -282,6 +282,10 @@ public class TransactionContext implements Transaction {
     return true;
   }
 
+  public boolean hasCallbackKey(final String key) {
+    return registeredCallbackKeys != null && registeredCallbackKeys.contains(key);
+  }
+
   private void resetAndFireCallbacks() {
     final List<Runnable> callbacks = afterCommitCallbacks;
     reset();

@@ -21,7 +21,12 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.CSRAdjacencyIndex;
+import com.arcadedb.graph.olap.Column;
+import com.arcadedb.graph.olap.ColumnStore;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -42,6 +47,10 @@ import java.util.stream.Stream;
  * Computes the single-source shortest path (SSSP) from a given start node to all reachable
  * nodes using Dijkstra's algorithm with a binary min-heap. This extends the existing
  * source-target {@code algo.dijkstra} to return results for all reachable targets at once.
+ * </p>
+ * <p>
+ * When a Graph Analytical View (GAV) with edge properties is available, the algorithm runs
+ * entirely on CSR arrays with zero OLTP access, providing massive speedups on large graphs.
  * </p>
  * <p>
  * Parameters:
@@ -102,6 +111,45 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir  = args.length > 3 ? parseDirection(extractString(args[3], "direction")) : Vertex.DIRECTION.OUT;
 
     final Database db = context.getDatabase();
+
+    // Try CSR-accelerated path: requires a provider with edge properties
+    final GraphTraversalProvider provider = findProvider(db, relTypes);
+    if (provider instanceof GraphAnalyticalView gav && gav.hasEdgeProperties()) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(gav, startNode.getIdentity(), relTypes, weightProperty, dir);
+    }
+
+    // Fall back to OLTP path
+    return executeWithOLTP(db, startNode, relTypes, weightProperty, dir);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final RID startRid,
+      final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
+    final int n = gav.getNodeCount();
+    if (n == 0)
+      return Stream.empty();
+
+    final int src = gav.getNodeId(startRid);
+    if (src < 0)
+      return Stream.empty();
+
+    final double[] dist = com.arcadedb.graph.olap.GraphAlgorithms.dijkstraSingleSource(
+        gav, src, weightProperty, dir, relTypes);
+
+    final List<Result> results = new ArrayList<>();
+    for (int i = 0; i < n; i++) {
+      if (i != src && dist[i] < Double.POSITIVE_INFINITY) {
+        final ResultInternal r = new ResultInternal();
+        r.setProperty("node", gav.getRID(i).asVertex());
+        r.setProperty("cost", dist[i]);
+        results.add(r);
+      }
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db, final Vertex startNode,
+      final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> iter = getAllVertices(db, null);
     while (iter.hasNext())
@@ -117,16 +165,47 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       return Stream.empty();
     final int src = startIdxObj;
 
+    // Build weighted adjacency once to avoid OLTP per-vertex during Dijkstra
+    final Set<String> relTypeSet = relTypes != null ? new HashSet<>(Arrays.asList(relTypes)) : null;
+    final int[][] adjNeighbors = new int[n][];
+    final double[][] adjWeights = new double[n][];
+    for (int i = 0; i < n; i++) {
+      final Vertex v = vertices.get(i);
+      final List<int[]> nbrs = new ArrayList<>();
+      final List<Double> wts = new ArrayList<>();
+      for (final Edge edge : v.getEdges(dir)) {
+        if (relTypeSet != null && !relTypeSet.contains(edge.getTypeName()))
+          continue;
+        final RID neighborRid = neighborRid(edge, v.getIdentity(), dir);
+        final Integer nbrIdx = ridToIdx.get(neighborRid);
+        if (nbrIdx == null)
+          continue;
+        double weight = 1.0;
+        if (weightProperty != null) {
+          final Object w = edge.get(weightProperty);
+          if (w instanceof Number num)
+            weight = num.doubleValue();
+        }
+        if (weight < 0)
+          continue;
+        nbrs.add(new int[]{ nbrIdx });
+        wts.add(weight);
+      }
+      adjNeighbors[i] = new int[nbrs.size()];
+      adjWeights[i] = new double[wts.size()];
+      for (int j = 0; j < nbrs.size(); j++) {
+        adjNeighbors[i][j] = nbrs.get(j)[0];
+        adjWeights[i][j] = wts.get(j);
+      }
+    }
+
+    // Dijkstra purely in-memory
     final double[] dist = new double[n];
     Arrays.fill(dist, Double.POSITIVE_INFINITY);
     dist[src] = 0.0;
 
-    // Min-heap entries: [distance, nodeIndex]
     final PriorityQueue<double[]> heap = new PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
     heap.offer(new double[]{ 0.0, src });
-
-    // Build rel-type filter set for fast lookup
-    final Set<String> relTypeSet = relTypes != null ? new HashSet<>(Arrays.asList(relTypes)) : null;
 
     while (!heap.isEmpty()) {
       final double[] entry = heap.poll();
@@ -135,26 +214,9 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       if (d > dist[u])
         continue;
 
-      for (final Edge edge : vertices.get(u).getEdges(dir)) {
-        if (relTypeSet != null && !relTypeSet.contains(edge.getTypeName()))
-          continue;
-        final RID neighborRid = neighborRid(edge, vertices.get(u).getIdentity(), dir);
-        final Integer vObj = ridToIdx.get(neighborRid);
-        if (vObj == null)
-          continue;
-        final int v = vObj;
-
-        double weight = 1.0;
-        if (weightProperty != null) {
-          final Object w = edge.get(weightProperty);
-          if (w instanceof Number num)
-            weight = num.doubleValue();
-        }
-
-        if (weight < 0)
-          continue; // Dijkstra requires non-negative weights
-
-        final double newDist = dist[u] + weight;
+      for (int j = 0; j < adjNeighbors[u].length; j++) {
+        final int v = adjNeighbors[u][j];
+        final double newDist = d + adjWeights[u][j];
         if (newDist < dist[v]) {
           dist[v] = newDist;
           heap.offer(new double[]{ newDist, v });

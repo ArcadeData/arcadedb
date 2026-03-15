@@ -239,4 +239,72 @@ class MatchRelationshipStepOptimizationTest {
     assertThat(names).containsExactlyInAnyOrder("Bob", "Dave");
     result.close();
   }
+
+  /**
+   * Tests that BOTH direction uses the fast path and correctly deduplicates
+   * self-loop edges (which appear once in OUT and once in IN).
+   */
+  @Test
+  void testBothDirectionUsesFastPath() {
+    // Alice-[:KNOWS]->Bob, Bob-[:KNOWS]->Charlie, Alice-[:FOLLOWS]->Dave
+    // BOTH from Bob: Alice (via IN KNOWS) and Charlie (via OUT KNOWS) — no self-loops
+    final ResultSet result = database.query("opencypher",
+        "MATCH (a:Person {name: 'Bob'})--(b:Person) RETURN b.name AS name ORDER BY name");
+
+    final java.util.List<String> names = new java.util.ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().<String>getProperty("name"));
+    result.close();
+
+    assertThat(names).containsExactly("Alice", "Charlie");
+  }
+
+  /**
+   * Tests that BOTH direction with self-loops produces correct multiplicity.
+   * A single self-loop edge should produce exactly one match, not two.
+   */
+  @Test
+  void testBothDirectionSelfLoopDedup() {
+    // Create a self-loop
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)");
+    });
+
+    // BOTH from Alice: Bob (OUT KNOWS), Dave (OUT FOLLOWS), Alice (self-loop, should appear once)
+    final ResultSet result = database.query("opencypher",
+        "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-(b:Person) RETURN b.name AS name ORDER BY name");
+
+    final java.util.List<String> names = new java.util.ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().<String>getProperty("name"));
+    result.close();
+
+    // Alice: one self-loop (not doubled), Bob: one KNOWS edge from Alice
+    assertThat(names).containsExactly("Alice", "Bob");
+  }
+
+  /**
+   * Tests that BOTH direction with multiple self-loops preserves correct multiplicity.
+   */
+  @Test
+  void testBothDirectionMultipleSelfLoops() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)");
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)");
+    });
+
+    // BOTH from Alice for KNOWS: Bob (1), Alice (2 self-loops, should appear twice)
+    final ResultSet result = database.query("opencypher",
+        "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-(b:Person) RETURN b.name AS name ORDER BY name");
+
+    final java.util.List<String> names = new java.util.ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().<String>getProperty("name"));
+    result.close();
+
+    assertThat(names).containsExactly("Alice", "Alice", "Bob");
+  }
 }

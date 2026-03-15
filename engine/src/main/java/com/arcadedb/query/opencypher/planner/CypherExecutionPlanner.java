@@ -206,7 +206,10 @@ public class CypherExecutionPlanner {
         return false;
     }
 
-    // Phase 4: Aggregation functions not yet fully integrated with optimizer
+    // Aggregation queries go through the traditional path which also supports GAV
+    // via MatchRelationshipStep fast path. The optimizer doesn't yet handle all edge
+    // cases (undirected self-relationships, complex pattern counting), so keep this
+    // restriction until those are resolved.
     if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations())
       return false;
 

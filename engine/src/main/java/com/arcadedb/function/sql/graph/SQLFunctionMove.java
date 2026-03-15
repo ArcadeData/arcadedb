@@ -21,7 +21,11 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.CSRVertexIterable;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -35,11 +39,13 @@ import java.util.*;
  * Created by luigidellaquila on 03/01/17.
  */
 public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
+
   protected SQLFunctionMove(final String iName) {
     super(iName);
   }
 
-  protected abstract Object move(final Database db, final Identifiable iRecord, final String[] iLabels);
+  protected abstract Object move(final Database db, final Identifiable iRecord, final String[] iLabels,
+      final CommandContext context);
 
   public String getSyntax() {
     return "Syntax error: " + name + "([<labels>])";
@@ -54,19 +60,37 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     else
       labels = null;
 
-    return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels), self, context);
+    return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels, context), self, context);
   }
 
   protected Object v2v(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
-      final String[] iLabels) {
+      final String[] iLabels, final CommandContext context) {
     if (iRecord != null) {
       final Document rec = (Document) iRecord.getRecord();
-      if (rec instanceof Vertex vertex)
+      if (rec instanceof Vertex vertex) {
+        final Database database = vertex.getDatabase();
+        final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, iLabels);
+        if (provider != null) {
+          final int nodeId = provider.getNodeId(vertex.getIdentity());
+          if (nodeId >= 0) {
+            final int[] neighborIds = provider.getNeighborIds(nodeId, iDirection, iLabels);
+            markCSRAccelerated(context);
+            return new CSRVertexIterable(provider, neighborIds);
+          }
+        }
         return vertex.getVertices(iDirection, iLabels);
+      }
     }
     return null;
   }
 
+  protected static void markCSRAccelerated(final CommandContext context) {
+    if (context != null)
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+  }
+
+  // Note: v2e always uses the OLTP path (Vertex.getEdges) because CSR stores only neighbor node IDs,
+  // not edge RIDs. Unlike v2v, there is no CSR acceleration possible for edge-returning functions.
   protected Object v2e(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
       final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();

@@ -96,22 +96,18 @@ public class AlgoDFS extends AbstractAlgoProcedure {
     final int maxDepth         = args.length > 3 ? ((Number) args[3]).intValue() : Integer.MAX_VALUE;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
-
-    final Integer startIdxObj = ridToIdx.get(startNode.getIdentity());
-    if (startIdxObj == null)
+    final int startIdx = graph.indexOf(startNode.getIdentity());
+    if (startIdx < 0)
       return Stream.empty();
-    final int startIdx = startIdxObj;
 
     final List<Result> results = new ArrayList<>();
     final boolean[] visited = new boolean[n];
@@ -134,7 +130,7 @@ public class AlgoDFS extends AbstractAlgoProcedure {
       if (d > 0) {
         // Don't emit the start node itself
         final ResultInternal r = new ResultInternal();
-        r.setProperty("node", vertices.get(v));
+        r.setProperty("node", graph.getVertex(v));
         r.setProperty("depth", d);
         results.add(r);
       }

@@ -85,18 +85,15 @@ public class AlgoSCC extends AbstractAlgoProcedure {
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj  = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
-    final int[][] radj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.IN,  relTypes);
+    final int[][] adj  = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
+    final int[][] radj = graph.adjacency(Vertex.DIRECTION.IN,  relTypes);
 
     // Pass 1: iterative DFS on original graph — record post-order (finish order)
     final int[] order  = new int[n]; // finish order stack (bottom = earliest finish)
@@ -163,7 +160,7 @@ public class AlgoSCC extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("componentId", comp[i]);
       return (Result) r;
     });

@@ -53,7 +53,7 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
       if (possibleRIDs != null && possibleRIDs.isEmpty())
         return Collections.emptyList();
 
-      final Object result = move(context.getDatabase(), iArgument, labels);
+      final Object result = move(context.getDatabase(), iArgument, labels, context);
       if (result == null || possibleRIDs == null)
         return result;
 

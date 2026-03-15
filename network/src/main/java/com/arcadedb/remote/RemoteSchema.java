@@ -31,6 +31,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.*;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -554,6 +555,16 @@ public class RemoteSchema implements Schema {
   @Override
   public FunctionDefinition getFunction(final String libraryName, final String functionName) throws IllegalArgumentException {
     throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public JSONObject getExtension(final String name) {
+    return null;
+  }
+
+  @Override
+  public void setExtension(final String name, final JSONObject value) {
+
   }
 
   @Deprecated

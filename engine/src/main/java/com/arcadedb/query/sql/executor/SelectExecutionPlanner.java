@@ -438,14 +438,13 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * returns true if the query is minimal, ie. no WHERE condition, no SKIP/LIMIT, no UNWIND, no GROUP/ORDER BY, no LET
-   *
-   * @return
+   * returns true if the query is minimal, ie. no WHERE condition, no UNWIND, no GROUP/ORDER BY, no LET.
+   * SKIP/LIMIT are allowed because all hardwired optimizations (count, max, min) return a single row.
    */
   private boolean isMinimalQuery(final QueryPlanningInfo info) {
     return info.projectionAfterOrderBy == null && info.globalLetClause == null && info.perRecordLetClause == null
         && info.whereClause == null && info.flattenedWhereClause == null && info.groupBy == null && info.orderBy == null
-        && info.unwind == null && info.skip == null && info.limit == null;
+        && info.unwind == null;
   }
 
   private boolean isCountStar(final QueryPlanningInfo info) {
@@ -1551,6 +1550,7 @@ public class SelectExecutionPlanner {
     case "database" -> plan.chain(new FetchFromSchemaDatabaseStep(context));
     case "buckets" -> plan.chain(new FetchFromSchemaBucketsStep(context));
     case "materializedviews" -> plan.chain(new FetchFromSchemaMaterializedViewsStep(context));
+    case "graphanalyticalviews" -> plan.chain(new FetchFromSchemaGraphAnalyticalViewsStep(context));
     case "continuousaggregates" -> plan.chain(new FetchFromSchemaContinuousAggregatesStep(context));
     case "stats" -> plan.chain(new FetchFromSchemaStatsStep(context));
     case "dictionary" -> plan.chain(new FetchFromSchemaDictionaryStep(context));

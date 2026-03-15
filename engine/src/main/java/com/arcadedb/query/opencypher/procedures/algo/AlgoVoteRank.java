@@ -85,17 +85,14 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     final int topK          = args.length > 1 ? ((Number) args[1]).intValue() : Integer.MAX_VALUE;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adjOut = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
+    final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
     // Compute in-degree for each node (votes received)
     final int[] inDegree = new int[n];
@@ -183,7 +180,7 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(electedCount);
     for (int i = 0; i < electedCount; i++) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", vertices.get(electedOrder[i]).getIdentity());
+      r.setProperty("nodeId", graph.getVertex(electedOrder[i]).getIdentity());
       r.setProperty("rank", i + 1);
       results.add(r);
     }

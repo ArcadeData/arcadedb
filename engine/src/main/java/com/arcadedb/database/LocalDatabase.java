@@ -53,6 +53,10 @@ import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
@@ -108,7 +112,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -261,6 +264,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
 
     openInternal();
+
+    try {
+      executeCallbacks(CALLBACK_EVENT.DB_AFTER_OPEN);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on executing DB_AFTER_OPEN callbacks", e);
+    }
+
+    // Restore Graph Analytical Views persisted in schema extensions
+    try {
+      GraphAnalyticalViewPersistence.restoreAll(this);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error restoring Graph Analytical Views on database open", e);
+    }
   }
 
   protected void create() {
@@ -1870,6 +1886,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
 
+    // Shutdown all Graph Analytical Views before closing the database
+    try {
+      GraphAnalyticalViewRegistry.shutdownAll(this);
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error on shutting down Graph Analytical Views during close for database '%s'", e, name);
+    } finally {
+      // Safety net: clear any orphaned traversal providers that were not cleaned up
+      // by individual view shutdown() calls (e.g., if a view was registered directly
+      // in GraphTraversalProviderRegistry without being in GraphAnalyticalViewRegistry)
+      GraphTraversalProviderRegistry.clearAll(this);
+    }
+
     executeInWriteLock(() -> {
       if (!open)
         return null;
@@ -1960,8 +1989,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     });
 
-    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath)) {
+      GraphAnalyticalView.closeExecutor();
       PageManager.INSTANCE.close();
+    }
   }
 
   private void checkForRecovery() throws IOException {

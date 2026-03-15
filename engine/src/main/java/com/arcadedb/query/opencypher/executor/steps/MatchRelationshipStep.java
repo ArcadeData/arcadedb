@@ -18,8 +18,12 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -30,8 +34,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-
-import com.arcadedb.database.RID;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -61,9 +63,16 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private final Set<String> previousStepVariables; // Snapshot for uniqueness scoping
   private final Direction directionOverride; // When non-null, overrides pattern.getDirection()
 
-  // Profiling: track fast path vs standard path usage
+  // GAV provider for CSR-accelerated fast path (null = not checked yet, resolved lazily)
+  private volatile GraphTraversalProvider gavProvider;
+  private volatile boolean gavProviderResolved = false;
+  private volatile String gavProviderDebug = null;
+
+  // Profiling: track fast path vs standard path usage (single-threaded access — one thread per step instance)
   private long fastPathCount = 0;
   private long standardPathCount = 0;
+  private long gavPathCount = 0;
+  private boolean gavUsed = false;
 
   /**
    * Creates a match relationship step.
@@ -168,35 +177,32 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     return true;
   }
 
+  /**
+   * Checks whether all target node labels exist in the schema.
+   * If any label does not exist, no target vertex can match.
+   */
+  private boolean targetLabelsExistInSchema(final CommandContext context) {
+    if (targetNodePattern == null || !targetNodePattern.hasLabels())
+      return true;
+    final var schema = context.getDatabase().getSchema();
+    for (final String label : targetNodePattern.getLabels())
+      if (!schema.existsType(label))
+        return false;
+    return true;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("MatchRelationshipStep requires a previous step");
-
-    // Short-circuit: if edge types don't exist in the schema, no results are possible
-    if (!edgeTypesExistInSchema(context)) {
-      return new ResultSet() {
-        @Override
-        public boolean hasNext() {
-          return false;
-        }
-
-        @Override
-        public Result next() {
-          throw new NoSuchElementException();
-        }
-
-        @Override
-        public void close() {
-          MatchRelationshipStep.this.close();
-        }
-      };
-    }
 
     return new ResultSet() {
       private ResultSet prevResults = null;
       private Result lastResult = null;
       private Iterator<Edge> currentEdges = null;
       private Iterator<Vertex> currentVertices = null;
+      // Short-circuit flag: checked lazily after first pull from predecessor
+      // (predecessor might create the edge type via CREATE/FOREACH/MERGE)
+      private Boolean schemaShortCircuit = null;
       private boolean useFastPath = false;
       private Set<RID> seenEdges = null;
       private final List<Result> buffer = new ArrayList<>();
@@ -237,15 +243,30 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
           } else if (!useFastPath && currentEdges != null && currentEdges.hasNext()) {
             processStandardPath(n);
           } else {
-            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            final long begin;
+            if (context.isProfiling()) {
+              begin = System.nanoTime();
+              if (cost < 0)
+                cost = 0;
+            } else
+              begin = 0;
             try {
               // Initialize prevResults on first call
-              if (prevResults == null) {
+              if (prevResults == null)
                 prevResults = prev.syncPull(context, nRecords);
-              }
 
               // Get next source vertex from previous step
               if (!prevResults.hasNext()) {
+                finished = true;
+                break;
+              }
+
+              // Lazy schema short-circuit: check AFTER first pull from predecessor
+              // so that upstream CREATE/FOREACH/MERGE steps have a chance to create types.
+              // prevResults.hasNext() triggers the lazy pull chain, executing predecessor steps.
+              if (schemaShortCircuit == null)
+                schemaShortCircuit = !edgeTypesExistInSchema(context) || !targetLabelsExistInSchema(context);
+              if (schemaShortCircuit) {
                 finished = true;
                 break;
               }
@@ -454,38 +475,49 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
-   * Determines if we can use the fast path (skip loading edges).
-   * Fast path is possible when:
-   * - No relationship variable binding (anonymous relationship) OR internal anonymous variable
-   * - No edge properties to filter
-   * - No path variable
-   * - No edges already in the result (for uniqueness checking)
+   * Determines if we can use the fast path (skip loading edge objects, use vertex-only traversal).
+   * <p>
+   * Philosophy: fast path (and GAV/CSR acceleration) is the DEFAULT. We only fall back to
+   * standard edge-loading when there is a hard structural reason that requires edge objects.
+   * This ensures GAV is used for all common patterns: aggregations, GROUP BY, ORDER BY,
+   * WHERE on vertices, OPTIONAL MATCH, WITH, etc.
+   * <p>
+   * Hard blockers (edge objects are required):
+   * <ol>
+   *   <li>User-visible edge variable (e.g., [r:TYPE]) — the query references the edge object</li>
+   *   <li>Edge property filter (e.g., [{weight: 5}]) — GAV has no edge property data</li>
+   *   <li>Path variable (e.g., p = ...) — paths need edge objects for reconstruction</li>
+   *   <li>Pre-bound edge variable — identity check requires the edge object</li>
+   *   <li>Edge uniqueness — other edges in result require deduplication via edge identity</li>
+   *   <li>Multi-hop relationship variable — internal anonymous vars (e.g., "  rel0") signal
+   *       that cross-hop edge uniqueness checking is needed</li>
+   * </ol>
+   * <p>
+   * Note: BOTH direction is allowed on the fast path. Self-loop deduplication (a self-loop
+   * edge appears once in OUT and once in IN) is handled in {@link #getVertices(Vertex)}
+   * by halving self-loop entries in the neighbor array.
+   * <p>
+   * The plan builder cooperates: for single-hop anonymous patterns it passes null as the
+   * relationship variable (enabling fast path), while for multi-hop patterns it generates
+   * internal anonymous variables that trigger condition 6, preserving correctness.
    */
   private boolean canUseFastPath(final Result result) {
-    // Check if edge variable is needed
-    // Allow fast path for internal anonymous variables (start with spaces like "  rel0")
-    // since they're only created for uniqueness checking but aren't actually used
-    final boolean isInternalAnonymousVar = relationshipVariable != null &&
-        !relationshipVariable.isEmpty() &&
-        relationshipVariable.charAt(0) == ' ';
-
-    if (relationshipVariable != null && !relationshipVariable.isEmpty() && !isInternalAnonymousVar)
+    // 1. Any relationship variable (user-visible or internal anonymous) — either the query
+    //    references the edge object, or the plan builder needs edge identity for cross-hop
+    //    uniqueness checking in multi-hop patterns
+    if (relationshipVariable != null && !relationshipVariable.isEmpty())
       return false;
 
-    // Check if edge properties need to be filtered
+    // 2. Edge property filter — GAV doesn't store edge properties
     if (pattern.hasProperties())
       return false;
 
-    // Check if path variable requires edge tracking
+    // 3. Path variable — path reconstruction needs edge objects
     if (pathVariable != null && !pathVariable.isEmpty())
       return false;
 
-    // Check if relationship variable is pre-bound (requires edge identity check)
-    if (boundVariableNames != null && relationshipVariable != null
-        && boundVariableNames.contains(relationshipVariable))
-      return false;
-
-    // Check if result already contains edges (would need uniqueness checking)
+    // 4. Edge uniqueness — other hops in the same MATCH already produced edges,
+    //    so Cypher requires deduplication via edge identity
     if (resultContainsEdges(result))
       return false;
 
@@ -544,6 +576,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   /**
    * Gets vertices directly from a vertex based on the relationship pattern.
    * This is an optimized path that skips loading edge objects.
+   * When a GAV provider covers the required edge types, uses CSR arrays for O(1) neighbor lookup.
    */
   private Iterator<Vertex> getVertices(final Vertex vertex) {
     final Direction direction = getEffectiveDirection();
@@ -551,11 +584,121 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         pattern.getTypes().toArray(new String[0]) :
         null;
 
-    if (types == null || types.length == 0) {
-      return vertex.getVertices(direction.toArcadeDirection()).iterator();
-    } else {
-      return vertex.getVertices(direction.toArcadeDirection(), types).iterator();
+    // Try GAV-accelerated lookup (lazy resolution, cached)
+    final GraphTraversalProvider provider = resolveGavProvider(types);
+    if (provider != null) {
+      final int nodeId = provider.getNodeId(vertex.getIdentity());
+      if (nodeId >= 0) {
+        gavUsed = true;
+        int[] neighborIds = provider.getNeighborIds(nodeId, direction.toArcadeDirection(), types);
+
+        // For BOTH direction, deduplicate self-loop entries: each self-loop edge
+        // appears once in the forward and once in the backward neighbor list,
+        // doubling it in the merged result. Keep only half the self-loop entries.
+        if (direction == Direction.BOTH)
+          neighborIds = deduplicateSelfLoops(neighborIds, nodeId);
+
+        final int[] neighbors = neighborIds;
+        return new Iterator<>() {
+          private int idx = 0;
+
+          @Override
+          public boolean hasNext() {
+            return idx < neighbors.length;
+          }
+
+          @Override
+          public Vertex next() {
+            if (!hasNext())
+              throw new NoSuchElementException();
+            final RID rid = provider.getRID(neighbors[idx++]);
+            gavPathCount++;
+            return (Vertex) context.getDatabase().lookupByRID(rid, true);
+          }
+        };
+      }
     }
+
+    final Iterator<Vertex> it;
+    if (types == null || types.length == 0)
+      it = vertex.getVertices(direction.toArcadeDirection()).iterator();
+    else
+      it = vertex.getVertices(direction.toArcadeDirection(), types).iterator();
+
+    // For BOTH direction, deduplicate self-loop vertices: the OLTP iterator
+    // concatenates OUT and IN edge iterators, so self-loops yield the source
+    // vertex twice. Skip every other occurrence of the source vertex.
+    // This is semantically equivalent to the CSR path's deduplicateSelfLoops(),
+    // which removes selfLoopCount/2 entries from the neighbor array — both rely
+    // on the invariant that each self-loop produces exactly 2 entries.
+    //
+    // Structural invariant: ArcadeDB stores each edge in exactly two edge lists
+    // (one OUT, one IN) — see GraphEngine.getVertices() BOTH case which concatenates
+    // outEdges.vertexIterator() + inEdges.vertexIterator(). A self-loop edge (src==tgt)
+    // therefore appears once in each list, producing exactly 2 entries in the merged
+    // iterator. This invariant holds as long as the storage model uses separate
+    // per-direction edge linked lists (EdgeLinkedList).
+    if (direction == Direction.BOTH) {
+      final RID sourceRid = vertex.getIdentity();
+      return new Iterator<>() {
+        private Vertex nextVertex = null;
+        private int selfLoopSeen = 0;
+
+        @Override
+        public boolean hasNext() {
+          if (nextVertex != null)
+            return true;
+          while (it.hasNext()) {
+            final Vertex v = it.next();
+            if (v.getIdentity().equals(sourceRid)) {
+              selfLoopSeen++;
+              if (selfLoopSeen % 2 == 0)
+                continue; // skip every other self-loop occurrence
+            }
+            nextVertex = v;
+            return true;
+          }
+          return false;
+        }
+
+        @Override
+        public Vertex next() {
+          if (!hasNext())
+            throw new NoSuchElementException();
+          final Vertex v = nextVertex;
+          nextVertex = null;
+          return v;
+        }
+      };
+    }
+    return it;
+  }
+
+  /**
+   * Lazily resolves a GAV provider that covers the required edge types.
+   * Result is cached for the lifetime of this step.
+   * <p>
+   * Note: concurrent threads may both enter the {@code !gavProviderResolved} branch and call
+   * {@code findProvider()} redundantly. This is intentional — the result is idempotent and a
+   * full {@code synchronized} block would add contention on the hot path for no correctness gain.
+   */
+  private GraphTraversalProvider resolveGavProvider(final String[] edgeTypes) {
+    if (!gavProviderResolved) {
+      final Database db = context.getDatabase();
+      final GraphTraversalProvider resolved = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+      if (resolved == null && context.isProfiling()) {
+        final List<GraphTraversalProvider> allProviders = GraphTraversalProviderRegistry.getProviders(db);
+        gavProviderDebug = "db=" + db.getClass().getSimpleName() + ", providers=" + allProviders.size();
+        if (!allProviders.isEmpty())
+          gavProviderDebug += " [ready=" + allProviders.stream().filter(GraphTraversalProvider::isReady).count()
+              + ", edgeTypes=" + java.util.Arrays.toString(edgeTypes) + "]";
+      }
+      // Assign provider before setting resolved flag to prevent another thread from seeing
+      // resolved=true with gavProvider still null
+      gavProvider = resolved;
+      gavProviderResolved = true;
+    }
+    return gavProvider;
   }
 
   /**
@@ -697,9 +840,14 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         builder.append(", ").append(getRowCountFormatted());
 
       // Show fast path vs standard path statistics
-      if (fastPathCount > 0 || standardPathCount > 0) {
+      if (gavUsed || fastPathCount > 0 || standardPathCount > 0) {
         builder.append(", traversal: ");
-        if (fastPathCount > 0 && standardPathCount > 0) {
+        if (gavUsed) {
+          builder.append("GAV/CSR (").append(gavPathCount).append(" vertices");
+          if (gavProvider != null)
+            builder.append(", provider=").append(gavProvider.getName());
+          builder.append(")");
+        } else if (fastPathCount > 0 && standardPathCount > 0) {
           // Mixed: both paths used
           builder.append("mixed [fast: ").append(fastPathCount);
           builder.append(", edges: ").append(standardPathCount).append("]");
@@ -711,10 +859,47 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
           builder.append("standard (").append(standardPathCount).append(" edges)");
         }
       }
+      if (gavProviderDebug != null)
+        builder.append(", GAV-debug: ").append(gavProviderDebug);
 
       builder.append(")");
     }
     return builder.toString();
+  }
+
+  /**
+   * Removes duplicate self-loop entries from a neighbor ID array for BOTH direction.
+   * Each self-loop edge contributes the source node to both the forward and backward
+   * neighbor lists, so it appears twice in the merged array. This method keeps only
+   * half the self-loop entries, preserving correct multiplicity for multi-self-loop cases.
+   * <p>
+   * <b>Invariant:</b> the self-loop count is always even because every self-loop edge
+   * contributes exactly one entry to the forward neighbor list and one to the backward
+   * neighbor list — whether from base CSR or from the delta overlay (which adds to both
+   * ovOut and ovIn). This mirrors the OLTP path's skip-every-other deduplication in
+   * {@link #getVertices(Vertex)}, which also relies on the OUT+IN iterator concatenation
+   * producing exactly 2 entries per self-loop edge. See
+   * {@code GraphEngine.getVertices()} BOTH case for the structural guarantee.
+   */
+  private static int[] deduplicateSelfLoops(final int[] neighborIds, final int sourceNodeId) {
+    int selfLoopCount = 0;
+    for (final int id : neighborIds)
+      if (id == sourceNodeId)
+        selfLoopCount++;
+    if (selfLoopCount <= 1)
+      return neighborIds; // 0 or 1 self-loop entries: no duplicates to remove
+    final int toRemove = selfLoopCount / 2;
+    final int[] result = new int[neighborIds.length - toRemove];
+    int w = 0;
+    int skipped = 0;
+    for (final int id : neighborIds) {
+      if (id == sourceNodeId && skipped < toRemove) {
+        skipped++;
+        continue;
+      }
+      result[w++] = id;
+    }
+    return result;
   }
 
   private static String getIndent(final int depth, final int indent) {

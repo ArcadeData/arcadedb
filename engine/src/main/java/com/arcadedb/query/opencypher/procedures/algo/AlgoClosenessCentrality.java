@@ -88,17 +88,14 @@ public class AlgoClosenessCentrality extends AbstractAlgoProcedure {
     final boolean normalized = args.length > 2 ? Boolean.parseBoolean(args[2].toString()) : true;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
     // BFS from each vertex using primitive int[] queue (no boxing)
     final int[] queue = new int[n];
@@ -139,7 +136,7 @@ public class AlgoClosenessCentrality extends AbstractAlgoProcedure {
     // Build result stream
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("score", scores[i]);
       return (Result) r;
     });

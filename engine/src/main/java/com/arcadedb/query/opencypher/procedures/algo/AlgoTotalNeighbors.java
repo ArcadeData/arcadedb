@@ -90,25 +90,19 @@ public class AlgoTotalNeighbors extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = args.length > 3 ? parseDirection(extractString(args[3], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
-
-    final Integer idx1obj = ridToIdx.get(node1.getIdentity());
-    final Integer idx2obj = ridToIdx.get(node2.getIdentity());
-    if (idx1obj == null || idx2obj == null)
+    final int idx1 = graph.indexOf(node1.getIdentity());
+    final int idx2 = graph.indexOf(node2.getIdentity());
+    if (idx1 < 0 || idx2 < 0)
       return Stream.empty();
-
-    final int idx1 = idx1obj;
-    final int idx2 = idx2obj;
 
     // |N(u) ∪ N(v)| = |N(u)| + |N(v)| - |N(u) ∩ N(v)|
     final BitSet n1Set = new BitSet(n);

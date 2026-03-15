@@ -98,17 +98,14 @@ public class AlgoKNN extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
     // Build BitSets for O(1) intersection
     final BitSet[] neighborSets = new BitSet[n];
@@ -172,8 +169,8 @@ public class AlgoKNN extends AbstractAlgoProcedure {
 
       for (int i = 0; i < topCount; i++) {
         final ResultInternal r = new ResultInternal();
-        r.setProperty("node1", vertices.get(u));
-        r.setProperty("node2", vertices.get(topIdx[i]));
+        r.setProperty("node1", graph.getVertex(u));
+        r.setProperty("node2", graph.getVertex(topIdx[i]));
         r.setProperty("similarity", topSim[i]);
         results.add(r);
       }

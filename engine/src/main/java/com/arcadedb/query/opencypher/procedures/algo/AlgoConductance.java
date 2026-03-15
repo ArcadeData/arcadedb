@@ -87,17 +87,14 @@ public class AlgoConductance extends AbstractAlgoProcedure {
     final String[] relTypes = args.length > 1 ? extractRelTypes(args[1]) : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     // Read community IDs from vertex property
     final Object[] communityValues = new Object[n];
@@ -106,7 +103,7 @@ public class AlgoConductance extends AbstractAlgoProcedure {
     int numCommunities = 0;
 
     for (int i = 0; i < n; i++) {
-      final Object commVal = vertices.get(i).get(communityProperty);
+      final Object commVal = graph.getVertex(i).get(communityProperty);
       communityValues[i] = commVal;
       if (commVal != null && !communityToIndex.containsKey(commVal))
         communityToIndex.put(commVal, numCommunities++);

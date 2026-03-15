@@ -102,16 +102,12 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> it = getAllVertices(db, null);
-    while (it.hasNext())
-      vertices.add(it.next());
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
     // Use 4× over-parameterised bit space for good hash quality
     final int numFeatures = Math.max(embDim * 4, 64);
@@ -122,7 +118,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     for (int i = 0; i < n; i++) {
       // Use per-node deterministic seed for reproducible initialisation
       final Random nodeRng = seed >= 0 ? new Random(seed + i * 1_000_003L) :
-          new Random(vertices.get(i).getIdentity().hashCode() * 1_000_003L + i);
+          new Random(graph.getRID(i).hashCode() * 1_000_003L + i);
       int set = 0;
       final int target = numFeatures / 8; // 12.5% density
       while (set < target) {
@@ -178,7 +174,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
       normalizeL2(embed);
 
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("embedding", toEmbeddingList(embed));
       results.add(r);
     }

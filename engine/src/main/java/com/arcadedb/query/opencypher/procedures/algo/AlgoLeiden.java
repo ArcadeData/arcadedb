@@ -87,17 +87,14 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     final double resolution = args.length > 2 && args[2] instanceof Number n ? n.doubleValue() : 1.0;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     // Compute total edges (m) and node degrees
     final int[] degree = new int[n];
@@ -110,7 +107,7 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     final double m = totalEdges / 2.0;
     if (m == 0.0) {
       // Isolated nodes: each in its own community
-      return buildResults(vertices, initCommunities(n));
+      return buildResults(graph, initCommunities(n));
     }
 
     // Phase 1: Initialize each node in its own community
@@ -210,7 +207,7 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", vertices.get(i).getIdentity());
+      r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("community", remap.get(community[i]));
       results.add(r);
     }
@@ -224,12 +221,12 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     return c;
   }
 
-  private Stream<Result> buildResults(final List<Vertex> vertices, final int[] community) {
-    final int n = vertices.size();
+  private Stream<Result> buildResults(final GraphData graph, final int[] community) {
+    final int n = graph.nodeCount;
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", vertices.get(i).getIdentity());
+      r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("community", community[i]);
       results.add(r);
     }

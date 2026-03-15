@@ -27,6 +27,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -132,6 +135,33 @@ class AlgoGraphSummaryTest {
     final Object val = result.getProperty("density");
     assertThat(((Number) val).doubleValue()).isGreaterThan(0.0);
     assertThat(((Number) val).doubleValue()).isLessThanOrEqualTo(1.0);
+  }
+
+  @Test
+  void graphSummaryWithNodeLabelsFilterCountsOnlyFilteredType() {
+    // Create a second vertex type with different nodes
+    database.getSchema().createVertexType("Device");
+    database.getSchema().createEdgeType("CONNECTS");
+
+    database.transaction(() -> {
+      final MutableVertex d1 = database.newVertex("Device").set("name", "D1").save();
+      final MutableVertex d2 = database.newVertex("Device").set("name", "D2").save();
+      d1.newEdge("CONNECTS", d2, true, (Object[]) null).save();
+    });
+
+    // Without filter: 4 Nodes + 2 Devices = 6 vertices
+    final ResultSet rsAll = database.query("opencypher",
+        "CALL algo.graphSummary() YIELD nodeCount RETURN nodeCount");
+    assertThat(rsAll.hasNext()).isTrue();
+    final long allCount = ((Number) rsAll.next().getProperty("nodeCount")).longValue();
+    assertThat(allCount).isEqualTo(6L);
+
+    // With nodeLabels filter: only Device vertices (2)
+    final ResultSet rsFiltered = database.query("opencypher",
+        "CALL algo.graphSummary(null, ['Device']) YIELD nodeCount RETURN nodeCount");
+    assertThat(rsFiltered.hasNext()).isTrue();
+    final long filteredCount = ((Number) rsFiltered.next().getProperty("nodeCount")).longValue();
+    assertThat(filteredCount).isEqualTo(2L);
   }
 
   @Test

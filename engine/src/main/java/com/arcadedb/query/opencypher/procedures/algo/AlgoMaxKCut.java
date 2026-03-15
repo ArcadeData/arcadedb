@@ -115,19 +115,15 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> it = getAllVertices(db, null);
-    while (it.hasNext())
-      vertices.add(it.next());
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
     // Build weighted adjacency (null weightProperty → all weights = 1.0)
-    final double[][] adjW = buildWeightedAdj(vertices, ridToIdx, adj, dir, relTypes, weightProperty);
+    final double[][] adjW = buildWeightedAdj(graph, adj, dir, relTypes, weightProperty);
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
     int[] bestAssign = new int[n];
@@ -184,7 +180,7 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("community", bestAssign[i]);
       r.setProperty("cutWeight", finalCut);
       results.add(r);
@@ -193,9 +189,9 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
   }
 
   /** Builds a parallel weight array for each adjacency list entry. */
-  private double[][] buildWeightedAdj(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
+  private double[][] buildWeightedAdj(final GraphData graph,
       final int[][] adj, final Vertex.DIRECTION dir, final String[] relTypes, final String weightProp) {
-    final int n = vertices.size();
+    final int n = graph.nodeCount;
     final double[][] adjW = new double[n][];
     for (int i = 0; i < n; i++) {
       adjW[i] = new double[adj[i].length];
@@ -207,12 +203,12 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     // Fill weights from edge properties
     for (int i = 0; i < n; i++) {
       final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-          vertices.get(i).getEdges(dir, relTypes) :
-          vertices.get(i).getEdges(dir);
+          graph.getVertex(i).getEdges(dir, relTypes) :
+          graph.getVertex(i).getEdges(dir);
       int pos = 0;
       for (final Edge e : edges) {
-        final RID nbRid = neighborRid(e, vertices.get(i).getIdentity(), dir);
-        if (nbRid == null || !ridToIdx.containsKey(nbRid))
+        final RID nbRid = neighborRid(e, graph.getRID(i), dir);
+        if (nbRid == null || graph.indexOf(nbRid) < 0)
           continue;
         if (pos < adjW[i].length) {
           final Object w = e.get(weightProp);

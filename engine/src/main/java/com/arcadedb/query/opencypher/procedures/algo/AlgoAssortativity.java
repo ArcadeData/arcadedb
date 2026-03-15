@@ -89,24 +89,21 @@ public class AlgoAssortativity extends AbstractAlgoProcedure {
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0) {
       final ResultInternal r = new ResultInternal();
       r.setProperty("assortativity", 0.0);
       r.setProperty("edgeCount", 0L);
       return Stream.of(r);
     }
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] outAdj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
+    final int[][] outAdj = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
     // Compute undirected degrees: degree[i] = number of unique neighbors (BOTH direction)
-    final int[][] bothAdj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
+    final int[][] bothAdj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
     final int[] degree = new int[n];
     for (int i = 0; i < n; i++)
       degree[i] = bothAdj[i].length;

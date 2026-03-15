@@ -39,6 +39,8 @@ class FunctionRegistryTest {
   @AfterEach
   void tearDown() {
     FunctionRegistry.clear();
+    // Re-register Cypher built-in functions into the unified registry so other tests are not affected
+    CypherFunctionRegistry.reset();
   }
 
   @Test

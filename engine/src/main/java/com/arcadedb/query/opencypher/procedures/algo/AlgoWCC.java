@@ -19,19 +19,16 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -41,6 +38,10 @@ import java.util.stream.Stream;
  * if there exists a path between them when all edges are treated as undirected. This is
  * fundamental for determining if a network is fully connected and for isolating disconnected
  * subgraphs.
+ * </p>
+ * <p>
+ * When a Graph Analytical View (GAV) is available, delegates to the CSR-native union-find
+ * implementation in {@link GraphAlgorithms#connectedComponents} for maximum performance.
  * </p>
  * <p>
  * Example Cypher usage:
@@ -86,17 +87,42 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> vertIter = getAllVertices(db, null);
-    while (vertIter.hasNext())
-      vertices.add(vertIter.next());
-    if (vertices.isEmpty())
+
+    // Try CSR-accelerated path: delegate to native union-find on CSR arrays
+    final GraphTraversalProvider provider = findProvider(db, null);
+    if (provider instanceof GraphAnalyticalView gav) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(gav);
+    }
+
+    // Fall back to OLTP path
+    return executeWithOLTP(db);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav) {
+    final int n = gav.getNodeCount();
+    if (n == 0)
       return Stream.empty();
 
-    final int n = vertices.size();
-    final Map<Vertex, Integer> vertexIndex = new HashMap<>(n);
-    for (int i = 0; i < n; i++)
-      vertexIndex.put(vertices.get(i), i);
+    final int[] componentId = GraphAlgorithms.connectedComponents(gav);
+
+    final List<Result> results = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      final ResultInternal result = new ResultInternal();
+      result.setProperty("node", gav.getRID(i).asVertex());
+      result.setProperty("componentId", componentId[i]);
+      results.add(result);
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db) {
+    final GraphData graph = loadGraph(db, null, null, null);
+
+    final int n = graph.nodeCount;
+    if (n == 0)
+      return Stream.empty();
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH);
 
     final int[] componentId = new int[n];
     for (int i = 0; i < n; i++)
@@ -104,28 +130,23 @@ public class AlgoWCC extends AbstractAlgoProcedure {
 
     int nextComponentId = 0;
 
-    // BFS treating all edges as undirected
+    // BFS treating all edges as undirected, using int[] queue (zero allocation)
+    final int[] queue = new int[n];
     for (int i = 0; i < n; i++) {
       if (componentId[i] != -1)
         continue;
 
-      final Deque<Integer> queue = new ArrayDeque<>();
-      queue.add(i);
+      int head = 0, tail = 0;
+      queue[tail++] = i;
       componentId[i] = nextComponentId;
 
-      while (!queue.isEmpty()) {
-        final int v = queue.poll();
-        final Vertex vVertex = vertices.get(v);
-
-        // Traverse both directions to treat edges as undirected
-        for (final Edge edge : vVertex.getEdges(Vertex.DIRECTION.BOTH)) {
-          final Vertex neighbor = edge.getOut().equals(vVertex.getIdentity()) ?
-              edge.getInVertex() : edge.getOutVertex();
-          final Integer w = vertexIndex.get(neighbor);
-          if (w == null || componentId[w] != -1)
+      while (head < tail) {
+        final int v = queue[head++];
+        for (final int w : adj[v]) {
+          if (componentId[w] != -1)
             continue;
           componentId[w] = nextComponentId;
-          queue.add(w);
+          queue[tail++] = w;
         }
       }
       nextComponentId++;
@@ -134,7 +155,7 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", vertices.get(i));
+      result.setProperty("node", graph.getVertex(i));
       result.setProperty("componentId", componentId[i]);
       results.add(result);
     }

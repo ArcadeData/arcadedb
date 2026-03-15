@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -90,55 +92,128 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     final double tolerance = args.length > 4 && args[4] instanceof Number n ? n.doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    // Try CSR-accelerated path
+    final GraphTraversalProvider provider = findProvider(db, relTypes);
+    if (provider != null) {
+      final int sourceIdx = provider.getNodeId(sourceVertex.getIdentity());
+      if (sourceIdx >= 0) {
+        context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+        return executeWithCSR(provider, sourceIdx, relTypes, dampingFactor, maxIterations, tolerance);
+      }
+    }
+
+    // Fall back to OLTP path
+    return executeWithOLTP(db, sourceVertex, relTypes, dampingFactor, maxIterations, tolerance);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphTraversalProvider provider, final int sourceIdx,
+      final String[] relTypes, final double dampingFactor, final int maxIterations, final double tolerance) {
+    final int n = provider.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
+    // Zero-allocation neighbor access via NeighborView
+    final NeighborView outView = provider.getNeighborView(Vertex.DIRECTION.OUT, relTypes);
+    final NeighborView inView = provider.getNeighborView(Vertex.DIRECTION.IN, relTypes);
+    final boolean hasView = outView != null && inView != null;
 
-    // Find source index
-    final Integer sourceIdx = ridToIdx.get(sourceVertex.getIdentity());
-    if (sourceIdx == null)
+    final int[][] outAdjFallback = hasView ? null : buildAdjacencyFromProvider(provider, Vertex.DIRECTION.OUT, relTypes);
+    final int[][] inAdjFallback = hasView ? null : buildAdjacencyFromProvider(provider, Vertex.DIRECTION.IN, relTypes);
+
+    final int[] outDegree = new int[n];
+    for (int i = 0; i < n; i++)
+      outDegree[i] = hasView ? outView.degree(i) : outAdjFallback[i].length;
+
+    final double[] rank = new double[n];
+    rank[sourceIdx] = 1.0;
+
+    for (int iter = 0; iter < maxIterations; iter++) {
+      final double[] newRank = new double[n];
+      double dangling = 0.0;
+      for (int i = 0; i < n; i++)
+        if (outDegree[i] == 0)
+          dangling += rank[i];
+
+      if (hasView) {
+        final int[] inNbrs = inView.neighbors();
+        for (int i = 0; i < n; i++) {
+          double incoming = 0.0;
+          for (int k = inView.offset(i), end = inView.offsetEnd(i); k < end; k++) {
+            final int j = inNbrs[k];
+            if (outDegree[j] > 0)
+              incoming += rank[j] / outDegree[j];
+          }
+          final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+          newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
+        }
+      } else {
+        for (int i = 0; i < n; i++) {
+          double incoming = 0.0;
+          for (final int j : inAdjFallback[i])
+            if (outDegree[j] > 0)
+              incoming += rank[j] / outDegree[j];
+          final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+          newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
+        }
+      }
+
+      double maxChange = 0.0;
+      for (int i = 0; i < n; i++) {
+        maxChange = Math.max(maxChange, Math.abs(newRank[i] - rank[i]));
+        rank[i] = newRank[i];
+      }
+
+      if (maxChange < tolerance)
+        break;
+    }
+
+    final List<Result> results = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      final ResultInternal r = new ResultInternal();
+      r.setProperty("nodeId", provider.getRID(i));
+      r.setProperty("score", rank[i]);
+      results.add(r);
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db, final Vertex sourceVertex, final String[] relTypes,
+      final double dampingFactor, final int maxIterations, final double tolerance) {
+
+    final GraphData graph = loadGraph(db, null, relTypes);
+
+
+    final int n = graph.nodeCount;
+    if (n == 0)
       return Stream.empty();
 
-    // Build OUT adjacency list for push-based propagation
-    final int[][] outAdj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
+    final int sourceIdx = graph.indexOf(sourceVertex.getIdentity());
+    if (sourceIdx < 0)
+      return Stream.empty();
 
-    // Compute out-degrees
+    final int[][] outAdj = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
     final int[] outDegree = new int[n];
     for (int i = 0; i < n; i++)
       outDegree[i] = outAdj[i].length;
 
-    // Build IN adjacency list for pull-based update
-    final int[][] inAdj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.IN, relTypes);
+    final int[][] inAdj = graph.adjacency(Vertex.DIRECTION.IN, relTypes);
 
-    // Initialize ranks: 1.0 at source, 0 elsewhere
     final double[] rank = new double[n];
-    final double[] newRank = new double[n];
     rank[sourceIdx] = 1.0;
 
-    // Personalization vector: 1.0 at source, 0 elsewhere
-    // PPR: rank[i] = (1-d)*personalization[i] + d * sum_j( rank[j] / outDegree[j] ) for j->i
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
-      // Dangling nodes contribute to source only (personalized teleport)
+      final double[] newRank = new double[n];
       double dangling = 0.0;
-      for (int i = 0; i < n; i++) {
+      for (int i = 0; i < n; i++)
         if (outDegree[i] == 0)
           dangling += rank[i];
-      }
 
       for (int i = 0; i < n; i++) {
         double incoming = 0.0;
-        for (final int j : inAdj[i]) {
+        for (final int j : inAdj[i])
           if (outDegree[j] > 0)
             incoming += rank[j] / outDegree[j];
-        }
-        // Personalization: only source has non-zero personal vector
         final double personal = (i == sourceIdx) ? 1.0 : 0.0;
         newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
       }
@@ -156,7 +231,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", vertices.get(i).getIdentity());
+      r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("score", rank[i]);
       results.add(r);
     }

@@ -102,18 +102,17 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
         num.longValue() : -1L;
     final Random rng = seedVal < 0 ? new Random() : new Random(seedVal);
 
-    final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
+    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
 
-    final int n = vertices.size();
+    final Database db = context.getDatabase();
+
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, null);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, null);
 
     // Memory: memory[v] is a list of labels heard by v (including its initial label)
     // Using int[] lists backed by arrays for performance
@@ -176,7 +175,7 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
         communities.add((long) i); // keep at least the initial label
 
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("communities", communities);
       results.add(r);
     }

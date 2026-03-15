@@ -115,16 +115,12 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> it = getAllVertices(db, null);
-    while (it.hasNext())
-      vertices.add(it.next());
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
 
@@ -228,7 +224,7 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     for (int i = 0; i < n; i++) {
       normalizeL2(W[i]);
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("embedding", toEmbeddingList(W[i]));
       results.add(r);
     }

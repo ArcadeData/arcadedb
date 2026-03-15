@@ -101,26 +101,22 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
       return Stream.empty();
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> it = getAllVertices(db, null);
-    while (it.hasNext())
-      vertices.add(it.next());
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-
     // Build weighted adjacency lists (undirected for shortest paths)
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
-    final double[][] adjW = buildWeightedAdj(vertices, adj, weightProperty);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
+    final double[][] adjW = buildWeightedAdj(graph, adj, weightProperty);
 
     // Map terminals to their indices
     final int t = terminals.size();
     final int[] termIdx = new int[t];
     for (int i = 0; i < t; i++) {
-      final Integer idx = ridToIdx.get(terminals.get(i).getIdentity());
-      if (idx == null)
+      final int idx = graph.indexOf(terminals.get(i).getIdentity());
+      if (idx < 0)
         return Stream.empty();
       termIdx[i] = idx;
     }
@@ -261,8 +257,8 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(edgeList.size());
     for (final int[] e : edgeList) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("source", vertices.get(e[0]));
-      r.setProperty("target", vertices.get(e[1]));
+      r.setProperty("source", graph.getVertex(e[0]));
+      r.setProperty("target", graph.getVertex(e[1]));
       r.setProperty("weight", adjW[e[0]][e[2]]);
       r.setProperty("totalWeight", totalWeight);
       results.add(r);
@@ -334,9 +330,9 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     }
   }
 
-  private double[][] buildWeightedAdj(final List<Vertex> vertices, final int[][] adj,
+  private double[][] buildWeightedAdj(final GraphData graph, final int[][] adj,
       final String weightProp) {
-    final int n = vertices.size();
+    final int n = graph.nodeCount;
     final double[][] adjW = new double[n][];
     for (int i = 0; i < n; i++) {
       adjW[i] = new double[adj[i].length];
@@ -344,20 +340,18 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     }
     if (weightProp == null)
       return adjW;
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
     for (int i = 0; i < n; i++) {
-      final Iterable<Edge> edges = vertices.get(i).getEdges(Vertex.DIRECTION.BOTH);
+      final Iterable<Edge> edges = graph.getVertex(i).getEdges(Vertex.DIRECTION.BOTH);
       // Build a temporary map: neighbour index → weight
       final double[] tmpW = new double[adj[i].length];
       Arrays.fill(tmpW, 1.0);
       int pos = 0;
       for (final Edge e : edges) {
-        final RID nbRid = neighborRid(e, vertices.get(i).getIdentity(), Vertex.DIRECTION.BOTH);
+        final RID nbRid = neighborRid(e, graph.getRID(i), Vertex.DIRECTION.BOTH);
         if (nbRid == null)
           continue;
-        final Integer nbIdx = ridToIdx.get(nbRid);
-        if (nbIdx == null)
+        final int nbIdx = graph.indexOf(nbRid);
+        if (nbIdx < 0)
           continue;
         if (pos < adj[i].length) {
           final Object w = e.get(weightProp);

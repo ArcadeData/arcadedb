@@ -258,7 +258,7 @@ public class PaginatedComponentFile extends ComponentFile {
     } catch (final Exception e) {
       if (!warningPrinted) {
         warningPrinted = true;
-        LogManager.instance().log(this, Level.WARNING, "Unable to disable channel close on interrupt: %s", e.getMessage());
+        LogManager.instance().log(this, Level.FINE, "Unable to disable channel close on interrupt: %s", e.getMessage());
       }
     }
   }

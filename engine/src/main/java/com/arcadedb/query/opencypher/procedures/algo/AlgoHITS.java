@@ -88,18 +88,15 @@ public class AlgoHITS extends AbstractAlgoProcedure {
     final double tolerance     = args.length > 2 ? ((Number) args[2]).doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adjOut = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
-    final int[][] adjIn  = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.IN, relTypes);
+    final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
+    final int[][] adjIn  = graph.adjacency(Vertex.DIRECTION.IN, relTypes);
 
     double[] hub     = new double[n];
     double[] auth    = new double[n];
@@ -166,7 +163,7 @@ public class AlgoHITS extends AbstractAlgoProcedure {
     final double[] finalAuth = auth;
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("hubScore", finalHub[i]);
       r.setProperty("authorityScore", finalAuth[i]);
       return (Result) r;

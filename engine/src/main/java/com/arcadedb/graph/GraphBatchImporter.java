@@ -40,6 +40,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -141,20 +142,21 @@ public class GraphBatchImporter implements AutoCloseable {
   private int[] countingSortCursor;
 
   // --- Edge type cache: avoids repeated schema lookups ---
-  private final Map<String, Integer> edgeTypeFirstBucketCache = new HashMap<>();
+  private final Map<String, Integer> edgeTypeFirstBucketCache = new ConcurrentHashMap<>();
 
   // --- Head chunk RID cache: avoids vertex loads when chunk is already known ---
-  private final Map<Long, RID> outChunkRIDCache = new HashMap<>();
-  private final Map<Long, RID> inChunkRIDCache = new HashMap<>();
+  // Must be ConcurrentHashMap because getOrCreate*EdgeChunk() is called from parallel async slots
+  private final Map<Long, RID> outChunkRIDCache = new ConcurrentHashMap<>();
+  private final Map<Long, RID> inChunkRIDCache = new ConcurrentHashMap<>();
 
   // --- Deferred vertex head chunk updates: persisted in one batch pass at close() ---
   // vertexKey → latest segment RID that needs to be set on the vertex record
-  private final Map<Long, RID> deferredOutHead = new HashMap<>();
-  private final Map<Long, RID> deferredInHead = new HashMap<>();
+  private final Map<Long, RID> deferredOutHead = new ConcurrentHashMap<>();
+  private final Map<Long, RID> deferredInHead = new ConcurrentHashMap<>();
 
   // --- Known-new vertices: created by createVertices(), guaranteed no existing segments ---
   // Allows skipping vertex record loads when creating first segment
-  private final java.util.HashSet<Long> knownNewVertexKeys = new java.util.HashSet<>();
+  private final Set<Long> knownNewVertexKeys = ConcurrentHashMap.newKeySet();
 
   // --- Statistics ---
   private long totalVerticesCreated;
