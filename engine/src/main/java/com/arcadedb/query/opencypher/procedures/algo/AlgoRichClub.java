@@ -85,17 +85,14 @@ public class AlgoRichClub extends AbstractAlgoProcedure {
     final int minDegree = args.length > 1 && args[1] instanceof Number n ? n.intValue() : 2;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     // Compute degrees
     final int[] degree = new int[n];

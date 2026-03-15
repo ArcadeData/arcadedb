@@ -88,17 +88,14 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     final int numClusters = args.length > 1 && args[1] instanceof Number n ? n.intValue() : 2;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.BOTH, relTypes);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     // Build neighbor BitSets for Jaccard similarity
     final BitSet[] neighborSets = new BitSet[n];
@@ -167,7 +164,7 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", vertices.get(i).getIdentity());
+      r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("cluster", clusterRemap.get(find(parent, i)));
       results.add(r);
     }

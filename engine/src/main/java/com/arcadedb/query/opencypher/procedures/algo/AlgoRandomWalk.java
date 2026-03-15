@@ -94,29 +94,26 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
       return Stream.empty();
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
-
-    final Integer srcIdxObj = ridToIdx.get(startVertex.getIdentity());
-    if (srcIdxObj == null)
+    final int srcIdx = graph.indexOf(startVertex.getIdentity());
+    if (srcIdx < 0)
       return Stream.empty();
 
     // Walk — use int[] array (all primitives, zero boxing)
     final int[] walk = new int[steps + 1];
-    walk[0] = srcIdxObj;
+    walk[0] = srcIdx;
     int walkLen = 1;
 
     final Random rnd = new Random(seed);
-    int cur = srcIdxObj;
+    int cur = srcIdx;
     for (int step = 0; step < steps; step++) {
       final int[] neighbors = adj[cur];
       if (neighbors.length == 0)
@@ -128,7 +125,7 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
     // Build RID list from walk (one ArrayList allocation)
     final List<RID> rids = new ArrayList<>(walkLen);
     for (int i = 0; i < walkLen; i++)
-      rids.add(vertices.get(walk[i]).getIdentity());
+      rids.add(graph.getVertex(walk[i]).getIdentity());
 
     final Map<String, Object> path = buildPath(rids, db);
     final ResultInternal result = new ResultInternal();

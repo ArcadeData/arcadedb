@@ -19,14 +19,16 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +48,7 @@ import java.util.stream.Stream;
  *   <li>maxIterations (int, default 20): maximum number of iterations</li>
  *   <li>tolerance (double, default 0.0001): convergence threshold</li>
  *   <li>weightProperty (string, default null): edge property to use as weight</li>
+ *   <li>direction (string, default "OUT"): edge direction for push — "OUT" for directed graphs, "BOTH" for undirected</li>
  * </ul>
  * </p>
  * <p>
@@ -100,61 +103,81 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
+    final String dirStr = config != null && config.get("direction") instanceof String s ? s : "OUT";
+    final Vertex.DIRECTION direction = "BOTH".equalsIgnoreCase(dirStr) ? Vertex.DIRECTION.BOTH :
+        "IN".equalsIgnoreCase(dirStr) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> vertIter = getAllVertices(db, null);
-    while (vertIter.hasNext())
-      vertices.add(vertIter.next());
-    if (vertices.isEmpty())
+
+    // Try CSR-accelerated path (only for unweighted PageRank)
+    final GraphTraversalProvider provider = weightProperty == null ? findProvider(db, null) : null;
+    if (provider != null) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(provider, dampingFactor, maxIterations, tolerance, direction);
+    }
+
+    // Fall back to OLTP path
+    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphTraversalProvider provider,
+      final double dampingFactor, final int maxIterations, final double tolerance,
+      final Vertex.DIRECTION direction) {
+    final int n = provider.getNodeCount();
+    if (n == 0)
       return Stream.empty();
 
-    final int n = vertices.size();
-    final Map<Vertex, Integer> vertexIndex = new HashMap<>(n);
-    for (int i = 0; i < n; i++)
-      vertexIndex.put(vertices.get(i), i);
+    // Zero-allocation neighbor access via NeighborView
+    final NeighborView view = provider.getNeighborView(direction);
+    final int[] nbrs;
+    final boolean hasView = view != null;
 
-    // Initialize scores
+    if (hasView) {
+      nbrs = view.neighbors();
+    } else {
+      // Fallback: materialize adjacency (should not happen with GAV, but keeps correctness)
+      nbrs = null;
+    }
+    final int[][] neighborsFallback = hasView ? null : buildAdjacencyFromProvider(provider, direction, null);
+
     final double[] scores = new double[n];
-    final double[] newScores = new double[n];
     final double initialScore = 1.0 / n;
     for (int i = 0; i < n; i++)
       scores[i] = initialScore;
 
-    // Iterative PageRank computation
     for (int iter = 0; iter < maxIterations; iter++) {
+      final double[] newScores = new double[n];
       double dangling = 0.0;
 
+      // Detect dangling nodes (no outgoing edges)
       for (int i = 0; i < n; i++) {
-        final Vertex v = vertices.get(i);
-        final long outDegree = v.countEdges(Vertex.DIRECTION.OUT);
-        if (outDegree == 0)
+        final int deg = hasView ? view.degree(i) : neighborsFallback[i].length;
+        if (deg == 0)
           dangling += scores[i];
-        newScores[i] = 0.0;
       }
 
-      for (int i = 0; i < n; i++) {
-        final Vertex v = vertices.get(i);
-        for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
-          final Vertex neighbor = edge.getInVertex();
-          final Integer neighborIdx = vertexIndex.get(neighbor);
-          if (neighborIdx == null)
+      // Push contributions: each node distributes its score to OUT neighbors
+      if (hasView) {
+        for (int i = 0; i < n; i++) {
+          final int start = view.offset(i);
+          final int end = view.offsetEnd(i);
+          if (start == end)
             continue;
-
-          double weight = 1.0;
-          if (weightProperty != null) {
-            final Object w = edge.get(weightProperty);
-            if (w instanceof Number num)
-              weight = num.doubleValue();
-          }
-
-          final long outDegree = v.countEdges(Vertex.DIRECTION.OUT);
-          if (outDegree > 0)
-            newScores[neighborIdx] += scores[i] * weight / outDegree;
+          final double contribution = scores[i] / (end - start);
+          for (int j = start; j < end; j++)
+            newScores[nbrs[j]] += contribution;
+        }
+      } else {
+        for (int i = 0; i < n; i++) {
+          final int[] neighbors = neighborsFallback[i];
+          if (neighbors.length == 0)
+            continue;
+          final double contribution = scores[i] / neighbors.length;
+          for (final int neighbor : neighbors)
+            newScores[neighbor] += contribution;
         }
       }
 
-      // Apply damping factor and dangling node contribution
       final double danglingContribution = dampingFactor * dangling / n;
       double maxChange = 0.0;
       for (int i = 0; i < n; i++) {
@@ -167,7 +190,120 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
         break;
     }
 
-    // Build result stream
+    final List<Result> results = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      final ResultInternal result = new ResultInternal();
+      result.setProperty("node", provider.getRID(i).asVertex());
+      result.setProperty("score", scores[i]);
+      results.add(result);
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
+      final int maxIterations, final double tolerance, final String weightProperty,
+      final Vertex.DIRECTION direction) {
+    final List<Vertex> vertices = new ArrayList<>();
+    final Iterator<Vertex> vertIter = getAllVertices(db, null);
+    while (vertIter.hasNext())
+      vertices.add(vertIter.next());
+    if (vertices.isEmpty())
+      return Stream.empty();
+
+    final int n = vertices.size();
+    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
+
+    // Build adjacency once: for each node, store (neighborIdx, weight) pairs.
+    // When direction is BOTH, edges are treated as bidirectional (undirected graphs).
+    final int[][] outNeighbors = new int[n][];
+    final double[][] outWeights = weightProperty != null ? new double[n][] : null;
+    for (int i = 0; i < n; i++) {
+      final Vertex v = vertices.get(i);
+      final List<int[]> nbrs = new ArrayList<>();
+      final List<Double> wts = weightProperty != null ? new ArrayList<>() : null;
+
+      // Always traverse OUT edges
+      for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
+        final Integer neighborIdx = ridToIdx.get(edge.getInVertex().getIdentity());
+        if (neighborIdx == null)
+          continue;
+        nbrs.add(new int[]{ neighborIdx });
+        if (wts != null) {
+          final Object w = edge.get(weightProperty);
+          wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+        }
+      }
+
+      // For BOTH direction, also traverse IN edges (treat undirected edges as bidirectional)
+      if (direction == Vertex.DIRECTION.BOTH) {
+        for (final Edge edge : v.getEdges(Vertex.DIRECTION.IN)) {
+          final Integer neighborIdx = ridToIdx.get(edge.getOutVertex().getIdentity());
+          if (neighborIdx == null)
+            continue;
+          nbrs.add(new int[]{ neighborIdx });
+          if (wts != null) {
+            final Object w = edge.get(weightProperty);
+            wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+          }
+        }
+      }
+
+      outNeighbors[i] = new int[nbrs.size()];
+      for (int j = 0; j < nbrs.size(); j++)
+        outNeighbors[i][j] = nbrs.get(j)[0];
+      if (outWeights != null) {
+        outWeights[i] = new double[wts.size()];
+        for (int j = 0; j < wts.size(); j++)
+          outWeights[i][j] = wts.get(j);
+      }
+    }
+
+    // Iterate purely in-memory
+    final double[] scores = new double[n];
+    final double initialScore = 1.0 / n;
+    for (int i = 0; i < n; i++)
+      scores[i] = initialScore;
+
+    for (int iter = 0; iter < maxIterations; iter++) {
+      final double[] newScores = new double[n];
+      double dangling = 0.0;
+
+      for (int i = 0; i < n; i++) {
+        if (outNeighbors[i].length == 0)
+          dangling += scores[i];
+      }
+
+      for (int i = 0; i < n; i++) {
+        final int[] neighbors = outNeighbors[i];
+        if (neighbors.length == 0)
+          continue;
+        if (outWeights != null) {
+          double totalWeight = 0;
+          for (final double w : outWeights[i])
+            totalWeight += w;
+          if (totalWeight == 0)
+            continue;
+          for (int j = 0; j < neighbors.length; j++)
+            newScores[neighbors[j]] += scores[i] * outWeights[i][j] / totalWeight;
+        } else {
+          final double contribution = scores[i] / neighbors.length;
+          for (final int neighbor : neighbors)
+            newScores[neighbor] += contribution;
+        }
+      }
+
+      final double danglingContribution = dampingFactor * dangling / n;
+      double maxChange = 0.0;
+      for (int i = 0; i < n; i++) {
+        newScores[i] = (1.0 - dampingFactor) / n + dampingFactor * newScores[i] + danglingContribution;
+        maxChange = Math.max(maxChange, Math.abs(newScores[i] - scores[i]));
+        scores[i] = newScores[i];
+      }
+
+      if (maxChange < tolerance)
+        break;
+    }
+
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal result = new ResultInternal();

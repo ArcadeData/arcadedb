@@ -44,7 +44,7 @@ import java.util.concurrent.*;
 @ExcludeFromJacocoGeneratedReport
 public interface DatabaseInternal extends Database {
   enum CALLBACK_EVENT {
-    TX_AFTER_WAL_WRITE, DB_NOT_CLOSED
+    TX_AFTER_WAL_WRITE, DB_NOT_CLOSED, DB_AFTER_OPEN
   }
 
   default TransactionContext getTransaction() {
@@ -73,6 +73,19 @@ public interface DatabaseInternal extends Database {
   PageManager getPageManager();
 
   DatabaseInternal getWrappedDatabaseInstance();
+
+  /**
+   * Unwraps a database to its underlying instance (e.g., ServerDatabase → LocalDatabase).
+   * Ensures consistent identity regardless of wrapper layers.
+   */
+  static Database unwrap(final Database database) {
+    if (database instanceof DatabaseInternal) {
+      final DatabaseInternal internal = ((DatabaseInternal) database).getWrappedDatabaseInstance();
+      if (internal != null && internal != database)
+        return unwrap(internal);
+    }
+    return database;
+  }
 
   Map<String, Object> getWrappers();
 

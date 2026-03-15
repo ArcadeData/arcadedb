@@ -19,14 +19,16 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.graph.Edge;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -39,6 +41,10 @@ import java.util.stream.Stream;
  * Detects communities using the Label Propagation Algorithm (LPA). Each node adopts the
  * most common label among its neighbors in each iteration. Very fast and scalable; useful
  * for real-time community detection. Results may be non-deterministic due to tie-breaking.
+ * </p>
+ * <p>
+ * When a Graph Analytical View (GAV) is available, delegates to the CSR-native
+ * implementation in {@link GraphAlgorithms#labelPropagation} for maximum performance.
  * </p>
  * <p>
  * Config map parameters (all optional):
@@ -93,10 +99,41 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
         n.intValue() : 10;
-    final String directionStr = config != null && config.get("direction") instanceof String s ? s : "BOTH";
-    final Vertex.DIRECTION direction = parseDirection(directionStr);
 
     final Database db = context.getDatabase();
+
+    // Try CSR-accelerated path: delegate to native label propagation on CSR arrays
+    final GraphTraversalProvider provider = findProvider(db, null);
+    if (provider instanceof GraphAnalyticalView gav) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(gav, maxIterations);
+    }
+
+    // Fall back to OLTP path
+    final String directionStr = config != null && config.get("direction") instanceof String s ? s : "BOTH";
+    final Vertex.DIRECTION direction = parseDirection(directionStr);
+    return executeWithOLTP(db, maxIterations, direction);
+  }
+
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final int maxIterations) {
+    final int n = gav.getNodeCount();
+    if (n == 0)
+      return Stream.empty();
+
+    final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations);
+
+    final List<Result> results = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      final ResultInternal result = new ResultInternal();
+      result.setProperty("node", gav.getRID(i).asVertex());
+      result.setProperty("communityId", labels[i]);
+      results.add(result);
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> executeWithOLTP(final Database db, final int maxIterations,
+      final Vertex.DIRECTION direction) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> vertIter = getAllVertices(db, null);
     while (vertIter.hasNext())
@@ -105,46 +142,32 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       return Stream.empty();
 
     final int n = vertices.size();
-    final Map<Vertex, Integer> vertexIndex = new HashMap<>(n);
-    for (int i = 0; i < n; i++)
-      vertexIndex.put(vertices.get(i), i);
+    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
-    // Initialize: each node gets a unique label (its index)
-    final int[] label = new int[n];
+    // Build adjacency once to avoid repeated OLTP traversal
+    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, direction, null);
+
+    // Initialize: each node gets its own index as label
+    int[] label = new int[n];
     for (int i = 0; i < n; i++)
       label[i] = i;
 
-    // Create a mutable list of indices for shuffling
-    final List<Integer> order = new ArrayList<>(n);
-    for (int i = 0; i < n; i++)
-      order.add(i);
-
+    // Synchronous label propagation: compute all new labels, then apply
     for (int iter = 0; iter < maxIterations; iter++) {
-      Collections.shuffle(order);
+      final int[] newLabel = new int[n];
       boolean changed = false;
 
-      for (final int i : order) {
-        final Vertex v = vertices.get(i);
+      for (int i = 0; i < n; i++) {
+        final int[] neighbors = adj[i];
+        if (neighbors.length == 0) {
+          newLabel[i] = label[i];
+          continue;
+        }
 
         // Count labels of neighbors
         final Map<Integer, Integer> labelCount = new HashMap<>();
-        for (final Edge edge : v.getEdges(direction)) {
-          final Vertex neighbor;
-          if (direction == Vertex.DIRECTION.OUT)
-            neighbor = edge.getInVertex();
-          else if (direction == Vertex.DIRECTION.IN)
-            neighbor = edge.getOutVertex();
-          else
-            neighbor = edge.getOut().equals(v.getIdentity()) ? edge.getInVertex() : edge.getOutVertex();
-
-          final Integer neighborIdx = vertexIndex.get(neighbor);
-          if (neighborIdx == null)
-            continue;
+        for (final int neighborIdx : neighbors)
           labelCount.merge(label[neighborIdx], 1, Integer::sum);
-        }
-
-        if (labelCount.isEmpty())
-          continue;
 
         // Find most frequent label (ties broken by smallest label)
         int bestLabel = label[i];
@@ -156,32 +179,24 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
           }
         }
 
-        if (bestLabel != label[i]) {
-          label[i] = bestLabel;
+        newLabel[i] = bestLabel;
+        if (bestLabel != label[i])
           changed = true;
-        }
       }
 
+      label = newLabel;
       if (!changed)
         break;
     }
 
-    // Remap community IDs to be sequential
-    final Map<Integer, Integer> communityRemap = new HashMap<>();
-    int nextId = 0;
-    for (int i = 0; i < n; i++) {
-      if (!communityRemap.containsKey(label[i]))
-        communityRemap.put(label[i], nextId++);
-    }
-
+    // Return raw label values (no sequential remapping)
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal result = new ResultInternal();
       result.setProperty("node", vertices.get(i));
-      result.setProperty("communityId", communityRemap.get(label[i]));
+      result.setProperty("communityId", label[i]);
       results.add(result);
     }
     return results.stream();
   }
-
 }

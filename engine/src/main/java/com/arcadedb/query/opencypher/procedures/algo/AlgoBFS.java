@@ -19,16 +19,14 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -36,6 +34,10 @@ import java.util.stream.Stream;
  * <p>
  * Performs a Breadth-First Search (BFS) from the given start node and returns all reachable
  * nodes in BFS order together with their depth from the start node.
+ * </p>
+ * <p>
+ * When a Graph Analytical View (GAV) is available, the algorithm uses zero-allocation
+ * NeighborView iteration over CSR arrays, avoiding per-node array materialization.
  * </p>
  * <p>
  * Parameters:
@@ -96,24 +98,62 @@ public class AlgoBFS extends AbstractAlgoProcedure {
     final int maxDepth         = args.length > 3 ? ((Number) args[3]).intValue() : Integer.MAX_VALUE;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
-
-    final Integer startIdxObj = ridToIdx.get(startNode.getIdentity());
-    if (startIdxObj == null)
+    final int startIdx = graph.indexOf(startNode.getIdentity());
+    if (startIdx < 0)
       return Stream.empty();
-    final int startIdx = startIdxObj;
 
-    // BFS with depth tracking; use int[] as queue to avoid object allocation
+    // Try zero-allocation NeighborView path (CSR-backed)
+    final NeighborView nv = graph.neighborView(dir, relTypes);
+    if (nv != null)
+      return bfsWithNeighborView(nv, graph, n, startIdx, maxDepth);
+
+    // Fallback: materialize adjacency arrays
+    final int[][] adj = graph.adjacency(dir, relTypes);
+    return bfsWithAdjacency(adj, graph, n, startIdx, maxDepth);
+  }
+
+  private Stream<Result> bfsWithNeighborView(final NeighborView nv, final GraphData graph,
+      final int n, final int startIdx, final int maxDepth) {
+    final int[] nbrs = nv.neighbors();
+    final int[] queue = new int[n];
+    final int[] depth = new int[n];
+    final boolean[] visited = new boolean[n];
+
+    int head = 0, tail = 0;
+    queue[tail++] = startIdx;
+    visited[startIdx] = true;
+    depth[startIdx] = 0;
+
+    final List<Result> results = new ArrayList<>();
+    while (head < tail) {
+      final int v = queue[head++];
+      if (depth[v] >= maxDepth)
+        continue;
+      for (int j = nv.offset(v), end = nv.offsetEnd(v); j < end; j++) {
+        final int u = nbrs[j];
+        if (!visited[u]) {
+          visited[u] = true;
+          depth[u] = depth[v] + 1;
+          queue[tail++] = u;
+          final ResultInternal r = new ResultInternal();
+          r.setProperty("node", graph.getVertex(u));
+          r.setProperty("depth", depth[u]);
+          results.add(r);
+        }
+      }
+    }
+    return results.stream();
+  }
+
+  private Stream<Result> bfsWithAdjacency(final int[][] adj, final GraphData graph,
+      final int n, final int startIdx, final int maxDepth) {
     final int[] queue = new int[n];
     final int[] depth = new int[n];
     final boolean[] visited = new boolean[n];
@@ -134,7 +174,7 @@ public class AlgoBFS extends AbstractAlgoProcedure {
           depth[u] = depth[v] + 1;
           queue[tail++] = u;
           final ResultInternal r = new ResultInternal();
-          r.setProperty("node", vertices.get(u));
+          r.setProperty("node", graph.getVertex(u));
           r.setProperty("depth", depth[u]);
           results.add(r);
         }

@@ -97,17 +97,14 @@ public class AlgoLongestPathDAG extends AbstractAlgoProcedure {
     final String weightProperty = args.length > 1 ? extractString(args[1], "weightProperty") : null;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] outAdj = buildAdjacencyList(vertices, ridToIdx, Vertex.DIRECTION.OUT, relTypes);
+    final int[][] outAdj = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
     // Compute in-degrees for topological sort (Kahn's algorithm)
     final int[] inDegree = new int[n];
@@ -146,7 +143,7 @@ public class AlgoLongestPathDAG extends AbstractAlgoProcedure {
 
     for (int ti = 0; ti < n; ti++) {
       final int u = topoOrder[ti];
-      final Vertex vu = vertices.get(u);
+      final Vertex vu = graph.getVertex(u);
       for (final Edge edge : vu.getEdges(Vertex.DIRECTION.OUT)) {
         if (relTypes != null) {
           final String type = edge.getTypeName();
@@ -155,9 +152,8 @@ public class AlgoLongestPathDAG extends AbstractAlgoProcedure {
             if (rt.equals(type)) { found = true; break; }
           if (!found) continue;
         }
-        final Integer vObj = ridToIdx.get(edge.getIn());
-        if (vObj == null) continue;
-        final int v = vObj;
+        final int v = graph.indexOf(edge.getIn());
+        if (v < 0) continue;
         double weight = 1.0;
         if (weightProperty != null) {
           final Object w = edge.get(weightProperty);
@@ -174,9 +170,9 @@ public class AlgoLongestPathDAG extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("distance", dp[i]);
-      r.setProperty("source", vertices.get(source[i]));
+      r.setProperty("source", graph.getVertex(source[i]));
       results.add(r);
     }
     return results.stream();

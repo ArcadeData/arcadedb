@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -311,5 +312,23 @@ class SchemaTest extends TestHelper {
     assertThat(database.getSchema().existsType("TestType")).isFalse();
     assertThat(database.getSchema().existsType("NewTypeAfterDrop")).isTrue();
     assertThat(database.getSchema().getType("NewTypeAfterDrop").existsProperty("field")).isTrue();
+  }
+
+  @Test
+  void getExtensionReturnsDefensiveCopy() {
+    final JSONObject ext = new JSONObject();
+    ext.put("key", "value");
+    database.getSchema().setExtension("testExt", ext);
+
+    // Mutate the returned object without calling setExtension
+    final JSONObject returned = database.getSchema().getExtension("testExt");
+    assertThat(returned).isNotNull();
+    returned.put("key", "mutated");
+    returned.put("extra", "sneaky");
+
+    // The stored extension must be unaffected
+    final JSONObject stored = database.getSchema().getExtension("testExt");
+    assertThat(stored.getString("key")).isEqualTo("value");
+    assertThat(stored.has("extra")).isFalse();
   }
 }

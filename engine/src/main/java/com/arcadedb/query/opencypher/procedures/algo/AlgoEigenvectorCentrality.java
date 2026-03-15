@@ -88,17 +88,14 @@ public class AlgoEigenvectorCentrality extends AbstractAlgoProcedure {
     final double tolerance     = args.length > 3 ? ((Number) args[3]).doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
 
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+
+
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+    final int[][] adj = graph.adjacency(dir, relTypes);
 
     double[] scores    = new double[n];
     double[] newScores = new double[n];
@@ -140,7 +137,7 @@ public class AlgoEigenvectorCentrality extends AbstractAlgoProcedure {
     final double[] finalScores = scores;
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", graph.getVertex(i));
       r.setProperty("score", finalScores[i]);
       return (Result) r;
     });
