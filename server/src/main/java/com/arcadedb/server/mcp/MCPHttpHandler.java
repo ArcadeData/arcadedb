@@ -22,9 +22,14 @@ import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
+import com.arcadedb.server.mcp.tools.GetServerSettingsTool;
 import com.arcadedb.server.mcp.tools.ListDatabasesTool;
+import com.arcadedb.server.mcp.tools.ProfilerStartTool;
+import com.arcadedb.server.mcp.tools.ProfilerStatusTool;
+import com.arcadedb.server.mcp.tools.ProfilerStopTool;
 import com.arcadedb.server.mcp.tools.QueryTool;
 import com.arcadedb.server.mcp.tools.ServerStatusTool;
+import com.arcadedb.server.mcp.tools.SetServerSettingTool;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -50,6 +55,11 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     TOOLS_LIST.put(QueryTool.getDefinition());
     TOOLS_LIST.put(ExecuteCommandTool.getDefinition());
     TOOLS_LIST.put(ServerStatusTool.getDefinition());
+    TOOLS_LIST.put(ProfilerStartTool.getDefinition());
+    TOOLS_LIST.put(ProfilerStopTool.getDefinition());
+    TOOLS_LIST.put(ProfilerStatusTool.getDefinition());
+    TOOLS_LIST.put(GetServerSettingsTool.getDefinition());
+    TOOLS_LIST.put(SetServerSettingTool.getDefinition());
   }
 
   private final ArcadeDBServer  server;
@@ -142,6 +152,11 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
         case "query" -> QueryTool.execute(server, user, args, config);
         case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
         case "server_status" -> ServerStatusTool.execute(server, user, args, config);
+        case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
+        case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
+        case "profiler_status" -> ProfilerStatusTool.execute(server, user, args, config);
+        case "get_server_settings" -> GetServerSettingsTool.execute(server, user, args, config);
+        case "set_server_setting" -> SetServerSettingTool.execute(server, user, args, config);
         default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
       };
 
@@ -197,6 +212,11 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
       case "get_schema" -> result.getJSONArray("types", new JSONArray()).length() + " type(s)";
       case "query", "execute_command" -> result.getInt("count", 0) + " record(s)";
       case "server_status" -> "ok";
+      case "profiler_start" -> result.getString("status", "ok");
+      case "profiler_stop" -> result.getInt("totalQueries", 0) + " queries captured";
+      case "profiler_status" -> result.getBoolean("recording", false) ? "recording" : "idle";
+      case "get_server_settings" -> result.getJSONArray("settings", new JSONArray()).length() + " setting(s)";
+      case "set_server_setting" -> result.getString("key", "") + " updated";
       default -> "ok";
     };
   }
