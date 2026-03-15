@@ -30,16 +30,19 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 public class ReplicationServerFixedClientConnectionIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
   private       int           errors   = 0;
@@ -59,12 +62,23 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
+  @Override
   @Test
-  @Disabled
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
+  @Disabled("This test is designed for a degenerate case: MAJORITY quorum with 2 servers prevents leader election. " +
+      "With 2 servers and MAJORITY quorum, a new leader cannot be elected when the first leader fails (needs 2 votes, only has 1). " +
+      "This test demonstrates FIXED connection strategy behavior in this scenario, but it's not a realistic production configuration.")
+  public void replication() {
+    testReplication();
+  }
+
+  @Disabled("This test is designed for a degenerate case: MAJORITY quorum with 2 servers prevents leader election. " +
+      "With 2 servers and MAJORITY quorum, a new leader cannot be elected when the first leader fails (needs 2 votes, only has 1). " +
+      "This test demonstrates FIXED connection strategy behavior in this scenario, but it's not a realistic production configuration.")
   void testReplication() {
     checkDatabases();
 
@@ -87,8 +101,10 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
       for (int i = 0; i < getVerticesPerTx(); ++i) {
         for (int retry = 0; retry < maxRetry; ++retry) {
           try {
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
-                "distributed-test");
+            final ResultSet resultSet = db.command("SQL",
+                "CREATE VERTEX " + VERTEX1_TYPE_NAME +
+                    " SET id = ?, name = ?",
+                ++counter, "distributed-test");
 
             assertThat(resultSet.hasNext()).isTrue();
             final Result result = resultSet.next();
@@ -118,7 +134,9 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
     }
 
     LogManager.instance().log(this, Level.FINE, "Done");
-    CodeUtils.sleep(1000);
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     for (final int s : getServerToCheck())
@@ -126,14 +144,14 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
 
     onAfterTest();
 
-    Assertions.assertThat(errors).as("Found %d errors during the test", errors).isGreaterThanOrEqualTo(10);
+    assertThat(errors).as("Found %d errors during the test", errors).isGreaterThanOrEqualTo(10);
   }
 
   @Override
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_1"))
       server.registerTestEventListener((type, object, server1) -> {
-        if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
+        if (type == ReplicationCallback.Type.REPLICA_MSG_RECEIVED) {
           if (messages.incrementAndGet() > 1000 && getServer(0).isStarted()) {
             testLog("TEST: Stopping the Leader...");
 

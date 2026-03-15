@@ -19,15 +19,19 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.log.LogManager;
-import com.arcadedb.utility.CodeUtils;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
+@Tag("ha")
 class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
+
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void testReplication() {
     // Ensure all servers are fully connected and synchronized before writing against replica
     // This is critical because we're writing against server 1 (replica) which must forward
@@ -36,30 +40,33 @@ class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
     LogManager.instance().log(this, Level.INFO,
         "TEST: Waiting for all servers to be fully connected before writing against replica...");
 
-    // Wait for cluster to be fully established
-    Awaitility.await()
+    // Wait for cluster to be fully established and stable
+    Awaitility.await("cluster fully connected and stable")
         .atMost(30, TimeUnit.SECONDS)
         .pollInterval(500, TimeUnit.MILLISECONDS)
         .until(() -> {
           // Check that server 1 (replica) is connected to the leader
-          if (getServer(1).getHA() != null) {
-            final String leaderName = getServer(1).getHA().getLeaderName();
-            if (leaderName != null && !leaderName.isEmpty()) {
-              LogManager.instance().log(this, Level.INFO,
-                  "TEST: Server 1 connected to leader: " + leaderName);
-              return true;
+          if (getServer(1).getHA() == null) {
+            return false;
+          }
+
+          final String leaderName = getServer(1).getHA().getLeaderName();
+          if (leaderName == null || leaderName.isEmpty()) {
+            return false;
+          }
+
+          LogManager.instance().log(this, Level.INFO,
+              "TEST: Server 1 connected to leader: " + leaderName);
+
+          // Ensure connection is stable by verifying all replication queues are empty
+          for (int i = 0; i < getServerCount(); i++) {
+            if (getServer(i).getHA() != null && getServer(i).getHA().getMessagesInQueue() > 0) {
+              return false;
             }
           }
-          return false;
+
+          return true;
         });
-
-    // Additional wait to ensure connection is stable
-    CodeUtils.sleep(2000);
-
-    // Ensure all servers have empty replication queues
-    for (int i = 0; i < getServerCount(); i++) {
-      waitForReplicationIsCompleted(i);
-    }
 
     LogManager.instance().log(this, Level.INFO,
         "TEST: Starting write operations against replica (server 1)...");
