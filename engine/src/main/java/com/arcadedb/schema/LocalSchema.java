@@ -72,6 +72,7 @@ import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.concurrent.locks.*;
 import java.util.logging.*;
 
 /**
@@ -92,6 +93,7 @@ public class LocalSchema implements Schema {
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
   private final       List<Component>                        files                         = new ArrayList<>();
+  private final       ReentrantReadWriteLock                  filesLock                     = new ReentrantReadWriteLock();
   final               Map<String, LocalBucket>               bucketMap                     = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
@@ -263,37 +265,57 @@ public class LocalSchema implements Schema {
 
   @Override
   public Component getFileById(final int id) {
-    if (id >= files.size())
-      throw new SchemaException("File with id '" + id + "' was not found");
+    filesLock.readLock().lock();
+    try {
+      if (id >= files.size())
+        throw new SchemaException("File with id '" + id + "' was not found");
 
-    final Component p = files.get(id);
-    if (p == null)
-      throw new SchemaException("File with id '" + id + "' was not found");
-    return p;
+      final Component p = files.get(id);
+      if (p == null)
+        throw new SchemaException("File with id '" + id + "' was not found");
+      return p;
+    } finally {
+      filesLock.readLock().unlock();
+    }
   }
 
   @Override
   public Component getFileByIdIfExists(final int id) {
-    if (id >= files.size())
-      return null;
+    filesLock.readLock().lock();
+    try {
+      if (id >= files.size())
+        return null;
 
-    return files.get(id);
+      return files.get(id);
+    } finally {
+      filesLock.readLock().unlock();
+    }
   }
 
   public Component getFileByName(final String name) {
-    for (final Component f : files)
-      if (f != null && name.equals(f.getName()))
-        return f;
-    return null;
+    filesLock.readLock().lock();
+    try {
+      for (final Component f : files)
+        if (f != null && name.equals(f.getName()))
+          return f;
+      return null;
+    } finally {
+      filesLock.readLock().unlock();
+    }
   }
 
   public void removeFile(final int fileId) {
-    if (fileId >= files.size())
-      return;
+    filesLock.writeLock().lock();
+    try {
+      if (fileId >= files.size())
+        return;
 
-    database.getTransaction().removeFile(fileId);
+      database.getTransaction().removeFile(fileId);
 
-    files.set(fileId, null);
+      files.set(fileId, null);
+    } finally {
+      filesLock.writeLock().unlock();
+    }
   }
 
   @Override
@@ -319,20 +341,25 @@ public class LocalSchema implements Schema {
   }
 
   public LocalBucket getBucketById(final int id, final boolean throwExceptionIfNotFound) {
-    if (id < 0 || id >= files.size())
-      if (throwExceptionIfNotFound)
-        throw new SchemaException("Bucket with id '" + id + "' was not found");
-      else
-        return null;
+    filesLock.readLock().lock();
+    try {
+      if (id < 0 || id >= files.size())
+        if (throwExceptionIfNotFound)
+          throw new SchemaException("Bucket with id '" + id + "' was not found");
+        else
+          return null;
 
-    final Component p = files.get(id);
-    if (!(p instanceof LocalBucket)) {
-      if (throwExceptionIfNotFound)
-        throw new SchemaException("Bucket with id '" + id + "' was not found");
-      else
-        return null;
+      final Component p = files.get(id);
+      if (!(p instanceof LocalBucket)) {
+        if (throwExceptionIfNotFound)
+          throw new SchemaException("Bucket with id '" + id + "' was not found");
+        else
+          return null;
+      }
+      return (LocalBucket) p;
+    } finally {
+      filesLock.readLock().unlock();
     }
-    return (LocalBucket) p;
   }
 
   @Override
@@ -1746,16 +1773,21 @@ public class LocalSchema implements Schema {
   }
 
   public void registerFile(final Component file) {
-    final int fileId = file.getFileId();
+    filesLock.writeLock().lock();
+    try {
+      final int fileId = file.getFileId();
 
-    while (files.size() < fileId + 1)
-      files.add(null);
+      while (files.size() < fileId + 1)
+        files.add(null);
 
-    if (files.get(fileId) != null)
-      throw new SchemaException(
-          "File with id '" + fileId + "' already exists (previous=" + files.get(fileId) + " new=" + file + ")");
+      if (files.get(fileId) != null)
+        throw new SchemaException(
+            "File with id '" + fileId + "' already exists (previous=" + files.get(fileId) + " new=" + file + ")");
 
-    files.set(fileId, file);
+      files.set(fileId, file);
+    } finally {
+      filesLock.writeLock().unlock();
+    }
   }
 
   public void initComponents() {

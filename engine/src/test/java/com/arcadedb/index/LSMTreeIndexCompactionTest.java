@@ -34,6 +34,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -128,6 +130,87 @@ class LSMTreeIndexCompactionTest extends TestHelper {
       checkLookups(1, 3);
       checkRanges(1, 3);
       checkNotUniqueEntries(3);
+
+    } finally {
+      GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(300);
+      GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(10);
+    }
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3615.
+   * Concurrent index compactions triggered IndexOutOfBoundsException in LocalSchema.registerFile()
+   * because the ArrayList was not synchronized.
+   */
+  @Test
+  void testConcurrentCompaction() throws Exception {
+    final int numIndices = 8;
+    final int recordsPerIndex = 5_000;
+    final AtomicInteger errors = new AtomicInteger(0);
+
+    try {
+      GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(1);
+      GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
+
+      // Create multiple document types each with their own index
+      database.transaction(() -> {
+        for (int i = 0; i < numIndices; i++) {
+          final String typeName = "ConcurrentType" + i;
+          final DocumentType t = database.getSchema().buildDocumentType().withName(typeName).withTotalBuckets(1).create();
+          t.createProperty("value", String.class);
+          database.getSchema().buildTypeIndex(typeName, new String[] { "value" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+              .withUnique(false).withPageSize(INDEX_PAGE_SIZE).create();
+        }
+      });
+
+      // Insert records into each type
+      database.async().setParallelLevel(1);
+      database.async().setCommitEvery(1000);
+      for (int i = 0; i < numIndices; i++) {
+        final String typeName = "ConcurrentType" + i;
+        final int typeIndex = i;
+        database.async().transaction(() -> {
+          for (int r = 0; r < recordsPerIndex; r++)
+            database.newDocument(typeName).set("value", typeName + "_" + r + "_" + typeIndex).save();
+        });
+        database.async().waitCompletion();
+      }
+
+      // Trigger concurrent compactions on all indices simultaneously
+      final List<Index> allIndices = Arrays.asList(database.getSchema().getIndexes());
+      final CountDownLatch start = new CountDownLatch(1);
+      final CountDownLatch done = new CountDownLatch(allIndices.size());
+
+      for (final Index index : allIndices) {
+        final Thread t = new Thread(() -> {
+          try {
+            start.await();
+            if (index instanceof IndexInternal internal) {
+              internal.scheduleCompaction();
+              internal.compact();
+            }
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Concurrent compaction error", e);
+            errors.incrementAndGet();
+          } finally {
+            done.countDown();
+          }
+        });
+        t.setDaemon(true);
+        t.start();
+      }
+
+      start.countDown();
+      assertThat(done.await(60, TimeUnit.SECONDS)).as("Concurrent compaction must complete within 60s").isTrue();
+
+      assertThat(errors.get()).as("Concurrent compaction must not throw errors").isEqualTo(0);
+
+      // Verify data integrity after concurrent compaction
+      for (int i = 0; i < numIndices; i++) {
+        final String typeName = "ConcurrentType" + i;
+        final long count = database.countType(typeName, false);
+        assertThat(count).as("Record count mismatch for " + typeName).isEqualTo(recordsPerIndex);
+      }
 
     } finally {
       GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(300);
