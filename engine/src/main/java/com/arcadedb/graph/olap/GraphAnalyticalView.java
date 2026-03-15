@@ -184,7 +184,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final String[]   propertyFilter;
   private final String[]   edgePropertyFilter; // null = no edge properties (default)
   private       int        propertySampleSize = CSRBuilder.DEFAULT_PROPERTY_SAMPLE_SIZE;
-  private       boolean    useWhenStale;
+  private volatile boolean useWhenStale;
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -1132,9 +1132,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
               final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
               final long durationMs = System.currentTimeMillis() - buildStart;
-              // Atomic swap — readers see all-or-nothing
-              this.snapshot = snapshotFromResult(result, durationMs);
-              this.status = Status.READY;
+              // Synchronized swap: check that the mode hasn't changed to SYNCHRONOUS during rebuild.
+              // If it did, applyDelta() may have enriched the current snapshot with overlay deltas
+              // that would be lost by an unconditional swap.
+              synchronized (GraphAnalyticalView.this) {
+                if (updateMode == UpdateMode.ASYNCHRONOUS) {
+                  this.snapshot = snapshotFromResult(result, durationMs);
+                  this.status = Status.READY;
+                } else
+                  LogManager.instance().log(this, Level.INFO,
+                      "GraphAnalyticalView '%s': async rebuild result discarded (update mode changed to %s during rebuild)", name, updateMode);
+              }
 
             } finally {
               if (database.isTransactionActive())

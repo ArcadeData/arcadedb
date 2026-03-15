@@ -130,14 +130,13 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       private boolean isConnectedOLTP(final Vertex source, final Vertex target) {
         final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
         for (final Edge edge : source.getEdges(arcadeDirection, edgeTypes)) {
-          final Vertex other = arcadeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-          if (other.getIdentity().equals(target.getIdentity()))
-            return true;
-          // For BOTH direction, check either end
           if (arcadeDirection == Vertex.DIRECTION.BOTH) {
-            final Vertex out = edge.getOutVertex();
-            final Vertex in = edge.getInVertex();
-            if (out.getIdentity().equals(target.getIdentity()) || in.getIdentity().equals(target.getIdentity()))
+            // source can be either endpoint, so check both sides
+            if (edge.getOutVertex().getIdentity().equals(target.getIdentity()) || edge.getInVertex().getIdentity().equals(target.getIdentity()))
+              return true;
+          } else {
+            final Vertex other = arcadeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+            if (other.getIdentity().equals(target.getIdentity()))
               return true;
           }
         }

@@ -3996,4 +3996,128 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     gav.drop();
   }
+
+  // ---- GAVExpandInto tests ----
+
+  @Test
+  void testGAVExpandIntoCSRFastPath() {
+    // Triangle: A->B->C->A — the last relationship triggers ExpandInto (both endpoints bound)
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    charlie.newEdge("KNOWS", alice);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("expandIntoCSR")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Triangle query: third relationship uses ExpandInto (both a and c already bound)
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) " +
+            "RETURN a.name AS a, b.name AS b, c.name AS c ORDER BY a");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("a") + "->" + r.getProperty("b") + "->" + r.getProperty("c"));
+    }
+    rs.close();
+
+    assertThat(results).hasSize(3);
+    assertThat(results).contains("Alice->Bob->Charlie", "Bob->Charlie->Alice", "Charlie->Alice->Bob");
+
+    gav.drop();
+  }
+
+  @Test
+  void testGAVExpandIntoOLTPFallback() {
+    // Build GAV, then add a new vertex+edge outside GAV mapping — forces OLTP fallback
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", alice);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("expandIntoFallback")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Add new vertex after GAV build — not in CSR mapping
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    charlie.newEdge("KNOWS", alice);
+    alice.newEdge("KNOWS", charlie);
+    database.commit();
+
+    // Triangle query: Charlie is not in GAV, so OLTP fallback kicks in for connectivity check
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(a) " +
+            "RETURN a.name AS a, b.name AS b ORDER BY a, b");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("a") + "->" + r.getProperty("b"));
+    }
+    rs.close();
+
+    // Alice<->Bob and Alice<->Charlie are mutual — all form 2-cycles
+    assertThat(results).contains("Alice->Bob", "Bob->Alice", "Alice->Charlie", "Charlie->Alice");
+
+    gav.drop();
+  }
+
+  @Test
+  void testGAVExpandIntoBothDirection() {
+    // Test BOTH direction with undirected pattern matching
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    // A->B, B->C, C->A (directed triangle)
+    alice.newEdge("KNOWS", bob);
+    bob.newEdge("KNOWS", charlie);
+    charlie.newEdge("KNOWS", alice);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("expandIntoBoth")
+        .withEdgeTypes("KNOWS")
+        .build();
+
+    // Undirected triangle: (a)-[:KNOWS]-(b)-[:KNOWS]-(c)-[:KNOWS]-(a) — BOTH direction for expand-into
+    final ResultSet rs = database.command("cypher",
+        "MATCH (a:Person)-[:KNOWS]-(b:Person)-[:KNOWS]-(c:Person)-[:KNOWS]-(a) " +
+            "WHERE a.name < b.name AND b.name < c.name " +
+            "RETURN a.name AS a, b.name AS b, c.name AS c");
+
+    final List<String> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      final var r = rs.next();
+      results.add(r.getProperty("a") + "-" + r.getProperty("b") + "-" + r.getProperty("c"));
+    }
+    rs.close();
+
+    // With undirected edges and the ordering constraint, should find exactly one triangle
+    assertThat(results).hasSize(1);
+    assertThat(results).containsExactly("Alice-Bob-Charlie");
+
+    gav.drop();
+  }
 }

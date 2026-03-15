@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.WeakHashMap;
@@ -88,7 +87,8 @@ public class GraphTraversalProviderRegistry {
     final Database key = unwrap(database);
     synchronized (REGISTRY) {
       final CopyOnWriteArrayList<GraphTraversalProvider> list = REGISTRY.get(key);
-      return list != null ? Collections.unmodifiableList(new ArrayList<>(list)) : Collections.emptyList();
+      // CopyOnWriteArrayList's iterator already returns a snapshot — no need to copy into a new ArrayList
+      return list != null ? Collections.unmodifiableList(list) : Collections.emptyList();
     }
   }
 
