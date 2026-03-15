@@ -77,7 +77,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(5);
+    assertThat(tools.length()).isEqualTo(10);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -85,6 +85,11 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     boolean hasQuery = false;
     boolean hasExecuteCommand = false;
     boolean hasServerStatus = false;
+    boolean hasProfilerStart = false;
+    boolean hasProfilerStop = false;
+    boolean hasProfilerStatus = false;
+    boolean hasGetServerSettings = false;
+    boolean hasSetServerSetting = false;
 
     for (int i = 0; i < tools.length(); i++) {
       final String name = tools.getJSONObject(i).getString("name");
@@ -94,6 +99,11 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       case "query" -> hasQuery = true;
       case "execute_command" -> hasExecuteCommand = true;
       case "server_status" -> hasServerStatus = true;
+      case "profiler_start" -> hasProfilerStart = true;
+      case "profiler_stop" -> hasProfilerStop = true;
+      case "profiler_status" -> hasProfilerStatus = true;
+      case "get_server_settings" -> hasGetServerSettings = true;
+      case "set_server_setting" -> hasSetServerSetting = true;
       }
     }
     assertThat(hasListDatabases).isTrue();
@@ -101,6 +111,11 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasQuery).isTrue();
     assertThat(hasExecuteCommand).isTrue();
     assertThat(hasServerStatus).isTrue();
+    assertThat(hasProfilerStart).isTrue();
+    assertThat(hasProfilerStop).isTrue();
+    assertThat(hasProfilerStatus).isTrue();
+    assertThat(hasGetServerSettings).isTrue();
+    assertThat(hasSetServerSetting).isTrue();
   }
 
   @Test
@@ -437,6 +452,195 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     } finally {
       connection.disconnect();
     }
+  }
+
+  @Test
+  void profilerStartStopCycle() throws Exception {
+    // Enable admin permission for profiler
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowAdmin", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    // Start profiler
+    final JSONObject startResponse = callTool("profiler_start", new JSONObject().put("timeoutSeconds", 30));
+    assertThat(startResponse.getBoolean("isError", true)).isFalse();
+    final JSONObject startResult = new JSONObject(startResponse.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(startResult.getString("status")).isEqualTo("started");
+    assertThat(startResult.getInt("timeoutSeconds")).isEqualTo(30);
+
+    // Run a query through the server database so the profiler captures it
+    getServer(0).getDatabase("graph").query("sql", "SELECT FROM V1 LIMIT 1").close();
+
+    // Check status while recording
+    final JSONObject statusResponse = callTool("profiler_status", new JSONObject());
+    assertThat(statusResponse.getBoolean("isError", true)).isFalse();
+    final JSONObject statusResult = new JSONObject(statusResponse.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(statusResult.getBoolean("recording")).isTrue();
+    assertThat(statusResult.getInt("totalQueries")).isGreaterThan(0);
+
+    // Stop profiler
+    final JSONObject stopResponse = callTool("profiler_stop", new JSONObject());
+    assertThat(stopResponse.getBoolean("isError", true)).isFalse();
+    final JSONObject stopResult = new JSONObject(stopResponse.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(stopResult.getBoolean("recording")).isFalse();
+    assertThat(stopResult.has("queries")).isTrue();
+    assertThat(stopResult.getInt("totalQueries")).isGreaterThan(0);
+  }
+
+  @Test
+  void profilerStartAlreadyRecording() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowAdmin", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    // Start profiler
+    callTool("profiler_start", new JSONObject());
+
+    // Try to start again
+    final JSONObject response = callTool("profiler_start", new JSONObject());
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject result = new JSONObject(response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(result.getString("status")).isEqualTo("already_recording");
+
+    // Cleanup: stop the profiler
+    callTool("profiler_stop", new JSONObject());
+  }
+
+  @Test
+  void profilerDeniedWithoutAdminPermission() throws Exception {
+    // Ensure admin is disabled
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowAdmin", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject response = callTool("profiler_start", new JSONObject());
+    assertThat(response.getBoolean("isError")).isTrue();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(text).contains("not allowed");
+  }
+
+  @Test
+  void profilerStatusWhenNeverStarted() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowAdmin", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    // Reset profiler to ensure clean state
+    getServer(0).getQueryProfiler().reset();
+
+    final JSONObject response = callTool("profiler_status", new JSONObject());
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject result = new JSONObject(response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(result.getBoolean("recording")).isFalse();
+    assertThat(result.getInt("totalQueries")).isEqualTo(0);
+  }
+
+  @Test
+  void getServerSettings() throws Exception {
+    final JSONObject response = callTool("get_server_settings", new JSONObject());
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    final JSONObject result = new JSONObject(text);
+    assertThat(result.has("settings")).isTrue();
+    final JSONArray settings = result.getJSONArray("settings");
+    assertThat(settings.length()).isGreaterThan(0);
+
+    // Verify each setting has required fields
+    final JSONObject first = settings.getJSONObject(0);
+    assertThat(first.has("key")).isTrue();
+    assertThat(first.has("value")).isTrue();
+    assertThat(first.has("description")).isTrue();
+
+    // Verify passwords are masked
+    boolean foundPassword = false;
+    for (int i = 0; i < settings.length(); i++) {
+      final JSONObject setting = settings.getJSONObject(i);
+      if (setting.getString("key").toLowerCase().contains("password")) {
+        assertThat(setting.getString("value")).isEqualTo("*****");
+        foundPassword = true;
+      }
+    }
+    assertThat(foundPassword).isTrue();
+  }
+
+  @Test
+  void getServerSettingsDeniedWithoutReadPermission() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject response = callTool("get_server_settings", new JSONObject());
+    assertThat(response.getBoolean("isError")).isTrue();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(text).contains("not allowed");
+  }
+
+  @Test
+  void setServerSetting() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowAdmin", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject response = callTool("set_server_setting", new JSONObject()
+        .put("key", "arcadedb.sqlStatementCache")
+        .put("value", "500"));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    final JSONObject result = new JSONObject(text);
+    assertThat(result.getString("key")).isEqualTo("arcadedb.sqlStatementCache");
+    assertThat(result.getString("newValue")).isEqualTo("500");
+
+    // Restore default
+    callTool("set_server_setting", new JSONObject()
+        .put("key", "arcadedb.sqlStatementCache")
+        .put("value", "300"));
+  }
+
+  @Test
+  void setServerSettingDeniedWithoutAdminPermission() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowAdmin", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject response = callTool("set_server_setting", new JSONObject()
+        .put("key", "arcadedb.sqlStatementCache")
+        .put("value", "500"));
+
+    assertThat(response.getBoolean("isError")).isTrue();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(text).contains("not allowed");
+  }
+
+  @Test
+  void setServerSettingUnknownKey() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowAdmin", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject response = callTool("set_server_setting", new JSONObject()
+        .put("key", "arcadedb.nonExistentSetting")
+        .put("value", "foo"));
+
+    assertThat(response.getBoolean("isError")).isTrue();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(text).contains("Unknown server setting");
   }
 
   // ---- Helper methods ----
