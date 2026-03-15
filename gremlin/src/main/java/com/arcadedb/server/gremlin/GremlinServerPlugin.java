@@ -139,7 +139,13 @@ public class GremlinServerPlugin implements ServerPlugin {
         }
 
         // Derive the database name from the last path component (e.g. "./databases/graph" → "graph")
-        final String dbName = new File(dbDirectory).getName();
+        final String dbName = new File(dbDirectory.replaceAll("/+$", "")).getName();
+        if (dbName.isEmpty()) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Gremlin graph '%s': cannot derive database name from directory '%s' — skipping",
+              graphName, dbDirectory);
+          continue;
+        }
 
         if (!server.existsDatabase(dbName)) {
           // createIfNotExists=true: creates the database if it doesn't exist yet
@@ -148,8 +154,7 @@ public class GremlinServerPlugin implements ServerPlugin {
               "Gremlin graph '%s': created/opened database '%s'", graphName, dbName);
         }
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Gremlin graph '%s': error initializing database — %s", graphName, e.getMessage());
+        LogManager.instance().log(this, Level.WARNING, "Gremlin graph '%s': error initializing database", e, graphName);
       }
     }
   }
@@ -158,7 +163,7 @@ public class GremlinServerPlugin implements ServerPlugin {
     final File f = new File(path);
     if (f.isAbsolute())
       return path;
-    return rootPath + File.separator + path;
+    return new File(rootPath, path).getPath();
   }
 
   @Override

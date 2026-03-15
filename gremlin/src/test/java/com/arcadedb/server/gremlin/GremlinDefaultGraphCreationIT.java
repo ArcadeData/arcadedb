@@ -29,7 +29,6 @@ import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSo
 import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -65,7 +64,7 @@ class GremlinDefaultGraphCreationIT extends BaseGraphServerTest {
       GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(Runtime.getRuntime().availableProcessors());
 
     } catch (final IOException e) {
-      fail("", e);
+      fail("Failed to configure test settings", e);
     }
   }
 
@@ -76,13 +75,6 @@ class GremlinDefaultGraphCreationIT extends BaseGraphServerTest {
   @Override
   protected boolean isCreateDatabases() {
     return false;
-  }
-
-  @BeforeEach
-  @Override
-  public void beginTest() {
-    super.beginTest();
-    // no explicit database creation — the Gremlin plugin must handle it
   }
 
   @AfterEach
@@ -110,7 +102,7 @@ class GremlinDefaultGraphCreationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void canConnectViaGremlinToAutoCreatedDatabase() {
+  void canConnectViaGremlinToAutoCreatedDatabase() throws Exception {
     final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
         new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
 
@@ -122,14 +114,20 @@ class GremlinDefaultGraphCreationIT extends BaseGraphServerTest {
         .serializer(serializer)
         .create();
 
+    GraphTraversalSource g = null;
     try {
-      final GraphTraversalSource g = AnonymousTraversalSource.traversal()
+      g = AnonymousTraversalSource.traversal()
           .withRemote(DriverRemoteConnection.using(cluster, getDatabaseName()));
 
       // The database is freshly created, so it must be empty.
       assertThat(g.V().count().next()).isZero();
     } finally {
-      cluster.close();
+      try {
+        if (g != null)
+          g.close();
+      } finally {
+        cluster.close();
+      }
     }
   }
 }
