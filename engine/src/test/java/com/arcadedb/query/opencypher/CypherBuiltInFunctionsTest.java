@@ -58,8 +58,13 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   @BeforeAll
   static void ensureRegistriesLoaded() {
     // Force loading of CypherProcedureRegistry to ensure its static initializer
-    // registers procedures in the unified ProcedureRegistry
-    CypherProcedureRegistry.size();
+    // registers procedures in the unified ProcedureRegistry.
+    // Clear and reset both registries to ensure unified FunctionRegistry/ProcedureRegistry
+    // are populated with the same instances (other tests may clear the unified registries).
+    FunctionRegistry.clear();
+    ProcedureRegistry.clear();
+    CypherFunctionRegistry.reset();
+    CypherProcedureRegistry.reset();
   }
 
   // ===================== REGISTRY TESTS =====================
