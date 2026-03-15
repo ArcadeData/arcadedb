@@ -33,6 +33,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
@@ -49,6 +50,8 @@ import java.util.logging.Level;
  */
 class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
 
+  private static final AtomicInteger ANONYMOUS_COUNTER = new AtomicInteger();
+
   private final GraphAnalyticalView view;
   private final String              callbackKey;
 
@@ -59,7 +62,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
 
   DeltaCollector(final GraphAnalyticalView view) {
     this.view = view;
-    this.callbackKey = "gav-delta-" + (view.getName() != null ? view.getName() : System.identityHashCode(view));
+    this.callbackKey = "gav-delta-" + (view.getName() != null ? view.getName() : "anon-" + ANONYMOUS_COUNTER.getAndIncrement());
     this.perThreadDeltas = view.getUpdateMode() == GraphAnalyticalView.UpdateMode.SYNCHRONOUS
         ? new ConcurrentHashMap<>()
         : null;

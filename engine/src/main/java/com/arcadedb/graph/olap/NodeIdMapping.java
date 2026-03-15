@@ -196,6 +196,29 @@ public class NodeIdMapping {
     return naturalId - bucketBase[bucketIdxForNaturalId(naturalId)];
   }
 
+  /**
+   * Returns both bucket index and local ID for a global dense ID in a single call,
+   * avoiding the double binary search that would occur when calling getBucketIdx()
+   * and getLocalId() separately. The two values are packed into a single long to
+   * avoid object allocation: bucket index in the upper 32 bits, local ID in the lower 32 bits.
+   * Use {@link #unpackBucketIdx(long)} and {@link #unpackLocalId(long)} to extract.
+   */
+  public long getBucketIdxAndLocalId(final int globalId) {
+    final int naturalId = newToOld != null ? newToOld[globalId] : globalId;
+    final int bucketIdx = bucketIdxForNaturalId(naturalId);
+    return ((long) bucketIdx << 32) | (naturalId - bucketBase[bucketIdx]);
+  }
+
+  /** Extracts the bucket index from the packed result of {@link #getBucketIdxAndLocalId(int)}. */
+  public static int unpackBucketIdx(final long packed) {
+    return (int) (packed >>> 32);
+  }
+
+  /** Extracts the local ID from the packed result of {@link #getBucketIdxAndLocalId(int)}. */
+  public static int unpackLocalId(final long packed) {
+    return (int) packed;
+  }
+
   private int bucketIdxForNaturalId(final int naturalId) {
     int lo = 0, hi = numBuckets - 1;
     while (lo < hi) {

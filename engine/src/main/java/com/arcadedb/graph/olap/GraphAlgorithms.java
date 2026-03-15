@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
 /**
@@ -60,6 +61,7 @@ public final class GraphAlgorithms {
   /**
    * Partitions range [0, n) into chunks and runs each on a dedicated thread.
    * Falls back to single-threaded execution when n is below threshold.
+   * Propagates any exception thrown by a worker to the calling thread.
    */
   static void parallelForRange(final int n, final BiConsumer<Integer, Integer> work) {
     if (n < PARALLEL_THRESHOLD) {
@@ -68,17 +70,44 @@ public final class GraphAlgorithms {
     }
     final int chunkSize = (n + PARALLELISM - 1) / PARALLELISM;
     final Thread[] threads = new Thread[PARALLELISM];
+    final AtomicReference<Throwable> firstError = new AtomicReference<>();
     int launched = 0;
     for (int t = 0; t < PARALLELISM; t++) {
       final int start = t * chunkSize;
       final int end = Math.min(start + chunkSize, n);
       if (start >= n)
         break;
-      threads[t] = new Thread(() -> work.accept(start, end));
-      threads[t].start();
+      final Thread thread = new Thread(() -> {
+        try {
+          work.accept(start, end);
+        } catch (final Throwable e) {
+          firstError.compareAndSet(null, e);
+        }
+      });
+      thread.setDaemon(true);
+      thread.setName("gav-algo-" + t);
+      threads[t] = thread;
+      thread.start();
       launched++;
     }
     joinThreads(threads, launched);
+    rethrowIfFailed(firstError);
+  }
+
+  /**
+   * Creates a named daemon thread for algorithm parallelism.
+   */
+  static Thread newAlgoThread(final int index, final AtomicReference<Throwable> firstError, final Runnable task) {
+    final Thread thread = new Thread(() -> {
+      try {
+        task.run();
+      } catch (final Throwable e) {
+        firstError.compareAndSet(null, e);
+      }
+    });
+    thread.setDaemon(true);
+    thread.setName("gav-algo-" + index);
+    return thread;
   }
 
   private static void joinThreads(final Thread[] threads, final int count) {
@@ -89,6 +118,17 @@ public final class GraphAlgorithms {
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
         }
+  }
+
+  private static void rethrowIfFailed(final AtomicReference<Throwable> firstError) {
+    final Throwable t = firstError.get();
+    if (t != null) {
+      if (t instanceof RuntimeException)
+        throw (RuntimeException) t;
+      if (t instanceof Error)
+        throw (Error) t;
+      throw new RuntimeException(t);
+    }
   }
 
   // --- PageRank (Pull-based, Parallel) ---
@@ -533,6 +573,7 @@ public final class GraphAlgorithms {
         final int[] localSizes = new int[numThreads];
 
         final Thread[] threads = new Thread[numThreads];
+        final AtomicReference<Throwable> bfsError = new AtomicReference<>();
         int launched = 0;
         for (int t = 0; t < numThreads; t++) {
           final int tIdx = t;
@@ -540,7 +581,7 @@ public final class GraphAlgorithms {
           final int tEnd = Math.min(tStart + chunkSize, fSize);
           if (tStart >= fSize)
             break;
-          threads[t] = new Thread(() -> {
+          threads[t] = newAlgoThread(t, bfsError, () -> {
             int[] localNext = new int[Math.min(n, (tEnd - tStart) * 8)];
             int localSize = 0;
             for (int f = tStart; f < tEnd; f++) {
@@ -597,6 +638,7 @@ public final class GraphAlgorithms {
           launched++;
         }
         joinThreads(threads, launched);
+        rethrowIfFailed(bfsError);
 
         // Copy atomic bitmap back to plain bitmap for next iteration
         for (int i = 0; i < visited.length; i++)

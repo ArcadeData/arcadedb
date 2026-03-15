@@ -196,6 +196,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Incremental auto-update
   private DeltaCollector         deltaCollector;
   public static final int        DEFAULT_COMPACTION_THRESHOLD = 10_000;
+  private static final int       MAX_PENDING_DELTAS           = 100_000;
   private volatile int           compactionThreshold = DEFAULT_COMPACTION_THRESHOLD;
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
@@ -723,9 +724,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // Fall back to base column store
     if (snap.bucketColumns == null || nodeId >= snap.nodeMapping.size())
       return null;
-    final int bucketIdx = snap.nodeMapping.getBucketIdx(nodeId);
-    final int localId = snap.nodeMapping.getLocalId(nodeId);
-    return snap.bucketColumns[bucketIdx].getValue(localId, propertyName);
+    final long packed = snap.nodeMapping.getBucketIdxAndLocalId(nodeId);
+    return snap.bucketColumns[NodeIdMapping.unpackBucketIdx(packed)].getValue(NodeIdMapping.unpackLocalId(packed), propertyName);
   }
 
   /**
@@ -1171,8 +1171,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // Buffer raw delta during compaction for re-application against the new mapping.
     // TxDelta uses RIDs (not dense IDs), so it can be cleanly re-applied against any mapping.
-    if (pendingDeltas != null)
-      pendingDeltas.add(delta);
+    if (pendingDeltas != null) {
+      if (pendingDeltas.size() >= MAX_PENDING_DELTAS) {
+        // Too many deltas accumulated during compaction — the rebuild result would be immediately
+        // stale again. Discard the buffer so the compaction thread aborts cleanly on swap.
+        LogManager.instance().log(this, Level.WARNING,
+            "GraphAnalyticalView '%s': pending delta buffer exceeded %d during compaction, aborting compaction", name, MAX_PENDING_DELTAS);
+        pendingDeltas = null;
+      } else
+        pendingDeltas.add(delta);
+    }
 
     if (compactionThreshold > 0 && Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold) {
       // Guard: only one compaction thread at a time
@@ -1197,20 +1205,27 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               final List<TxDelta> buffered = pendingDeltas;
               pendingDeltas = null;
 
-              Snapshot fresh = snapshotFromResult(result, durationMs);
+              if (buffered == null) {
+                // Buffer was aborted (overflow) — keep the current snapshot with its overlay.
+                // The current overlay is still valid and already has all deltas merged.
+                LogManager.instance().log(this, Level.INFO,
+                    "GraphAnalyticalView '%s': compaction result discarded (delta buffer overflowed during rebuild)", name);
+              } else {
+                Snapshot fresh = snapshotFromResult(result, durationMs);
 
-              // Re-apply any deltas that arrived during the rebuild.
-              // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
-              // Merging against the new mapping resolves RIDs to correct dense IDs.
-              if (buffered != null && !buffered.isEmpty()) {
-                DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
-                for (final TxDelta d : buffered)
-                  overlay = overlay.merge(d, result.getMapping());
-                if (overlay.hasChanges())
-                  fresh = fresh.withOverlay(overlay);
+                // Re-apply any deltas that arrived during the rebuild.
+                // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
+                // Merging against the new mapping resolves RIDs to correct dense IDs.
+                if (!buffered.isEmpty()) {
+                  DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
+                  for (final TxDelta d : buffered)
+                    overlay = overlay.merge(d, result.getMapping());
+                  if (overlay.hasChanges())
+                    fresh = fresh.withOverlay(overlay);
+                }
+
+                this.snapshot = fresh;
               }
-
-              this.snapshot = fresh;
             }
 
           } finally {

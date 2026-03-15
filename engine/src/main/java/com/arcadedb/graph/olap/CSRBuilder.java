@@ -184,9 +184,11 @@ public class CSRBuilder {
       }
 
       // Extract properties into per-bucket column store
-      if (extractProps && !detectedTypes.isEmpty())
-        fillProperties(vertex, bucketColumns[mapping.getBucketIdx(globalId)],
-            mapping.getLocalId(globalId), detectedTypes);
+      if (extractProps && !detectedTypes.isEmpty()) {
+        final long packed = mapping.getBucketIdxAndLocalId(globalId);
+        fillProperties(vertex, bucketColumns[NodeIdMapping.unpackBucketIdx(packed)],
+            NodeIdMapping.unpackLocalId(packed), detectedTypes);
+      }
 
       // Count degrees and collect edge pairs
       final EdgeLinkedList outList = loadOutEdgeList(vertex);

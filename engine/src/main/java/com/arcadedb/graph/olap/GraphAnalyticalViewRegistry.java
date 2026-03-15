@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -88,7 +89,7 @@ public class GraphAnalyticalViewRegistry {
       final ConcurrentHashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
       if (views == null)
         return Collections.emptyMap();
-      final ConcurrentHashMap<String, GraphAnalyticalView> ready = new ConcurrentHashMap<>();
+      final Map<String, GraphAnalyticalView> ready = new HashMap<>();
       for (final Map.Entry<String, GraphAnalyticalView> entry : views.entrySet())
         if (entry.getValue().isReady())
           ready.put(entry.getKey(), entry.getValue());

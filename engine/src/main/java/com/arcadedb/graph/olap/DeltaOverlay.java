@@ -28,6 +28,9 @@ import java.util.*;
  * <p>
  * Thread-safe for reads (immutable after construction). A new overlay is created for each
  * committed transaction by merging the previous overlay with the new {@link TxDelta}.
+ * The {@code merge()} method is called from {@code GraphAnalyticalView.applyDelta()}, which
+ * synchronizes on the view instance to serialize concurrent commits. The resulting overlay is
+ * then published via a volatile write, so readers never see a partially constructed instance.
  * <p>
  * Query methods in {@link GraphAnalyticalView} merge base CSR results with this overlay.
  */

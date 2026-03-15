@@ -3887,4 +3887,113 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     gav.drop();
   }
+
+  // ── ASYNCHRONOUS update mode tests ──────────────────────────────────────
+
+  @Test
+  void testAsynchronousUpdateModeRebuildsAfterCommit() throws InterruptedException {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    // Build initial graph: Alice -> Bob
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("async-update")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS)
+        .build();
+
+    assertThat(gav.isReady()).isTrue();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    // Add a new vertex and edge — ASYNCHRONOUS mode triggers a background rebuild
+    database.begin();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    bob.newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    // Wait for the async rebuild to complete
+    assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+
+    // After rebuild, the view should reflect the new data
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+    assertThat(gav.getNodeId(charlie.getIdentity())).isGreaterThanOrEqualTo(0);
+
+    gav.drop();
+  }
+
+  @Test
+  void testAsynchronousUpdateModeMultipleCommits() throws InterruptedException {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("async-multi")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getNodeCount()).isEqualTo(1);
+
+    // Rapid-fire commits — some may coalesce into a single rebuild
+    for (int i = 0; i < 5; i++) {
+      database.begin();
+      final MutableVertex v = database.newVertex("Person").set("name", "P" + i).save();
+      alice.newEdge("FOLLOWS", v);
+      database.commit();
+    }
+
+    // Wait for the final rebuild to settle
+    assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+
+    // All 6 vertices (Alice + P0..P4) and 5 edges should be visible
+    assertThat(gav.getNodeCount()).isEqualTo(6);
+    assertThat(gav.getEdgeCount()).isEqualTo(5);
+
+    gav.drop();
+  }
+
+  @Test
+  void testAsynchronousUpdateModeStatusTransitions() throws InterruptedException {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("async-status")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS)
+        .build();
+
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    // Commit triggers async rebuild — status should transition through BUILDING back to READY
+    database.begin();
+    database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(gav.isStale()).isFalse();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+
+    gav.drop();
+  }
 }

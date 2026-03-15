@@ -48,6 +48,10 @@ import java.util.logging.Level;
 public class GraphTraversalProviderRegistry {
   private static final WeakHashMap<Database, CopyOnWriteArrayList<GraphTraversalProvider>> REGISTRY = new WeakHashMap<>();
 
+  // Fast-path flag: when false, findProvider() returns null without acquiring the lock.
+  // Updated under synchronized(REGISTRY) on every register/unregister/clearAll.
+  private static volatile boolean hasAnyProviders = false;
+
   /**
    * Registers a traversal provider for a database.
    */
@@ -55,6 +59,7 @@ public class GraphTraversalProviderRegistry {
     final Database key = unwrap(database);
     synchronized (REGISTRY) {
       REGISTRY.computeIfAbsent(key, k -> new CopyOnWriteArrayList<>()).add(provider);
+      hasAnyProviders = true;
     }
   }
 
@@ -70,6 +75,7 @@ public class GraphTraversalProviderRegistry {
         if (list.isEmpty())
           REGISTRY.remove(key);
       }
+      hasAnyProviders = !REGISTRY.isEmpty();
     }
   }
 
@@ -77,6 +83,8 @@ public class GraphTraversalProviderRegistry {
    * Returns all registered providers for a database (unmodifiable snapshot).
    */
   public static List<GraphTraversalProvider> getProviders(final Database database) {
+    if (!hasAnyProviders)
+      return Collections.emptyList();
     final Database key = unwrap(database);
     synchronized (REGISTRY) {
       final CopyOnWriteArrayList<GraphTraversalProvider> list = REGISTRY.get(key);
@@ -92,6 +100,11 @@ public class GraphTraversalProviderRegistry {
    * @return a matching ready provider, or null if none found
    */
   public static GraphTraversalProvider findProvider(final Database database, final String... edgeTypes) {
+    // Fast path: single volatile read avoids lock, unwrap, and WeakHashMap lookup
+    // when no providers are registered (the common case for most databases)
+    if (!hasAnyProviders)
+      return null;
+
     final CopyOnWriteArrayList<GraphTraversalProvider> list;
     synchronized (REGISTRY) {
       list = REGISTRY.get(unwrap(database));
@@ -133,6 +146,7 @@ public class GraphTraversalProviderRegistry {
   public static void clearAll(final Database database) {
     synchronized (REGISTRY) {
       REGISTRY.remove(unwrap(database));
+      hasAnyProviders = !REGISTRY.isEmpty();
     }
   }
 

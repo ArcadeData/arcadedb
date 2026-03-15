@@ -628,6 +628,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     // For BOTH direction, deduplicate self-loop vertices: the OLTP iterator
     // concatenates OUT and IN edge iterators, so self-loops yield the source
     // vertex twice. Skip every other occurrence of the source vertex.
+    // This is semantically equivalent to the CSR path's deduplicateSelfLoops(),
+    // which removes selfLoopCount/2 entries from the neighbor array — both rely
+    // on the invariant that each self-loop produces exactly 2 entries.
     if (direction == Direction.BOTH) {
       final RID sourceRid = vertex.getIdentity();
       return new Iterator<>() {
@@ -667,6 +670,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   /**
    * Lazily resolves a GAV provider that covers the required edge types.
    * Result is cached for the lifetime of this step.
+   * <p>
+   * Note: concurrent threads may both enter the {@code !gavProviderResolved} branch and call
+   * {@code findProvider()} redundantly. This is intentional — the result is idempotent and a
+   * full {@code synchronized} block would add contention on the hot path for no correctness gain.
    */
   private GraphTraversalProvider resolveGavProvider(final String[] edgeTypes) {
     if (!gavProviderResolved) {
@@ -858,6 +865,13 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * Each self-loop edge contributes the source node to both the forward and backward
    * neighbor lists, so it appears twice in the merged array. This method keeps only
    * half the self-loop entries, preserving correct multiplicity for multi-self-loop cases.
+   * <p>
+   * <b>Invariant:</b> the self-loop count is always even because every self-loop edge
+   * contributes exactly one entry to the forward neighbor list and one to the backward
+   * neighbor list — whether from base CSR or from the delta overlay (which adds to both
+   * ovOut and ovIn). This mirrors the OLTP path's skip-every-other deduplication in
+   * {@link #getVertices(Vertex)}, which also relies on the OUT+IN iterator concatenation
+   * producing exactly 2 entries per self-loop edge.
    */
   private static int[] deduplicateSelfLoops(final int[] neighborIds, final int sourceNodeId) {
     int selfLoopCount = 0;

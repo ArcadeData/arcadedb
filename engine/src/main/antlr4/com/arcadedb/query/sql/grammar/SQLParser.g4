@@ -782,7 +782,9 @@ refreshContinuousAggregateBody
  *         [VERTEX TYPES (type1, type2, ...)]
  *         [EDGE TYPES (type1, type2, ...)]
  *         [PROPERTIES (prop1, prop2, ...)]
- *         [AUTO UPDATE]
+ *         [EDGE PROPERTIES (prop1, prop2, ...)]
+ *         [UPDATE MODE OFF|SYNCHRONOUS|ASYNCHRONOUS]
+ *         [COMPACTION THRESHOLD n]
  */
 createGraphAnalyticalViewBody
     : (IF NOT EXISTS)? viewName=identifier
