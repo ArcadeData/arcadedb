@@ -191,7 +191,7 @@ public class GraphAnalyticalViewBuilder {
   /**
    * Skips persisting the definition to schema. Used during restore to avoid redundant writes.
    */
-  GraphAnalyticalViewBuilder skipPersistence() {
+  public GraphAnalyticalViewBuilder skipPersistence() {
     this.skipPersistence = true;
     return this;
   }
