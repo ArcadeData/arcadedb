@@ -28,10 +28,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ContinuousAggregateSQLTest extends TestHelper {
+class ContinuousAggregateSQLTest extends TestHelper {
 
   @Test
-  public void testCreateViaSql() {
+  void createViaSql() {
     createSensorType();
     insertInitialData();
 
@@ -45,7 +45,7 @@ public class ContinuousAggregateSQLTest extends TestHelper {
   }
 
   @Test
-  public void testCreateIfNotExistsViaSql() {
+  void createIfNotExistsViaSql() {
     createSensorType();
     insertInitialData();
 
@@ -64,7 +64,7 @@ public class ContinuousAggregateSQLTest extends TestHelper {
   }
 
   @Test
-  public void testDropViaSql() {
+  void dropViaSql() {
     createSensorType();
     insertInitialData();
 
@@ -79,13 +79,13 @@ public class ContinuousAggregateSQLTest extends TestHelper {
   }
 
   @Test
-  public void testDropIfExistsViaSql() {
+  void dropIfExistsViaSql() {
     // Should not throw even if it doesn't exist
     database.command("sql", "DROP CONTINUOUS AGGREGATE IF EXISTS nonexistent");
   }
 
   @Test
-  public void testRefreshViaSql() {
+  void refreshViaSql() {
     createSensorType();
     insertInitialData();
 
@@ -100,7 +100,7 @@ public class ContinuousAggregateSQLTest extends TestHelper {
   }
 
   @Test
-  public void testSelectFromSchemaMetadata() {
+  void selectFromSchemaMetadata() {
     createSensorType();
     insertInitialData();
 
@@ -122,7 +122,7 @@ public class ContinuousAggregateSQLTest extends TestHelper {
   }
 
   @Test
-  public void testEndToEndIncrementalUpdate() {
+  void endToEndIncrementalUpdate() {
     createSensorType();
 
     // Insert initial data (hour 0)

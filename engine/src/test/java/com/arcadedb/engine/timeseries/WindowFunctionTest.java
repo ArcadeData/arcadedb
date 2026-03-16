@@ -27,10 +27,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class WindowFunctionTest extends TestHelper {
+class WindowFunctionTest extends TestHelper {
 
   @Test
-  public void testLagBasic() {
+  void lagBasic() {
     database.command("sql", "CREATE TIMESERIES TYPE LagSensor TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     database.transaction(() -> {
@@ -55,7 +55,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testLagWithOffset2() {
+  void lagWithOffset2() {
     database.command("sql", "CREATE TIMESERIES TYPE LagOff2 TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     database.transaction(() -> {
@@ -80,7 +80,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testLagWithDefault() {
+  void lagWithDefault() {
     database.command("sql", "CREATE TIMESERIES TYPE LagDef TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     database.transaction(() -> {
@@ -105,7 +105,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testLeadBasic() {
+  void leadBasic() {
     database.command("sql", "CREATE TIMESERIES TYPE LeadSensor TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     database.transaction(() -> {
@@ -130,7 +130,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testLeadWithDefault() {
+  void leadWithDefault() {
     database.command("sql", "CREATE TIMESERIES TYPE LeadDef TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     database.transaction(() -> {
@@ -155,7 +155,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testRowNumber() {
+  void rowNumber() {
     database.command("sql", "CREATE TIMESERIES TYPE RnSensor TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     database.transaction(() -> {
@@ -176,7 +176,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testRankWithTies() {
+  void rankWithTies() {
     database.command("sql", "CREATE TIMESERIES TYPE RankTies TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     database.transaction(() -> {
@@ -196,7 +196,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testRankNoDuplicates() {
+  void rankNoDuplicates() {
     database.command("sql", "CREATE TIMESERIES TYPE RankUniq TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     database.transaction(() -> {
@@ -217,7 +217,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testLagWithGroupBy() {
+  void lagWithGroupBy() {
     database.command("sql", "CREATE TIMESERIES TYPE LagBucket TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     database.transaction(() -> {
@@ -248,7 +248,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testWindowFunctionsOnEmptyType() {
+  void windowFunctionsOnEmptyType() {
     database.command("sql", "CREATE TIMESERIES TYPE EmptyWin TIMESTAMP ts FIELDS (temperature DOUBLE)");
 
     final ResultSet lagRs = database.query("sql", "SELECT ts.lag(temperature, 1, ts) AS prev FROM EmptyWin");
@@ -281,7 +281,7 @@ public class WindowFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testLagLeadWithTimeSeries() {
+  void lagLeadWithTimeSeries() {
     database.command("sql", "CREATE TIMESERIES TYPE TsWinSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
     database.transaction(() -> {

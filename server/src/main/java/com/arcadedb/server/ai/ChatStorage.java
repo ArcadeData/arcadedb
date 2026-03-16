@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -132,7 +133,7 @@ public class ChatStorage {
     chat.put("id", UUID.randomUUID().toString());
     chat.put("title", title);
     chat.put("database", database);
-    final String now = java.time.Instant.now().toString();
+    final String now = Instant.now().toString();
     chat.put("created", now);
     chat.put("updated", now);
     chat.put("messages", new JSONArray());

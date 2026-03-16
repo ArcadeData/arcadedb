@@ -28,10 +28,7 @@ import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.Property;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.*;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -544,7 +541,7 @@ public class CSRBuilder {
     }
   }
 
-  private static Column.Type schemaTypeToColumnType(final com.arcadedb.schema.Type schemaType) {
+  private static Column.Type schemaTypeToColumnType(final Type schemaType) {
     return switch (schemaType) {
       case INTEGER, SHORT, BYTE -> Column.Type.INT;
       case LONG -> Column.Type.LONG;

@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ServerStudioDisplayHostTest extends StaticBaseServerTest {
+class ServerStudioDisplayHostTest extends StaticBaseServerTest {
   private ArcadeDBServer server;
 
   @BeforeEach
@@ -50,7 +50,7 @@ public class ServerStudioDisplayHostTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testStudioDisplayHostDefaultIsLocalhost() throws Exception {
+  void studioDisplayHostDefaultIsLocalhost() throws Exception {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
     config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);

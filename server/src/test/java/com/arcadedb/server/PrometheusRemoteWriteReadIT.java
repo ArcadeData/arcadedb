@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   @Test
-  void testRemoteWriteBasic() throws Exception {
+  void remoteWriteBasic() throws Exception {
     testEachServer((serverIndex) -> {
       final WriteRequest writeRequest = new WriteRequest(List.of(
           new TimeSeries(
@@ -77,7 +77,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRemoteWriteAutoCreateType() throws Exception {
+  void remoteWriteAutoCreateType() throws Exception {
     testEachServer((serverIndex) -> {
       final WriteRequest writeRequest = new WriteRequest(List.of(
           new TimeSeries(
@@ -98,7 +98,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRemoteWriteMultipleLabels() throws Exception {
+  void remoteWriteMultipleLabels() throws Exception {
     testEachServer((serverIndex) -> {
       final WriteRequest writeRequest = new WriteRequest(List.of(
           new TimeSeries(
@@ -123,7 +123,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRemoteWriteEmptyBody() throws Exception {
+  void remoteWriteEmptyBody() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = createPromConnection(serverIndex, "prom/write");
       connection.setDoOutput(true);
@@ -135,7 +135,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRemoteWriteInvalidSnappy() throws Exception {
+  void remoteWriteInvalidSnappy() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = createPromConnection(serverIndex, "prom/write");
       connection.setDoOutput(true);
@@ -148,7 +148,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRemoteReadBasic() throws Exception {
+  void remoteReadBasic() throws Exception {
     testEachServer((serverIndex) -> {
       // First insert some data
       final WriteRequest writeRequest = new WriteRequest(List.of(
@@ -183,7 +183,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRemoteReadWithLabelMatcher() throws Exception {
+  void remoteReadWithLabelMatcher() throws Exception {
     testEachServer((serverIndex) -> {
       // Insert data with different label values
       final WriteRequest writeRequest = new WriteRequest(List.of(
@@ -216,7 +216,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRemoteReadEmptyResult() throws Exception {
+  void remoteReadEmptyResult() throws Exception {
     testEachServer((serverIndex) -> {
       final ReadRequest readRequest = new ReadRequest(List.of(
           new Query(0, 5000, List.of(
@@ -231,7 +231,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testProtobufRoundtrip() throws Exception {
+  void protobufRoundtrip() throws Exception {
     // Test WriteRequest encode/decode
     final WriteRequest writeReq = new WriteRequest(List.of(
         new TimeSeries(

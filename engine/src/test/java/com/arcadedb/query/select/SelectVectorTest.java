@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Tests for vector k-NN search in the Select API.
  */
-public class SelectVectorTest extends TestHelper {
+class SelectVectorTest extends TestHelper {
 
   private static final int DIMENSIONS = 8;
 

@@ -59,7 +59,7 @@ public class TimeSeriesEmbeddedBenchmark {
   }
 
   @Test
-  public void run() throws Exception {
+  void run() throws Exception {
     // Clean up
     FileUtils.deleteRecursively(new File(DB_PATH));
 

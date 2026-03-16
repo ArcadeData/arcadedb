@@ -26,7 +26,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -245,13 +247,13 @@ class MatchRelationshipStepOptimizationTest {
    * self-loop edges (which appear once in OUT and once in IN).
    */
   @Test
-  void testBothDirectionUsesFastPath() {
+  void bothDirectionUsesFastPath() {
     // Alice-[:KNOWS]->Bob, Bob-[:KNOWS]->Charlie, Alice-[:FOLLOWS]->Dave
     // BOTH from Bob: Alice (via IN KNOWS) and Charlie (via OUT KNOWS) — no self-loops
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name: 'Bob'})--(b:Person) RETURN b.name AS name ORDER BY name");
 
-    final java.util.List<String> names = new java.util.ArrayList<>();
+    final List<String> names = new ArrayList<>();
     while (result.hasNext())
       names.add(result.next().<String>getProperty("name"));
     result.close();
@@ -264,7 +266,7 @@ class MatchRelationshipStepOptimizationTest {
    * A single self-loop edge should produce exactly one match, not two.
    */
   @Test
-  void testBothDirectionSelfLoopDedup() {
+  void bothDirectionSelfLoopDedup() {
     // Create a self-loop
     database.transaction(() -> {
       database.command("opencypher",
@@ -275,7 +277,7 @@ class MatchRelationshipStepOptimizationTest {
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-(b:Person) RETURN b.name AS name ORDER BY name");
 
-    final java.util.List<String> names = new java.util.ArrayList<>();
+    final List<String> names = new ArrayList<>();
     while (result.hasNext())
       names.add(result.next().<String>getProperty("name"));
     result.close();
@@ -288,7 +290,7 @@ class MatchRelationshipStepOptimizationTest {
    * Tests that BOTH direction with multiple self-loops preserves correct multiplicity.
    */
   @Test
-  void testBothDirectionMultipleSelfLoops() {
+  void bothDirectionMultipleSelfLoops() {
     database.transaction(() -> {
       database.command("opencypher",
           "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)");
@@ -300,7 +302,7 @@ class MatchRelationshipStepOptimizationTest {
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-(b:Person) RETURN b.name AS name ORDER BY name");
 
-    final java.util.List<String> names = new java.util.ArrayList<>();
+    final List<String> names = new ArrayList<>();
     while (result.hasNext())
       names.add(result.next().<String>getProperty("name"));
     result.close();

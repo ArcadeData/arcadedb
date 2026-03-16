@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
 
   @Test
-  void testIngestLineProtocol() throws Exception {
+  void ingestLineProtocol() throws Exception {
     testEachServer((serverIndex) -> {
       // Create a TimeSeries type
       command(serverIndex,
@@ -63,7 +63,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testIngestWithNanoPrecision() throws Exception {
+  void ingestWithNanoPrecision() throws Exception {
     testEachServer((serverIndex) -> {
       command(serverIndex,
           "CREATE TIMESERIES TYPE cpu TIMESTAMP ts TAGS (host STRING) FIELDS (usage DOUBLE)");
@@ -82,7 +82,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testEmptyBody() throws Exception {
+  void emptyBody() throws Exception {
     testEachServer((serverIndex) -> {
       final int statusCode = postLineProtocol(serverIndex, "", "ms");
       assertThat(statusCode).isEqualTo(400);

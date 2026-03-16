@@ -41,7 +41,7 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testSumDouble(final TimeSeriesVectorOps ops) {
+  void sumDouble(final TimeSeriesVectorOps ops) {
     final double[] data = { 1.0, 2.0, 3.0, 4.0, 5.0 };
     assertThat(ops.sum(data, 0, 5)).isCloseTo(15.0, within(1e-10));
     assertThat(ops.sum(data, 1, 3)).isCloseTo(9.0, within(1e-10));
@@ -49,7 +49,7 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testMinMaxDouble(final TimeSeriesVectorOps ops) {
+  void minMaxDouble(final TimeSeriesVectorOps ops) {
     final double[] data = { 5.0, 1.0, 3.0, -2.0, 4.0, 0.0, 7.0 };
     assertThat(ops.min(data, 0, 7)).isEqualTo(-2.0);
     assertThat(ops.max(data, 0, 7)).isEqualTo(7.0);
@@ -59,7 +59,7 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testSumLong(final TimeSeriesVectorOps ops) {
+  void sumLong(final TimeSeriesVectorOps ops) {
     final long[] data = { 10, 20, 30, 40, 50 };
     assertThat(ops.sumLong(data, 0, 5)).isEqualTo(150);
     assertThat(ops.sumLong(data, 2, 2)).isEqualTo(70);
@@ -67,7 +67,7 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testMinMaxLong(final TimeSeriesVectorOps ops) {
+  void minMaxLong(final TimeSeriesVectorOps ops) {
     final long[] data = { 50, 10, 30, -20, 40, 0, 70 };
     assertThat(ops.minLong(data, 0, 7)).isEqualTo(-20);
     assertThat(ops.maxLong(data, 0, 7)).isEqualTo(70);
@@ -75,7 +75,7 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testSingleElement(final TimeSeriesVectorOps ops) {
+  void singleElement(final TimeSeriesVectorOps ops) {
     final double[] data = { 42.0 };
     assertThat(ops.sum(data, 0, 1)).isEqualTo(42.0);
     assertThat(ops.min(data, 0, 1)).isEqualTo(42.0);
@@ -84,7 +84,7 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testNonAlignedLength(final TimeSeriesVectorOps ops) {
+  void nonAlignedLength(final TimeSeriesVectorOps ops) {
     // Length not a multiple of SIMD lane width
     final double[] data = new double[17];
     for (int i = 0; i < data.length; i++)
@@ -97,7 +97,7 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testFilteredSum(final TimeSeriesVectorOps ops) {
+  void filteredSum(final TimeSeriesVectorOps ops) {
     final double[] data = { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0 };
     // Bitmask: bits 0,2,4,6 set → select 1.0, 3.0, 5.0, 7.0
     final long[] bitmask = { 0b01010101L };
@@ -106,14 +106,14 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testCountFiltered(final TimeSeriesVectorOps ops) {
+  void countFiltered(final TimeSeriesVectorOps ops) {
     final long[] bitmask = { 0b01010101L };
     assertThat(ops.countFiltered(bitmask, 0, 8)).isEqualTo(4);
   }
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testGreaterThan(final TimeSeriesVectorOps ops) {
+  void greaterThan(final TimeSeriesVectorOps ops) {
     final double[] data = { 1.0, 5.0, 2.0, 8.0, 3.0, 6.0, 0.5, 4.0 };
     final long[] out = new long[1];
     ops.greaterThan(data, 3.0, out, 0, 8);
@@ -129,7 +129,7 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testBitmaskAndOr(final TimeSeriesVectorOps ops) {
+  void bitmaskAndOr(final TimeSeriesVectorOps ops) {
     final long[] a = { 0b1100L };
     final long[] b = { 0b1010L };
     final long[] andOut = new long[1];
@@ -143,7 +143,7 @@ class TimeSeriesVectorOpsTest {
   }
 
   @Test
-  void testScalarAndSimdProduceIdenticalResults() {
+  void scalarAndSimdProduceIdenticalResults() {
     final ScalarTimeSeriesVectorOps scalar = new ScalarTimeSeriesVectorOps();
     final SimdTimeSeriesVectorOps simd = new SimdTimeSeriesVectorOps();
 
@@ -205,7 +205,7 @@ class TimeSeriesVectorOpsTest {
   }
 
   @Test
-  void testProviderReturnsInstance() {
+  void providerReturnsInstance() {
     final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
     assertThat(ops).isNotNull();
     // Smoke test

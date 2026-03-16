@@ -1340,7 +1340,7 @@ class OpenCypherCollectUnwindTest {
     }
 
     @Test
-    void testUnwindWithInlinePropertyFilterCommaPattern() {
+    void unwindWithInlinePropertyFilterCommaPattern() {
       database.command("opencypher", "MATCH ()-[k:KNOWS]->() DELETE k");
 
       final List<Map<String, Object>> batch = List.of(
@@ -1364,7 +1364,7 @@ class OpenCypherCollectUnwindTest {
     }
 
     @Test
-    void testUnwindWithWhereClause() {
+    void unwindWithWhereClause() {
       database.command("opencypher", "MATCH ()-[k:KNOWS]->() DELETE k");
 
       final List<Map<String, Object>> batch = List.of(
@@ -1389,7 +1389,7 @@ class OpenCypherCollectUnwindTest {
     }
 
     @Test
-    void testUnwindWithSingleMatchInlineFilter() {
+    void unwindWithSingleMatchInlineFilter() {
       final List<Map<String, Object>> batch = List.of(
           Map.of("id", 0),
           Map.of("id", 1),
@@ -1409,7 +1409,7 @@ class OpenCypherCollectUnwindTest {
     }
 
     @Test
-    void testInlinePropertyFilterWithLiteral() {
+    void inlinePropertyFilterWithLiteral() {
       try (final ResultSet rs = database.query("opencypher",
           "MATCH (a:Person {id: 0}) RETURN a.name AS name")) {
         assertThat(rs.hasNext()).isTrue();
@@ -1418,7 +1418,7 @@ class OpenCypherCollectUnwindTest {
     }
 
     @Test
-    void testInlinePropertyFilterWithParameter() {
+    void inlinePropertyFilterWithParameter() {
       try (final ResultSet rs = database.query("opencypher",
           "MATCH (a:Person {id: $id}) RETURN a.name AS name",
           Map.of("id", 0))) {
@@ -1428,7 +1428,7 @@ class OpenCypherCollectUnwindTest {
     }
 
     @Test
-    void testUnwindBatchWhereUsesIndex() {
+    void unwindBatchWhereUsesIndex() {
       database.command("opencypher", "MATCH ()-[k:KNOWS]->() DELETE k");
 
       final List<Map<String, Object>> batch = new ArrayList<>();
@@ -1450,7 +1450,7 @@ class OpenCypherCollectUnwindTest {
     }
 
     @Test
-    void testUnwindSimpleListWithInlineFilter() {
+    void unwindSimpleListWithInlineFilter() {
       try (final ResultSet rs = database.query("opencypher",
           "UNWIND [0, 1, 2] AS id " +
               "MATCH (a:Person {id: id}) " +

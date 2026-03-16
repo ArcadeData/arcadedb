@@ -28,10 +28,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests that ts.* namespaced functions are correctly resolved by the SQL parser.
  */
-public class TimeSeriesNamespaceTest extends TestHelper {
+class TimeSeriesNamespaceTest extends TestHelper {
 
   @Test
-  public void testTsFirstNamespace() {
+  void tsFirstNamespace() {
     database.command("sql", "CREATE TIMESERIES TYPE NsSensor TIMESTAMP ts FIELDS (value DOUBLE)");
     database.transaction(() -> {
       database.command("sql", "INSERT INTO NsSensor SET ts = 1000, value = 10.0");
@@ -48,7 +48,7 @@ public class TimeSeriesNamespaceTest extends TestHelper {
   }
 
   @Test
-  public void testTsTimeBucketNamespace() {
+  void tsTimeBucketNamespace() {
     database.command("sql", "CREATE TIMESERIES TYPE BucketNs TIMESTAMP ts FIELDS (value DOUBLE)");
     database.transaction(() -> {
       for (int i = 0; i < 10; i++)
@@ -68,7 +68,7 @@ public class TimeSeriesNamespaceTest extends TestHelper {
   }
 
   @Test
-  public void testTsRateWithTimeBucket() {
+  void tsRateWithTimeBucket() {
     database.command("sql", "CREATE TIMESERIES TYPE RateNs TIMESTAMP ts FIELDS (value DOUBLE)");
     database.transaction(() -> {
       database.command("sql", "INSERT INTO RateNs SET ts = 1000, value = 10.0");
@@ -90,7 +90,7 @@ public class TimeSeriesNamespaceTest extends TestHelper {
   }
 
   @Test
-  public void testMixedNamespacedAndRegularFunctions() {
+  void mixedNamespacedAndRegularFunctions() {
     database.command("sql", "CREATE TIMESERIES TYPE MixedNs TIMESTAMP ts FIELDS (value DOUBLE)");
     database.transaction(() -> {
       database.command("sql", "INSERT INTO MixedNs SET ts = 1000, value = 10.0");

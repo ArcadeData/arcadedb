@@ -66,7 +66,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testBasicHourlyAvg() {
+  void basicHourlyAvg() {
     final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp FROM SensorData GROUP BY hour");
 
@@ -82,7 +82,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testMultiColumnAggregation() {
+  void multiColumnAggregation() {
     final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(humidity) AS max_hum FROM SensorData GROUP BY hour");
 
@@ -105,7 +105,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testCountWithTimeBucket() {
+  void countWithTimeBucket() {
     final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, count(*) AS cnt FROM SensorData GROUP BY hour");
 
@@ -120,7 +120,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testWithWhereBetween() {
+  void withWhereBetween() {
     // Only buckets 0 and 1 should be included (0 to 3601000)
     final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp FROM SensorData WHERE ts BETWEEN 0 AND 3601000 GROUP BY hour");
@@ -135,7 +135,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testSumAggregation() {
+  void sumAggregation() {
     final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, sum(temperature) AS sum_temp FROM SensorData GROUP BY hour");
 
@@ -150,7 +150,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testMinAggregation() {
+  void minAggregation() {
     final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, min(temperature) AS min_temp FROM SensorData GROUP BY hour");
 
@@ -165,7 +165,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testEmptyResultSet() {
+  void emptyResultSet() {
     // Query a range with no data
     final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp FROM SensorData WHERE ts BETWEEN 999999999 AND 999999999 GROUP BY hour");
@@ -175,7 +175,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testAllRowsInOneBucket() {
+  void allRowsInOneBucket() {
     // Use a very large bucket interval (1 day) so all rows fall in one bucket
     final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1d', ts) AS day, avg(temperature) AS avg_temp, count(*) AS cnt FROM SensorData GROUP BY day");
@@ -189,7 +189,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testFallbackWithDistinct() {
+  void fallbackWithDistinct() {
     // DISTINCT should prevent push-down and fall through to normal execution
     // This verifies the fallback path still works
     final ResultSet rs = database.query("sql",
@@ -201,7 +201,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
   }
 
   @Test
-  void testEquivalenceWithFallback() {
+  void equivalenceWithFallback() {
     // Push-down path: ts.timeBucket GROUP BY
     final ResultSet rsPushDown = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp FROM SensorData GROUP BY hour");

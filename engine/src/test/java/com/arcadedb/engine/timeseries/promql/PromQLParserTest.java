@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PromQLParserTest {
 
   @Test
-  void testSimpleSelector() {
+  void simpleSelector() {
     final PromQLExpr expr = new PromQLParser("cpu_usage").parse();
     assertThat(expr).isInstanceOf(VectorSelector.class);
     final VectorSelector vs = (VectorSelector) expr;
@@ -54,7 +54,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testSelectorWithMatchers() {
+  void selectorWithMatchers() {
     final PromQLExpr expr = new PromQLParser("http_requests{job=\"api\",status!=\"500\"}").parse();
     assertThat(expr).isInstanceOf(VectorSelector.class);
     final VectorSelector vs = (VectorSelector) expr;
@@ -65,7 +65,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testRegexMatcher() {
+  void regexMatcher() {
     final PromQLExpr expr = new PromQLParser("http_requests{job=~\"api.*\"}").parse();
     assertThat(expr).isInstanceOf(VectorSelector.class);
     final VectorSelector vs = (VectorSelector) expr;
@@ -75,14 +75,14 @@ class PromQLParserTest {
   }
 
   @Test
-  void testNegativeRegexMatcher() {
+  void negativeRegexMatcher() {
     final PromQLExpr expr = new PromQLParser("http_requests{job!~\"test.*\"}").parse();
     final VectorSelector vs = (VectorSelector) expr;
     assertThat(vs.matchers().getFirst().op()).isEqualTo(MatchOp.NRE);
   }
 
   @Test
-  void testRangeVector() {
+  void rangeVector() {
     final PromQLExpr expr = new PromQLParser("http_requests[5m]").parse();
     assertThat(expr).isInstanceOf(MatrixSelector.class);
     final MatrixSelector ms = (MatrixSelector) expr;
@@ -91,7 +91,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testAggregationByBefore() {
+  void aggregationByBefore() {
     final PromQLExpr expr = new PromQLParser("sum by (job) (http_requests)").parse();
     assertThat(expr).isInstanceOf(AggregationExpr.class);
     final AggregationExpr agg = (AggregationExpr) expr;
@@ -102,7 +102,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testAggregationByAfter() {
+  void aggregationByAfter() {
     final PromQLExpr expr = new PromQLParser("sum(http_requests) by (job)").parse();
     assertThat(expr).isInstanceOf(AggregationExpr.class);
     final AggregationExpr agg = (AggregationExpr) expr;
@@ -111,7 +111,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testAggregationWithout() {
+  void aggregationWithout() {
     final PromQLExpr expr = new PromQLParser("avg without (instance) (cpu_usage)").parse();
     final AggregationExpr agg = (AggregationExpr) expr;
     assertThat(agg.op()).isEqualTo(AggOp.AVG);
@@ -120,7 +120,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testFunctionCall() {
+  void functionCall() {
     final PromQLExpr expr = new PromQLParser("rate(http_requests[5m])").parse();
     assertThat(expr).isInstanceOf(FunctionCallExpr.class);
     final FunctionCallExpr fn = (FunctionCallExpr) expr;
@@ -130,7 +130,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testBinaryExpression() {
+  void binaryExpression() {
     final PromQLExpr expr = new PromQLParser("cpu_usage * 100").parse();
     assertThat(expr).isInstanceOf(BinaryExpr.class);
     final BinaryExpr bin = (BinaryExpr) expr;
@@ -141,7 +141,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testNestedAggregationAndFunction() {
+  void nestedAggregationAndFunction() {
     final PromQLExpr expr = new PromQLParser("sum(rate(http_requests_total[5m])) by (job)").parse();
     assertThat(expr).isInstanceOf(AggregationExpr.class);
     final AggregationExpr agg = (AggregationExpr) expr;
@@ -151,7 +151,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testOffset() {
+  void offset() {
     final PromQLExpr expr = new PromQLParser("http_requests offset 5m").parse();
     assertThat(expr).isInstanceOf(VectorSelector.class);
     final VectorSelector vs = (VectorSelector) expr;
@@ -159,7 +159,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testRangeWithOffset() {
+  void rangeWithOffset() {
     final PromQLExpr expr = new PromQLParser("http_requests[5m] offset 1h").parse();
     assertThat(expr).isInstanceOf(MatrixSelector.class);
     final MatrixSelector ms = (MatrixSelector) expr;
@@ -168,7 +168,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testDurationParsing() {
+  void durationParsing() {
     assertThat(PromQLParser.parseDuration("5m")).isEqualTo(300_000);
     assertThat(PromQLParser.parseDuration("1h30m")).isEqualTo(5_400_000);
     assertThat(PromQLParser.parseDuration("2d")).isEqualTo(172_800_000);
@@ -177,7 +177,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testDurationParsingMilliseconds() {
+  void durationParsingMilliseconds() {
     // Regression: '500ms' was previously mis-parsed as 500 minutes (30,000,000 ms) instead of 500 ms
     assertThat(PromQLParser.parseDuration("500ms")).isEqualTo(500);
     assertThat(PromQLParser.parseDuration("1ms")).isEqualTo(1);
@@ -190,7 +190,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testDurationParsingOverflow() {
+  void durationParsingOverflow() {
     // Values that overflow long when multiplied by the unit multiplier should throw.
     // 300,000,000 years overflows: 300_000_000 * 31_536_000_000 > Long.MAX_VALUE
     assertThatThrownBy(() -> PromQLParser.parseDuration("300000000y"))
@@ -199,7 +199,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testRangeVectorWithMilliseconds() {
+  void rangeVectorWithMilliseconds() {
     // Regression: metric[500ms] should have rangeMs = 500, not 30,000,000
     final PromQLExpr expr = new PromQLParser("http_requests[500ms]").parse();
     assertThat(expr).isInstanceOf(MatrixSelector.class);
@@ -207,7 +207,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testOperatorPrecedence() {
+  void operatorPrecedence() {
     // 1 + 2 * 3 should be 1 + (2 * 3)
     final PromQLExpr expr = new PromQLParser("1 + 2 * 3").parse();
     assertThat(expr).isInstanceOf(BinaryExpr.class);
@@ -219,7 +219,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testComparisonOperator() {
+  void comparisonOperator() {
     final PromQLExpr expr = new PromQLParser("cpu_usage > 80").parse();
     assertThat(expr).isInstanceOf(BinaryExpr.class);
     final BinaryExpr bin = (BinaryExpr) expr;
@@ -227,7 +227,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testUnaryNegation() {
+  void unaryNegation() {
     final PromQLExpr expr = new PromQLParser("-cpu_usage").parse();
     assertThat(expr).isInstanceOf(UnaryExpr.class);
     final UnaryExpr un = (UnaryExpr) expr;
@@ -236,7 +236,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testTopk() {
+  void topk() {
     final PromQLExpr expr = new PromQLParser("topk(5, http_requests)").parse();
     assertThat(expr).isInstanceOf(AggregationExpr.class);
     final AggregationExpr agg = (AggregationExpr) expr;
@@ -246,21 +246,21 @@ class PromQLParserTest {
   }
 
   @Test
-  void testStringLiteral() {
+  void stringLiteral() {
     final PromQLExpr expr = new PromQLParser("\"hello world\"").parse();
     assertThat(expr).isInstanceOf(StringLiteral.class);
     assertThat(((StringLiteral) expr).value()).isEqualTo("hello world");
   }
 
   @Test
-  void testNumberLiteral() {
+  void numberLiteral() {
     final PromQLExpr expr = new PromQLParser("42.5").parse();
     assertThat(expr).isInstanceOf(NumberLiteral.class);
     assertThat(((NumberLiteral) expr).value()).isEqualTo(42.5);
   }
 
   @Test
-  void testParenthesizedExpression() {
+  void parenthesizedExpression() {
     final PromQLExpr expr = new PromQLParser("(cpu_usage + mem_usage) / 2").parse();
     assertThat(expr).isInstanceOf(BinaryExpr.class);
     final BinaryExpr bin = (BinaryExpr) expr;
@@ -269,25 +269,25 @@ class PromQLParserTest {
   }
 
   @Test
-  void testMalformedExpression() {
+  void malformedExpression() {
     assertThatThrownBy(() -> new PromQLParser("sum(").parse())
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  void testEmptyExpression() {
+  void emptyExpression() {
     assertThatThrownBy(() -> new PromQLParser("").parse())
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  void testInvalidDuration() {
+  void invalidDuration() {
     assertThatThrownBy(() -> PromQLParser.parseDuration("5"))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  void testMultipleFunctionArgs() {
+  void multipleFunctionArgs() {
     final PromQLExpr expr = new PromQLParser("round(cpu_usage, 0.5)").parse();
     assertThat(expr).isInstanceOf(FunctionCallExpr.class);
     final FunctionCallExpr fn = (FunctionCallExpr) expr;
@@ -296,7 +296,7 @@ class PromQLParserTest {
   }
 
   @Test
-  void testSelectorWithMatchersAndRange() {
+  void selectorWithMatchersAndRange() {
     final PromQLExpr expr = new PromQLParser("http_requests{job=\"api\"}[5m]").parse();
     assertThat(expr).isInstanceOf(MatrixSelector.class);
     final MatrixSelector ms = (MatrixSelector) expr;

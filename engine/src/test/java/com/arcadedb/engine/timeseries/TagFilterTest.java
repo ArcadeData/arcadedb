@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TagFilterTest {
 
   @Test
-  void testMatchesFullSchemaOrder() {
+  void matchesFullSchemaOrder() {
     // row[0]=ts, row[1]=col0, row[2]=col1, row[3]=col2
     final Object[] row = { 1000L, "shard-a", 42.0, "region-eu" };
     final TagFilter filter = TagFilter.eq(0, "shard-a");
@@ -42,7 +42,7 @@ class TagFilterTest {
   }
 
   @Test
-  void testMatchesMappedNullColumnIndicesFallsBackToMatches() {
+  void matchesMappedNullColumnIndicesFallsBackToMatches() {
     // null columnIndices → full schema order, same semantics as matches()
     final Object[] row = { 1000L, "shard-a", 42.0, "region-eu" };
     final TagFilter filter = TagFilter.eq(2, "region-eu");
@@ -51,7 +51,7 @@ class TagFilterTest {
   }
 
   @Test
-  void testMatchesMappedSubsetColumnsCorrectly() {
+  void matchesMappedSubsetColumnsCorrectly() {
     // Regression: column index 2 in a subset projection [0, 2] must resolve to row[2], not row[3].
     // Schema layout (non-ts): col0="shard", col1="value", col2="region"
     // Projection selects col0 and col2 (columnIndices=[0,2]).
@@ -72,7 +72,7 @@ class TagFilterTest {
   }
 
   @Test
-  void testMatchesMappedColumnNotInSubset() {
+  void matchesMappedColumnNotInSubset() {
     // If a tag column is not present in the selected subset, matchesMapped returns false
     final Object[] row = { 1000L, "shard-a" }; // only col0 selected
     final int[] columnIndices = { 0 };
@@ -83,7 +83,7 @@ class TagFilterTest {
   }
 
   @Test
-  void testMatchesMappedMultipleConditions() {
+  void matchesMappedMultipleConditions() {
     // Two conditions on non-adjacent columns in a subset projection
     // Schema: col0=shard, col1=value, col2=region, col3=env
     // Projection: [0, 3] → row[1]=col0, row[2]=col3

@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for graph traversal implementations.
  * Phase 2: Tests for BFS, DFS, and variable-length path traversal.
  */
-public class OpenCypherTraversalTest {
+class OpenCypherTraversalTest {
   private Database database;
   private Vertex alice;
   private Vertex bob;
