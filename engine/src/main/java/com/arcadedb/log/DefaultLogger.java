@@ -168,11 +168,11 @@ public class DefaultLogger implements Logger {
   }
 
   public void log(final Object requester, final Level level, String message, final Throwable exception,
-      final String context,
-      final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
-      final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
-      final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15,
-      final Object arg16, final Object arg17) {
+                  final String context,
+                  final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
+                  final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
+                  final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15,
+                  final Object arg16, final Object arg17) {
     if (message == null)
       return;
 
@@ -184,8 +184,9 @@ public class DefaultLogger implements Logger {
     // During JVM shutdown, bypass the logging framework and use System.err directly
     // to avoid NPE when handlers are closed (issue #2813)
     if (shuttingDown) {
-      logToSystemErr(message, exception, context, hasParams, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
-          arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+      if (level.intValue() >= Level.INFO.intValue())
+        logToSystemErr(message, exception, context, hasParams, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+            arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
       return;
     }
 
@@ -264,7 +265,7 @@ public class DefaultLogger implements Logger {
    * Helper method to log directly to System.err during shutdown.
    */
   private void logToSystemErr(String message, final Throwable exception, final String context,
-      final boolean hasParams, final Object... args) {
+                              final boolean hasParams, final Object... args) {
     try {
       if (context != null)
         message = "<" + context + "> " + message;
@@ -283,7 +284,7 @@ public class DefaultLogger implements Logger {
   }
 
   public void log(final Object requester, final Level level, String message, final Throwable exception,
-      final String context, final Object... args) {
+                  final String context, final Object... args) {
     if (message == null)
       return;
 
