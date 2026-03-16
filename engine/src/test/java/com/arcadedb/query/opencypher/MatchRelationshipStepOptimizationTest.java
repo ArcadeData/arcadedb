@@ -26,7 +26,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -251,7 +253,7 @@ class MatchRelationshipStepOptimizationTest {
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name: 'Bob'})--(b:Person) RETURN b.name AS name ORDER BY name");
 
-    final java.util.List<String> names = new java.util.ArrayList<>();
+    final List<String> names = new ArrayList<>();
     while (result.hasNext())
       names.add(result.next().<String>getProperty("name"));
     result.close();
@@ -275,7 +277,7 @@ class MatchRelationshipStepOptimizationTest {
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-(b:Person) RETURN b.name AS name ORDER BY name");
 
-    final java.util.List<String> names = new java.util.ArrayList<>();
+    final List<String> names = new ArrayList<>();
     while (result.hasNext())
       names.add(result.next().<String>getProperty("name"));
     result.close();
@@ -300,7 +302,7 @@ class MatchRelationshipStepOptimizationTest {
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-(b:Person) RETURN b.name AS name ORDER BY name");
 
-    final java.util.List<String> names = new java.util.ArrayList<>();
+    final List<String> names = new ArrayList<>();
     while (result.hasNext())
       names.add(result.next().<String>getProperty("name"));
     result.close();

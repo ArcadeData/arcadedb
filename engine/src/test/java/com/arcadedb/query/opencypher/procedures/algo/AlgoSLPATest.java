@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -120,8 +121,8 @@ class AlgoSLPATest {
     database.transaction(() -> {
       final ResultSet findA = database.query("opencypher", "MATCH (a:Person {name: 'A'}) RETURN a");
       final ResultSet findF = database.query("opencypher", "MATCH (f:Person {name: 'F'}) RETURN f");
-      final var a = (com.arcadedb.graph.Vertex) findA.next().getProperty("a");
-      final var f = (com.arcadedb.graph.Vertex) findF.next().getProperty("f");
+      final var a = (Vertex) findA.next().getProperty("a");
+      final var f = (Vertex) findF.next().getProperty("f");
       a.asVertex().modify().newEdge("WORKS_WITH", f, true, (Object[]) null).save();
     });
 

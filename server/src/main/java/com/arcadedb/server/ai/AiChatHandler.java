@@ -49,6 +49,7 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.logging.Level;
 
 /**
@@ -119,7 +120,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       final JSONObject userMsg = new JSONObject();
       userMsg.put("role", "user");
       userMsg.put("content", message);
-      userMsg.put("timestamp", java.time.Instant.now().toString());
+      userMsg.put("timestamp", Instant.now().toString());
       messages.put(userMsg);
 
       // Build history for gateway (last 20 messages max to keep context manageable)
@@ -276,7 +277,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       final JSONObject assistantMsg = new JSONObject();
       assistantMsg.put("role", "assistant");
       assistantMsg.put("content", doneData.getString("response", ""));
-      assistantMsg.put("timestamp", java.time.Instant.now().toString());
+      assistantMsg.put("timestamp", Instant.now().toString());
 
       final JSONArray commands = doneData.getJSONArray("commands", null);
       if (commands != null && commands.length() > 0)
@@ -284,7 +285,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
       messages.put(assistantMsg);
       chat.put("messages", messages);
-      chat.put("updated", java.time.Instant.now().toString());
+      chat.put("updated", Instant.now().toString());
       chatStorage.saveChat(username, chat);
     }
 
@@ -300,7 +301,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     final JSONObject assistantMsg = new JSONObject();
     assistantMsg.put("role", "assistant");
     assistantMsg.put("content", gatewayResponse.getString("response", ""));
-    assistantMsg.put("timestamp", java.time.Instant.now().toString());
+    assistantMsg.put("timestamp", Instant.now().toString());
 
     final JSONArray commands = gatewayResponse.getJSONArray("commands", null);
     if (commands != null && commands.length() > 0)
@@ -310,7 +311,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     // Update and save chat
     chat.put("messages", messages);
-    chat.put("updated", java.time.Instant.now().toString());
+    chat.put("updated", Instant.now().toString());
     chatStorage.saveChat(username, chat);
 
     // Return response to Studio

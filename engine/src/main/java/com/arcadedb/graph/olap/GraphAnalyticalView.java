@@ -41,11 +41,7 @@ import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -332,7 +328,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           latch.countDown();
         }
       });
-    } catch (final java.util.concurrent.RejectedExecutionException e) {
+    } catch (final RejectedExecutionException e) {
       this.buildError = e;
       this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
       buildQueued.set(false);
@@ -1045,13 +1041,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     stats.put("propertyCount", propertyCount);
 
     if (vertexTypes != null)
-      stats.put("vertexTypes", java.util.Arrays.asList(vertexTypes));
+      stats.put("vertexTypes", Arrays.asList(vertexTypes));
     if (edgeTypes != null)
-      stats.put("edgeTypeFilter", java.util.Arrays.asList(edgeTypes));
+      stats.put("edgeTypeFilter", Arrays.asList(edgeTypes));
     if (propertyFilter != null)
-      stats.put("propertyFilter", java.util.Arrays.asList(propertyFilter));
+      stats.put("propertyFilter", Arrays.asList(propertyFilter));
     if (edgePropertyFilter != null)
-      stats.put("edgePropertyFilter", java.util.Arrays.asList(edgePropertyFilter));
+      stats.put("edgePropertyFilter", Arrays.asList(edgePropertyFilter));
 
     // Edge property memory
     long edgePropMemory = 0;
@@ -1158,7 +1154,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             latch.countDown();
           }
         });
-      } catch (final java.util.concurrent.RejectedExecutionException e) {
+      } catch (final RejectedExecutionException e) {
         this.status = Status.STALE;
         compacting.set(false);
         latch.countDown();
@@ -1266,7 +1262,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             compacting.set(false);
           }
         });
-      } catch (final java.util.concurrent.RejectedExecutionException e) {
+      } catch (final RejectedExecutionException e) {
         pendingDeltas = null;
         compacting.set(false);
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': compaction rejected (executor shut down)", name);

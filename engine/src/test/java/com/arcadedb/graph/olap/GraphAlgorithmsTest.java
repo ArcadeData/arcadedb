@@ -21,6 +21,8 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,7 +70,7 @@ public class GraphAlgorithmsTest extends TestHelper {
     double sum = 0;
     for (final double r : ranks)
       sum += r;
-    assertThat(sum).isCloseTo(1.0, org.assertj.core.data.Offset.offset(0.01));
+    assertThat(sum).isCloseTo(1.0, Offset.offset(0.01));
   }
 
   @Test
@@ -99,7 +101,7 @@ public class GraphAlgorithmsTest extends TestHelper {
     final int s2Id = gav.getNodeId(s2.getIdentity());
 
     // All spokes should have equal rank
-    assertThat(ranks[s1Id]).isCloseTo(ranks[s2Id], org.assertj.core.data.Offset.offset(0.001));
+    assertThat(ranks[s1Id]).isCloseTo(ranks[s2Id], Offset.offset(0.001));
   }
 
   @Test
@@ -553,7 +555,7 @@ public class GraphAlgorithmsTest extends TestHelper {
 
     assertThat(lcc).hasSize(3);
     for (final double coeff : lcc)
-      assertThat(coeff).isCloseTo(1.0, org.assertj.core.data.Offset.offset(1e-9));
+      assertThat(coeff).isCloseTo(1.0, Offset.offset(1e-9));
 
     gav.drop();
   }
@@ -581,9 +583,9 @@ public class GraphAlgorithmsTest extends TestHelper {
     assertThat(lcc).hasSize(4);
     // Hub has degree 3 but no triangles
     final int hubId = gav.getNodeId(a.getIdentity());
-    assertThat(lcc[hubId]).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-9));
+    assertThat(lcc[hubId]).isCloseTo(0.0, Offset.offset(1e-9));
     // Leaves have degree 1 → LCC = 0
-    assertThat(lcc[gav.getNodeId(b.getIdentity())]).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-9));
+    assertThat(lcc[gav.getNodeId(b.getIdentity())]).isCloseTo(0.0, Offset.offset(1e-9));
 
     gav.drop();
   }

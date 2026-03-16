@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.test.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +32,7 @@ import org.neo4j.driver.*;
 
 import java.util.Arrays;
 import java.util.Map;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -77,7 +79,7 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
     db.transaction(() -> {
       if (!db.getSchema().existsType("PerfPerson")) {
         final var type = db.getSchema().createVertexType("PerfPerson");
-        type.createProperty("id", com.arcadedb.schema.Type.INTEGER);
+        type.createProperty("id", Type.INTEGER);
         db.getSchema().createEdgeType("PERF_KNOWS");
       }
     });
@@ -243,7 +245,7 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
       );
 
       // Log results (visible in test output)
-      LogManager.instance().log(this, java.util.logging.Level.INFO, report);
+      LogManager.instance().log(this, Level.INFO, report);
 
       // The edge creation should not be more than 15x the lookup latency
       // (Neo4j shows ~1.3x ratio, we aim for <10x as a reasonable target)

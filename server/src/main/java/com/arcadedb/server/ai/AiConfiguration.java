@@ -27,6 +27,7 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.time.Instant;
 import java.util.logging.Level;
 
 /**
@@ -82,7 +83,7 @@ public class AiConfiguration {
 
   public synchronized void activate(final String token, final String ip, final String hwId, final String version) {
     this.subscriptionToken = token;
-    this.activatedAt = java.time.Instant.now().toString();
+    this.activatedAt = Instant.now().toString();
     this.activationIp = ip;
     this.hardwareId = hwId;
     this.serverVersion = version;

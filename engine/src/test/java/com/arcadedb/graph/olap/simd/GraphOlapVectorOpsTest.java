@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.util.Arrays;
 import java.util.Random;
 import java.util.stream.Stream;
 
@@ -142,7 +143,7 @@ class GraphOlapVectorOpsTest {
   void testSumIntOverflow(final GraphOlapVectorOps ops) {
     // Regression: values whose lane-wise sum exceeds Integer.MAX_VALUE
     final int[] data = new int[16];
-    java.util.Arrays.fill(data, 400_000_000); // 16 × 400M = 6.4B > Integer.MAX_VALUE
+    Arrays.fill(data, 400_000_000); // 16 × 400M = 6.4B > Integer.MAX_VALUE
     assertThat(ops.sumInt(data, 0, 16)).isEqualTo(16L * 400_000_000L);
   }
 

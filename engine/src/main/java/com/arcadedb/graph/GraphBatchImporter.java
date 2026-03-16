@@ -38,6 +38,7 @@ import com.arcadedb.serializer.BinaryTypes;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -755,7 +756,7 @@ public class GraphBatchImporter implements AutoCloseable {
     final long startNs = System.nanoTime();
 
     // Collect all vertex keys that need updating
-    final java.util.Set<Long> allKeys = new java.util.HashSet<>(deferredOutHead.keySet());
+    final Set<Long> allKeys = new HashSet<>(deferredOutHead.keySet());
     allKeys.addAll(deferredInHead.keySet());
 
     // Sort by vertex key for page locality

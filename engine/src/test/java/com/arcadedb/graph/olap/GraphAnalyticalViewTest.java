@@ -24,15 +24,17 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -837,17 +839,17 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .build();
 
     // Verify it's persisted in schema extensions
-    final com.arcadedb.serializer.json.JSONObject ext = database.getSchema().getExtension("graphAnalyticalViews");
+    final JSONObject ext = database.getSchema().getExtension("graphAnalyticalViews");
     assertThat(ext).isNotNull();
     assertThat(ext.has("social-persist")).isTrue();
 
-    final com.arcadedb.serializer.json.JSONObject gavDef = ext.getJSONObject("social-persist");
+    final JSONObject gavDef = ext.getJSONObject("social-persist");
     assertThat(gavDef.getString("name")).isEqualTo("social-persist");
     assertThat(gavDef.getString("updateMode")).isEqualTo("SYNCHRONOUS");
 
     // Close removes from schema
     gav.drop();
-    final com.arcadedb.serializer.json.JSONObject extAfter = database.getSchema().getExtension("graphAnalyticalViews");
+    final JSONObject extAfter = database.getSchema().getExtension("graphAnalyticalViews");
     assertThat(extAfter).isNull();
   }
 
@@ -895,11 +897,11 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Test the generic extension mechanism
     assertThat(database.getSchema().getExtension("nonexistent")).isNull();
 
-    final com.arcadedb.serializer.json.JSONObject testExt = new com.arcadedb.serializer.json.JSONObject();
+    final JSONObject testExt = new JSONObject();
     testExt.put("key", "value");
     database.getSchema().setExtension("testModule", testExt);
 
-    final com.arcadedb.serializer.json.JSONObject loaded = database.getSchema().getExtension("testModule");
+    final JSONObject loaded = database.getSchema().getExtension("testModule");
     assertThat(loaded).isNotNull();
     assertThat(loaded.getString("key")).isEqualTo("value");
 
@@ -2129,7 +2131,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
       // Verify the GAV was restored in the in-memory registry (async build)
       final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db2, "cityRoads");
       assertThat(restored).isNotNull();
-      assertThat(restored.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+      assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
       assertThat(restored.getNodeCount()).isEqualTo(2);
       assertThat(restored.getEdgeCount()).isEqualTo(1);
 
@@ -2594,7 +2596,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     // After compaction/rebuild, the view should still be correct
     // Wait a bit for async compaction to complete
-    gav.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    gav.awaitReady(10, TimeUnit.SECONDS);
 
     assertThat(gav.getNodeCount()).isEqualTo(9);
     assertThat(gav.getEdgeCount()).isEqualTo(8);
@@ -2628,7 +2630,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Verify the live view has the threshold
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "compThresholdTest");
     assertThat(liveView).isNotNull();
-    liveView.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    liveView.awaitReady(10, TimeUnit.SECONDS);
     assertThat(liveView.getCompactionThreshold()).isEqualTo(500);
 
     // ALTER the compaction threshold
@@ -2754,7 +2756,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "machineNet");
     assertThat(liveView).isNotNull();
-    liveView.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    liveView.awaitReady(10, TimeUnit.SECONDS);
     assertThat(liveView.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
 
     // Add more data
@@ -2804,8 +2806,8 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     // Each thread creates vertices in its own type (separate pages, no CME).
     // Concurrent applyDelta calls all merge into the same overlay.
-    final java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(threadCount);
-    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+    final CyclicBarrier barrier = new CyclicBarrier(threadCount);
+    final AtomicInteger errors = new AtomicInteger(0);
 
     final Thread[] threads = new Thread[threadCount];
     for (int t = 0; t < threadCount; t++) {
@@ -2908,7 +2910,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(nodeCount).isEqualTo(4);
 
     // Test NeighborView for OUT direction — last node should have degree 0
-    final com.arcadedb.graph.NeighborView outView = gav.getNeighborView(Vertex.DIRECTION.OUT, "LINK");
+    final NeighborView outView = gav.getNeighborView(Vertex.DIRECTION.OUT, "LINK");
     assertThat(outView).isNotNull();
     assertThat(outView.nodeCount()).isEqualTo(nodeCount);
 
@@ -2924,7 +2926,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(totalOutDegree).isEqualTo(3); // 3 edges total
 
     // Test NeighborView for IN direction — first node should have degree 0
-    final com.arcadedb.graph.NeighborView inView = gav.getNeighborView(Vertex.DIRECTION.IN, "LINK");
+    final NeighborView inView = gav.getNeighborView(Vertex.DIRECTION.IN, "LINK");
     assertThat(inView).isNotNull();
 
     int totalInDegree = 0;
@@ -2937,7 +2939,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(totalInDegree).isEqualTo(3);
 
     // Test BOTH direction — verify merged view handles last node correctly
-    final com.arcadedb.graph.NeighborView bothView = gav.getNeighborView(Vertex.DIRECTION.BOTH, "LINK");
+    final NeighborView bothView = gav.getNeighborView(Vertex.DIRECTION.BOTH, "LINK");
     assertThat(bothView).isNotNull();
     assertThat(bothView.nodeCount()).isEqualTo(nodeCount);
 
@@ -3032,23 +3034,23 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
         .build();
-    gav.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    gav.awaitReady(10, TimeUnit.SECONDS);
 
     // Verify provider is registered
-    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
 
     // Remove from the in-memory registry so the DROP goes through the else branch
     GraphAnalyticalViewRegistry.unregister(database, "orphanTest");
     assertThat(GraphAnalyticalViewRegistry.get(database, "orphanTest")).isNull();
 
     // The traversal provider should still be registered at this point
-    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
 
     // DROP should clean up both schema AND the orphaned traversal provider
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW orphanTest");
 
     // Traversal provider must be unregistered
-    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
 
     // Schema must be clean
     final var ext = database.getSchema().getExtension("graphAnalyticalViews");
@@ -3534,8 +3536,8 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(gav.getNodeCount()).isEqualTo(0);
 
-    final java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(writerCount + 1);
-    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+    final CyclicBarrier barrier = new CyclicBarrier(writerCount + 1);
+    final AtomicInteger errors = new AtomicInteger(0);
 
     // Writer threads: each creates vertices/edges in its own type
     final Thread[] writers = new Thread[writerCount];
@@ -3669,7 +3671,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   void testEdgePropertyBasic() {
     // A -[weight:1.0]-> B -[weight:2.5]-> C
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("ROAD").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+    database.getSchema().createEdgeType("ROAD").createProperty("weight", Type.DOUBLE);
 
     database.begin();
     final MutableVertex a = database.newVertex("Node").set("name", "A").save();
@@ -3724,7 +3726,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   void testEdgePropertyNoConfig() {
     // Default: no edge properties — zero overhead
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("ROAD").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+    database.getSchema().createEdgeType("ROAD").createProperty("weight", Type.DOUBLE);
 
     database.begin();
     final MutableVertex a = database.newVertex("Node").set("name", "A").save();
@@ -3749,7 +3751,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   void testEdgePropertyStarTopology() {
     // Hub -> spoke1, spoke2, spoke3, spoke4, spoke5 with distinct weights
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("LINK").createProperty("cost", com.arcadedb.schema.Type.DOUBLE);
+    database.getSchema().createEdgeType("LINK").createProperty("cost", Type.DOUBLE);
 
     database.begin();
     final MutableVertex hub = database.newVertex("Node").set("name", "hub").save();
@@ -3773,7 +3775,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     // Verify all 5 edge properties are correct (order may differ due to CSR sorting)
     final int[] neighbors = gav.getNeighborIds(hubId, Vertex.DIRECTION.OUT, "LINK");
-    final java.util.Set<Double> retrievedWeights = new java.util.HashSet<>();
+    final Set<Double> retrievedWeights = new HashSet<>();
     for (int i = 0; i < neighbors.length; i++) {
       final Object cost = gav.getEdgeProperty(hubId, i, Vertex.DIRECTION.OUT, "LINK", "cost");
       assertThat(cost).isNotNull();
@@ -3796,7 +3798,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   @Test
   void testEdgePropertyMemoryAccounted() {
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("LINK").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+    database.getSchema().createEdgeType("LINK").createProperty("weight", Type.DOUBLE);
 
     database.begin();
     final MutableVertex a = database.newVertex("Node").set("name", "A").save();
@@ -3819,7 +3821,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(memWith).isGreaterThan(memWithout);
 
     // Stats should include edge property info
-    final java.util.Map<String, Object> stats = gavWithEdgeProps.getStats();
+    final Map<String, Object> stats = gavWithEdgeProps.getStats();
     assertThat(stats.get("edgePropertyColumns")).isEqualTo(1);
     assertThat((long) stats.get("edgePropertyMemoryBytes")).isGreaterThan(0);
 
