@@ -179,21 +179,21 @@ public class ContextConfiguration implements Serializable {
     final Object v = getValue(iConfig);
     if (v == null)
       return 0;
-    return v instanceof Integer i ? i : Integer.parseInt(v.toString());
+    return v instanceof Integer i ? i : Integer.parseInt(v.toString().trim());
   }
 
   public long getValueAsLong(final GlobalConfiguration iConfig) {
     final Object v = getValue(iConfig);
     if (v == null)
       return 0;
-    return v instanceof Long l ? l : Long.parseLong(v.toString());
+    return v instanceof Long l ? l : Long.parseLong(v.toString().trim());
   }
 
   public float getValueAsFloat(final GlobalConfiguration iConfig) {
     final Object v = getValue(iConfig);
     if (v == null)
       return 0;
-    return v instanceof Float f ? f : Float.parseFloat(v.toString());
+    return v instanceof Float f ? f : Float.parseFloat(v.toString().trim());
   }
 
   public Set<String> getContextKeys() {
