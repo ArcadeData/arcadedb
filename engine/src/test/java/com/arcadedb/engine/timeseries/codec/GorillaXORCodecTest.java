@@ -31,20 +31,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GorillaXORCodecTest {
 
   @Test
-  void testEmpty() {
+  void empty() {
     assertThat(GorillaXORCodec.decode(GorillaXORCodec.encode(new double[0]))).isEmpty();
     assertThat(GorillaXORCodec.decode(GorillaXORCodec.encode(null))).isEmpty();
   }
 
   @Test
-  void testSingleValue() {
+  void singleValue() {
     final double[] input = { 22.5 };
     final byte[] encoded = GorillaXORCodec.encode(input);
     assertThat(GorillaXORCodec.decode(encoded)).containsExactly(input);
   }
 
   @Test
-  void testConstantValues() {
+  void constantValues() {
     final double[] input = new double[100];
     Arrays.fill(input, 42.0);
 
@@ -56,7 +56,7 @@ class GorillaXORCodecTest {
   }
 
   @Test
-  void testSlowlyChangingValues() {
+  void slowlyChangingValues() {
     // Temperature-like data: small increments
     final double[] input = new double[500];
     input[0] = 20.0;
@@ -68,7 +68,7 @@ class GorillaXORCodecTest {
   }
 
   @Test
-  void testRandomDoubles() {
+  void randomDoubles() {
     final Random rng = new Random(42);
     final double[] input = new double[300];
     for (int i = 0; i < input.length; i++)
@@ -79,7 +79,7 @@ class GorillaXORCodecTest {
   }
 
   @Test
-  void testSpecialValues() {
+  void specialValues() {
     final double[] input = { 0.0, -0.0, Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.MAX_VALUE,
         Double.MIN_VALUE };
     final byte[] encoded = GorillaXORCodec.encode(input);
@@ -96,14 +96,14 @@ class GorillaXORCodecTest {
   }
 
   @Test
-  void testTwoValues() {
+  void twoValues() {
     final double[] input = { 1.0, 2.0 };
     final byte[] encoded = GorillaXORCodec.encode(input);
     assertThat(GorillaXORCodec.decode(encoded)).containsExactly(input);
   }
 
   @Test
-  void testNegativeValues() {
+  void negativeValues() {
     final double[] input = { -100.5, -100.3, -100.1, -99.9, -99.7 };
     final byte[] encoded = GorillaXORCodec.encode(input);
     assertThat(GorillaXORCodec.decode(encoded)).containsExactly(input);
@@ -117,7 +117,7 @@ class GorillaXORCodecTest {
    * so that leading >= prevLeading is false and the '11' path is taken correctly.
    */
   @Test
-  void testDecoderPrevLeadingInitialisedToMaxValue() {
+  void decoderPrevLeadingInitialisedToMaxValue() {
     // Construct two values whose XOR has the same leading/trailing zeros as
     // "no prior block" — use a constant array where the third differs.
     // 1.0 XOR 2.0 has many leading zeros; encoding must round-trip correctly.
@@ -126,7 +126,7 @@ class GorillaXORCodecTest {
   }
 
   @Test
-  void testDecodeBufferVariant() {
+  void decodeBufferVariant() {
     final double[] input = { 1.0, 2.0, 3.0, 4.0 };
     final byte[] encoded = GorillaXORCodec.encode(input);
     final double[] output = new double[input.length];

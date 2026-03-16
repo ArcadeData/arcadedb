@@ -52,7 +52,7 @@ class TimeSeriesCrashRecoveryTest extends TestHelper {
   }
 
   @Test
-  void testRecoveryAfterInterruptedCompaction() throws Exception {
+  void recoveryAfterInterruptedCompaction() throws Exception {
     final List<ColumnDefinition> columns = createTestColumns();
 
     // Phase 1: Create shard, insert data, compact normally, then insert more data
@@ -121,7 +121,7 @@ class TimeSeriesCrashRecoveryTest extends TestHelper {
   }
 
   @Test
-  void testRecoveryWithCleanState() throws Exception {
+  void recoveryWithCleanState() throws Exception {
     final List<ColumnDefinition> columns = createTestColumns();
 
     // Create, insert, compact normally
@@ -158,7 +158,7 @@ class TimeSeriesCrashRecoveryTest extends TestHelper {
    * Verifies that the stale .tmp file is cleaned up on startup and the shard opens normally.
    */
   @Test
-  void testRecoveryWithStaleTmpFile() throws Exception {
+  void recoveryWithStaleTmpFile() throws Exception {
     final List<ColumnDefinition> columns = createTestColumns();
 
     // Phase 1: Create shard, insert data, compact to create a valid .sealed file
@@ -216,7 +216,7 @@ class TimeSeriesCrashRecoveryTest extends TestHelper {
    * up and a fresh empty sealed store is created.
    */
   @Test
-  void testRecoveryWithMissingSealedAndOrphanedTmp() throws Exception {
+  void recoveryWithMissingSealedAndOrphanedTmp() throws Exception {
     final List<ColumnDefinition> columns = createTestColumns();
 
     // Phase 1: Create shard, insert data, compact to produce sealed blocks
@@ -294,7 +294,7 @@ class TimeSeriesCrashRecoveryTest extends TestHelper {
    * no-op and the actual block-removal path was never exercised.
    */
   @Test
-  void testRecoveryTruncatesExtraSealedBlocks() throws Exception {
+  void recoveryTruncatesExtraSealedBlocks() throws Exception {
     final List<ColumnDefinition> columns = createTestColumns();
 
     // Step 1: Insert 3 samples and compact → 1 sealed block

@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CSRPerformanceTest extends TestHelper {
+class CSRPerformanceTest extends TestHelper {
 
   private static final int NODE_COUNT = 5_000;
   private static final int EDGE_COUNT = 20_000;

@@ -41,7 +41,7 @@ class TimeSeriesShardTest extends TestHelper {
   }
 
   @Test
-  void testAppendAndScan() throws Exception {
+  void appendAndScan() throws Exception {
     database.begin();
     final TimeSeriesShard shard = new TimeSeriesShard(
         (DatabaseInternal) database, "test_shard", 0, createTestColumns());
@@ -64,7 +64,7 @@ class TimeSeriesShardTest extends TestHelper {
   }
 
   @Test
-  void testCompaction() throws Exception {
+  void compaction() throws Exception {
     database.begin();
     final TimeSeriesShard shard = new TimeSeriesShard(
         (DatabaseInternal) database, "test_compact_shard", 0, createTestColumns());
@@ -96,7 +96,7 @@ class TimeSeriesShardTest extends TestHelper {
   }
 
   @Test
-  void testTagFilter() throws Exception {
+  void tagFilter() throws Exception {
     database.begin();
     final TimeSeriesShard shard = new TimeSeriesShard(
         (DatabaseInternal) database, "test_filter_shard", 0, createTestColumns());

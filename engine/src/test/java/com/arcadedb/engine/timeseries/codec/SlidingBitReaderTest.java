@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SlidingBitReaderTest {
 
   @Test
-  void testReadBitAndReadBits1Match() {
+  void readBitAndReadBits1Match() {
     // Write alternating 0s and 1s, read them back via readBit() and readBits(1)
     final DeltaOfDeltaCodec.BitWriter writer = new DeltaOfDeltaCodec.BitWriter(16);
     writer.writeBit(1);
@@ -52,7 +52,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testReadZeroBits() {
+  void readZeroBits() {
     final DeltaOfDeltaCodec.BitWriter writer = new DeltaOfDeltaCodec.BitWriter(16);
     writer.writeBits(0xAB, 8);
     final byte[] data = writer.toByteArray();
@@ -63,7 +63,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testRead64Bits() {
+  void read64Bits() {
     // 64-bit reads are used for the header (count, first value, first delta)
     final long value = 0x123456789ABCDEF0L;
     final DeltaOfDeltaCodec.BitWriter writer = new DeltaOfDeltaCodec.BitWriter(16);
@@ -75,7 +75,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testMultiple64BitReads() {
+  void multiple64BitReads() {
     // Gorilla XOR header: 32-bit count + 64-bit first value
     final DeltaOfDeltaCodec.BitWriter writer = new DeltaOfDeltaCodec.BitWriter(32);
     writer.writeBits(42, 32);
@@ -91,7 +91,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testRefillBoundary() {
+  void refillBoundary() {
     // Write enough bits to force multiple refills
     final DeltaOfDeltaCodec.BitWriter writer = new DeltaOfDeltaCodec.BitWriter(64);
     // Write 57 bits then another 57 bits — this forces a refill mid-stream
@@ -108,7 +108,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testVeryShortData() {
+  void veryShortData() {
     // 1 byte = 8 bits
     final DeltaOfDeltaCodec.BitWriter writer = new DeltaOfDeltaCodec.BitWriter(4);
     writer.writeBits(0b10110, 5);
@@ -119,7 +119,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testMixedBitAndBitsReads() {
+  void mixedBitAndBitsReads() {
     // Simulates the Gorilla XOR decode pattern: readBit + readBit + readBits(N)
     final DeltaOfDeltaCodec.BitWriter writer = new DeltaOfDeltaCodec.BitWriter(32);
     writer.writeBit(1);       // control bit
@@ -149,7 +149,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testGorillaXorRoundTripLargeRandom() {
+  void gorillaXorRoundTripLargeRandom() {
     // Simulates benchmark data pattern: 20.0 + random * 15.0
     final Random rng = new Random(12345);
     final double[] input = new double[65536];
@@ -169,7 +169,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testDeltaOfDeltaRoundTripLargeMonotonic() {
+  void deltaOfDeltaRoundTripLargeMonotonic() {
     // Monotonically increasing timestamps at ~100ms intervals with jitter
     final Random rng = new Random(54321);
     final long[] input = new long[65536];
@@ -190,7 +190,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testGorillaXorRoundTripSpecialValues() {
+  void gorillaXorRoundTripSpecialValues() {
     final double[] input = {
         0.0, -0.0, Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY,
         Double.MAX_VALUE, Double.MIN_VALUE, Math.PI, Math.E,
@@ -207,7 +207,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testDeltaOfDeltaRoundTripConstantDelta() {
+  void deltaOfDeltaRoundTripConstantDelta() {
     // Perfectly regular timestamps — all delta-of-deltas are 0
     final long[] input = new long[10000];
     for (int i = 0; i < input.length; i++)
@@ -219,7 +219,7 @@ class SlidingBitReaderTest {
   }
 
   @Test
-  void testDeltaOfDeltaRoundTripAllBuckets() {
+  void deltaOfDeltaRoundTripAllBuckets() {
     // Exercise all encoding buckets: dod=0, |dod|<=63, |dod|<=255, |dod|<=2047, else
     final long[] input = new long[20];
     input[0] = 1000;

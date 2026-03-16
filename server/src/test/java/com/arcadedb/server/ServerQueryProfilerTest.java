@@ -34,7 +34,7 @@ import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ServerQueryProfilerTest extends StaticBaseServerTest {
+class ServerQueryProfilerTest extends StaticBaseServerTest {
   private ArcadeDBServer server;
 
   @BeforeEach
@@ -63,7 +63,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testStartStopRecording() {
+  void startStopRecording() {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     assertThat(profiler).isNotNull();
     assertThat(profiler.isRecording()).isFalse();
@@ -82,7 +82,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testReset() {
+  void reset() {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     profiler.start();
     profiler.recordQuery("testdb", "sql", "SELECT 1", 1_000_000, null);
@@ -94,7 +94,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testRecordAndAggregate() {
+  void recordAndAggregate() {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     profiler.start();
 
@@ -124,7 +124,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testSnapshotsCapture() {
+  void snapshotsCapture() {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     profiler.start();
     final JSONObject results = profiler.stop();
@@ -141,7 +141,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testPersistenceAndList() {
+  void persistenceAndList() {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     profiler.start();
     profiler.recordQuery("testdb", "sql", "SELECT 1", 1_000_000, null);
@@ -157,7 +157,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testLoadSavedRun() {
+  void loadSavedRun() {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     profiler.start();
     profiler.recordQuery("testdb", "sql", "SELECT 1", 1_000_000, null);
@@ -174,7 +174,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testProfilerWithRealQueries() {
+  void profilerWithRealQueries() {
     // Create a test database
     server.createDatabase("profiler-test-db", ComponentFile.MODE.READ_WRITE);
     final ServerDatabase db = server.getDatabase("profiler-test-db");
@@ -223,14 +223,14 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testNormalizeQuery() {
+  void normalizeQuery() {
     assertThat(ServerQueryProfiler.normalizeQuery("SELECT  FROM   Person")).isEqualTo("SELECT FROM Person");
     assertThat(ServerQueryProfiler.normalizeQuery("  SELECT FROM Person  ")).isEqualTo("SELECT FROM Person");
     assertThat(ServerQueryProfiler.normalizeQuery("SELECT\nFROM\tPerson")).isEqualTo("SELECT FROM Person");
   }
 
   @Test
-  public void testDoubleStartIsIdempotent() {
+  void doubleStartIsIdempotent() {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     profiler.start();
     assertThat(profiler.isRecording()).isTrue();
@@ -244,7 +244,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testStopWhenNotRecordingReturnsLastResults() {
+  void stopWhenNotRecordingReturnsLastResults() {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     profiler.start();
     profiler.recordQuery("testdb", "sql", "SELECT 1", 1_000_000, null);
@@ -257,7 +257,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testAutoStopTimeout() throws InterruptedException {
+  void autoStopTimeout() throws Exception {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     profiler.start(2); // 2-second timeout
     assertThat(profiler.isRecording()).isTrue();
@@ -275,7 +275,7 @@ public class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  public void testStartWithCustomTimeout() {
+  void startWithCustomTimeout() {
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     profiler.start(120);
     assertThat(profiler.isRecording()).isTrue();

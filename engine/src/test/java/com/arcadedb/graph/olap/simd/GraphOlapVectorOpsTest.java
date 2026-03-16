@@ -43,7 +43,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testGatherInt(final GraphOlapVectorOps ops) {
+  void gatherInt(final GraphOlapVectorOps ops) {
     final int[] src = { 10, 20, 30, 40, 50, 60, 70, 80 };
     final int[] indices = { 7, 0, 3, 5, 1 };
     final int[] dst = new int[5];
@@ -55,7 +55,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testGatherIntWithOffset(final GraphOlapVectorOps ops) {
+  void gatherIntWithOffset(final GraphOlapVectorOps ops) {
     final int[] src = { 100, 200, 300, 400, 500 };
     final int[] indices = { 0, 1, 4, 3, 2 };
     final int[] dst = new int[3];
@@ -67,7 +67,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testGatherLong(final GraphOlapVectorOps ops) {
+  void gatherLong(final GraphOlapVectorOps ops) {
     final long[] src = { 100L, 200L, 300L, 400L, 500L };
     final int[] indices = { 4, 2, 0 };
     final long[] dst = new long[3];
@@ -79,7 +79,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testGatherDouble(final GraphOlapVectorOps ops) {
+  void gatherDouble(final GraphOlapVectorOps ops) {
     final double[] src = { 1.1, 2.2, 3.3, 4.4, 5.5 };
     final int[] indices = { 3, 1, 4 };
     final double[] dst = new double[3];
@@ -93,7 +93,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testGatherIntLargeArray(final GraphOlapVectorOps ops) {
+  void gatherIntLargeArray(final GraphOlapVectorOps ops) {
     // Test with array larger than SIMD lane width to exercise vectorized + remainder paths
     final int n = 2048;
     final int[] src = new int[n];
@@ -116,7 +116,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testSumDouble(final GraphOlapVectorOps ops) {
+  void sumDouble(final GraphOlapVectorOps ops) {
     final double[] data = { 1.0, 2.0, 3.0, 4.0, 5.0 };
     assertThat(ops.sumDouble(data, 0, 5)).isCloseTo(15.0, within(1e-10));
     assertThat(ops.sumDouble(data, 1, 3)).isCloseTo(9.0, within(1e-10));
@@ -124,7 +124,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testMinMaxDouble(final GraphOlapVectorOps ops) {
+  void minMaxDouble(final GraphOlapVectorOps ops) {
     final double[] data = { 3.0, 1.0, 4.0, 1.5, 9.0, 2.6 };
     assertThat(ops.minDouble(data, 0, 6)).isCloseTo(1.0, within(1e-10));
     assertThat(ops.maxDouble(data, 0, 6)).isCloseTo(9.0, within(1e-10));
@@ -132,7 +132,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testSumInt(final GraphOlapVectorOps ops) {
+  void sumInt(final GraphOlapVectorOps ops) {
     final int[] data = { 10, 20, 30, 40, 50 };
     assertThat(ops.sumInt(data, 0, 5)).isEqualTo(150);
     assertThat(ops.sumInt(data, 2, 2)).isEqualTo(70);
@@ -140,7 +140,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testSumIntOverflow(final GraphOlapVectorOps ops) {
+  void sumIntOverflow(final GraphOlapVectorOps ops) {
     // Regression: values whose lane-wise sum exceeds Integer.MAX_VALUE
     final int[] data = new int[16];
     Arrays.fill(data, 400_000_000); // 16 × 400M = 6.4B > Integer.MAX_VALUE
@@ -149,7 +149,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testMinMaxInt(final GraphOlapVectorOps ops) {
+  void minMaxInt(final GraphOlapVectorOps ops) {
     final int[] data = { 30, 10, 40, 15, 90, 26 };
     assertThat(ops.minInt(data, 0, 6)).isEqualTo(10);
     assertThat(ops.maxInt(data, 0, 6)).isEqualTo(90);
@@ -157,14 +157,14 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testSumLong(final GraphOlapVectorOps ops) {
+  void sumLong(final GraphOlapVectorOps ops) {
     final long[] data = { 100L, 200L, 300L };
     assertThat(ops.sumLong(data, 0, 3)).isEqualTo(600L);
   }
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testMinMaxLong(final GraphOlapVectorOps ops) {
+  void minMaxLong(final GraphOlapVectorOps ops) {
     final long[] data = { 30L, 10L, 40L, 15L, 90L };
     assertThat(ops.minLong(data, 0, 5)).isEqualTo(10L);
     assertThat(ops.maxLong(data, 0, 5)).isEqualTo(90L);
@@ -172,7 +172,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testAggregationLargeArray(final GraphOlapVectorOps ops) {
+  void aggregationLargeArray(final GraphOlapVectorOps ops) {
     // Test with array larger than SIMD lanes to exercise vectorized + remainder
     final int n = 1025; // odd size to test remainder handling
     final double[] data = new double[n];
@@ -191,7 +191,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testBitmaskAnd(final GraphOlapVectorOps ops) {
+  void bitmaskAnd(final GraphOlapVectorOps ops) {
     final long[] a = { 0xFF00FF00FF00FF00L, 0x0F0F0F0F0F0F0F0FL };
     final long[] b = { 0xFFFF0000FFFF0000L, 0x00FF00FF00FF00FFL };
     final long[] out = new long[2];
@@ -204,7 +204,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testBitmaskOr(final GraphOlapVectorOps ops) {
+  void bitmaskOr(final GraphOlapVectorOps ops) {
     final long[] a = { 0xFF00L };
     final long[] b = { 0x00FFL };
     final long[] out = new long[1];
@@ -216,7 +216,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testBitmaskNot(final GraphOlapVectorOps ops) {
+  void bitmaskNot(final GraphOlapVectorOps ops) {
     final long[] a = { 0L, ~0L };
     final long[] out = new long[2];
 
@@ -228,14 +228,14 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testBitmaskPopcount(final GraphOlapVectorOps ops) {
+  void bitmaskPopcount(final GraphOlapVectorOps ops) {
     final long[] mask = { 0xFFL, 0xFF00L }; // 8 + 8 = 16 set bits
     assertThat(ops.bitmaskPopcount(mask, 2)).isEqualTo(16);
   }
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testBitmaskOpsLarge(final GraphOlapVectorOps ops) {
+  void bitmaskOpsLarge(final GraphOlapVectorOps ops) {
     // Larger than SIMD lane width
     final int n = 17; // 17 longs = 1088 bits
     final long[] a = new long[n];
@@ -261,7 +261,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testExtractNullMaskSequential(final GraphOlapVectorOps ops) {
+  void extractNullMaskSequential(final GraphOlapVectorOps ops) {
     // Simulate a 128-node column where nodes 0, 5, 63, 64, 127 are null
     final long[] nullBitset = new long[2];
     nullBitset[0] = (1L << 0) | (1L << 5) | (1L << 63);
@@ -281,7 +281,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testExtractNullMaskSequentialWithOffset(final GraphOlapVectorOps ops) {
+  void extractNullMaskSequentialWithOffset(final GraphOlapVectorOps ops) {
     final long[] nullBitset = new long[2];
     nullBitset[0] = (1L << 60); // node 60 is null
     nullBitset[1] = (1L << 5);  // node 69 is null
@@ -299,7 +299,7 @@ class GraphOlapVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void testExtractNullMaskGather(final GraphOlapVectorOps ops) {
+  void extractNullMaskGather(final GraphOlapVectorOps ops) {
     final long[] nullBitset = new long[2];
     nullBitset[0] = (1L << 3) | (1L << 10);
     nullBitset[1] = (1L << 0); // node 64
@@ -318,7 +318,7 @@ class GraphOlapVectorOpsTest {
   // ── Parity tests (scalar vs SIMD) ─────────────────────────────────────
 
   @Test
-  void testScalarSimdParityGather() {
+  void scalarSimdParityGather() {
     final ScalarGraphOlapVectorOps scalar = new ScalarGraphOlapVectorOps();
     final SimdGraphOlapVectorOps simd = new SimdGraphOlapVectorOps();
     final Random rnd = new Random(99);
@@ -358,7 +358,7 @@ class GraphOlapVectorOpsTest {
   }
 
   @Test
-  void testScalarSimdParityAggregation() {
+  void scalarSimdParityAggregation() {
     final ScalarGraphOlapVectorOps scalar = new ScalarGraphOlapVectorOps();
     final SimdGraphOlapVectorOps simd = new SimdGraphOlapVectorOps();
     final Random rnd = new Random(77);
@@ -387,7 +387,7 @@ class GraphOlapVectorOpsTest {
   }
 
   @Test
-  void testProviderReturnsInstance() {
+  void providerReturnsInstance() {
     final GraphOlapVectorOps ops = GraphOlapVectorOpsProvider.getInstance();
     assertThat(ops).isNotNull();
 

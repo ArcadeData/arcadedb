@@ -62,7 +62,7 @@ import java.util.concurrent.ThreadLocalRandom;
 @Tag("performance")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-public class GraphOLAPBenchmark {
+class GraphOLAPBenchmark {
 
   private static final String DB_PATH = "target/databases/olap-benchmark";
   private static final int    VERTEX_COUNT      = Integer.getInteger("arcadedb.olap.vertices", 500_000);

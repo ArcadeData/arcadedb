@@ -32,12 +32,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GraphAlgorithmsTest extends TestHelper {
+class GraphAlgorithmsTest extends TestHelper {
 
   // --- PageRank ---
 
   @Test
-  void testPageRankSimpleChain() {
+  void pageRankSimpleChain() {
     // A -> B -> C: C should have the highest rank
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -74,7 +74,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testPageRankStarGraph() {
+  void pageRankStarGraph() {
     // Hub -> spoke1, spoke2, spoke3
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -105,7 +105,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testPageRankEmptyGraph() {
+  void pageRankEmptyGraph() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -121,7 +121,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   // --- Connected Components ---
 
   @Test
-  void testConnectedComponentsSingleComponent() {
+  void connectedComponentsSingleComponent() {
     // A -- B -- C (all connected)
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -150,7 +150,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testConnectedComponentsTwoComponents() {
+  void connectedComponentsTwoComponents() {
     // {A -> B} and {C -> D} — two separate components
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -184,7 +184,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testConnectedComponentsIsolatedNodes() {
+  void connectedComponentsIsolatedNodes() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -206,7 +206,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   // --- Shortest Path ---
 
   @Test
-  void testShortestPathDirect() {
+  void shortestPathDirect() {
     // A -> B -> C -> D
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -244,7 +244,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testShortestPathNoPath() {
+  void shortestPathNoPath() {
     // A -> B, C (disconnected from A)
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -267,7 +267,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testShortestPathAll() {
+  void shortestPathAll() {
     // A -> B -> C, A -> C (shortcut)
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -297,7 +297,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testShortestPathAllBothDirection() {
+  void shortestPathAllBothDirection() {
     // A -> B -> C, verify BOTH direction finds reverse paths
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -327,7 +327,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testShortestPathAllInDirection() {
+  void shortestPathAllInDirection() {
     // A -> B -> C, from C with IN direction should traverse backward edges
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -363,7 +363,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testShortestPathAllLargeGraph() {
+  void shortestPathAllLargeGraph() {
     // Build a chain of 200 nodes to verify bitmap and pre-allocated frontier work on larger graphs
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -398,7 +398,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testShortestPathAllPullMode() {
+  void shortestPathAllPullMode() {
     // Star graph: center node connected to 50 leaves. After first BFS level,
     // frontier contains 50 nodes (> n/20 = 51/20 = 2), triggering pull mode.
     // Then each leaf is connected to a "tail" node, testing pull mode correctness.
@@ -442,7 +442,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   // --- Label Propagation ---
 
   @Test
-  void testLabelPropagationTwoCommunities() {
+  void labelPropagationTwoCommunities() {
     // Community 1: A -- B -- C (fully connected)
     // Community 2: D -- E -- F (fully connected)
     // Single bridge: C -> D
@@ -498,7 +498,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testLabelPropagationSingleNode() {
+  void labelPropagationSingleNode() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -517,7 +517,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testLabelPropagationEmptyGraph() {
+  void labelPropagationEmptyGraph() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -535,7 +535,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   // --- Local Clustering Coefficient ---
 
   @Test
-  void testLCCTriangle() {
+  void lccTriangle() {
     // A -- B -- C -- A: all nodes in a triangle, LCC = 1.0 for all
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -561,7 +561,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testLCCStar() {
+  void lccStar() {
     // Hub A connected to B, C, D — no edges among B, C, D. LCC(A) = 0 (no triangles)
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
@@ -591,7 +591,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testLCCPartialClique() {
+  void lccPartialClique() {
     // A--B, A--C, A--D, B--C (triangle A-B-C, but D not connected to B or C)
     // LCC(A) = 2 * 1 / (3 * 2) = 1/3  (1 triangle out of 3 possible)
     database.getSchema().createVertexType("Node");
@@ -623,7 +623,7 @@ public class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
-  void testCompactionThresholdBuilder() {
+  void compactionThresholdBuilder() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 

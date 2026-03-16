@@ -51,7 +51,7 @@ class TimeSeriesBucketTest extends TestHelper {
   }
 
   @Test
-  void testCreateBucketAndAppend() throws Exception {
+  void createBucketAndAppend() throws Exception {
     database.begin();
     final TimeSeriesBucket bucket = createAndRegisterBucket("test_ts_bucket", createTestColumns());
 
@@ -70,7 +70,7 @@ class TimeSeriesBucketTest extends TestHelper {
   }
 
   @Test
-  void testAppendMultipleSamples() throws Exception {
+  void appendMultipleSamples() throws Exception {
     database.begin();
     final TimeSeriesBucket bucket = createAndRegisterBucket("test_ts_multi", createTestColumns());
 
@@ -89,7 +89,7 @@ class TimeSeriesBucketTest extends TestHelper {
   }
 
   @Test
-  void testScanRange() throws Exception {
+  void scanRange() throws Exception {
     database.begin();
     final TimeSeriesBucket bucket = createAndRegisterBucket("test_ts_scan", createTestColumns());
 
@@ -115,7 +115,7 @@ class TimeSeriesBucketTest extends TestHelper {
   }
 
   @Test
-  void testScanRangeEmpty() throws Exception {
+  void scanRangeEmpty() throws Exception {
     database.begin();
     final TimeSeriesBucket bucket = createAndRegisterBucket("test_ts_empty", createTestColumns());
 
@@ -133,7 +133,7 @@ class TimeSeriesBucketTest extends TestHelper {
   }
 
   @Test
-  void testNumericOnlyColumns() throws Exception {
+  void numericOnlyColumns() throws Exception {
     final List<ColumnDefinition> cols = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD),
@@ -161,7 +161,7 @@ class TimeSeriesBucketTest extends TestHelper {
   }
 
   @Test
-  void testCompactionFlag() throws Exception {
+  void compactionFlag() throws Exception {
     database.begin();
     final TimeSeriesBucket bucket = createAndRegisterBucket("test_ts_compact", createTestColumns());
 
@@ -174,7 +174,7 @@ class TimeSeriesBucketTest extends TestHelper {
   }
 
   @Test
-  void testReadAllForCompaction() throws Exception {
+  void readAllForCompaction() throws Exception {
     database.begin();
     final TimeSeriesBucket bucket = createAndRegisterBucket("test_ts_readall", createTestColumns());
 

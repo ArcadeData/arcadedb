@@ -72,7 +72,7 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testEdgeCreationPerformanceViaBolt() {
+  void edgeCreationPerformanceViaBolt() {
     final Database db = getServerDatabase(0, getDatabaseName());
 
     // Setup schema and data using direct API for speed

@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue3516NamedParamOffsetTest extends TestHelper {
 
   @Test
-  void testSkipWithOffsetParam() {
+  void skipWithOffsetParam() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Brewery IF NOT EXISTS");
       database.command("sql", "DELETE FROM Brewery");
@@ -67,7 +67,7 @@ class Issue3516NamedParamOffsetTest extends TestHelper {
   }
 
   @Test
-  void testSkipWithOffsetParamNonZero() {
+  void skipWithOffsetParamNonZero() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Brewery2 IF NOT EXISTS");
       database.command("sql", "DELETE FROM Brewery2");
@@ -91,7 +91,7 @@ class Issue3516NamedParamOffsetTest extends TestHelper {
   }
 
   @Test
-  void testLimitOffsetOrder() {
+  void limitOffsetOrder() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Brewery3 IF NOT EXISTS");
       database.command("sql", "DELETE FROM Brewery3");

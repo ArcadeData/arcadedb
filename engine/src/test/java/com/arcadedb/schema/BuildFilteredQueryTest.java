@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BuildFilteredQueryTest {
 
   @Test
-  void testWithGroupBy() {
+  void withGroupBy() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading GROUP BY sensor_id");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
@@ -40,7 +40,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testWithOrderByNoGroupBy() {
+  void withOrderByNoGroupBy() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, temp FROM SensorReading ORDER BY sensor_id");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
@@ -49,7 +49,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testWithOrderByAndGroupBy() {
+  void withOrderByAndGroupBy() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading GROUP BY sensor_id ORDER BY sensor_id");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
@@ -59,7 +59,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testWithExistingWhere() {
+  void withExistingWhere() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE active = true GROUP BY sensor_id");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
@@ -68,7 +68,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testNoKeywordsAppendsAtEnd() {
+  void noKeywordsAppendsAtEnd() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
@@ -77,7 +77,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testWithLimitNoGroupByNoOrderBy() {
+  void withLimitNoGroupByNoOrderBy() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, temp FROM SensorReading LIMIT 100");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
@@ -86,7 +86,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testWhereConditionStartsWithParenthesis() {
+  void whereConditionStartsWithParenthesis() {
     // Regression: WHERE(condition) without a space after WHERE caused "AND(condition)" — missing space
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE(active = true) GROUP BY sensor_id");
@@ -96,7 +96,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testWatermarkZeroReturnsOriginal() {
+  void watermarkZeroReturnsOriginal() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id FROM SensorReading ORDER BY sensor_id");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 0);
@@ -104,7 +104,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testBlockCommentContainingWhereIsIgnored() {
+  void blockCommentContainingWhereIsIgnored() {
     // Regression: block comment containing WHERE must not be matched as the top-level WHERE
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) /* WHERE not here */ FROM SensorReading GROUP BY sensor_id");
@@ -114,7 +114,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testLineCommentContainingWhereIsIgnored() {
+  void lineCommentContainingWhereIsIgnored() {
     // Regression: line comment containing WHERE must not be matched as the top-level WHERE
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading -- no WHERE needed\nGROUP BY sensor_id");
@@ -124,7 +124,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testLineCommentWithWhereKeywordIsNotMatched() {
+  void lineCommentWithWhereKeywordIsNotMatched() {
     // A -- comment containing WHERE should not be treated as a top-level WHERE clause
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT avg(temp) FROM SensorReading -- WHERE clause not needed\nGROUP BY sensor_id");
@@ -135,7 +135,7 @@ class BuildFilteredQueryTest {
   }
 
   @Test
-  void testDotInTimestampColumnIsRejected() {
+  void dotInTimestampColumnIsRejected() {
     // Regression: SAFE_COLUMN_NAME must not allow dots in column names (could allow injection)
     final ContinuousAggregateImpl ca = new ContinuousAggregateImpl(null, "test_ca",
         "SELECT avg(temp) FROM SensorReading GROUP BY sensor_id",

@@ -57,7 +57,7 @@ class GraphBatchImporterTest extends TestHelper {
    * Correctness test: verifies that edges are properly created and traversable (both OUT and IN).
    */
   @Test
-  void testCorrectnessSmall() {
+  void correctnessSmall() {
     final int vertices = 100;
     final int edges = 500;
 
@@ -109,7 +109,7 @@ class GraphBatchImporterTest extends TestHelper {
    * Correctness test for regular (non-light) edges with properties.
    */
   @Test
-  void testCorrectnessWithProperties() {
+  void correctnessWithProperties() {
     final int vertices = 50;
     final int edges = 200;
 
@@ -152,7 +152,7 @@ class GraphBatchImporterTest extends TestHelper {
    * Correctness test for createVertex with pre-allocated edge segments.
    */
   @Test
-  void testCreateVertexPreAllocate() {
+  void createVertexPreAllocate() {
     final int vertices = 50;
     final int edges = 200;
 
@@ -205,7 +205,7 @@ class GraphBatchImporterTest extends TestHelper {
    * Correctness test for deferred incoming edges across multiple flushes.
    */
   @Test
-  void testDeferredIncomingAcrossFlushes() {
+  void deferredIncomingAcrossFlushes() {
     final int vertices = 100;
     final int edges = 500;
 
@@ -253,7 +253,7 @@ class GraphBatchImporterTest extends TestHelper {
    * Correctness test for batch vertex creation using createVertices().
    */
   @Test
-  void testCreateVerticesBatch() {
+  void createVerticesBatch() {
     final int vertices = 200;
     final int edges = 1000;
 
@@ -295,7 +295,7 @@ class GraphBatchImporterTest extends TestHelper {
    * Correctness test for createVertices with properties.
    */
   @Test
-  void testCreateVerticesBatchWithProperties() {
+  void createVerticesBatchWithProperties() {
     final int vertices = 50;
 
     final Object[][] props = new Object[vertices][];
@@ -322,7 +322,7 @@ class GraphBatchImporterTest extends TestHelper {
    * Correctness test for parallel flush mode.
    */
   @Test
-  void testParallelFlushCorrectness() {
+  void parallelFlushCorrectness() {
     final int vertices = 200;
     final int edges = 2000;
 

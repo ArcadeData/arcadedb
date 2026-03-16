@@ -247,7 +247,7 @@ class MatchRelationshipStepOptimizationTest {
    * self-loop edges (which appear once in OUT and once in IN).
    */
   @Test
-  void testBothDirectionUsesFastPath() {
+  void bothDirectionUsesFastPath() {
     // Alice-[:KNOWS]->Bob, Bob-[:KNOWS]->Charlie, Alice-[:FOLLOWS]->Dave
     // BOTH from Bob: Alice (via IN KNOWS) and Charlie (via OUT KNOWS) — no self-loops
     final ResultSet result = database.query("opencypher",
@@ -266,7 +266,7 @@ class MatchRelationshipStepOptimizationTest {
    * A single self-loop edge should produce exactly one match, not two.
    */
   @Test
-  void testBothDirectionSelfLoopDedup() {
+  void bothDirectionSelfLoopDedup() {
     // Create a self-loop
     database.transaction(() -> {
       database.command("opencypher",
@@ -290,7 +290,7 @@ class MatchRelationshipStepOptimizationTest {
    * Tests that BOTH direction with multiple self-loops preserves correct multiplicity.
    */
   @Test
-  void testBothDirectionMultipleSelfLoops() {
+  void bothDirectionMultipleSelfLoops() {
     database.transaction(() -> {
       database.command("opencypher",
           "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)");

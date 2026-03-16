@@ -45,7 +45,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
   }
 
   @Test
-  void testDdlAddAndDropPolicy() throws Exception {
+  void ddlAddAndDropPolicy() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE SensorDDL TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE)");
 
@@ -76,7 +76,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
   }
 
   @Test
-  void testSingleTierDownsamplingAccuracy() throws Exception {
+  void singleTierDownsamplingAccuracy() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 
@@ -126,7 +126,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
   }
 
   @Test
-  void testMultiTierDownsampling() throws Exception {
+  void multiTierDownsampling() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 
@@ -189,7 +189,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
   }
 
   @Test
-  void testIdempotency() throws Exception {
+  void idempotency() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 
@@ -244,7 +244,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
   }
 
   @Test
-  void testMultiTagGrouping() throws Exception {
+  void multiTagGrouping() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 
@@ -303,7 +303,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
   }
 
   @Test
-  void testInteractionWithRetention() throws Exception {
+  void interactionWithRetention() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 
@@ -355,7 +355,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
   }
 
   @Test
-  void testNoOpOnEmptyEngine() throws Exception {
+  void noOpOnEmptyEngine() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 

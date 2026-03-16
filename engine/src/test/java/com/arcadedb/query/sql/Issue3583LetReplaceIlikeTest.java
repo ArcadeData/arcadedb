@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue3583LetReplaceIlikeTest extends TestHelper {
 
   @Test
-  void testReplaceWithIlikeInLetSubquery() {
+  void replaceWithIlikeInLetSubquery() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE NER IF NOT EXISTS");
       database.command("sql", "CREATE DOCUMENT TYPE THEME IF NOT EXISTS");
@@ -80,7 +80,7 @@ class Issue3583LetReplaceIlikeTest extends TestHelper {
   }
 
   @Test
-  void testReplaceMethodCallInWhereClause() {
+  void replaceMethodCallInWhereClause() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestReplace IF NOT EXISTS");
       database.command("sql", "INSERT INTO TestReplace SET identity = ?", "hello\nworld");
@@ -99,7 +99,7 @@ class Issue3583LetReplaceIlikeTest extends TestHelper {
   }
 
   @Test
-  void testReplaceWithIlikeAndIndex() {
+  void replaceWithIlikeAndIndex() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE IndexedType IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY IndexedType.identity IF NOT EXISTS STRING");
@@ -124,7 +124,7 @@ class Issue3583LetReplaceIlikeTest extends TestHelper {
   }
 
   @Test
-  void testReplaceWithIlikeInLetSubqueryWithIndex() {
+  void replaceWithIlikeInLetSubqueryWithIndex() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE NER2 IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY NER2.identity IF NOT EXISTS STRING");

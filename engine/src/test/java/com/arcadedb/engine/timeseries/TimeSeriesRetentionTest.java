@@ -44,7 +44,7 @@ class TimeSeriesRetentionTest extends TestHelper {
   }
 
   @Test
-  void testRetentionRemovesOldBlocks() throws Exception {
+  void retentionRemovesOldBlocks() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 
@@ -115,7 +115,7 @@ class TimeSeriesRetentionTest extends TestHelper {
   }
 
   @Test
-  void testRetentionWithNoDataToRemove() throws Exception {
+  void retentionWithNoDataToRemove() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 
@@ -150,7 +150,7 @@ class TimeSeriesRetentionTest extends TestHelper {
   }
 
   @Test
-  void testRetentionRemovesAllBlocks() throws Exception {
+  void retentionRemovesAllBlocks() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 
@@ -185,7 +185,7 @@ class TimeSeriesRetentionTest extends TestHelper {
   }
 
   @Test
-  void testRetentionWithMultipleShards() throws Exception {
+  void retentionWithMultipleShards() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 
@@ -273,7 +273,7 @@ class TimeSeriesRetentionTest extends TestHelper {
   }
 
   @Test
-  void testRetentionOnEmptyEngine() throws Exception {
+  void retentionOnEmptyEngine() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final List<ColumnDefinition> columns = createTestColumns();
 

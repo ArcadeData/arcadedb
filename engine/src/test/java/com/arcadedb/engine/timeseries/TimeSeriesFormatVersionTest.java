@@ -64,7 +64,7 @@ class TimeSeriesFormatVersionTest {
   }
 
   @Test
-  void testSealedStoreHeaderHasVersionByte() throws Exception {
+  void sealedStoreHeaderHasVersionByte() throws Exception {
     final long[] timestamps = { 1000L, 2000L, 3000L };
     final double[] values = { 10.0, 20.0, 30.0 };
 
@@ -96,7 +96,7 @@ class TimeSeriesFormatVersionTest {
   }
 
   @Test
-  void testSealedStoreRejectsNewerVersion() throws Exception {
+  void sealedStoreRejectsNewerVersion() throws Exception {
     // Create a valid file first
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       store.appendBlock(1, 1000L, 1000L, new byte[][] {
@@ -118,7 +118,7 @@ class TimeSeriesFormatVersionTest {
   }
 
   @Test
-  void testBlockCRC32DetectsCorruption() throws Exception {
+  void blockCRC32DetectsCorruption() throws Exception {
     final long[] timestamps = { 1000L, 2000L, 3000L };
     final double[] values = { 10.0, 20.0, 30.0 };
 
@@ -151,7 +151,7 @@ class TimeSeriesFormatVersionTest {
   }
 
   @Test
-  void testStatsWithoutColIndex() throws Exception {
+  void statsWithoutColIndex() throws Exception {
     final long[] timestamps = { 1000L, 2000L, 3000L };
     final double[] values = { 10.0, 20.0, 30.0 };
 
@@ -194,7 +194,7 @@ class TimeSeriesFormatVersionTest {
   }
 
   @Test
-  void testSchemaJsonFormatVersionRoundTrip() {
+  void schemaJsonFormatVersionRoundTrip() {
     final JSONObject json = new JSONObject();
     json.put("timestampColumn", "ts");
     json.put("shardCount", 1);

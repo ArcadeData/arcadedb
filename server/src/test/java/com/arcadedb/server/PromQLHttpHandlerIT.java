@@ -71,7 +71,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testInstantQuery() throws Exception {
+  void instantQuery() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query", "query=" + encode("prom_cpu") + "&time=5");
@@ -84,7 +84,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testInstantQueryWithLabelFilter() throws Exception {
+  void instantQueryWithLabelFilter() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query",
@@ -97,7 +97,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRangeQuery() throws Exception {
+  void rangeQuery() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query_range",
@@ -113,7 +113,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRangeQueryWithRate() throws Exception {
+  void rangeQueryWithRate() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query_range",
@@ -124,7 +124,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testLabels() throws Exception {
+  void labels() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "labels", "");
@@ -139,7 +139,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testLabelValuesForName() throws Exception {
+  void labelValuesForName() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQLLabelValues(serverIndex, "__name__");
@@ -160,7 +160,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testLabelValuesForHost() throws Exception {
+  void labelValuesForHost() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQLLabelValues(serverIndex, "host");
@@ -171,7 +171,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testSeries() throws Exception {
+  void series() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "series",
@@ -184,7 +184,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testErrorMissingQuery() throws Exception {
+  void errorMissingQuery() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject result = getPromQL(serverIndex, "query", "time=5");
       assertThat(result.getString("status")).isEqualTo("error");
@@ -193,7 +193,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testErrorNonexistentMetric() throws Exception {
+  void errorNonexistentMetric() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject result = getPromQL(serverIndex, "query",
           "query=" + encode("nonexistent_metric") + "&time=5");
@@ -203,7 +203,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testErrorMalformedPromQL() throws Exception {
+  void errorMalformedPromQL() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject result = getPromQL(serverIndex, "query",
           "query=" + encode("sum(") + "&time=5");
@@ -212,7 +212,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBinaryExpression() throws Exception {
+  void binaryExpression() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query",
@@ -224,7 +224,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testAggregationSum() throws Exception {
+  void aggregationSum() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query",
@@ -236,7 +236,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testEmptyResultSet() throws Exception {
+  void emptyResultSet() throws Exception {
     testEachServer((serverIndex) -> {
       // Query a metric that has no data ingested
       final JSONObject result = getPromQL(serverIndex, "query",
@@ -248,7 +248,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testTopkWithKGreaterThanSeriesCount() throws Exception {
+  void topkWithKGreaterThanSeriesCount() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       // prom_cpu has 2 series (server1, server2); ask for topk(10) — should return all 2
@@ -263,7 +263,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBottomkWithKGreaterThanSeriesCount() throws Exception {
+  void bottomkWithKGreaterThanSeriesCount() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       // Ask for bottomk(100) — should return all available series
@@ -276,7 +276,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRangeQueryEmptyResult() throws Exception {
+  void rangeQueryEmptyResult() throws Exception {
     testEachServer((serverIndex) -> {
       // Range query on nonexistent metric
       final JSONObject result = getPromQL(serverIndex, "query_range",
@@ -289,7 +289,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testLookbackDeltaParameter() throws Exception {
+  void lookbackDeltaParameter() throws Exception {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       // Query with a custom lookback_delta

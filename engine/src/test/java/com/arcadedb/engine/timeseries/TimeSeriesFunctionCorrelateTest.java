@@ -26,10 +26,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
-public class TimeSeriesFunctionCorrelateTest extends TestHelper {
+class TimeSeriesFunctionCorrelateTest extends TestHelper {
 
   @Test
-  public void testPerfectPositiveCorrelation() {
+  void perfectPositiveCorrelation() {
     database.command("sql",
         "CREATE TIMESERIES TYPE CorrSensor TIMESTAMP ts FIELDS (a DOUBLE, b DOUBLE)");
 
@@ -45,7 +45,7 @@ public class TimeSeriesFunctionCorrelateTest extends TestHelper {
   }
 
   @Test
-  public void testPerfectNegativeCorrelation() {
+  void perfectNegativeCorrelation() {
     database.command("sql",
         "CREATE TIMESERIES TYPE NegCorrSensor TIMESTAMP ts FIELDS (a DOUBLE, b DOUBLE)");
 
@@ -60,7 +60,7 @@ public class TimeSeriesFunctionCorrelateTest extends TestHelper {
   }
 
   @Test
-  public void testUncorrelated() {
+  void uncorrelated() {
     database.command("sql",
         "CREATE TIMESERIES TYPE UncorrSensor TIMESTAMP ts FIELDS (a DOUBLE, b DOUBLE)");
 
@@ -80,7 +80,7 @@ public class TimeSeriesFunctionCorrelateTest extends TestHelper {
   }
 
   @Test
-  public void testSingleSample() {
+  void singleSample() {
     database.command("sql",
         "CREATE TIMESERIES TYPE SingleCorr TIMESTAMP ts FIELDS (a DOUBLE, b DOUBLE)");
 
@@ -94,7 +94,7 @@ public class TimeSeriesFunctionCorrelateTest extends TestHelper {
   }
 
   @Test
-  public void testConstantSeries() {
+  void constantSeries() {
     database.command("sql",
         "CREATE TIMESERIES TYPE ConstCorr TIMESTAMP ts FIELDS (a DOUBLE, b DOUBLE)");
 
