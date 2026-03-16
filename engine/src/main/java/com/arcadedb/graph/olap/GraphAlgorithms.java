@@ -21,6 +21,7 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.graph.Vertex;
 
 import java.util.Arrays;
+import java.util.PriorityQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReference;
@@ -787,7 +788,7 @@ public final class GraphAlgorithms {
     }
 
     // Dijkstra with binary min-heap (PriorityQueue)
-    final java.util.PriorityQueue<double[]> heap = new java.util.PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
+    final PriorityQueue<double[]> heap = new PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
     heap.offer(new double[]{ 0.0, source });
 
     while (!heap.isEmpty()) {

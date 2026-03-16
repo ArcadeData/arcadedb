@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class IssueLinkDotNotationProjectionTest extends TestHelper {
 
   @Test
-  void testLinkDotNotationProjection() {
+  void linkDotNotationProjection() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE AppUser IF NOT EXISTS");
       database.command("sql", "CREATE VERTEX TYPE Product IF NOT EXISTS");
@@ -81,7 +81,7 @@ class IssueLinkDotNotationProjectionTest extends TestHelper {
   }
 
   @Test
-  void testLinkDotNotationWithNullLink() {
+  void linkDotNotationWithNullLink() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE AppUser2 IF NOT EXISTS");
       database.command("sql", "CREATE VERTEX TYPE Product2 IF NOT EXISTS");
@@ -103,7 +103,7 @@ class IssueLinkDotNotationProjectionTest extends TestHelper {
   }
 
   @Test
-  void testLinkDotNotationWithVertexLink() {
+  void linkDotNotationWithVertexLink() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE UserVertex IF NOT EXISTS");
       database.command("sql", "CREATE VERTEX TYPE ProductVertex IF NOT EXISTS");
@@ -135,7 +135,7 @@ class IssueLinkDotNotationProjectionTest extends TestHelper {
   }
 
   @Test
-  void testLinkDotNotationInLetSubquery() {
+  void linkDotNotationInLetSubquery() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE AppUser3 IF NOT EXISTS");
       database.command("sql", "CREATE VERTEX TYPE Product3 IF NOT EXISTS");
@@ -170,7 +170,7 @@ class IssueLinkDotNotationProjectionTest extends TestHelper {
   }
 
   @Test
-  void testLinkDotNotationMixedNullAndNonNull() {
+  void linkDotNotationMixedNullAndNonNull() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE AppUser4 IF NOT EXISTS");
       database.command("sql", "CREATE VERTEX TYPE Product4 IF NOT EXISTS");

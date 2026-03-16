@@ -59,7 +59,7 @@ class BucketAlignedCompactionTest {
   }
 
   @Test
-  void testBucketAlignedCompactionProducesSingleBucketBlocks() throws Exception {
+  void bucketAlignedCompactionProducesSingleBucketBlocks() throws Exception {
     // Create type with 1-second compaction bucket interval
     database.command("sql",
         "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) " +
@@ -110,7 +110,7 @@ class BucketAlignedCompactionTest {
   }
 
   @Test
-  void testBucketAlignedAggregationUses100PercentFastPath() throws Exception {
+  void bucketAlignedAggregationUses100PercentFastPath() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) " +
             "SHARDS 1 COMPACTION_INTERVAL 1 HOURS");
@@ -159,7 +159,7 @@ class BucketAlignedCompactionTest {
   }
 
   @Test
-  void testDefaultCompactionDoesNotSplitAtBuckets() throws Exception {
+  void defaultCompactionDoesNotSplitAtBuckets() throws Exception {
     // Without COMPACTION_INTERVAL, blocks use fixed SEALED_BLOCK_SIZE chunking
     database.command("sql",
         "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) SHARDS 1");
@@ -199,7 +199,7 @@ class BucketAlignedCompactionTest {
   }
 
   @Test
-  void testSqlDdlWithCompactionInterval() {
+  void sqlDdlWithCompactionInterval() {
     // Test that COMPACTION_INTERVAL is properly parsed and persisted
     database.command("sql",
         "CREATE TIMESERIES TYPE SensorHourly TIMESTAMP ts TAGS (id STRING) FIELDS (temp DOUBLE) " +
@@ -211,7 +211,7 @@ class BucketAlignedCompactionTest {
   }
 
   @Test
-  void testSqlDdlWithCompactionIntervalMinutes() {
+  void sqlDdlWithCompactionIntervalMinutes() {
     database.command("sql",
         "CREATE TIMESERIES TYPE SensorMinute TIMESTAMP ts TAGS (id STRING) FIELDS (temp DOUBLE) " +
             "SHARDS 1 COMPACTION_INTERVAL 15 MINUTES");
@@ -222,7 +222,7 @@ class BucketAlignedCompactionTest {
   }
 
   @Test
-  void testCompactionBucketIntervalPersistedAndReloaded() throws Exception {
+  void compactionBucketIntervalPersistedAndReloaded() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) " +
             "SHARDS 1 COMPACTION_INTERVAL 1 HOURS");

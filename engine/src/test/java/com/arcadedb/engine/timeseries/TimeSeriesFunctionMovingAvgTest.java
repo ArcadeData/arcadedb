@@ -28,10 +28,10 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
-public class TimeSeriesFunctionMovingAvgTest extends TestHelper {
+class TimeSeriesFunctionMovingAvgTest extends TestHelper {
 
   @Test
-  public void testWindowOf3On5Values() {
+  void windowOf3On5Values() {
     database.command("sql",
         "CREATE TIMESERIES TYPE MaSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -62,7 +62,7 @@ public class TimeSeriesFunctionMovingAvgTest extends TestHelper {
   }
 
   @Test
-  public void testWindowOf1() {
+  void windowOf1() {
     database.command("sql",
         "CREATE TIMESERIES TYPE Ma1Sensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -83,7 +83,7 @@ public class TimeSeriesFunctionMovingAvgTest extends TestHelper {
   }
 
   @Test
-  public void testWindowLargerThanData() {
+  void windowLargerThanData() {
     database.command("sql",
         "CREATE TIMESERIES TYPE MaBigWindow TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -102,7 +102,7 @@ public class TimeSeriesFunctionMovingAvgTest extends TestHelper {
   }
 
   @Test
-  public void testEmptyInput() {
+  void emptyInput() {
     database.command("sql",
         "CREATE TIMESERIES TYPE MaEmpty TIMESTAMP ts FIELDS (value DOUBLE)");
 

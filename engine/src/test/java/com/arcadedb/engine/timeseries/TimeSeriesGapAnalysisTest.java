@@ -42,7 +42,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   // ===== Counter Reset Handling in ts.rate() =====
 
   @Test
-  void testRateWithCounterReset() {
+  void rateWithCounterReset() {
     database.command("sql",
         "CREATE TIMESERIES TYPE ResetCounter TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -65,7 +65,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testRateWithMultipleResets() {
+  void rateWithMultipleResets() {
     database.command("sql",
         "CREATE TIMESERIES TYPE MultiResetCounter TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -87,7 +87,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testRateWithoutResetDetection() {
+  void rateWithoutResetDetection() {
     database.command("sql",
         "CREATE TIMESERIES TYPE NoResetCounter TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -104,7 +104,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testRateDecreasingWithoutResetDetection() {
+  void rateDecreasingWithoutResetDetection() {
     database.command("sql",
         "CREATE TIMESERIES TYPE DecGauge TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -121,7 +121,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   // ===== Time Range Operators =====
 
   @Test
-  void testGreaterThanOperator() {
+  void greaterThanOperator() {
     database.command("sql",
         "CREATE TIMESERIES TYPE GtSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -139,7 +139,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testGreaterThanOrEqualOperator() {
+  void greaterThanOrEqualOperator() {
     database.command("sql",
         "CREATE TIMESERIES TYPE GeSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -157,7 +157,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testLessThanOperator() {
+  void lessThanOperator() {
     database.command("sql",
         "CREATE TIMESERIES TYPE LtSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -175,7 +175,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testCombinedRangeOperators() {
+  void combinedRangeOperators() {
     database.command("sql",
         "CREATE TIMESERIES TYPE CombinedSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -195,7 +195,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   // ===== Multi-Tag Filtering =====
 
   @Test
-  void testMultiTagFilter() {
+  void multiTagFilter() {
     final TagFilter filter = TagFilter.eq(0, "us-east")
         .and(1, "prod");
 
@@ -210,7 +210,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testMultiTagFilterWithIn() {
+  void multiTagFilterWithIn() {
     final TagFilter filter = TagFilter.in(0, Set.of("us-east", "us-west"))
         .and(1, "prod");
 
@@ -224,7 +224,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testSingleTagFilterBackwardCompatibility() {
+  void singleTagFilterBackwardCompatibility() {
     final TagFilter filter = TagFilter.eq(0, "sensor-1");
     assertThat(filter.getColumnIndex()).isEqualTo(0);
     assertThat(filter.getConditionCount()).isEqualTo(1);
@@ -238,7 +238,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   // ===== Linear Interpolation =====
 
   @Test
-  void testLinearInterpolation() {
+  void linearInterpolation() {
     database.command("sql", "CREATE DOCUMENT TYPE LinearInterp");
     database.command("sql", "CREATE PROPERTY LinearInterp.ts LONG");
     database.command("sql", "CREATE PROPERTY LinearInterp.value DOUBLE");
@@ -261,7 +261,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testLinearInterpolationMultipleGaps() {
+  void linearInterpolationMultipleGaps() {
     database.command("sql", "CREATE DOCUMENT TYPE LinearMultiGap");
     database.command("sql", "CREATE PROPERTY LinearMultiGap.ts LONG");
     database.command("sql", "CREATE PROPERTY LinearMultiGap.value DOUBLE");
@@ -286,7 +286,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testLinearInterpolationNoGaps() {
+  void linearInterpolationNoGaps() {
     database.command("sql",
         "CREATE TIMESERIES TYPE LinearNoGap TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -310,7 +310,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   // ===== ts.percentile() =====
 
   @Test
-  void testPercentileP50() {
+  void percentileP50() {
     database.command("sql",
         "CREATE TIMESERIES TYPE PercSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -326,7 +326,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testPercentileP95() {
+  void percentileP95() {
     database.command("sql",
         "CREATE TIMESERIES TYPE Perc95Sensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -342,7 +342,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testPercentileP99() {
+  void percentileP99() {
     database.command("sql",
         "CREATE TIMESERIES TYPE Perc99Sensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -358,7 +358,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testPercentileWithGroupBy() {
+  void percentileWithGroupBy() {
     database.command("sql",
         "CREATE TIMESERIES TYPE PercGroupSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -383,7 +383,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   // ===== Automatic Scheduler =====
 
   @Test
-  void testMaintenanceSchedulerCreation() {
+  void maintenanceSchedulerCreation() {
     final TimeSeriesMaintenanceScheduler scheduler = new TimeSeriesMaintenanceScheduler();
     // Should not throw
     scheduler.cancel("nonexistent");
@@ -391,7 +391,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testMaintenanceSchedulerAlwaysSchedulesEvenWithoutPolicies() {
+  void maintenanceSchedulerAlwaysSchedulesEvenWithoutPolicies() {
     // Regression: scheduler previously skipped scheduling when no retention/downsampling
     // policy was set, leaving the mutable bucket growing unboundedly.
     database.command("sql", "CREATE TIMESERIES TYPE NoPolicySeries TIMESTAMP ts FIELDS (value DOUBLE)");
@@ -414,7 +414,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   // ===== Tag Filter on Aggregation Queries =====
 
   @Test
-  void testTagFilterOnAggregation() {
+  void tagFilterOnAggregation() {
     database.command("sql",
         "CREATE TIMESERIES TYPE TagAggStocks TIMESTAMP ts TAGS (symbol STRING) FIELDS (price DOUBLE)");
 
@@ -455,7 +455,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   // ===== Block-Level Tag Filter Tests (after compaction) =====
 
   @Test
-  void testTagFilterBlockSkipping() throws Exception {
+  void tagFilterBlockSkipping() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE BlockSkipStocks TIMESTAMP ts TAGS (symbol STRING) FIELDS (price DOUBLE)");
 
@@ -481,7 +481,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testTagFilterAggregationAfterCompaction() throws Exception {
+  void tagFilterAggregationAfterCompaction() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE AggCompactStocks TIMESTAMP ts TAGS (symbol STRING) FIELDS (price DOUBLE)");
 
@@ -511,7 +511,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
   }
 
   @Test
-  void testTagFilterNonexistentTag() throws Exception {
+  void tagFilterNonexistentTag() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE NonExistTagStocks TIMESTAMP ts TAGS (symbol STRING) FIELDS (price DOUBLE)");
 

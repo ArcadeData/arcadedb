@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TimeSeriesConcurrentAppendCompactTest extends TestHelper {
 
   @Test
-  void testConcurrentAppendDuringCompaction() throws Exception {
+  void concurrentAppendDuringCompaction() throws Exception {
     final List<ColumnDefinition> columns = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD)

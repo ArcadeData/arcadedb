@@ -26,10 +26,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TimeSeriesFunctionInterpolateTest extends TestHelper {
+class TimeSeriesFunctionInterpolateTest extends TestHelper {
 
   @Test
-  public void testNoNulls() {
+  void noNulls() {
     database.command("sql",
         "CREATE TIMESERIES TYPE InterpSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -50,7 +50,7 @@ public class TimeSeriesFunctionInterpolateTest extends TestHelper {
   }
 
   @Test
-  public void testZeroMethod() {
+  void zeroMethod() {
     database.command("sql", "CREATE DOCUMENT TYPE ZeroInterp");
     database.command("sql", "CREATE PROPERTY ZeroInterp.ts LONG");
     database.command("sql", "CREATE PROPERTY ZeroInterp.value DOUBLE");
@@ -73,7 +73,7 @@ public class TimeSeriesFunctionInterpolateTest extends TestHelper {
   }
 
   @Test
-  public void testPrevMethodWithDocumentType() {
+  void prevMethodWithDocumentType() {
     // Use a regular document type where nulls are properly preserved
     database.command("sql", "CREATE DOCUMENT TYPE PrevInterp");
     database.command("sql", "CREATE PROPERTY PrevInterp.ts LONG");
@@ -99,7 +99,7 @@ public class TimeSeriesFunctionInterpolateTest extends TestHelper {
   }
 
   @Test
-  public void testAllNullsWithZero() {
+  void allNullsWithZero() {
     database.command("sql", "CREATE DOCUMENT TYPE AllNullInterp");
     database.command("sql", "CREATE PROPERTY AllNullInterp.ts LONG");
     database.command("sql", "CREATE PROPERTY AllNullInterp.value DOUBLE");

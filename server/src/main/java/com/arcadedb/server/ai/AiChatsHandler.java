@@ -27,6 +27,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.PathTemplateMatch;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -97,7 +98,7 @@ public class AiChatsHandler extends AbstractServerHttpHandler {
     final JSONArray messages = payload.getJSONArray("messages", null);
     if (messages != null) {
       chat.put("messages", messages);
-      chat.put("updated", java.time.Instant.now().toString());
+      chat.put("updated", Instant.now().toString());
       chatStorage.saveChat(username, chat);
     }
 

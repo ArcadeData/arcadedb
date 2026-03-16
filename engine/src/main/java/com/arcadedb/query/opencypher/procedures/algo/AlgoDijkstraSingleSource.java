@@ -23,10 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.graph.olap.CSRAdjacencyIndex;
-import com.arcadedb.graph.olap.Column;
-import com.arcadedb.graph.olap.ColumnStore;
-import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -133,7 +130,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     if (src < 0)
       return Stream.empty();
 
-    final double[] dist = com.arcadedb.graph.olap.GraphAlgorithms.dijkstraSingleSource(
+    final double[] dist = GraphAlgorithms.dijkstraSingleSource(
         gav, src, weightProperty, dir, relTypes);
 
     final List<Result> results = new ArrayList<>();

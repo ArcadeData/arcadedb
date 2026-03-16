@@ -30,20 +30,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DeltaOfDeltaCodecTest {
 
   @Test
-  void testEmpty() {
+  void empty() {
     assertThat(DeltaOfDeltaCodec.decode(DeltaOfDeltaCodec.encode(new long[0]))).isEmpty();
     assertThat(DeltaOfDeltaCodec.decode(DeltaOfDeltaCodec.encode(null))).isEmpty();
   }
 
   @Test
-  void testSingleValue() {
+  void singleValue() {
     final long[] input = { 1000000000L };
     final byte[] encoded = DeltaOfDeltaCodec.encode(input);
     assertThat(DeltaOfDeltaCodec.decode(encoded)).containsExactly(input);
   }
 
   @Test
-  void testRegularIntervals() {
+  void regularIntervals() {
     // Regular 10-second intervals — all delta-of-deltas are 0
     final long[] input = new long[1000];
     for (int i = 0; i < input.length; i++)
@@ -57,21 +57,21 @@ class DeltaOfDeltaCodecTest {
   }
 
   @Test
-  void testMonotonicIncreasing() {
+  void monotonicIncreasing() {
     final long[] input = { 100, 200, 300, 400, 500, 600 };
     final byte[] encoded = DeltaOfDeltaCodec.encode(input);
     assertThat(DeltaOfDeltaCodec.decode(encoded)).containsExactly(input);
   }
 
   @Test
-  void testNonMonotonic() {
+  void nonMonotonic() {
     final long[] input = { 100, 300, 250, 400, 350, 500 };
     final byte[] encoded = DeltaOfDeltaCodec.encode(input);
     assertThat(DeltaOfDeltaCodec.decode(encoded)).containsExactly(input);
   }
 
   @Test
-  void testRandomTimestamps() {
+  void randomTimestamps() {
     final Random rng = new Random(42);
     final long[] input = new long[500];
     input[0] = Math.abs(rng.nextLong() % 1_000_000_000_000L);
@@ -83,14 +83,14 @@ class DeltaOfDeltaCodecTest {
   }
 
   @Test
-  void testTwoValues() {
+  void twoValues() {
     final long[] input = { 100, 200 };
     final byte[] encoded = DeltaOfDeltaCodec.encode(input);
     assertThat(DeltaOfDeltaCodec.decode(encoded)).containsExactly(input);
   }
 
   @Test
-  void testLargeDeltaOfDelta() {
+  void largeDeltaOfDelta() {
     // Large jumps that require 64-bit encoding
     final long[] input = { 0, 1_000_000_000_000L, 1_000_000_000_001L, 5_000_000_000_000L };
     final byte[] encoded = DeltaOfDeltaCodec.encode(input);
@@ -98,7 +98,7 @@ class DeltaOfDeltaCodecTest {
   }
 
   @Test
-  void testZigZagEncoding() {
+  void zigZagEncoding() {
     assertThat(DeltaOfDeltaCodec.zigZagEncode(0)).isEqualTo(0);
     assertThat(DeltaOfDeltaCodec.zigZagEncode(-1)).isEqualTo(1);
     assertThat(DeltaOfDeltaCodec.zigZagEncode(1)).isEqualTo(2);
@@ -108,7 +108,7 @@ class DeltaOfDeltaCodecTest {
   }
 
   @Test
-  void testAllSameTimestamp() {
+  void allSameTimestamp() {
     final long[] input = { 42, 42, 42, 42, 42 };
     final byte[] encoded = DeltaOfDeltaCodec.encode(input);
     assertThat(DeltaOfDeltaCodec.decode(encoded)).containsExactly(input);
@@ -119,7 +119,7 @@ class DeltaOfDeltaCodecTest {
    * ZigZag(-64) = 127 which fits in 7 bits. Previously the range check excluded -64.
    */
   @Test
-  void testDodMinusSixtyFourUsesCompactEncoding() {
+  void dodMinusSixtyFourUsesCompactEncoding() {
     // Construct timestamps where dod == -64: delta[1]=100, delta[2]=36 → dod = 36 - 100 = -64
     final long[] input = { 1000L, 1100L, 1136L };
     final byte[] encoded = DeltaOfDeltaCodec.encode(input);

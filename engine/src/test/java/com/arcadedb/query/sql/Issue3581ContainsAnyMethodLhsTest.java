@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue3581ContainsAnyMethodLhsTest extends TestHelper {
 
   @Test
-  void testContainsAnyWithSplitOnLhs() {
+  void containsAnyWithSplitOnLhs() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc3581 IF NOT EXISTS");
       database.command("sql", "INSERT INTO doc3581 SET txt = 'te st'");
@@ -51,7 +51,7 @@ class Issue3581ContainsAnyMethodLhsTest extends TestHelper {
   }
 
   @Test
-  void testContainsAnyWithSplitOnLhsMultipleMatches() {
+  void containsAnyWithSplitOnLhsMultipleMatches() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc3581b IF NOT EXISTS");
       database.command("sql", "INSERT INTO doc3581b SET txt = 'te st'");
@@ -69,7 +69,7 @@ class Issue3581ContainsAnyMethodLhsTest extends TestHelper {
   }
 
   @Test
-  void testContainsAnyWithSplitOnLhsNoMatch() {
+  void containsAnyWithSplitOnLhsNoMatch() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc3581c IF NOT EXISTS");
       database.command("sql", "INSERT INTO doc3581c SET txt = 'hello world'");
@@ -80,7 +80,7 @@ class Issue3581ContainsAnyMethodLhsTest extends TestHelper {
   }
 
   @Test
-  void testContainsAnyWithSplitOnLhsNullField() {
+  void containsAnyWithSplitOnLhsNullField() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc3581d IF NOT EXISTS");
       database.command("sql", "INSERT INTO doc3581d SET txt = 'te st'");
@@ -94,7 +94,7 @@ class Issue3581ContainsAnyMethodLhsTest extends TestHelper {
   }
 
   @Test
-  void testContainsAllWithSplitOnLhs() {
+  void containsAllWithSplitOnLhs() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc3581e IF NOT EXISTS");
       database.command("sql", "INSERT INTO doc3581e SET txt = 'te st'");

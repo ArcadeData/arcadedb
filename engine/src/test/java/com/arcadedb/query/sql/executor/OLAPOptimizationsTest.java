@@ -66,7 +66,7 @@ class OLAPOptimizationsTest extends TestHelper {
   // =========== PREDICATE PUSHDOWN (ScanWithFilter) TESTS ===========
 
   @Test
-  void testPredicatePushdownEquality() {
+  void predicatePushdownEquality() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL", "SELECT FROM WideTable WHERE status = 'active'");
 
@@ -82,7 +82,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testPredicatePushdownRange() {
+  void predicatePushdownRange() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL", "SELECT FROM WideTable WHERE id < 100");
 
@@ -97,7 +97,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testPredicatePushdownWithProjection() {
+  void predicatePushdownWithProjection() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL", "SELECT name, amount FROM WideTable WHERE status = 'pending'");
 
@@ -113,7 +113,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testPredicatePushdownAnd() {
+  void predicatePushdownAnd() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
           "SELECT FROM WideTable WHERE status = 'active' AND category = 'cat_0'");
@@ -130,7 +130,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testPredicatePushdownOr() {
+  void predicatePushdownOr() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
           "SELECT FROM WideTable WHERE status = 'active' OR status = 'closed'");
@@ -149,7 +149,7 @@ class OLAPOptimizationsTest extends TestHelper {
   // =========== COLUMN PROJECTION PUSHDOWN TESTS ===========
 
   @Test
-  void testProjectionOnlyRequestedColumns() {
+  void projectionOnlyRequestedColumns() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL", "SELECT name, category FROM WideTable");
 
@@ -164,7 +164,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testProjectionSelectStar() {
+  void projectionSelectStar() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL", "SELECT * FROM WideTable LIMIT 10");
 
@@ -182,7 +182,7 @@ class OLAPOptimizationsTest extends TestHelper {
   // =========== PARALLEL BUCKET SCANNING TESTS ===========
 
   @Test
-  void testParallelScanResults() {
+  void parallelScanResults() {
     database.transaction(() -> {
       // Ensure parallel scan is enabled
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
@@ -202,7 +202,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testParallelScanDisabled() {
+  void parallelScanDisabled() {
     database.transaction(() -> {
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
       try {
@@ -221,7 +221,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testParallelScanWithFilter() {
+  void parallelScanWithFilter() {
     database.transaction(() -> {
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
 
@@ -238,7 +238,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testParallelScanWithLimitApplied() {
+  void parallelScanWithLimitApplied() {
     database.transaction(() -> {
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
 
@@ -256,7 +256,7 @@ class OLAPOptimizationsTest extends TestHelper {
   // =========== AGGREGATION TESTS ===========
 
   @Test
-  void testAggregationGroupBy() {
+  void aggregationGroupBy() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
           "SELECT category, sum(amount) as total, count(*) as cnt FROM WideTable GROUP BY category");
@@ -276,7 +276,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testAggregationNoGroupBy() {
+  void aggregationNoGroupBy() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
           "SELECT count(*) as cnt, sum(amount) as total, min(id) as minId, max(id) as maxId FROM WideTable");
@@ -293,7 +293,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testAggregationWithFilterAndGroupBy() {
+  void aggregationWithFilterAndGroupBy() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
           "SELECT category, count(*) as cnt FROM WideTable WHERE status = 'active' GROUP BY category");
@@ -312,7 +312,7 @@ class OLAPOptimizationsTest extends TestHelper {
   // =========== TWO-PHASE DESERIALIZATION TESTS ===========
 
   @Test
-  void testTwoPhaseDeserializationProjectionWithFilter() {
+  void twoPhaseDeserializationProjectionWithFilter() {
     // This tests the optimization: SELECT a, max(b) FROM c WHERE a IS NOT NULL AND d > 100
     // - Phase 1: deserialize only 'a' and 'd' for WHERE evaluation
     // - Phase 2: deserialize only 'a' and 'amount' for projection (skip 'd' if not in SELECT)
@@ -332,7 +332,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testTwoPhaseDeserializationWithAggregation() {
+  void twoPhaseDeserializationWithAggregation() {
     // SELECT category, sum(amount), count(*) FROM WideTable WHERE status = 'active' GROUP BY category
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
@@ -349,7 +349,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testProjectionWithFilterSameField() {
+  void projectionWithFilterSameField() {
     // When 'a' appears in both WHERE and SELECT, it should not be deserialized twice
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
@@ -368,7 +368,7 @@ class OLAPOptimizationsTest extends TestHelper {
   // =========== COMBINED OPTIMIZATION TESTS ===========
 
   @Test
-  void testFilterWithOrderByAndLimit() {
+  void filterWithOrderByAndLimit() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
           "SELECT name, amount FROM WideTable WHERE status = 'active' ORDER BY amount DESC LIMIT 10");
@@ -387,7 +387,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testCountWithFilter() {
+  void countWithFilter() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
           "SELECT count(*) as cnt FROM WideTable WHERE status = 'active'");
@@ -400,7 +400,7 @@ class OLAPOptimizationsTest extends TestHelper {
   }
 
   @Test
-  void testExecutionPlanShowsScanWithFilter() {
+  void executionPlanShowsScanWithFilter() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL",
           "EXPLAIN SELECT FROM WideTable WHERE status = 'active'");

@@ -28,10 +28,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TimeSeriesFunctionDeltaTest extends TestHelper {
+class TimeSeriesFunctionDeltaTest extends TestHelper {
 
   @Test
-  public void testIncreasingCounter() {
+  void increasingCounter() {
     database.command("sql",
         "CREATE TIMESERIES TYPE DeltaSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -47,7 +47,7 @@ public class TimeSeriesFunctionDeltaTest extends TestHelper {
   }
 
   @Test
-  public void testNegativeDelta() {
+  void negativeDelta() {
     database.command("sql",
         "CREATE TIMESERIES TYPE NegDeltaSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -61,7 +61,7 @@ public class TimeSeriesFunctionDeltaTest extends TestHelper {
   }
 
   @Test
-  public void testSingleSample() {
+  void singleSample() {
     database.command("sql",
         "CREATE TIMESERIES TYPE SingleDelta TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -74,7 +74,7 @@ public class TimeSeriesFunctionDeltaTest extends TestHelper {
   }
 
   @Test
-  public void testWithGroupBy() {
+  void withGroupBy() {
     database.command("sql",
         "CREATE TIMESERIES TYPE GroupedDelta TIMESTAMP ts TAGS (sensor STRING) FIELDS (value DOUBLE)");
 

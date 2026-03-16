@@ -33,10 +33,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class TimeSeriesSQLTest extends TestHelper {
+class TimeSeriesSQLTest extends TestHelper {
 
   @Test
-  public void testInsertAndSelectAll() {
+  void insertAndSelectAll() {
     database.command("sql",
         "CREATE TIMESERIES TYPE SensorReading TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE)");
 
@@ -58,7 +58,7 @@ public class TimeSeriesSQLTest extends TestHelper {
   }
 
   @Test
-  public void testSelectWithBetween() {
+  void selectWithBetween() {
     database.command("sql",
         "CREATE TIMESERIES TYPE TempData TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -79,7 +79,7 @@ public class TimeSeriesSQLTest extends TestHelper {
   }
 
   @Test
-  public void testInsertWithSET() {
+  void insertWithSET() {
     database.command("sql",
         "CREATE TIMESERIES TYPE DeviceMetrics TIMESTAMP ts TAGS (device STRING) FIELDS (cpu DOUBLE, mem LONG)");
 
@@ -96,7 +96,7 @@ public class TimeSeriesSQLTest extends TestHelper {
   }
 
   @Test
-  public void testTimeBucketFunction() {
+  void timeBucketFunction() {
     database.command("sql",
         "CREATE TIMESERIES TYPE HourlyMetrics TIMESTAMP ts FIELDS (value DOUBLE)");
 

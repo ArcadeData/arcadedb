@@ -33,10 +33,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CreateTimeSeriesTypeStatementTest extends TestHelper {
+class CreateTimeSeriesTypeStatementTest extends TestHelper {
 
   @Test
-  public void testBasicCreateTimeSeriesType() {
+  void basicCreateTimeSeriesType() {
     final ResultSet result = database.command("sql",
         "CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE)");
 
@@ -55,7 +55,7 @@ public class CreateTimeSeriesTypeStatementTest extends TestHelper {
   }
 
   @Test
-  public void testCreateWithShardsAndRetention() {
+  void createWithShardsAndRetention() {
     database.command("sql",
         "CREATE TIMESERIES TYPE Metrics TIMESTAMP ts TAGS (host STRING) FIELDS (cpu DOUBLE, mem LONG) SHARDS 4 RETENTION 90 DAYS");
 
@@ -66,7 +66,7 @@ public class CreateTimeSeriesTypeStatementTest extends TestHelper {
   }
 
   @Test
-  public void testCreateWithRetentionHours() {
+  void createWithRetentionHours() {
     database.command("sql",
         "CREATE TIMESERIES TYPE HourlyData TIMESTAMP ts FIELDS (value DOUBLE) RETENTION 24 HOURS");
 
@@ -75,7 +75,7 @@ public class CreateTimeSeriesTypeStatementTest extends TestHelper {
   }
 
   @Test
-  public void testCreateWithMultipleTags() {
+  void createWithMultipleTags() {
     database.command("sql",
         "CREATE TIMESERIES TYPE MultiTag TIMESTAMP ts TAGS (region STRING, zone INTEGER) FIELDS (temp DOUBLE)");
 
@@ -90,7 +90,7 @@ public class CreateTimeSeriesTypeStatementTest extends TestHelper {
   }
 
   @Test
-  public void testCreateIfNotExists() {
+  void createIfNotExists() {
     database.command("sql", "CREATE TIMESERIES TYPE Existing TIMESTAMP ts FIELDS (value DOUBLE)");
     // Should not throw
     database.command("sql", "CREATE TIMESERIES TYPE Existing IF NOT EXISTS TIMESTAMP ts FIELDS (value DOUBLE)");
@@ -99,7 +99,7 @@ public class CreateTimeSeriesTypeStatementTest extends TestHelper {
   }
 
   @Test
-  public void testCreateMinimal() {
+  void createMinimal() {
     database.command("sql", "CREATE TIMESERIES TYPE Minimal TIMESTAMP ts FIELDS (value DOUBLE)");
 
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType("Minimal");

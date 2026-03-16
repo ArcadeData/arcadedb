@@ -28,10 +28,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TimeSeriesFunctionFirstLastTest extends TestHelper {
+class TimeSeriesFunctionFirstLastTest extends TestHelper {
 
   @Test
-  public void testBasicFirstLast() {
+  void basicFirstLast() {
     database.command("sql",
         "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -52,7 +52,7 @@ public class TimeSeriesFunctionFirstLastTest extends TestHelper {
   }
 
   @Test
-  public void testUnsortedInput() {
+  void unsortedInput() {
     database.command("sql",
         "CREATE TIMESERIES TYPE UnsortedSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -71,7 +71,7 @@ public class TimeSeriesFunctionFirstLastTest extends TestHelper {
   }
 
   @Test
-  public void testWithGroupBy() {
+  void withGroupBy() {
     database.command("sql",
         "CREATE TIMESERIES TYPE GroupedSensor TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (value DOUBLE)");
 
@@ -96,7 +96,7 @@ public class TimeSeriesFunctionFirstLastTest extends TestHelper {
   }
 
   @Test
-  public void testSingleRow() {
+  void singleRow() {
     database.command("sql",
         "CREATE TIMESERIES TYPE SingleSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -113,7 +113,7 @@ public class TimeSeriesFunctionFirstLastTest extends TestHelper {
   }
 
   @Test
-  public void testNullHandling() {
+  void nullHandling() {
     database.command("sql",
         "CREATE TIMESERIES TYPE NullSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 

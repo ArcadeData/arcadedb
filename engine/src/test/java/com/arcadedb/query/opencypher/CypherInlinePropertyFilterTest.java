@@ -81,7 +81,7 @@ class CypherInlinePropertyFilterTest {
   }
 
   @Test
-  void testInlinePropertyFilterOnAnonymousTargetNode() {
+  void inlinePropertyFilterOnAnonymousTargetNode() {
     // This query should return only the S0 vertex with name='one'
     final ResultSet rs = database.query("opencypher",
         "MATCH (s:S0 {name:'one'})-[:E0]->(:Sx) RETURN s");
@@ -96,7 +96,7 @@ class CypherInlinePropertyFilterTest {
   }
 
   @Test
-  void testInlinePropertyFilterOnAnonymousTargetNodeNoMatch() {
+  void inlinePropertyFilterOnAnonymousTargetNodeNoMatch() {
     // This query should return NO results because no S0 has name='x'
     final ResultSet rs = database.query("opencypher",
         "MATCH (sx:Sx)<-[:E0]-(:S0 {name:'x'}) RETURN sx");
@@ -109,7 +109,7 @@ class CypherInlinePropertyFilterTest {
   }
 
   @Test
-  void testInlinePropertyFilterOnNamedTargetNode() {
+  void inlinePropertyFilterOnNamedTargetNode() {
     // Same as above but with a named variable - filter should still apply
     final ResultSet rs = database.query("opencypher",
         "MATCH (sx:Sx)<-[:E0]-(s:S0 {name:'x'}) RETURN sx");
@@ -122,7 +122,7 @@ class CypherInlinePropertyFilterTest {
   }
 
   @Test
-  void testInlinePropertyFilterMatchingExists() {
+  void inlinePropertyFilterMatchingExists() {
     // Filter with name='one' should return the Sx connected to S0(name='one')
     final ResultSet rs = database.query("opencypher",
         "MATCH (sx:Sx)<-[:E0]-(:S0 {name:'one'}) RETURN sx");
@@ -135,7 +135,7 @@ class CypherInlinePropertyFilterTest {
   }
 
   @Test
-  void testInlinePropertyFilterWithInheritance() {
+  void inlinePropertyFilterWithInheritance() {
     // S1 extends S0, so matching :S0 {name:'two'} should find the S1 vertex
     final ResultSet rs = database.query("opencypher",
         "MATCH (sx:Sx)<-[:E0]-(:S0 {name:'two'}) RETURN sx");

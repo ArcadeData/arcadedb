@@ -31,19 +31,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class DictionaryCodecTest {
 
   @Test
-  void testEmpty() throws IOException {
+  void empty() throws Exception {
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(new String[0]))).isEmpty();
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(null))).isEmpty();
   }
 
   @Test
-  void testSingleValue() throws IOException {
+  void singleValue() throws Exception {
     final String[] input = { "sensor_a" };
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(input))).containsExactly(input);
   }
 
   @Test
-  void testSingleUniqueRepeated() throws IOException {
+  void singleUniqueRepeated() throws Exception {
     final String[] input = { "host1", "host1", "host1", "host1", "host1" };
     final byte[] encoded = DictionaryCodec.encode(input);
     assertThat(DictionaryCodec.decode(encoded)).containsExactly(input);
@@ -53,7 +53,7 @@ class DictionaryCodecTest {
   }
 
   @Test
-  void testMultipleUnique() throws IOException {
+  void multipleUnique() throws Exception {
     final String[] input = new String[100];
     for (int i = 0; i < input.length; i++)
       input[i] = "sensor_" + (i % 10);
@@ -62,19 +62,19 @@ class DictionaryCodecTest {
   }
 
   @Test
-  void testEmptyStrings() throws IOException {
+  void emptyStrings() throws Exception {
     final String[] input = { "", "", "a", "", "b" };
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(input))).containsExactly(input);
   }
 
   @Test
-  void testUnicodeStrings() throws IOException {
+  void unicodeStrings() throws Exception {
     final String[] input = { "温度", "湿度", "温度", "气压", "湿度" };
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(input))).containsExactly(input);
   }
 
   @Test
-  void testManyUniqueValues() throws IOException {
+  void manyUniqueValues() throws Exception {
     final String[] input = new String[1000];
     for (int i = 0; i < input.length; i++)
       input[i] = "unique_tag_" + i;
@@ -83,13 +83,13 @@ class DictionaryCodecTest {
   }
 
   @Test
-  void testPreservesOrder() throws IOException {
+  void preservesOrder() throws Exception {
     final String[] input = { "c", "a", "b", "a", "c", "b" };
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(input))).containsExactly(input);
   }
 
   @Test
-  void testMalformedDataThrowsIOException() {
+  void malformedDataThrowsIOException() {
     final byte[] malformed = new byte[] { 0, 0, 0, 5 }; // count=5 but no data follows
     assertThatThrownBy(() -> DictionaryCodec.decode(malformed))
         .isInstanceOf(IOException.class)
@@ -97,7 +97,7 @@ class DictionaryCodecTest {
   }
 
   @Test
-  void testUtf8LengthGuard() {
+  void utf8LengthGuard() {
     // A string whose UTF-8 encoding exceeds 65535 bytes must be rejected with a clear error.
     // Each '豆' character encodes to 3 UTF-8 bytes, so 21845 repetitions = 65535 bytes.
     final String longEntry = "豆".repeat(21846); // 21846 × 3 = 65538 bytes > 65535
@@ -108,7 +108,7 @@ class DictionaryCodecTest {
   }
 
   @Test
-  void testDictionaryOverflow() {
+  void dictionaryOverflow() {
     // More than MAX_DICTIONARY_SIZE distinct values must be rejected.
     final String[] input = new String[DictionaryCodec.MAX_DICTIONARY_SIZE + 1];
     for (int i = 0; i <= DictionaryCodec.MAX_DICTIONARY_SIZE; i++)

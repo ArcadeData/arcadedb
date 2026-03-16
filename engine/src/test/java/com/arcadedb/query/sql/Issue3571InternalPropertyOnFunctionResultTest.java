@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
 
   @Test
-  void testInEAtRidUnquoted() {
+  void inEAtRidUnquoted() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571a IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571a IF NOT EXISTS");
@@ -61,7 +61,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
   }
 
   @Test
-  void testInEAtRidQuoted() {
+  void inEAtRidQuoted() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571b IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571b IF NOT EXISTS");
@@ -84,7 +84,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
   }
 
   @Test
-  void testInEIndexedAtRidUnquoted() {
+  void inEIndexedAtRidUnquoted() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571c IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571c IF NOT EXISTS");
@@ -103,7 +103,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
   }
 
   @Test
-  void testInEIndexedAtRidQuoted() {
+  void inEIndexedAtRidQuoted() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571d IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571d IF NOT EXISTS");
@@ -123,7 +123,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
   }
 
   @Test
-  void testInEAtType() {
+  void inEAtType() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571e IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571e IF NOT EXISTS");
@@ -143,7 +143,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
   }
 
   @Test
-  void testInEAtCat() {
+  void inEAtCat() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571f IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571f IF NOT EXISTS");
@@ -164,7 +164,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
   }
 
   @Test
-  void testInEIndexedAtIn() {
+  void inEIndexedAtIn() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571g IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571g IF NOT EXISTS");
@@ -184,7 +184,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
   }
 
   @Test
-  void testInEIndexedAtOut() {
+  void inEIndexedAtOut() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571h IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571h IF NOT EXISTS");
@@ -204,7 +204,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
   }
 
   @Test
-  void testInEAtInList() {
+  void inEAtInList() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571i IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571i IF NOT EXISTS");
@@ -227,7 +227,7 @@ class Issue3571InternalPropertyOnFunctionResultTest extends TestHelper {
   }
 
   @Test
-  void testMapWithAtOut() {
+  void mapWithAtOut() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE V3571j IF NOT EXISTS");
       database.command("sql", "CREATE EDGE TYPE E3571j IF NOT EXISTS");

@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -172,7 +174,7 @@ class AlgoPageRankTest {
     for (final Map.Entry<String, Double> entry : oltpScores.entrySet()) {
       final String name = entry.getKey();
       assertThat(csrScores).containsKey(name);
-      assertThat(csrScores.get(name)).isCloseTo(entry.getValue(), org.assertj.core.data.Offset.offset(1e-6));
+      assertThat(csrScores.get(name)).isCloseTo(entry.getValue(), Offset.offset(1e-6));
     }
 
     gav.shutdown();

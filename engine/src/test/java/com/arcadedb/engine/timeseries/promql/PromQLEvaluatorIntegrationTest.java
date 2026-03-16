@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PromQLEvaluatorIntegrationTest extends TestHelper {
 
   @Test
-  void testInstantVectorSelector() {
+  void instantVectorSelector() {
     createTypeAndInsertData("cpu_usage");
 
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
@@ -52,7 +52,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testRateFunction() {
+  void rateFunction() {
     createTypeAndInsertData("http_requests_total");
 
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
@@ -67,7 +67,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testBinaryExpressionWithScalar() {
+  void binaryExpressionWithScalar() {
     createTypeAndInsertData("metric_a");
 
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
@@ -81,7 +81,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testSumAggregation() {
+  void sumAggregation() {
     createTypeWithTags("tagged_metric");
 
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
@@ -96,7 +96,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testSumByAggregation() {
+  void sumByAggregation() {
     createTypeWithTags("group_metric");
 
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
@@ -110,7 +110,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testRangeQueryWithStep() {
+  void rangeQueryWithStep() {
     createTypeAndInsertData("range_metric");
 
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
@@ -123,7 +123,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testEmptyResultForNonExistentType() {
+  void emptyResultForNonExistentType() {
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
     final PromQLExpr expr = new PromQLParser("nonexistent_metric").parse();
     final PromQLResult result = evaluator.evaluateInstant(expr, 1000L);
@@ -134,7 +134,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testEvaluateRangeStepZero() {
+  void evaluateRangeStepZero() {
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
     final PromQLExpr expr = new PromQLParser("42").parse();
 
@@ -144,7 +144,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testEvaluateRangeInvertedBounds() {
+  void evaluateRangeInvertedBounds() {
     // Regression: endMs < startMs previously returned empty results silently
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
     final PromQLExpr expr = new PromQLParser("42").parse();
@@ -156,7 +156,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testReDoSPatternRejected() {
+  void reDoSPatternRejected() {
     // Security: regex patterns with nested quantifiers must be rejected to prevent ReDoS attacks
     createTypeWithTags("redos_metric");
 
@@ -170,7 +170,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testScalarArithmetic() {
+  void scalarArithmetic() {
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
     final PromQLExpr expr = new PromQLParser("2 + 3 * 4").parse();
     final PromQLResult result = evaluator.evaluateInstant(expr, 1000L);
@@ -180,7 +180,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testExtractLabelsWithTagBeforeTimestamp() {
+  void extractLabelsWithTagBeforeTimestamp() {
     // Regression: extractLabels / extractValue must work correctly even when the
     // TIMESTAMP column is not at schema position 0.
     // Schema: TAG(host) at index 0, TIMESTAMP(ts) at index 1, FIELD(value) at index 2.
@@ -216,7 +216,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testQueryUsesIterateQueryPath() {
+  void queryUsesIterateQueryPath() {
     // Verify that evaluateVectorSelector uses the lazy iterator path (iterateQuery)
     // rather than the eager-loading query() path. We verify this indirectly by
     // confirming that a large dataset is evaluated correctly.
@@ -232,7 +232,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testPromQLSqlFunction() {
+  void promQLSqlFunction() {
     createTypeAndInsertData("promql_sql_test");
 
     // RETURN with a List<Map> unwraps each map entry into a separate result row.
@@ -246,7 +246,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void testPromQLSqlFunctionUsesCurrentTimeWhenNoArgument() {
+  void promQLSqlFunctionUsesCurrentTimeWhenNoArgument() {
     createTypeAndInsertData("promql_sql_notime_test");
 
     // Called without evalTimeMs — uses System.currentTimeMillis() internally.

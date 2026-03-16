@@ -24,15 +24,17 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -42,10 +44,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GraphAnalyticalViewTest extends TestHelper {
+class GraphAnalyticalViewTest extends TestHelper {
 
   @Test
-  void testEmptyGraph() {
+  void emptyGraph() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -59,13 +61,13 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testNotBuiltThrows() {
+  void notBuiltThrows() {
     final GraphAnalyticalView gav = new GraphAnalyticalView(database);
     assertThatThrownBy(() -> gav.getNodeCount()).isInstanceOf(IllegalStateException.class);
   }
 
   @Test
-  void testSimpleChain() {
+  void simpleChain() {
     // A -> B -> C
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
@@ -128,7 +130,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testStarTopology() {
+  void starTopology() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -161,7 +163,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testVectorizedScan() {
+  void vectorizedScan() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -189,7 +191,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCommonNeighbors() {
+  void commonNeighbors() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -217,7 +219,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testMultipleEdgeTypes() {
+  void multipleEdgeTypes() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.getSchema().createEdgeType("LIKES");
@@ -260,7 +262,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testMultipleVertexTypes() {
+  void multipleVertexTypes() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Company");
     database.getSchema().createEdgeType("WORKS_AT");
@@ -302,7 +304,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSelectiveEdgeTypeBuild() {
+  void selectiveEdgeTypeBuild() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.getSchema().createEdgeType("LIKES");
@@ -325,7 +327,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testNonexistentEdgeTypeReturnsZero() {
+  void nonexistentEdgeTypeReturnsZero() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -348,7 +350,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testRIDRoundTrip() {
+  void ridRoundTrip() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -368,7 +370,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testNodeIdMappingPerBucket() {
+  void nodeIdMappingPerBucket() {
     final NodeIdMapping mapping = new NodeIdMapping(4);
 
     // Register two buckets
@@ -424,7 +426,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testDataVector() {
+  void dataVector() {
     final DataVector vec = new DataVector(DataVector.Type.INT);
     assertThat(vec.getType()).isEqualTo(DataVector.Type.INT);
     assertThat(vec.getSize()).isEqualTo(0);
@@ -452,7 +454,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testMemoryUsage() {
+  void memoryUsage() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -472,7 +474,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testLightEdges() {
+  void lightEdges() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -495,7 +497,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSortedNeighbors() {
+  void sortedNeighbors() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -520,7 +522,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Builder tests ---
 
   @Test
-  void testBuilderBasic() {
+  void builderBasic() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -545,7 +547,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testBuilderPropertyFilter() {
+  void builderPropertyFilter() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -568,7 +570,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testBuilderNoProperties() {
+  void builderNoProperties() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -591,7 +593,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAutoUpdate() throws Exception {
+  void autoUpdate() throws Exception {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -631,7 +633,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Status and async build tests ---
 
   @Test
-  void testStatusLifecycle() {
+  void statusLifecycle() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -652,7 +654,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAsyncBuildWithData() throws Exception {
+  void asyncBuildWithData() throws Exception {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -679,13 +681,13 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testStatusNotBuilt() {
+  void statusNotBuilt() {
     final GraphAnalyticalView gav = new GraphAnalyticalView(database);
     assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.NOT_BUILT);
   }
 
   @Test
-  void testSyncBuildSetsReady() {
+  void syncBuildSetsReady() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -698,7 +700,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAsyncAutoUpdate() throws Exception {
+  void asyncAutoUpdate() throws Exception {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -731,7 +733,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Registry tests ---
 
   @Test
-  void testRegistryRegisterAndGet() {
+  void registryRegisterAndGet() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -749,7 +751,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testRegistryMultipleViews() {
+  void registryMultipleViews() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.getSchema().createEdgeType("BLOCKS");
@@ -784,7 +786,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testGavName() {
+  void gavName() {
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
         .withName("test-view")
         .build();
@@ -794,7 +796,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testGavConfigAccessors() {
+  void gavConfigAccessors() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -818,7 +820,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Schema persistence tests ---
 
   @Test
-  void testPersistenceRoundTrip() {
+  void persistenceRoundTrip() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -837,22 +839,22 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .build();
 
     // Verify it's persisted in schema extensions
-    final com.arcadedb.serializer.json.JSONObject ext = database.getSchema().getExtension("graphAnalyticalViews");
+    final JSONObject ext = database.getSchema().getExtension("graphAnalyticalViews");
     assertThat(ext).isNotNull();
     assertThat(ext.has("social-persist")).isTrue();
 
-    final com.arcadedb.serializer.json.JSONObject gavDef = ext.getJSONObject("social-persist");
+    final JSONObject gavDef = ext.getJSONObject("social-persist");
     assertThat(gavDef.getString("name")).isEqualTo("social-persist");
     assertThat(gavDef.getString("updateMode")).isEqualTo("SYNCHRONOUS");
 
     // Close removes from schema
     gav.drop();
-    final com.arcadedb.serializer.json.JSONObject extAfter = database.getSchema().getExtension("graphAnalyticalViews");
+    final JSONObject extAfter = database.getSchema().getExtension("graphAnalyticalViews");
     assertThat(extAfter).isNull();
   }
 
   @Test
-  void testRestoreFromSchema() throws Exception {
+  void restoreFromSchema() throws Exception {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -891,15 +893,15 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSchemaExtensionGeneric() {
+  void schemaExtensionGeneric() {
     // Test the generic extension mechanism
     assertThat(database.getSchema().getExtension("nonexistent")).isNull();
 
-    final com.arcadedb.serializer.json.JSONObject testExt = new com.arcadedb.serializer.json.JSONObject();
+    final JSONObject testExt = new JSONObject();
     testExt.put("key", "value");
     database.getSchema().setExtension("testModule", testExt);
 
-    final com.arcadedb.serializer.json.JSONObject loaded = database.getSchema().getExtension("testModule");
+    final JSONObject loaded = database.getSchema().getExtension("testModule");
     assertThat(loaded).isNotNull();
     assertThat(loaded.getString("key")).isEqualTo("value");
 
@@ -911,7 +913,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Traversal provider integration tests ---
 
   @Test
-  void testTraversalProviderRegistration() {
+  void traversalProviderRegistration() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -938,7 +940,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCoversAllTypesWhenExplicitTypesMatchSchema() {
+  void coversAllTypesWhenExplicitTypesMatchSchema() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -962,7 +964,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testDoesNotCoverAllTypesWhenSchemaHasMore() {
+  void doesNotCoverAllTypesWhenSchemaHasMore() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Company");
     database.getSchema().createEdgeType("FOLLOWS");
@@ -991,7 +993,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testTraversalProviderAllTypes() {
+  void traversalProviderAllTypes() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -1008,7 +1010,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCypherQueryWithGAV() {
+  void cypherQueryWithGAV() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -1043,7 +1045,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCypherQueryWithEdgeVariable() {
+  void cypherQueryWithEdgeVariable() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -1076,7 +1078,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCypherTraditionalPathUsesGAV() {
+  void cypherTraditionalPathUsesGAV() {
     // Queries with aggregation disable the optimizer, falling back to the traditional path.
     // The traditional path's MatchRelationshipStep should still use GAV for fast neighbor lookup.
     database.getSchema().createVertexType("Person");
@@ -1117,7 +1119,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCypherTraditionalPathWithWhereAndGAV() {
+  void cypherTraditionalPathWithWhereAndGAV() {
     // Test GAV usage in traditional path with WHERE clause and property constraints
     database.getSchema().createVertexType("Session");
     database.getSchema().createVertexType("Resource");
@@ -1162,7 +1164,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Columnar storage tests ---
 
   @Test
-  void testColumnStoreBasics() {
+  void columnStoreBasics() {
     final ColumnStore store = new ColumnStore(5);
 
     final Column intCol = store.createColumn("age", Column.Type.INT);
@@ -1198,7 +1200,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testDictionaryEncoding() {
+  void dictionaryEncoding() {
     final DictionaryEncoding dict = new DictionaryEncoding();
     assertThat(dict.size()).isEqualTo(0);
 
@@ -1217,7 +1219,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testColumnScanOperatorFullScan() {
+  void columnScanOperatorFullScan() {
     final Column col = new Column("age", Column.Type.INT, 5);
     col.setInt(0, 30);
     col.setInt(1, 25);
@@ -1240,7 +1242,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testColumnScanOperatorSelective() {
+  void columnScanOperatorSelective() {
     final Column col = new Column("score", Column.Type.DOUBLE, 10);
     for (int i = 0; i < 10; i++)
       col.setDouble(i, i * 1.5);
@@ -1259,7 +1261,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testColumnarPropertyIntegration() {
+  void columnarPropertyIntegration() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -1288,7 +1290,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testColumnarMultipleTypes() {
+  void columnarMultipleTypes() {
     database.getSchema().createVertexType("Item");
     database.getSchema().createEdgeType("RELATED");
 
@@ -1316,7 +1318,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testNullBitset() {
+  void nullBitset() {
     final Column col = new Column("val", Column.Type.INT, 128);
 
     for (int i = 0; i < 128; i++)
@@ -1338,7 +1340,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- SQL integration tests (Phase 6) ---
 
   @Test
-  void testSqlOutWithGAV() {
+  void sqlOutWithGAV() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -1380,7 +1382,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSqlInWithGAV() {
+  void sqlInWithGAV() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -1414,7 +1416,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSqlBothWithGAV() {
+  void sqlBothWithGAV() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -1448,7 +1450,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSqlOutWithEdgeTypeFilter() {
+  void sqlOutWithEdgeTypeFilter() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
     database.getSchema().createEdgeType("WORKS_WITH");
@@ -1483,7 +1485,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSqlOutENotAccelerated() {
+  void sqlOutENotAccelerated() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -1508,7 +1510,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSqlTraversalWithoutGAV() {
+  void sqlTraversalWithoutGAV() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -1534,7 +1536,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Algorithm CSR acceleration tests ---
 
   @Test
-  void testPageRankWithGAV() {
+  void pageRankWithGAV() {
     database.getSchema().createVertexType("Page");
     database.getSchema().createEdgeType("LINKS");
 
@@ -1583,7 +1585,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testArticleRankWithGAV() {
+  void articleRankWithGAV() {
     database.getSchema().createVertexType("Page");
     database.getSchema().createEdgeType("LINKS");
 
@@ -1617,7 +1619,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testPersonalizedPageRankWithGAV() {
+  void personalizedPageRankWithGAV() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -1651,7 +1653,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testPageRankWithPartialGAVFallsBackToOLTP() {
+  void pageRankWithPartialGAVFallsBackToOLTP() {
     database.getSchema().createVertexType("Page");
     database.getSchema().createEdgeType("LINKS");
     database.getSchema().createEdgeType("CITES");
@@ -1688,7 +1690,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- SQL shortestPath CSR acceleration ---
 
   @Test
-  void testSqlShortestPathWithGAV() {
+  void sqlShortestPathWithGAV() {
     database.getSchema().createVertexType("City");
     database.getSchema().createEdgeType("ROAD");
 
@@ -1734,7 +1736,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Algorithm CSR acceleration tests (additional algorithms) ---
 
   @Test
-  void testBetweennessCentralityWithGAV() {
+  void betweennessCentralityWithGAV() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -1769,7 +1771,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testWCCWithGAV() {
+  void wccWithGAV() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -1803,7 +1805,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testTriangleCountWithGAV() {
+  void triangleCountWithGAV() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -1840,7 +1842,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testLouvainWithGAV() {
+  void louvainWithGAV() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -1884,7 +1886,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testBFSWithGAV() {
+  void bfsWithGAV() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -1915,7 +1917,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSCCWithGAV() {
+  void sccWithGAV() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -1951,7 +1953,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testEigenvectorCentralityWithGAV() {
+  void eigenvectorCentralityWithGAV() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -1987,7 +1989,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // ── SQL DDL Tests ────────────────────────────────────────────────────────
 
   @Test
-  void testCreateGraphAnalyticalViewSQL() {
+  void createGraphAnalyticalViewSQL() {
     database.getSchema().createVertexType("City");
     database.getSchema().createEdgeType("ROAD");
     database.begin();
@@ -2025,7 +2027,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCreateGraphAnalyticalViewWithUpdateMode() {
+  void createGraphAnalyticalViewWithUpdateMode() {
     database.getSchema().createVertexType("Sensor");
     database.getSchema().createEdgeType("FEEDS");
     database.begin();
@@ -2042,7 +2044,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCreateGraphAnalyticalViewIfNotExists() {
+  void createGraphAnalyticalViewIfNotExists() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -2057,13 +2059,13 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testDropGraphAnalyticalViewIfExists() {
+  void dropGraphAnalyticalViewIfExists() {
     // Drop non-existent with IF EXISTS should not throw
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW IF EXISTS nonExistentView");
   }
 
   @Test
-  void testCreateGraphAnalyticalViewWithProperties() {
+  void createGraphAnalyticalViewWithProperties() {
     database.getSchema().createVertexType("Product");
     database.getSchema().createEdgeType("SIMILAR");
     database.begin();
@@ -2084,7 +2086,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSchemaGraphAnalyticalViewsQuery() {
+  void schemaGraphAnalyticalViewsQuery() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -2102,7 +2104,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testGavRestoredOnDatabaseReopen() {
+  void gavRestoredOnDatabaseReopen() {
     // Setup: create types and data
     database.getSchema().createVertexType("City");
     database.getSchema().createEdgeType("ROAD");
@@ -2129,7 +2131,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
       // Verify the GAV was restored in the in-memory registry (async build)
       final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db2, "cityRoads");
       assertThat(restored).isNotNull();
-      assertThat(restored.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+      assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
       assertThat(restored.getNodeCount()).isEqualTo(2);
       assertThat(restored.getEdgeCount()).isEqualTo(1);
 
@@ -2146,7 +2148,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Incremental update (delta overlay) tests ---
 
   @Test
-  void testIncrementalAddVertexAndEdge() {
+  void incrementalAddVertexAndEdge() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2190,7 +2192,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testIncrementalPropertyUpdate() {
+  void incrementalPropertyUpdate() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2223,7 +2225,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testIncrementalMultipleTransactions() {
+  void incrementalMultipleTransactions() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2270,7 +2272,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testIncrementalDeleteEdge() {
+  void incrementalDeleteEdge() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2307,7 +2309,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testIncrementalDeleteEdgeInDirection() {
+  void incrementalDeleteEdgeInDirection() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2346,7 +2348,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCountEdgesAfterEdgeDeletionSynchronous() {
+  void countEdgesAfterEdgeDeletionSynchronous() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2392,7 +2394,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testIncrementalDeleteVertex() {
+  void incrementalDeleteVertex() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2423,7 +2425,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testIncrementalNewVertexProperties() {
+  void incrementalNewVertexProperties() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2457,7 +2459,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Delta correctness and compaction tests ---
 
   @Test
-  void testDeltaEdgeCorrectnessAfterCommit() {
+  void deltaEdgeCorrectnessAfterCommit() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.getSchema().createEdgeType("LIKES");
@@ -2510,7 +2512,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testDeltaPropertyUpdatesInColumnarStore() {
+  void deltaPropertyUpdatesInColumnarStore() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2560,7 +2562,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCompactionTriggersFullRebuild() {
+  void compactionTriggersFullRebuild() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2594,7 +2596,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     // After compaction/rebuild, the view should still be correct
     // Wait a bit for async compaction to complete
-    gav.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    gav.awaitReady(10, TimeUnit.SECONDS);
 
     assertThat(gav.getNodeCount()).isEqualTo(9);
     assertThat(gav.getEdgeCount()).isEqualTo(8);
@@ -2607,7 +2609,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCompactionThresholdViaDDL() {
+  void compactionThresholdViaDDL() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2628,7 +2630,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     // Verify the live view has the threshold
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "compThresholdTest");
     assertThat(liveView).isNotNull();
-    liveView.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    liveView.awaitReady(10, TimeUnit.SECONDS);
     assertThat(liveView.getCompactionThreshold()).isEqualTo(500);
 
     // ALTER the compaction threshold
@@ -2647,7 +2649,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- STALE status tests ---
 
   @Test
-  void testStaleStatusOnNonAutoUpdateGAV() {
+  void staleStatusOnNonAutoUpdateGAV() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -2686,7 +2688,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testStaleNotTriggeredForUnrelatedTypes() {
+  void staleNotTriggeredForUnrelatedTypes() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Product");
     database.getSchema().createEdgeType("FOLLOWS");
@@ -2716,7 +2718,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAlterGraphAnalyticalViewUpdateMode() {
+  void alterGraphAnalyticalViewUpdateMode() {
     database.getSchema().createVertexType("Device");
     database.getSchema().createEdgeType("CONNECTS");
     database.begin();
@@ -2741,7 +2743,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testRebuildGraphAnalyticalView() {
+  void rebuildGraphAnalyticalView() {
     database.getSchema().createVertexType("Machine");
     database.getSchema().createEdgeType("POWERS");
     database.begin();
@@ -2754,7 +2756,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "machineNet");
     assertThat(liveView).isNotNull();
-    liveView.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    liveView.awaitReady(10, TimeUnit.SECONDS);
     assertThat(liveView.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
 
     // Add more data
@@ -2778,7 +2780,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Regression tests for PR review findings ---
 
   @Test
-  void testConcurrentApplyDeltaNoLostUpdates() throws Exception {
+  void concurrentApplyDeltaNoLostUpdates() throws Exception {
     // Each thread gets its own vertex type to avoid page contention entirely.
     // This isolates the test to exercise concurrent applyDelta, not CME retry behavior.
     final int threadCount = 4;
@@ -2804,8 +2806,8 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     // Each thread creates vertices in its own type (separate pages, no CME).
     // Concurrent applyDelta calls all merge into the same overlay.
-    final java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(threadCount);
-    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+    final CyclicBarrier barrier = new CyclicBarrier(threadCount);
+    final AtomicInteger errors = new AtomicInteger(0);
 
     final Thread[] threads = new Thread[threadCount];
     for (int t = 0; t < threadCount; t++) {
@@ -2845,7 +2847,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testGAVExpandAllWithStaleVertex() {
+  void gavExpandAllWithStaleVertex() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -2886,7 +2888,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testNeighborViewBoundaryLastNode() {
+  void neighborViewBoundaryLastNode() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
@@ -2908,7 +2910,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(nodeCount).isEqualTo(4);
 
     // Test NeighborView for OUT direction — last node should have degree 0
-    final com.arcadedb.graph.NeighborView outView = gav.getNeighborView(Vertex.DIRECTION.OUT, "LINK");
+    final NeighborView outView = gav.getNeighborView(Vertex.DIRECTION.OUT, "LINK");
     assertThat(outView).isNotNull();
     assertThat(outView.nodeCount()).isEqualTo(nodeCount);
 
@@ -2924,7 +2926,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(totalOutDegree).isEqualTo(3); // 3 edges total
 
     // Test NeighborView for IN direction — first node should have degree 0
-    final com.arcadedb.graph.NeighborView inView = gav.getNeighborView(Vertex.DIRECTION.IN, "LINK");
+    final NeighborView inView = gav.getNeighborView(Vertex.DIRECTION.IN, "LINK");
     assertThat(inView).isNotNull();
 
     int totalInDegree = 0;
@@ -2937,7 +2939,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(totalInDegree).isEqualTo(3);
 
     // Test BOTH direction — verify merged view handles last node correctly
-    final com.arcadedb.graph.NeighborView bothView = gav.getNeighborView(Vertex.DIRECTION.BOTH, "LINK");
+    final NeighborView bothView = gav.getNeighborView(Vertex.DIRECTION.BOTH, "LINK");
     assertThat(bothView).isNotNull();
     assertThat(bothView.nodeCount()).isEqualTo(nodeCount);
 
@@ -2953,7 +2955,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCSRVertexIterableSkipsDeletedNodes() {
+  void csrVertexIterableSkipsDeletedNodes() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -2990,7 +2992,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAlterPersistsBeforeUpdatingLiveView() {
+  void alterPersistsBeforeUpdatingLiveView() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -3016,7 +3018,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testDropCleansUpOrphanedTraversalProvider() {
+  void dropCleansUpOrphanedTraversalProvider() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -3032,23 +3034,23 @@ public class GraphAnalyticalViewTest extends TestHelper {
         .withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS")
         .build();
-    gav.awaitReady(10, java.util.concurrent.TimeUnit.SECONDS);
+    gav.awaitReady(10, TimeUnit.SECONDS);
 
     // Verify provider is registered
-    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
 
     // Remove from the in-memory registry so the DROP goes through the else branch
     GraphAnalyticalViewRegistry.unregister(database, "orphanTest");
     assertThat(GraphAnalyticalViewRegistry.get(database, "orphanTest")).isNull();
 
     // The traversal provider should still be registered at this point
-    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
 
     // DROP should clean up both schema AND the orphaned traversal provider
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW orphanTest");
 
     // Traversal provider must be unregistered
-    assertThat(com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
 
     // Schema must be clean
     final var ext = database.getSchema().getExtension("graphAnalyticalViews");
@@ -3058,7 +3060,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Bug 16: COMPACTION THRESHOLD validation ---
 
   @Test
-  void testCompactionThresholdNegativeRejected() {
+  void compactionThresholdNegativeRejected() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.begin();
@@ -3072,7 +3074,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCompactionThresholdOneRejected() {
+  void compactionThresholdOneRejected() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.begin();
@@ -3086,7 +3088,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testCompactionThresholdZeroDisablesCompaction() {
+  void compactionThresholdZeroDisablesCompaction() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.begin();
@@ -3109,7 +3111,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAlterCompactionThresholdToZero() {
+  void alterCompactionThresholdToZero() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.begin();
@@ -3135,7 +3137,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAlterCompactionThresholdOneRejected() {
+  void alterCompactionThresholdOneRejected() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.begin();
@@ -3162,7 +3164,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Bug 17: UpdateMode.valueOf() throws IllegalArgumentException for invalid mode strings ---
 
   @Test
-  void testCreateWithInvalidUpdateModeThrowsCommandExecutionException() {
+  void createWithInvalidUpdateModeThrowsCommandExecutionException() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.begin();
@@ -3177,7 +3179,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAlterWithInvalidUpdateModeThrowsCommandExecutionException() {
+  void alterWithInvalidUpdateModeThrowsCommandExecutionException() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.begin();
@@ -3205,7 +3207,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Bug 18: buildAsync() failure silently marks view READY with no error surface ---
 
   @Test
-  void testAwaitReadyReturnsFalseOnBuildFailure() {
+  void awaitReadyReturnsFalseOnBuildFailure() {
     // Create a view that references a non-existent vertex type to force build failure
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
         .withName("failView")
@@ -3229,7 +3231,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Bug 21: SYNCHRONOUS mode with mixed additions and deletions ---
 
   @Test
-  void testCountEdgesWithMixedAdditionsAndDeletionsSynchronous() {
+  void countEdgesWithMixedAdditionsAndDeletionsSynchronous() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
     database.getSchema().createEdgeType("BLOCKS");
@@ -3291,7 +3293,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Bug 22: compaction actually triggers and clears overlay ---
 
   @Test
-  void testCompactionClearsOverlay() {
+  void compactionClearsOverlay() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -3343,7 +3345,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testDeletedOverflowVertexNotDangling() {
+  void deletedOverflowVertexNotDangling() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -3389,7 +3391,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testUseWhenStaleFalseExcludesFromQueryPlanner() {
+  void useWhenStaleFalseExcludesFromQueryPlanner() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -3432,7 +3434,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // ── Robustness tests ────────────────────────────────────────────────────
 
   @Test
-  void testStaleGAVReturnsDeterministicApproximateResults() {
+  void staleGAVReturnsDeterministicApproximateResults() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -3509,7 +3511,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testConcurrentWriteAndReadUnderSynchronousOverlay() throws Exception {
+  void concurrentWriteAndReadUnderSynchronousOverlay() throws Exception {
     // Each writer gets its own vertex/edge type to avoid page contention.
     // This isolates the test to exercise concurrent overlay merges + reads.
     final int writerCount = 2;
@@ -3534,8 +3536,8 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(gav.getNodeCount()).isEqualTo(0);
 
-    final java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(writerCount + 1);
-    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+    final CyclicBarrier barrier = new CyclicBarrier(writerCount + 1);
+    final AtomicInteger errors = new AtomicInteger(0);
 
     // Writer threads: each creates vertices/edges in its own type
     final Thread[] writers = new Thread[writerCount];
@@ -3608,7 +3610,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testDroppedGAVQueriesFailGracefully() {
+  void droppedGAVQueriesFailGracefully() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -3666,10 +3668,10 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // === Edge Property Tests ===
 
   @Test
-  void testEdgePropertyBasic() {
+  void edgePropertyBasic() {
     // A -[weight:1.0]-> B -[weight:2.5]-> C
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("ROAD").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+    database.getSchema().createEdgeType("ROAD").createProperty("weight", Type.DOUBLE);
 
     database.begin();
     final MutableVertex a = database.newVertex("Node").set("name", "A").save();
@@ -3721,10 +3723,10 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testEdgePropertyNoConfig() {
+  void edgePropertyNoConfig() {
     // Default: no edge properties — zero overhead
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("ROAD").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+    database.getSchema().createEdgeType("ROAD").createProperty("weight", Type.DOUBLE);
 
     database.begin();
     final MutableVertex a = database.newVertex("Node").set("name", "A").save();
@@ -3746,10 +3748,10 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testEdgePropertyStarTopology() {
+  void edgePropertyStarTopology() {
     // Hub -> spoke1, spoke2, spoke3, spoke4, spoke5 with distinct weights
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("LINK").createProperty("cost", com.arcadedb.schema.Type.DOUBLE);
+    database.getSchema().createEdgeType("LINK").createProperty("cost", Type.DOUBLE);
 
     database.begin();
     final MutableVertex hub = database.newVertex("Node").set("name", "hub").save();
@@ -3773,7 +3775,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
 
     // Verify all 5 edge properties are correct (order may differ due to CSR sorting)
     final int[] neighbors = gav.getNeighborIds(hubId, Vertex.DIRECTION.OUT, "LINK");
-    final java.util.Set<Double> retrievedWeights = new java.util.HashSet<>();
+    final Set<Double> retrievedWeights = new HashSet<>();
     for (int i = 0; i < neighbors.length; i++) {
       final Object cost = gav.getEdgeProperty(hubId, i, Vertex.DIRECTION.OUT, "LINK", "cost");
       assertThat(cost).isNotNull();
@@ -3794,9 +3796,9 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testEdgePropertyMemoryAccounted() {
+  void edgePropertyMemoryAccounted() {
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("LINK").createProperty("weight", com.arcadedb.schema.Type.DOUBLE);
+    database.getSchema().createEdgeType("LINK").createProperty("weight", Type.DOUBLE);
 
     database.begin();
     final MutableVertex a = database.newVertex("Node").set("name", "A").save();
@@ -3819,7 +3821,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
     assertThat(memWith).isGreaterThan(memWithout);
 
     // Stats should include edge property info
-    final java.util.Map<String, Object> stats = gavWithEdgeProps.getStats();
+    final Map<String, Object> stats = gavWithEdgeProps.getStats();
     assertThat(stats.get("edgePropertyColumns")).isEqualTo(1);
     assertThat((long) stats.get("edgePropertyMemoryBytes")).isGreaterThan(0);
 
@@ -3829,7 +3831,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // --- Edge Properties SQL Tests ---
 
   @Test
-  void testEdgePropertiesSQL() {
+  void edgePropertiesSQL() {
     database.getSchema().createVertexType("EPNode");
     database.getSchema().createEdgeType("EPLINK");
     database.begin();
@@ -3854,7 +3856,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testSelfLoopWithGAVBothDirection() {
+  void selfLoopWithGAVBothDirection() {
     database.getSchema().createVertexType("SLNode");
     database.getSchema().createEdgeType("SELF_REL");
 
@@ -3891,7 +3893,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // ── ASYNCHRONOUS update mode tests ──────────────────────────────────────
 
   @Test
-  void testAsynchronousUpdateModeRebuildsAfterCommit() throws InterruptedException {
+  void asynchronousUpdateModeRebuildsAfterCommit() throws Exception {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -3931,7 +3933,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAsynchronousUpdateModeMultipleCommits() throws InterruptedException {
+  void asynchronousUpdateModeMultipleCommits() throws Exception {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -3967,7 +3969,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testAsynchronousUpdateModeStatusTransitions() throws InterruptedException {
+  void asynchronousUpdateModeStatusTransitions() throws Exception {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("FOLLOWS");
 
@@ -4000,7 +4002,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   // ---- GAVExpandInto tests ----
 
   @Test
-  void testGAVExpandIntoCSRFastPath() {
+  void gavExpandIntoCSRFastPath() {
     // Triangle: A->B->C->A — the last relationship triggers ExpandInto (both endpoints bound)
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
@@ -4038,7 +4040,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testGAVExpandIntoOLTPFallback() {
+  void gavExpandIntoOLTPFallback() {
     // Build GAV, then add a new vertex+edge outside GAV mapping — forces OLTP fallback
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
@@ -4081,7 +4083,7 @@ public class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
-  void testGAVExpandIntoBothDirection() {
+  void gavExpandIntoBothDirection() {
     // Test BOTH direction with undirected pattern matching
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");

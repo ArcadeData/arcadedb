@@ -25,10 +25,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TimeSeriesFunctionRateTest extends TestHelper {
+class TimeSeriesFunctionRateTest extends TestHelper {
 
   @Test
-  public void testLinearIncrease() {
+  void linearIncrease() {
     database.command("sql",
         "CREATE TIMESERIES TYPE RateSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -45,7 +45,7 @@ public class TimeSeriesFunctionRateTest extends TestHelper {
   }
 
   @Test
-  public void testConstantValues() {
+  void constantValues() {
     database.command("sql",
         "CREATE TIMESERIES TYPE ConstSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -60,7 +60,7 @@ public class TimeSeriesFunctionRateTest extends TestHelper {
   }
 
   @Test
-  public void testDecreasing() {
+  void decreasing() {
     database.command("sql",
         "CREATE TIMESERIES TYPE DecSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -74,7 +74,7 @@ public class TimeSeriesFunctionRateTest extends TestHelper {
   }
 
   @Test
-  public void testSingleSample() {
+  void singleSample() {
     database.command("sql",
         "CREATE TIMESERIES TYPE SingleRateSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
@@ -88,7 +88,7 @@ public class TimeSeriesFunctionRateTest extends TestHelper {
   }
 
   @Test
-  public void testWithTimeBucketGroupBy() {
+  void withTimeBucketGroupBy() {
     database.command("sql",
         "CREATE TIMESERIES TYPE BucketRateSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 

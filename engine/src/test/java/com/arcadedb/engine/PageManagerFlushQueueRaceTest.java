@@ -55,7 +55,7 @@ class PageManagerFlushQueueRaceTest extends TestHelper {
   }
 
   @Test
-  void testAsyncAppendDoesNotCauseMVCCErrors() throws Exception {
+  void asyncAppendDoesNotCauseMVCCErrors() throws Exception {
     final AtomicLong errors = new AtomicLong(0);
 
     database.async().setParallelLevel(PARALLEL_LEVEL);

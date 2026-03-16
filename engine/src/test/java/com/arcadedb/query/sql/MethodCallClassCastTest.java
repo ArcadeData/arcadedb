@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MethodCallClassCastTest extends TestHelper {
 
   @Test
-  void testMethodCallWithNonIdentifiableCurrent() {
+  void methodCallWithNonIdentifiableCurrent() {
     // Test that method calls work correctly when $current might not be Identifiable.
     // This can happen in complex queries with LET, UNIONALL, and method chains.
     database.transaction(() -> {
@@ -90,7 +90,7 @@ class MethodCallClassCastTest extends TestHelper {
   }
 
   @Test
-  void testMethodCallOnStringInLetWithUnionAll() {
+  void methodCallOnStringInLetWithUnionAll() {
     // Test method calls (.replace(), .toLowerCase()) within LET subqueries combined with UNIONALL
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE DocA IF NOT EXISTS");
@@ -117,7 +117,7 @@ class MethodCallClassCastTest extends TestHelper {
   }
 
   @Test
-  void testSizeMethodOnEdgeTraversalInLetSubquery() {
+  void sizeMethodOnEdgeTraversalInLetSubquery() {
     // Test .size() method call on edge traversal results within LET subqueries
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE Node IF NOT EXISTS");

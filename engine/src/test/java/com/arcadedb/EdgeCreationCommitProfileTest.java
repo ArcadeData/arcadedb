@@ -27,7 +27,9 @@ import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 
@@ -245,7 +247,7 @@ class EdgeCreationCommitProfileTest extends TestHelper {
     report.append(String.format("\n%-20s %12s %12s", "Batch Size", "Total(ms)", "Per-Edge(ms)"));
 
     for (final int batchSize : batchSizes) {
-      final java.util.List<Map<String, Object>> batch = new java.util.ArrayList<>();
+      final List<Map<String, Object>> batch = new ArrayList<>();
       for (int i = 0; i < batchSize; i++)
         batch.add(Map.of("src_id", i % VERTEX_COUNT, "dst_id", (i + 1) % VERTEX_COUNT,
             "weight", 0.5, "since", "2024"));

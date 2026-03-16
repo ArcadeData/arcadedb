@@ -31,10 +31,10 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class ContinuousAggregateTest extends TestHelper {
+class ContinuousAggregateTest extends TestHelper {
 
   @Test
-  public void testCreateAndInitialPopulation() {
+  void createAndInitialPopulation() {
     createSensorType();
     insertInitialData();
 
@@ -57,7 +57,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testIncrementalRefreshOnInsert() {
+  void incrementalRefreshOnInsert() {
     createSensorType();
     insertInitialData();
 
@@ -89,7 +89,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testWatermarkAdvances() {
+  void watermarkAdvances() {
     createSensorType();
 
     // Insert data at hour 0
@@ -117,7 +117,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testDropContinuousAggregate() {
+  void dropContinuousAggregate() {
     createSensorType();
     insertInitialData();
 
@@ -136,7 +136,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testIfNotExistsIdempotent() {
+  void ifNotExistsIdempotent() {
     createSensorType();
     insertInitialData();
 
@@ -156,7 +156,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testManualRefresh() {
+  void manualRefresh() {
     createSensorType();
     insertInitialData();
 
@@ -175,7 +175,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testSchemaPersistence() {
+  void schemaPersistence() {
     createSensorType();
     insertInitialData();
 
@@ -196,7 +196,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testInvalidQueryNoTimeBucket() {
+  void invalidQueryNoTimeBucket() {
     createSensorType();
 
     assertThatThrownBy(() ->
@@ -209,7 +209,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testInvalidQueryNonTimeSeriesSource() {
+  void invalidQueryNonTimeSeriesSource() {
     database.getSchema().buildDocumentType().withName("RegularDoc").create();
 
     assertThatThrownBy(() ->
@@ -222,7 +222,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testInvalidQueryNoGroupBy() {
+  void invalidQueryNoGroupBy() {
     createSensorType();
 
     assertThatThrownBy(() ->
@@ -235,7 +235,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testGetContinuousAggregates() {
+  void getContinuousAggregates() {
     createSensorType();
     insertInitialData();
 
@@ -250,7 +250,7 @@ public class ContinuousAggregateTest extends TestHelper {
   }
 
   @Test
-  public void testProtectSourceTypeFromDrop() {
+  void protectSourceTypeFromDrop() {
     createSensorType();
     insertInitialData();
 

@@ -31,10 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LineProtocolParserTest {
+class LineProtocolParserTest {
 
   @Test
-  public void testSingleLine() {
+  void singleLine() {
     final List<Sample> samples = LineProtocolParser.parse(
         "weather,location=us-midwest temperature=82 1465839830100400200", Precision.NANOSECONDS);
 
@@ -47,7 +47,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testMultipleLines() {
+  void multipleLines() {
     final String text = """
         cpu,host=serverA usage=55.3 1000000000
         cpu,host=serverB usage=72.1 2000000000
@@ -61,7 +61,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testAllFieldTypes() {
+  void allFieldTypes() {
     final List<Sample> samples = LineProtocolParser.parse(
         "test value_double=1.5,value_int=42i,value_str=\"hello\",value_bool=true 1000", Precision.MILLISECONDS);
 
@@ -74,7 +74,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testMultipleTags() {
+  void multipleTags() {
     final List<Sample> samples = LineProtocolParser.parse(
         "sensor,region=us-east,zone=1a,rack=42 temp=22.5 1000", Precision.MILLISECONDS);
 
@@ -86,7 +86,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testNoTags() {
+  void noTags() {
     final List<Sample> samples = LineProtocolParser.parse(
         "metric value=100.0 5000", Precision.MILLISECONDS);
 
@@ -98,7 +98,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testMissingTimestamp() {
+  void missingTimestamp() {
     final List<Sample> samples = LineProtocolParser.parse(
         "metric value=42.0", Precision.MILLISECONDS);
 
@@ -108,7 +108,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testPrecisionConversion() {
+  void precisionConversion() {
     // Nanoseconds
     List<Sample> ns = LineProtocolParser.parse("m v=1.0 1000000000", Precision.NANOSECONDS);
     assertThat(ns.get(0).getTimestampMs()).isEqualTo(1000L); // 1 second
@@ -127,7 +127,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testEmptyAndCommentLines() {
+  void emptyAndCommentLines() {
     final String text = """
         # This is a comment
 
@@ -140,7 +140,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testBooleanValues() {
+  void booleanValues() {
     final List<Sample> samples = LineProtocolParser.parse(
         "test a=true,b=false,c=t,d=f 1000", Precision.MILLISECONDS);
 
@@ -151,7 +151,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testMultipleFields() {
+  void multipleFields() {
     final List<Sample> samples = LineProtocolParser.parse(
         "system,host=server1 cpu=55.3,mem=8192i,disk=75.2 1000", Precision.MILLISECONDS);
 
@@ -162,7 +162,7 @@ public class LineProtocolParserTest {
   }
 
   @Test
-  public void testEmptyInput() {
+  void emptyInput() {
     assertThat(LineProtocolParser.parse("", Precision.MILLISECONDS)).isEmpty();
     assertThat(LineProtocolParser.parse(null, Precision.MILLISECONDS)).isEmpty();
   }
@@ -172,7 +172,7 @@ public class LineProtocolParserTest {
    * Previously NumberFormatException would propagate and halt the entire parse.
    */
   @Test
-  public void testMalformedLineDoesNotHaltBatch() {
+  void malformedLineDoesNotHaltBatch() {
     final String text = "metric value=1.0 1000\n" +
         "metric value=not_a_number 2000\n" +    // malformed field value
         "metric value=3.0 3000\n";
@@ -187,7 +187,7 @@ public class LineProtocolParserTest {
    * Regression test: a malformed timestamp must skip the line, not abort the batch.
    */
   @Test
-  public void testMalformedTimestampDoesNotHaltBatch() {
+  void malformedTimestampDoesNotHaltBatch() {
     final String text = "metric value=1.0 1000\n" +
         "metric value=2.0 NOT_A_TIMESTAMP\n" +   // malformed timestamp
         "metric value=3.0 3000\n";
@@ -203,7 +203,7 @@ public class LineProtocolParserTest {
    * Previously only NumberFormatException was caught, missing this case.
    */
   @Test
-  public void testUnsignedIntegerMaxValueIsAccepted() {
+  void unsignedIntegerMaxValueIsAccepted() {
     // 18446744073709551615u = max uint64; stored as the signed bit-pattern -1L (correct per InfluxDB spec)
     final String text = "metric value=1.0 1000\n" +
         "metric overflow=18446744073709551615u 2000\n" +
@@ -221,7 +221,7 @@ public class LineProtocolParserTest {
    * with a wrong consumed-length.
    */
   @Test
-  public void testUnterminatedQuotedStringIsRejected() {
+  void unterminatedQuotedStringIsRejected() {
     // The quoted string for field2 is never closed — the line is malformed
     final String text = "metric field1=1.0,field2=\"unterminated 1000\n";
     // Should skip the malformed line and return nothing (or throw)

@@ -67,14 +67,14 @@ class TimeSeriesSealedStoreTest {
   }
 
   @Test
-  void testCreateEmptyStore() throws Exception {
+  void createEmptyStore() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       assertThat(store.getBlockCount()).isEqualTo(0);
     }
   }
 
   @Test
-  void testAppendAndReadBlock() throws Exception {
+  void appendAndReadBlock() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       final long[] timestamps = { 1000L, 2000L, 3000L, 4000L, 5000L };
       final String[] sensorIds = { "A", "B", "A", "C", "B" };
@@ -110,7 +110,7 @@ class TimeSeriesSealedStoreTest {
   }
 
   @Test
-  void testRangeFilter() throws Exception {
+  void rangeFilter() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       final long[] timestamps = { 1000L, 2000L, 3000L, 4000L, 5000L };
       final String[] sensorIds = { "A", "B", "A", "C", "B" };
@@ -132,7 +132,7 @@ class TimeSeriesSealedStoreTest {
   }
 
   @Test
-  void testMultipleBlocks() throws Exception {
+  void multipleBlocks() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       // Block 1: timestamps 1000-3000
       store.appendBlock(3, 1000L, 3000L, new byte[][] {
@@ -159,7 +159,7 @@ class TimeSeriesSealedStoreTest {
   }
 
   @Test
-  void testBlockSkipping() throws Exception {
+  void blockSkipping() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       store.appendBlock(2, 1000L, 2000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
@@ -185,7 +185,7 @@ class TimeSeriesSealedStoreTest {
    * (blocks containing multiple distinct tag values where only some match the filter).
    */
   @Test
-  void testTagFilterSlowPathScanRange() throws Exception {
+  void tagFilterSlowPathScanRange() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       // Single block with mixed tag values — triggers SLOW_PATH in blockMatchesTagFilter
       final long[] timestamps = { 1000L, 2000L, 3000L, 4000L, 5000L };
@@ -220,7 +220,7 @@ class TimeSeriesSealedStoreTest {
    * Regression test: iterateRange must apply per-row tag filtering for SLOW_PATH blocks.
    */
   @Test
-  void testTagFilterSlowPathIterateRange() throws Exception {
+  void tagFilterSlowPathIterateRange() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       final long[] timestamps = { 1000L, 2000L, 3000L };
       final String[] sensorIds = { "X", "Y", "X" };
@@ -254,7 +254,7 @@ class TimeSeriesSealedStoreTest {
    * Previously it silently truncated the value via (short) val.length, causing data corruption.
    */
   @Test
-  void testTagValueTooLongRejected() throws Exception {
+  void tagValueTooLongRejected() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       // 'ß' encodes to 2 UTF-8 bytes, so 16384 repetitions = 32768 bytes > 32767 limit
       final String longValue = "ß".repeat(16384);
@@ -276,7 +276,7 @@ class TimeSeriesSealedStoreTest {
    * Previously the mismatch was silently ignored, potentially causing incorrect reads.
    */
   @Test
-  void testColumnCountMismatchOnReopen() throws Exception {
+  void columnCountMismatchOnReopen() throws Exception {
     // Write a store with 3 columns
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       store.appendBlock(1, 1000L, 1000L, new byte[][] {
@@ -303,7 +303,7 @@ class TimeSeriesSealedStoreTest {
    * binary search in iterateRange fails to find blocks.
    */
   @Test
-  void testDownsamplePreservesAscendingOrderOnDisk() throws Exception {
+  void downsamplePreservesAscendingOrderOnDisk() throws Exception {
     final List<ColumnDefinition> numericCols = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD)
@@ -350,7 +350,7 @@ class TimeSeriesSealedStoreTest {
   }
 
   @Test
-  void testTruncateBefore() throws Exception {
+  void truncateBefore() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       store.appendBlock(2, 1000L, 2000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),

@@ -24,7 +24,6 @@ import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class DictionaryCodecOverflowTest extends TestHelper {
 
   @Test
-  void testCodecOverflowThrows() {
+  void codecOverflowThrows() {
     // Direct codec test: more than MAX_DICTIONARY_SIZE distinct values
     final String[] values = new String[DictionaryCodec.MAX_DICTIONARY_SIZE + 1];
     for (int i = 0; i < values.length; i++)
@@ -51,7 +50,7 @@ class DictionaryCodecOverflowTest extends TestHelper {
   }
 
   @Test
-  void testCompactionAutoSplitsOnOverflow() throws Exception {
+  void compactionAutoSplitsOnOverflow() throws Exception {
     final List<ColumnDefinition> columns = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("tag", Type.STRING, ColumnDefinition.ColumnRole.TAG),
@@ -98,7 +97,7 @@ class DictionaryCodecOverflowTest extends TestHelper {
   }
 
   @Test
-  void testCodecAtExactLimit() throws IOException {
+  void codecAtExactLimit() throws Exception {
     // Exactly MAX_DICTIONARY_SIZE distinct values should succeed
     final String[] values = new String[DictionaryCodec.MAX_DICTIONARY_SIZE];
     for (int i = 0; i < values.length; i++)

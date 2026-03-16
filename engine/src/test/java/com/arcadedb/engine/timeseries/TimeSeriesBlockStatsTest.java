@@ -62,7 +62,7 @@ class TimeSeriesBlockStatsTest {
   }
 
   @Test
-  void testAppendBlockWithStatsAndReload() throws Exception {
+  void appendBlockWithStatsAndReload() throws Exception {
     final long[] timestamps = { 1000L, 2000L, 3000L, 4000L, 5000L };
     final double[] temperatures = { 10.0, 20.0, 30.0, 40.0, 50.0 };
     final long[] counts = { 1L, 2L, 3L, 4L, 5L };
@@ -98,7 +98,7 @@ class TimeSeriesBlockStatsTest {
   }
 
   @Test
-  void testAggregationUsesStatsFastPath() throws Exception {
+  void aggregationUsesStatsFastPath() throws Exception {
     // Block fits entirely within one 1-hour bucket (bucket interval = 3600000ms)
     final long[] timestamps = { 0L, 1000L, 2000L, 3000L, 4000L };
     final double[] temperatures = { 10.0, 20.0, 30.0, 40.0, 50.0 };
@@ -149,7 +149,7 @@ class TimeSeriesBlockStatsTest {
   }
 
   @Test
-  void testBoundaryBlockUsesSlowPath() throws Exception {
+  void boundaryBlockUsesSlowPath() throws Exception {
     // Block spans two 1-second buckets: timestamps 500-1500ms
     // bucket(500)=0, bucket(1500)=1000 → two buckets → slow path
     final long[] timestamps = { 500L, 800L, 1200L, 1500L };
@@ -194,7 +194,7 @@ class TimeSeriesBlockStatsTest {
   }
 
   @Test
-  void testMultipleBlocksAggregation() throws Exception {
+  void multipleBlocksAggregation() throws Exception {
     final byte[][] block1 = {
         DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
         GorillaXORCodec.encode(new double[] { 10.0, 20.0 }),
@@ -238,7 +238,7 @@ class TimeSeriesBlockStatsTest {
   }
 
   @Test
-  void testTruncatePreservesStats() throws Exception {
+  void truncatePreservesStats() throws Exception {
     final byte[][] block1 = {
         DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
         GorillaXORCodec.encode(new double[] { 10.0, 20.0 }),
@@ -284,7 +284,7 @@ class TimeSeriesBlockStatsTest {
   }
 
   @Test
-  void testTruncatePreservesStatsAfterReload() throws Exception {
+  void truncatePreservesStatsAfterReload() throws Exception {
     final byte[][] block1 = {
         DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
         GorillaXORCodec.encode(new double[] { 10.0, 20.0 }),

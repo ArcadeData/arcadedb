@@ -31,12 +31,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLFunctionTimeBucketTest {
+class SQLFunctionTimeBucketTest {
 
   private final SQLFunctionTimeBucket fn = new SQLFunctionTimeBucket();
 
   @Test
-  public void testHourBucket() {
+  void hourBucket() {
     // 2026-02-20T10:35:00Z -> should truncate to 2026-02-20T10:00:00Z
     final long ts = 1771580100000L; // ~2026-02-20T10:35:00Z
     final Date result = (Date) fn.execute(null, null, null, new Object[] { "1h", ts }, null);
@@ -48,7 +48,7 @@ public class SQLFunctionTimeBucketTest {
   }
 
   @Test
-  public void testMinuteBucket() {
+  void minuteBucket() {
     final long ts = 1771580100000L; // some timestamp
     final Date result = (Date) fn.execute(null, null, null, new Object[] { "5m", ts }, null);
 
@@ -58,7 +58,7 @@ public class SQLFunctionTimeBucketTest {
   }
 
   @Test
-  public void testSecondBucket() {
+  void secondBucket() {
     final long ts = 1771580123456L;
     final Date result = (Date) fn.execute(null, null, null, new Object[] { "1s", ts }, null);
 
@@ -67,7 +67,7 @@ public class SQLFunctionTimeBucketTest {
   }
 
   @Test
-  public void testDayBucket() {
+  void dayBucket() {
     final long ts = 1771580100000L;
     final Date result = (Date) fn.execute(null, null, null, new Object[] { "1d", ts }, null);
 
@@ -76,7 +76,7 @@ public class SQLFunctionTimeBucketTest {
   }
 
   @Test
-  public void testWeekBucket() {
+  void weekBucket() {
     final long ts = 1771580100000L;
     final Date result = (Date) fn.execute(null, null, null, new Object[] { "1w", ts }, null);
 
@@ -85,7 +85,7 @@ public class SQLFunctionTimeBucketTest {
   }
 
   @Test
-  public void testWithDateObject() {
+  void withDateObject() {
     final Date input = new Date(1771580100000L);
     final Date result = (Date) fn.execute(null, null, null, new Object[] { "1h", input }, null);
 
@@ -93,7 +93,7 @@ public class SQLFunctionTimeBucketTest {
   }
 
   @Test
-  public void testExactBoundary() {
+  void exactBoundary() {
     // Timestamp already on an hour boundary
     final long ts = 3600000L * 5; // exactly 05:00:00 UTC epoch
     final Date result = (Date) fn.execute(null, null, null, new Object[] { "1h", ts }, null);
@@ -102,13 +102,13 @@ public class SQLFunctionTimeBucketTest {
   }
 
   @Test
-  public void testInvalidInterval() {
+  void invalidInterval() {
     assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { "1x", 12345L }, null))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  public void testMissingParams() {
+  void missingParams() {
     assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { "1h" }, null))
         .isInstanceOf(IllegalArgumentException.class);
   }

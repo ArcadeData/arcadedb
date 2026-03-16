@@ -79,7 +79,7 @@ class TimeSeriesAccuracyTest {
   }
 
   @Test
-  void testTotalCountMatchesInserted() throws Exception {
+  void totalCountMatchesInserted() throws Exception {
     final TimeSeriesEngine engine = createAndPopulate();
 
     // Verify via direct API
@@ -94,7 +94,7 @@ class TimeSeriesAccuracyTest {
   }
 
   @Test
-  void testFullRangeScanReturnsAllSamples() throws Exception {
+  void fullRangeScanReturnsAllSamples() throws Exception {
     final TimeSeriesEngine engine = createAndPopulate();
 
     final List<Object[]> rows = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
@@ -114,7 +114,7 @@ class TimeSeriesAccuracyTest {
   }
 
   @Test
-  void testPerBucketAggregationExact() throws Exception {
+  void perBucketAggregationExact() throws Exception {
     createAndPopulate();
 
     final ResultSet rs = database.query("sql",
@@ -139,7 +139,7 @@ class TimeSeriesAccuracyTest {
   }
 
   @Test
-  void testGlobalAggregationExact() throws Exception {
+  void globalAggregationExact() throws Exception {
     createAndPopulate();
 
     // Global: N=200000, values 1..200000
@@ -161,7 +161,7 @@ class TimeSeriesAccuracyTest {
   }
 
   @Test
-  void testDirectApiAggregationMatchesSQL() throws Exception {
+  void directApiAggregationMatchesSQL() throws Exception {
     final TimeSeriesEngine engine = createAndPopulate();
 
     // Direct API aggregation (column index 2 = value, -1 = count)
@@ -211,7 +211,7 @@ class TimeSeriesAccuracyTest {
   }
 
   @Test
-  void testRangeQueryAccuracy() throws Exception {
+  void rangeQueryAccuracy() throws Exception {
     final TimeSeriesEngine engine = createAndPopulate();
 
     // Query hour 1 only: timestamps [3_600_000, 7_200_000)

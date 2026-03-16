@@ -76,7 +76,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownEquality() {
+  void predicatePushdownEquality() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.status = 'active' RETURN p");
@@ -94,7 +94,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownRange() {
+  void predicatePushdownRange() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.id < 50 RETURN p");
@@ -111,7 +111,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownAnd() {
+  void predicatePushdownAnd() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.status = 'active' AND p.category = 'cat_0' RETURN p");
@@ -129,7 +129,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownOr() {
+  void predicatePushdownOr() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.status = 'active' OR p.status = 'closed' RETURN p");
@@ -147,7 +147,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownIsNotNull() {
+  void predicatePushdownIsNotNull() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.name IS NOT NULL RETURN p");
@@ -164,7 +164,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownStringComparison() {
+  void predicatePushdownStringComparison() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.name = 'Product_42' RETURN p");
@@ -181,7 +181,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownWithReturn() {
+  void predicatePushdownWithReturn() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.id < 10 RETURN p.name AS name, p.price AS price");
@@ -197,7 +197,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownWithOrderByAndLimit() {
+  void predicatePushdownWithOrderByAndLimit() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.status = 'active' RETURN p ORDER BY p.price DESC LIMIT 5");
@@ -212,7 +212,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownWithCount() {
+  void predicatePushdownWithCount() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.status = 'active' RETURN count(p) AS cnt");
@@ -225,7 +225,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownMultipleMatches() {
+  void predicatePushdownMultipleMatches() {
     database.transaction(() -> {
       // Two separate node patterns with different filters
       final ResultSet rs = database.query("opencypher",
@@ -246,7 +246,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownNoMatchingRecords() {
+  void predicatePushdownNoMatchingRecords() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.status = 'nonexistent' RETURN p");
@@ -256,7 +256,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownAllRecordsMatch() {
+  void predicatePushdownAllRecordsMatch() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.id >= 0 RETURN p");
@@ -271,7 +271,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownNoDuplicates() {
+  void predicatePushdownNoDuplicates() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.status = 'active' RETURN p");
@@ -287,7 +287,7 @@ class OpenCypherPredicatePushdownTest {
   }
 
   @Test
-  void testPredicatePushdownWithAggregation() {
+  void predicatePushdownWithAggregation() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Product) WHERE p.status = 'active' RETURN p.category AS cat, count(p) AS cnt " +

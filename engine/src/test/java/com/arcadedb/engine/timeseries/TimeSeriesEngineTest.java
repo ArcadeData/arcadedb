@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TimeSeriesEngineTest extends TestHelper {
 
   @Test
-  void testMultiShardWriteAndQuery() throws Exception {
+  void multiShardWriteAndQuery() throws Exception {
     final List<ColumnDefinition> cols = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD)
@@ -60,7 +60,7 @@ class TimeSeriesEngineTest extends TestHelper {
   }
 
   @Test
-  void testShardCount() throws Exception {
+  void shardCount() throws Exception {
     final List<ColumnDefinition> cols = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD)
@@ -77,7 +77,7 @@ class TimeSeriesEngineTest extends TestHelper {
   }
 
   @Test
-  void testQueryWithTagFilter() throws Exception {
+  void queryWithTagFilter() throws Exception {
     final List<ColumnDefinition> cols = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("sensor", Type.STRING, ColumnDefinition.ColumnRole.TAG),
@@ -106,7 +106,7 @@ class TimeSeriesEngineTest extends TestHelper {
   }
 
   @Test
-  void testRoundRobinShardDistribution() throws Exception {
+  void roundRobinShardDistribution() throws Exception {
     final List<ColumnDefinition> cols = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD)

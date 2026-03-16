@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -691,7 +692,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         gavProviderDebug = "db=" + db.getClass().getSimpleName() + ", providers=" + allProviders.size();
         if (!allProviders.isEmpty())
           gavProviderDebug += " [ready=" + allProviders.stream().filter(GraphTraversalProvider::isReady).count()
-              + ", edgeTypes=" + java.util.Arrays.toString(edgeTypes) + "]";
+              + ", edgeTypes=" + Arrays.toString(edgeTypes) + "]";
       }
       // Assign provider before setting resolved flag to prevent another thread from seeing
       // resolved=true with gavProvider still null

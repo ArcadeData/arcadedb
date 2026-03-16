@@ -33,10 +33,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class TimeSeriesTypeTest extends TestHelper {
+class TimeSeriesTypeTest extends TestHelper {
 
   @Test
-  public void testCreateTimeSeriesType() {
+  void createTimeSeriesType() {
     final LocalTimeSeriesType type = database.getSchema().buildTimeSeriesType()
         .withName("SensorData")
         .withTimestamp("ts")
@@ -66,7 +66,7 @@ public class TimeSeriesTypeTest extends TestHelper {
   }
 
   @Test
-  public void testTimeSeriesTypeJSON() {
+  void timeSeriesTypeJSON() {
     final LocalTimeSeriesType type = database.getSchema().buildTimeSeriesType()
         .withName("Metrics")
         .withTimestamp("ts")
@@ -84,7 +84,7 @@ public class TimeSeriesTypeTest extends TestHelper {
   }
 
   @Test
-  public void testTimeSeriesTypePersistence() {
+  void timeSeriesTypePersistence() {
     database.getSchema().buildTimeSeriesType()
         .withName("PersistentTS")
         .withTimestamp("ts")
@@ -125,7 +125,7 @@ public class TimeSeriesTypeTest extends TestHelper {
   }
 
   @Test
-  public void testColumnDefinitions() {
+  void columnDefinitions() {
     final LocalTimeSeriesType type = database.getSchema().buildTimeSeriesType()
         .withName("AllTypes")
         .withTimestamp("ts")
@@ -151,7 +151,7 @@ public class TimeSeriesTypeTest extends TestHelper {
   }
 
   @Test
-  public void testDefaultShardCountMatchesAsyncWorkerThreads() {
+  void defaultShardCountMatchesAsyncWorkerThreads() {
     final int expectedShards = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS);
 
     final LocalTimeSeriesType type = database.getSchema().buildTimeSeriesType()

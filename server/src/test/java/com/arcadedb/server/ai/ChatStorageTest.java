@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -112,13 +113,13 @@ class ChatStorageTest {
     final JSONObject userMsg = new JSONObject();
     userMsg.put("role", "user");
     userMsg.put("content", "Hello AI");
-    userMsg.put("timestamp", java.time.Instant.now().toString());
+    userMsg.put("timestamp", Instant.now().toString());
     messages.put(userMsg);
 
     final JSONObject assistantMsg = new JSONObject();
     assistantMsg.put("role", "assistant");
     assistantMsg.put("content", "Hello! How can I help?");
-    assistantMsg.put("timestamp", java.time.Instant.now().toString());
+    assistantMsg.put("timestamp", Instant.now().toString());
     messages.put(assistantMsg);
 
     chatStorage.saveChat("root", chat);

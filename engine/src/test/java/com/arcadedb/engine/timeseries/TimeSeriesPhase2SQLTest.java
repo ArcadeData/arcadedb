@@ -33,10 +33,10 @@ import static org.assertj.core.api.Assertions.within;
 /**
  * End-to-end SQL integration tests for all Phase 2 TimeSeries functions.
  */
-public class TimeSeriesPhase2SQLTest extends TestHelper {
+class TimeSeriesPhase2SQLTest extends TestHelper {
 
   @BeforeEach
-  public void setupData() {
+  void setupData() {
     database.command("sql",
         "CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor STRING) FIELDS (value DOUBLE)");
 
@@ -54,7 +54,7 @@ public class TimeSeriesPhase2SQLTest extends TestHelper {
   }
 
   @Test
-  public void testTsFirstTsLastGroupBySensor() {
+  void tsFirstTsLastGroupBySensor() {
     final ResultSet rs = database.query("sql",
         "SELECT sensor, ts.first(value, ts) AS first_val, ts.last(value, ts) AS last_val " +
             "FROM SensorData GROUP BY sensor ORDER BY sensor");
@@ -73,7 +73,7 @@ public class TimeSeriesPhase2SQLTest extends TestHelper {
   }
 
   @Test
-  public void testRateGroupBySensor() {
+  void rateGroupBySensor() {
     final ResultSet rs = database.query("sql",
         "SELECT sensor, ts.rate(value, ts) AS r FROM SensorData GROUP BY sensor ORDER BY sensor");
 
@@ -89,7 +89,7 @@ public class TimeSeriesPhase2SQLTest extends TestHelper {
   }
 
   @Test
-  public void testDeltaGroupBySensor() {
+  void deltaGroupBySensor() {
     final ResultSet rs = database.query("sql",
         "SELECT sensor, ts.delta(value, ts) AS d FROM SensorData GROUP BY sensor ORDER BY sensor");
 
@@ -103,7 +103,7 @@ public class TimeSeriesPhase2SQLTest extends TestHelper {
   }
 
   @Test
-  public void testCorrelateAcrossSensors() {
+  void correlateAcrossSensors() {
     // Create a joined view with both sensors' values
     database.command("sql",
         "CREATE TIMESERIES TYPE JoinedData TIMESTAMP ts FIELDS (a DOUBLE, b DOUBLE)");
@@ -121,7 +121,7 @@ public class TimeSeriesPhase2SQLTest extends TestHelper {
   }
 
   @Test
-  public void testMovingAvgOnSensor() {
+  void movingAvgOnSensor() {
     final ResultSet rs = database.query("sql",
         "SELECT ts.movingAvg(value, 3) AS ma FROM SensorData WHERE sensor = 'A'");
 
@@ -136,7 +136,7 @@ public class TimeSeriesPhase2SQLTest extends TestHelper {
   }
 
   @Test
-  public void testRateWithTimeBucket() {
+  void rateWithTimeBucket() {
     final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('5s', ts) AS tb, ts.rate(value, ts) AS r " +
             "FROM SensorData WHERE sensor = 'A' GROUP BY tb ORDER BY tb");
@@ -152,7 +152,7 @@ public class TimeSeriesPhase2SQLTest extends TestHelper {
   }
 
   @Test
-  public void testAllFunctionsTogether() {
+  void allFunctionsTogether() {
     // Single query using ts_first, ts_last, rate, and delta
     final ResultSet rs = database.query("sql",
         "SELECT sensor, ts.first(value, ts) AS first_val, ts.last(value, ts) AS last_val, " +
