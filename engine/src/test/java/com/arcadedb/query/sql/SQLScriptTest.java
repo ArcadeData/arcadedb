@@ -27,6 +27,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import java.util.HashMap;
 import java.util.Optional;
 
@@ -597,7 +599,7 @@ public class SQLScriptTest extends TestHelper {
     final String script = """
         INSERT INTO foo SET name = 'x';
         """;
-    org.junit.jupiter.api.Assertions.assertThrows(QueryNotIdempotentException.class,
-        () -> database.query("sqlscript", script));
+    assertThatThrownBy(() -> database.query("sqlscript", script))
+        .isInstanceOf(QueryNotIdempotentException.class);
   }
 }
