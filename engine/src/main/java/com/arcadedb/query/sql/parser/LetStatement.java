@@ -115,5 +115,13 @@ public class LetStatement extends SimpleExecStatement {
   public Identifier getVariableName() {
     return variableName;
   }
+
+  @Override
+  public boolean isIdempotent() {
+    if (statement != null)
+      return statement.isIdempotent();
+    // expressions (literals, variable references, method calls) do not write data
+    return true;
+  }
 }
 /* JavaCC - OriginalChecksum=cc646e5449351ad9ced844f61b687928 (do not edit this line) */

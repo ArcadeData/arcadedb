@@ -91,6 +91,11 @@ public class ReturnStatement extends SimpleExecStatement {
   }
 
   @Override
+  public boolean isIdempotent() {
+    return true;
+  }
+
+  @Override
   public ReturnStatement copy() {
     final ReturnStatement result = new ReturnStatement(-1);
     result.expression = expression == null ? null : expression.copy();

@@ -20,11 +20,14 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.HashMap;
 import java.util.Optional;
@@ -565,5 +568,38 @@ public class SQLScriptTest extends TestHelper {
       assertThat(((Number) result.next().getProperty("id")).intValue()).isEqualTo(301);
       result.close();
     });
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3664.
+   * A SQLScript composed only of LET (with SELECT sub-queries) and RETURN statements
+   * must be treated as idempotent so it can be submitted via the /query endpoint.
+   */
+  @Test
+  void queryScriptWithLetAndReturnIsIdempotent() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Chunk IF NOT EXISTS");
+      database.command("sql", "INSERT INTO Chunk SET text = 'hello world'");
+    });
+
+    // Script is read-only: only LET+SELECT and RETURN — must NOT throw QueryNotIdempotentException
+    final String script = """
+        LET $chunks = (SELECT @rid, text FROM Chunk);
+        LET $count = 15;
+        RETURN $chunks;
+        """;
+    final ResultSet rs = database.query("sqlscript", script);
+    assertThat(rs.hasNext()).isTrue();
+    rs.close();
+  }
+
+  @Test
+  void queryScriptWithWriteStatementIsNotIdempotent() {
+    // A SQLScript that inserts at the top level must still be rejected by the query endpoint
+    final String script = """
+        INSERT INTO foo SET name = 'x';
+        """;
+    assertThatThrownBy(() -> database.query("sqlscript", script))
+        .isInstanceOf(QueryNotIdempotentException.class);
   }
 }
