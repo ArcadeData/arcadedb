@@ -82,6 +82,20 @@ jobs:
           mvn org.codehaus.mojo:license-maven-plugin:2.4.0:aggregate-download-licenses -DskipTests
         continue-on-error: true
 
+      - name: Sanitize license filenames for upload-artifact compatibility
+        if: always()
+        run: |
+          # upload-artifact forbids: " : < > | * ? \r \n in filenames
+          find target/generated-resources/licenses/ -type f 2>/dev/null | while IFS= read -r f; do
+            dir="$(dirname "$f")"
+            base="$(basename "$f")"
+            sanitized="$(printf '%s' "$base" | sed 's/[":<>|*?]/_/g')"
+            if [ "$base" != "$sanitized" ]; then
+              echo "Renaming: $base -> $sanitized"
+              mv "$f" "$dir/$sanitized"
+            fi
+          done
+
       - name: Upload license report
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
