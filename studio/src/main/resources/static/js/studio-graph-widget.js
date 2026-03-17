@@ -21,12 +21,13 @@ function renderGraph() {
 
   for (let i in globalResultset.vertices) {
     let vertex = globalResultset.vertices[i];
-    assignVertexColor(vertex.t);
+    assignTypeColor(vertex.t);
     assignProperties(vertex);
   }
 
   for (let i in globalResultset.edges) {
     let edge = globalResultset.edges[i];
+    assignTypeColor(edge.t);
     assignProperties(edge);
   }
 
@@ -267,7 +268,7 @@ function updateLabelsForType(type) {
   });
 }
 
-function assignVertexColor(type) {
+function assignTypeColor(type) {
   let sidebarColor = typeof globalSidebarTypeColors !== "undefined" ? globalSidebarTypeColors[type] : null;
   if (sidebarColor != null) {
     getOrCreateStyleTypeAttrib(type, "shapeColor", sidebarColor);
@@ -327,7 +328,11 @@ function assignStyles(styles) {
       },
     };
 
-    if (element == "e") style.style["line-color"] = shapeColor;
+    if (element == "e") {
+      style.style["line-color"] = shapeColor;
+      style.style["target-arrow-color"] = shapeColor;
+      style.style["color"] = shapeColor;
+    }
 
     let labelPosition = getOrCreateStyleTypeAttrib(type, "labelPosition");
     let borderSize = getOrCreateStyleTypeAttrib(type, "borderSize");
@@ -465,7 +470,7 @@ function loadNodeNeighbors(direction, rid) {
 
         let vertex = data.result.vertices[i];
 
-        assignVertexColor(vertex.t);
+        assignTypeColor(vertex.t);
         assignProperties(vertex);
 
         globalResultset.vertices.push(vertex);
@@ -486,6 +491,7 @@ function loadNodeNeighbors(direction, rid) {
 
         if (!globalRenderedVerticesRID[edge.i] || !globalRenderedVerticesRID[edge.o]) continue;
 
+        assignTypeColor(edge.t);
         assignProperties(edge);
 
         globalResultset.edges.push(edge);
