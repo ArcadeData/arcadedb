@@ -163,6 +163,8 @@ public class PageManagerFlushThread extends Thread {
                 if (!pagesToFlush.database.isOpen()) {
                   // Database was closed/dropped concurrently (e.g., during test teardown).
                   // Clean up remaining pageIndex entries and stop flushing this batch.
+                  LogManager.instance().log(this, Level.FINE, "Skipping page flush for closed database '%s'",
+                      pagesToFlush.database.getName());
                   for (final MutablePage remaining : pagesToFlush.pages)
                     pageIndex.remove(remaining.getPageId(), remaining);
                   break;
