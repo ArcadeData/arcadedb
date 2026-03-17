@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.gremlin;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.test.BaseGraphServerTest;
@@ -92,22 +91,39 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
 
         @Override
         public String call() {
-          try {
-            List<Map<String, Object>> queryInputParams = createQueryInputParams(batchSize, threadId, nOfProperties);
-            Map<String, Object> params = Map.of("rows", queryInputParams);
+          final int maxRetries = 10;
+          List<Map<String, Object>> queryInputParams = createQueryInputParams(batchSize, threadId, nOfProperties);
+          Map<String, Object> params = Map.of("rows", queryInputParams);
 
-            System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
-                ") Importing " + batchSize + " entries");
+          System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
+              ") Importing " + batchSize + " entries");
 
-            int nOfResults = client.submit(query, params).all().join().size();
-
-            return Thread.currentThread().getName() + " -> " + nOfResults + " results";
-          } catch (Exception e) {
-            errorCount.incrementAndGet();
-            System.err.println("Error in thread " + Thread.currentThread().getName() + ": " + e.getMessage());
-            e.printStackTrace();
-            throw new RuntimeException(e);
+          for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+              int nOfResults = client.submit(query, params).all().join().size();
+              return Thread.currentThread().getName() + " -> " + nOfResults + " results";
+            } catch (Exception e) {
+              if (attempt < maxRetries && isConcurrentModification(e)) {
+                System.out.println(Thread.currentThread().getName() + " retry " + attempt + " after concurrent modification");
+                continue;
+              }
+              errorCount.incrementAndGet();
+              System.err.println("Error in thread " + Thread.currentThread().getName() + ": " + e.getMessage());
+              e.printStackTrace();
+              throw new RuntimeException(e);
+            }
           }
+          // Should not reach here
+          throw new RuntimeException("Exhausted retries");
+        }
+
+        private boolean isConcurrentModification(Throwable e) {
+          while (e != null) {
+            if (e.getMessage() != null && e.getMessage().contains("Concurrent modification"))
+              return true;
+            e = e.getCause();
+          }
+          return false;
         }
 
         private List<Map<String, Object>> createQueryInputParams(int batchSize, int threadId, int nOfProperties) {
