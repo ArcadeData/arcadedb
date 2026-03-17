@@ -46,7 +46,7 @@ class GremlinMergeVStressTest extends AbstractGremlinServerIT {
 
   @Test
   void highConcurrencyMergeVWithThreadBucketStrategy() throws Exception {
-    final int nOfThreads = 12;
+    final int nOfThreads = Math.max(2, Runtime.getRuntime().availableProcessors());
     final int batchSize = 200;
     final int nOfProperties = 8;
     final int iterations = 2;
