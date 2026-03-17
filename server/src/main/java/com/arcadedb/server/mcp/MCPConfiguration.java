@@ -171,6 +171,8 @@ public class MCPConfiguration {
    * also matches the bare token name against the allowed list.
    */
   public boolean isUserAllowed(final String username) {
+    if (username == null)
+      return false;
     if (allowedUsers.contains("*") || allowedUsers.contains(username))
       return true;
     // API token users have synthetic names like "apitoken:<tokenName>".

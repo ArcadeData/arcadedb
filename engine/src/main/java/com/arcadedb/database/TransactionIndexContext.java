@@ -164,6 +164,9 @@ public class TransactionIndexContext {
   }
 
   public void commit() {
+    // REMOVE ENTRIES FOR INDEXES DROPPED DURING THE TRANSACTION (e.g. TYPE DROP)
+    indexEntries.keySet().removeIf(indexName -> !database.getSchema().existsIndex(indexName));
+
     checkUniqueIndexKeys();
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
@@ -224,6 +227,10 @@ public class TransactionIndexContext {
     final Set<Index> lockedIndexes = new HashSet<>(indexEntries.size());
 
     for (final String indexName : indexEntries.keySet()) {
+      if (!schema.existsIndex(indexName))
+        // INDEX WAS DROPPED DURING THE TRANSACTION (e.g. TYPE DROP), SKIP IT
+        continue;
+
       final IndexInternal index = (IndexInternal) schema.getIndexByName(indexName);
 
       if (!lockedIndexes.add(index))
