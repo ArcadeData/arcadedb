@@ -108,7 +108,7 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
             } catch (final Exception e) {
               lastException = e;
               if (attempt < maxRetries && isConcurrentModification(e)) {
-                LogManager.instance().log(this, Level.INFO, "%s retry %d after concurrent modification",
+                LogManager.instance().log(this, Level.WARNING, "%s retry %d after concurrent modification",
                     Thread.currentThread().getName(), attempt);
                 try {
                   Thread.sleep(10L * attempt);
