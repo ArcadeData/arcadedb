@@ -10,6 +10,9 @@ function renderGraph() {
   loadGraphTypeStyles();
   $("#settingGraphSpacing").val(globalGraphSettings.graphSpacing);
   $("#settingGraphSpacingVal").text(globalGraphSettings.graphSpacing);
+  $("#settingNodeSize").val(globalGraphSettings.nodeSize || 25);
+  $("#settingNodeSizeVal").text(globalGraphSettings.nodeSize || 25);
+  $("#settingDefaultLabel").val(globalGraphSettings.defaultLabel != null ? globalGraphSettings.defaultLabel : "");
 
   let elements = [];
   globalRenderedVerticesRID = {};
@@ -217,14 +220,12 @@ function createVertex(vertex) {
 
   getOrCreateStyleTypeAttrib(type, "element", "v");
 
-  let label = "@type";
-  if (getOrCreateStyleTypeAttrib(type, "labelText") != null) label = getOrCreateStyleTypeAttrib(type, "labelText");
-  if (label == "@type") label = type;
-  else label = vertex["p"][label];
+  let label = resolveLabel(type, vertex["p"]);
 
-  if (label == null) label = "";
+  let nodeSize = globalGraphSettings.nodeSize || 25;
+  let size = label.length > 0 ? nodeSize + 2 * label.length : nodeSize;
 
-  return { id: vertex["r"], label: label, size: 40 + 3 * label.length, type: type, weight: vertex["i"] + vertex["o"], properties: vertex["p"] };
+  return { id: vertex["r"], label: label, size: size, type: type, weight: vertex["i"] + vertex["o"], properties: vertex["p"] };
 }
 
 function createEdge(edge) {
@@ -232,23 +233,53 @@ function createEdge(edge) {
 
   getOrCreateStyleTypeAttrib(type, "element", "e");
 
-  let label = "@type";
-  if (getOrCreateStyleTypeAttrib(type, "labelText") != null) label = getOrCreateStyleTypeAttrib(type, "labelText");
-  if (label == "@type") label = type;
-  else label = edge["p"][label];
-
-  if (label == null) label = "";
+  let label = resolveLabel(type, edge["p"]);
 
   return { id: edge["r"], label: label, type: type, source: edge["o"], target: edge["i"], properties: edge["p"] };
 }
 
+function resolveLabel(type, properties) {
+  let labelProp = getOrCreateStyleTypeAttrib(type, "labelText");
+  if (labelProp == null) {
+    let defaultLabel = globalGraphSettings.defaultLabel;
+    labelProp = defaultLabel != null ? defaultLabel : "";
+  }
+
+  if (labelProp == "@type") return type;
+  if (labelProp.length == 0) return "";
+
+  let label = properties[labelProp];
+  return label != null ? String(label) : "";
+}
+
+function updateLabelsForType(type) {
+  if (globalCy == null) return;
+
+  let nodeSize = globalGraphSettings.nodeSize || 25;
+  let isEdge = getOrCreateStyleTypeAttrib(type, "element") === "e";
+
+  globalCy.elements("." + type).forEach(function (ele) {
+    let props = ele.data("properties");
+    let label = resolveLabel(type, props || {});
+    ele.data("label", label);
+    if (!isEdge)
+      ele.data("size", label.length > 0 ? nodeSize + 2 * label.length : nodeSize);
+  });
+}
+
 function assignVertexColor(type) {
-  let color = getOrCreateStyleTypeAttrib(type, "shapeColor");
-  if (color == null) {
-    if (globalLastColorIndex >= globalBgColors.length) globalLastColorIndex = 0;
-    getOrCreateStyleTypeAttrib(type, "labelColor", globalFgColors[globalLastColorIndex]);
-    getOrCreateStyleTypeAttrib(type, "shapeColor", globalBgColors[globalLastColorIndex]);
-    ++globalLastColorIndex;
+  let sidebarColor = typeof globalSidebarTypeColors !== "undefined" ? globalSidebarTypeColors[type] : null;
+  if (sidebarColor != null) {
+    getOrCreateStyleTypeAttrib(type, "shapeColor", sidebarColor);
+    getOrCreateStyleTypeAttrib(type, "labelColor", "white");
+  } else {
+    let color = getOrCreateStyleTypeAttrib(type, "shapeColor");
+    if (color == null) {
+      if (globalLastColorIndex >= globalBgColors.length) globalLastColorIndex = 0;
+      getOrCreateStyleTypeAttrib(type, "labelColor", globalFgColors[globalLastColorIndex]);
+      getOrCreateStyleTypeAttrib(type, "shapeColor", globalBgColors[globalLastColorIndex]);
+      ++globalLastColorIndex;
+    }
   }
 }
 
@@ -565,7 +596,27 @@ function saveGraphTypeStyles() {
   globalStorageSave("graphTypeStyles", JSON.stringify(globalGraphSettings.types));
 }
 
+function saveGraphGlobalSettings() {
+  globalStorageSave("graphGlobalSettings", JSON.stringify({
+    nodeSize: globalGraphSettings.nodeSize,
+    defaultLabel: globalGraphSettings.defaultLabel,
+    graphSpacing: globalGraphSettings.graphSpacing,
+    cumulativeSelection: globalGraphSettings.cumulativeSelection
+  }));
+}
+
 function loadGraphTypeStyles() {
+  var savedGlobal = globalStorageLoad("graphGlobalSettings", null);
+  if (savedGlobal != null) {
+    try {
+      var parsed = JSON.parse(savedGlobal);
+      if (parsed.nodeSize != null) globalGraphSettings.nodeSize = parsed.nodeSize;
+      if (parsed.defaultLabel != null) globalGraphSettings.defaultLabel = parsed.defaultLabel;
+      if (parsed.graphSpacing != null) globalGraphSettings.graphSpacing = parsed.graphSpacing;
+      if (parsed.cumulativeSelection != null) globalGraphSettings.cumulativeSelection = parsed.cumulativeSelection;
+    } catch (e) { /* ignore corrupt data */ }
+  }
+
   var saved = globalStorageLoad("graphTypeStyles", null);
   if (saved != null) {
     try {
