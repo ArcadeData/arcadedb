@@ -68,7 +68,8 @@ set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError ^
   -Dpolyglot.engine.WarnInterpreterOnly=false ^
   -Djava.awt.headless=true ^
   -Dfile.encoding=UTF8 ^
-  -Djava.util.logging.config.file=config/arcadedb-log.properties
+  -Djava.util.logging.config.file=config/arcadedb-log.properties ^
+  --enable-native-access=ALL-UNNAMED
 
 "%JAVACMD%" ^
  -client ^
