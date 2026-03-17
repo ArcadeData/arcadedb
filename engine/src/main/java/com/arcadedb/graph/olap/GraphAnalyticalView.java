@@ -196,6 +196,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private volatile int           compactionThreshold = DEFAULT_COMPACTION_THRESHOLD;
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
+  private volatile boolean       asyncRebuildNeeded;  // true when a commit arrived during an async rebuild
 
   // Raw TxDeltas buffered during compaction. Non-null only while a compaction rebuild is in progress.
   // Accessed only under synchronized(this), so ArrayList is safe.
@@ -343,16 +344,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @return true if the view is READY, false if the timeout elapsed or the build failed
    */
   public boolean awaitReady(final long timeout, final TimeUnit unit) {
-    if (status == Status.READY)
-      return true;
+    final long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
     try {
-      if (!readyLatch.await(timeout, unit))
-        return false;
+      // Loop to handle follow-up rebuilds triggered by asyncRebuildNeeded.
+      // Each rebuild creates a new latch, so we re-read the field after each wait.
+      while (status != Status.READY || asyncRebuildNeeded) {
+        final long remainingNanos = deadlineNanos - System.nanoTime();
+        if (remainingNanos <= 0)
+          return false;
+        final CountDownLatch latch = readyLatch;
+        if (latch == null)
+          return status == Status.READY && !asyncRebuildNeeded;
+        if (!latch.await(remainingNanos, TimeUnit.NANOSECONDS))
+          return false;
+      }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       return false;
     }
-    return status == Status.READY;
+    return true;
   }
 
   /**
@@ -1113,8 +1123,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   synchronized void onRelevantCommit() {
     if (updateMode == UpdateMode.ASYNCHRONOUS) {
-      if (!compacting.compareAndSet(false, true))
-        return; // rebuild already in progress, it will pick up committed changes
+      if (!compacting.compareAndSet(false, true)) {
+        // A rebuild is already in progress — flag that another one is needed once it finishes.
+        asyncRebuildNeeded = true;
+        return;
+      }
+      asyncRebuildNeeded = false;
       final CountDownLatch latch = new CountDownLatch(1);
       this.readyLatch = latch;
       this.status = Status.BUILDING;
@@ -1152,6 +1166,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             BUILD_PERMITS.release();
             compacting.set(false);
             latch.countDown();
+            // If more commits arrived during this rebuild, trigger another one
+            if (asyncRebuildNeeded)
+              onRelevantCommit();
           }
         });
       } catch (final RejectedExecutionException e) {
