@@ -25,6 +25,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.QueryEngine;
@@ -56,6 +57,15 @@ public interface Database extends BasicDatabase {
   String getCurrentUserName();
 
   Select select();
+
+  /**
+   * Returns a new {@link GraphBatch.Builder} for high-performance batch graph operations.
+   * Configure batch size, edge list sizes, WAL, and other options, then call
+   * {@link GraphBatch.Builder#build()} to create the {@link GraphBatch} instance.
+   *
+   * @return A new builder for configuring and creating a {@link GraphBatch} instance
+   */
+  GraphBatch.Builder batch();
 
   /**
    * Executes a command by specifying the language and arguments in a map.

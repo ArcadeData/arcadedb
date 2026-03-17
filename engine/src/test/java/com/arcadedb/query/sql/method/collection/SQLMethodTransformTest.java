@@ -45,6 +45,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -393,6 +394,11 @@ class SQLMethodTransformTest {
 
       @Override
       public Select select() {
+        return null;
+      }
+
+      @Override
+      public GraphBatch.Builder batch() {
         return null;
       }
 

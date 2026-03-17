@@ -41,7 +41,7 @@ import java.util.List;
 import java.util.logging.Level;
 
 /**
- * @deprecated Use {@link com.arcadedb.graph.GraphBatchImporter} instead, which is in the engine module
+ * @deprecated Use {@link com.arcadedb.graph.GraphBatch} instead, which is in the engine module
  * and provides 6-11x better performance through sorted flushes, vectorized segment writes,
  * deferred incoming edge connection, and bulk record creation.
  */

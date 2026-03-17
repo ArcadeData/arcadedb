@@ -35,12 +35,12 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests and benchmarks for {@link GraphBatchImporter}.
+ * Tests and benchmarks for {@link GraphBatch}.
  * Compares batch import performance against the standard edge creation API.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class GraphBatchImporterTest extends TestHelper {
+class GraphBatchTest extends TestHelper {
 
   private static final int VERTEX_COUNT = 5_000;
   private static final int EDGE_COUNT   = 50_000;
@@ -74,7 +74,7 @@ class GraphBatchImporterTest extends TestHelper {
 
     // Create edges using batch importer (with deferred incoming edges)
     final Random rng = new Random(42);
-    try (final GraphBatchImporter importer = GraphBatchImporter.builder(database)
+    try (final GraphBatch importer = GraphBatch.builder(database)
         .withBatchSize(200)
         .withEdgeListInitialSize(256)
         .withLightEdges(true)
@@ -123,7 +123,7 @@ class GraphBatchImporterTest extends TestHelper {
       }
     });
 
-    try (final GraphBatchImporter importer = GraphBatchImporter.builder(database)
+    try (final GraphBatch importer = GraphBatch.builder(database)
         .withBatchSize(100)
         .withLightEdges(true) // still true, but edges with properties will be regular
         .build()) {
@@ -158,7 +158,7 @@ class GraphBatchImporterTest extends TestHelper {
 
     final RID[] vertexRIDs = new RID[vertices];
 
-    try (final GraphBatchImporter importer = GraphBatchImporter.builder(database)
+    try (final GraphBatch importer = GraphBatch.builder(database)
         .withBatchSize(100)
         .withPreAllocateEdgeChunks(true)
         .build()) {
@@ -220,7 +220,7 @@ class GraphBatchImporterTest extends TestHelper {
     });
 
     // Use tiny batch size to force multiple flushes
-    try (final GraphBatchImporter importer = GraphBatchImporter.builder(database)
+    try (final GraphBatch importer = GraphBatch.builder(database)
         .withBatchSize(50) // will flush 10 times for 500 edges
         .withEdgeListInitialSize(256)
         .build()) {
@@ -258,7 +258,7 @@ class GraphBatchImporterTest extends TestHelper {
     final int edges = 1000;
 
     final RID[] vertexRIDs;
-    try (final GraphBatchImporter importer = GraphBatchImporter.builder(database)
+    try (final GraphBatch importer = GraphBatch.builder(database)
         .withBatchSize(500)
         .withPreAllocateEdgeChunks(true)
         .build()) {
@@ -303,7 +303,7 @@ class GraphBatchImporterTest extends TestHelper {
       props[i] = new Object[] { "id", i, "name", "person_" + i };
 
     final RID[] vertexRIDs;
-    try (final GraphBatchImporter importer = GraphBatchImporter.builder(database)
+    try (final GraphBatch importer = GraphBatch.builder(database)
         .withPreAllocateEdgeChunks(true)
         .build()) {
       vertexRIDs = importer.createVertices("BatchPerson", props);
@@ -327,7 +327,7 @@ class GraphBatchImporterTest extends TestHelper {
     final int edges = 2000;
 
     final RID[] vertexRIDs;
-    try (final GraphBatchImporter importer = GraphBatchImporter.builder(database)
+    try (final GraphBatch importer = GraphBatch.builder(database)
         .withBatchSize(200) // forces multiple flushes
         .withEdgeListInitialSize(256)
         .withPreAllocateEdgeChunks(true)
@@ -363,13 +363,13 @@ class GraphBatchImporterTest extends TestHelper {
   }
 
   /**
-   * Benchmark: GraphBatchImporter vs standard API.
+   * Benchmark: GraphBatch vs standard API.
    * Compares throughput of batch import vs one-edge-at-a-time insertion.
    */
   @Test
   void benchmarkBatchVsStandard() {
     final StringBuilder report = new StringBuilder();
-    report.append(String.format("%n=== GraphBatchImporter Benchmark ===%nVertices: %d, Edges: %d%n",
+    report.append(String.format("%n=== GraphBatch Benchmark ===%nVertices: %d, Edges: %d%n",
         VERTEX_COUNT, EDGE_COUNT));
 
     // --- Generate random edge list ---
@@ -438,7 +438,7 @@ class GraphBatchImporterTest extends TestHelper {
     FileUtils.deleteRecursively(new File(stdPath));
 
     // ========================================================
-    // Benchmark 2: GraphBatchImporter (with deferred incoming)
+    // Benchmark 2: GraphBatch (with deferred incoming)
     // ========================================================
     final String batchPath = "target/databases/GraphBatchBench_batch";
     FileUtils.deleteRecursively(new File(batchPath));
@@ -462,7 +462,7 @@ class GraphBatchImporterTest extends TestHelper {
       });
 
       final long start = System.nanoTime();
-      try (final GraphBatchImporter importer = GraphBatchImporter.builder(batchDb)
+      try (final GraphBatch importer = GraphBatch.builder(batchDb)
           .withBatchSize(10_000)
           .withEdgeListInitialSize(2048)
           .withLightEdges(true)
@@ -494,7 +494,7 @@ class GraphBatchImporterTest extends TestHelper {
     FileUtils.deleteRecursively(new File(batchPath));
 
     // ========================================================
-    // Benchmark 3: GraphBatchImporter with pre-allocated vertices
+    // Benchmark 3: GraphBatch with pre-allocated vertices
     // ========================================================
     final String preAllocPath = "target/databases/GraphBatchBench_prealloc";
     FileUtils.deleteRecursively(new File(preAllocPath));
@@ -509,7 +509,7 @@ class GraphBatchImporterTest extends TestHelper {
 
       final long start = System.nanoTime();
       final RID[] vRIDs;
-      try (final GraphBatchImporter importer = GraphBatchImporter.builder(paDb)
+      try (final GraphBatch importer = GraphBatch.builder(paDb)
           .withBatchSize(10_000)
           .withEdgeListInitialSize(2048)
           .withLightEdges(true)
@@ -540,7 +540,7 @@ class GraphBatchImporterTest extends TestHelper {
     FileUtils.deleteRecursively(new File(preAllocPath));
 
     // ========================================================
-    // Benchmark 4: GraphBatchImporter with parallel flush
+    // Benchmark 4: GraphBatch with parallel flush
     // ========================================================
     final String parallelPath = "target/databases/GraphBatchBench_parallel";
     FileUtils.deleteRecursively(new File(parallelPath));
@@ -555,7 +555,7 @@ class GraphBatchImporterTest extends TestHelper {
 
       final long start = System.nanoTime();
       final RID[] vRIDs;
-      try (final GraphBatchImporter importer = GraphBatchImporter.builder(parDb)
+      try (final GraphBatch importer = GraphBatch.builder(parDb)
           .withBatchSize(10_000)
           .withEdgeListInitialSize(2048)
           .withLightEdges(true)

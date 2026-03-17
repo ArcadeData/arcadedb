@@ -49,6 +49,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -1562,6 +1563,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public Select select() {
     return new Select(this);
+  }
+
+  @Override
+  public GraphBatch.Builder batch() {
+    return GraphBatch.builder(this);
   }
 
   @Override
