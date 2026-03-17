@@ -160,8 +160,14 @@ table,
   flex-wrap: nowrap;
 }
 
-#studioPanel > .card-header > .row > .col-1 {
+#studioPanel > .card-header > .row > #sidebar-col {
   padding: 0;
+  max-width: 70px;
+  flex: 0 0 70px;
+}
+
+#sidebar-col .nav-item a.vertical-tab i {
+  font-size: 1.2rem;
 }
 
 #studioPanel > .card-header > .row > .col-11 {
@@ -253,11 +259,14 @@ a.vertical-tab.nav-link.active.show {
 }
 
 .nav-label {
-  font-size: 0.65rem;
+  font-size: 0.5rem;
   margin-top: 0;
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 a.nav-link.active.show {
@@ -3832,7 +3841,7 @@ div.dt-search {
   }
 
   #tabs .nav-item:first-child img {
-    width: 65% !important;
+    width: 45% !important;
   }
 }
 
