@@ -46,6 +46,8 @@ var globalEnableElementPanel = true;
 var globalGraphSettings = {
   graphSpacing: 50,
   cumulativeSelection: false,
+  nodeSize: 25,
+  defaultLabel: "",
   types: {},
 };
 

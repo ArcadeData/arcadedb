@@ -589,7 +589,13 @@ public class ArcadeDBServer {
 
         if (credentialEnd < db.length() - 1 && db.charAt(credentialEnd + 1) == '{') {
           // PARSE IMPORTS
-          final String commands = db.substring(credentialEnd + 2, db.length() - 1);
+          final int commandsEnd = db.indexOf('}', credentialEnd + 2);
+          if (commandsEnd < 0) {
+            LogManager.instance().log(this, Level.WARNING, "Missing closing '}' in default databases format: '%s'",
+                db);
+            break;
+          }
+          final String commands = db.substring(credentialEnd + 2, commandsEnd);
 
           final String[] commandParts = commands.split(",");
           for (final String command : commandParts) {

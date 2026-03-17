@@ -117,13 +117,17 @@ function renderGraphAppearanceSection(type, rid) {
   html += "</div><div style='margin-top:10px'></div>";
 
   // Label
-  var labelText = getOrCreateStyleTypeAttrib(type, "labelText") || "@type";
+  var labelText = getOrCreateStyleTypeAttrib(type, "labelText");
+  if (labelText == null) labelText = globalGraphSettings.defaultLabel != null ? globalGraphSettings.defaultLabel : "";
   html += "<div class='record-editor-appearance-row'>";
   html += "<label class='form-label'>Label</label>";
   html += "<select id='geLabel' class='form-select form-select-sm'>";
+  html += "<option value=''" + (labelText === "" ? " selected" : "") + ">(none)</option>";
   html += "<option value='@type'" + (labelText === "@type" ? " selected" : "") + ">@type</option>";
-  for (var p in properties)
+  for (var p in properties) {
+    if (p.charAt(0) === '@') continue;
     html += "<option value='" + escapeHtml(p) + "'" + (labelText === p ? " selected" : "") + ">" + escapeHtml(p) + "</option>";
+  }
   html += "</select></div>";
 
   // Label size
@@ -231,7 +235,7 @@ function bindGraphAppearanceEvents(type) {
 
   $("#geLabel").change(function () {
     getOrCreateStyleTypeAttrib(type, "labelText", $(this).val());
-    renderGraph();
+    updateLabelsForType(type);
   });
 
   $("#geLabelSize").on("input", function () {

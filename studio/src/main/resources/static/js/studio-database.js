@@ -6,6 +6,7 @@ var globalCredentials = null;
 var globalBasicAuth = null;
 var globalUsername = null;
 var globalSchemaTypes = null;
+var globalSidebarTypeColors = {};
 var globalFunctionReference = null;
 var globalDatabaseList = [];
 
@@ -2377,9 +2378,19 @@ function populateSettingsPanel() {
 
   let spacingVal = globalGraphSettings ? (globalGraphSettings.graphSpacing || 20) : 20;
   let cumulativeChecked = (globalGraphSettings && globalGraphSettings.cumulativeSelection) ? "checked" : "";
+  let nodeSizeVal = globalGraphSettings ? (globalGraphSettings.nodeSize || 25) : 25;
+  let defaultLabelVal = globalGraphSettings ? (globalGraphSettings.defaultLabel != null ? globalGraphSettings.defaultLabel : "") : "";
 
   html += "<div class='settings-section'>";
   html += "<div class='settings-section-header'>Graph Settings</div>";
+  html += "<div class='settings-row'><label>Node Size: <span id='settingNodeSizeVal'>" + nodeSizeVal + "</span></label>";
+  html += "<input type='range' class='form-range' id='settingNodeSize' min='15' max='80' step='5' value='" + nodeSizeVal + "' onchange='applyNodeSize(this.value)'></div>";
+  html += "<div class='settings-row'><label>Default Label</label>";
+  html += "<select class='form-select form-select-sm' id='settingDefaultLabel' onchange='applyDefaultLabel(this.value)'>";
+  html += "<option value=''" + (defaultLabelVal == "" ? " selected" : "") + ">(none)</option>";
+  html += "<option value='name'" + (defaultLabelVal == "name" ? " selected" : "") + ">name</option>";
+  html += "<option value='@type'" + (defaultLabelVal == "@type" ? " selected" : "") + ">@type</option>";
+  html += "</select></div>";
   html += "<div class='settings-row'><label>Graph Spacing: <span id='settingGraphSpacingVal'>" + spacingVal + "</span></label>";
   html += "<input type='range' class='form-range' id='settingGraphSpacing' min='10' max='150' step='10' value='" + spacingVal + "' onchange='applyGraphSpacing(this.value)'></div>";
   html += "<div class='settings-row'><label>Cumulative Selection</label>";
@@ -2412,6 +2423,7 @@ function applyDefaultLimit(value) {
 function applyGraphSpacing(value) {
   globalGraphSettings.graphSpacing = parseInt(value);
   $("#settingGraphSpacingVal").text(value);
+  saveGraphGlobalSettings();
   if (globalCy != null) {
     globalGraphSettings._spacingChanged = true;
     renderGraph();
@@ -2420,6 +2432,20 @@ function applyGraphSpacing(value) {
 
 function applyCumulativeSelection(checked) {
   globalGraphSettings.cumulativeSelection = checked;
+  saveGraphGlobalSettings();
+}
+
+function applyNodeSize(value) {
+  globalGraphSettings.nodeSize = parseInt(value);
+  $("#settingNodeSizeVal").text(value);
+  saveGraphGlobalSettings();
+  if (globalCy != null) renderGraph();
+}
+
+function applyDefaultLabel(value) {
+  globalGraphSettings.defaultLabel = value;
+  saveGraphGlobalSettings();
+  if (globalCy != null) renderGraph();
 }
 
 function executeCommand(language, query) {
@@ -2671,6 +2697,7 @@ function displaySchema() {
       for (let j = 0; j < items.length; j++) {
         let row = items[j];
         let color = colors[j % colors.length];
+        globalSidebarTypeColors[row.name] = color;
         let name = escapeHtml(row.name);
         let records = (row.records || 0).toLocaleString();
         html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
@@ -2950,6 +2977,7 @@ function populateQuerySidebar() {
     for (let j = 0; j < items.length; j++) {
       let row = items[j];
       let color = palette[j % palette.length];
+      globalSidebarTypeColors[row.name] = color;
       let name = escapeHtml(row.name);
       let records = (row.records || 0).toLocaleString();
       html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
