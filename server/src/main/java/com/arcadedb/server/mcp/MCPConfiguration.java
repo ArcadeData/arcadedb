@@ -167,9 +167,17 @@ public class MCPConfiguration {
   /**
    * Checks if a user is allowed to access MCP endpoints.
    * The special value "*" in allowedUsers permits any authenticated user.
+   * For API token users (whose name has the format "apitoken:&lt;tokenName&gt;"),
+   * also matches the bare token name against the allowed list.
    */
   public boolean isUserAllowed(final String username) {
-    return allowedUsers.contains("*") || allowedUsers.contains(username);
+    if (allowedUsers.contains("*") || allowedUsers.contains(username))
+      return true;
+    // API token users have synthetic names like "apitoken:<tokenName>".
+    // Allow matching by the bare token name so users don't need to know the internal prefix.
+    if (username.startsWith("apitoken:"))
+      return allowedUsers.contains(username.substring("apitoken:".length()));
+    return false;
   }
 
   public synchronized JSONObject toJSON() {

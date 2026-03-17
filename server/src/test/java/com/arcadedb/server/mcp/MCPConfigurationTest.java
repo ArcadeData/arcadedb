@@ -92,6 +92,29 @@ class MCPConfigurationTest {
 
     assertThat(config.isUserAllowed("root")).isTrue();
     assertThat(config.isUserAllowed("anyone")).isTrue();
+    assertThat(config.isUserAllowed("apitoken:mytoken")).isTrue();
+  }
+
+  @Test
+  void apiTokenUserAllowedByBareTokenName() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.setAllowedUsers(List.of("root", "mytoken"));
+
+    // API token user with synthetic name "apitoken:mytoken" should match "mytoken" in allowedUsers
+    assertThat(config.isUserAllowed("apitoken:mytoken")).isTrue();
+    // Regular user "root" still works
+    assertThat(config.isUserAllowed("root")).isTrue();
+    // API token not in the list should be denied
+    assertThat(config.isUserAllowed("apitoken:othertoken")).isFalse();
+  }
+
+  @Test
+  void apiTokenUserAllowedByFullPrefixedName() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.setAllowedUsers(List.of("apitoken:mytoken"));
+
+    // Should also work when the full prefixed name is in the list
+    assertThat(config.isUserAllowed("apitoken:mytoken")).isTrue();
   }
 
   @Test
