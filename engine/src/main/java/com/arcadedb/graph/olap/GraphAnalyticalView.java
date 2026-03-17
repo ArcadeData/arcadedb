@@ -349,6 +349,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Loop to handle follow-up rebuilds triggered by asyncRebuildNeeded.
       // Each rebuild creates a new latch, so we re-read the field after each wait.
       while (status != Status.READY || asyncRebuildNeeded) {
+        if (status == Status.STALE)
+          return false;
         final long remainingNanos = deadlineNanos - System.nanoTime();
         if (remainingNanos <= 0)
           return false;
@@ -1166,7 +1168,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             BUILD_PERMITS.release();
             compacting.set(false);
             latch.countDown();
-            // If more commits arrived during this rebuild, trigger another one
+            // Volatile read outside the monitor is intentional: visibility is guaranteed by the
+            // volatile flag, and onRelevantCommit() will acquire the lock when it executes.
             if (asyncRebuildNeeded)
               onRelevantCommit();
           }
