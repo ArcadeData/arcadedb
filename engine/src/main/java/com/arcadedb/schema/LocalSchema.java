@@ -91,7 +91,7 @@ public class LocalSchema implements Schema {
   private             String                                 encoding                      = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
-  private final       List<Component>                        files                         = new ArrayList<>();
+  private final       List<Component>                        files                         = Collections.synchronizedList(new ArrayList<>());
   final               Map<String, LocalBucket>               bucketMap                     = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
@@ -216,7 +216,11 @@ public class LocalSchema implements Schema {
 
     readConfiguration();
 
-    for (final Component f : new ArrayList<>(files))
+    final List<Component> snapshot;
+    synchronized (files) {
+      snapshot = new ArrayList<>(files);
+    }
+    for (final Component f : snapshot)
       if (f != null)
         f.onAfterSchemaLoad();
 
@@ -279,37 +283,45 @@ public class LocalSchema implements Schema {
 
   @Override
   public Component getFileById(final int id) {
-    if (id >= files.size())
-      throw new SchemaException("File with id '" + id + "' was not found");
+    synchronized (files) {
+      if (id >= files.size())
+        throw new SchemaException("File with id '" + id + "' was not found");
 
-    final Component p = files.get(id);
-    if (p == null)
-      throw new SchemaException("File with id '" + id + "' was not found");
-    return p;
+      final Component p = files.get(id);
+      if (p == null)
+        throw new SchemaException("File with id '" + id + "' was not found");
+      return p;
+    }
   }
 
   @Override
   public Component getFileByIdIfExists(final int id) {
-    if (id >= files.size())
-      return null;
+    synchronized (files) {
+      if (id >= files.size())
+        return null;
 
-    return files.get(id);
+      return files.get(id);
+    }
   }
 
   public Component getFileByName(final String name) {
-    for (final Component f : files)
-      if (f != null && name.equals(f.getName()))
-        return f;
-    return null;
+    synchronized (files) {
+      for (final Component f : files)
+        if (f != null && name.equals(f.getName()))
+          return f;
+      return null;
+    }
   }
 
   public void removeFile(final int fileId) {
-    if (fileId >= files.size())
-      return;
+    synchronized (files) {
+      if (fileId >= files.size())
+        return;
+
+      files.set(fileId, null);
+    }
 
     database.getTransaction().removeFile(fileId);
-
-    files.set(fileId, null);
   }
 
   @Override
@@ -335,20 +347,22 @@ public class LocalSchema implements Schema {
   }
 
   public LocalBucket getBucketById(final int id, final boolean throwExceptionIfNotFound) {
-    if (id < 0 || id >= files.size())
-      if (throwExceptionIfNotFound)
-        throw new SchemaException("Bucket with id '" + id + "' was not found");
-      else
-        return null;
+    synchronized (files) {
+      if (id < 0 || id >= files.size())
+        if (throwExceptionIfNotFound)
+          throw new SchemaException("Bucket with id '" + id + "' was not found");
+        else
+          return null;
 
-    final Component p = files.get(id);
-    if (!(p instanceof LocalBucket)) {
-      if (throwExceptionIfNotFound)
-        throw new SchemaException("Bucket with id '" + id + "' was not found");
-      else
-        return null;
+      final Component p = files.get(id);
+      if (!(p instanceof LocalBucket)) {
+        if (throwExceptionIfNotFound)
+          throw new SchemaException("Bucket with id '" + id + "' was not found");
+        else
+          return null;
+      }
+      return (LocalBucket) p;
     }
-    return (LocalBucket) p;
   }
 
   @Override
@@ -1781,18 +1795,24 @@ public class LocalSchema implements Schema {
   public void registerFile(final Component file) {
     final int fileId = file.getFileId();
 
-    while (files.size() < fileId + 1)
-      files.add(null);
+    synchronized (files) {
+      while (files.size() < fileId + 1)
+        files.add(null);
 
-    if (files.get(fileId) != null)
-      throw new SchemaException(
-          "File with id '" + fileId + "' already exists (previous=" + files.get(fileId) + " new=" + file + ")");
+      if (files.get(fileId) != null)
+        throw new SchemaException(
+            "File with id '" + fileId + "' already exists (previous=" + files.get(fileId) + " new=" + file + ")");
 
-    files.set(fileId, file);
+      files.set(fileId, file);
+    }
   }
 
   public void initComponents() {
-    for (final Component f : files)
+    final List<Component> snapshot;
+    synchronized (files) {
+      snapshot = new ArrayList<>(files);
+    }
+    for (final Component f : snapshot)
       if (f != null)
         f.onAfterLoad();
   }
