@@ -643,6 +643,153 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(text).contains("Unknown server setting");
   }
 
+  @Test
+  void apiTokenUserAllowedByTokenName() throws Exception {
+    // Create an API token
+    final JSONObject permissions = new JSONObject()
+        .put("types", new JSONObject()
+            .put("*", new JSONObject().put("access", new JSONArray().put("readRecord"))))
+        .put("database", new JSONArray());
+
+    final JSONObject tokenResult = getServer(0).getSecurity().getApiTokenConfiguration()
+        .createToken("mcptoken", "graph", 0, permissions);
+    final String tokenValue = tokenResult.getString("token");
+
+    try {
+      // Configure MCP to allow "mcptoken" (the bare token name, not "apitoken:mcptoken")
+      saveMCPConfig(new JSONObject()
+          .put("enabled", true)
+          .put("allowReads", true)
+          .put("allowedUsers", new JSONArray().put("root").put("mcptoken")));
+
+      // Use the API token to call MCP initialize
+      final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization", "Bearer " + tokenValue);
+      connection.setRequestProperty("Content-Type", "application/json");
+      connection.setDoOutput(true);
+
+      final JSONObject request = new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 500)
+          .put("method", "initialize")
+          .put("params", new JSONObject());
+      try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+        out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+      }
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        final String body = FileUtils.readStreamAsString(connection.getInputStream(), "utf8");
+        final JSONObject response = new JSONObject(body);
+        assertThat(response.has("result")).isTrue();
+        assertThat(response.getJSONObject("result").has("protocolVersion")).isTrue();
+      } finally {
+        connection.disconnect();
+      }
+    } finally {
+      // Cleanup: delete the token
+      getServer(0).getSecurity().getApiTokenConfiguration()
+          .deleteToken(tokenResult.getString("tokenHash"));
+    }
+  }
+
+  @Test
+  void apiTokenUserDeniedWhenNotInAllowedUsers() throws Exception {
+    // Create an API token
+    final JSONObject permissions = new JSONObject()
+        .put("types", new JSONObject()
+            .put("*", new JSONObject().put("access", new JSONArray().put("readRecord"))))
+        .put("database", new JSONArray());
+
+    final JSONObject tokenResult = getServer(0).getSecurity().getApiTokenConfiguration()
+        .createToken("deniedtoken", "graph", 0, permissions);
+    final String tokenValue = tokenResult.getString("token");
+
+    try {
+      // Configure MCP with only "root" — token name "deniedtoken" is NOT in the list
+      saveMCPConfig(new JSONObject()
+          .put("enabled", true)
+          .put("allowReads", true)
+          .put("allowedUsers", new JSONArray().put("root")));
+
+      final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization", "Bearer " + tokenValue);
+      connection.setRequestProperty("Content-Type", "application/json");
+      connection.setDoOutput(true);
+
+      final JSONObject request = new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 501)
+          .put("method", "initialize")
+          .put("params", new JSONObject());
+      try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+        out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+      }
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(403);
+      } finally {
+        connection.disconnect();
+      }
+    } finally {
+      getServer(0).getSecurity().getApiTokenConfiguration()
+          .deleteToken(tokenResult.getString("tokenHash"));
+    }
+  }
+
+  @Test
+  void apiTokenUserAllowedByWildcard() throws Exception {
+    // Create an API token
+    final JSONObject permissions = new JSONObject()
+        .put("types", new JSONObject()
+            .put("*", new JSONObject().put("access", new JSONArray().put("readRecord"))))
+        .put("database", new JSONArray());
+
+    final JSONObject tokenResult = getServer(0).getSecurity().getApiTokenConfiguration()
+        .createToken("wildcardtoken", "graph", 0, permissions);
+    final String tokenValue = tokenResult.getString("token");
+
+    try {
+      // Configure MCP with wildcard "*"
+      saveMCPConfig(new JSONObject()
+          .put("enabled", true)
+          .put("allowReads", true)
+          .put("allowedUsers", new JSONArray().put("*")));
+
+      final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization", "Bearer " + tokenValue);
+      connection.setRequestProperty("Content-Type", "application/json");
+      connection.setDoOutput(true);
+
+      final JSONObject request = new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 502)
+          .put("method", "initialize")
+          .put("params", new JSONObject());
+      try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+        out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+      }
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        final String body = FileUtils.readStreamAsString(connection.getInputStream(), "utf8");
+        final JSONObject response = new JSONObject(body);
+        assertThat(response.has("result")).isTrue();
+      } finally {
+        connection.disconnect();
+      }
+    } finally {
+      getServer(0).getSecurity().getApiTokenConfiguration()
+          .deleteToken(tokenResult.getString("tokenHash"));
+    }
+  }
+
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {
