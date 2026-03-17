@@ -23,7 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GraphBatchImporter;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ol>
  *   <li>Standard API (one edge at a time with manual tx batching)</li>
  *   <li>Old GraphImporter (integration module, async-based)</li>
- *   <li>New GraphBatchImporter (engine module, sorted flush + deferred incoming)</li>
+ *   <li>New GraphBatch (engine module, sorted flush + deferred incoming)</li>
  * </ol>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -75,7 +75,7 @@ class GraphImporterBenchmarkTest {
     // ========================================================
     // Warmup: run BatchImporter once to trigger JIT compilation
     // ========================================================
-    benchmarkNewGraphBatchImporter(edgeSrc, edgeDst);
+    benchmarkNewGraphBatch(edgeSrc, edgeDst);
 
     // ========================================================
     // 1. Standard API (one edge per transaction batch of 1000)
@@ -88,9 +88,9 @@ class GraphImporterBenchmarkTest {
     final long oldTimeNs = benchmarkOldGraphImporter(edgeSrc, edgeDst);
 
     // ========================================================
-    // 3. New GraphBatchImporter (engine module)
+    // 3. New GraphBatch (engine module)
     // ========================================================
-    final long newTimeNs = benchmarkNewGraphBatchImporter(edgeSrc, edgeDst);
+    final long newTimeNs = benchmarkNewGraphBatch(edgeSrc, edgeDst);
 
     // ========================================================
     // Report
@@ -106,7 +106,7 @@ class GraphImporterBenchmarkTest {
     report.append(String.format("%-45s %12.1f %14.0f%n",
         "2. Old GraphImporter (integration)", oldMs, EDGE_COUNT / (oldMs / 1000.0)));
     report.append(String.format("%-45s %12.1f %14.0f%n",
-        "3. New GraphBatchImporter (engine)", newMs, EDGE_COUNT / (newMs / 1000.0)));
+        "3. New GraphBatch (engine)", newMs, EDGE_COUNT / (newMs / 1000.0)));
 
     report.append(String.format(
         "%nSpeedup vs standard: OldImporter=%.2fx, NewBatchImporter=%.2fx%n",
@@ -121,9 +121,9 @@ class GraphImporterBenchmarkTest {
     final long stdPropsTimeNs = benchmarkStandardAPIWithProperties(edgeSrc, edgeDst);
 
     // ========================================================
-    // 5. New GraphBatchImporter with edge properties (int + long)
+    // 5. New GraphBatch with edge properties (int + long)
     // ========================================================
-    final long newPropsTimeNs = benchmarkNewGraphBatchImporterWithProperties(edgeSrc, edgeDst);
+    final long newPropsTimeNs = benchmarkNewGraphBatchWithProperties(edgeSrc, edgeDst);
 
     final double stdPropsMs = stdPropsTimeNs / 1_000_000.0;
     final double newPropsMs = newPropsTimeNs / 1_000_000.0;
@@ -264,7 +264,7 @@ class GraphImporterBenchmarkTest {
   }
 
   // -----------------------------------------------------------------------
-  // Benchmark 3: New GraphBatchImporter
+  // Benchmark 3: New GraphBatch
   // -----------------------------------------------------------------------
 
   // -----------------------------------------------------------------------
@@ -328,10 +328,10 @@ class GraphImporterBenchmarkTest {
   }
 
   // -----------------------------------------------------------------------
-  // Benchmark 5: New GraphBatchImporter with edge properties
+  // Benchmark 5: New GraphBatch with edge properties
   // -----------------------------------------------------------------------
 
-  private long benchmarkNewGraphBatchImporterWithProperties(final int[] edgeSrc, final int[] edgeDst) {
+  private long benchmarkNewGraphBatchWithProperties(final int[] edgeSrc, final int[] edgeDst) {
     final String path = "target/databases/BenchCompare_newProps";
     FileUtils.deleteRecursively(new File(path));
 
@@ -347,7 +347,7 @@ class GraphImporterBenchmarkTest {
       final long start = System.nanoTime();
 
       final RID[] vRIDs;
-      try (final GraphBatchImporter importer = GraphBatchImporter.builder(db)
+      try (final GraphBatch importer = GraphBatch.builder(db)
           .withExpectedEdgeCount(EDGE_COUNT)
           .withEdgeListInitialSize(2048)
           .withLightEdges(false)
@@ -389,10 +389,10 @@ class GraphImporterBenchmarkTest {
   }
 
   // -----------------------------------------------------------------------
-  // Benchmark 3: New GraphBatchImporter (light edges)
+  // Benchmark 3: New GraphBatch (light edges)
   // -----------------------------------------------------------------------
 
-  private long benchmarkNewGraphBatchImporter(final int[] edgeSrc, final int[] edgeDst) {
+  private long benchmarkNewGraphBatch(final int[] edgeSrc, final int[] edgeDst) {
     final String path = "target/databases/BenchCompare_new";
     FileUtils.deleteRecursively(new File(path));
 
@@ -406,7 +406,7 @@ class GraphImporterBenchmarkTest {
       final long start = System.nanoTime();
 
       final RID[] vRIDs;
-      try (final GraphBatchImporter importer = GraphBatchImporter.builder(db)
+      try (final GraphBatch importer = GraphBatch.builder(db)
           .withExpectedEdgeCount(EDGE_COUNT)
           .withEdgeListInitialSize(2048)
           .withLightEdges(true)

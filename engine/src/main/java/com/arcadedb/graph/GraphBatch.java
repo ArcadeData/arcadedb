@@ -69,7 +69,7 @@ import java.util.logging.Level;
  * <p>
  * Usage:
  * <pre>
- * try (final GraphBatchImporter importer = GraphBatchImporter.builder(database)
+ * try (final GraphBatch batch = database.batch()
  *     .withBatchSize(100_000)
  *     .withEdgeListInitialSize(2048)
  *     .withLightEdges(true)
@@ -77,11 +77,11 @@ import java.util.logging.Level;
  *     .build()) {
  *
  *   // Phase 1: create vertices (edge segments pre-allocated)
- *   MutableVertex v1 = importer.newVertex("Person").set("name", "Alice").save();
- *   MutableVertex v2 = importer.newVertex("Person").set("name", "Bob").save();
+ *   MutableVertex v1 = batch.newVertex("Person").set("name", "Alice").save();
+ *   MutableVertex v2 = batch.newVertex("Person").set("name", "Bob").save();
  *
  *   // Phase 2: buffer edges (outgoing flushed periodically, incoming deferred)
- *   importer.newEdge(v1.getIdentity(), "KNOWS", v2.getIdentity());
+ *   batch.newEdge(v1.getIdentity(), "KNOWS", v2.getIdentity());
  *
  *   // Edges are flushed automatically on close (incoming edges connected here)
  * }
@@ -89,7 +89,7 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GraphBatchImporter implements AutoCloseable {
+public class GraphBatch implements AutoCloseable {
 
   private final DatabaseInternal database;
 
@@ -170,7 +170,7 @@ public class GraphBatchImporter implements AutoCloseable {
   private final boolean savedUseWAL;
   private final WALFile.FlushType savedWALFlush;
 
-  private GraphBatchImporter(final DatabaseInternal database, final int batchSize, final int edgeListInitialSize,
+  private GraphBatch(final DatabaseInternal database, final int batchSize, final int edgeListInitialSize,
       final boolean lightEdges, final boolean bidirectional, final int commitEvery,
       final boolean useWAL, final WALFile.FlushType walFlush, final boolean preAllocateEdgeChunks,
       final boolean parallelFlush) {
@@ -713,7 +713,7 @@ public class GraphBatchImporter implements AutoCloseable {
     database.setReadYourWrites(savedReadYourWrites);
 
     LogManager.instance().log(this, Level.INFO,
-        "GraphBatchImporter closed: vertices=%d edges=%d flushes=%d avgFlushMs=%.1f",
+        "GraphBatch closed: vertices=%d edges=%d flushes=%d avgFlushMs=%.1f",
         null, totalVerticesCreated, totalEdgesCreated, totalFlushes,
         totalFlushes > 0 ? (totalFlushTimeNs / totalFlushes) / 1_000_000.0 : 0.0);
   }
@@ -2061,7 +2061,7 @@ public class GraphBatchImporter implements AutoCloseable {
       return this;
     }
 
-    public GraphBatchImporter build() {
+    public GraphBatch build() {
       int effectiveBatchSize = batchSize;
       if (!batchSizeExplicit && expectedEdgeCount > 0)
         effectiveBatchSize = Math.max(MIN_BATCH_SIZE, Math.min(MAX_BATCH_SIZE, expectedEdgeCount));
@@ -2070,7 +2070,7 @@ public class GraphBatchImporter implements AutoCloseable {
       // to eliminate unnecessary transaction begin/commit overhead
       final int effectiveCommitEvery = (!commitEveryExplicit && !useWAL) ? 0 : commitEvery;
 
-      return new GraphBatchImporter(database, effectiveBatchSize, edgeListInitialSize, lightEdges,
+      return new GraphBatch(database, effectiveBatchSize, edgeListInitialSize, lightEdges,
           bidirectional, effectiveCommitEvery, useWAL, walFlush, preAllocateEdgeChunks, parallelFlush);
     }
   }
