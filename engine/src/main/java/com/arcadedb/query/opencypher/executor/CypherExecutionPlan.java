@@ -48,6 +48,7 @@ import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
+import com.arcadedb.query.opencypher.ast.StarExpression;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
@@ -55,6 +56,7 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
+import com.arcadedb.query.opencypher.executor.steps.CountChainPathsStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
@@ -868,6 +870,13 @@ public class CypherExecutionPlan {
     if (typeCountStep != null)
       return typeCountStep;
 
+    // OPTIMIZATION: Count-push-down for linear chain patterns with RETURN count(*)
+    // Instead of materializing all paths (O(paths) memory), propagates counts through
+    // CSR arrays level-by-level (O(nodes) memory). Critical for large-fanout chains.
+    final AbstractExecutionStep chainCountStep = tryOptimizeChainCountStar(context);
+    if (chainCountStep != null)
+      return chainCountStep;
+
     // Special case: no MATCH as first clause (standalone expressions, WITH before MATCH, etc.)
     // E.g., RETURN abs(-42), WITH collect([0, 0.0]) AS numbers UNWIND ...
     // Skip this when a seed step is provided (e.g., CALL subquery) since the seed provides input
@@ -1595,6 +1604,11 @@ public class CypherExecutionPlan {
     final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
     if (typeCountStep != null)
       return typeCountStep;
+
+    // OPTIMIZATION: Count-push-down for linear chain patterns with RETURN count(*)
+    final AbstractExecutionStep chainCountStep = tryOptimizeChainCountStar(context);
+    if (chainCountStep != null)
+      return chainCountStep;
 
     // Special case: RETURN without MATCH (standalone expressions)
     // E.g., RETURN abs(-42), RETURN 1+1
@@ -3307,6 +3321,118 @@ public class CypherExecutionPlan {
         return false;
 
     return true;
+  }
+
+  /**
+   * Attempts to optimize a linear chain MATCH with {@code RETURN count(*)} into a
+   * CSR count-push-down step that avoids materializing intermediate rows.
+   * <p>
+   * Detects pattern:
+   * <pre>
+   *   MATCH (a:A)-[:T1]->(b:B)-[:T2]->(c:C) ... RETURN count(*) AS alias
+   * </pre>
+   * <p>
+   * Requirements:
+   * <ul>
+   *   <li>Exactly one non-optional MATCH clause with exactly one path pattern</li>
+   *   <li>No WHERE clause (neither MATCH-level nor statement-level)</li>
+   *   <li>RETURN has exactly one item: count(*)</li>
+   *   <li>At least one relationship in the path (otherwise use TypeCountStep)</li>
+   *   <li>All relationships are fixed-length and anonymous (no edge variables)</li>
+   *   <li>No path variable</li>
+   *   <li>No other clauses (WITH, CREATE, etc.)</li>
+   * </ul>
+   *
+   * @return optimized CountChainPathsStep if pattern matches, null otherwise
+   */
+  private AbstractExecutionStep tryOptimizeChainCountStar(final CommandContext context) {
+    // Exactly one MATCH clause
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    if (matchClause.isOptional())
+      return null;
+
+    // No WHERE
+    if (matchClause.hasWhereClause() || statement.getWhereClause() != null)
+      return null;
+
+    // Exactly one path pattern with at least one relationship
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    if (pathPattern.getRelationshipCount() < 1)
+      return null;
+    if (pathPattern.hasPathVariable())
+      return null;
+
+    // RETURN must be exactly count(*) with no grouping
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.isDistinct())
+      return null;
+    final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
+    if (items.size() != 1)
+      return null;
+    final ReturnClause.ReturnItem item = items.get(0);
+    if (!(item.getExpression() instanceof FunctionCallExpression))
+      return null;
+    final FunctionCallExpression func = (FunctionCallExpression) item.getExpression();
+    if (!"count".equals(func.getFunctionName()))
+      return null;
+    // Must be count(*) — argument is StarExpression
+    if (func.getArguments().size() != 1 || !(func.getArguments().get(0) instanceof StarExpression))
+      return null;
+
+    // No other clauses (WITH, CREATE, SET, etc.)
+    if (statement.getClausesInOrder() != null) {
+      for (final ClauseEntry entry : statement.getClausesInOrder()) {
+        final ClauseEntry.ClauseType type = entry.getType();
+        if (type != ClauseEntry.ClauseType.MATCH && type != ClauseEntry.ClauseType.RETURN)
+          return null;
+      }
+    }
+
+    // All relationships must be fixed-length, anonymous, no properties
+    final int hopCount = pathPattern.getRelationshipCount();
+    final String[] nodeLabels = new String[hopCount + 1];
+    final String[] edgeTypes = new String[hopCount];
+    final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hopCount];
+
+    for (int i = 0; i <= hopCount; i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      nodeLabels[i] = node.hasLabels() ? node.getLabels().get(0) : null;
+    }
+
+    for (int i = 0; i < hopCount; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      if (rel.isVariableLength())
+        return null;
+      if (rel.getVariable() != null && !rel.getVariable().isEmpty())
+        return null;
+      if (rel.hasProperties())
+        return null;
+      if (!rel.hasTypes() || rel.getTypes().size() != 1)
+        return null; // Require exactly one edge type per hop for CSR
+
+      edgeTypes[i] = rel.getTypes().get(0);
+      final Direction dir = rel.getDirection();
+      if (dir == Direction.OUT)
+        directions[i] = Vertex.DIRECTION.OUT;
+      else if (dir == Direction.IN)
+        directions[i] = Vertex.DIRECTION.IN;
+      else
+        directions[i] = Vertex.DIRECTION.BOTH;
+    }
+
+    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when
+    // all edge types are disjoint (an edge has exactly one type → uniqueness is automatic)
+    final Set<String> seenTypes = new HashSet<>();
+    for (final String et : edgeTypes)
+      if (!seenTypes.add(et))
+        return null; // Duplicate edge type → need edge uniqueness tracking
+
+    final String alias = item.getAlias() != null ? item.getAlias() : "count(*)";
+    return new CountChainPathsStep(nodeLabels, edgeTypes, directions, alias, context);
   }
 
   private String extractIdFilter(final WhereClause whereClause, final String variable) {
