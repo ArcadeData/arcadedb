@@ -36,6 +36,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import io.grpc.stub.StreamObserver;
+
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -43,7 +45,9 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -64,6 +68,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
   private ManagedChannel channel;
   private ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub blockingStub;
   private ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub authenticatedStub;
+  private ArcadeDbServiceGrpc.ArcadeDbServiceStub asyncAuthenticatedStub;
 
   @Override
   public void setTestConfiguration() {
@@ -82,6 +87,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
     // Create an authenticated channel using a client interceptor
     Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
+    asyncAuthenticatedStub = ArcadeDbServiceGrpc.newStub(authenticatedChannel);
   }
 
   /**
@@ -184,6 +190,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
   private GrpcValue longValue(final long l) {
     return GrpcValue.newBuilder().setInt64Value(l).build();
   }
+
 
   @Test
   void executeQuerySelectsExistingData() {
@@ -831,5 +838,300 @@ public class GrpcServerIT extends BaseGraphServerTest {
     assertThatThrownBy(() -> tokenStub.executeQuery(request))
         .isInstanceOf(StatusRuntimeException.class)
         .hasMessageContaining("UNAUTHENTICATED");
+  }
+
+  // Graph batch load tests
+
+  @Test
+  void graphBatchLoadVerticesAndEdges() throws Exception {
+    // Create vertex and edge types
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE VERTEX TYPE BatchPerson IF NOT EXISTS")
+        .build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE EDGE TYPE BatchKnows IF NOT EXISTS")
+        .build());
+
+    final CountDownLatch latch = new CountDownLatch(1);
+    final AtomicReference<GraphBatchResult> resultRef = new AtomicReference<>();
+    final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+    final StreamObserver<GraphBatchChunk> requestObserver = asyncAuthenticatedStub.graphBatchLoad(
+        new StreamObserver<>() {
+          @Override public void onNext(final GraphBatchResult result) { resultRef.set(result); }
+          @Override public void onError(final Throwable t) { errorRef.set(t); latch.countDown(); }
+          @Override public void onCompleted() { latch.countDown(); }
+        });
+
+    // Send vertices in first chunk
+    requestObserver.onNext(GraphBatchChunk.newBuilder()
+        .setDatabase(getDatabaseName())
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.VERTEX)
+            .setTypeName("BatchPerson")
+            .setTempId("p1")
+            .putProperties("name", stringValue("Alice"))
+            .putProperties("age", intValue(30)))
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.VERTEX)
+            .setTypeName("BatchPerson")
+            .setTempId("p2")
+            .putProperties("name", stringValue("Bob"))
+            .putProperties("age", intValue(25)))
+        .build());
+
+    // Send edges in second chunk
+    requestObserver.onNext(GraphBatchChunk.newBuilder()
+        .setDatabase(getDatabaseName())
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.EDGE)
+            .setTypeName("BatchKnows")
+            .setFromRef("p1")
+            .setToRef("p2")
+            .putProperties("since", intValue(2020)))
+        .build());
+
+    requestObserver.onCompleted();
+    assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(errorRef.get()).isNull();
+
+    final GraphBatchResult result = resultRef.get();
+    assertThat(result).isNotNull();
+    assertThat(result.getVerticesCreated()).isEqualTo(2);
+    assertThat(result.getEdgesCreated()).isEqualTo(1);
+    assertThat(result.getElapsedMs()).isGreaterThanOrEqualTo(0);
+    assertThat(result.getIdMappingMap()).hasSize(2);
+    assertThat(result.getIdMappingMap()).containsKeys("p1", "p2");
+
+    // Verify graph structure via query
+    final ExecuteQueryResponse queryResp = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setQuery("SELECT FROM BatchPerson")
+        .build());
+    assertThat(queryResp.getResultsList().get(0).getRecordsList()).hasSize(2);
+  }
+
+  @Test
+  void graphBatchLoadVerticesOnly() throws Exception {
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE VERTEX TYPE BatchCity IF NOT EXISTS")
+        .build());
+
+    final CountDownLatch latch = new CountDownLatch(1);
+    final AtomicReference<GraphBatchResult> resultRef = new AtomicReference<>();
+    final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+    final StreamObserver<GraphBatchChunk> requestObserver = asyncAuthenticatedStub.graphBatchLoad(
+        new StreamObserver<>() {
+          @Override public void onNext(final GraphBatchResult result) { resultRef.set(result); }
+          @Override public void onError(final Throwable t) { errorRef.set(t); latch.countDown(); }
+          @Override public void onCompleted() { latch.countDown(); }
+        });
+
+    requestObserver.onNext(GraphBatchChunk.newBuilder()
+        .setDatabase(getDatabaseName())
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.VERTEX)
+            .setTypeName("BatchCity")
+            .setTempId("c1")
+            .putProperties("name", stringValue("Rome")))
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.VERTEX)
+            .setTypeName("BatchCity")
+            .setTempId("c2")
+            .putProperties("name", stringValue("Milan")))
+        .build());
+
+    requestObserver.onCompleted();
+    assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(errorRef.get()).isNull();
+
+    final GraphBatchResult result = resultRef.get();
+    assertThat(result.getVerticesCreated()).isEqualTo(2);
+    assertThat(result.getEdgesCreated()).isEqualTo(0);
+    assertThat(result.getIdMappingMap()).hasSize(2);
+  }
+
+  @Test
+  void graphBatchLoadEmptyStream() throws Exception {
+    final CountDownLatch latch = new CountDownLatch(1);
+    final AtomicReference<GraphBatchResult> resultRef = new AtomicReference<>();
+
+    final StreamObserver<GraphBatchChunk> requestObserver = asyncAuthenticatedStub.graphBatchLoad(
+        new StreamObserver<>() {
+          @Override public void onNext(final GraphBatchResult result) { resultRef.set(result); }
+          @Override public void onError(final Throwable t) { latch.countDown(); }
+          @Override public void onCompleted() { latch.countDown(); }
+        });
+
+    requestObserver.onCompleted();
+    assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
+
+    final GraphBatchResult result = resultRef.get();
+    assertThat(result).isNotNull();
+    assertThat(result.getVerticesCreated()).isEqualTo(0);
+    assertThat(result.getEdgesCreated()).isEqualTo(0);
+  }
+
+  @Test
+  void graphBatchLoadUnknownTempIdReturnsError() throws Exception {
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE VERTEX TYPE BatchNode IF NOT EXISTS")
+        .build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE EDGE TYPE BatchLink IF NOT EXISTS")
+        .build());
+
+    final CountDownLatch latch = new CountDownLatch(1);
+    final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+    final StreamObserver<GraphBatchChunk> requestObserver = asyncAuthenticatedStub.graphBatchLoad(
+        new StreamObserver<>() {
+          @Override public void onNext(final GraphBatchResult result) { }
+          @Override public void onError(final Throwable t) { errorRef.set(t); latch.countDown(); }
+          @Override public void onCompleted() { latch.countDown(); }
+        });
+
+    // Send a vertex, then an edge referencing a non-existent temp ID
+    requestObserver.onNext(GraphBatchChunk.newBuilder()
+        .setDatabase(getDatabaseName())
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.VERTEX)
+            .setTypeName("BatchNode")
+            .setTempId("n1")
+            .putProperties("name", stringValue("Node1")))
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.EDGE)
+            .setTypeName("BatchLink")
+            .setFromRef("n1")
+            .setToRef("n999"))  // non-existent temp ID
+        .build());
+
+    requestObserver.onCompleted();
+    assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(errorRef.get()).isNotNull();
+    assertThat(errorRef.get().getMessage()).contains("Unknown temporary ID");
+  }
+
+  @Test
+  void graphBatchLoadVertexAfterEdgeReturnsError() throws Exception {
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE VERTEX TYPE BatchItem IF NOT EXISTS")
+        .build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE EDGE TYPE BatchRel IF NOT EXISTS")
+        .build());
+
+    final CountDownLatch latch = new CountDownLatch(1);
+    final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+    final StreamObserver<GraphBatchChunk> requestObserver = asyncAuthenticatedStub.graphBatchLoad(
+        new StreamObserver<>() {
+          @Override public void onNext(final GraphBatchResult result) { }
+          @Override public void onError(final Throwable t) { errorRef.set(t); latch.countDown(); }
+          @Override public void onCompleted() { latch.countDown(); }
+        });
+
+    // Send vertices, then edge, then another vertex (invalid)
+    requestObserver.onNext(GraphBatchChunk.newBuilder()
+        .setDatabase(getDatabaseName())
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.VERTEX)
+            .setTypeName("BatchItem")
+            .setTempId("i1")
+            .putProperties("name", stringValue("Item1")))
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.VERTEX)
+            .setTypeName("BatchItem")
+            .setTempId("i2")
+            .putProperties("name", stringValue("Item2")))
+        .build());
+
+    // Second chunk: edge then vertex (violates ordering constraint)
+    requestObserver.onNext(GraphBatchChunk.newBuilder()
+        .setDatabase(getDatabaseName())
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.EDGE)
+            .setTypeName("BatchRel")
+            .setFromRef("i1")
+            .setToRef("i2"))
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.VERTEX)
+            .setTypeName("BatchItem")
+            .setTempId("i3")
+            .putProperties("name", stringValue("Item3")))
+        .build());
+
+    requestObserver.onCompleted();
+    assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(errorRef.get()).isNotNull();
+    assertThat(errorRef.get().getMessage()).contains("Vertex record received after edges");
+  }
+
+  // This test sends only edges in the first chunk (no vertices in the batch).
+  // The batch is initialized with inEdgePhase=false; edge records immediately trigger the transition.
+  @Test
+  void graphBatchLoadWithDirectRidReferences() throws Exception {
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE VERTEX TYPE BatchDirect IF NOT EXISTS")
+        .build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE EDGE TYPE BatchDirectEdge IF NOT EXISTS")
+        .build());
+
+    // Create two vertices via regular API to get real RIDs
+    final ExecuteCommandResponse v1Resp = authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE VERTEX BatchDirect SET name = 'Existing1'")
+        .setReturnRows(true)
+        .build());
+    final ExecuteCommandResponse v2Resp = authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE VERTEX BatchDirect SET name = 'Existing2'")
+        .setReturnRows(true)
+        .build());
+
+    final String rid1 = v1Resp.getRecords(0).getRid();
+    final String rid2 = v2Resp.getRecords(0).getRid();
+
+    final CountDownLatch latch = new CountDownLatch(1);
+    final AtomicReference<GraphBatchResult> resultRef = new AtomicReference<>();
+    final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+    final StreamObserver<GraphBatchChunk> requestObserver = asyncAuthenticatedStub.graphBatchLoad(
+        new StreamObserver<>() {
+          @Override public void onNext(final GraphBatchResult result) { resultRef.set(result); }
+          @Override public void onError(final Throwable t) { errorRef.set(t); latch.countDown(); }
+          @Override public void onCompleted() { latch.countDown(); }
+        });
+
+    // Send only edges referencing existing RIDs (no vertices in batch)
+    requestObserver.onNext(GraphBatchChunk.newBuilder()
+        .setDatabase(getDatabaseName())
+        .addRecords(GraphBatchRecord.newBuilder()
+            .setKind(GraphBatchRecord.Kind.EDGE)
+            .setTypeName("BatchDirectEdge")
+            .setFromRef(rid1)
+            .setToRef(rid2))
+        .build());
+
+    requestObserver.onCompleted();
+    assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(errorRef.get()).isNull();
+
+    final GraphBatchResult result = resultRef.get();
+    assertThat(result).isNotNull();
+    assertThat(result.getVerticesCreated()).isEqualTo(0);
+    assertThat(result.getEdgesCreated()).isEqualTo(1);
+    assertThat(result.getIdMappingMap()).isEmpty();
   }
 }
