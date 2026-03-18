@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -71,14 +70,13 @@ class AlgoTriangleCountTest {
   @Test
   void triangleNodesHaveOneTriangle() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.triangleCount() YIELD node, triangles RETURN node, triangles");
+        "CALL algo.triangleCount() YIELD node, triangles RETURN node.name AS name, triangles");
 
     final Map<String, Long> triangles = new HashMap<>();
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      if (nodeObj instanceof Vertex v)
-        triangles.put(v.getString("name"), ((Number) r.getProperty("triangles")).longValue());
+      final String name = (String) r.getProperty("name");
+      triangles.put(name, ((Number) r.getProperty("triangles")).longValue());
     }
 
     assertThat(triangles.get("A")).isEqualTo(1L);
@@ -90,11 +88,11 @@ class AlgoTriangleCountTest {
   @Test
   void isolatedNodeHasZeroTriangles() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.triangleCount() YIELD node, triangles RETURN node, triangles");
+        "CALL algo.triangleCount() YIELD node, triangles RETURN node.name AS name, triangles");
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      if (nodeObj instanceof Vertex v && "D".equals(v.getString("name"))) {
+      final String name = (String) r.getProperty("name");
+      if ("D".equals(name)) {
         final long count = ((Number) r.getProperty("triangles")).longValue();
         assertThat(count).isEqualTo(0L);
       }
@@ -104,12 +102,12 @@ class AlgoTriangleCountTest {
   @Test
   void clusteringCoefficientOneForTriangleNodes() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.triangleCount() YIELD node, clusteringCoefficient RETURN node, clusteringCoefficient");
+        "CALL algo.triangleCount() YIELD node, clusteringCoefficient RETURN node.name AS name, clusteringCoefficient");
 
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      if (nodeObj instanceof Vertex v && !"D".equals(v.getString("name"))) {
+      final String name = (String) r.getProperty("name");
+      if (!"D".equals(name)) {
         final double coeff = ((Number) r.getProperty("clusteringCoefficient")).doubleValue();
         assertThat(coeff).isEqualTo(1.0);
       }

@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -75,14 +74,13 @@ class AlgoKCoreTest {
   @Test
   void kcoreCliqueMembersHaveCoreTwo() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.kcore() YIELD node, coreNumber RETURN node, coreNumber");
+        "CALL algo.kcore() YIELD node, coreNumber RETURN node.name AS name, coreNumber");
 
     final Map<String, Integer> cores = new HashMap<>();
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      if (nodeObj instanceof Vertex v)
-        cores.put(v.getString("name"), ((Number) r.getProperty("coreNumber")).intValue());
+      final String name = (String) r.getProperty("name");
+      cores.put(name, ((Number) r.getProperty("coreNumber")).intValue());
     }
 
     assertThat(cores.get("A")).isEqualTo(2);
@@ -94,11 +92,11 @@ class AlgoKCoreTest {
   @Test
   void kcorePeripheralNodeHasLowerCore() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.kcore() YIELD node, coreNumber RETURN node, coreNumber");
+        "CALL algo.kcore() YIELD node, coreNumber RETURN node.name AS name, coreNumber");
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      if (nodeObj instanceof Vertex v && "D".equals(v.getString("name"))) {
+      final String name = (String) r.getProperty("name");
+      if ("D".equals(name)) {
         final int core = ((Number) r.getProperty("coreNumber")).intValue();
         assertThat(core).isEqualTo(1);
       }

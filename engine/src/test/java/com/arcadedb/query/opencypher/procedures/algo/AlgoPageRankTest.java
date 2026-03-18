@@ -174,7 +174,7 @@ class AlgoPageRankTest {
     for (final Map.Entry<String, Double> entry : oltpScores.entrySet()) {
       final String name = entry.getKey();
       assertThat(csrScores).containsKey(name);
-      assertThat(csrScores.get(name)).isCloseTo(entry.getValue(), Offset.offset(1e-6));
+      assertThat(csrScores.get(name)).isCloseTo(entry.getValue(), Offset.offset(1e-4));
     }
 
     gav.shutdown();

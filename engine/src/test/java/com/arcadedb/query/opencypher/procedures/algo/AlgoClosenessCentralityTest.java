@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -73,22 +72,19 @@ class AlgoClosenessCentralityTest {
   void closenessMiddleNodesRankHigher() {
     // In a linear chain A-B-C-D with BOTH direction, B and C are closer to all nodes than A and D
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.closeness(null, 'BOTH', true) YIELD node, score RETURN node, score");
+        "CALL algo.closeness(null, 'BOTH', true) YIELD node, score RETURN node.name AS name, score");
 
     double scoreA = 0, scoreB = 0, scoreC = 0, scoreD = 0;
     int count = 0;
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
+      final String name = (String) r.getProperty("name");
       final double score = ((Number) r.getProperty("score")).doubleValue();
-      if (nodeObj instanceof Vertex v) {
-        final String name = v.getString("name");
-        switch (name) {
-          case "A" -> scoreA = score;
-          case "B" -> scoreB = score;
-          case "C" -> scoreC = score;
-          case "D" -> scoreD = score;
-        }
+      switch (name) {
+        case "A" -> scoreA = score;
+        case "B" -> scoreB = score;
+        case "C" -> scoreC = score;
+        case "D" -> scoreD = score;
       }
       count++;
     }
