@@ -299,4 +299,94 @@ class GAVEligibilityTest {
     assertThat(count).isEqualTo(1L);
     result.close();
   }
+
+  // --- Count-push-down optimization for chain patterns ---
+
+  @Test
+  void countPushDownUsedForChainCountStar() {
+    // Q1-like chain with count(*) should use CountChainPathsStep
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (:Country)<-[:IS_PART_OF]-(:City)<-[:IS_LOCATED_IN]-(:Person)<-[:HAS_MEMBER]-(:Forum)-[:CONTAINER_OF]->(:Post) RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    // Should use the optimized count-push-down step
+    assertThat(planString).contains("COUNT CHAIN PATHS");
+    result.close();
+  }
+
+  @Test
+  void countPushDownChainCorrectResult() {
+    // Verify count is correct with count-push-down
+    final ResultSet result = database.query("opencypher",
+        "MATCH (:Country)<-[:IS_PART_OF]-(:City)<-[:IS_LOCATED_IN]-(:Person)<-[:HAS_MEMBER]-(:Forum)-[:CONTAINER_OF]->(:Post) RETURN count(*) AS count");
+
+    assertThat(result.hasNext()).isTrue();
+    final long count = result.next().getProperty("count");
+    // Italy<-Rome<-Alice<-Tech->world = 1 path
+    assertThat(count).isEqualTo(1L);
+    result.close();
+  }
+
+  @Test
+  void countPushDownNotUsedWithWhere() {
+    // WHERE clause prevents count-push-down
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (p1:Person)-[:KNOWS]-(p2:Person) WHERE p1 <> p2 RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    // Should NOT use count-push-down due to WHERE clause
+    assertThat(planString).doesNotContain("COUNT CHAIN PATHS");
+    result.close();
+  }
+
+  @Test
+  void countPushDownNotUsedWithEdgeVariable() {
+    // Named edge variable prevents count-push-down
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (:Person)-[r:KNOWS]->(:Person) RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    // Should NOT use count-push-down due to edge variable
+    assertThat(planString).doesNotContain("COUNT CHAIN PATHS");
+    result.close();
+  }
+
+  @Test
+  void countPushDownWithGAV() {
+    // Build a GAV and verify count-push-down uses CSR acceleration
+    final var gav = com.arcadedb.graph.olap.GraphAnalyticalView.builder(database)
+        .withName("test_gav")
+        .build();
+
+    try {
+      final ResultSet result = database.query("opencypher",
+          "PROFILE MATCH (:Country)<-[:IS_PART_OF]-(:City)<-[:IS_LOCATED_IN]-(:Person) RETURN count(*) AS count");
+
+      while (result.hasNext())
+        result.next();
+
+      final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+      assertThat(planString).contains("COUNT CHAIN PATHS");
+
+      // Verify correctness
+      final ResultSet result2 = database.query("opencypher",
+          "MATCH (:Country)<-[:IS_PART_OF]-(:City)<-[:IS_LOCATED_IN]-(:Person) RETURN count(*) AS count");
+      assertThat(result2.hasNext()).isTrue();
+      final long count = result2.next().getProperty("count");
+      assertThat(count).isEqualTo(1L); // Italy<-Rome<-Alice
+      result2.close();
+      result.close();
+    } finally {
+      gav.shutdown();
+    }
+  }
 }
