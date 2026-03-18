@@ -113,7 +113,7 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, null);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH);
 
     // Memory: memory[v] is a list of labels heard by v (including its initial label)
     // Using int[] lists backed by arrays for performance
