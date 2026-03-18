@@ -331,16 +331,29 @@ class GAVEligibilityTest {
   }
 
   @Test
-  void countPushDownNotUsedWithWhere() {
-    // WHERE clause prevents count-push-down
+  void countPushDownWithInequality() {
+    // WHERE var1 <> var2 should still use count-push-down (total minus self-loops)
     final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (p1:Person)-[:KNOWS]-(p2:Person) WHERE p1 <> p2 RETURN count(*) AS count");
+        "PROFILE MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag) WHERE p1 <> p3 RETURN count(*) AS count");
 
     while (result.hasNext())
       result.next();
 
     final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
-    // Should NOT use count-push-down due to WHERE clause
+    assertThat(planString).contains("COUNT CHAIN PATHS");
+    result.close();
+  }
+
+  @Test
+  void countPushDownNotUsedWithComplexWhere() {
+    // Complex WHERE (not a simple inequality) prevents count-push-down
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (p1:Person)-[:KNOWS]-(p2:Person) WHERE p1.name = 'Alice' RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
     assertThat(planString).doesNotContain("COUNT CHAIN PATHS");
     result.close();
   }
@@ -357,6 +370,64 @@ class GAVEligibilityTest {
     final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
     // Should NOT use count-push-down due to edge variable
     assertThat(planString).doesNotContain("COUNT CHAIN PATHS");
+    result.close();
+  }
+
+  // --- Star-join optimization (Q4, Q7) ---
+
+  @Test
+  void starJoinQ4PatternUsesOptimizedStep() {
+    // Q4-like: star join with central node m:Message
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (:Tag)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(:Person), (m)<-[:LIKES]-(:Person), (m)<-[:REPLY_OF]-(:Comment) RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(planString).contains("COUNT STAR JOIN");
+    result.close();
+  }
+
+  @Test
+  void starJoinQ4Correct() {
+    // Q4-like: verify correctness
+    final ResultSet result = database.query("opencypher",
+        "MATCH (:Tag)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(:Person), (m)<-[:LIKES]-(:Person), (m)<-[:REPLY_OF]-(:Comment) RETURN count(*) AS count");
+
+    assertThat(result.hasNext()).isTrue();
+    final long count = result.next().getProperty("count");
+    // Comment(hello): HAS_TAG(Java)=1, HAS_CREATOR(Alice)=1, LIKES: none → 0 → product=0
+    // Post(world): HAS_TAG(Python)=1, HAS_CREATOR(Bob)=1, LIKES(Alice)=1, REPLY_OF(Comment)=1 → 1*1*1*1=1
+    assertThat(count).isEqualTo(1L);
+    result.close();
+  }
+
+  @Test
+  void starJoinQ7OptionalMatchUsesOptimizedStep() {
+    // Q7-like: star join with OPTIONAL MATCH arms
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (:Tag)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(:Person) OPTIONAL MATCH (m)<-[:LIKES]-(:Person) OPTIONAL MATCH (m)<-[:REPLY_OF]-(:Comment) RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(planString).contains("COUNT STAR JOIN");
+    result.close();
+  }
+
+  @Test
+  void starJoinQ7Correct() {
+    // Q7-like: OPTIONAL MATCH means max(1, degree) for each optional arm
+    final ResultSet result = database.query("opencypher",
+        "MATCH (:Tag)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(:Person) OPTIONAL MATCH (m)<-[:LIKES]-(:Person) OPTIONAL MATCH (m)<-[:REPLY_OF]-(:Comment) RETURN count(*) AS count");
+
+    assertThat(result.hasNext()).isTrue();
+    final long count = result.next().getProperty("count");
+    // Comment(hello): HAS_TAG(Java)=1, HAS_CREATOR(Alice)=1. OPTIONAL LIKES=max(1,0)=1. OPTIONAL REPLY_OF=max(1,0)=1. → 1
+    // Post(world): HAS_TAG(Python)=1, HAS_CREATOR(Bob)=1. OPTIONAL LIKES(Alice)=max(1,1)=1. OPTIONAL REPLY_OF(Comment)=max(1,1)=1. → 1
+    assertThat(count).isEqualTo(2L);
     result.close();
   }
 
