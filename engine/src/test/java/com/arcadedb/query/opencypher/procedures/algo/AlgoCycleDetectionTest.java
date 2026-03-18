@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -141,22 +140,18 @@ class AlgoCycleDetectionTest {
     buildCyclicGraph();
 
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.cycleDetection() YIELD node, inCycle RETURN node, inCycle");
+        "CALL algo.cycleDetection() YIELD node, inCycle RETURN node.name AS name, inCycle");
 
     boolean inCycleA = false, inCycleB = false, inCycleC = false;
 
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      final Object inCycleObj = r.getProperty("inCycle");
-      if (nodeObj instanceof Vertex v) {
-        final String name = v.getString("name");
-        final boolean inCycle = Boolean.TRUE.equals(inCycleObj);
-        switch (name) {
-          case "A" -> inCycleA = inCycle;
-          case "B" -> inCycleB = inCycle;
-          case "C" -> inCycleC = inCycle;
-        }
+      final String name = (String) r.getProperty("name");
+      final boolean inCycle = Boolean.TRUE.equals(r.getProperty("inCycle"));
+      switch (name) {
+        case "A" -> inCycleA = inCycle;
+        case "B" -> inCycleB = inCycle;
+        case "C" -> inCycleC = inCycle;
       }
     }
 

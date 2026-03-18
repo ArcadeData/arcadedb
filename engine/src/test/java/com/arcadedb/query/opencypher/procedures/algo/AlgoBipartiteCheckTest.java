@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -107,21 +106,17 @@ class AlgoBipartiteCheckTest {
     buildBipartiteGraph();
 
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.bipartite() YIELD node, partition, isBipartite RETURN node, partition, isBipartite");
+        "CALL algo.bipartite() YIELD node, partition, isBipartite RETURN node.name AS name, partition, isBipartite");
 
     int partA = -1, partB = -1;
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      final Object partitionObj = r.getProperty("partition");
-      if (nodeObj instanceof Vertex v) {
-        final String name = v.getString("name");
-        final int partition = ((Number) partitionObj).intValue();
-        if ("A".equals(name))
-          partA = partition;
-        else if ("B".equals(name))
-          partB = partition;
-      }
+      final String name = (String) r.getProperty("name");
+      final int partition = ((Number) r.getProperty("partition")).intValue();
+      if ("A".equals(name))
+        partA = partition;
+      else if ("B".equals(name))
+        partB = partition;
     }
 
     // A and B are adjacent so they must be in different partitions

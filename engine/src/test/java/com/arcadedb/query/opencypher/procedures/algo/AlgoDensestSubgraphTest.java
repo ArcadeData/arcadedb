@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -128,25 +127,22 @@ class AlgoDensestSubgraphTest {
     // The triangle A-B-C is denser than the full graph including D,
     // so after peeling, the dense subgraph should contain A, B, C
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.densestSubgraph() YIELD node, inDenseSubgraph RETURN node, inDenseSubgraph");
+        "CALL algo.densestSubgraph() YIELD node, inDenseSubgraph RETURN node.name AS name, inDenseSubgraph");
 
     boolean inSubgraphA = false, inSubgraphB = false, inSubgraphC = false;
     int inSubgraphCount = 0;
 
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
+      final String name = (String) r.getProperty("name");
       final Object inDenseObj = r.getProperty("inDenseSubgraph");
       final boolean inSubgraph = Boolean.TRUE.equals(inDenseObj);
       if (inSubgraph)
         inSubgraphCount++;
-      if (nodeObj instanceof Vertex v) {
-        final String name = v.getString("name");
-        switch (name) {
-          case "A" -> inSubgraphA = inSubgraph;
-          case "B" -> inSubgraphB = inSubgraph;
-          case "C" -> inSubgraphC = inSubgraph;
-        }
+      switch (name) {
+        case "A" -> inSubgraphA = inSubgraph;
+        case "B" -> inSubgraphB = inSubgraph;
+        case "C" -> inSubgraphC = inSubgraph;
       }
     }
 
