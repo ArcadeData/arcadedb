@@ -98,14 +98,14 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     final GraphTraversalProvider provider = findProvider(db, relTypes);
     if (provider instanceof GraphAnalyticalView gav) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(gav, relTypes);
+      return executeWithCSR(context, gav, relTypes);
     }
 
     // Fall back to OLTP path
     return executeWithOLTP(db, relTypes, context);
   }
 
-  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final String[] relTypes) {
+  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav, final String[] relTypes) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
@@ -113,6 +113,7 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     final double[] lcc = relTypes != null ?
         GraphAlgorithms.localClusteringCoefficient(gav, relTypes) :
         GraphAlgorithms.localClusteringCoefficient(gav);
+    context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();

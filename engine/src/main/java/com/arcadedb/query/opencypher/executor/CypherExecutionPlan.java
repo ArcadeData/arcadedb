@@ -1059,6 +1059,11 @@ public class CypherExecutionPlan {
         if (currentStep != null) {
           callStep.setPrevious(currentStep);
         }
+        // Detect count-only pattern: CALL ... YIELD ... RETURN count(*)
+        // When detected, enable fast-path that skips per-row Result object creation
+        if (isFollowedByCountOnlyReturn(clausesInOrder, clausesInOrder.indexOf(entry))) {
+          callStep.setCountOnlyOptimization(true);
+        }
         currentStep = callStep;
         break;
 
@@ -3358,6 +3363,34 @@ public class CypherExecutionPlan {
    *
    * @return optimized CountChainPathsStep if pattern matches, null otherwise
    */
+  /**
+   * Checks if the clause at the given index in the clause list is followed by a RETURN clause
+   * that contains only count(*) aggregations (no property access needed from procedure results).
+   * Used to enable the count-only fast path in CallStep.
+   */
+  private boolean isFollowedByCountOnlyReturn(final List<ClauseEntry> clausesInOrder, final int callIndex) {
+    if (callIndex < 0)
+      return false;
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || !returnClause.hasAggregations())
+      return false;
+    // Check that RETURN is the only clause after CALL
+    for (int i = callIndex + 1; i < clausesInOrder.size(); i++) {
+      final ClauseEntry.ClauseType type = clausesInOrder.get(i).getType();
+      if (type != ClauseEntry.ClauseType.RETURN)
+        return false; // There's a WITH, ORDER BY, etc. between CALL and RETURN
+    }
+    // Check that ALL return items are aggregation functions (count, sum, avg, etc.)
+    // and none access individual row properties
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+      if (!(item.getExpression() instanceof FunctionCallExpression func))
+        return false;
+      if (!func.isAggregation())
+        return false;
+    }
+    return true;
+  }
+
   private AbstractExecutionStep tryOptimizeChainCountStar(final CommandContext context) {
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)

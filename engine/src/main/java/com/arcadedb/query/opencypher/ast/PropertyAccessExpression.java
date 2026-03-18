@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.temporal.*;
@@ -53,7 +54,12 @@ public class PropertyAccessExpression implements Expression {
     if (variable == null)
       return null;
 
-    if (variable instanceof Document) {
+    if (variable instanceof RID rid) {
+      // Lazy vertex resolution: algorithm procedures store RIDs to avoid loading all vertices upfront.
+      // Only resolve to Document when a property is actually accessed.
+      final Object rawValue = rid.asVertex().get(propertyName);
+      return convertFromStorage(rawValue);
+    } else if (variable instanceof Document) {
       final Object rawValue = ((Document) variable).get(propertyName);
       return convertFromStorage(rawValue);
     } else if (variable instanceof Map) {

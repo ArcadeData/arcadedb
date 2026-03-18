@@ -107,7 +107,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     final GraphTraversalProvider provider = findProvider(db, null);
     if (provider instanceof GraphAnalyticalView gav) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(gav, maxIterations);
+      return executeWithCSR(context, gav, maxIterations);
     }
 
     // Fall back to OLTP path
@@ -116,12 +116,13 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     return executeWithOLTP(db, maxIterations, direction);
   }
 
-  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final int maxIterations) {
+  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav, final int maxIterations) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
     final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations);
+    context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
