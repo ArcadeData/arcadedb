@@ -207,18 +207,17 @@ public final class AntiJoinChainOp implements CountOp {
     // Apply anti-join and inequality filters, then compute tail.
     if (anchorIsSource) {
       // Case A (Q9): anchor is anti-join source. Exclude frontier nodes that are
-      // in anchor's anti-join neighbors. Use merge-scan on sorted arrays.
-      int ai = 0;
+      // in anchor's anti-join neighbors. Use binary search on the sorted anti-join
+      // neighbor array (the frontier is NOT sorted since it's concatenated from
+      // multiple source expansions).
       for (final int target : frontier) {
         // Inequality check (anchor at position 0, target at checkPosition)
         if (inequalityIdxA >= 0 && inequalityIdxB >= 0
             && isInequalityViolation(anchorId, target, 0, checkPosition))
           continue;
 
-        // Anti-join merge-scan
-        while (ai < anchorAntiNbrs.length && anchorAntiNbrs[ai] < target)
-          ai++;
-        if (ai < anchorAntiNbrs.length && anchorAntiNbrs[ai] == target)
+        // Anti-join: binary search for target in anchor's sorted neighbor list
+        if (Arrays.binarySearch(anchorAntiNbrs, target) >= 0)
           continue;
 
         count += computeTailCount(provider, target, validBuckets);
