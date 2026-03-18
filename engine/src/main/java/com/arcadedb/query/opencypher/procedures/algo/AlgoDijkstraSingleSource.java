@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -133,16 +134,12 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     final double[] dist = GraphAlgorithms.dijkstraSingleSource(
         gav, src, weightProperty, dir, relTypes);
 
-    final List<Result> results = new ArrayList<>();
-    for (int i = 0; i < n; i++) {
-      if (i != src && dist[i] < Double.POSITIVE_INFINITY) {
-        final ResultInternal r = new ResultInternal();
-        r.setProperty("node", gav.getRID(i).asVertex());
-        r.setProperty("cost", dist[i]);
-        results.add(r);
-      }
-    }
-    return results.stream();
+    return IntStream.range(0, n).filter(i -> i != src && dist[i] < Double.POSITIVE_INFINITY).mapToObj(i -> {
+      final ResultInternal r = new ResultInternal();
+      r.setProperty("node", gav.getRID(i));
+      r.setProperty("cost", dist[i]);
+      return (Result) r;
+    });
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final Vertex startNode,
@@ -221,15 +218,11 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       }
     }
 
-    final List<Result> results = new ArrayList<>();
-    for (int i = 0; i < n; i++) {
-      if (i != src && dist[i] < Double.POSITIVE_INFINITY) {
-        final ResultInternal r = new ResultInternal();
-        r.setProperty("node", vertices.get(i));
-        r.setProperty("cost", dist[i]);
-        results.add(r);
-      }
-    }
-    return results.stream();
+    return IntStream.range(0, n).filter(i -> i != src && dist[i] < Double.POSITIVE_INFINITY).mapToObj(i -> {
+      final ResultInternal r = new ResultInternal();
+      r.setProperty("node", vertices.get(i).getIdentity());
+      r.setProperty("cost", dist[i]);
+      return (Result) r;
+    });
   }
 }

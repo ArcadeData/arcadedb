@@ -31,6 +31,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -158,7 +159,9 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     }
 
     // Post-processing: keep only labels with relative frequency >= threshold
-    final List<Result> results = new ArrayList<>(n);
+    // Pre-compute communities for all nodes (pure int/map work, no vertex loading)
+    @SuppressWarnings("unchecked")
+    final List<Long>[] allCommunities = new List[n];
     for (int i = 0; i < n; i++) {
       final Map<Integer, Integer> freq = new HashMap<>();
       for (int j = 0; j < memorySize[i]; j++) {
@@ -173,13 +176,15 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
       }
       if (communities.isEmpty())
         communities.add((long) i); // keep at least the initial label
-
-      final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
-      r.setProperty("communities", communities);
-      results.add(r);
+      allCommunities[i] = communities;
     }
-    return results.stream();
+
+    return IntStream.range(0, n).mapToObj(i -> {
+      final ResultInternal r = new ResultInternal();
+      r.setProperty("node", graph.getRID(i));
+      r.setProperty("communities", allCommunities[i]);
+      return (Result) r;
+    });
   }
 
   /** Returns the most-frequent element in arr[0..len), breaking ties randomly. */

@@ -25,8 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -131,7 +131,10 @@ public class AlgoBFS extends AbstractAlgoProcedure {
     visited[startIdx] = true;
     depth[startIdx] = 0;
 
-    final List<Result> results = new ArrayList<>();
+    // BFS traversal: record visited nodes and their depths
+    final int[] visited_nodes = new int[n];
+    int visitedCount = 0;
+
     while (head < tail) {
       final int v = queue[head++];
       if (depth[v] >= maxDepth)
@@ -142,14 +145,19 @@ public class AlgoBFS extends AbstractAlgoProcedure {
           visited[u] = true;
           depth[u] = depth[v] + 1;
           queue[tail++] = u;
-          final ResultInternal r = new ResultInternal();
-          r.setProperty("node", graph.getVertex(u));
-          r.setProperty("depth", depth[u]);
-          results.add(r);
+          visited_nodes[visitedCount++] = u;
         }
       }
     }
-    return results.stream();
+
+    final int count = visitedCount;
+    return IntStream.range(0, count).mapToObj(idx -> {
+      final int u = visited_nodes[idx];
+      final ResultInternal r = new ResultInternal();
+      r.setProperty("node", graph.getRID(u));
+      r.setProperty("depth", depth[u]);
+      return (Result) r;
+    });
   }
 
   private Stream<Result> bfsWithAdjacency(final int[][] adj, final GraphData graph,
@@ -163,7 +171,10 @@ public class AlgoBFS extends AbstractAlgoProcedure {
     visited[startIdx] = true;
     depth[startIdx] = 0;
 
-    final List<Result> results = new ArrayList<>();
+    // BFS traversal: record visited nodes and their depths
+    final int[] visited_nodes = new int[n];
+    int visitedCount = 0;
+
     while (head < tail) {
       final int v = queue[head++];
       if (depth[v] >= maxDepth)
@@ -173,13 +184,18 @@ public class AlgoBFS extends AbstractAlgoProcedure {
           visited[u] = true;
           depth[u] = depth[v] + 1;
           queue[tail++] = u;
-          final ResultInternal r = new ResultInternal();
-          r.setProperty("node", graph.getVertex(u));
-          r.setProperty("depth", depth[u]);
-          results.add(r);
+          visited_nodes[visitedCount++] = u;
         }
       }
     }
-    return results.stream();
+
+    final int count = visitedCount;
+    return IntStream.range(0, count).mapToObj(idx -> {
+      final int u = visited_nodes[idx];
+      final ResultInternal r = new ResultInternal();
+      r.setProperty("node", graph.getRID(u));
+      r.setProperty("depth", depth[u]);
+      return (Result) r;
+    });
   }
 }

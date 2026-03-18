@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -190,14 +191,12 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
         break;
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", provider.getRID(i).asVertex());
+      result.setProperty("node", provider.getRID(i));
       result.setProperty("score", scores[i]);
-      results.add(result);
-    }
-    return results.stream();
+      return (Result) result;
+    });
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
@@ -304,13 +303,11 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
         break;
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", vertices.get(i));
+      result.setProperty("node", vertices.get(i).getIdentity());
       result.setProperty("score", scores[i]);
-      results.add(result);
-    }
-    return results.stream();
+      return (Result) result;
+    });
   }
 }

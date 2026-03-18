@@ -116,7 +116,7 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", gav.getRID(i).asVertex());
+      r.setProperty("node", gav.getRID(i));
       r.setProperty("localClusteringCoefficient", lcc[i]);
       return (Result) r;
     });
@@ -163,7 +163,7 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
       final long deg = adj[i].length;
       final double coeff = deg < 2 ? 0.0 : (2.0 * triangles[i]) / (double) (deg * (deg - 1));
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
+      r.setProperty("node", graph.getRID(i));
       r.setProperty("localClusteringCoefficient", coeff);
       return (Result) r;
     });
