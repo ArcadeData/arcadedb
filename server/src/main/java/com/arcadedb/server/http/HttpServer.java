@@ -41,6 +41,7 @@ import com.arcadedb.server.http.handler.GetReadyHandler;
 import com.arcadedb.server.http.handler.GetServerHandler;
 import com.arcadedb.server.http.handler.GetSessionsHandler;
 import com.arcadedb.server.http.handler.PostApiTokenHandler;
+import com.arcadedb.server.http.handler.PostBatchHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
 import com.arcadedb.server.http.handler.PostGroupHandler;
 import com.arcadedb.server.http.handler.PostUserHandler;
@@ -191,6 +192,7 @@ public class HttpServer implements ServerPlugin {
 
     routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this, webSocketEventBus));
     routes.addPrefixPath("/api/v1", basicRoutes
+        .post("/batch/{database}", new PostBatchHandler(this))
         .post("/begin/{database}", new PostBeginHandler(this))
         .post("/command/{database}", new PostCommandHandler(this))
         .post("/commit/{database}", new PostCommitHandler(this))

@@ -60,6 +60,16 @@
           </div>
         </div>
 
+        <!-- Data Import -->
+        <div class="api-section">
+          <div class="api-section-label">Data Import</div>
+          <div class="api-endpoint" onclick="showApiDetail('batch')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/batch/{db}</span>
+            <span class="api-desc">Batch import vertices &amp; edges</span>
+          </div>
+        </div>
+
         <!-- Transactions -->
         <div class="api-section">
           <div class="api-section-label">Transactions</div>
@@ -248,6 +258,34 @@ var apiEndpoints = {
     responseCode: "200 OK",
     responseBody: '{\n  "user": "root",\n  "version": "26.x",\n  "serverName": "ArcadeDB_0",\n  "result": [ { ... } ]\n}',
     notes: "Commands run inside an implicit transaction unless a managed transaction is active."
+  },
+  batch: {
+    method: "POST", path: "/api/v1/batch/{database}", auth: true, tryIt: true,
+    contentType: "application/x-ndjson",
+    docsAnchor: "http-batch",
+    title: "Batch Import Vertices & Edges",
+    description: "High-performance bulk import of vertices and edges using the <strong>GraphBatch</strong> engine. Supports JSONL and CSV input with streaming parsing &mdash; the server never loads the entire request body into memory. Vertices must appear before edges. Edges reference vertices by temporary ID (<code>@id</code>) or existing RID (<code>#bucket:pos</code>).",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    queryParams: [
+      { name: "batchSize", desc: "Max edges buffered before auto-flush (default: <code>100000</code>)" },
+      { name: "lightEdges", desc: "Property-less edges as connectivity only, saves ~33% I/O (default: <code>false</code>)" },
+      { name: "wal", desc: "Enable Write-Ahead Logging for crash safety (default: <code>false</code>)" },
+      { name: "parallelFlush", desc: "Parallelize edge connection across threads (default: <code>true</code>)" },
+      { name: "preAllocateEdgeChunks", desc: "Pre-allocate edge segments on vertex creation (default: <code>true</code>)" },
+      { name: "edgeListInitialSize", desc: "Initial segment size in bytes, 64-8192 (default: <code>2048</code>)" },
+      { name: "bidirectional", desc: "Connect both outgoing and incoming edges (default: <code>true</code>)" },
+      { name: "commitEvery", desc: "Edges per sub-transaction within a flush (default: <code>50000</code>)" },
+      { name: "expectedEdgeCount", desc: "Hint for auto-tuning batch size (default: <code>0</code>)" }
+    ],
+    requestHeaders: [
+      { name: "Content-Type", value: "application/x-ndjson", desc: "JSONL format (or <code>text/csv</code> for CSV)" }
+    ],
+    requestBody: '{"@type":"vertex","@class":"Person","@id":"t1","name":"Alice","age":30}\n{"@type":"vertex","@class":"Person","@id":"t2","name":"Bob","age":25}\n{"@type":"edge","@class":"KNOWS","@from":"t1","@to":"t2","since":2020}',
+    responseCode: "200 OK",
+    responseBody: '{\n  "verticesCreated": 2,\n  "edgesCreated": 1,\n  "elapsedMs": 42,\n  "idMapping": {\n    "t1": "#9:0",\n    "t2": "#9:1"\n  }\n}',
+    notes: "This endpoint is <strong>not atomic</strong> by design &mdash; GraphBatch commits internally in chunks for maximum throughput. Group vertices by type for best performance: the endpoint batches consecutive same-type vertices into a single bulk creation call. Use <code>@type</code> values <code>vertex</code> (or <code>v</code>) and <code>edge</code> (or <code>e</code>). For CSV, separate vertex and edge sections with a <code>---</code> row."
   },
   begin: {
     method: "POST", path: "/api/v1/begin/{database}", auth: true, tryIt: true,
