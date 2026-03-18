@@ -428,6 +428,41 @@ class GAVEligibilityTest {
     result.close();
   }
 
+  // --- Pair join optimization (Q2) ---
+
+  @Test
+  void pairJoinQ2UsesOptimizedStep() {
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (p1:Person)-[:KNOWS]-(p2:Person), (p1)<-[:HAS_CREATOR]-(c:Comment)-[:REPLY_OF]->(po:Post)-[:HAS_CREATOR]->(p2) RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(planString).contains("COUNT PAIR JOIN");
+    result.close();
+  }
+
+  @Test
+  void pairJoinQ2Correct() {
+    // Q2-like: verify count matches expected
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p1:Person)-[:KNOWS]-(p2:Person), (p1)<-[:HAS_CREATOR]-(c:Comment)-[:REPLY_OF]->(po:Post)-[:HAS_CREATOR]->(p2) RETURN count(*) AS count");
+
+    assertThat(result.hasNext()).isTrue();
+    final long count = result.next().getProperty("count");
+    // Comment(hello)->HAS_CREATOR->Alice, Comment(hello)->REPLY_OF->Post(world), Post(world)->HAS_CREATOR->Bob
+    // So (p1=Alice, p2=Bob) has 1 chain path. Alice-KNOWS-Bob exists (both directions for BOTH)
+    // KNOWS is BOTH: Alice→Bob and Bob→Alice are the same edge traversed in both directions
+    // The probe iterates ALL KNOWS edges (BOTH): from Alice sees Bob, from Bob sees Alice
+    // pairCount[(Alice,Bob)] = 1, pairCount[(Bob,Alice)] = 0 (chain goes c→Alice, po→Bob, not reverse)
+    // So: probe Alice→Bob: pairCount[(Alice,Bob)]=1 → +1
+    //     probe Bob→Alice: pairCount[(Bob,Alice)]=0 → +0
+    // Total = 1
+    assertThat(count).isEqualTo(1L);
+    result.close();
+  }
+
   // --- Star-join optimization (Q4, Q7) ---
 
   @Test

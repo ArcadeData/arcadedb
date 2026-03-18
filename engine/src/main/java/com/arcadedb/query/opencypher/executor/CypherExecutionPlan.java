@@ -59,6 +59,7 @@ import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainPathsStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CountCountryTrianglesStep;
+import com.arcadedb.query.opencypher.executor.steps.CountPairJoinStep;
 import com.arcadedb.query.opencypher.executor.steps.CountStarJoinStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
@@ -224,6 +225,8 @@ public class CypherExecutionPlan {
       rootStep = tryOptimizeStarCountStar(context);
     if (rootStep == null)
       rootStep = tryOptimizeTriangleCountStar(context);
+    if (rootStep == null)
+      rootStep = tryOptimizePairJoinCountStar(context);
 
     if (rootStep == null) {
       // Phase 4: Use optimized physical plan if available
@@ -425,6 +428,8 @@ public class CypherExecutionPlan {
           rootStep = tryOptimizeStarCountStar(context);
         if (rootStep == null)
           rootStep = tryOptimizeTriangleCountStar(context);
+        if (rootStep == null)
+          rootStep = tryOptimizePairJoinCountStar(context);
 
         if (rootStep == null) {
           final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
@@ -3833,6 +3838,181 @@ public class CypherExecutionPlan {
     final String alias = retItem.getAlias() != null ? retItem.getAlias() : "count(*)";
     return new CountCountryTrianglesStep(partitionEdgeTypes, partitionDirections,
         cycleEdgeType, alias, context);
+  }
+
+  /**
+   * Detects two comma-separated path patterns sharing two endpoint variables + count(*).
+   * One pattern is a single-hop "probe" edge, the other is a multi-hop "build" chain.
+   * <pre>
+   *   MATCH (p1:Person)-[:KNOWS]-(p2:Person),
+   *         (p1)<-[:HAS_CREATOR]-(c:Comment)-[:REPLY_OF]->(po:Post)-[:HAS_CREATOR]->(p2)
+   *   RETURN count(*) AS count
+   * </pre>
+   */
+  private AbstractExecutionStep tryOptimizePairJoinCountStar(final CommandContext context) {
+    // Exactly one non-optional MATCH with exactly 2 path patterns
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    if (matchClause.isOptional() || matchClause.hasWhereClause())
+      return null;
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 2)
+      return null;
+    if (statement.getWhereClause() != null)
+      return null;
+
+    // RETURN must be exactly count(*)
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.isDistinct())
+      return null;
+    final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
+    if (items.size() != 1)
+      return null;
+    final ReturnClause.ReturnItem retItem = items.get(0);
+    if (!(retItem.getExpression() instanceof FunctionCallExpression))
+      return null;
+    final FunctionCallExpression func = (FunctionCallExpression) retItem.getExpression();
+    if (!"count".equals(func.getFunctionName()) || func.getArguments().size() != 1
+        || !(func.getArguments().get(0) instanceof StarExpression))
+      return null;
+
+    // No other clauses
+    if (statement.getClausesInOrder() != null)
+      for (final ClauseEntry entry : statement.getClausesInOrder())
+        if (entry.getType() != ClauseEntry.ClauseType.MATCH && entry.getType() != ClauseEntry.ClauseType.RETURN)
+          return null;
+
+    // Identify probe (single-hop) and build (multi-hop) patterns
+    final PathPattern pp0 = matchClause.getPathPatterns().get(0);
+    final PathPattern pp1 = matchClause.getPathPatterns().get(1);
+
+    PathPattern probePattern, buildPattern;
+    if (pp0.getRelationshipCount() == 1 && pp1.getRelationshipCount() >= 2) {
+      probePattern = pp0;
+      buildPattern = pp1;
+    } else if (pp1.getRelationshipCount() == 1 && pp0.getRelationshipCount() >= 2) {
+      probePattern = pp1;
+      buildPattern = pp0;
+    } else
+      return null; // Neither is single-hop
+
+    // Probe pattern: must be a single anonymous relationship with one edge type
+    final RelationshipPattern probeRel = probePattern.getRelationship(0);
+    if (probeRel.isVariableLength() || !probeRel.hasTypes() || probeRel.getTypes().size() != 1)
+      return null;
+    if (probeRel.getVariable() != null && !probeRel.getVariable().isEmpty())
+      return null;
+    final String probeEdgeType = probeRel.getTypes().get(0);
+    final Direction probeDir = probeRel.getDirection();
+    final Vertex.DIRECTION probeDirection = probeDir == Direction.OUT ? Vertex.DIRECTION.OUT
+        : probeDir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+
+    // Get the two shared endpoint variables from probe pattern
+    final String probeVar1 = probePattern.getFirstNode().getVariable();
+    final String probeVar2 = probePattern.getLastNode().getVariable();
+    if (probeVar1 == null || probeVar2 == null)
+      return null;
+
+    // Build pattern: extract chain and find which hops reach the shared endpoints
+    final int buildHops = buildPattern.getRelationshipCount();
+    final String[] buildEdgeTypes = new String[buildHops];
+    final Vertex.DIRECTION[] buildDirections = new Vertex.DIRECTION[buildHops];
+
+    // Find the build chain's start node (a non-shared variable, e.g., "c" in Q2)
+    // The shared variables (probeVar1, probeVar2) should appear as targets of hops
+    int startNodeIdx = -1;
+    for (int i = 0; i <= buildHops; i++) {
+      final String nv = buildPattern.getNode(i).getVariable();
+      if (nv != null && !nv.equals(probeVar1) && !nv.equals(probeVar2)) {
+        startNodeIdx = i;
+        break;
+      }
+    }
+    // If no non-shared named variable found, try anonymous nodes
+    if (startNodeIdx < 0) {
+      for (int i = 0; i <= buildHops; i++) {
+        final String nv = buildPattern.getNode(i).getVariable();
+        if (nv == null || nv.isEmpty()) {
+          startNodeIdx = i;
+          break;
+        }
+      }
+    }
+    if (startNodeIdx < 0)
+      return null;
+
+    // Determine the build chain start label
+    final NodePattern startNode = buildPattern.getNode(startNodeIdx);
+    final String buildStartLabel = startNode.hasLabels() ? startNode.getLabels().get(0) : null;
+    if (buildStartLabel == null)
+      return null;
+
+    // Build two arms from startNodeIdx: backward (toward position 0) and forward (toward end).
+    // Each arm reaches one of the shared endpoint variables.
+
+    // Walk backward from startNodeIdx to find endpoint reaching probeVar1 or probeVar2
+    final java.util.ArrayList<String> bwdET = new java.util.ArrayList<>();
+    final java.util.ArrayList<Vertex.DIRECTION> bwdDir = new java.util.ArrayList<>();
+    String bwdEndpointVar = null;
+    for (int i = startNodeIdx - 1; i >= 0; i--) {
+      final RelationshipPattern rel = buildPattern.getRelationship(i);
+      if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1
+          || (rel.getVariable() != null && !rel.getVariable().isEmpty()))
+        return null;
+      bwdET.add(rel.getTypes().get(0));
+      final Direction d = rel.getDirection().reverse();
+      bwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
+          : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
+      final String nodeVar = buildPattern.getNode(i).getVariable();
+      if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
+        bwdEndpointVar = nodeVar;
+        break;
+      }
+    }
+
+    // Walk forward from startNodeIdx to find the other endpoint
+    final java.util.ArrayList<String> fwdET = new java.util.ArrayList<>();
+    final java.util.ArrayList<Vertex.DIRECTION> fwdDir = new java.util.ArrayList<>();
+    String fwdEndpointVar = null;
+    for (int i = startNodeIdx; i < buildHops; i++) {
+      final RelationshipPattern rel = buildPattern.getRelationship(i);
+      if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1
+          || (rel.getVariable() != null && !rel.getVariable().isEmpty()))
+        return null;
+      fwdET.add(rel.getTypes().get(0));
+      final Direction d = rel.getDirection();
+      fwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
+          : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
+      final String nodeVar = buildPattern.getNode(i + 1).getVariable();
+      if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
+        fwdEndpointVar = nodeVar;
+        break;
+      }
+    }
+
+    if (bwdEndpointVar == null || fwdEndpointVar == null)
+      return null;
+    if (bwdEndpointVar.equals(fwdEndpointVar))
+      return null; // Both arms reach the same endpoint
+
+    // Arm reaching probeVar1 and arm reaching probeVar2
+    final String[] arm1ET, arm2ET;
+    final Vertex.DIRECTION[] arm1Dir, arm2Dir;
+    if (bwdEndpointVar.equals(probeVar1)) {
+      arm1ET = bwdET.toArray(new String[0]);
+      arm1Dir = bwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm2ET = fwdET.toArray(new String[0]);
+      arm2Dir = fwdDir.toArray(new Vertex.DIRECTION[0]);
+    } else {
+      arm1ET = fwdET.toArray(new String[0]);
+      arm1Dir = fwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm2ET = bwdET.toArray(new String[0]);
+      arm2Dir = bwdDir.toArray(new Vertex.DIRECTION[0]);
+    }
+
+    final String alias = retItem.getAlias() != null ? retItem.getAlias() : "count(*)";
+    return new CountPairJoinStep(buildStartLabel, arm1ET, arm1Dir, arm2ET, arm2Dir,
+        probeEdgeType, probeDirection, alias, context);
   }
 
   /**
