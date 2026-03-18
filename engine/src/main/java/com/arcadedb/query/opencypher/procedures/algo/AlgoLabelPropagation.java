@@ -33,6 +33,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -122,14 +123,12 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
 
     final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations);
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", gav.getRID(i).asVertex());
+      result.setProperty("node", gav.getRID(i));
       result.setProperty("communityId", labels[i]);
-      results.add(result);
-    }
-    return results.stream();
+      return (Result) result;
+    });
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final int maxIterations,
@@ -190,13 +189,12 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     }
 
     // Return raw label values (no sequential remapping)
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    final int[] finalLabel = label;
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", vertices.get(i));
-      result.setProperty("communityId", label[i]);
-      results.add(result);
-    }
-    return results.stream();
+      result.setProperty("node", vertices.get(i).getIdentity());
+      result.setProperty("communityId", finalLabel[i]);
+      return (Result) result;
+    });
   }
 }
