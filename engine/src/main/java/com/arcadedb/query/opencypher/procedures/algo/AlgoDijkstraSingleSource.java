@@ -114,14 +114,14 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     final GraphTraversalProvider provider = findProvider(db, relTypes);
     if (provider instanceof GraphAnalyticalView gav && gav.hasEdgeProperties()) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(gav, startNode.getIdentity(), relTypes, weightProperty, dir);
+      return executeWithCSR(context, gav, startNode.getIdentity(), relTypes, weightProperty, dir);
     }
 
     // Fall back to OLTP path
     return executeWithOLTP(db, startNode, relTypes, weightProperty, dir);
   }
 
-  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final RID startRid,
+  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav, final RID startRid,
       final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
     final int n = gav.getNodeCount();
     if (n == 0)
@@ -133,6 +133,10 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
 
     final double[] dist = GraphAlgorithms.dijkstraSingleSource(
         gav, src, weightProperty, dir, relTypes);
+    long reachable = 0;
+    for (int i = 0; i < n; i++)
+      if (i != src && dist[i] < Double.POSITIVE_INFINITY) reachable++;
+    context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, reachable);
 
     return IntStream.range(0, n).filter(i -> i != src && dist[i] < Double.POSITIVE_INFINITY).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();

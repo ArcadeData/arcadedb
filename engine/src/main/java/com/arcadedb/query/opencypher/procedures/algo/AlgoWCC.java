@@ -93,19 +93,20 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     final GraphTraversalProvider provider = findProvider(db, null);
     if (provider instanceof GraphAnalyticalView gav) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(gav);
+      return executeWithCSR(context, gav);
     }
 
     // Fall back to OLTP path
     return executeWithOLTP(db);
   }
 
-  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav) {
+  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
     final int[] componentId = GraphAlgorithms.connectedComponents(gav);
+    context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();

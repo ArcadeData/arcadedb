@@ -111,6 +111,10 @@ public class AlgoBFS extends AbstractAlgoProcedure {
         return Stream.empty();
       final int n = gav.getNodeCount();
       final int[] depths = GraphAlgorithms.shortestPathAll(gav, startIdx, dir, relTypes);
+      long reachable = 0;
+      for (int i = 0; i < n; i++)
+        if (i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth) reachable++;
+      context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, reachable);
       return IntStream.range(0, n).filter(i -> i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth).mapToObj(i -> {
         final ResultInternal r = new ResultInternal();
         r.setProperty("node", gav.getRID(i));

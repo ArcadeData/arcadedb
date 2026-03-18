@@ -66,6 +66,16 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CallStep extends AbstractExecutionStep {
+  private boolean countOnlyOptimization = false;
+
+  /**
+   * Enables count-only optimization: when the downstream only needs count(*),
+   * the procedure's result stream can be replaced with a fast-counting ResultSet
+   * that skips per-row Result object creation.
+   */
+  public void setCountOnlyOptimization(final boolean enabled) {
+    this.countOnlyOptimization = enabled;
+  }
   private final CallClause callClause;
   private final CypherFunctionFactory functionFactory;
   private final ExpressionEvaluator evaluator;
@@ -103,11 +113,13 @@ public class CallStep extends AbstractExecutionStep {
    * </pre>
    */
   private ResultSet executeChainedCall(final CommandContext context, final int nRecords) {
-    final List<ResultInternal> results = new ArrayList<>();
-
     // Pull rows from previous step
     final ResultSet prevResults = prev.syncPull(context, nRecords);
+    final boolean hasYield = callClause.hasYield() && !callClause.isYieldAll();
+    final boolean yieldHasWhere = hasYield && callClause.getYieldWhere() != null;
 
+    // Collect all results from all input rows
+    final List<Iterator<?>> allIters = new ArrayList<>();
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -115,29 +127,20 @@ public class CallStep extends AbstractExecutionStep {
         if (context.isProfiling())
           rowCount++;
 
-        // Execute the call with this row's context
         final Object callResult = executeCall(context, inputRow);
 
-        // Convert and add results, merging with input row properties
         if (callResult == null) {
-          // OPTIONAL CALL returned null - pass through input row
-          if (callClause.isOptional()) {
-            results.add(mergeWithInputRow(inputRow, null));
-          }
+          if (callClause.isOptional())
+            allIters.add(java.util.Collections.singletonList((Object) mergeWithInputRow(inputRow, null)).iterator());
           continue;
         }
 
-        if (callResult instanceof Collection) {
-          for (final Object item : (Collection<?>) callResult) {
-            results.add(mergeWithInputRow(inputRow, convertItemToResult(item)));
-          }
-        } else if (callResult instanceof Iterator) {
-          final Iterator<?> iter = (Iterator<?>) callResult;
-          while (iter.hasNext()) {
-            results.add(mergeWithInputRow(inputRow, convertItemToResult(iter.next())));
-          }
+        if (callResult instanceof Iterator) {
+          allIters.add((Iterator<?>) callResult);
+        } else if (callResult instanceof Collection) {
+          allIters.add(((Collection<?>) callResult).iterator());
         } else {
-          results.add(mergeWithInputRow(inputRow, convertItemToResult(callResult)));
+          allIters.add(java.util.Collections.singletonList(callResult).iterator());
         }
       } finally {
         if (context.isProfiling())
@@ -145,12 +148,75 @@ public class CallStep extends AbstractExecutionStep {
       }
     }
 
-    // Apply YIELD filtering if specified
-    if (callClause.hasYield() && !callClause.isYieldAll()) {
-      return applyYieldFiltering(results);
+    // Check for result count hint (set by CSR-accelerated algorithm procedures)
+    // Only activate when countOnlyOptimization is enabled (detected during plan compilation)
+    final Object countHint = countOnlyOptimization ? context.getVariable(CommandContext.RESULT_COUNT_HINT_VAR) : null;
+    if (countHint instanceof Long resultCount && resultCount > 0 && !yieldHasWhere) {
+      // Fast path: return a ResultSet that yields `resultCount` shared empty results.
+      // The procedure already computed the algorithm; downstream only needs the row count.
+      final ResultInternal sharedResult = new ResultInternal();
+      return new ResultSet() {
+        private long remaining = resultCount;
+
+        @Override
+        public boolean hasNext() {
+          return remaining > 0;
+        }
+
+        @Override
+        public Result next() {
+          if (remaining-- <= 0)
+            throw new java.util.NoSuchElementException();
+          return sharedResult;
+        }
+
+        @Override
+        public void close() {
+        }
+      };
     }
 
-    return new IteratorResultSet(results.iterator());
+    // Standard path: lazily iterate through all result iterators
+    final Iterator<Iterator<?>> iterOfIters = allIters.iterator();
+    final Iterator<Result> lazyIter = new Iterator<>() {
+      private Iterator<?> currentIter = null;
+      private Result next = null;
+
+      @Override
+      public boolean hasNext() {
+        while (next == null) {
+          if (currentIter != null && currentIter.hasNext()) {
+            final ResultInternal converted = convertItemToResult(currentIter.next());
+            if (hasYield) {
+              final ResultInternal filtered = applyYieldToSingleResult(converted);
+              if (filtered != null) {
+                next = filtered;
+                return true;
+              }
+            } else {
+              next = converted;
+              return true;
+            }
+          } else if (iterOfIters.hasNext()) {
+            currentIter = iterOfIters.next();
+          } else {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      @Override
+      public Result next() {
+        if (!hasNext())
+          throw new java.util.NoSuchElementException();
+        final Result r = next;
+        next = null;
+        return r;
+      }
+    };
+
+    return new IteratorResultSet(lazyIter);
   }
 
   /**
@@ -452,9 +518,39 @@ public class CallStep extends AbstractExecutionStep {
       sourceIter = java.util.Collections.singletonList(result).iterator();
     }
 
-    // Apply YIELD filtering lazily if specified
+    // Optimization: when the procedure has set a result count hint and YIELD has no WHERE filter,
+    // return a fast-counting ResultSet that reuses a single shared Result object instead of
+    // creating one per row. This makes count(*) queries O(1) in memory instead of O(n).
     final boolean hasYield = callClause.hasYield() && !callClause.isYieldAll();
+    final boolean yieldHasWhere = hasYield && callClause.getYieldWhere() != null;
+    final Object countHint = countOnlyOptimization ? context.getVariable(CommandContext.RESULT_COUNT_HINT_VAR) : null;
 
+    if (countHint instanceof Long resultCount && resultCount > 0 && !yieldHasWhere) {
+      // Fast path: return a ResultSet that yields `resultCount` shared empty results.
+      // The procedure already computed the algorithm; downstream only needs the count.
+      final ResultInternal sharedResult = new ResultInternal();
+      return new ResultSet() {
+        private long remaining = resultCount;
+
+        @Override
+        public boolean hasNext() {
+          return remaining > 0;
+        }
+
+        @Override
+        public Result next() {
+          if (remaining-- <= 0)
+            throw new java.util.NoSuchElementException();
+          return sharedResult;
+        }
+
+        @Override
+        public void close() {
+        }
+      };
+    }
+
+    // Standard path: apply YIELD filtering lazily
     final Iterator<Result> lazyIter = new Iterator<>() {
       private Result next = null;
 
