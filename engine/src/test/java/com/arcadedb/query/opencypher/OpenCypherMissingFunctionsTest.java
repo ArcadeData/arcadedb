@@ -251,7 +251,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
 
   @Test
   void charLength() {
-    try (final ResultSet rs = database.command("opencypher", "RETURN char_length('hello') AS val")) {
+    try (final ResultSet rs = database.command("opencypher", "RETURN char.length('hello') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).longValue()).isEqualTo(5L);
     }
@@ -259,7 +259,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
 
   @Test
   void characterLength() {
-    try (final ResultSet rs = database.command("opencypher", "RETURN character_length('hello') AS val")) {
+    try (final ResultSet rs = database.command("opencypher", "RETURN character.length('hello') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).longValue()).isEqualTo(5L);
     }

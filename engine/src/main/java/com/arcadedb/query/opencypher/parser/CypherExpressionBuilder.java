@@ -2496,13 +2496,13 @@ class CypherExpressionBuilder {
 
   /**
    * Parse vector(values, dimension, type) into a FunctionCallExpression.
-   * Delegates to the "vector_create" Cypher function which converts a list to float[].
+   * Delegates to the "vector.create" Cypher function which converts a list to float[].
    */
   Expression parseVectorFunction(final Cypher25Parser.VectorFunctionContext ctx) {
     final List<Expression> args = new ArrayList<>();
     args.add(parseExpression(ctx.vectorValue));
     args.add(parseExpression(ctx.dimension));
-    return new FunctionCallExpression("vector_create", args, false);
+    return new FunctionCallExpression("vector.create", args, false);
   }
 
   /**
@@ -2530,8 +2530,8 @@ class CypherExpressionBuilder {
     final String metric = ctx.vectorDistanceMetric().getText().toUpperCase();
     final String functionName = switch (metric) {
       case "EUCLIDEAN" -> "vector.l2Distance";
-      case "MANHATTAN" -> "vector_distance_manhattan";
-      case "COSINE" -> "vector_distance_cosine";
+      case "MANHATTAN" -> "vector.distance.manhattan";
+      case "COSINE" -> "vector.distance.cosine";
       case "DOT" -> "vector.dotProduct";
       default -> throw new CommandParsingException("Unsupported vector_distance metric: " + metric);
     };
