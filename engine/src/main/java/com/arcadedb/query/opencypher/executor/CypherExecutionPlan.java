@@ -56,11 +56,13 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
-import com.arcadedb.query.opencypher.executor.steps.CountChainPathsStep;
+import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
-import com.arcadedb.query.opencypher.executor.steps.CountCountryTrianglesStep;
-import com.arcadedb.query.opencypher.executor.steps.CountPairJoinStep;
-import com.arcadedb.query.opencypher.executor.steps.CountStarJoinStep;
+import com.arcadedb.query.opencypher.executor.steps.CountOp;
+import com.arcadedb.query.opencypher.executor.steps.DegreeProductOp;
+import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
+import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
+import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
@@ -220,13 +222,7 @@ public class CypherExecutionPlan {
     // FAST PATH: Specialized count-push-down optimizations.
     // Must be checked BEFORE the optimizer dispatch, because the optimizer produces
     // GAVExpandAll operators that still materialize individual rows (O(paths) memory).
-    rootStep = tryOptimizeChainCountStar(context);
-    if (rootStep == null)
-      rootStep = tryOptimizeStarCountStar(context);
-    if (rootStep == null)
-      rootStep = tryOptimizeTriangleCountStar(context);
-    if (rootStep == null)
-      rootStep = tryOptimizePairJoinCountStar(context);
+    rootStep = tryOptimizeCountStar(context);
 
     if (rootStep == null) {
       // Phase 4: Use optimized physical plan if available
@@ -423,13 +419,7 @@ public class CypherExecutionPlan {
           results.add(resultSet.next());
       } else {
         // FAST PATH: Count-push-down (same logic as execute())
-        rootStep = tryOptimizeChainCountStar(context);
-        if (rootStep == null)
-          rootStep = tryOptimizeStarCountStar(context);
-        if (rootStep == null)
-          rootStep = tryOptimizeTriangleCountStar(context);
-        if (rootStep == null)
-          rootStep = tryOptimizePairJoinCountStar(context);
+        rootStep = tryOptimizeCountStar(context);
 
         if (rootStep == null) {
           final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
@@ -897,12 +887,12 @@ public class CypherExecutionPlan {
     if (typeCountStep != null)
       return typeCountStep;
 
-    // OPTIMIZATION: Count-push-down for linear chain patterns with RETURN count(*)
+    // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
     // Instead of materializing all paths (O(paths) memory), propagates counts through
     // CSR arrays level-by-level (O(nodes) memory). Critical for large-fanout chains.
-    final AbstractExecutionStep chainCountStep = tryOptimizeChainCountStar(context);
-    if (chainCountStep != null)
-      return chainCountStep;
+    final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
+    if (countStep != null)
+      return countStep;
 
     // Special case: no MATCH as first clause (standalone expressions, WITH before MATCH, etc.)
     // E.g., RETURN abs(-42), WITH collect([0, 0.0]) AS numbers UNWIND ...
@@ -1637,10 +1627,10 @@ public class CypherExecutionPlan {
     if (typeCountStep != null)
       return typeCountStep;
 
-    // OPTIMIZATION: Count-push-down for linear chain patterns with RETURN count(*)
-    final AbstractExecutionStep chainCountStep = tryOptimizeChainCountStar(context);
-    if (chainCountStep != null)
-      return chainCountStep;
+    // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
+    final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
+    if (countStep != null)
+      return countStep;
 
     // Special case: RETURN without MATCH (standalone expressions)
     // E.g., RETURN abs(-42), RETURN 1+1
@@ -3405,39 +3395,12 @@ public class CypherExecutionPlan {
     return true;
   }
 
-  private AbstractExecutionStep tryOptimizeChainCountStar(final CommandContext context) {
-    // Exactly one MATCH clause
-    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
-      return null;
-    final MatchClause matchClause = statement.getMatchClauses().get(0);
-    if (matchClause.isOptional())
-      return null;
-
-    // WHERE: allow simple inequality (var1 <> var2) or no WHERE
-    String inequalityVar1 = null;
-    String inequalityVar2 = null;
-    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
-    if (whereClause != null) {
-      // Try to extract a simple inequality: exactly "var1 <> var2"
-      final String[] ineqPair = extractSimpleInequality(whereClause);
-      if (ineqPair == null)
-        return null; // Complex WHERE → can't optimize
-      inequalityVar1 = ineqPair[0];
-      inequalityVar2 = ineqPair[1];
-      // Ensure the inequality is the ONLY WHERE condition
-      // (already guaranteed by extractSimpleInequality returning non-null only for single comparisons)
-    }
-
-    // Exactly one path pattern with at least one relationship
-    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
-      return null;
-    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
-    if (pathPattern.getRelationshipCount() < 1)
-      return null;
-    if (pathPattern.hasPathVariable())
-      return null;
-
-    // RETURN must be exactly count(*) with no grouping
+  /**
+   * Checks if the RETURN clause is exactly {@code RETURN count(*) AS alias}.
+   *
+   * @return the alias (or "count(*)"), or null if not a count(*) return
+   */
+  private String isCountStarReturn() {
     final ReturnClause returnClause = statement.getReturnClause();
     if (returnClause == null || returnClause.isDistinct())
       return null;
@@ -3450,18 +3413,73 @@ public class CypherExecutionPlan {
     final FunctionCallExpression func = (FunctionCallExpression) item.getExpression();
     if (!"count".equals(func.getFunctionName()))
       return null;
-    // Must be count(*) — argument is StarExpression
     if (func.getArguments().size() != 1 || !(func.getArguments().get(0) instanceof StarExpression))
       return null;
+    return item.getAlias() != null ? item.getAlias() : "count(*)";
+  }
 
-    // No other clauses (WITH, CREATE, SET, etc.)
-    if (statement.getClausesInOrder() != null) {
-      for (final ClauseEntry entry : statement.getClausesInOrder()) {
-        final ClauseEntry.ClauseType type = entry.getType();
-        if (type != ClauseEntry.ClauseType.MATCH && type != ClauseEntry.ClauseType.RETURN)
-          return null;
-      }
+  /**
+   * Checks that there are no clause types other than MATCH and RETURN.
+   */
+  private boolean hasOnlyMatchAndReturnClauses() {
+    if (statement.getClausesInOrder() == null)
+      return true;
+    for (final ClauseEntry entry : statement.getClausesInOrder()) {
+      final ClauseEntry.ClauseType type = entry.getType();
+      if (type != ClauseEntry.ClauseType.MATCH && type != ClauseEntry.ClauseType.RETURN)
+        return false;
     }
+    return true;
+  }
+
+  /**
+   * Unified entry point: tries all count-push-down patterns and wraps the result in a CSRCountStep.
+   */
+  private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context) {
+    CountOp op = tryDetectChainCountStar();
+    if (op == null)
+      op = tryDetectStarCountStar();
+    if (op == null)
+      op = tryDetectTriangleCountStar();
+    if (op == null)
+      op = tryDetectPairJoinCountStar();
+    if (op == null)
+      return null;
+    final String alias = isCountStarReturn();
+    return new CSRCountStep(op, alias, context);
+  }
+
+  private CountOp tryDetectChainCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
+
+    // Exactly one MATCH clause
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    if (matchClause.isOptional())
+      return null;
+
+    // WHERE: allow simple inequality (var1 <> var2) or no WHERE
+    String inequalityVar1 = null;
+    String inequalityVar2 = null;
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+    if (whereClause != null) {
+      final String[] ineqPair = extractSimpleInequality(whereClause);
+      if (ineqPair == null)
+        return null;
+      inequalityVar1 = ineqPair[0];
+      inequalityVar2 = ineqPair[1];
+    }
+
+    // Exactly one path pattern with at least one relationship
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    if (pathPattern.getRelationshipCount() < 1)
+      return null;
+    if (pathPattern.hasPathVariable())
+      return null;
 
     // All relationships must be fixed-length, anonymous, no properties
     final int hopCount = pathPattern.getRelationshipCount();
@@ -3483,7 +3501,7 @@ public class CypherExecutionPlan {
       if (rel.hasProperties())
         return null;
       if (!rel.hasTypes() || rel.getTypes().size() != 1)
-        return null; // Require exactly one edge type per hop for CSR
+        return null;
 
       edgeTypes[i] = rel.getTypes().get(0);
       final Direction dir = rel.getDirection();
@@ -3497,8 +3515,7 @@ public class CypherExecutionPlan {
 
     // Count-push-down does NOT enforce edge uniqueness, so it's only safe when:
     // (a) all edge types are disjoint, OR
-    // (b) there's an inequality filter between the endpoints sharing the duplicate type,
-    //     which guarantees edge uniqueness (e.g., p1<>p3 for KNOWS-KNOWS chains)
+    // (b) there's an inequality filter
     final Set<String> seenTypes = new HashSet<>();
     boolean hasDuplicateTypes = false;
     for (final String et : edgeTypes)
@@ -3506,7 +3523,7 @@ public class CypherExecutionPlan {
         hasDuplicateTypes = true;
 
     if (hasDuplicateTypes && inequalityVar1 == null)
-      return null; // Duplicate types without inequality → unsafe
+      return null;
 
     // Resolve inequality variable positions in the chain
     int inequalityIdxA = -1;
@@ -3523,12 +3540,10 @@ public class CypherExecutionPlan {
         }
       }
       if (inequalityIdxA < 0 || inequalityIdxB < 0)
-        return null; // Inequality variables not found in chain
+        return null;
     }
 
-    final String alias = item.getAlias() != null ? item.getAlias() : "count(*)";
-    return new CountChainPathsStep(nodeLabels, edgeTypes, directions, alias,
-        inequalityIdxA, inequalityIdxB, context);
+    return new PropagateChainOp(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB);
   }
 
   /**
@@ -3543,7 +3558,10 @@ public class CypherExecutionPlan {
    *
    * @return optimized CountStarJoinStep if pattern matches, null otherwise
    */
-  private AbstractExecutionStep tryOptimizeStarCountStar(final CommandContext context) {
+  private CountOp tryDetectStarCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
+
     // Must have at least one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().isEmpty())
       return null;
@@ -3552,36 +3570,10 @@ public class CypherExecutionPlan {
     if (statement.getWhereClause() != null)
       return null;
 
-    // RETURN must be exactly count(*)
-    final ReturnClause returnClause = statement.getReturnClause();
-    if (returnClause == null || returnClause.isDistinct())
-      return null;
-    final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
-    if (items.size() != 1)
-      return null;
-    final ReturnClause.ReturnItem retItem = items.get(0);
-    if (!(retItem.getExpression() instanceof FunctionCallExpression))
-      return null;
-    final FunctionCallExpression func = (FunctionCallExpression) retItem.getExpression();
-    if (!"count".equals(func.getFunctionName()))
-      return null;
-    if (func.getArguments().size() != 1 || !(func.getArguments().get(0) instanceof StarExpression))
-      return null;
-
-    // No other clauses besides MATCH/OPTIONAL MATCH and RETURN
-    if (statement.getClausesInOrder() != null) {
-      for (final ClauseEntry entry : statement.getClausesInOrder()) {
-        final ClauseEntry.ClauseType type = entry.getType();
-        if (type != ClauseEntry.ClauseType.MATCH && type != ClauseEntry.ClauseType.RETURN)
-          return null;
-      }
-    }
-
     // Find the central variable: the one variable that appears in multiple path patterns.
-    // All other nodes must be anonymous or only appear in one pattern.
     String centralVar = null;
     String centralLabel = null;
-    final java.util.ArrayList<CountStarJoinStep.Arm> armList = new java.util.ArrayList<>();
+    final java.util.ArrayList<DegreeProductOp.Arm> armList = new java.util.ArrayList<>();
 
     for (final MatchClause matchClause : statement.getMatchClauses()) {
       if (matchClause.hasWhereClause())
@@ -3594,9 +3586,7 @@ public class CypherExecutionPlan {
         if (pathPattern.hasPathVariable())
           return null;
 
-        // Each path pattern must have at least one relationship
         if (pathPattern.getRelationshipCount() < 1) {
-          // Single node pattern: could be the central node anchor
           if (pathPattern.isSingleNode()) {
             final NodePattern node = pathPattern.getFirstNode();
             if (node.getVariable() != null) {
@@ -3605,15 +3595,13 @@ public class CypherExecutionPlan {
                 if (node.hasLabels())
                   centralLabel = node.getLabels().get(0);
               } else if (!centralVar.equals(node.getVariable()))
-                return null; // Multiple different single-node variables
+                return null;
             }
             continue;
           }
           return null;
         }
 
-        // Find which node in this pattern is the central variable
-        // The central node must be at an endpoint and appear by variable name
         int centralNodeIdx = -1;
         for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
           final NodePattern node = pathPattern.getNode(i);
@@ -3626,36 +3614,29 @@ public class CypherExecutionPlan {
               centralNodeIdx = i;
             } else if (centralVar.equals(nodeVar)) {
               centralNodeIdx = i;
-            } else {
-              // Another named variable that is not the central → not a star pattern
+            } else
               return null;
-            }
           }
         }
 
         if (centralNodeIdx < 0)
-          return null; // No central variable in this pattern
+          return null;
 
-        // Build arms from the central node outward. If the central node is in the middle,
-        // split the path into two arms: one going left, one going right.
         final int totalHops = pathPattern.getRelationshipCount();
 
         if (centralNodeIdx == 0) {
-          // Central at start: one arm going forward (0→1→2...)
-          final CountStarJoinStep.Arm arm = buildArmForward(pathPattern, 0, totalHops, isOptional);
+          final DegreeProductOp.Arm arm = buildArmForward(pathPattern, 0, totalHops, isOptional);
           if (arm == null) return null;
           armList.add(arm);
         } else if (centralNodeIdx == totalHops) {
-          // Central at end: one arm going backward (last→...→0)
-          final CountStarJoinStep.Arm arm = buildArmBackward(pathPattern, totalHops, 0, isOptional);
+          final DegreeProductOp.Arm arm = buildArmBackward(pathPattern, totalHops, 0, isOptional);
           if (arm == null) return null;
           armList.add(arm);
         } else {
-          // Central in the middle: split into left arm (backward) and right arm (forward)
-          final CountStarJoinStep.Arm leftArm = buildArmBackward(pathPattern, centralNodeIdx, 0, isOptional);
+          final DegreeProductOp.Arm leftArm = buildArmBackward(pathPattern, centralNodeIdx, 0, isOptional);
           if (leftArm == null) return null;
           armList.add(leftArm);
-          final CountStarJoinStep.Arm rightArm = buildArmForward(pathPattern, centralNodeIdx, totalHops, isOptional);
+          final DegreeProductOp.Arm rightArm = buildArmForward(pathPattern, centralNodeIdx, totalHops, isOptional);
           if (rightArm == null) return null;
           armList.add(rightArm);
         }
@@ -3665,8 +3646,7 @@ public class CypherExecutionPlan {
     if (centralVar == null || centralLabel == null || armList.isEmpty())
       return null;
 
-    final String alias = retItem.getAlias() != null ? retItem.getAlias() : "count(*)";
-    return new CountStarJoinStep(centralLabel, armList.toArray(new CountStarJoinStep.Arm[0]), alias, context);
+    return new DegreeProductOp(centralLabel, armList.toArray(new DegreeProductOp.Arm[0]));
   }
 
   /**
@@ -3681,32 +3661,13 @@ public class CypherExecutionPlan {
    * </pre>
    * Requires: 5+ MATCH clauses, no WHERE, RETURN count(*), one cycle MATCH, three partition MATCHes.
    */
-  private AbstractExecutionStep tryOptimizeTriangleCountStar(final CommandContext context) {
+  private CountOp tryDetectTriangleCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() < 4)
       return null;
     if (statement.getWhereClause() != null)
       return null;
-
-    // RETURN must be exactly count(*)
-    final ReturnClause returnClause = statement.getReturnClause();
-    if (returnClause == null || returnClause.isDistinct())
-      return null;
-    final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
-    if (items.size() != 1)
-      return null;
-    final ReturnClause.ReturnItem retItem = items.get(0);
-    if (!(retItem.getExpression() instanceof FunctionCallExpression))
-      return null;
-    final FunctionCallExpression func = (FunctionCallExpression) retItem.getExpression();
-    if (!"count".equals(func.getFunctionName()) || func.getArguments().size() != 1
-        || !(func.getArguments().get(0) instanceof StarExpression))
-      return null;
-
-    // No other clause types
-    if (statement.getClausesInOrder() != null)
-      for (final ClauseEntry entry : statement.getClausesInOrder())
-        if (entry.getType() != ClauseEntry.ClauseType.MATCH && entry.getType() != ClauseEntry.ClauseType.RETURN)
-          return null;
 
     // No MATCH clause should have WHERE
     for (final MatchClause mc : statement.getMatchClauses())
@@ -3835,9 +3796,7 @@ public class CypherExecutionPlan {
     if (chainMatchCount != 3 || partitionEdgeTypes == null)
       return null;
 
-    final String alias = retItem.getAlias() != null ? retItem.getAlias() : "count(*)";
-    return new CountCountryTrianglesStep(partitionEdgeTypes, partitionDirections,
-        cycleEdgeType, alias, context);
+    return new PartitionedTriangleOp(partitionEdgeTypes, partitionDirections, cycleEdgeType);
   }
 
   /**
@@ -3849,7 +3808,10 @@ public class CypherExecutionPlan {
    *   RETURN count(*) AS count
    * </pre>
    */
-  private AbstractExecutionStep tryOptimizePairJoinCountStar(final CommandContext context) {
+  private CountOp tryDetectPairJoinCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
+
     // Exactly one non-optional MATCH with exactly 2 path patterns
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
@@ -3860,27 +3822,6 @@ public class CypherExecutionPlan {
       return null;
     if (statement.getWhereClause() != null)
       return null;
-
-    // RETURN must be exactly count(*)
-    final ReturnClause returnClause = statement.getReturnClause();
-    if (returnClause == null || returnClause.isDistinct())
-      return null;
-    final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
-    if (items.size() != 1)
-      return null;
-    final ReturnClause.ReturnItem retItem = items.get(0);
-    if (!(retItem.getExpression() instanceof FunctionCallExpression))
-      return null;
-    final FunctionCallExpression func = (FunctionCallExpression) retItem.getExpression();
-    if (!"count".equals(func.getFunctionName()) || func.getArguments().size() != 1
-        || !(func.getArguments().get(0) instanceof StarExpression))
-      return null;
-
-    // No other clauses
-    if (statement.getClausesInOrder() != null)
-      for (final ClauseEntry entry : statement.getClausesInOrder())
-        if (entry.getType() != ClauseEntry.ClauseType.MATCH && entry.getType() != ClauseEntry.ClauseType.RETURN)
-          return null;
 
     // Identify probe (single-hop) and build (multi-hop) patterns
     final PathPattern pp0 = matchClause.getPathPatterns().get(0);
@@ -4010,9 +3951,8 @@ public class CypherExecutionPlan {
       arm2Dir = bwdDir.toArray(new Vertex.DIRECTION[0]);
     }
 
-    final String alias = retItem.getAlias() != null ? retItem.getAlias() : "count(*)";
-    return new CountPairJoinStep(buildStartLabel, arm1ET, arm1Dir, arm2ET, arm2Dir,
-        probeEdgeType, probeDirection, alias, context);
+    return new PairHashJoinOp(buildStartLabel, arm1ET, arm1Dir, arm2ET, arm2Dir,
+        probeEdgeType, probeDirection);
   }
 
   /**
@@ -4040,7 +3980,7 @@ public class CypherExecutionPlan {
    * Builds a star-join arm going forward from centralIdx toward endIdx in the path pattern.
    * Direction is preserved as-is from the pattern.
    */
-  private CountStarJoinStep.Arm buildArmForward(final PathPattern pathPattern, final int centralIdx,
+  private DegreeProductOp.Arm buildArmForward(final PathPattern pathPattern, final int centralIdx,
       final int endIdx, final boolean optional) {
     final int hops = endIdx - centralIdx;
     final String[] edgeTypes = new String[hops];
@@ -4055,14 +3995,14 @@ public class CypherExecutionPlan {
       directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
           : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
     }
-    return new CountStarJoinStep.Arm(edgeTypes, directions, optional);
+    return new DegreeProductOp.Arm(edgeTypes, directions, optional);
   }
 
   /**
    * Builds a star-join arm going backward from centralIdx toward endIdx in the path pattern.
    * Directions are reversed since we traverse from the central node toward position 0.
    */
-  private CountStarJoinStep.Arm buildArmBackward(final PathPattern pathPattern, final int centralIdx,
+  private DegreeProductOp.Arm buildArmBackward(final PathPattern pathPattern, final int centralIdx,
       final int endIdx, final boolean optional) {
     final int hops = centralIdx - endIdx;
     final String[] edgeTypes = new String[hops];
@@ -4079,7 +4019,7 @@ public class CypherExecutionPlan {
       directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
           : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
     }
-    return new CountStarJoinStep.Arm(edgeTypes, directions, optional);
+    return new DegreeProductOp.Arm(edgeTypes, directions, optional);
   }
 
   private String extractIdFilter(final WhereClause whereClause, final String variable) {
