@@ -191,9 +191,6 @@ public class GrpcServerIT extends BaseGraphServerTest {
     return GrpcValue.newBuilder().setInt64Value(l).build();
   }
 
-  private GrpcValue sv(final String s) {
-    return stringValue(s);
-  }
 
   @Test
   void executeQuerySelectsExistingData() {
@@ -1007,7 +1004,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
             .setKind(GraphBatchRecord.Kind.VERTEX)
             .setTypeName("BatchNode")
             .setTempId("n1")
-            .putProperties("name", sv("Node1")))
+            .putProperties("name", stringValue("Node1")))
         .addRecords(GraphBatchRecord.newBuilder()
             .setKind(GraphBatchRecord.Kind.EDGE)
             .setTypeName("BatchLink")
@@ -1049,12 +1046,12 @@ public class GrpcServerIT extends BaseGraphServerTest {
             .setKind(GraphBatchRecord.Kind.VERTEX)
             .setTypeName("BatchItem")
             .setTempId("i1")
-            .putProperties("name", sv("Item1")))
+            .putProperties("name", stringValue("Item1")))
         .addRecords(GraphBatchRecord.newBuilder()
             .setKind(GraphBatchRecord.Kind.VERTEX)
             .setTypeName("BatchItem")
             .setTempId("i2")
-            .putProperties("name", sv("Item2")))
+            .putProperties("name", stringValue("Item2")))
         .build());
 
     // Second chunk: edge then vertex (violates ordering constraint)
@@ -1069,7 +1066,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
             .setKind(GraphBatchRecord.Kind.VERTEX)
             .setTypeName("BatchItem")
             .setTempId("i3")
-            .putProperties("name", sv("Item3")))
+            .putProperties("name", stringValue("Item3")))
         .build());
 
     requestObserver.onCompleted();
@@ -1078,6 +1075,8 @@ public class GrpcServerIT extends BaseGraphServerTest {
     assertThat(errorRef.get().getMessage()).contains("Vertex record received after edges");
   }
 
+  // This test sends only edges in the first chunk (no vertices in the batch).
+  // The batch is initialized with inEdgePhase=false; edge records immediately trigger the transition.
   @Test
   void graphBatchLoadWithDirectRidReferences() throws Exception {
     authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()

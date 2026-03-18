@@ -526,7 +526,7 @@ message GraphBatchRecord {
 // Interleaving is not supported and will result in an error.
 message GraphBatchChunk {
   string database                    = 1;  // required on first chunk
-  DatabaseCredentials credentials    = 2;  // required on first chunk
+  DatabaseCredentials credentials    = 2;  // optional if channel-level auth is used
   GraphBatchOptions options          = 3;  // required on first chunk, ignored after
   repeated GraphBatchRecord records  = 4;
 }
@@ -536,6 +536,9 @@ message GraphBatchResult {
   int64 edges_created            = 2;
   int64 elapsed_ms               = 3;
   map<string, string> id_mapping = 4;  // temp_id → RID string
+  // Note: for very large batches with many temp IDs, the id_mapping may exceed the default
+  // gRPC message size limit (4 MB). Callers importing millions of vertices with temp IDs should
+  // increase maxInboundMessageSize or avoid temp IDs when RID mapping is not needed.
 }
 
 // -----------------------------------------------------------------------------

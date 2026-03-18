@@ -1590,6 +1590,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final long startedAt = System.currentTimeMillis();
     final AtomicBoolean cancelled = new AtomicBoolean(false);
+    final boolean[] errorSent = { false };
     final AtomicReference<GraphBatch> batchRef = new AtomicReference<>();
     final AtomicReference<Database> dbRef = new AtomicReference<>();
     final Map<String, RID> tempIdMap = new HashMap<>();
@@ -1633,7 +1634,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
                 inEdgePhase[0] = true;
               }
-              processEdge(batch, rec, tempIdMap);
+              processEdge(batch, rec, dbRef.get(), tempIdMap);
               counts[1]++;
             } else {
               if (inEdgePhase[0])
@@ -1654,11 +1655,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             }
           }
         } catch (final Exception e) {
+          errorSent[0] = true;
           resp.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
+          // Note: closeQuietly may flush/commit partial data. GraphBatch has no rollback path by design
+          // (same as the HTTP batch endpoint). Callers should treat batch loading as non-atomic.
           closeQuietly(batchRef.get());
           return;
         } finally {
-          if (!cancelled.get())
+          if (!cancelled.get() && !errorSent[0])
             call.request(1);
         }
       }
@@ -1715,7 +1719,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return result;
   }
 
-  private RID resolveRef(final String ref, final Map<String, RID> tempIdMap) {
+  private RID resolveRef(final String ref, final Database db, final Map<String, RID> tempIdMap) {
     if (ref == null || ref.isEmpty())
       throw new IllegalArgumentException("Edge record is missing from_ref or to_ref");
     if (ref.charAt(0) == '#') {
@@ -1724,7 +1728,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         throw new IllegalArgumentException("Malformed RID '" + ref + "'");
       final int bucketId = Integer.parseInt(ref.substring(1, colonIdx));
       final long position = Long.parseLong(ref.substring(colonIdx + 1));
-      return new RID(null, bucketId, position);
+      return new RID(db, bucketId, position);
     }
     final RID rid = tempIdMap.get(ref);
     if (rid == null)
@@ -1747,9 +1751,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return count;
   }
 
-  private void processEdge(final GraphBatch batch, final GraphBatchRecord rec, final Map<String, RID> tempIdMap) {
-    final RID srcRID = resolveRef(rec.getFromRef(), tempIdMap);
-    final RID dstRID = resolveRef(rec.getToRef(), tempIdMap);
+  private void processEdge(final GraphBatch batch, final GraphBatchRecord rec, final Database db,
+      final Map<String, RID> tempIdMap) {
+    final RID srcRID = resolveRef(rec.getFromRef(), db, tempIdMap);
+    final RID dstRID = resolveRef(rec.getToRef(), db, tempIdMap);
     if (rec.getPropertiesMap().isEmpty())
       batch.newEdge(srcRID, rec.getTypeName(), dstRID);
     else
@@ -1765,6 +1770,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       builder.withLightEdges(true);
     if (opts.getWal())
       builder.withWAL(true);
+    // Only need to disable: builder defaults to true; setting true explicitly is a no-op
     if (opts.hasParallelFlush() && !opts.getParallelFlush())
       builder.withParallelFlush(false);
     if (opts.hasPreAllocateEdgeChunks() && !opts.getPreAllocateEdgeChunks())
