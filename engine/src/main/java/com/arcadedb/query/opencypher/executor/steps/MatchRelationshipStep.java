@@ -517,19 +517,29 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     if (pathVariable != null && !pathVariable.isEmpty())
       return false;
 
-    // 4. Edge uniqueness — other hops in the same MATCH already produced edges,
-    //    so Cypher requires deduplication via edge identity
-    if (resultContainsEdges(result))
+    // 4. Edge uniqueness — other hops in the same MATCH already produced edges
+    //    whose type overlaps with this hop's types. Disjoint-type edges are
+    //    always distinct, so they don't block the fast path.
+    if (resultContainsOverlappingEdges(result))
       return false;
 
     return true;
   }
 
   /**
-   * Checks if the result contains any edges that would require uniqueness checking.
+   * Checks if the result contains edges whose type overlaps with the current hop's edge types.
+   * <p>
+   * Cypher's relationship uniqueness constraint requires that each relationship in a MATCH clause
+   * matches a distinct edge. However, edges of different types are <i>always</i> distinct — an edge
+   * has exactly one type, so if the current hop only matches type A and the existing edges in the
+   * result are all type B, there is no uniqueness conflict. This allows hops with disjoint types
+   * to use the fast path (and GAV/CSR) even when prior hops in the same pattern needed edge tracking.
    */
   @SuppressWarnings("unchecked")
-  private boolean resultContainsEdges(final Result result) {
+  private boolean resultContainsOverlappingEdges(final Result result) {
+    // Current hop's edge types (null = untyped, matches all)
+    final List<String> currentTypes = pattern.hasTypes() ? pattern.getTypes() : null;
+
     for (final String prop : result.getPropertyNames()) {
       // Skip the current relationship variable if it's being rebound
       if (prop.equals(relationshipVariable))
@@ -538,14 +548,18 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       if (previousStepVariables != null && previousStepVariables.contains(prop))
         continue;
       final Object val = result.getProperty(prop);
-      if (val instanceof Edge)
-        return true;
+      if (val instanceof Edge) {
+        if (currentTypes == null || currentTypes.contains(((Edge) val).getTypeName()))
+          return true;
+      }
       if (val instanceof TraversalPath)
-        return true;
+        return true; // paths may contain any edge type — conservative
       if (val instanceof List) {
         for (final Object item : (List<Object>) val)
-          if (item instanceof Edge)
-            return true;
+          if (item instanceof Edge) {
+            if (currentTypes == null || currentTypes.contains(((Edge) item).getTypeName()))
+              return true;
+          }
       }
     }
     return false;

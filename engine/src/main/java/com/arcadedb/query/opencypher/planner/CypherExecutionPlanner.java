@@ -27,8 +27,10 @@ import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Creates optimized execution plans for Cypher statements.
@@ -206,13 +208,42 @@ public class CypherExecutionPlanner {
         return false;
     }
 
-    // Aggregation queries go through the traditional path which also supports GAV
-    // via MatchRelationshipStep fast path. The optimizer doesn't yet handle all edge
-    // cases (undirected self-relationships, complex pattern counting), so keep this
-    // restriction until those are resolved.
-    if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations())
-      return false;
+    // Aggregation queries: the optimizer doesn't enforce Cypher's relationship uniqueness
+    // constraint (each edge matched at most once per MATCH clause). When all edge types in
+    // the pattern are disjoint, uniqueness is automatically satisfied (an edge has exactly
+    // one type), so the optimizer is safe. When types overlap, fall back to the traditional
+    // path which supports edge tracking AND GAV via MatchRelationshipStep.
+    if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()) {
+      for (final MatchClause match : statement.getMatchClauses()) {
+        if (match.hasPathPatterns()) {
+          for (final PathPattern path : match.getPathPatterns()) {
+            if (!allEdgeTypesDisjoint(path))
+              return false;
+          }
+        }
+      }
+    }
 
+    return true;
+  }
+
+  /**
+   * Checks whether all edge types across all hops in a path pattern are disjoint
+   * (no type appears in more than one hop). When disjoint, the optimizer is safe
+   * to use even for aggregation queries because edge uniqueness is automatically satisfied.
+   */
+  private static boolean allEdgeTypesDisjoint(final PathPattern pathPattern) {
+    if (pathPattern.getRelationshipCount() <= 1)
+      return true;
+    final Set<String> seenTypes = new HashSet<>();
+    for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      if (!rel.hasTypes())
+        return false; // untyped hop overlaps with everything
+      for (final String type : rel.getTypes())
+        if (!seenTypes.add(type))
+          return false; // duplicate type
+    }
     return true;
   }
 }
