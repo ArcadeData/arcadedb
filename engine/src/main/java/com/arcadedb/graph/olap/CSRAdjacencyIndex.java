@@ -75,7 +75,6 @@ public class CSRAdjacencyIndex {
    * Returns the outgoing degree for the given node.
    */
   public int outDegree(final int nodeId) {
-    checkNodeId(nodeId);
     return fwdOffsets[nodeId + 1] - fwdOffsets[nodeId];
   }
 
@@ -83,7 +82,6 @@ public class CSRAdjacencyIndex {
    * Returns the incoming degree for the given node.
    */
   public int inDegree(final int nodeId) {
-    checkNodeId(nodeId);
     return bwdOffsets[nodeId + 1] - bwdOffsets[nodeId];
   }
 
@@ -91,7 +89,6 @@ public class CSRAdjacencyIndex {
    * Returns the start offset into the forward neighbors array for a node.
    */
   public int outOffset(final int nodeId) {
-    checkNodeId(nodeId);
     return fwdOffsets[nodeId];
   }
 
@@ -99,7 +96,6 @@ public class CSRAdjacencyIndex {
    * Returns the end offset (exclusive) into the forward neighbors array for a node.
    */
   public int outOffsetEnd(final int nodeId) {
-    checkNodeId(nodeId);
     return fwdOffsets[nodeId + 1];
   }
 
@@ -107,7 +103,6 @@ public class CSRAdjacencyIndex {
    * Returns the start offset into the backward neighbors array for a node.
    */
   public int inOffset(final int nodeId) {
-    checkNodeId(nodeId);
     return bwdOffsets[nodeId];
   }
 
@@ -115,7 +110,6 @@ public class CSRAdjacencyIndex {
    * Returns the end offset (exclusive) into the backward neighbors array for a node.
    */
   public int inOffsetEnd(final int nodeId) {
-    checkNodeId(nodeId);
     return bwdOffsets[nodeId + 1];
   }
 
@@ -169,11 +163,6 @@ public class CSRAdjacencyIndex {
 
   public int getEdgeCount() {
     return edgeCount;
-  }
-
-  private void checkNodeId(final int nodeId) {
-    if (nodeId < 0 || nodeId >= nodeCount)
-      throw new IndexOutOfBoundsException("nodeId " + nodeId + " out of range [0, " + nodeCount + ")");
   }
 
   /**
