@@ -26,7 +26,9 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -66,7 +68,16 @@ public final class PropagateChainOp implements CountOp {
     for (int i = 0; i <= hops; i++)
       validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
 
-    // Initialize counts for the anchor type
+    // When inequality is present and the inequality source is at position 0,
+    // use single-pass per-source expansion. This computes countAll and countEqual
+    // simultaneously, avoids dense long[nodeCount] arrays, and eliminates the
+    // separate self-loop subtraction pass entirely.
+    if (inequalityIdxA >= 0 && inequalityIdxB >= 0
+        && Math.min(inequalityIdxA, inequalityIdxB) == 0)
+      return executePerSourceInequality(provider, db, nodeCount, validBuckets);
+
+    // Standard dense array propagation for chains without inequality
+    // (or with inequality source not at position 0)
     long[] current = new long[nodeCount];
     final String anchorLabel = nodeLabels[0];
     if (anchorLabel != null && db.getSchema().existsType(anchorLabel)) {
@@ -78,22 +89,86 @@ public final class PropagateChainOp implements CountOp {
       }
     }
 
-    // Propagate counts through each hop
     for (int hop = 0; hop < hops; hop++) {
       current = CSRCountUtils.propagateOneHop(provider, current, directions[hop], edgeTypes[hop]);
       CSRCountUtils.filterByBuckets(provider, current, validBuckets[hop + 1]);
     }
 
-    // Sum all remaining counts
     long total = 0;
     for (int v = 0; v < nodeCount; v++)
       total += current[v];
 
-    // Subtract self-loop paths if inequality filter is active
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
       total -= countSelfLoopPaths(provider, db, validBuckets);
 
     return total;
+  }
+
+  /**
+   * Single-pass per-source expansion for chains with inequality starting at position 0.
+   * <p>
+   * For each anchor vertex, expands through the chain using sparse frontier arrays,
+   * applies the inequality filter inline (excluding paths where endpoints match),
+   * and computes tail contributions via degree lookups. This combines countAll and
+   * countEqual into a single traversal, avoiding dense node-indexed arrays entirely.
+   * <p>
+   * For Q5 (16K tags × ~90 frontier nodes each): ~1.4M CSR ops vs ~6M for dense + self-loop.
+   * For Q6 (10K persons × ~1.7K frontier nodes each): ~17M CSR ops (comparable to dense + self-loop).
+   */
+  private long executePerSourceInequality(final GraphTraversalProvider provider, final Database db,
+      final int nodeCount, final Set<Integer>[] validBuckets) {
+    final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
+
+    // Pre-fetch NeighborViews for hops up to the inequality target
+    final NeighborView[] views = new NeighborView[idxB];
+    for (int h = 0; h < idxB; h++)
+      views[h] = provider.getNeighborView(directions[h], edgeTypes[h]);
+
+    final String anchorLabel = nodeLabels[0];
+    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
+      return 0;
+
+    long totalCount = 0;
+
+    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
+      final RID rid = it.next().getIdentity();
+      final int srcId = provider.getNodeId(rid);
+      if (srcId < 0)
+        continue;
+
+      // Expand from srcId through hops [0, idxB)
+      int[] frontier = new int[]{srcId};
+      for (int h = 0; h < idxB; h++) {
+        frontier = expandFrontier(provider, frontier, views[h], h, validBuckets[h + 1]);
+        if (frontier.length == 0)
+          break;
+      }
+
+      if (frontier.length == 0)
+        continue;
+
+      // frontier now contains nodes at position idxB (the inequality target).
+      // Count contributions, excluding nodes that equal srcId (inequality filter).
+      // For each surviving node, compute the "tail" count (remaining hops after idxB).
+      for (final int p : frontier) {
+        if (p == srcId)
+          continue; // inequality: skip paths where endpoints match
+
+        // Compute tail: degree product for hops [idxB, end)
+        if (idxB >= edgeTypes.length) {
+          totalCount++; // no tail hops — endpoint is the chain end
+        } else {
+          long tailCount = 1;
+          for (int h = idxB; h < edgeTypes.length; h++) {
+            tailCount *= provider.countEdges(p, directions[h], edgeTypes[h]);
+            if (tailCount == 0)
+              break;
+          }
+          totalCount += tailCount;
+        }
+      }
+    }
+    return totalCount;
   }
 
   private long countSelfLoopPaths(final GraphTraversalProvider provider, final Database db,
@@ -264,33 +339,110 @@ public final class PropagateChainOp implements CountOp {
     if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
       return 0;
 
-    long total = 0;
-    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
-      final Vertex v = it.next().asVertex();
-      final RID anchorRid = inequalityIdxA == 0 ? v.getIdentity() : null;
-      total += countPathsFrom(v, 0, db, anchorRid);
+    // BFS count propagation: each unique vertex at each level is processed once,
+    // with its count capturing path multiplicity. This reduces O(paths) traversals
+    // to O(unique edges), which is dramatically faster for high-fanout chains.
+    // E.g., Q5 with 13.8M paths but only ~3.5M unique edges: ~4x fewer OLTP scans.
+    HashMap<RID, Long> current = new HashMap<>();
+    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); )
+      current.put(it.next().getIdentity(), 1L);
+
+    for (int hop = 0; hop < edgeTypes.length; hop++) {
+      final String targetLabel = nodeLabels[hop + 1];
+      final HashMap<RID, Long> next = new HashMap<>();
+      for (final Map.Entry<RID, Long> entry : current.entrySet()) {
+        final Vertex v = (Vertex) db.lookupByRID(entry.getKey(), true);
+        final long pathCount = entry.getValue();
+        final Iterator<Vertex> neighbors = v.getVertices(directions[hop], edgeTypes[hop]).iterator();
+        while (neighbors.hasNext()) {
+          final Vertex neighbor = neighbors.next();
+          if (targetLabel != null && !neighbor.getType().instanceOf(targetLabel))
+            continue;
+          next.merge(neighbor.getIdentity(), pathCount, Long::sum);
+        }
+      }
+      current = next;
     }
+
+    long total = 0;
+    for (final long c : current.values())
+      total += c;
+
+    // Subtract self-loop paths for inequality
+    if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
+      total -= countSelfLoopPathsOLTP(db);
+
     return total;
   }
 
-  private long countPathsFrom(final Vertex vertex, final int hopIndex, final Database db, final RID anchorRid) {
-    if (hopIndex >= edgeTypes.length)
-      return 1;
+  /**
+   * OLTP self-loop counting: for each anchor vertex, BFS through the sub-chain
+   * and check for paths that return to the anchor.
+   */
+  private long countSelfLoopPathsOLTP(final Database db) {
+    final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
+    final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
+    final int subLength = idxB - idxA;
 
-    final String targetLabel = nodeLabels[hopIndex + 1];
-    long count = 0;
+    final String anchorLabel = nodeLabels[idxA];
+    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
+      return 0;
 
-    final Iterator<Vertex> neighbors = vertex.getVertices(directions[hopIndex], edgeTypes[hopIndex]).iterator();
-    while (neighbors.hasNext()) {
-      final Vertex neighbor = neighbors.next();
-      if (targetLabel != null && !neighbor.getType().instanceOf(targetLabel))
-        continue;
-      if (anchorRid != null && (hopIndex + 1) == inequalityIdxB
-          && neighbor.getIdentity().equals(anchorRid))
-        continue;
-      count += countPathsFrom(neighbor, hopIndex + 1, db, anchorRid);
+    long selfLoopTotal = 0;
+
+    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
+      final Vertex anchor = it.next().asVertex();
+      final RID anchorRid = anchor.getIdentity();
+
+      // Sparse BFS from anchor through sub-chain [idxA, idxB)
+      // using per-source map to deduplicate within this source's expansion
+      HashMap<RID, Long> cur = new HashMap<>();
+      cur.put(anchorRid, 1L);
+
+      for (int h = 0; h < subLength; h++) {
+        final int hopIdx = idxA + h;
+        final String targetLabel = nodeLabels[hopIdx + 1];
+        final HashMap<RID, Long> next = new HashMap<>();
+        for (final Map.Entry<RID, Long> entry : cur.entrySet()) {
+          final Vertex v = (Vertex) db.lookupByRID(entry.getKey(), true);
+          final Iterator<Vertex> neighbors = v.getVertices(directions[hopIdx], edgeTypes[hopIdx]).iterator();
+          while (neighbors.hasNext()) {
+            final Vertex neighbor = neighbors.next();
+            if (targetLabel != null && !neighbor.getType().instanceOf(targetLabel))
+              continue;
+            next.merge(neighbor.getIdentity(), entry.getValue(), Long::sum);
+          }
+        }
+        cur = next;
+      }
+
+      long loopCount = cur.getOrDefault(anchorRid, 0L);
+
+      // Multiply by tail after idxB
+      if (loopCount > 0 && idxB < edgeTypes.length) {
+        long tailCount = 1;
+        for (int h = idxB; h < edgeTypes.length; h++) {
+          tailCount *= anchor.countEdges(directions[h], edgeTypes[h]);
+          if (tailCount == 0)
+            break;
+        }
+        loopCount *= tailCount;
+      }
+
+      // Multiply by prefix before idxA
+      if (loopCount > 0 && idxA > 0) {
+        long prefixCount = 1;
+        for (int h = idxA - 1; h >= 0; h--) {
+          prefixCount *= anchor.countEdges(directions[h], edgeTypes[h]);
+          if (prefixCount == 0)
+            break;
+        }
+        loopCount *= prefixCount;
+      }
+
+      selfLoopTotal += loopCount;
     }
-    return count;
+    return selfLoopTotal;
   }
 
   @Override
