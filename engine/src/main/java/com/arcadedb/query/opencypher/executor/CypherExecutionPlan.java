@@ -42,6 +42,7 @@ import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
@@ -56,6 +57,7 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
+import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CountOp;
@@ -3438,6 +3440,8 @@ public class CypherExecutionPlan {
   private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context) {
     CountOp op = tryDetectChainCountStar();
     if (op == null)
+      op = tryDetectAntiJoinChainCountStar();
+    if (op == null)
       op = tryDetectStarCountStar();
     if (op == null)
       op = tryDetectTriangleCountStar();
@@ -3966,6 +3970,279 @@ public class CypherExecutionPlan {
     if (!(condition instanceof ComparisonExpression))
       return null;
     final ComparisonExpression cmp = (ComparisonExpression) condition;
+    if (cmp.getOperator() != ComparisonExpression.Operator.NOT_EQUALS)
+      return null;
+    final Expression left = cmp.getLeft();
+    final Expression right = cmp.getRight();
+    if (!(left instanceof VariableExpression) || !(right instanceof VariableExpression))
+      return null;
+    return new String[]{((VariableExpression) left).getVariableName(),
+        ((VariableExpression) right).getVariableName()};
+  }
+
+  /**
+   * Detects a chain pattern with a negative path predicate (anti-join) in WHERE.
+   * <p>
+   * Handles patterns like:
+   * <pre>
+   *   MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag)
+   *   WHERE NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3
+   *   RETURN count(*) AS count
+   * </pre>
+   * The WHERE clause must contain a negated single-hop pattern predicate between two chain nodes,
+   * optionally combined with a simple inequality via AND.
+   */
+  private CountOp tryDetectAntiJoinChainCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
+
+    // Exactly one MATCH clause
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    if (matchClause.isOptional())
+      return null;
+
+    // Must have a WHERE clause with an anti-join pattern
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+    if (whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+
+    // Parse the WHERE clause: extract anti-join pattern and optional inequality
+    final AntiJoinInfo antiJoin = extractAntiJoinInfo(whereClause);
+    if (antiJoin == null)
+      return null;
+
+    // Exactly one path pattern with at least one relationship
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    if (pathPattern.getRelationshipCount() < 2) // need at least 2 hops for anti-join to make sense
+      return null;
+    if (pathPattern.hasPathVariable())
+      return null;
+
+    // Extract chain structure
+    final int hopCount = pathPattern.getRelationshipCount();
+    final String[] nodeLabels = new String[hopCount + 1];
+    final String[] edgeTypes = new String[hopCount];
+    final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hopCount];
+
+    for (int i = 0; i <= hopCount; i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      nodeLabels[i] = node.hasLabels() ? node.getLabels().get(0) : null;
+    }
+
+    for (int i = 0; i < hopCount; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      if (rel.isVariableLength())
+        return null;
+      if (rel.getVariable() != null && !rel.getVariable().isEmpty())
+        return null;
+      if (rel.hasProperties())
+        return null;
+      if (!rel.hasTypes() || rel.getTypes().size() != 1)
+        return null;
+
+      edgeTypes[i] = rel.getTypes().get(0);
+      final Direction dir = rel.getDirection();
+      if (dir == Direction.OUT)
+        directions[i] = Vertex.DIRECTION.OUT;
+      else if (dir == Direction.IN)
+        directions[i] = Vertex.DIRECTION.IN;
+      else
+        directions[i] = Vertex.DIRECTION.BOTH;
+    }
+
+    // Resolve anti-join variable positions in the chain
+    int antiJoinSourceIdx = -1;
+    int antiJoinTargetIdx = -1;
+    for (int i = 0; i <= hopCount; i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      final String nv = node.getVariable();
+      if (nv != null) {
+        if (nv.equals(antiJoin.sourceVar))
+          antiJoinSourceIdx = i;
+        if (nv.equals(antiJoin.targetVar))
+          antiJoinTargetIdx = i;
+      }
+    }
+    if (antiJoinSourceIdx < 0 || antiJoinTargetIdx < 0)
+      return null;
+
+    // Ensure source comes before target
+    if (antiJoinSourceIdx > antiJoinTargetIdx) {
+      final int tmp = antiJoinSourceIdx;
+      antiJoinSourceIdx = antiJoinTargetIdx;
+      antiJoinTargetIdx = tmp;
+    }
+
+    // Resolve inequality positions (if present)
+    int inequalityIdxA = -1;
+    int inequalityIdxB = -1;
+    if (antiJoin.inequalityVar1 != null) {
+      for (int i = 0; i <= hopCount; i++) {
+        final NodePattern node = pathPattern.getNode(i);
+        final String nv = node.getVariable();
+        if (nv != null) {
+          if (nv.equals(antiJoin.inequalityVar1))
+            inequalityIdxA = i;
+          else if (nv.equals(antiJoin.inequalityVar2))
+            inequalityIdxB = i;
+        }
+      }
+      if (inequalityIdxA < 0 || inequalityIdxB < 0)
+        return null;
+    }
+
+    return new AntiJoinChainOp(nodeLabels, edgeTypes, directions,
+        antiJoinSourceIdx, antiJoinTargetIdx,
+        antiJoin.antiJoinEdgeType, antiJoin.antiJoinDirection,
+        inequalityIdxA, inequalityIdxB);
+  }
+
+  /**
+   * Information extracted from a WHERE clause containing an anti-join pattern.
+   */
+  private static final class AntiJoinInfo {
+    final String sourceVar;
+    final String targetVar;
+    final String antiJoinEdgeType;
+    final Vertex.DIRECTION antiJoinDirection;
+    final String inequalityVar1; // null if no inequality
+    final String inequalityVar2;
+
+    AntiJoinInfo(final String sourceVar, final String targetVar,
+        final String antiJoinEdgeType, final Vertex.DIRECTION antiJoinDirection,
+        final String inequalityVar1, final String inequalityVar2) {
+      this.sourceVar = sourceVar;
+      this.targetVar = targetVar;
+      this.antiJoinEdgeType = antiJoinEdgeType;
+      this.antiJoinDirection = antiJoinDirection;
+      this.inequalityVar1 = inequalityVar1;
+      this.inequalityVar2 = inequalityVar2;
+    }
+  }
+
+  /**
+   * Extracts anti-join pattern info from a WHERE clause.
+   * <p>
+   * Supported forms:
+   * <ul>
+   *   <li>{@code WHERE NOT (a)-[:TYPE]-(b)} — anti-join only</li>
+   *   <li>{@code WHERE NOT (a)-[:TYPE]-(b) AND a <> b} — anti-join + inequality (either order)</li>
+   * </ul>
+   *
+   * @return extracted info, or null if the WHERE clause doesn't match
+   */
+  private static AntiJoinInfo extractAntiJoinInfo(final WhereClause whereClause) {
+    if (whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+
+    final BooleanExpression condition = whereClause.getConditionExpression();
+
+    // Case 1: Simple negated pattern predicate — either PatternPredicateExpression(negated=true)
+    // or LogicalExpression(NOT, PatternPredicateExpression)
+    final PatternPredicateExpression directNeg = extractNegatedPattern(condition);
+    if (directNeg != null)
+      return extractFromPatternPredicate(directNeg, null, null);
+
+    // Case 2: AND of two conditions (anti-join + inequality, in either order)
+    if (condition instanceof LogicalExpression) {
+      final LogicalExpression logical = (LogicalExpression) condition;
+      if (logical.getOperator() != LogicalExpression.Operator.AND)
+        return null;
+
+      final BooleanExpression left = logical.getLeft();
+      final BooleanExpression right = logical.getRight();
+
+      // Try: left = anti-join, right = inequality
+      final PatternPredicateExpression leftNeg = extractNegatedPattern(left);
+      if (leftNeg != null && right instanceof ComparisonExpression) {
+        final String[] ineq = extractInequalityFromComparison((ComparisonExpression) right);
+        if (ineq != null)
+          return extractFromPatternPredicate(leftNeg, ineq[0], ineq[1]);
+      }
+
+      // Try: left = inequality, right = anti-join
+      final PatternPredicateExpression rightNeg = extractNegatedPattern(right);
+      if (rightNeg != null && left instanceof ComparisonExpression) {
+        final String[] ineq = extractInequalityFromComparison((ComparisonExpression) left);
+        if (ineq != null)
+          return extractFromPatternPredicate(rightNeg, ineq[0], ineq[1]);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Extracts a negated pattern predicate from a boolean expression.
+   * Handles two forms:
+   * <ul>
+   *   <li>{@code PatternPredicateExpression(isNegated=true)}</li>
+   *   <li>{@code LogicalExpression(NOT, PatternPredicateExpression)}</li>
+   * </ul>
+   *
+   * @return the pattern predicate (always with isNegated semantics), or null
+   */
+  private static PatternPredicateExpression extractNegatedPattern(final BooleanExpression expr) {
+    if (expr instanceof PatternPredicateExpression) {
+      final PatternPredicateExpression ppe = (PatternPredicateExpression) expr;
+      return ppe.isNegated() ? ppe : null;
+    }
+    if (expr instanceof LogicalExpression) {
+      final LogicalExpression logical = (LogicalExpression) expr;
+      if (logical.getOperator() == LogicalExpression.Operator.NOT
+          && logical.getLeft() instanceof PatternPredicateExpression) {
+        // NOT wrapping a non-negated pattern predicate = negated pattern
+        return (PatternPredicateExpression) logical.getLeft();
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Extracts anti-join info from a negated pattern predicate.
+   * The pattern must be a single-hop, single-type, anonymous relationship between two variables.
+   */
+  /**
+   * Extracts anti-join info from a pattern predicate expression.
+   * The pattern must be a single-hop, single-type, anonymous relationship between two variables.
+   * Note: the negation may come from either PatternPredicateExpression.isNegated() or from
+   * a wrapping LogicalExpression(NOT, ...) — the caller ensures negation semantics.
+   */
+  private static AntiJoinInfo extractFromPatternPredicate(final PatternPredicateExpression ppe,
+      final String inequalityVar1, final String inequalityVar2) {
+    final PathPattern pp = ppe.getPathPattern();
+    if (pp == null || pp.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern rel = pp.getRelationship(0);
+    if (rel.isVariableLength())
+      return null;
+    if (!rel.hasTypes() || rel.getTypes().size() != 1)
+      return null;
+
+    final String sourceVar = pp.getFirstNode().getVariable();
+    final String targetVar = pp.getLastNode().getVariable();
+    if (sourceVar == null || targetVar == null)
+      return null;
+
+    final String edgeType = rel.getTypes().get(0);
+    final Direction dir = rel.getDirection();
+    final Vertex.DIRECTION direction = dir == Direction.OUT ? Vertex.DIRECTION.OUT
+        : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+
+    return new AntiJoinInfo(sourceVar, targetVar, edgeType, direction,
+        inequalityVar1, inequalityVar2);
+  }
+
+  /**
+   * Extracts inequality info from a comparison expression.
+   * Returns [var1, var2] if the expression is "var1 <> var2", null otherwise.
+   */
+  private static String[] extractInequalityFromComparison(final ComparisonExpression cmp) {
     if (cmp.getOperator() != ComparisonExpression.Operator.NOT_EQUALS)
       return null;
     final Expression left = cmp.getLeft();
