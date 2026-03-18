@@ -30,6 +30,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -207,15 +208,13 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
         communityRemap.put(community[i], nextId++);
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", vertices.get(i));
+      result.setProperty("node", vertices.get(i).getIdentity());
       result.setProperty("communityId", communityRemap.get(community[i]));
       result.setProperty("modularity", finalModularity);
-      results.add(result);
-    }
-    return results.stream();
+      return (Result) result;
+    });
   }
 
   private double getCommunityDegree(final int[] community, final double[] nodeDegree, final int targetCommunity, final int n) {

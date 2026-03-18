@@ -127,8 +127,8 @@ public class AlgoResourceAllocation extends AbstractAlgoProcedure {
       if (v == srcIdx || raScores[v] <= cutoff)
         continue;
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node1", sourceVertex);
-      r.setProperty("node2", graph.getVertex(v));
+      r.setProperty("node1", sourceVertex.getIdentity());
+      r.setProperty("node2", graph.getRID(v));
       r.setProperty("score", raScores[v]);
       results.add(r);
     }

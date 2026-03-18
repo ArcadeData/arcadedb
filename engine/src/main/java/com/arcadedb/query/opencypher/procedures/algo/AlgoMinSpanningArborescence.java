@@ -157,8 +157,8 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(msaEdges.length);
     for (final int ei : msaEdges) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("source", vertices.get(eFrom[ei]));
-      r.setProperty("target", vertices.get(eTo[ei]));
+      r.setProperty("source", vertices.get(eFrom[ei]).getIdentity());
+      r.setProperty("target", vertices.get(eTo[ei]).getIdentity());
       r.setProperty("weight", eW[ei]);
       r.setProperty("totalWeight", totalWeight);
       results.add(r);

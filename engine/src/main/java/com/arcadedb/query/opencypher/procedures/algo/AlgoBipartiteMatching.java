@@ -165,8 +165,8 @@ public class AlgoBipartiteMatching extends AbstractAlgoProcedure {
     for (int u = 1; u <= L; u++) {
       if (pairU[u] != NIL) {
         final ResultInternal r = new ResultInternal();
-        r.setProperty("node1", graph.getVertex(leftGlobal[u - 1]));
-        r.setProperty("node2", graph.getVertex(rightGlobal[pairU[u] - 1]));
+        r.setProperty("node1", graph.getRID(leftGlobal[u - 1]));
+        r.setProperty("node2", graph.getRID(rightGlobal[pairU[u] - 1]));
         r.setProperty("matchingSize", matching);
         results.add(r);
       }

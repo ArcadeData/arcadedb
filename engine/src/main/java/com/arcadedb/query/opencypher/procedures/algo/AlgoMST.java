@@ -174,8 +174,8 @@ public class AlgoMST extends AbstractAlgoProcedure {
     final int finalSize = mstSize;
     return IntStream.range(0, finalSize).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("source", vertices.get(mstU[i]));
-      r.setProperty("target", vertices.get(mstV[i]));
+      r.setProperty("source", vertices.get(mstU[i]).getIdentity());
+      r.setProperty("target", vertices.get(mstV[i]).getIdentity());
       r.setProperty("weight", mstW[i]);
       r.setProperty("totalWeight", finalTotal);
       return (Result) r;

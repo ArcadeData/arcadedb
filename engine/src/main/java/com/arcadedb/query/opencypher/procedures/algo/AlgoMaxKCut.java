@@ -26,12 +26,11 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -177,15 +176,14 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     }
 
     final double finalCut = bestCut;
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    final int[] finalAssign = bestAssign;
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
-      r.setProperty("community", bestAssign[i]);
+      r.setProperty("node", graph.getRID(i));
+      r.setProperty("community", finalAssign[i]);
       r.setProperty("cutWeight", finalCut);
-      results.add(r);
-    }
-    return results.stream();
+      return (Result) r;
+    });
   }
 
   /** Builds a parallel weight array for each adjacency list entry. */

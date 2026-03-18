@@ -148,7 +148,7 @@ public class AlgoArticulationPoints extends AbstractAlgoProcedure {
       if (!isAP[i])
         continue;
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
+      r.setProperty("node", graph.getRID(i));
       results.add(r);
     }
     return results.stream();

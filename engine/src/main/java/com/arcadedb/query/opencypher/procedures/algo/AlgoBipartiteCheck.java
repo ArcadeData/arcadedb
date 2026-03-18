@@ -124,7 +124,7 @@ public class AlgoBipartiteCheck extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
+      r.setProperty("node", graph.getRID(i));
       r.setProperty("partition", color[i] == -1 ? 0 : color[i]);
       r.setProperty("isBipartite", finalBipartite);
       return (Result) r;

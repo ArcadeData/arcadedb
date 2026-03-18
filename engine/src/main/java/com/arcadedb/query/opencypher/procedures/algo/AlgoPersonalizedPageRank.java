@@ -27,10 +27,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -168,14 +167,12 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
         break;
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", provider.getRID(i));
       r.setProperty("score", rank[i]);
-      results.add(r);
-    }
-    return results.stream();
+      return (Result) r;
+    });
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final Vertex sourceVertex, final String[] relTypes,
@@ -228,13 +225,11 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
         break;
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("score", rank[i]);
-      results.add(r);
-    }
-    return results.stream();
+      return (Result) r;
+    });
   }
 }

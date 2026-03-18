@@ -126,8 +126,8 @@ public class AlgoJaccardSimilarity extends AbstractAlgoProcedure {
       if (similarity <= cutoff)
         continue;
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node1", sourceVertex);
-      r.setProperty("node2", graph.getVertex(v));
+      r.setProperty("node1", sourceVertex.getIdentity());
+      r.setProperty("node2", graph.getRID(v));
       r.setProperty("similarity", similarity);
       results.add(r);
     }

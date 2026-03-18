@@ -130,7 +130,7 @@ public class AlgoDFS extends AbstractAlgoProcedure {
       if (d > 0) {
         // Don't emit the start node itself
         final ResultInternal r = new ResultInternal();
-        r.setProperty("node", graph.getVertex(v));
+        r.setProperty("node", graph.getRID(v));
         r.setProperty("depth", d);
         results.add(r);
       }

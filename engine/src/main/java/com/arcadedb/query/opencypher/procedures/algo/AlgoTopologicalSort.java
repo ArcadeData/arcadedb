@@ -125,7 +125,7 @@ public class AlgoTopologicalSort extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
+      r.setProperty("node", graph.getRID(i));
       r.setProperty("order", order[i]);
       return (Result) r;
     });

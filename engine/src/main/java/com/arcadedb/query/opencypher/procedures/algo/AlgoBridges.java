@@ -135,8 +135,8 @@ public class AlgoBridges extends AbstractAlgoProcedure {
             // Bridge condition: strictly greater (not >=)
             if (low[v] > disc[p]) {
               final ResultInternal r = new ResultInternal();
-              r.setProperty("source", graph.getVertex(p));
-              r.setProperty("target", graph.getVertex(v));
+              r.setProperty("source", graph.getRID(p));
+              r.setProperty("target", graph.getRID(v));
               results.add(r);
             }
           }

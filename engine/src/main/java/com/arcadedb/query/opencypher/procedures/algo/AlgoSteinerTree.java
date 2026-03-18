@@ -257,8 +257,8 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(edgeList.size());
     for (final int[] e : edgeList) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("source", graph.getVertex(e[0]));
-      r.setProperty("target", graph.getVertex(e[1]));
+      r.setProperty("source", graph.getRID(e[0]));
+      r.setProperty("target", graph.getRID(e[1]));
       r.setProperty("weight", adjW[e[0]][e[2]]);
       r.setProperty("totalWeight", totalWeight);
       results.add(r);
