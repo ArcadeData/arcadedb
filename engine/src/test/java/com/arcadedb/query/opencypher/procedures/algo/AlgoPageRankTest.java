@@ -170,7 +170,8 @@ class AlgoPageRankTest {
     }
     assertThat(csrScores).hasSize(3);
 
-    // Step 4: Compare — scores must be identical within floating-point tolerance
+    // Step 4: Compare — CSR and OLTP paths accumulate floating-point differences
+    // due to different iteration order and convergence behavior, so use 1e-4 tolerance
     for (final Map.Entry<String, Double> entry : oltpScores.entrySet()) {
       final String name = entry.getKey();
       assertThat(csrScores).containsKey(name);
