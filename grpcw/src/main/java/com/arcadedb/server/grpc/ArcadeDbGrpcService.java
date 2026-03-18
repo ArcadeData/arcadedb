@@ -33,6 +33,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -98,6 +99,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private static final JsonSerializer SAFE = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false)
       .setUseVertexEdgeSize(true)
       .setUseCollectionSizeForEdges(false).setUseCollectionSize(false);
+
+  private static final int GRAPH_BATCH_VERTEX_BUFFER = 10_000;
 
   // Transaction management - now stores TransactionContext with executor for thread affinity
   private final Map<String, TransactionContext> activeTransactions = new ConcurrentHashMap<>();
@@ -1577,6 +1580,215 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
     };
+  }
+
+  // --- 3) Client-streaming graph batch load ---
+  @Override
+  public StreamObserver<GraphBatchChunk> graphBatchLoad(final StreamObserver<GraphBatchResult> resp) {
+    final ServerCallStreamObserver<GraphBatchResult> call = (ServerCallStreamObserver<GraphBatchResult>) resp;
+    call.disableAutoInboundFlowControl();
+
+    final long startedAt = System.currentTimeMillis();
+    final AtomicBoolean cancelled = new AtomicBoolean(false);
+    final boolean[] errorSent = { false };
+    final AtomicReference<GraphBatch> batchRef = new AtomicReference<>();
+    final AtomicReference<Database> dbRef = new AtomicReference<>();
+    final Map<String, RID> tempIdMap = new HashMap<>();
+
+    // Vertex accumulation state
+    final List<Object[]> vertexPropsBatch = new ArrayList<>(GRAPH_BATCH_VERTEX_BUFFER);
+    final List<String> vertexTempIds = new ArrayList<>(GRAPH_BATCH_VERTEX_BUFFER);
+    final String[] currentType = { null };
+    final long[] counts = new long[2]; // [0]=vertices, [1]=edges
+    final boolean[] inEdgePhase = { false };
+
+    call.setOnCancelHandler(() -> cancelled.set(true));
+    call.request(1);
+
+    return new StreamObserver<>() {
+
+      @Override
+      public void onNext(final GraphBatchChunk chunk) {
+        if (cancelled.get())
+          return;
+        try {
+          GraphBatch batch = batchRef.get();
+          if (batch == null) {
+            // First chunk: initialize
+            if (chunk.getDatabase().isEmpty())
+              throw new IllegalArgumentException("First chunk must contain the database name");
+            final Database db = getDatabase(chunk.getDatabase(), chunk.getCredentials());
+            dbRef.set(db);
+            final GraphBatch.Builder builder = db.batch();
+            configureGraphBatchOptions(builder, chunk.hasOptions() ? chunk.getOptions() : null);
+            batch = builder.build();
+            batchRef.set(batch);
+          }
+
+          // Process records in this chunk
+          for (final GraphBatchRecord rec : chunk.getRecordsList()) {
+            if (rec.getKind() == GraphBatchRecord.Kind.EDGE) {
+              // Flush remaining vertices on transition to edge phase
+              if (!inEdgePhase[0]) {
+                if (!vertexPropsBatch.isEmpty())
+                  counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
+                inEdgePhase[0] = true;
+              }
+              processEdge(batch, rec, dbRef.get(), tempIdMap);
+              counts[1]++;
+            } else {
+              if (inEdgePhase[0])
+                throw new IllegalArgumentException("Vertex record received after edges. All vertices must appear before edges");
+
+              // Type change -> flush
+              final String prevType = currentType[0];
+              if (prevType != null && !prevType.equals(rec.getTypeName()))
+                counts[0] += flushVertexBatch(batch, prevType, vertexPropsBatch, vertexTempIds, tempIdMap);
+              currentType[0] = rec.getTypeName();
+
+              final Object[] props = rec.getPropertiesMap().isEmpty() ? new Object[0] : toPropertyArray(rec.getPropertiesMap());
+              vertexPropsBatch.add(props);
+              vertexTempIds.add(rec.getTempId().isEmpty() ? null : rec.getTempId());
+
+              if (vertexPropsBatch.size() >= GRAPH_BATCH_VERTEX_BUFFER)
+                counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
+            }
+          }
+        } catch (final Exception e) {
+          errorSent[0] = true;
+          resp.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
+          // Note: closeQuietly may flush/commit partial data. GraphBatch has no rollback path by design
+          // (same as the HTTP batch endpoint). Callers should treat batch loading as non-atomic.
+          closeQuietly(batchRef.get());
+          return;
+        } finally {
+          if (!cancelled.get() && !errorSent[0])
+            call.request(1);
+        }
+      }
+
+      @Override
+      public void onError(final Throwable t) {
+        closeQuietly(batchRef.get());
+      }
+
+      @Override
+      public void onCompleted() {
+        try {
+          final GraphBatch batch = batchRef.get();
+          if (batch == null) {
+            resp.onNext(GraphBatchResult.newBuilder().build());
+            resp.onCompleted();
+            return;
+          }
+
+          // Flush remaining vertices
+          if (!vertexPropsBatch.isEmpty())
+            counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
+
+          // Close batch -> flushes edges, connects incoming edges
+          batch.close();
+
+          final GraphBatchResult.Builder result = GraphBatchResult.newBuilder()
+              .setVerticesCreated(counts[0])
+              .setEdgesCreated(counts[1])
+              .setElapsedMs(System.currentTimeMillis() - startedAt);
+
+          for (final Map.Entry<String, RID> entry : tempIdMap.entrySet())
+            result.putIdMapping(entry.getKey(), entry.getValue().toString());
+
+          if (!cancelled.get()) {
+            resp.onNext(result.build());
+            resp.onCompleted();
+          }
+        } catch (final Exception e) {
+          resp.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
+          closeQuietly(batchRef.get());
+        }
+      }
+    };
+  }
+
+  private Object[] toPropertyArray(final Map<String, GrpcValue> properties) {
+    final Object[] result = new Object[properties.size() * 2];
+    int i = 0;
+    for (final Map.Entry<String, GrpcValue> entry : properties.entrySet()) {
+      result[i++] = entry.getKey();
+      result[i++] = GrpcTypeConverter.fromGrpcValue(entry.getValue());
+    }
+    return result;
+  }
+
+  private RID resolveRef(final String ref, final Database db, final Map<String, RID> tempIdMap) {
+    if (ref == null || ref.isEmpty())
+      throw new IllegalArgumentException("Edge record is missing from_ref or to_ref");
+    if (ref.charAt(0) == '#') {
+      final int colonIdx = ref.indexOf(':');
+      if (colonIdx < 0)
+        throw new IllegalArgumentException("Malformed RID '" + ref + "'");
+      final int bucketId = Integer.parseInt(ref.substring(1, colonIdx));
+      final long position = Long.parseLong(ref.substring(colonIdx + 1));
+      return new RID(db, bucketId, position);
+    }
+    final RID rid = tempIdMap.get(ref);
+    if (rid == null)
+      throw new IllegalArgumentException("Unknown temporary ID '" + ref + "'. Vertices must appear before edges that reference them");
+    return rid;
+  }
+
+  private int flushVertexBatch(final GraphBatch batch, final String typeName,
+      final List<Object[]> propsBatch, final List<String> tempIds, final Map<String, RID> tempIdMap) {
+    final int count = propsBatch.size();
+    final Object[][] propsArray = propsBatch.toArray(new Object[count][]);
+    final RID[] rids = batch.createVertices(typeName, propsArray);
+    for (int i = 0; i < count; i++) {
+      final String tempId = tempIds.get(i);
+      if (tempId != null)
+        tempIdMap.put(tempId, rids[i]);
+    }
+    propsBatch.clear();
+    tempIds.clear();
+    return count;
+  }
+
+  private void processEdge(final GraphBatch batch, final GraphBatchRecord rec, final Database db,
+      final Map<String, RID> tempIdMap) {
+    final RID srcRID = resolveRef(rec.getFromRef(), db, tempIdMap);
+    final RID dstRID = resolveRef(rec.getToRef(), db, tempIdMap);
+    if (rec.getPropertiesMap().isEmpty())
+      batch.newEdge(srcRID, rec.getTypeName(), dstRID);
+    else
+      batch.newEdge(srcRID, rec.getTypeName(), dstRID, toPropertyArray(rec.getPropertiesMap()));
+  }
+
+  private void configureGraphBatchOptions(final GraphBatch.Builder builder, final GraphBatchOptions opts) {
+    if (opts == null)
+      return;
+    if (opts.getBatchSize() > 0)
+      builder.withBatchSize(opts.getBatchSize());
+    if (opts.getLightEdges())
+      builder.withLightEdges(true);
+    if (opts.getWal())
+      builder.withWAL(true);
+    // Only need to disable: builder defaults to true; setting true explicitly is a no-op
+    if (opts.hasParallelFlush() && !opts.getParallelFlush())
+      builder.withParallelFlush(false);
+    if (opts.hasPreAllocateEdgeChunks() && !opts.getPreAllocateEdgeChunks())
+      builder.withPreAllocateEdgeChunks(false);
+    if (opts.getEdgeListInitialSize() > 0)
+      builder.withEdgeListInitialSize(opts.getEdgeListInitialSize());
+    if (opts.hasBidirectional() && !opts.getBidirectional())
+      builder.withBidirectional(false);
+    if (opts.getCommitEvery() > 0)
+      builder.withCommitEvery(opts.getCommitEvery());
+    if (opts.getExpectedEdgeCount() > 0)
+      builder.withExpectedEdgeCount(opts.getExpectedEdgeCount());
+  }
+
+  private void closeQuietly(final GraphBatch batch) {
+    if (batch != null) {
+      try { batch.close(); } catch (final Exception ignored) { }
+    }
   }
 
   /**
