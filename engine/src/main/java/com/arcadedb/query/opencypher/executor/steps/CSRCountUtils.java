@@ -109,6 +109,20 @@ public final class CSRCountUtils {
    */
   public static int[] walkArm(final GraphTraversalProvider provider, final int startId,
       final String[] edgeTypes, final Vertex.DIRECTION[] directions) {
+    return walkArm(provider, startId, edgeTypes, directions, null);
+  }
+
+  /**
+   * Walks a multi-hop arm from a single start node with optional intermediate node type filtering.
+   * The {@code intermediateLabels} array (if non-null) has one entry per hop, specifying the
+   * required type label for nodes reached at that hop. Null entries mean no filtering.
+   * <p>
+   * This is critical for queries like Q2 where REPLY_OF reaches both Posts and Comments
+   * but only Posts should match the intermediate {@code (po:Post)} node pattern.
+   */
+  public static int[] walkArm(final GraphTraversalProvider provider, final int startId,
+      final String[] edgeTypes, final Vertex.DIRECTION[] directions,
+      final Set<Integer>[] intermediateValidBuckets) {
     int[] current = new int[]{startId};
     for (int hop = 0; hop < edgeTypes.length; hop++) {
       int totalNext = 0;
@@ -123,7 +137,20 @@ public final class CSRCountUtils {
         System.arraycopy(neighbors, 0, next, pos, neighbors.length);
         pos += neighbors.length;
       }
-      current = next;
+
+      // Apply intermediate node type filter if specified
+      if (intermediateValidBuckets != null && intermediateValidBuckets[hop] != null
+          && !intermediateValidBuckets[hop].isEmpty()) {
+        int writePos = 0;
+        for (int i = 0; i < pos; i++) {
+          final RID rid = provider.getRID(next[i]);
+          if (intermediateValidBuckets[hop].contains(rid.getBucketId()))
+            next[writePos++] = next[i];
+        }
+        current = java.util.Arrays.copyOf(next, writePos);
+      } else {
+        current = pos < next.length ? java.util.Arrays.copyOf(next, pos) : next;
+      }
     }
     return current;
   }
