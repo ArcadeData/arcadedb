@@ -1597,9 +1597,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Vertex accumulation state
     final List<Object[]> vertexPropsBatch = new ArrayList<>(GRAPH_BATCH_VERTEX_BUFFER);
     final List<String> vertexTempIds = new ArrayList<>(GRAPH_BATCH_VERTEX_BUFFER);
-    final AtomicReference<String> currentTypeRef = new AtomicReference<>();
+    final String[] currentType = { null };
     final long[] counts = new long[2]; // [0]=vertices, [1]=edges
-    final AtomicBoolean inEdgePhase = new AtomicBoolean(false);
+    final boolean[] inEdgePhase = { false };
 
     call.setOnCancelHandler(() -> cancelled.set(true));
     call.request(1);
@@ -1614,6 +1614,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           GraphBatch batch = batchRef.get();
           if (batch == null) {
             // First chunk: initialize
+            if (chunk.getDatabase().isEmpty())
+              throw new IllegalArgumentException("First chunk must contain the database name");
             final Database db = getDatabase(chunk.getDatabase(), chunk.getCredentials());
             dbRef.set(db);
             final GraphBatch.Builder builder = db.batch();
@@ -1626,29 +1628,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           for (final GraphBatchRecord rec : chunk.getRecordsList()) {
             if (rec.getKind() == GraphBatchRecord.Kind.EDGE) {
               // Flush remaining vertices on transition to edge phase
-              if (!inEdgePhase.get()) {
+              if (!inEdgePhase[0]) {
                 if (!vertexPropsBatch.isEmpty())
-                  counts[0] += flushVertexBatch(batch, currentTypeRef.get(), vertexPropsBatch, vertexTempIds, tempIdMap);
-                inEdgePhase.set(true);
+                  counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
+                inEdgePhase[0] = true;
               }
               processEdge(batch, rec, tempIdMap);
               counts[1]++;
             } else {
-              if (inEdgePhase.get())
+              if (inEdgePhase[0])
                 throw new IllegalArgumentException("Vertex record received after edges. All vertices must appear before edges");
 
               // Type change -> flush
-              final String currentType = currentTypeRef.get();
-              if (currentType != null && !currentType.equals(rec.getTypeName()))
-                counts[0] += flushVertexBatch(batch, currentType, vertexPropsBatch, vertexTempIds, tempIdMap);
-              currentTypeRef.set(rec.getTypeName());
+              final String prevType = currentType[0];
+              if (prevType != null && !prevType.equals(rec.getTypeName()))
+                counts[0] += flushVertexBatch(batch, prevType, vertexPropsBatch, vertexTempIds, tempIdMap);
+              currentType[0] = rec.getTypeName();
 
               final Object[] props = rec.getPropertiesMap().isEmpty() ? new Object[0] : toPropertyArray(rec.getPropertiesMap());
               vertexPropsBatch.add(props);
               vertexTempIds.add(rec.getTempId().isEmpty() ? null : rec.getTempId());
 
               if (vertexPropsBatch.size() >= GRAPH_BATCH_VERTEX_BUFFER)
-                counts[0] += flushVertexBatch(batch, currentTypeRef.get(), vertexPropsBatch, vertexTempIds, tempIdMap);
+                counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
             }
           }
         } catch (final Exception e) {
@@ -1678,7 +1680,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           // Flush remaining vertices
           if (!vertexPropsBatch.isEmpty())
-            counts[0] += flushVertexBatch(batch, currentTypeRef.get(), vertexPropsBatch, vertexTempIds, tempIdMap);
+            counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
 
           // Close batch -> flushes edges, connects incoming edges
           batch.close();
@@ -1714,6 +1716,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private RID resolveRef(final String ref, final Map<String, RID> tempIdMap) {
+    if (ref == null || ref.isEmpty())
+      throw new IllegalArgumentException("Edge record is missing from_ref or to_ref");
     if (ref.charAt(0) == '#') {
       final int colonIdx = ref.indexOf(':');
       if (colonIdx < 0)
@@ -1761,13 +1765,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       builder.withLightEdges(true);
     if (opts.getWal())
       builder.withWAL(true);
-    if (!opts.getParallelFlush())
+    if (opts.hasParallelFlush() && !opts.getParallelFlush())
       builder.withParallelFlush(false);
-    if (!opts.getPreAllocateEdgeChunks())
+    if (opts.hasPreAllocateEdgeChunks() && !opts.getPreAllocateEdgeChunks())
       builder.withPreAllocateEdgeChunks(false);
     if (opts.getEdgeListInitialSize() > 0)
       builder.withEdgeListInitialSize(opts.getEdgeListInitialSize());
-    if (!opts.getBidirectional())
+    if (opts.hasBidirectional() && !opts.getBidirectional())
       builder.withBidirectional(false);
     if (opts.getCommitEvery() > 0)
       builder.withCommitEvery(opts.getCommitEvery());
