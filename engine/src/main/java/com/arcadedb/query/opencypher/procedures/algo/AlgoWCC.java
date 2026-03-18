@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -106,14 +107,12 @@ public class AlgoWCC extends AbstractAlgoProcedure {
 
     final int[] componentId = GraphAlgorithms.connectedComponents(gav);
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", gav.getRID(i).asVertex());
+      result.setProperty("node", gav.getRID(i));
       result.setProperty("componentId", componentId[i]);
-      results.add(result);
-    }
-    return results.stream();
+      return (Result) result;
+    });
   }
 
   private Stream<Result> executeWithOLTP(final Database db) {
@@ -152,13 +151,11 @@ public class AlgoWCC extends AbstractAlgoProcedure {
       nextComponentId++;
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", graph.getVertex(i));
+      result.setProperty("node", graph.getRID(i));
       result.setProperty("componentId", componentId[i]);
-      results.add(result);
-    }
-    return results.stream();
+      return (Result) result;
+    });
   }
 }
