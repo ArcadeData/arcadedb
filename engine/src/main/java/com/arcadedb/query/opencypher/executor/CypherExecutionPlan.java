@@ -3169,21 +3169,23 @@ public class CypherExecutionPlan {
   /**
    * Determines which hops in a path pattern need edge tracking for Cypher's relationship
    * uniqueness constraint. A hop needs tracking only if its edge types could overlap with
-   * another hop's types in the same pattern. Hops with disjoint types are guaranteed to
-   * match distinct edges, so they can safely use the fast path (GAV/CSR).
+   * another hop's types in the same pattern AND the overlapping hops could match the same
+   * physical edge. Two hops with the same edge type but type-disjoint source or target
+   * vertex labels cannot match the same edge.
    * <p>
    * Rules:
    * <ul>
    *   <li>Single-hop pattern → no tracking needed (no other hop to conflict with)</li>
    *   <li>Untyped hop (matches all edge types) → always needs tracking</li>
    *   <li>Typed hop whose types are disjoint from all other hops → no tracking</li>
-   *   <li>Typed hop with any overlap → needs tracking</li>
+   *   <li>Typed hop with type overlap but disjoint vertex labels on the edge endpoints → no tracking</li>
+   *   <li>Typed hop with type overlap and compatible vertex labels → needs tracking</li>
    * </ul>
    *
    * @param pathPattern the path pattern to analyze
    * @return boolean array, true at index i if hop i needs edge tracking
    */
-  private static boolean[] computeHopEdgeTrackingNeeds(final PathPattern pathPattern) {
+  private boolean[] computeHopEdgeTrackingNeeds(final PathPattern pathPattern) {
     final int hopCount = pathPattern.getRelationshipCount();
     final boolean[] needs = new boolean[hopCount];
     if (hopCount <= 1)
@@ -3220,6 +3222,10 @@ public class CypherExecutionPlan {
         // Both typed: check intersection
         for (final String type : hopTypes[i]) {
           if (hopTypes[j].contains(type)) {
+            // Same edge type — check if the hops are guaranteed to match different
+            // physical edges based on their vertex endpoint labels
+            if (areHopsDisjointByEndpointLabels(pathPattern, i, j))
+              continue; // Disjoint endpoints → skip this overlap
             needs[i] = true;
             break;
           }
@@ -3229,6 +3235,78 @@ public class CypherExecutionPlan {
       }
     }
     return needs;
+  }
+
+  /**
+   * Checks if two hops with the same edge type are guaranteed to match different physical edges
+   * based on the vertex labels at their edge endpoints.
+   * <p>
+   * An edge has exactly one OUT vertex and one IN vertex. If we can prove that the OUT vertex
+   * (or IN vertex) for hop i must be of a different type than for hop j, the edges are distinct.
+   * <p>
+   * Uses the pattern direction to map pattern nodes to edge OUT/IN endpoints:
+   * <ul>
+   *   <li>OUT direction: edge OUT = source node (node[i]), edge IN = target node (node[i+1])</li>
+   *   <li>IN direction: edge OUT = target node (node[i+1]), edge IN = source node (node[i])</li>
+   *   <li>BOTH direction: cannot determine mapping → conservative (not disjoint)</li>
+   * </ul>
+   */
+  private boolean areHopsDisjointByEndpointLabels(final PathPattern pathPattern, final int hopI, final int hopJ) {
+    final Direction dirI = pathPattern.getRelationship(hopI).getDirection();
+    final Direction dirJ = pathPattern.getRelationship(hopJ).getDirection();
+
+    // BOTH direction: can't determine which node is the edge's OUT/IN vertex
+    if (dirI == Direction.BOTH || dirJ == Direction.BOTH)
+      return false;
+
+    // Map pattern nodes to edge endpoints based on direction
+    final NodePattern edgeOutI = dirI == Direction.OUT ? pathPattern.getNode(hopI) : pathPattern.getNode(hopI + 1);
+    final NodePattern edgeOutJ = dirJ == Direction.OUT ? pathPattern.getNode(hopJ) : pathPattern.getNode(hopJ + 1);
+    final NodePattern edgeInI = dirI == Direction.OUT ? pathPattern.getNode(hopI + 1) : pathPattern.getNode(hopI);
+    final NodePattern edgeInJ = dirJ == Direction.OUT ? pathPattern.getNode(hopJ + 1) : pathPattern.getNode(hopJ);
+
+    // If the OUT vertex labels are type-disjoint, the edges are different
+    if (nodeLabelsAreTypeDisjoint(edgeOutI, edgeOutJ))
+      return true;
+
+    // If the IN vertex labels are type-disjoint, the edges are different
+    return nodeLabelsAreTypeDisjoint(edgeInI, edgeInJ);
+  }
+
+  /**
+   * Checks whether two node patterns have labels that are type-disjoint in the schema,
+   * meaning no vertex can match both labels simultaneously.
+   * <p>
+   * Two labels are disjoint if neither is a supertype/subtype of the other AND no type
+   * in the schema is a subtype of both (which would allow a vertex to match both labels).
+   */
+  private boolean nodeLabelsAreTypeDisjoint(final NodePattern node1, final NodePattern node2) {
+    if (!node1.hasLabels() || !node2.hasLabels())
+      return false; // Without labels, can't prove disjointness
+
+    // Use the first label from each node for the check
+    final String label1 = node1.getLabels().get(0);
+    final String label2 = node2.getLabels().get(0);
+
+    if (label1.equals(label2))
+      return false; // Same label → not disjoint
+
+    if (!database.getSchema().existsType(label1) || !database.getSchema().existsType(label2))
+      return false; // Unknown type → conservative
+
+    final com.arcadedb.schema.DocumentType type1 = database.getSchema().getType(label1);
+    final com.arcadedb.schema.DocumentType type2 = database.getSchema().getType(label2);
+
+    // Direct hierarchy check: if one extends the other, not disjoint
+    if (type1.instanceOf(label2) || type2.instanceOf(label1))
+      return false;
+
+    // Check for common subtypes: if any type extends both, a vertex could match both labels
+    for (final com.arcadedb.schema.DocumentType schemaType : database.getSchema().getTypes())
+      if (schemaType.instanceOf(label1) && schemaType.instanceOf(label2))
+        return false;
+
+    return true;
   }
 
   private String extractIdFilter(final WhereClause whereClause, final String variable) {

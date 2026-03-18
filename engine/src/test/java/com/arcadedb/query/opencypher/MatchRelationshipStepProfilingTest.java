@@ -231,8 +231,9 @@ class MatchRelationshipStepProfilingTest {
   @Test
   void singleHopAnonymousUsesFastPath() {
     // Single-hop anonymous relationship should use fast path (vertex-only traversal)
+    // Node property constraint forces traditional execution path (optimizer doesn't support inline properties)
     final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
+        "PROFILE MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
 
     while (result.hasNext())
       result.next();
@@ -272,8 +273,9 @@ class MatchRelationshipStepProfilingTest {
   void namedButUnusedEdgeVariableUsesFastPath() {
     // User writes [r:KNOWS] but never references r in RETURN/WHERE/ORDER BY
     // The planner should detect that r is unused and enable fast path
+    // Node property constraint forces traditional execution path
     final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
+        "PROFILE MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
 
     while (result.hasNext())
       result.next();
@@ -287,9 +289,9 @@ class MatchRelationshipStepProfilingTest {
   @Test
   void namedAndUsedEdgeVariableUsesStandardPath() {
     // User writes [r:KNOWS] AND references r.since in RETURN — must use standard path
-    // Use collect() aggregation to force the traditional execution path
+    // Node property constraint forces traditional execution path
     final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, collect(r.since) AS years");
+        "PROFILE MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person) RETURN a.name, collect(r.since) AS years");
 
     while (result.hasNext())
       result.next();
