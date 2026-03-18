@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Set;
 
@@ -150,45 +151,111 @@ public final class PropagateChainOp implements CountOp {
     return selfLoopTotal;
   }
 
+  /**
+   * Counts the number of paths from node v through the sub-chain that return to v.
+   * <p>
+   * Uses sparse frontier expansion instead of dense node-indexed arrays.
+   * For each hop, only the actual reachable nodes are tracked (not all nodeCount entries).
+   * At the final hop, uses binary search on sorted CSR neighbor arrays to count arrivals at v.
+   * <p>
+   * Complexity: O(reachable_per_source × hops) instead of O(nodeCount × hops).
+   * For Q5 (16K tags, ~200K total nodes): ~210 ops per tag vs ~600K ops per tag.
+   */
   private long countLoopsFromNode(final GraphTraversalProvider provider, final int vId,
       final NeighborView[] subViews, final int startHop, final int subChainLength,
       final Set<Integer>[] validBuckets) {
     if (subChainLength == 0)
       return 1;
 
-    final int nodeCount = provider.getNodeCount();
-    long[] cur = new long[nodeCount];
-    cur[vId] = 1;
+    // Sparse frontier: track only reached nodes as a compact int[] array.
+    // Duplicates are allowed — each entry represents one path reaching that node.
+    int[] frontier = new int[]{vId};
 
-    for (int h = 0; h < subChainLength; h++) {
-      final long[] next = new long[nodeCount];
-      final NeighborView view = subViews[h];
-      if (view != null) {
-        final int[] nbrs = view.neighbors();
-        for (int n = 0; n < nodeCount; n++) {
-          if (cur[n] == 0) continue;
-          for (int j = view.offset(n), end = view.offsetEnd(n); j < end; j++)
-            next[nbrs[j]] += cur[n];
-        }
-      } else {
-        for (int n = 0; n < nodeCount; n++) {
-          if (cur[n] == 0) continue;
-          final int[] neighbors = provider.getNeighborIds(n, directions[startHop + h], edgeTypes[startHop + h]);
-          for (final int neighbor : neighbors)
-            next[neighbor] += cur[n];
-        }
-      }
-
-      final Set<Integer> targetBuckets = validBuckets[startHop + h + 1];
-      if (targetBuckets != null && !targetBuckets.isEmpty()) {
-        for (int n = 0; n < nodeCount; n++) {
-          if (next[n] > 0 && !targetBuckets.contains(provider.getRID(n).getBucketId()))
-            next[n] = 0;
-        }
-      }
-      cur = next;
+    // Expand through all hops except the last
+    for (int h = 0; h < subChainLength - 1; h++) {
+      frontier = expandFrontier(provider, frontier, subViews[h], startHop + h, validBuckets[startHop + h + 1]);
+      if (frontier.length == 0)
+        return 0;
     }
-    return cur[vId];
+
+    // Last hop: instead of expanding fully, count only paths that arrive back at vId.
+    // Use binary search on sorted CSR neighbor arrays for O(log d) per frontier node.
+    final int lastHopIdx = startHop + subChainLength - 1;
+    final Set<Integer> lastBuckets = validBuckets[lastHopIdx + 1];
+    // If there are type filters at the target position and vId doesn't match, no self-loops possible
+    if (lastBuckets != null && !lastBuckets.isEmpty()) {
+      final RID vRid = provider.getRID(vId);
+      if (!lastBuckets.contains(vRid.getBucketId()))
+        return 0;
+    }
+
+    long loopCount = 0;
+    final NeighborView lastView = subViews[subChainLength - 1];
+    if (lastView != null) {
+      final int[] nbrs = lastView.neighbors();
+      for (final int node : frontier) {
+        // Binary search for vId in node's sorted neighbor list
+        final int start = lastView.offset(node);
+        final int end = lastView.offsetEnd(node);
+        if (Arrays.binarySearch(nbrs, start, end, vId) >= 0)
+          loopCount++;
+      }
+    } else {
+      for (final int node : frontier) {
+        final int[] neighbors = provider.getNeighborIds(node, directions[lastHopIdx], edgeTypes[lastHopIdx]);
+        if (Arrays.binarySearch(neighbors, vId) >= 0)
+          loopCount++;
+      }
+    }
+    return loopCount;
+  }
+
+  /**
+   * Expands the frontier by one hop, returning the new frontier of reached nodes.
+   * Applies type filtering at the target position if needed.
+   */
+  private int[] expandFrontier(final GraphTraversalProvider provider, final int[] frontier,
+      final NeighborView view, final int hopIdx, final Set<Integer> targetBuckets) {
+    // Count total next-level nodes
+    int totalNext = 0;
+    if (view != null) {
+      for (final int node : frontier)
+        totalNext += view.degree(node);
+    } else {
+      for (final int node : frontier)
+        totalNext += provider.getNeighborIds(node, directions[hopIdx], edgeTypes[hopIdx]).length;
+    }
+    if (totalNext == 0)
+      return new int[0];
+
+    // Expand
+    final int[] next = new int[totalNext];
+    int pos = 0;
+    if (view != null) {
+      final int[] nbrs = view.neighbors();
+      for (final int node : frontier) {
+        for (int j = view.offset(node), end = view.offsetEnd(node); j < end; j++)
+          next[pos++] = nbrs[j];
+      }
+    } else {
+      for (final int node : frontier) {
+        final int[] neighbors = provider.getNeighborIds(node, directions[hopIdx], edgeTypes[hopIdx]);
+        System.arraycopy(neighbors, 0, next, pos, neighbors.length);
+        pos += neighbors.length;
+      }
+    }
+
+    // Apply type filter if needed
+    if (targetBuckets != null && !targetBuckets.isEmpty()) {
+      int writePos = 0;
+      for (int i = 0; i < pos; i++) {
+        final RID rid = provider.getRID(next[i]);
+        if (targetBuckets.contains(rid.getBucketId()))
+          next[writePos++] = next[i];
+      }
+      return Arrays.copyOf(next, writePos);
+    }
+    return pos < next.length ? Arrays.copyOf(next, pos) : next;
   }
 
   @Override
