@@ -349,7 +349,7 @@ class CypherMissingFunctionsTest {
   // ========== vector_dimension_count ==========
   @Test
   void vectorDimensionCount() {
-    final ResultSet rs = database.query("opencypher", "RETURN vector_dimension_count(vector([1.0, 2.0, 3.0])) AS result");
+    final ResultSet rs = database.query("opencypher", "RETURN vector.dimension.count(vector([1.0, 2.0, 3.0])) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(3L);
   }
@@ -358,7 +358,7 @@ class CypherMissingFunctionsTest {
   @Test
   void vectorDistanceEuclidean() {
     final ResultSet rs = database.query("opencypher",
-        "RETURN vector_distance(vector([0.0, 0.0]), vector([3.0, 4.0])) AS result");
+        "RETURN vector.distance(vector([0.0, 0.0]), vector([3.0, 4.0])) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(5.0, Offset.offset(0.001));
   }
@@ -366,7 +366,7 @@ class CypherMissingFunctionsTest {
   @Test
   void vectorDistanceManhattan() {
     final ResultSet rs = database.query("opencypher",
-        "RETURN vector_distance(vector([0.0, 0.0]), vector([3.0, 4.0]), 'MANHATTAN') AS result");
+        "RETURN vector.distance(vector([0.0, 0.0]), vector([3.0, 4.0]), 'MANHATTAN') AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(7.0, Offset.offset(0.001));
   }
@@ -417,7 +417,7 @@ class CypherMissingFunctionsTest {
 
   @Test
   void vectorDimensionCountNull() {
-    final ResultSet rs = database.query("opencypher", "RETURN vector_dimension_count(null) AS result");
+    final ResultSet rs = database.query("opencypher", "RETURN vector.dimension.count(null) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Object) rs.next().getProperty("result")).isNull();
   }

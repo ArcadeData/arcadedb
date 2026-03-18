@@ -168,9 +168,9 @@ public class FunctionValidator {
     registerFunction("tostringlist", 1, 1, "Convert list elements to strings", false);
 
     // Vector functions
-    registerFunction("vector", 1, 2, "Create vector from list (alias for vector_create)", false);
-    registerFunction("vector_dimension_count", 1, 1, "Return dimension count of vector", false);
-    registerFunction("vector_distance", 2, 3, "Calculate distance between vectors", false);
+    registerFunction("vector", 1, 2, "Create vector from list (alias for vector.create)", false);
+    registerFunction("vector.dimension.count", 1, 1, "Return dimension count of vector", false);
+    registerFunction("vector.distance", 2, 3, "Calculate distance between vectors", false);
     registerFunction("vector.distance.euclidean", 2, 2, "Euclidean distance between vectors", false);
     registerFunction("vector.norm", 1, 1, "L2 norm (magnitude) of vector", false);
     registerFunction("coalesce", 1, -1, "First non-null value", false);
@@ -194,9 +194,9 @@ public class FunctionValidator {
     registerFunction("vector.similarity.euclidean", 2, 2, "Euclidean similarity between vectors", false);
 
     // Vector construction and distance functions (Cypher-specific; others delegate to SQL functions)
-    registerFunction("vector_create", 1, 2, "Create vector from list", false);
-    registerFunction("vector_distance_manhattan", 2, 2, "Manhattan distance between vectors", false);
-    registerFunction("vector_distance_cosine", 2, 2, "Cosine distance between vectors", false);
+    registerFunction("vector.create", 1, 2, "Create vector from list", false);
+    registerFunction("vector.distance.manhattan", 2, 2, "Manhattan distance between vectors", false);
+    registerFunction("vector.distance.cosine", 2, 2, "Cosine distance between vectors", false);
 
     // Geo-spatial functions
     registerFunction("point.withinbbox", 3, 3, "Check if point is within bounding box", false);
@@ -231,8 +231,8 @@ public class FunctionValidator {
     registerFunction("charat", 2, 2, "Character at position", false);
     registerFunction("normalize", 1, 2, "Normalize string", false);
     registerFunction("isnormalized", 1, 2, "Check if normalized", false);
-    registerFunction("char_length", 1, 1, "Character length", false);
-    registerFunction("character_length", 1, 1, "Character length", false);
+    registerFunction("char.length", 1, 1, "Character length", false);
+    registerFunction("character.length", 1, 1, "Character length", false);
     registerFunction("nullif", 2, 2, "Null if equal", false);
     registerFunction("valuetype", 1, 1, "Value type string", false);
     registerFunction("elementid", 1, 1, "Element ID", false);
