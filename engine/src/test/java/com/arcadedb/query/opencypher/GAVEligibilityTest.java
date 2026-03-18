@@ -275,6 +275,20 @@ class GAVEligibilityTest {
   }
 
   @Test
+  void q5LikePatternUsesCountPushDown() {
+    // Q5-like chain with inequality should use COUNT CHAIN PATHS
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (t1:Tag)<-[:HAS_TAG]-(m:Message)<-[:REPLY_OF]-(c:Comment)-[:HAS_TAG]->(t2:Tag) WHERE t1 <> t2 RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(planString).contains("COUNT CHAIN PATHS");
+    result.close();
+  }
+
+  @Test
   void q5LikePatternCorrect() {
     // Q5-like: Message + reply with different tags
     final ResultSet result = database.query("opencypher",
