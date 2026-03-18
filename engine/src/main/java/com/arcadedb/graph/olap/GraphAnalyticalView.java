@@ -532,6 +532,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     }
 
+    // Sort each node's merged neighbor list so algorithms using sorted intersection
+    // (e.g., triangle counting via merge-join) produce correct results
+    for (int i = 0; i < n; i++) {
+      final int start = offsets[i];
+      final int end = offsets[i + 1];
+      if (end - start > 1)
+        Arrays.sort(neighbors, start, end);
+    }
+
     return new NeighborView(n, offsets, neighbors);
   }
 
