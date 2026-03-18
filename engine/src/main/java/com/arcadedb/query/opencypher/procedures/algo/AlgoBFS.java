@@ -19,8 +19,11 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -99,6 +102,24 @@ public class AlgoBFS extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
+    // Try CSR-accelerated path: delegate to parallel BFS on CSR arrays
+    final GraphTraversalProvider provider = findProvider(db, relTypes);
+    if (provider instanceof GraphAnalyticalView gav) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      final int startIdx = gav.getNodeId(startNode.getIdentity());
+      if (startIdx < 0)
+        return Stream.empty();
+      final int n = gav.getNodeCount();
+      final int[] depths = GraphAlgorithms.shortestPathAll(gav, startIdx, dir, relTypes);
+      return IntStream.range(0, n).filter(i -> i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth).mapToObj(i -> {
+        final ResultInternal r = new ResultInternal();
+        r.setProperty("node", gav.getRID(i));
+        r.setProperty("depth", depths[i]);
+        return (Result) r;
+      });
+    }
+
+    // Fall back to OLTP path
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
     final int n = graph.nodeCount;

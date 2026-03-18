@@ -22,8 +22,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
-import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -112,88 +113,26 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
     // Try CSR-accelerated path (only for unweighted PageRank)
     final GraphTraversalProvider provider = weightProperty == null ? findProvider(db, null) : null;
-    if (provider != null) {
+    if (provider instanceof GraphAnalyticalView gav) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(provider, dampingFactor, maxIterations, tolerance, direction);
+      return executeWithCSR(gav, dampingFactor, maxIterations);
     }
 
     // Fall back to OLTP path
     return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction);
   }
 
-  private Stream<Result> executeWithCSR(final GraphTraversalProvider provider,
-      final double dampingFactor, final int maxIterations, final double tolerance,
-      final Vertex.DIRECTION direction) {
-    final int n = provider.getNodeCount();
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav,
+      final double dampingFactor, final int maxIterations) {
+    final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
-    // Zero-allocation neighbor access via NeighborView
-    final NeighborView view = provider.getNeighborView(direction);
-    final int[] nbrs;
-    final boolean hasView = view != null;
-
-    if (hasView) {
-      nbrs = view.neighbors();
-    } else {
-      // Fallback: materialize adjacency (should not happen with GAV, but keeps correctness)
-      nbrs = null;
-    }
-    final int[][] neighborsFallback = hasView ? null : buildAdjacencyFromProvider(provider, direction, null);
-
-    final double[] scores = new double[n];
-    final double initialScore = 1.0 / n;
-    for (int i = 0; i < n; i++)
-      scores[i] = initialScore;
-
-    for (int iter = 0; iter < maxIterations; iter++) {
-      final double[] newScores = new double[n];
-      double dangling = 0.0;
-
-      // Detect dangling nodes (no outgoing edges)
-      for (int i = 0; i < n; i++) {
-        final int deg = hasView ? view.degree(i) : neighborsFallback[i].length;
-        if (deg == 0)
-          dangling += scores[i];
-      }
-
-      // Push contributions: each node distributes its score to OUT neighbors
-      if (hasView) {
-        for (int i = 0; i < n; i++) {
-          final int start = view.offset(i);
-          final int end = view.offsetEnd(i);
-          if (start == end)
-            continue;
-          final double contribution = scores[i] / (end - start);
-          for (int j = start; j < end; j++)
-            newScores[nbrs[j]] += contribution;
-        }
-      } else {
-        for (int i = 0; i < n; i++) {
-          final int[] neighbors = neighborsFallback[i];
-          if (neighbors.length == 0)
-            continue;
-          final double contribution = scores[i] / neighbors.length;
-          for (final int neighbor : neighbors)
-            newScores[neighbor] += contribution;
-        }
-      }
-
-      final double danglingContribution = dampingFactor * dangling / n;
-      double maxChange = 0.0;
-      for (int i = 0; i < n; i++) {
-        newScores[i] = (1.0 - dampingFactor) / n + dampingFactor * newScores[i] + danglingContribution;
-        maxChange = Math.max(maxChange, Math.abs(newScores[i] - scores[i]));
-        scores[i] = newScores[i];
-      }
-
-      if (maxChange < tolerance)
-        break;
-    }
+    final double[] scores = GraphAlgorithms.pageRank(gav, dampingFactor, maxIterations);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", provider.getRID(i));
+      result.setProperty("node", gav.getRID(i));
       result.setProperty("score", scores[i]);
       return (Result) result;
     });
