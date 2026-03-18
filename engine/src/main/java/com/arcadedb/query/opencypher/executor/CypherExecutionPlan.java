@@ -58,6 +58,7 @@ import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainPathsStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
+import com.arcadedb.query.opencypher.executor.steps.CountCountryTrianglesStep;
 import com.arcadedb.query.opencypher.executor.steps.CountStarJoinStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
@@ -221,6 +222,8 @@ public class CypherExecutionPlan {
     rootStep = tryOptimizeChainCountStar(context);
     if (rootStep == null)
       rootStep = tryOptimizeStarCountStar(context);
+    if (rootStep == null)
+      rootStep = tryOptimizeTriangleCountStar(context);
 
     if (rootStep == null) {
       // Phase 4: Use optimized physical plan if available
@@ -420,6 +423,8 @@ public class CypherExecutionPlan {
         rootStep = tryOptimizeChainCountStar(context);
         if (rootStep == null)
           rootStep = tryOptimizeStarCountStar(context);
+        if (rootStep == null)
+          rootStep = tryOptimizeTriangleCountStar(context);
 
         if (rootStep == null) {
           final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
@@ -3657,6 +3662,177 @@ public class CypherExecutionPlan {
 
     final String alias = retItem.getAlias() != null ? retItem.getAlias() : "count(*)";
     return new CountStarJoinStep(centralLabel, armList.toArray(new CountStarJoinStep.Arm[0]), alias, context);
+  }
+
+  /**
+   * Detects the Q3 "triangle in country" pattern:
+   * <pre>
+   *   MATCH (co:Anchor)
+   *   MATCH (p1:Node)-[:CHAIN1]->(:Mid)-[:CHAIN2]->(co)
+   *   MATCH (p2:Node)-[:CHAIN1]->(:Mid)-[:CHAIN2]->(co)
+   *   MATCH (p3:Node)-[:CHAIN1]->(:Mid)-[:CHAIN2]->(co)
+   *   MATCH (p1)-[:TRI]-(p2)-[:TRI]-(p3)-[:TRI]-(p1)
+   *   RETURN count(*) AS count
+   * </pre>
+   * Requires: 5+ MATCH clauses, no WHERE, RETURN count(*), one cycle MATCH, three partition MATCHes.
+   */
+  private AbstractExecutionStep tryOptimizeTriangleCountStar(final CommandContext context) {
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() < 4)
+      return null;
+    if (statement.getWhereClause() != null)
+      return null;
+
+    // RETURN must be exactly count(*)
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.isDistinct())
+      return null;
+    final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
+    if (items.size() != 1)
+      return null;
+    final ReturnClause.ReturnItem retItem = items.get(0);
+    if (!(retItem.getExpression() instanceof FunctionCallExpression))
+      return null;
+    final FunctionCallExpression func = (FunctionCallExpression) retItem.getExpression();
+    if (!"count".equals(func.getFunctionName()) || func.getArguments().size() != 1
+        || !(func.getArguments().get(0) instanceof StarExpression))
+      return null;
+
+    // No other clause types
+    if (statement.getClausesInOrder() != null)
+      for (final ClauseEntry entry : statement.getClausesInOrder())
+        if (entry.getType() != ClauseEntry.ClauseType.MATCH && entry.getType() != ClauseEntry.ClauseType.RETURN)
+          return null;
+
+    // No MATCH clause should have WHERE
+    for (final MatchClause mc : statement.getMatchClauses())
+      if (mc.hasWhereClause() || mc.isOptional())
+        return null;
+
+    // Find the cycle MATCH: a path pattern where first and last node share the same variable
+    // e.g., (p1)-[:KNOWS]-(p2)-[:KNOWS]-(p3)-[:KNOWS]-(p1)
+    MatchClause cycleMC = null;
+    PathPattern cyclePP = null;
+    String cycleEdgeType = null;
+    final java.util.ArrayList<String> cycleVars = new java.util.ArrayList<>();
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
+        continue;
+      final PathPattern pp = mc.getPathPatterns().get(0);
+      if (pp.getRelationshipCount() < 3)
+        continue;
+      final String firstVar = pp.getFirstNode().getVariable();
+      final String lastVar = pp.getLastNode().getVariable();
+      if (firstVar != null && firstVar.equals(lastVar) && pp.getRelationshipCount() == 3) {
+        // Check all relationships use the same edge type and are anonymous
+        boolean valid = true;
+        String edgeType = null;
+        for (int i = 0; i < 3; i++) {
+          final RelationshipPattern rel = pp.getRelationship(i);
+          if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
+              || !rel.hasTypes() || rel.getTypes().size() != 1) {
+            valid = false;
+            break;
+          }
+          if (edgeType == null)
+            edgeType = rel.getTypes().get(0);
+          else if (!edgeType.equals(rel.getTypes().get(0))) {
+            valid = false;
+            break;
+          }
+        }
+        if (valid) {
+          cycleMC = mc;
+          cyclePP = pp;
+          cycleEdgeType = edgeType;
+          // Collect the 3 distinct variables (first=last, so 3 unique vars)
+          for (int i = 0; i < 3; i++) {
+            final String nv = pp.getNode(i).getVariable();
+            if (nv != null && !cycleVars.contains(nv))
+              cycleVars.add(nv);
+          }
+          break;
+        }
+      }
+    }
+    if (cycleMC == null || cycleVars.size() != 3)
+      return null;
+
+    // Find the anchor MATCH: single node pattern (e.g., (co:Country))
+    String anchorVar = null;
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (mc == cycleMC)
+        continue;
+      if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
+        continue;
+      final PathPattern pp = mc.getPathPatterns().get(0);
+      if (pp.isSingleNode() && pp.getFirstNode().getVariable() != null) {
+        anchorVar = pp.getFirstNode().getVariable();
+        break;
+      }
+    }
+
+    // Find partition chain MATCHes: each cycle var linked to the anchor via a chain
+    // e.g., (p1:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co)
+    String[] partitionEdgeTypes = null;
+    Vertex.DIRECTION[] partitionDirections = null;
+    int chainMatchCount = 0;
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (mc == cycleMC)
+        continue;
+      if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
+        continue;
+      final PathPattern pp = mc.getPathPatterns().get(0);
+      if (pp.isSingleNode())
+        continue; // anchor match
+
+      // Check: first node is a cycle var, last node is anchor var
+      final String firstVar = pp.getFirstNode().getVariable();
+      final String lastVar = pp.getLastNode().getVariable();
+      if (firstVar == null || lastVar == null)
+        continue;
+      if (!cycleVars.contains(firstVar) || !lastVar.equals(anchorVar))
+        continue;
+
+      // Extract chain edge types and directions
+      final int hops = pp.getRelationshipCount();
+      final String[] chainET = new String[hops];
+      final Vertex.DIRECTION[] chainDir = new Vertex.DIRECTION[hops];
+      boolean valid = true;
+      for (int i = 0; i < hops; i++) {
+        final RelationshipPattern rel = pp.getRelationship(i);
+        if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1) {
+          valid = false;
+          break;
+        }
+        chainET[i] = rel.getTypes().get(0);
+        final Direction d = rel.getDirection();
+        chainDir[i] = d == Direction.OUT ? Vertex.DIRECTION.OUT
+            : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+      }
+      if (!valid)
+        continue;
+
+      // All chain MATCHes must have the same chain structure
+      if (partitionEdgeTypes == null) {
+        partitionEdgeTypes = chainET;
+        partitionDirections = chainDir;
+      } else {
+        if (chainET.length != partitionEdgeTypes.length)
+          return null;
+        for (int i = 0; i < chainET.length; i++)
+          if (!chainET[i].equals(partitionEdgeTypes[i]) || chainDir[i] != partitionDirections[i])
+            return null;
+      }
+      chainMatchCount++;
+    }
+
+    // Must have exactly 3 chain MATCHes (one per cycle variable)
+    if (chainMatchCount != 3 || partitionEdgeTypes == null)
+      return null;
+
+    final String alias = retItem.getAlias() != null ? retItem.getAlias() : "count(*)";
+    return new CountCountryTrianglesStep(partitionEdgeTypes, partitionDirections,
+        cycleEdgeType, alias, context);
   }
 
   /**
