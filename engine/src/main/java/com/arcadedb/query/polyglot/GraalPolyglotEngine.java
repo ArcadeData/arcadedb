@@ -52,7 +52,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
       // Use the shared engine to discover supported languages
       supportedLanguages = PolyglotEngineManager.getInstance().getSharedEngine().getLanguages().keySet();
     } catch (Throwable e) {
-      LogManager.instance().log(GraalPolyglotEngine.class, Level.SEVERE, "GraalVM Polyglot Engine: no languages found");
+      LogManager.instance().log(GraalPolyglotEngine.class, Level.WARNING, "GraalVM Polyglot Engine: no languages found");
       supportedLanguages = Collections.emptySet();
     }
   }
