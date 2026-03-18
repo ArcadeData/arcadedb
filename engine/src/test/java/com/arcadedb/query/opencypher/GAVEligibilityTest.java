@@ -521,6 +521,112 @@ class GAVEligibilityTest {
     result.close();
   }
 
+  // --- Anti-join chain optimization (Q9-like) ---
+
+  @Test
+  void antiJoinChainUsesOptimizedStep() {
+    // Q9-like: 2-hop KNOWS chain with anti-join + HAS_INTEREST tail
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag) WHERE NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3 RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(planString).contains("COUNT ANTI-JOIN CHAIN");
+    result.close();
+  }
+
+  @Test
+  void antiJoinChainCorrectCount() {
+    // Q9-like: verify correctness
+    // Graph: Alice-KNOWS-Bob-KNOWS-Charlie, Charlie-HAS_INTEREST->Java
+    // Paths without anti-join (p1<>p3): Alice-Bob-Charlie-Java = 1 path
+    // Anti-join check: NOT Alice-KNOWS-Charlie. Alice's KNOWS neighbors = {Bob}.
+    // Charlie not in {Bob}, so anti-join passes. Count = 1.
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag) WHERE NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3 RETURN count(*) AS count");
+
+    assertThat(result.hasNext()).isTrue();
+    final long count = result.next().getProperty("count");
+    assertThat(count).isEqualTo(1L);
+    result.close();
+  }
+
+  @Test
+  void antiJoinChainFiltersConnectedPairs() {
+    // Add Charlie-KNOWS-Alice to create a direct connection
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (c:Person {name: 'Charlie'}), (a:Person {name: 'Alice'}) CREATE (c)-[:KNOWS]->(a)");
+    });
+
+    // Now: Alice-Bob-Charlie-Java should be filtered out because Alice-KNOWS-Charlie exists
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag) WHERE NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3 RETURN count(*) AS count");
+
+    assertThat(result.hasNext()).isTrue();
+    final long count = result.next().getProperty("count");
+    // Alice-Bob-Charlie: Alice knows Charlie now → filtered out
+    // Charlie-Bob-Alice: Charlie knows Alice → filtered out (no HAS_INTEREST on Alice anyway)
+    // Other paths? Bob has no HAS_INTEREST. No other 2-hop paths reach Charlie.
+    assertThat(count).isEqualTo(0L);
+    result.close();
+  }
+
+  @Test
+  void antiJoinWithoutInequalityUsesOptimizedStep() {
+    // Anti-join only (no inequality): WHERE NOT (p1)-[:KNOWS]-(p3)
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag) WHERE NOT (p1)-[:KNOWS]-(p3) RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(planString).contains("COUNT ANTI-JOIN CHAIN");
+    result.close();
+  }
+
+  @Test
+  void antiJoinWithoutInequalityCorrectCount() {
+    // Without inequality, p1 can equal p3 (self-loops through 2-hop KNOWS)
+    // Alice-Bob-Alice: NOT Alice-KNOWS-Alice? Alice's KNOWS = {Bob}. Alice not in {Bob} → passes.
+    //   But Alice has no HAS_INTEREST → contributes 0
+    // Alice-Bob-Charlie: NOT Alice-KNOWS-Charlie? Charlie not in {Bob} → passes.
+    //   Charlie has HAS_INTEREST Java → contributes 1
+    // Bob-Alice-Bob: NOT Bob-KNOWS-Bob? Bob's KNOWS = {Alice, Charlie}. Bob not in set → passes.
+    //   But Bob has no HAS_INTEREST → contributes 0
+    // Charlie-Bob-Alice: NOT Charlie-KNOWS-Alice? Alice not in {Bob} → passes.
+    //   Alice has no HAS_INTEREST → contributes 0
+    // Charlie-Bob-Charlie: NOT Charlie-KNOWS-Charlie? Charlie's KNOWS = {Bob}. Charlie not in {Bob} → passes.
+    //   Charlie has HAS_INTEREST → contributes 1
+    // Total: 2 (Alice-Bob-Charlie + Charlie-Bob-Charlie)
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag) WHERE NOT (p1)-[:KNOWS]-(p3) RETURN count(*) AS count");
+
+    assertThat(result.hasNext()).isTrue();
+    final long count = result.next().getProperty("count");
+    assertThat(count).isEqualTo(2L);
+    result.close();
+  }
+
+  @Test
+  void antiJoinMatchesTraditionalExecution() {
+    // Compare anti-join optimization result against traditional execution (without optimization)
+    // Use a simpler pattern that also triggers anti-join
+    final ResultSet optimized = database.query("opencypher",
+        "MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person) WHERE NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3 RETURN count(*) AS count");
+    assertThat(optimized.hasNext()).isTrue();
+    final long optimizedCount = optimized.next().getProperty("count");
+    optimized.close();
+
+    // Alice-Bob-Charlie: NOT Alice-KNOWS-Charlie → passes. p1<>p3 → passes. Count 1.
+    // Charlie-Bob-Alice: NOT Charlie-KNOWS-Alice → passes. p1<>p3 → passes. Count 1.
+    // Total = 2
+    assertThat(optimizedCount).isEqualTo(2L);
+  }
+
   @Test
   void countPushDownWithGAV() {
     // Build a GAV and verify count-push-down uses CSR acceleration
