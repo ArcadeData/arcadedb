@@ -214,19 +214,27 @@ public class CypherExecutionPlan {
 
     AbstractExecutionStep rootStep;
 
-    // Phase 4: Use optimized physical plan if available
-    // Use pre-computed flags from the cached CypherStatement to avoid scanning clause lists per execution
-    if (physicalPlan != null && physicalPlan.getRootOperator() != null
-        && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
-        && !statement.hasWithBeforeMatch() && !statement.hasVariableLengthPath()) {
-      // Use optimizer - execute physical operators directly
-      // Note: For Phase 4, we only optimize MATCH patterns
-      // RETURN, ORDER BY, LIMIT are still handled by execution steps
-      rootStep = buildExecutionStepsWithOptimizer(context);
-    } else {
-      // Fall back to non-optimized execution
-      // This path correctly handles clause ordering (UNWIND before MATCH), VLP patterns, etc.
-      rootStep = buildExecutionSteps(context);
+    // FAST PATH: Count-push-down for linear chain MATCH + RETURN count(*)
+    // Must be checked BEFORE the optimizer dispatch, because the optimizer produces
+    // GAVExpandAll operators that still materialize individual rows (O(paths) memory).
+    // CountChainPathsStep propagates counts through CSR arrays (O(nodes) memory).
+    rootStep = tryOptimizeChainCountStar(context);
+
+    if (rootStep == null) {
+      // Phase 4: Use optimized physical plan if available
+      // Use pre-computed flags from the cached CypherStatement to avoid scanning clause lists per execution
+      if (physicalPlan != null && physicalPlan.getRootOperator() != null
+          && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
+          && !statement.hasWithBeforeMatch() && !statement.hasVariableLengthPath()) {
+        // Use optimizer - execute physical operators directly
+        // Note: For Phase 4, we only optimize MATCH patterns
+        // RETURN, ORDER BY, LIMIT are still handled by execution steps
+        rootStep = buildExecutionStepsWithOptimizer(context);
+      } else {
+        // Fall back to non-optimized execution
+        // This path correctly handles clause ordering (UNWIND before MATCH), VLP patterns, etc.
+        rootStep = buildExecutionSteps(context);
+      }
     }
 
     if (rootStep == null) {
@@ -406,15 +414,20 @@ public class CypherExecutionPlan {
         while (resultSet.hasNext())
           results.add(resultSet.next());
       } else {
-        final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
-        final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
+        // FAST PATH: Count-push-down (same logic as execute())
+        rootStep = tryOptimizeChainCountStar(context);
 
-        final boolean hasVLP2 = hasVariableLengthPath();
-        if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2
-            && !hasVLP2)
-          rootStep = buildExecutionStepsWithOptimizer(context);
-        else
-          rootStep = buildExecutionSteps(context);
+        if (rootStep == null) {
+          final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
+          final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
+
+          final boolean hasVLP2 = hasVariableLengthPath();
+          if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2
+              && !hasVLP2)
+            rootStep = buildExecutionStepsWithOptimizer(context);
+          else
+            rootStep = buildExecutionSteps(context);
+        }
 
         if (rootStep != null) {
           final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE);
