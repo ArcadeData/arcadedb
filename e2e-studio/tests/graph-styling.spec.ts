@@ -80,25 +80,29 @@ test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
 
     console.log('HTML labels supported:', htmlLabelsSupported);
 
-    // Verify node labels are displayed
+    // Verify nodes exist and have the label data property (may be empty by default)
     const nodeLabels = await page.evaluate(() => {
       if (!globalCy) return [];
 
       const nodes = globalCy.nodes();
       return nodes.map(node => ({
         id: node.id(),
-        label: node.data('label') || node.data('name') || 'No label'
+        label: node.data('label'),
+        type: node.data('type'),
+        hasLabelProp: 'label' in node.data()
       }));
     });
 
     expect(nodeLabels.length).toBeGreaterThan(0);
     console.log('Node labels:', nodeLabels.slice(0, 3)); // Log first 3 for verification
 
-    // Verify labels are not empty
-    const hasNonEmptyLabels = nodeLabels.some(node =>
-      node.label && node.label !== 'No label' && node.label.trim() !== ''
-    );
-    expect(hasNonEmptyLabels).toBe(true);
+    // Verify all nodes have the label property defined (even if empty, since default is no label)
+    const allHaveLabelProp = nodeLabels.every(node => node.hasLabelProp);
+    expect(allHaveLabelProp).toBe(true);
+
+    // Verify all nodes have a type assigned
+    const allHaveType = nodeLabels.every(node => node.type && node.type.trim() !== '');
+    expect(allHaveType).toBe(true);
   });
 
   test('should apply different styles for different vertex types', async ({ authenticatedHelper }) => {
