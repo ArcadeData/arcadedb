@@ -373,6 +373,61 @@ class GAVEligibilityTest {
     result.close();
   }
 
+  // --- Triangle counting optimization (Q3) ---
+
+  @Test
+  void triangleCountUsesOptimizedStep() {
+    // Q3-like: triangle in country
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (co:Country) MATCH (p1:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p2:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p3:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p1)-[:KNOWS]-(p2)-[:KNOWS]-(p3)-[:KNOWS]-(p1) RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(planString).contains("COUNT TRIANGLES");
+    result.close();
+  }
+
+  @Test
+  void triangleCountCorrect() {
+    // Q3-like: verify correctness
+    // Graph: Alice→Bob→Charlie (KNOWS), all in Italy/Rome
+    // Alice-Bob-Charlie form a path, NOT a triangle (Charlie doesn't know Alice)
+    // So count should be 0 (no triangles)
+    final ResultSet result = database.query("opencypher",
+        "MATCH (co:Country) MATCH (p1:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p2:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p3:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p1)-[:KNOWS]-(p2)-[:KNOWS]-(p3)-[:KNOWS]-(p1) RETURN count(*) AS count");
+
+    assertThat(result.hasNext()).isTrue();
+    final long count = result.next().getProperty("count");
+    // No triangle: Alice-Bob and Bob-Charlie exist, but Charlie-Alice does not
+    assertThat(count).isEqualTo(0L);
+    result.close();
+  }
+
+  @Test
+  void triangleCountCorrectWithTriangle() {
+    // Add Charlie→Alice edge to complete the triangle
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (c:Person {name: 'Charlie'}), (a:Person {name: 'Alice'}) CREATE (c)-[:KNOWS]->(a)");
+      // Also put Bob and Charlie in Rome
+      database.command("opencypher",
+          "MATCH (p:Person {name: 'Bob'}), (city:City {name: 'Rome'}) CREATE (p)-[:IS_LOCATED_IN]->(city)");
+      database.command("opencypher",
+          "MATCH (p:Person {name: 'Charlie'}), (city:City {name: 'Rome'}) CREATE (p)-[:IS_LOCATED_IN]->(city)");
+    });
+
+    final ResultSet result = database.query("opencypher",
+        "MATCH (co:Country) MATCH (p1:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p2:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p3:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co) MATCH (p1)-[:KNOWS]-(p2)-[:KNOWS]-(p3)-[:KNOWS]-(p1) RETURN count(*) AS count");
+
+    assertThat(result.hasNext()).isTrue();
+    final long count = result.next().getProperty("count");
+    // One triangle {Alice, Bob, Charlie} = 6 ordered triples
+    assertThat(count).isEqualTo(6L);
+    result.close();
+  }
+
   // --- Star-join optimization (Q4, Q7) ---
 
   @Test
