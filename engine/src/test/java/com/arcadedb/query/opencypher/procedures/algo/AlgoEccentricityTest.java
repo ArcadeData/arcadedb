@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -104,26 +103,21 @@ class AlgoEccentricityTest {
   void eccentricityMiddleNodesAreCenters() {
     final ResultSet rs = database.query("opencypher",
         "CALL algo.eccentricity() YIELD node, eccentricity, isCenter, isPeripheral " +
-            "RETURN node, eccentricity, isCenter, isPeripheral");
+            "RETURN node.name AS name, eccentricity, isCenter, isPeripheral");
 
     int eccA = 0, eccB = 0, eccC = 0, eccD = 0;
     boolean centerA = false, centerB = false, centerC = false, centerD = false;
 
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      final Object eccObj = r.getProperty("eccentricity");
-      final Object isCenterObj = r.getProperty("isCenter");
-      if (nodeObj instanceof Vertex v) {
-        final String name = v.getString("name");
-        final int ecc = ((Number) eccObj).intValue();
-        final boolean isCenter = Boolean.TRUE.equals(isCenterObj);
-        switch (name) {
-          case "A" -> { eccA = ecc; centerA = isCenter; }
-          case "B" -> { eccB = ecc; centerB = isCenter; }
-          case "C" -> { eccC = ecc; centerC = isCenter; }
-          case "D" -> { eccD = ecc; centerD = isCenter; }
-        }
+      final String name = (String) r.getProperty("name");
+      final int ecc = ((Number) r.getProperty("eccentricity")).intValue();
+      final boolean isCenter = Boolean.TRUE.equals(r.getProperty("isCenter"));
+      switch (name) {
+        case "A" -> { eccA = ecc; centerA = isCenter; }
+        case "B" -> { eccB = ecc; centerB = isCenter; }
+        case "C" -> { eccC = ecc; centerC = isCenter; }
+        case "D" -> { eccD = ecc; centerD = isCenter; }
       }
     }
 
@@ -141,23 +135,19 @@ class AlgoEccentricityTest {
   void eccentricityEndpointsArePeripheral() {
     final ResultSet rs = database.query("opencypher",
         "CALL algo.eccentricity() YIELD node, eccentricity, isCenter, isPeripheral " +
-            "RETURN node, isPeripheral");
+            "RETURN node.name AS name, isPeripheral");
 
     boolean peripheralA = false, peripheralB = false, peripheralC = false, peripheralD = false;
 
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      final Object isPeripheralObj = r.getProperty("isPeripheral");
-      if (nodeObj instanceof Vertex v) {
-        final String name = v.getString("name");
-        final boolean isPeripheral = Boolean.TRUE.equals(isPeripheralObj);
-        switch (name) {
-          case "A" -> peripheralA = isPeripheral;
-          case "B" -> peripheralB = isPeripheral;
-          case "C" -> peripheralC = isPeripheral;
-          case "D" -> peripheralD = isPeripheral;
-        }
+      final String name = (String) r.getProperty("name");
+      final boolean isPeripheral = Boolean.TRUE.equals(r.getProperty("isPeripheral"));
+      switch (name) {
+        case "A" -> peripheralA = isPeripheral;
+        case "B" -> peripheralB = isPeripheral;
+        case "C" -> peripheralC = isPeripheral;
+        case "D" -> peripheralD = isPeripheral;
       }
     }
 

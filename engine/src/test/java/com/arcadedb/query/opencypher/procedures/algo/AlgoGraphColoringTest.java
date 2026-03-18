@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -138,19 +137,16 @@ class AlgoGraphColoringTest {
     });
 
     final ResultSet rs = db2.query("opencypher",
-        "CALL algo.graphColoring() YIELD node, color RETURN node, color");
+        "CALL algo.graphColoring() YIELD node, color RETURN node.name AS name, color");
 
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      if (nodeObj instanceof Vertex v) {
-        final String name = v.getString("name");
-        final int col = ((Number) r.getProperty("color")).intValue();
-        if ("A".equals(name))
-          colorA[0] = col;
-        else if ("B".equals(name))
-          colorB[0] = col;
-      }
+      final String name = (String) r.getProperty("name");
+      final int col = ((Number) r.getProperty("color")).intValue();
+      if ("A".equals(name))
+        colorA[0] = col;
+      else if ("B".equals(name))
+        colorB[0] = col;
     }
 
     db2.drop();

@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -90,14 +89,13 @@ class AlgoSCCTest {
   @Test
   void sccCyclicNodesSameComponent() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.scc() YIELD node, componentId RETURN node, componentId");
+        "CALL algo.scc() YIELD node, componentId RETURN node.name AS name, componentId");
 
     final Map<String, Integer> compMap = new HashMap<>();
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      if (nodeObj instanceof Vertex v)
-        compMap.put(v.getString("name"), ((Number) r.getProperty("componentId")).intValue());
+      final String name = (String) r.getProperty("name");
+      compMap.put(name, ((Number) r.getProperty("componentId")).intValue());
     }
 
     // A and B form one SCC; C and D form another

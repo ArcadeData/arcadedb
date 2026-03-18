@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -68,20 +67,11 @@ class AlgoDegreeCentralityTest {
   @Test
   void degreeHubHasHighestOutDegree() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.degree() YIELD node, outDegree RETURN node, outDegree");
+        "CALL algo.degree() YIELD node, outDegree RETURN node.name AS name, outDegree ORDER BY outDegree DESC");
 
-    long maxOut = 0;
-    String maxName = null;
-    while (rs.hasNext()) {
-      final Result r = rs.next();
-      final long out = ((Number) r.getProperty("outDegree")).longValue();
-      if (out > maxOut) {
-        maxOut = out;
-        final Object n = r.getProperty("node");
-        if (n instanceof Vertex v)
-          maxName = v.getString("name");
-      }
-    }
+    final Result first = rs.next();
+    final long maxOut = ((Number) first.getProperty("outDegree")).longValue();
+    final String maxName = (String) first.getProperty("name");
     assertThat(maxOut).isEqualTo(3L);
     assertThat(maxName).isEqualTo("A");
   }
@@ -89,11 +79,11 @@ class AlgoDegreeCentralityTest {
   @Test
   void degreeSpokeHasInDegreeOne() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.degree() YIELD node, inDegree RETURN node, inDegree");
+        "CALL algo.degree() YIELD node, inDegree RETURN node.name AS name, inDegree");
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      if (nodeObj instanceof Vertex v && !"A".equals(v.getString("name"))) {
+      final String name = (String) r.getProperty("name");
+      if (!"A".equals(name)) {
         final long in = ((Number) r.getProperty("inDegree")).longValue();
         assertThat(in).isEqualTo(1L);
       }
@@ -103,11 +93,11 @@ class AlgoDegreeCentralityTest {
   @Test
   void degreeHubHasInDegreeZero() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.degree() YIELD node, inDegree RETURN node, inDegree");
+        "CALL algo.degree() YIELD node, inDegree RETURN node.name AS name, inDegree");
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object nodeObj = r.getProperty("node");
-      if (nodeObj instanceof Vertex v && "A".equals(v.getString("name"))) {
+      final String name = (String) r.getProperty("name");
+      if ("A".equals(name)) {
         final long in = ((Number) r.getProperty("inDegree")).longValue();
         assertThat(in).isEqualTo(0L);
       }
