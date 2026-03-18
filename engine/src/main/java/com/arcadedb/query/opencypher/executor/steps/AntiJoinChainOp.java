@@ -104,229 +104,171 @@ public final class AntiJoinChainOp implements CountOp {
     for (int i = 0; i <= hops; i++)
       validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
 
-    // Phase 1: Propagate counts from position 0 to antiJoinSourceIdx
-    // (If antiJoinSourceIdx == 0, this array is just the anchor initialization)
-    long[] countsAtSource = new long[nodeCount];
+    // Determine the "check position" — the later of the two anti-join endpoints.
+    // We always iterate from chain position 0 (anchor) and expand to the check position.
+    // The anti-join filter is applied at the check position.
+    final int earlierIdx = Math.min(antiJoinSourceIdx, antiJoinTargetIdx);
+    final int laterIdx = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
+
+    // We need position 0 to be one of the anti-join endpoints for per-source iteration
+    if (earlierIdx != 0)
+      return executeGenericAntiJoin(provider, db, nodeCount, validBuckets);
+
+    // Per-source iteration from anchor (position 0)
     final String anchorLabel = nodeLabels[0];
-    if (anchorLabel != null && db.getSchema().existsType(anchorLabel)) {
-      for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
-        final RID rid = it.next().getIdentity();
-        final int nodeId = provider.getNodeId(rid);
-        if (nodeId >= 0)
-          countsAtSource[nodeId] = 1;
-      }
-    }
+    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
+      return 0;
 
-    // Propagate through hops [0, antiJoinSourceIdx)
-    for (int hop = 0; hop < antiJoinSourceIdx; hop++) {
-      countsAtSource = CSRCountUtils.propagateOneHop(provider, countsAtSource, directions[hop], edgeTypes[hop]);
-      CSRCountUtils.filterByBuckets(provider, countsAtSource, validBuckets[hop + 1]);
-    }
+    // Case A (Q9): anti-join source is at position 0 → precompute anchor's anti-join neighbors
+    //   Check: is frontier node in anchor's neighbor list? (merge-scan)
+    // Case B (Q8): anti-join target is at position 0 → check each frontier node's neighbors for anchor
+    //   Check: is anchor in frontier node's neighbor list? (binary search)
+    final boolean anchorIsSource = (antiJoinSourceIdx == 0);
 
-    // Phase 2: Per-source anti-join iteration
     long totalCount = 0;
 
-    for (int srcId = 0; srcId < nodeCount; srcId++) {
-      if (countsAtSource[srcId] == 0)
+    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
+      final RID rid = it.next().getIdentity();
+      final int anchorId = provider.getNodeId(rid);
+      if (anchorId < 0)
         continue;
 
-      final long prefixCount = countsAtSource[srcId];
+      // Pre-compute anti-join neighbors for Case A (anchor is the anti-join source)
+      final int[] anchorAntiNbrs = anchorIsSource
+          ? provider.getNeighborIds(anchorId, antiJoinDirection, antiJoinEdgeType)
+          : null;
 
-      // Get anti-join neighbors of this source node (sorted)
-      final int[] antiNbrs = provider.getNeighborIds(srcId, antiJoinDirection, antiJoinEdgeType);
-      // antiNbrs is sorted because CSR arrays are sorted
-
-      // Enumerate paths from srcId through hops [antiJoinSourceIdx .. antiJoinTargetIdx-1]
-      // collecting (target node, path count) pairs at the anti-join target position.
-      // Then filter out targets present in antiNbrs.
-
-      final long antiJoinCount = countWithAntiJoin(provider, srcId, antiNbrs, validBuckets);
-      totalCount += prefixCount * antiJoinCount;
+      final long count = countWithAntiJoin(provider, anchorId, anchorAntiNbrs,
+          anchorIsSource, laterIdx, validBuckets);
+      totalCount += count;
     }
 
     return totalCount;
   }
 
   /**
-   * Counts paths from a single source node through the chain, applying anti-join
-   * at the target position, then propagating through remaining hops.
-   * <p>
-   * Uses merge-scan of sorted CSR neighbor arrays for efficient anti-join filtering.
+   * Fallback for anti-join patterns where neither endpoint is at position 0.
+   * Uses dense propagation + per-node anti-join checking.
    */
-  private long countWithAntiJoin(final GraphTraversalProvider provider, final int srcId,
-      final int[] antiNbrs, final Set<Integer>[] validBuckets) {
-
-    final int midHops = antiJoinTargetIdx - antiJoinSourceIdx; // hops from source to anti-join target
-    final int tailHops = edgeTypes.length - antiJoinTargetIdx; // hops after anti-join target
-
-    // For single-hop case (midHops == 1): direct neighbor enumeration with merge-scan
-    // For multi-hop case: expand level by level, then anti-join at target
-
-    if (midHops == 1) {
-      // Common case: one hop from source to target (e.g., single KNOWS edge)
-      return countSingleHopAntiJoin(provider, srcId, antiNbrs, validBuckets, tailHops);
-    }
-
-    // Multi-hop: expand from source through intermediate hops
-    return countMultiHopAntiJoin(provider, srcId, antiNbrs, validBuckets, midHops, tailHops);
+  private long executeGenericAntiJoin(final GraphTraversalProvider provider, final Database db,
+      final int nodeCount, final Set<Integer>[] validBuckets) {
+    // Fall back to OLTP for this rare case
+    return executeOLTP(db);
   }
 
   /**
-   * Single-hop anti-join: source has direct neighbors as anti-join targets.
-   * This is less common (Q9 has midHops=2), but handles it for completeness.
-   */
-  private long countSingleHopAntiJoin(final GraphTraversalProvider provider, final int srcId,
-      final int[] antiNbrs, final Set<Integer>[] validBuckets, final int tailHops) {
-    long count = 0;
-    final int[] targets = provider.getNeighborIds(srcId, directions[antiJoinSourceIdx],
-        edgeTypes[antiJoinSourceIdx]);
-
-    // Apply type filter at anti-join target position
-    final Set<Integer> targetBuckets = validBuckets[antiJoinTargetIdx];
-
-    int ai = 0; // pointer into antiNbrs for merge-scan
-    for (final int target : targets) {
-      // Type filter
-      if (targetBuckets != null && !targetBuckets.isEmpty()) {
-        final RID rid = provider.getRID(target);
-        if (!targetBuckets.contains(rid.getBucketId()))
-          continue;
-      }
-
-      // Inequality check
-      if (inequalityIdxA >= 0 && inequalityIdxB >= 0) {
-        final int ineqNode = (inequalityIdxA == antiJoinSourceIdx) ? srcId : -1;
-        final int ineqTarget = (inequalityIdxB == antiJoinTargetIdx) ? target : -1;
-        if (ineqNode >= 0 && ineqTarget >= 0 && ineqNode == ineqTarget)
-          continue;
-      }
-
-      // Anti-join: advance ai to find/skip target in antiNbrs
-      while (ai < antiNbrs.length && antiNbrs[ai] < target)
-        ai++;
-      if (ai < antiNbrs.length && antiNbrs[ai] == target)
-        continue; // anti-join hit — exclude
-
-      // Compute tail contribution
-      count += computeTailCount(provider, target, validBuckets);
-    }
-    return count;
-  }
-
-  /**
-   * Multi-hop anti-join: expand from source through intermediate hops,
-   * then apply anti-join at the target position.
+   * Counts paths from a single anchor node through the chain, applying anti-join
+   * at the later anti-join position, then propagating through remaining hops.
    * <p>
-   * For Q9: source=p1, hop through p2 (KNOWS), arrive at p3 candidates.
-   * For each (p1, p2), get p2's KNOWS neighbors as p3 candidates,
-   * merge-scan against p1's KNOWS neighbors (anti-join set).
+   * Handles two anti-join directions:
+   * <ul>
+   *   <li>Case A (Q9): anchor is the anti-join source → precomputed merge-scan</li>
+   *   <li>Case B (Q8): anchor is the anti-join target → per-frontier binary search</li>
+   * </ul>
    */
-  private long countMultiHopAntiJoin(final GraphTraversalProvider provider, final int srcId,
-      final int[] antiNbrs, final Set<Integer>[] validBuckets,
-      final int midHops, final int tailHops) {
+  private long countWithAntiJoin(final GraphTraversalProvider provider, final int anchorId,
+      final int[] anchorAntiNbrs, final boolean anchorIsSource,
+      final int checkPosition, final Set<Integer>[] validBuckets) {
     long count = 0;
 
-    // Expand from source through hops [antiJoinSourceIdx .. antiJoinTargetIdx-1]
-    // Track the frontier at each level
-    int[] frontier = new int[]{srcId};
-
-    for (int h = 0; h < midHops - 1; h++) {
-      final int hopIdx = antiJoinSourceIdx + h;
-      // Expand frontier one hop
+    // Expand from anchor through hops [0, checkPosition)
+    int[] frontier = new int[]{anchorId};
+    for (int h = 0; h < checkPosition; h++) {
       int totalNext = 0;
       for (final int nid : frontier)
-        totalNext += provider.getNeighborIds(nid, directions[hopIdx], edgeTypes[hopIdx]).length;
+        totalNext += provider.getNeighborIds(nid, directions[h], edgeTypes[h]).length;
       if (totalNext == 0)
         return 0;
 
       final int[] nextFrontier = new int[totalNext];
       int pos = 0;
       for (final int nid : frontier) {
-        final int[] neighbors = provider.getNeighborIds(nid, directions[hopIdx], edgeTypes[hopIdx]);
+        final int[] neighbors = provider.getNeighborIds(nid, directions[h], edgeTypes[h]);
         System.arraycopy(neighbors, 0, nextFrontier, pos, neighbors.length);
         pos += neighbors.length;
       }
 
-      // Apply type filter at this intermediate position
-      final Set<Integer> midBuckets = validBuckets[hopIdx + 1];
+      // Apply type filter
+      final Set<Integer> midBuckets = validBuckets[h + 1];
       if (midBuckets != null && !midBuckets.isEmpty()) {
         int writePos = 0;
-        for (int i = 0; i < nextFrontier.length; i++) {
+        for (int i = 0; i < pos; i++) {
           final RID rid = provider.getRID(nextFrontier[i]);
           if (midBuckets.contains(rid.getBucketId()))
             nextFrontier[writePos++] = nextFrontier[i];
         }
         frontier = Arrays.copyOf(nextFrontier, writePos);
       } else {
-        frontier = nextFrontier;
+        frontier = pos < nextFrontier.length ? Arrays.copyOf(nextFrontier, pos) : nextFrontier;
       }
     }
 
-    // Now frontier contains nodes at position (antiJoinTargetIdx - 1).
-    // The last hop reaches the anti-join target position.
-    final int lastMidHopIdx = antiJoinTargetIdx - 1;
-    final Set<Integer> targetBuckets = validBuckets[antiJoinTargetIdx];
-
-    for (final int midNode : frontier) {
-      final int[] targets = provider.getNeighborIds(midNode, directions[lastMidHopIdx],
-          edgeTypes[lastMidHopIdx]);
-
-      // Merge-scan targets against antiNbrs (both sorted)
+    // frontier now contains nodes at checkPosition.
+    // Apply anti-join and inequality filters, then compute tail.
+    if (anchorIsSource) {
+      // Case A (Q9): anchor is anti-join source. Exclude frontier nodes that are
+      // in anchor's anti-join neighbors. Use merge-scan on sorted arrays.
       int ai = 0;
-      for (final int target : targets) {
-        // Type filter
-        if (targetBuckets != null && !targetBuckets.isEmpty()) {
-          final RID rid = provider.getRID(target);
-          if (!targetBuckets.contains(rid.getBucketId()))
-            continue;
-        }
-
-        // Inequality check
-        if (inequalityIdxA >= 0 && inequalityIdxB >= 0) {
-          if (isInequalityViolation(srcId, target))
-            continue;
-        }
-
-        // Anti-join merge-scan
-        while (ai < antiNbrs.length && antiNbrs[ai] < target)
-          ai++;
-        if (ai < antiNbrs.length && antiNbrs[ai] == target)
+      for (final int target : frontier) {
+        // Inequality check (anchor at position 0, target at checkPosition)
+        if (inequalityIdxA >= 0 && inequalityIdxB >= 0
+            && isInequalityViolation(anchorId, target, 0, checkPosition))
           continue;
 
-        // Compute tail contribution
+        // Anti-join merge-scan
+        while (ai < anchorAntiNbrs.length && anchorAntiNbrs[ai] < target)
+          ai++;
+        if (ai < anchorAntiNbrs.length && anchorAntiNbrs[ai] == target)
+          continue;
+
         count += computeTailCount(provider, target, validBuckets);
+      }
+    } else {
+      // Case B (Q8): anchor is anti-join target. For each frontier node, check
+      // whether it has an anti-join edge to the anchor. Use binary search on the
+      // frontier node's sorted neighbor list.
+      for (final int frontierNode : frontier) {
+        // Inequality check
+        if (inequalityIdxA >= 0 && inequalityIdxB >= 0
+            && isInequalityViolation(anchorId, frontierNode, 0, checkPosition))
+          continue;
+
+        // Anti-join: check if frontierNode has an edge to anchor via the anti-join type/direction
+        final int[] frontierAntiNbrs = provider.getNeighborIds(frontierNode,
+            antiJoinDirection, antiJoinEdgeType);
+        if (Arrays.binarySearch(frontierAntiNbrs, anchorId) >= 0)
+          continue; // anti-join hit — exclude
+
+        count += computeTailCount(provider, frontierNode, validBuckets);
       }
     }
     return count;
   }
 
   /**
-   * Checks if the current (source, target) pair violates the inequality constraint.
+   * Checks if the (anchor, target) pair violates the inequality constraint.
    */
-  private boolean isInequalityViolation(final int srcId, final int targetId) {
-    // The inequality is between positions inequalityIdxA and inequalityIdxB.
-    // srcId is at antiJoinSourceIdx, targetId is at antiJoinTargetIdx.
-    // Check if both inequality positions map to these two nodes.
-    return (inequalityIdxA == antiJoinSourceIdx && inequalityIdxB == antiJoinTargetIdx
-        || inequalityIdxA == antiJoinTargetIdx && inequalityIdxB == antiJoinSourceIdx)
-        && srcId == targetId;
+  private boolean isInequalityViolation(final int anchorId, final int targetId,
+      final int anchorPos, final int targetPos) {
+    return ((inequalityIdxA == anchorPos && inequalityIdxB == targetPos)
+        || (inequalityIdxA == targetPos && inequalityIdxB == anchorPos))
+        && anchorId == targetId;
   }
 
   /**
-   * Computes the count contribution from the "tail" of the chain after the anti-join target.
+   * Computes the count contribution from the "tail" of the chain after the check position.
+   * The check position is the later of the two anti-join endpoints.
    * For single remaining hops, uses O(1) degree lookup.
-   * For multi-hop tails, uses degree product (each hop is independent).
    */
   private long computeTailCount(final GraphTraversalProvider provider, final int nodeId,
       final Set<Integer>[] validBuckets) {
+    final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
     long tailCount = 1;
-    for (int h = antiJoinTargetIdx; h < edgeTypes.length; h++) {
+    for (int h = checkPos; h < edgeTypes.length; h++) {
       final long degree = provider.countEdges(nodeId, directions[h], edgeTypes[h]);
       if (degree == 0)
         return 0;
       tailCount *= degree;
-      // For multi-hop tails, this uses degree product which is an approximation
-      // when type filtering is needed. For single-hop tails (common case), it's exact.
     }
     return tailCount;
   }

@@ -3898,6 +3898,7 @@ public class CypherExecutionPlan {
     // Walk backward from startNodeIdx to find endpoint reaching probeVar1 or probeVar2
     final java.util.ArrayList<String> bwdET = new java.util.ArrayList<>();
     final java.util.ArrayList<Vertex.DIRECTION> bwdDir = new java.util.ArrayList<>();
+    final java.util.ArrayList<String> bwdLabels = new java.util.ArrayList<>();
     String bwdEndpointVar = null;
     for (int i = startNodeIdx - 1; i >= 0; i--) {
       final RelationshipPattern rel = buildPattern.getRelationship(i);
@@ -3908,7 +3909,9 @@ public class CypherExecutionPlan {
       final Direction d = rel.getDirection().reverse();
       bwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
           : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
-      final String nodeVar = buildPattern.getNode(i).getVariable();
+      final NodePattern targetNode = buildPattern.getNode(i);
+      bwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().get(0) : null);
+      final String nodeVar = targetNode.getVariable();
       if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
         bwdEndpointVar = nodeVar;
         break;
@@ -3918,6 +3921,7 @@ public class CypherExecutionPlan {
     // Walk forward from startNodeIdx to find the other endpoint
     final java.util.ArrayList<String> fwdET = new java.util.ArrayList<>();
     final java.util.ArrayList<Vertex.DIRECTION> fwdDir = new java.util.ArrayList<>();
+    final java.util.ArrayList<String> fwdLabels = new java.util.ArrayList<>();
     String fwdEndpointVar = null;
     for (int i = startNodeIdx; i < buildHops; i++) {
       final RelationshipPattern rel = buildPattern.getRelationship(i);
@@ -3928,7 +3932,9 @@ public class CypherExecutionPlan {
       final Direction d = rel.getDirection();
       fwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
           : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
-      final String nodeVar = buildPattern.getNode(i + 1).getVariable();
+      final NodePattern targetNode = buildPattern.getNode(i + 1);
+      fwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().get(0) : null);
+      final String nodeVar = targetNode.getVariable();
       if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
         fwdEndpointVar = nodeVar;
         break;
@@ -3941,22 +3947,26 @@ public class CypherExecutionPlan {
       return null; // Both arms reach the same endpoint
 
     // Arm reaching probeVar1 and arm reaching probeVar2
-    final String[] arm1ET, arm2ET;
+    final String[] arm1ET, arm2ET, arm1Labels, arm2Labels;
     final Vertex.DIRECTION[] arm1Dir, arm2Dir;
     if (bwdEndpointVar.equals(probeVar1)) {
       arm1ET = bwdET.toArray(new String[0]);
       arm1Dir = bwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm1Labels = bwdLabels.toArray(new String[0]);
       arm2ET = fwdET.toArray(new String[0]);
       arm2Dir = fwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm2Labels = fwdLabels.toArray(new String[0]);
     } else {
       arm1ET = fwdET.toArray(new String[0]);
       arm1Dir = fwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm1Labels = fwdLabels.toArray(new String[0]);
       arm2ET = bwdET.toArray(new String[0]);
       arm2Dir = bwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm2Labels = bwdLabels.toArray(new String[0]);
     }
 
-    return new PairHashJoinOp(buildStartLabel, arm1ET, arm1Dir, arm2ET, arm2Dir,
-        probeEdgeType, probeDirection);
+    return new PairHashJoinOp(buildStartLabel, arm1ET, arm1Dir, arm1Labels,
+        arm2ET, arm2Dir, arm2Labels, probeEdgeType, probeDirection);
   }
 
   /**
@@ -4070,12 +4080,10 @@ public class CypherExecutionPlan {
     if (antiJoinSourceIdx < 0 || antiJoinTargetIdx < 0)
       return null;
 
-    // Ensure source comes before target
-    if (antiJoinSourceIdx > antiJoinTargetIdx) {
-      final int tmp = antiJoinSourceIdx;
-      antiJoinSourceIdx = antiJoinTargetIdx;
-      antiJoinTargetIdx = tmp;
-    }
+    // Do NOT swap source/target — the direction depends on the original order.
+    // AntiJoinChainOp handles both cases:
+    //   Case A (Q9): anti-join from anchor(0) to later position → merge-scan
+    //   Case B (Q8): anti-join from later position to anchor(0) → per-frontier binary search
 
     // Resolve inequality positions (if present)
     int inequalityIdxA = -1;

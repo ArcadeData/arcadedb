@@ -32,6 +32,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Count operator for two-pattern pair-join queries (Q2).
@@ -42,21 +43,27 @@ public final class PairHashJoinOp implements CountOp {
   private final String buildStartLabel;
   private final String[] arm1EdgeTypes;
   private final Vertex.DIRECTION[] arm1Directions;
+  private final String[] arm1IntermediateLabels; // labels for nodes reached at each hop (null = no filter)
   private final String[] arm2EdgeTypes;
   private final Vertex.DIRECTION[] arm2Directions;
+  private final String[] arm2IntermediateLabels;
   private final String probeEdgeType;
   private final Vertex.DIRECTION probeDirection;
   private final String[] allEdgeTypes;
 
   public PairHashJoinOp(final String buildStartLabel,
       final String[] arm1EdgeTypes, final Vertex.DIRECTION[] arm1Directions,
+      final String[] arm1IntermediateLabels,
       final String[] arm2EdgeTypes, final Vertex.DIRECTION[] arm2Directions,
+      final String[] arm2IntermediateLabels,
       final String probeEdgeType, final Vertex.DIRECTION probeDirection) {
     this.buildStartLabel = buildStartLabel;
     this.arm1EdgeTypes = arm1EdgeTypes;
     this.arm1Directions = arm1Directions;
+    this.arm1IntermediateLabels = arm1IntermediateLabels;
     this.arm2EdgeTypes = arm2EdgeTypes;
     this.arm2Directions = arm2Directions;
+    this.arm2IntermediateLabels = arm2IntermediateLabels;
     this.probeEdgeType = probeEdgeType;
     this.probeDirection = probeDirection;
 
@@ -81,11 +88,13 @@ public final class PairHashJoinOp implements CountOp {
       if (startId < 0)
         continue;
 
-      final int[] ep1Ids = CSRCountUtils.walkArm(provider, startId, arm1EdgeTypes, arm1Directions);
+      final int[] ep1Ids = CSRCountUtils.walkArm(provider, startId, arm1EdgeTypes, arm1Directions,
+          buildValidBucketSets(db, arm1IntermediateLabels));
       if (ep1Ids.length == 0)
         continue;
 
-      final int[] ep2Ids = CSRCountUtils.walkArm(provider, startId, arm2EdgeTypes, arm2Directions);
+      final int[] ep2Ids = CSRCountUtils.walkArm(provider, startId, arm2EdgeTypes, arm2Directions,
+          buildValidBucketSets(db, arm2IntermediateLabels));
       if (ep2Ids.length == 0)
         continue;
 
@@ -126,8 +135,8 @@ public final class PairHashJoinOp implements CountOp {
 
     for (final Iterator<? extends Identifiable> it = db.iterateType(buildStartLabel, true); it.hasNext(); ) {
       final Vertex start = it.next().asVertex();
-      final List<RID> ep1List = walkArmOLTP(start, arm1EdgeTypes, arm1Directions);
-      final List<RID> ep2List = walkArmOLTP(start, arm2EdgeTypes, arm2Directions);
+      final List<RID> ep1List = walkArmOLTP(start, arm1EdgeTypes, arm1Directions, arm1IntermediateLabels);
+      final List<RID> ep2List = walkArmOLTP(start, arm2EdgeTypes, arm2Directions, arm2IntermediateLabels);
       for (final RID ep1 : ep1List)
         for (final RID ep2 : ep2List)
           pairCounts.merge(ep1 + "|" + ep2, 1L, Long::sum);
@@ -151,18 +160,41 @@ public final class PairHashJoinOp implements CountOp {
   }
 
   private List<RID> walkArmOLTP(final Vertex start, final String[] edgeTypes,
-      final Vertex.DIRECTION[] directions) {
+      final Vertex.DIRECTION[] directions, final String[] intermediateLabels) {
     List<Vertex> current = List.of(start);
     for (int hop = 0; hop < edgeTypes.length; hop++) {
+      final String label = intermediateLabels != null ? intermediateLabels[hop] : null;
       final List<Vertex> next = new ArrayList<>();
       for (final Vertex v : current)
-        for (final Iterator<Vertex> it = v.getVertices(directions[hop], edgeTypes[hop]).iterator(); it.hasNext(); )
-          next.add(it.next());
+        for (final Iterator<Vertex> it = v.getVertices(directions[hop], edgeTypes[hop]).iterator(); it.hasNext(); ) {
+          final Vertex neighbor = it.next();
+          if (label != null && !neighbor.getType().instanceOf(label))
+            continue;
+          next.add(neighbor);
+        }
       current = next;
     }
     final List<RID> result = new ArrayList<>(current.size());
     for (final Vertex v : current)
       result.add(v.getIdentity());
+    return result;
+  }
+
+  /**
+   * Builds valid bucket sets from intermediate labels for use with CSRCountUtils.walkArm.
+   */
+  @SuppressWarnings("unchecked")
+  private static Set<Integer>[] buildValidBucketSets(final Database db, final String[] intermediateLabels) {
+    if (intermediateLabels == null)
+      return null;
+    boolean hasAny = false;
+    for (final String label : intermediateLabels)
+      if (label != null) { hasAny = true; break; }
+    if (!hasAny)
+      return null;
+    final Set<Integer>[] result = new Set[intermediateLabels.length];
+    for (int i = 0; i < intermediateLabels.length; i++)
+      result[i] = CSRCountUtils.buildValidBuckets(db, intermediateLabels[i]);
     return result;
   }
 
