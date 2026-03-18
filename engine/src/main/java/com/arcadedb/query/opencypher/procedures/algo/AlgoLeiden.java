@@ -25,11 +25,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -204,14 +203,12 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
         remap.put(community[i], nextId++);
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("community", remap.get(community[i]));
-      results.add(r);
-    }
-    return results.stream();
+      return (Result) r;
+    });
   }
 
   private int[] initCommunities(final int n) {
@@ -223,13 +220,11 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
 
   private Stream<Result> buildResults(final GraphData graph, final int[] community) {
     final int n = graph.nodeCount;
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("community", community[i]);
-      results.add(r);
-    }
-    return results.stream();
+      return (Result) r;
+    });
   }
 }

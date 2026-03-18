@@ -25,11 +25,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -156,9 +155,8 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     }
 
     // Compute MinHash signature → float embedding
-    final List<Result> results = new ArrayList<>(n);
+    final double[][] embeddings = new double[n][embDim];
     for (int i = 0; i < n; i++) {
-      final double[] embed = new double[embDim];
       for (int d = 0; d < embDim; d++) {
         int minHash = Integer.MAX_VALUE;
         final int a = hashA[d], b = hashB[d];
@@ -169,15 +167,16 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
               minHash = h;
           }
         }
-        embed[d] = minHash == Integer.MAX_VALUE ? 0.0 : (double) minHash / numFeatures;
+        embeddings[i][d] = minHash == Integer.MAX_VALUE ? 0.0 : (double) minHash / numFeatures;
       }
-      normalizeL2(embed);
-
-      final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
-      r.setProperty("embedding", toEmbeddingList(embed));
-      results.add(r);
+      normalizeL2(embeddings[i]);
     }
-    return results.stream();
+
+    return IntStream.range(0, n).mapToObj(i -> {
+      final ResultInternal r = new ResultInternal();
+      r.setProperty("node", graph.getRID(i));
+      r.setProperty("embedding", toEmbeddingList(embeddings[i]));
+      return (Result) r;
+    });
   }
 }

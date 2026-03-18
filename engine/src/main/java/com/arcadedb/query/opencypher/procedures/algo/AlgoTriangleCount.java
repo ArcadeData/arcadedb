@@ -127,7 +127,7 @@ public class AlgoTriangleCount extends AbstractAlgoProcedure {
       final long deg = adj[i].length;
       final double coeff = deg < 2 ? 0.0 : (2.0 * triangles[i]) / (double) (deg * (deg - 1));
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
+      r.setProperty("node", graph.getRID(i));
       r.setProperty("triangles", triangles[i]);
       r.setProperty("clusteringCoefficient", coeff);
       return (Result) r;

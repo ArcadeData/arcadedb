@@ -157,7 +157,7 @@ public class AlgoDensestSubgraph extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
+      r.setProperty("node", graph.getRID(i));
       r.setProperty("inDenseSubgraph", bestSubgraph[i]);
       r.setProperty("density", finalDensity);
       return (Result) r;

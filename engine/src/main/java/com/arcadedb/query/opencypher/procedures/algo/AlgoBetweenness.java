@@ -34,6 +34,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -172,13 +173,11 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
         betweenness[i] *= normFactor;
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", vertices.get(i));
+      result.setProperty("node", vertices.get(i).getIdentity());
       result.setProperty("score", betweenness[i]);
-      results.add(result);
-    }
-    return results.stream();
+      return (Result) result;
+    });
   }
 }

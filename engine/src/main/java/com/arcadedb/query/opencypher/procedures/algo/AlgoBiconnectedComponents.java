@@ -128,7 +128,7 @@ public class AlgoBiconnectedComponents extends AbstractAlgoProcedure {
     for (int i = 0; i < n; i++) {
       for (final int cid : nodeComponents.get(i)) {
         final ResultInternal r = new ResultInternal();
-        r.setProperty("node", graph.getVertex(i));
+        r.setProperty("node", graph.getRID(i));
         r.setProperty("componentId", cid);
         results.add(r);
       }

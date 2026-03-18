@@ -155,8 +155,8 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
         if (i == j || dist[i][j] >= INF)
           continue;
         final ResultInternal r = new ResultInternal();
-        r.setProperty("source", graph.getVertex(i));
-        r.setProperty("target", graph.getVertex(j));
+        r.setProperty("source", graph.getRID(i));
+        r.setProperty("target", graph.getRID(j));
         r.setProperty("distance", dist[i][j]);
         results.add(r);
       }

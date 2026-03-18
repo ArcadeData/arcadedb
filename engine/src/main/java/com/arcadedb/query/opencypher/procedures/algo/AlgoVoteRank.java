@@ -180,7 +180,7 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(electedCount);
     for (int i = 0; i < electedCount; i++) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", graph.getVertex(electedOrder[i]).getIdentity());
+      r.setProperty("nodeId", graph.getRID(electedOrder[i]));
       r.setProperty("rank", i + 1);
       results.add(r);
     }

@@ -431,38 +431,84 @@ public class CallStep extends AbstractExecutionStep {
    * Converts the call result to a ResultSet.
    */
   private ResultSet convertToResultSet(final Object result, final CommandContext context) {
-    final List<ResultInternal> results = new ArrayList<>();
-
     if (result == null) {
       // OPTIONAL CALL returned null - return empty result
       return createEmptyResultSet();
     }
 
-    if (result instanceof Collection) {
-      // Multiple results
-      for (final Object item : (Collection<?>) result) {
-        results.add(convertItemToResult(item));
-      }
-    } else if (result instanceof Iterator) {
-      // Iterator of results
-      final Iterator<?> iter = (Iterator<?>) result;
-      while (iter.hasNext()) {
-        results.add(convertItemToResult(iter.next()));
-      }
-    } else if (result instanceof ResultSet) {
+    if (result instanceof ResultSet) {
       // Already a ResultSet
       return (ResultSet) result;
+    }
+
+    // Build a lazy iterator that converts items on demand without pre-materializing
+    final Iterator<?> sourceIter;
+    if (result instanceof Iterator) {
+      sourceIter = (Iterator<?>) result;
+    } else if (result instanceof Collection) {
+      sourceIter = ((Collection<?>) result).iterator();
     } else {
       // Single result
-      results.add(convertItemToResult(result));
+      sourceIter = java.util.Collections.singletonList(result).iterator();
     }
 
-    // Apply YIELD filtering if specified
-    if (callClause.hasYield() && !callClause.isYieldAll()) {
-      return applyYieldFiltering(results);
+    // Apply YIELD filtering lazily if specified
+    final boolean hasYield = callClause.hasYield() && !callClause.isYieldAll();
+
+    final Iterator<Result> lazyIter = new Iterator<>() {
+      private Result next = null;
+
+      @Override
+      public boolean hasNext() {
+        while (next == null && sourceIter.hasNext()) {
+          final ResultInternal converted = convertItemToResult(sourceIter.next());
+          if (hasYield) {
+            final ResultInternal filtered = applyYieldToSingleResult(converted);
+            if (filtered != null) {
+              next = filtered;
+              return true;
+            }
+          } else {
+            next = converted;
+            return true;
+          }
+        }
+        return next != null;
+      }
+
+      @Override
+      public Result next() {
+        if (!hasNext())
+          throw new java.util.NoSuchElementException();
+        final Result r = next;
+        next = null;
+        return r;
+      }
+    };
+
+    return new IteratorResultSet(lazyIter);
+  }
+
+  /**
+   * Applies YIELD field filtering to a single result.
+   * Returns null if the result is filtered out by YIELD WHERE.
+   */
+  private ResultInternal applyYieldToSingleResult(final ResultInternal input) {
+    final ResultInternal output = new ResultInternal();
+
+    for (final CallClause.YieldItem yieldItem : callClause.getYieldItems()) {
+      final Object value = input.getProperty(yieldItem.getFieldName());
+      output.setProperty(yieldItem.getOutputName(), value);
     }
 
-    return new IteratorResultSet(results.iterator());
+    // Apply YIELD WHERE if present
+    if (callClause.getYieldWhere() != null) {
+      final boolean matches = callClause.getYieldWhere().getConditionExpression().evaluate(output, context);
+      if (!matches)
+        return null;
+    }
+
+    return output;
   }
 
   /**
@@ -499,27 +545,15 @@ public class CallStep extends AbstractExecutionStep {
   }
 
   /**
-   * Applies YIELD field filtering to results.
+   * Applies YIELD field filtering to results (legacy batch method, kept for compatibility).
    */
   private ResultSet applyYieldFiltering(final List<ResultInternal> results) {
     final List<ResultInternal> filteredResults = new ArrayList<>();
 
     for (final ResultInternal input : results) {
-      final ResultInternal output = new ResultInternal();
-
-      for (final CallClause.YieldItem yieldItem : callClause.getYieldItems()) {
-        final Object value = input.getProperty(yieldItem.getFieldName());
-        output.setProperty(yieldItem.getOutputName(), value);
-      }
-
-      // Apply YIELD WHERE if present
-      if (callClause.getYieldWhere() != null) {
-        final boolean matches = callClause.getYieldWhere().getConditionExpression().evaluate(output, context);
-        if (!matches)
-          continue;
-      }
-
-      filteredResults.add(output);
+      final ResultInternal output = applyYieldToSingleResult(input);
+      if (output != null)
+        filteredResults.add(output);
     }
 
     return new IteratorResultSet(filteredResults.iterator());

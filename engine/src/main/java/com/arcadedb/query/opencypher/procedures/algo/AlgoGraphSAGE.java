@@ -25,12 +25,11 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -179,13 +178,12 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
       curDim = outDim;
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    final double[][] finalEmbed = embed;
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getVertex(i));
-      r.setProperty("embedding", toEmbeddingList(embed[i]));
-      results.add(r);
-    }
-    return results.stream();
+      r.setProperty("node", graph.getRID(i));
+      r.setProperty("embedding", toEmbeddingList(finalEmbed[i]));
+      return (Result) r;
+    });
   }
 }

@@ -102,7 +102,7 @@ public class AlgoDegreeCentrality extends AbstractAlgoProcedure {
           v.countEdges(Vertex.DIRECTION.OUT);
       final long total = in + out;
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", v);
+      r.setProperty("node", v.getIdentity());
       r.setProperty("inDegree", in);
       r.setProperty("outDegree", out);
       r.setProperty("degree", total);

@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -190,14 +191,12 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
         break;
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", provider.getRID(i).asVertex());
+      r.setProperty("node", provider.getRID(i));
       r.setProperty("score", scores[i]);
-      results.add(r);
-    }
-    return results.stream();
+      return (Result) r;
+    });
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
@@ -254,13 +253,11 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
         break;
     }
 
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i));
+      r.setProperty("node", vertices.get(i).getIdentity());
       r.setProperty("score", scores[i]);
-      results.add(r);
-    }
-    return results.stream();
+      return (Result) r;
+    });
   }
 }

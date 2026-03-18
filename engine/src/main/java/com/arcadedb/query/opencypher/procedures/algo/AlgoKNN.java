@@ -169,8 +169,8 @@ public class AlgoKNN extends AbstractAlgoProcedure {
 
       for (int i = 0; i < topCount; i++) {
         final ResultInternal r = new ResultInternal();
-        r.setProperty("node1", graph.getVertex(u));
-        r.setProperty("node2", graph.getVertex(topIdx[i]));
+        r.setProperty("node1", graph.getRID(u));
+        r.setProperty("node2", graph.getRID(topIdx[i]));
         r.setProperty("similarity", topSim[i]);
         results.add(r);
       }

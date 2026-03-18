@@ -118,8 +118,8 @@ public class AlgoCommonNeighbors extends AbstractAlgoProcedure {
           count++;
       if (count >= cutoff) {
         final ResultInternal r = new ResultInternal();
-        r.setProperty("node1", sourceVertex);
-        r.setProperty("node2", graph.getVertex(v));
+        r.setProperty("node1", sourceVertex.getIdentity());
+        r.setProperty("node2", graph.getRID(v));
         r.setProperty("commonNeighbors", count);
         results.add(r);
       }
