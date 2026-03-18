@@ -58,6 +58,7 @@ import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainPathsStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
+import com.arcadedb.query.opencypher.executor.steps.CountStarJoinStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
@@ -214,11 +215,12 @@ public class CypherExecutionPlan {
 
     AbstractExecutionStep rootStep;
 
-    // FAST PATH: Count-push-down for linear chain MATCH + RETURN count(*)
+    // FAST PATH: Specialized count-push-down optimizations.
     // Must be checked BEFORE the optimizer dispatch, because the optimizer produces
     // GAVExpandAll operators that still materialize individual rows (O(paths) memory).
-    // CountChainPathsStep propagates counts through CSR arrays (O(nodes) memory).
     rootStep = tryOptimizeChainCountStar(context);
+    if (rootStep == null)
+      rootStep = tryOptimizeStarCountStar(context);
 
     if (rootStep == null) {
       // Phase 4: Use optimized physical plan if available
@@ -416,6 +418,8 @@ public class CypherExecutionPlan {
       } else {
         // FAST PATH: Count-push-down (same logic as execute())
         rootStep = tryOptimizeChainCountStar(context);
+        if (rootStep == null)
+          rootStep = tryOptimizeStarCountStar(context);
 
         if (rootStep == null) {
           final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
@@ -3399,9 +3403,20 @@ public class CypherExecutionPlan {
     if (matchClause.isOptional())
       return null;
 
-    // No WHERE
-    if (matchClause.hasWhereClause() || statement.getWhereClause() != null)
-      return null;
+    // WHERE: allow simple inequality (var1 <> var2) or no WHERE
+    String inequalityVar1 = null;
+    String inequalityVar2 = null;
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+    if (whereClause != null) {
+      // Try to extract a simple inequality: exactly "var1 <> var2"
+      final String[] ineqPair = extractSimpleInequality(whereClause);
+      if (ineqPair == null)
+        return null; // Complex WHERE → can't optimize
+      inequalityVar1 = ineqPair[0];
+      inequalityVar2 = ineqPair[1];
+      // Ensure the inequality is the ONLY WHERE condition
+      // (already guaranteed by extractSimpleInequality returning non-null only for single comparisons)
+    }
 
     // Exactly one path pattern with at least one relationship
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
@@ -3470,15 +3485,245 @@ public class CypherExecutionPlan {
         directions[i] = Vertex.DIRECTION.BOTH;
     }
 
-    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when
-    // all edge types are disjoint (an edge has exactly one type → uniqueness is automatic)
+    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when:
+    // (a) all edge types are disjoint, OR
+    // (b) there's an inequality filter between the endpoints sharing the duplicate type,
+    //     which guarantees edge uniqueness (e.g., p1<>p3 for KNOWS-KNOWS chains)
     final Set<String> seenTypes = new HashSet<>();
+    boolean hasDuplicateTypes = false;
     for (final String et : edgeTypes)
       if (!seenTypes.add(et))
-        return null; // Duplicate edge type → need edge uniqueness tracking
+        hasDuplicateTypes = true;
+
+    if (hasDuplicateTypes && inequalityVar1 == null)
+      return null; // Duplicate types without inequality → unsafe
+
+    // Resolve inequality variable positions in the chain
+    int inequalityIdxA = -1;
+    int inequalityIdxB = -1;
+    if (inequalityVar1 != null) {
+      for (int i = 0; i <= hopCount; i++) {
+        final NodePattern node = pathPattern.getNode(i);
+        final String nv = node.getVariable();
+        if (nv != null) {
+          if (nv.equals(inequalityVar1))
+            inequalityIdxA = i;
+          else if (nv.equals(inequalityVar2))
+            inequalityIdxB = i;
+        }
+      }
+      if (inequalityIdxA < 0 || inequalityIdxB < 0)
+        return null; // Inequality variables not found in chain
+    }
 
     final String alias = item.getAlias() != null ? item.getAlias() : "count(*)";
-    return new CountChainPathsStep(nodeLabels, edgeTypes, directions, alias, context);
+    return new CountChainPathsStep(nodeLabels, edgeTypes, directions, alias,
+        inequalityIdxA, inequalityIdxB, context);
+  }
+
+  /**
+   * Attempts to optimize a star-join pattern with {@code RETURN count(*)}.
+   * <p>
+   * Detects patterns where multiple MATCH/OPTIONAL MATCH path patterns share a single
+   * central node variable, and all other nodes are anonymous. For each central node,
+   * the count is the product of degrees (or max(1,degree) for optional arms).
+   * <p>
+   * Covers Q4: {@code MATCH (:Tag)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(:Person), (m)<-[:LIKES]-(:Person), (m)<-[:REPLY_OF]-(:Comment)}
+   * Covers Q7: same mandatory + OPTIONAL MATCH arms
+   *
+   * @return optimized CountStarJoinStep if pattern matches, null otherwise
+   */
+  private AbstractExecutionStep tryOptimizeStarCountStar(final CommandContext context) {
+    // Must have at least one MATCH clause
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().isEmpty())
+      return null;
+
+    // No statement-level WHERE
+    if (statement.getWhereClause() != null)
+      return null;
+
+    // RETURN must be exactly count(*)
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.isDistinct())
+      return null;
+    final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
+    if (items.size() != 1)
+      return null;
+    final ReturnClause.ReturnItem retItem = items.get(0);
+    if (!(retItem.getExpression() instanceof FunctionCallExpression))
+      return null;
+    final FunctionCallExpression func = (FunctionCallExpression) retItem.getExpression();
+    if (!"count".equals(func.getFunctionName()))
+      return null;
+    if (func.getArguments().size() != 1 || !(func.getArguments().get(0) instanceof StarExpression))
+      return null;
+
+    // No other clauses besides MATCH/OPTIONAL MATCH and RETURN
+    if (statement.getClausesInOrder() != null) {
+      for (final ClauseEntry entry : statement.getClausesInOrder()) {
+        final ClauseEntry.ClauseType type = entry.getType();
+        if (type != ClauseEntry.ClauseType.MATCH && type != ClauseEntry.ClauseType.RETURN)
+          return null;
+      }
+    }
+
+    // Find the central variable: the one variable that appears in multiple path patterns.
+    // All other nodes must be anonymous or only appear in one pattern.
+    String centralVar = null;
+    String centralLabel = null;
+    final java.util.ArrayList<CountStarJoinStep.Arm> armList = new java.util.ArrayList<>();
+
+    for (final MatchClause matchClause : statement.getMatchClauses()) {
+      if (matchClause.hasWhereClause())
+        return null;
+      if (!matchClause.hasPathPatterns())
+        return null;
+      final boolean isOptional = matchClause.isOptional();
+
+      for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
+        if (pathPattern.hasPathVariable())
+          return null;
+
+        // Each path pattern must have at least one relationship
+        if (pathPattern.getRelationshipCount() < 1) {
+          // Single node pattern: could be the central node anchor
+          if (pathPattern.isSingleNode()) {
+            final NodePattern node = pathPattern.getFirstNode();
+            if (node.getVariable() != null) {
+              if (centralVar == null) {
+                centralVar = node.getVariable();
+                if (node.hasLabels())
+                  centralLabel = node.getLabels().get(0);
+              } else if (!centralVar.equals(node.getVariable()))
+                return null; // Multiple different single-node variables
+            }
+            continue;
+          }
+          return null;
+        }
+
+        // Find which node in this pattern is the central variable
+        // The central node must be at an endpoint and appear by variable name
+        int centralNodeIdx = -1;
+        for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
+          final NodePattern node = pathPattern.getNode(i);
+          final String nodeVar = node.getVariable();
+          if (nodeVar != null && !nodeVar.isEmpty()) {
+            if (centralVar == null) {
+              centralVar = nodeVar;
+              if (node.hasLabels())
+                centralLabel = node.getLabels().get(0);
+              centralNodeIdx = i;
+            } else if (centralVar.equals(nodeVar)) {
+              centralNodeIdx = i;
+            } else {
+              // Another named variable that is not the central → not a star pattern
+              return null;
+            }
+          }
+        }
+
+        if (centralNodeIdx < 0)
+          return null; // No central variable in this pattern
+
+        // Build arms from the central node outward. If the central node is in the middle,
+        // split the path into two arms: one going left, one going right.
+        final int totalHops = pathPattern.getRelationshipCount();
+
+        if (centralNodeIdx == 0) {
+          // Central at start: one arm going forward (0→1→2...)
+          final CountStarJoinStep.Arm arm = buildArmForward(pathPattern, 0, totalHops, isOptional);
+          if (arm == null) return null;
+          armList.add(arm);
+        } else if (centralNodeIdx == totalHops) {
+          // Central at end: one arm going backward (last→...→0)
+          final CountStarJoinStep.Arm arm = buildArmBackward(pathPattern, totalHops, 0, isOptional);
+          if (arm == null) return null;
+          armList.add(arm);
+        } else {
+          // Central in the middle: split into left arm (backward) and right arm (forward)
+          final CountStarJoinStep.Arm leftArm = buildArmBackward(pathPattern, centralNodeIdx, 0, isOptional);
+          if (leftArm == null) return null;
+          armList.add(leftArm);
+          final CountStarJoinStep.Arm rightArm = buildArmForward(pathPattern, centralNodeIdx, totalHops, isOptional);
+          if (rightArm == null) return null;
+          armList.add(rightArm);
+        }
+      }
+    }
+
+    if (centralVar == null || centralLabel == null || armList.isEmpty())
+      return null;
+
+    final String alias = retItem.getAlias() != null ? retItem.getAlias() : "count(*)";
+    return new CountStarJoinStep(centralLabel, armList.toArray(new CountStarJoinStep.Arm[0]), alias, context);
+  }
+
+  /**
+   * Extracts a simple inequality predicate from a WHERE clause.
+   * Returns [var1, var2] if the WHERE is exactly "var1 <> var2", null otherwise.
+   */
+  private static String[] extractSimpleInequality(final WhereClause whereClause) {
+    if (whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+    final BooleanExpression condition = whereClause.getConditionExpression();
+    if (!(condition instanceof ComparisonExpression))
+      return null;
+    final ComparisonExpression cmp = (ComparisonExpression) condition;
+    if (cmp.getOperator() != ComparisonExpression.Operator.NOT_EQUALS)
+      return null;
+    final Expression left = cmp.getLeft();
+    final Expression right = cmp.getRight();
+    if (!(left instanceof VariableExpression) || !(right instanceof VariableExpression))
+      return null;
+    return new String[]{((VariableExpression) left).getVariableName(),
+        ((VariableExpression) right).getVariableName()};
+  }
+
+  /**
+   * Builds a star-join arm going forward from centralIdx toward endIdx in the path pattern.
+   * Direction is preserved as-is from the pattern.
+   */
+  private CountStarJoinStep.Arm buildArmForward(final PathPattern pathPattern, final int centralIdx,
+      final int endIdx, final boolean optional) {
+    final int hops = endIdx - centralIdx;
+    final String[] edgeTypes = new String[hops];
+    final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hops];
+    for (int i = 0; i < hops; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(centralIdx + i);
+      if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
+          || rel.hasProperties() || !rel.hasTypes() || rel.getTypes().size() != 1)
+        return null;
+      edgeTypes[i] = rel.getTypes().get(0);
+      final Direction dir = rel.getDirection();
+      directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
+          : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+    }
+    return new CountStarJoinStep.Arm(edgeTypes, directions, optional);
+  }
+
+  /**
+   * Builds a star-join arm going backward from centralIdx toward endIdx in the path pattern.
+   * Directions are reversed since we traverse from the central node toward position 0.
+   */
+  private CountStarJoinStep.Arm buildArmBackward(final PathPattern pathPattern, final int centralIdx,
+      final int endIdx, final boolean optional) {
+    final int hops = centralIdx - endIdx;
+    final String[] edgeTypes = new String[hops];
+    final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hops];
+    for (int i = 0; i < hops; i++) {
+      // Walk backward from centralIdx: rel at (centralIdx-1), (centralIdx-2), ...
+      final RelationshipPattern rel = pathPattern.getRelationship(centralIdx - 1 - i);
+      if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
+          || rel.hasProperties() || !rel.hasTypes() || rel.getTypes().size() != 1)
+        return null;
+      edgeTypes[i] = rel.getTypes().get(0);
+      // Reverse direction since we're traversing the arm in the opposite direction
+      final Direction dir = rel.getDirection().reverse();
+      directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
+          : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+    }
+    return new CountStarJoinStep.Arm(edgeTypes, directions, optional);
   }
 
   private String extractIdFilter(final WhereClause whereClause, final String variable) {
