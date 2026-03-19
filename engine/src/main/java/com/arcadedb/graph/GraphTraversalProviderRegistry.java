@@ -20,12 +20,14 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.log.LogManager;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -143,6 +145,44 @@ public class GraphTraversalProviderRegistry {
       }
     }
     return null;
+  }
+
+  /**
+   * Waits until all registered providers for a database are ready (or the timeout expires).
+   * <p>
+   * Use this after opening a database with persisted GAVs to ensure all CSR structures
+   * are built before running performance-critical queries.
+   * <pre>
+   *   Database db = new DatabaseFactory(path).open();
+   *   GraphTraversalProviderRegistry.awaitAll(db, 60, TimeUnit.SECONDS);
+   *   // Now all GAVs are ready — queries will use CSR acceleration
+   * </pre>
+   *
+   * @return true if all providers became ready within the timeout, false if some timed out
+   */
+  public static boolean awaitAll(final Database database, final long timeout, final TimeUnit unit) {
+    if (!hasAnyProviders)
+      return true;
+    final CopyOnWriteArrayList<GraphTraversalProvider> list;
+    synchronized (REGISTRY) {
+      list = REGISTRY.get(unwrap(database));
+    }
+    if (list == null || list.isEmpty())
+      return true;
+
+    final long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
+    for (final GraphTraversalProvider provider : list) {
+      if (provider.isReady())
+        continue;
+      if (provider instanceof GraphAnalyticalView) {
+        final long remainingNanos = deadlineNanos - System.nanoTime();
+        if (remainingNanos <= 0)
+          return false;
+        if (!((GraphAnalyticalView) provider).awaitReady(remainingNanos, TimeUnit.NANOSECONDS))
+          return false;
+      }
+    }
+    return true;
   }
 
   /**

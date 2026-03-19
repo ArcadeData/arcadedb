@@ -3574,9 +3574,46 @@ public class CypherExecutionPlan {
     if (statement.getWhereClause() != null)
       return null;
 
-    // Find the central variable: the one variable that appears in multiple path patterns.
+    // Find the central variable: the one that appears in multiple path patterns.
+    // First pass: count occurrences of each variable across all path patterns.
+    final java.util.HashMap<String, Integer> varCounts = new java.util.HashMap<>();
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.hasPathPatterns())
+        continue;
+      for (final PathPattern pp : mc.getPathPatterns())
+        for (int i = 0; i <= pp.getRelationshipCount(); i++) {
+          final String nv = pp.getNode(i).getVariable();
+          if (nv != null && !nv.isEmpty())
+            varCounts.merge(nv, 1, Integer::sum);
+        }
+    }
+    // The central variable must be the ONLY variable appearing in multiple patterns.
+    // If two or more variables appear in multiple patterns, it's a pair-join, not a star.
     String centralVar = null;
     String centralLabel = null;
+    for (final var entry : varCounts.entrySet())
+      if (entry.getValue() > 1) {
+        if (centralVar != null)
+          return null; // two shared variables → not a star join (likely a pair join)
+        centralVar = entry.getKey();
+      }
+    if (centralVar == null)
+      return null; // no variable appears in multiple patterns
+
+    // Find the label for the central variable
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.hasPathPatterns()) continue;
+      for (final PathPattern pp : mc.getPathPatterns())
+        for (int i = 0; i <= pp.getRelationshipCount(); i++) {
+          final NodePattern node = pp.getNode(i);
+          if (centralVar.equals(node.getVariable()) && node.hasLabels()) {
+            centralLabel = node.getLabels().get(0);
+            break;
+          }
+        }
+      if (centralLabel != null) break;
+    }
+
     final java.util.ArrayList<DegreeProductOp.Arm> armList = new java.util.ArrayList<>();
 
     for (final MatchClause matchClause : statement.getMatchClauses()) {
@@ -3591,35 +3628,21 @@ public class CypherExecutionPlan {
           return null;
 
         if (pathPattern.getRelationshipCount() < 1) {
-          if (pathPattern.isSingleNode()) {
-            final NodePattern node = pathPattern.getFirstNode();
-            if (node.getVariable() != null) {
-              if (centralVar == null) {
-                centralVar = node.getVariable();
-                if (node.hasLabels())
-                  centralLabel = node.getLabels().get(0);
-              } else if (!centralVar.equals(node.getVariable()))
-                return null;
-            }
+          // Single-node pattern: skip (e.g., anchor node for central variable)
+          if (pathPattern.isSingleNode())
             continue;
-          }
           return null;
         }
 
+        // Find the central variable's position in this path pattern.
+        // Non-central named variables are ignored — they're endpoint bindings
+        // that don't affect the degree-product logic for count(*).
         int centralNodeIdx = -1;
         for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
           final NodePattern node = pathPattern.getNode(i);
-          final String nodeVar = node.getVariable();
-          if (nodeVar != null && !nodeVar.isEmpty()) {
-            if (centralVar == null) {
-              centralVar = nodeVar;
-              if (node.hasLabels())
-                centralLabel = node.getLabels().get(0);
-              centralNodeIdx = i;
-            } else if (centralVar.equals(nodeVar)) {
-              centralNodeIdx = i;
-            } else
-              return null;
+          if (centralVar.equals(node.getVariable())) {
+            centralNodeIdx = i;
+            break;
           }
         }
 

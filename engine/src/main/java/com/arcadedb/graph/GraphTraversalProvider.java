@@ -145,4 +145,19 @@ public interface GraphTraversalProvider {
   default NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
     return null;
   }
+
+  /**
+   * Bulk degree computation: fills {@code degrees[nodeId]} with the edge count for each node.
+   * <p>
+   * Default implementation calls {@link #countEdges} per node. CSR-backed providers override
+   * this to compute degrees directly from offset arrays in a single pass, avoiding per-node
+   * HashMap lookups and method dispatch overhead.
+   * <p>
+   * For star-join queries (Q4/Q7), this reduces 5M × 150ns/call = 750ms to a single
+   * array scan at ~5M × 2ns = 10ms per edge type.
+   */
+  default void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+    for (int v = 0; v < degrees.length; v++)
+      degrees[v] = (int) countEdges(v, direction, edgeType);
+  }
 }
