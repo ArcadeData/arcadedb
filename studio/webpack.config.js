@@ -182,6 +182,18 @@ module.exports = {
           to: 'js/sql.js',
         },
         {
+          from: 'node_modules/codemirror/addon/hint/show-hint.js',
+          to: 'js/show-hint.js',
+        },
+        {
+          from: 'node_modules/codemirror/addon/hint/show-hint.css',
+          to: 'css/show-hint.css',
+        },
+        {
+          from: 'node_modules/codemirror/addon/hint/sql-hint.js',
+          to: 'js/sql-hint.js',
+        },
+        {
           from: 'node_modules/cytoscape-cxtmenu/cytoscape-cxtmenu.js',
           to: 'js/cytoscape-cxtmenu.js',
         },
@@ -205,6 +217,10 @@ module.exports = {
         {
           from: 'node_modules/cytoscape-node-html-label/dist/cytoscape-node-html-label.js',
           to: 'js/cytoscape-node-html-label.min.js',
+        },
+        {
+          from: 'node_modules/marked/lib/marked.umd.js',
+          to: 'js/marked.min.js',
         },
         {
           from: 'node_modules/@fortawesome/fontawesome-free/css/all.min.css',

@@ -781,7 +781,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 **Step 1: Write the failing test**
 
 ```java
-package com.arcadedb.query.sql.function.text;
+package com.arcadedb.function.sql.text;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
@@ -910,7 +910,7 @@ Expected: FAIL with "No function with name 'search_index_more'"
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.function.text;
+package com.arcadedb.function.sql.text;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
@@ -924,7 +924,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.fulltext.MoreLikeThisConfig;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
@@ -1096,7 +1096,7 @@ In `engine/src/main/java/com/arcadedb/query/sql/function/DefaultSQLFunctionFacto
 And add the import:
 
 ```java
-import com.arcadedb.query.sql.function.text.SQLFunctionSearchIndexMore;
+import com.arcadedb.function.sql.text.SQLFunctionSearchIndexMore;
 ```
 
 **Step 5: Run test to verify it passes**
@@ -1131,7 +1131,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 **Step 1: Write the failing test**
 
 ```java
-package com.arcadedb.query.sql.function.text;
+package com.arcadedb.function.sql.text;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
@@ -1216,7 +1216,7 @@ Expected: FAIL with "No function with name 'search_fields_more'"
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.function.text;
+package com.arcadedb.function.sql.text;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
@@ -1230,7 +1230,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.fulltext.MoreLikeThisConfig;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
@@ -1383,7 +1383,7 @@ In `engine/src/main/java/com/arcadedb/query/sql/function/DefaultSQLFunctionFacto
 And add the import:
 
 ```java
-import com.arcadedb.query.sql.function.text.SQLFunctionSearchFieldsMore;
+import com.arcadedb.function.sql.text.SQLFunctionSearchFieldsMore;
 ```
 
 **Step 5: Run test to verify it passes**

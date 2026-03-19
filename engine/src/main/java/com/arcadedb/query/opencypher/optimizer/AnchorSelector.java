@@ -86,6 +86,18 @@ public class AnchorSelector {
 
   /**
    * Evaluates a node as a potential anchor and estimates its cost.
+   * Public access for use by CypherOptimizer when building multi-MATCH plans.
+   *
+   * @param node the node to evaluate
+   * @param plan the logical plan (for context)
+   * @return anchor selection with cost estimate
+   */
+  public AnchorSelection evaluateNodeDirect(final LogicalNode node, final LogicalPlan plan) {
+    return evaluateNode(node, plan);
+  }
+
+  /**
+   * Evaluates a node as a potential anchor and estimates its cost.
    *
    * @param node the node to evaluate
    * @param plan the logical plan (for context)
@@ -294,9 +306,8 @@ public class AnchorSelector {
               final Object value = ((LiteralExpression) right).getValue();
               predicates.put(propertyName, value);
             } else if (right instanceof ParameterExpression) {
-              // For parameters, we'll mark it as having a predicate but value unknown
-              // The index can still be used at runtime
-              predicates.put(propertyName, null);
+              // Store the ParameterExpression so NodeIndexSeek can resolve it at runtime
+              predicates.put(propertyName, right);
             }
           }
         }
@@ -313,7 +324,8 @@ public class AnchorSelector {
               final Object value = ((LiteralExpression) left).getValue();
               predicates.put(propertyName, value);
             } else if (left instanceof ParameterExpression) {
-              predicates.put(propertyName, null);
+              // Store the ParameterExpression so NodeIndexSeek can resolve it at runtime
+              predicates.put(propertyName, left);
             }
           }
         }

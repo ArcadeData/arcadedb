@@ -1,5 +1,7 @@
 host: 0.0.0.0
-# Note: graphs are registered dynamically by ArcadeGraphManager based on database name
+graphs:
+  graph: config/gremlin-server.properties
+# Note: additional graphs are registered dynamically by ArcadeGraphManager based on database name
 scriptEngines:
   gremlin-groovy:
     plugins:

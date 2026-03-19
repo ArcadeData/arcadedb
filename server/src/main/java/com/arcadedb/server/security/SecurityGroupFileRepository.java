@@ -134,6 +134,8 @@ public class SecurityGroupFileRepository {
       }
       if (!json.has("version"))
         json = null;
+      else if (json.getInt("version") < ServerSecurity.LATEST_VERSION)
+        json = migrateConfiguration(json);
     }
 
     if (json == null)
@@ -141,6 +143,60 @@ public class SecurityGroupFileRepository {
 
     if (json != null)
       latestGroupConfiguration = json;
+
+    return json;
+  }
+
+  /**
+   * Migrates an old configuration to the latest version.
+   * Version 1 → 2: ensures all admin groups have the "updateDatabaseSettings" permission.
+   */
+  private JSONObject migrateConfiguration(final JSONObject json) {
+    final int version = json.getInt("version");
+    boolean modified = false;
+
+    if (version < 2) {
+      // MIGRATION v1 → v2: add "updateDatabaseSettings" to admin groups that are missing it
+      if (json.has("databases")) {
+        final JSONObject databases = json.getJSONObject("databases");
+        for (final String dbName : databases.keySet()) {
+          final JSONObject dbEntry = databases.getJSONObject(dbName);
+          if (!dbEntry.has("groups"))
+            continue;
+          final JSONObject groups = dbEntry.getJSONObject("groups");
+          if (!groups.has("admin"))
+            continue;
+          final JSONObject adminGroup = groups.getJSONObject("admin");
+          if (!adminGroup.has("access"))
+            continue;
+
+          final JSONArray access = adminGroup.getJSONArray("access");
+          boolean hasUpdateDatabaseSettings = false;
+          for (int i = 0; i < access.length(); i++) {
+            if ("updateDatabaseSettings".equals(access.getString(i))) {
+              hasUpdateDatabaseSettings = true;
+              break;
+            }
+          }
+          if (!hasUpdateDatabaseSettings) {
+            access.put("updateDatabaseSettings");
+            modified = true;
+          }
+        }
+      }
+    }
+
+    json.put("version", ServerSecurity.LATEST_VERSION);
+
+    if (modified) {
+      LogManager.instance().log(this, Level.INFO, "Migrated security group configuration from version %d to %d", version,
+          ServerSecurity.LATEST_VERSION);
+      try {
+        save(json);
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on saving migrated group configuration to file '%s'", e, FILE_NAME);
+      }
+    }
 
     return json;
   }

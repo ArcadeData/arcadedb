@@ -25,8 +25,14 @@ import com.arcadedb.network.binary.SocketFactory;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
+import com.arcadedb.server.http.handler.DeleteGroupHandler;
+import com.arcadedb.server.http.handler.DeleteUserHandler;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
+import com.arcadedb.server.http.handler.GetApiTokensHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
+import com.arcadedb.server.http.handler.GetGroupsHandler;
+import com.arcadedb.server.http.handler.GetUsersHandler;
 import com.arcadedb.server.http.handler.GetDynamicContentHandler;
 import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
 import com.arcadedb.server.http.handler.GetOpenApiHandler;
@@ -34,7 +40,12 @@ import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.GetReadyHandler;
 import com.arcadedb.server.http.handler.GetServerHandler;
 import com.arcadedb.server.http.handler.GetSessionsHandler;
+import com.arcadedb.server.http.handler.PostApiTokenHandler;
+import com.arcadedb.server.http.handler.PostBatchHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
+import com.arcadedb.server.http.handler.PostGroupHandler;
+import com.arcadedb.server.http.handler.PostUserHandler;
+import com.arcadedb.server.http.handler.PutUserHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
 import com.arcadedb.server.http.handler.PostLoginHandler;
@@ -42,16 +53,41 @@ import com.arcadedb.server.http.handler.PostLogoutHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
 import com.arcadedb.server.http.handler.PostServerCommandHandler;
+import com.arcadedb.server.http.handler.PostTimeSeriesQueryHandler;
+import com.arcadedb.server.http.handler.PostTimeSeriesWriteHandler;
+import com.arcadedb.server.http.handler.GetTimeSeriesLatestHandler;
+import com.arcadedb.server.http.handler.GetPromQLQueryHandler;
+import com.arcadedb.server.http.handler.GetPromQLQueryRangeHandler;
+import com.arcadedb.server.http.handler.GetPromQLLabelsHandler;
+import com.arcadedb.server.http.handler.GetPromQLLabelValuesHandler;
+import com.arcadedb.server.http.handler.GetPromQLSeriesHandler;
+import com.arcadedb.server.http.handler.GetGrafanaHealthHandler;
+import com.arcadedb.server.http.handler.GetGrafanaMetadataHandler;
+import com.arcadedb.server.http.handler.PostGrafanaQueryHandler;
+import com.arcadedb.server.http.handler.PostPrometheusWriteHandler;
+import com.arcadedb.server.http.handler.PostPrometheusReadHandler;
 import com.arcadedb.server.http.ssl.SslUtils;
 import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
+import com.arcadedb.server.ai.AiActivateHandler;
+import com.arcadedb.server.ai.AiAnalyzeProfilerHandler;
+import com.arcadedb.server.ai.AiChatHandler;
+import com.arcadedb.server.ai.AiChatsHandler;
+import com.arcadedb.server.ai.AiConfigHandler;
+import com.arcadedb.server.ai.ChatStorage;
+import com.arcadedb.server.mcp.MCPConfigHandler;
+import com.arcadedb.server.mcp.MCPHttpHandler;
 import com.arcadedb.server.security.ServerSecurityException;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.UndertowOptions;
+import io.undertow.server.HttpHandler;
+import io.undertow.server.HttpServerExchange;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
+import io.undertow.util.Headers;
+import io.undertow.util.StatusCodes;
 import org.xnio.Options;
 
 import javax.net.ssl.KeyManager;
@@ -156,6 +192,7 @@ public class HttpServer implements ServerPlugin {
 
     routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this, webSocketEventBus));
     routes.addPrefixPath("/api/v1", basicRoutes
+        .post("/batch/{database}", new PostBatchHandler(this))
         .post("/begin/{database}", new PostBeginHandler(this))
         .post("/command/{database}", new PostCommandHandler(this))
         .post("/commit/{database}", new PostCommitHandler(this))
@@ -172,6 +209,49 @@ public class HttpServer implements ServerPlugin {
         .get("/ready", new GetReadyHandler(this))
         .get("/openapi.json", new GetOpenApiHandler(this))
         .get("/docs", new GetApiDocsHandler(this))
+        .get("/server/api-tokens", new GetApiTokensHandler(this))
+        .post("/server/api-tokens", new PostApiTokenHandler(this))
+        .delete("/server/api-tokens", new DeleteApiTokenHandler(this))
+        .get("/server/users", new GetUsersHandler(this))
+        .post("/server/users", new PostUserHandler(this))
+        .put("/server/users", new PutUserHandler(this))
+        .delete("/server/users", new DeleteUserHandler(this))
+        .get("/server/groups", new GetGroupsHandler(this))
+        .post("/server/groups", new PostGroupHandler(this))
+        .delete("/server/groups", new DeleteGroupHandler(this))
+        .post("/ts/{database}/write", new PostTimeSeriesWriteHandler(this))
+        .post("/ts/{database}/query", new PostTimeSeriesQueryHandler(this))
+        .get("/ts/{database}/latest", new GetTimeSeriesLatestHandler(this))
+        .get("/ts/{database}/grafana/health", new GetGrafanaHealthHandler(this))
+        .get("/ts/{database}/grafana/metadata", new GetGrafanaMetadataHandler(this))
+        .post("/ts/{database}/grafana/query", new PostGrafanaQueryHandler(this))
+        .post("/ts/{database}/prom/write", new PostPrometheusWriteHandler(this))
+        .post("/ts/{database}/prom/read", new PostPrometheusReadHandler(this))
+        .get("/ts/{database}/prom/api/v1/query", new GetPromQLQueryHandler(this))
+        .get("/ts/{database}/prom/api/v1/query_range", new GetPromQLQueryRangeHandler(this))
+        .get("/ts/{database}/prom/api/v1/labels", new GetPromQLLabelsHandler(this))
+        .get("/ts/{database}/prom/api/v1/label/{name}/values", new GetPromQLLabelValuesHandler(this))
+        .get("/ts/{database}/prom/api/v1/series", new GetPromQLSeriesHandler(this))
+    );
+
+    // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling
+    final var mcpConfig = server.getMCPConfiguration();
+    routes.addExactPath("/api/v1/mcp", new MCPHttpHandler(this, server, mcpConfig));
+    routes.addExactPath("/api/v1/mcp/config", new MCPConfigHandler(this, mcpConfig));
+
+    // AI routes are always registered; the chat handler checks isConfigured() at request time
+    final var aiConfig = server.getAiConfiguration();
+    final var chatStorage = new ChatStorage(server.getRootPath());
+    final var aiChatsHandler = new AiChatsHandler(this, chatStorage);
+    routes.addPrefixPath("/api/v1/ai", Handlers.routing()//
+        .get("/config", new AiConfigHandler(this, aiConfig))//
+        .post("/activate", new AiActivateHandler(this, aiConfig))//
+        .post("/chat", new AiChatHandler(this, server, aiConfig, chatStorage))//
+        .post("/analyze-profiler", new AiAnalyzeProfilerHandler(this, server, aiConfig))//
+        .get("/chats", aiChatsHandler)//
+        .get("/chats/{id}", aiChatsHandler)//
+        .put("/chats/{id}", aiChatsHandler)//
+        .delete("/chats/{id}", aiChatsHandler)//
     );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
@@ -187,12 +267,13 @@ public class HttpServer implements ServerPlugin {
 
   private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
       int httpsPortListening) throws Exception {
-    final long maxEntitySize = configuration.getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
     final Undertow.Builder builder = Undertow.builder()//
         .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
-        .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, maxEntitySize)
+        // Set to Long.MAX_VALUE so Undertow does not reject oversized requests before routing;
+        // the actual limit is enforced in the handler chain to return a proper 413 with JSON body
+        .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, Long.MAX_VALUE)
         .addHttpListener(httpPortListening, host)//
-        .setHandler(routes)//
+        .setHandler(createBodySizeLimitHandler(routes, configuration))//
         .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
         .setIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS))//
         .setWorkerThreads(500)//
@@ -205,6 +286,25 @@ public class HttpServer implements ServerPlugin {
     }
 
     return builder.build();
+  }
+
+  private HttpHandler createBodySizeLimitHandler(final HttpHandler next, final ContextConfiguration configuration) {
+    return exchange -> {
+      final long maxEntitySize = configuration.getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
+      if (maxEntitySize > 0) {
+        final long contentLength = exchange.getRequestContentLength();
+        if (contentLength > maxEntitySize) {
+          exchange.setStatusCode(StatusCodes.REQUEST_ENTITY_TOO_LARGE);
+          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+          exchange.getResponseSender().send(
+              "{\"error\":\"Request body too large\",\"detail\":\"Request body size (" + contentLength
+                  + " bytes) exceeds the maximum allowed size of " + maxEntitySize
+                  + " bytes. Configure 'arcadedb.server.httpBodyContentMaxSize' to increase the limit.\"}");
+          return;
+        }
+      }
+      next.handleRequest(exchange);
+    };
   }
 
   private void handleServerStartException(final Exception e, int httpsPortListening) {

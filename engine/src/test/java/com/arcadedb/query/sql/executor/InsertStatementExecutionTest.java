@@ -765,8 +765,10 @@ public class InsertStatementExecutionTest extends TestHelper {
     params.put("language", "en-US");
 
     ResultSet result = database.command("sqlscript",
-        "LET $newRecord = INSERT INTO `DOCUMENT` SET hash = :hash, language = :language RETURN @rid;\n" +
-        "RETURN { \"created\": true, \"rid\": $newRecord['@rid'] };",
+        """
+        LET $newRecord = INSERT INTO `DOCUMENT` SET hash = :hash, language = :language RETURN @rid;
+        RETURN { "created": true, "rid": $newRecord['@rid'] };\
+        """,
         params);
 
     assertThat(result.hasNext()).isTrue();

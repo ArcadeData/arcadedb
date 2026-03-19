@@ -29,7 +29,9 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -97,6 +99,11 @@ public class RedisQueryEngine implements QueryEngine {
         public boolean isDDL() {
           return false;
         }
+
+        @Override
+        public Set<OperationType> getOperationTypes() {
+          return CollectionUtils.singletonSet(OperationType.READ);
+        }
       };
     }
 
@@ -105,6 +112,7 @@ public class RedisQueryEngine implements QueryEngine {
       case "GET", "EXISTS", "HGET", "HEXISTS", "HMGET", "PING" -> true;
       default -> false;
     };
+    final Set<OperationType> ops = detectRedisOperationTypes(cmd);
 
     return new AnalyzedQuery() {
       @Override
@@ -116,16 +124,33 @@ public class RedisQueryEngine implements QueryEngine {
       public boolean isDDL() {
         return false;
       }
+
+      @Override
+      public Set<OperationType> getOperationTypes() {
+        return ops;
+      }
+    };
+  }
+
+  private static Set<OperationType> detectRedisOperationTypes(final String cmd) {
+    return switch (cmd) {
+      case "GET", "EXISTS", "HGET", "HEXISTS", "HMGET", "PING" -> CollectionUtils.singletonSet(OperationType.READ);
+      case "SET", "HSET", "HMSET" -> Set.of(OperationType.CREATE, OperationType.UPDATE);
+      case "INCR", "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY" -> CollectionUtils.singletonSet(OperationType.UPDATE);
+      case "GETDEL", "HDEL" -> CollectionUtils.singletonSet(OperationType.DELETE);
+      default -> Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
     };
   }
 
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
+    checkIdempotent(query);
     return executeRedisCommand(query);
   }
 
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Object... parameters) {
+    checkIdempotent(query);
     return executeRedisCommand(query);
   }
 
@@ -137,6 +162,12 @@ public class RedisQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Object... parameters) {
     return executeRedisCommand(query);
+  }
+
+  private void checkIdempotent(final String query) {
+    final AnalyzedQuery analyzed = analyze(query);
+    if (!analyzed.isIdempotent())
+      throw new CommandParsingException("Non-idempotent Redis command cannot be executed on the query endpoint. Use the command endpoint instead");
   }
 
   private ResultSet executeRedisCommand(final String query) {
@@ -282,9 +313,17 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   private ResultSet createResultSet(final Object result) {
+    if (result == null)
+      return new IteratorResultSet(Collections.emptyIterator());
+
+    if (result instanceof Record record) {
+      // Return documents directly (consistent with SQL/OpenCypher result format)
+      final ResultInternal resultInternal = new ResultInternal(record);
+      return new IteratorResultSet(Collections.singleton((Result) resultInternal).iterator());
+    }
+
     final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("value", result);
-
     return new IteratorResultSet(Collections.singleton((Result) resultInternal).iterator());
   }
 
@@ -439,8 +478,7 @@ public class RedisQueryEngine implements QueryEngine {
 
     // Check if it's a RID
     if (firstArg.startsWith("#")) {
-      final Record record = new RID(database, firstArg).asDocument();
-      return record != null ? record.toJSON(true).toString() : null;
+      return new RID(database, firstArg).asDocument();
     }
 
     // It's an index lookup
@@ -451,8 +489,7 @@ public class RedisQueryEngine implements QueryEngine {
     final String indexName = firstArg;
     final String key = parts.get(2);
 
-    final Record record = getRecordByIndex(indexName, key);
-    return record != null ? record.toJSON(true).toString() : null;
+    return getRecordByIndex(indexName, key);
   }
 
   /**
@@ -475,8 +512,7 @@ public class RedisQueryEngine implements QueryEngine {
         if (!rid.startsWith("#")) {
           throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
         }
-        final Record record = new RID(database, rid).asDocument();
-        results.add(record != null ? record.toJSON(true).toString() : null);
+        results.add(new RID(database, rid).asDocument());
       }
     } else {
       // It's an index lookup
@@ -486,8 +522,7 @@ public class RedisQueryEngine implements QueryEngine {
 
       final String indexName = firstArg;
       for (int i = 2; i < parts.size(); i++) {
-        final Record record = getRecordByIndex(indexName, parts.get(i));
-        results.add(record != null ? record.toJSON(true).toString() : null);
+        results.add(getRecordByIndex(indexName, parts.get(i)));
       }
     }
 

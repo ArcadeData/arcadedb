@@ -7,7 +7,11 @@ from arcadedb_embedded.jvm import _build_jvm_args
 def test_defaults_no_env_vars():
     """Test defaults when no environment variables are set."""
     with patch.dict(os.environ, {}, clear=True):
-        args = _build_jvm_args()
+        args = _build_jvm_args(
+            heap_size="4g",
+            disable_xml_limits=True,
+            jvm_args=None,
+        )
         assert "-Xmx4g" in args
         assert "-Djava.awt.headless=true" in args
         assert "--add-modules=jdk.incubator.vector" in args
@@ -19,7 +23,11 @@ def test_defaults_no_env_vars():
 def test_custom_jvm_args_merging():
     """Test merging critical flags when user provides custom JVM args."""
     with patch.dict(os.environ, {"ARCADEDB_JVM_ARGS": "-Xmx8g -Dfoo=bar"}, clear=True):
-        args = _build_jvm_args()
+        args = _build_jvm_args(
+            heap_size="4g",
+            disable_xml_limits=True,
+            jvm_args=None,
+        )
 
         # User args preserved
         assert "-Xmx8g" in args
@@ -31,10 +39,28 @@ def test_custom_jvm_args_merging():
         assert "--enable-native-access=ALL-UNNAMED" in args
 
 
+def test_dedupe_heap_keeps_max():
+    """Multiple -Xmx values keep the maximum."""
+    with patch.dict(
+        os.environ, {"ARCADEDB_JVM_ARGS": "-Xmx2g -Xmx4096m -Xmx1g"}, clear=True
+    ):
+        args = _build_jvm_args(
+            heap_size="4g",
+            disable_xml_limits=True,
+            jvm_args=None,
+        )
+        assert "-Xmx4096m" in args
+        assert sum(1 for a in args if a.startswith("-Xmx")) == 1
+
+
 def test_custom_jvm_args_injects_heap_default_when_missing():
     """Ensure we add a heap default if user omits -Xmx."""
     with patch.dict(os.environ, {"ARCADEDB_JVM_ARGS": "-Dfoo=bar"}, clear=True):
-        args = _build_jvm_args()
+        args = _build_jvm_args(
+            heap_size="4g",
+            disable_xml_limits=True,
+            jvm_args=None,
+        )
         assert "-Xmx4g" in args
         assert "-Dfoo=bar" in args
 
@@ -43,7 +69,11 @@ def test_custom_jvm_args_no_duplicates():
     """Test that we don't duplicate flags if user provides them."""
     custom_args = "-Xmx2g -Djava.awt.headless=false --add-modules=jdk.incubator.vector --enable-native-access=ALL-UNNAMED"
     with patch.dict(os.environ, {"ARCADEDB_JVM_ARGS": custom_args}, clear=True):
-        args = _build_jvm_args()
+        args = _build_jvm_args(
+            heap_size="4g",
+            disable_xml_limits=True,
+            jvm_args=None,
+        )
 
         # Should NOT add defaults if present
         # Count occurrences
@@ -65,5 +95,9 @@ def test_error_file_env():
     with patch.dict(
         os.environ, {"ARCADEDB_JVM_ERROR_FILE": "/tmp/crash.log"}, clear=True
     ):
-        args = _build_jvm_args()
+        args = _build_jvm_args(
+            heap_size="4g",
+            disable_xml_limits=True,
+            jvm_args=None,
+        )
         assert "-XX:ErrorFile=/tmp/crash.log" in args

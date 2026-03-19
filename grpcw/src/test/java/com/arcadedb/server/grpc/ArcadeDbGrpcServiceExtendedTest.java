@@ -20,6 +20,8 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.test.BaseGraphServerTest;
+
+import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
@@ -66,6 +68,9 @@ public class ArcadeDbGrpcServiceExtendedTest extends BaseGraphServerTest {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue(
         "GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
+    // Disable parallel scan to avoid thread-local DatabaseContext contamination
+    // across tests when gRPC thread pool threads retain stale context
+    GlobalConfiguration.QUERY_PARALLEL_SCAN.setValue(false);
   }
 
   @BeforeEach
@@ -94,7 +99,7 @@ public class ArcadeDbGrpcServiceExtendedTest extends BaseGraphServerTest {
   private class AuthClientInterceptor implements ClientInterceptor {
     @Override
     public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
-        final MethodDescriptor<ReqT, RespT> method, final io.grpc.CallOptions callOptions, final Channel next) {
+        final MethodDescriptor<ReqT, RespT> method, final CallOptions callOptions, final Channel next) {
       return new ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT>(
           next.newCall(method, callOptions)) {
         @Override

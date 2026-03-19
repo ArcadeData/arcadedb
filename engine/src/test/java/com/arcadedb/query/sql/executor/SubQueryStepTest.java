@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SubQueryStepTest extends TestHelper {
+class SubQueryStepTest extends TestHelper {
 
   @Test
   void shouldExecuteSimpleSubQuery() {

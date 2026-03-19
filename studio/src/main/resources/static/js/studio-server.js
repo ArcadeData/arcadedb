@@ -3,13 +3,8 @@ var GB_SIZE = 1024 * 1024 * 1024;
 var lastUpdate = null;
 var serverData = null;
 var eventsData = {};
-var serverChartOSCPU = null;
-var serverChartOSRAM = null;
-var serverChartOSDisk = null;
-var serverChartServerRAM = null;
-var serverChartCache = null;
 var serverChartCommands = null;
-var reqPerSecLastMinute = {};
+var opsPerSecHistory = {};
 var serverRefreshTimer = null;
 
 function updateServer(callback) {
@@ -21,6 +16,8 @@ function updateServer(callback) {
 
   lastUpdate = currentSecond;
 
+  $("#serverSummaryLoading").show();
+
   jQuery
     .ajax({
       type: "GET",
@@ -30,16 +27,28 @@ function updateServer(callback) {
       },
     })
     .done(function (data) {
+      $("#serverSummaryLoading").hide();
       let version = data.version;
+      let buildInfo = '';
       let pos = data.version.indexOf("(build");
       if (pos > -1) {
-        version = version.substring(0, pos) + " <span style='font-size: 70%'>" + version.substring(pos) + "</span>";
+        buildInfo = version.substring(pos);
+        version = version.substring(0, pos).trim();
       }
 
-      let serverInfo = "Connected to <b>" + data.user + "@" + data.serverName + "</b> - v." + version;
-      if (data.metrics.profiler.configuration.description) serverInfo += "<br>Runs on " + data.metrics.profiler.configuration.description;
+      // Compact header label
+      let compactLabel = "Connected to <b>" + escapeHtml(data.user) + "@" + escapeHtml(data.serverName) + "</b> - v." + escapeHtml(version);
+      $("#serverConnectionLabel").html(compactLabel);
 
-      $("#serverConnection").html(serverInfo);
+      // Popover details
+      let popoverHtml = "<div style='margin-bottom:8px;font-weight:600;color:var(--text-primary);'>Server Details</div>";
+      popoverHtml += "<div style='margin-bottom:6px;'><b>Server:</b> " + escapeHtml(data.user) + "@" + escapeHtml(data.serverName) + "</div>";
+      popoverHtml += "<div style='margin-bottom:6px;'><b>Version:</b> " + escapeHtml(version) + "</div>";
+      if (buildInfo)
+        popoverHtml += "<div style='margin-bottom:6px;font-size:0.78rem;color:var(--text-muted);word-break:break-all;'><b>Build:</b> " + escapeHtml(buildInfo) + "</div>";
+      if (data.metrics && data.metrics.profiler && data.metrics.profiler.configuration && data.metrics.profiler.configuration.description)
+        popoverHtml += "<div style='font-size:0.78rem;color:var(--text-muted);'><b>Platform:</b> " + escapeHtml(data.metrics.profiler.configuration.description) + "</div>";
+      $("#serverInfoPopoverBody").html(popoverHtml);
 
       serverData = data;
 
@@ -52,6 +61,7 @@ function updateServer(callback) {
       if (callback) callback();
     })
     .fail(function (jqXHR, textStatus, errorThrown) {
+      $("#serverSummaryLoading").hide();
       globalNotifyError(jqXHR.responseText);
     });
 }
@@ -111,329 +121,215 @@ function displayServerSettings() {
 }
 
 function displayServerSummary() {
-  // COMMANDS
-  let currentDate = new Date();
-  let x = currentDate.getHours() + ":" + currentDate.getMinutes() + ":" + currentDate.getSeconds();
-  if (reqPerSecLastMinute.length > 0 && x == reqPerSecLastMinute[0].x)
-    // SKIP SAME SECOND
-    return;
+  var p = serverData.metrics.profiler || {};
+  var ev = serverData.metrics.events || {};
 
-  if (serverData.metrics.meters) {
-    let series = [];
-    for (commandsMetricName in serverData.metrics.meters) {
-      let metric = serverData.metrics.meters[commandsMetricName];
-      let array = reqPerSecLastMinute[commandsMetricName];
-      if (!array) {
-        array = [];
-        reqPerSecLastMinute[commandsMetricName] = array;
-      }
-      array.unshift({ x: x, y: metric.reqPerSecSinceLastTime });
+  // CPU
+  var cpuLoad = (p.cpuLoad && p.cpuLoad.perc != null) ? p.cpuLoad.perc : 0;
+  $("#summCpu").text(globalFormatDouble(cpuLoad, 1) + "%");
 
-      if (array.length > 50)
-        // KEEP ONLY THE LATEST 50 VALUES
-        array.pop();
-
-      series.push({ name: commandsMetricName, data: array });
-    }
-
-    var serverCommandsOptions = {
-      series: series,
-      labels: ["Used", "Available"],
-      chart: { type: "line", height: 300, animations: { enabled: false } },
-      legend: { show: false },
-      tooltip: { enabled: true },
-      fill: { opacity: [0.24, 1, 1] },
-      dataLabels: { enabled: true },
-      stroke: { curve: "smooth" },
-      grid: {
-        borderColor: "#e7e7e7",
-        row: {
-          colors: ["#f3f3f3", "transparent"], // takes an array which will be repeated on columns
-          opacity: 0.5,
-        },
-      },
-      markers: { size: 1 },
-      yaxis: { title: { text: "Req/Sec" } },
-    };
-
-    if (serverChartCommands != null) serverChartCommands.destroy();
-
-    serverChartCommands = new ApexCharts(document.querySelector("#serverChartCommands"), serverCommandsOptions);
-    serverChartCommands.render();
-  }
-
-  // CPU CHART
-  let cpuLoad = serverData.metrics.profiler.cpuLoad.perc;
-
-  var cpuOptions = {
-    series: [cpuLoad, 100 - cpuLoad],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: () => globalFormatDouble(cpuLoad, 0) + "%" },
-            total: { show: true, label: "OS CPU", formatter: () => globalFormatDouble(cpuLoad, 0) + "%" },
-          },
-        },
-      },
-    },
-  };
-
-  if (serverChartOSCPU != null) serverChartOSCPU.destroy();
-
-  serverChartOSCPU = new ApexCharts(document.querySelector("#serverChartOSCPU"), cpuOptions);
-  serverChartOSCPU.render();
+  // JVM Heap
+  var heapUsed = (p.ramHeapUsed && p.ramHeapUsed.space) || 0;
+  var heapMax = (p.ramHeapMax && p.ramHeapMax.space) || 1;
+  $("#summHeapUsed").text(globalFormatSpace(heapUsed));
+  $("#summHeapMax").text(globalFormatSpace(heapMax));
+  $("#summHeapBar").css("width", Math.round(heapUsed / heapMax * 100) + "%");
 
   // OS RAM
-  let ramOsUsed = serverData.metrics.profiler.ramOsUsed.space;
-  let ramOsTotal = serverData.metrics.profiler.ramOsTotal.space;
+  var ramUsed = (p.ramOsUsed && p.ramOsUsed.space) || 0;
+  var ramTotal = (p.ramOsTotal && p.ramOsTotal.space) || 1;
+  $("#summRamUsed").text(globalFormatSpace(ramUsed));
+  $("#summRamTotal").text(globalFormatSpace(ramTotal));
+  $("#summRamBar").css("width", Math.round(ramUsed / ramTotal * 100) + "%");
 
-  var serverRamOSOptions = {
-    series: [ramOsUsed, ramOsTotal - ramOsUsed],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: (val) => globalFormatDouble(val / GB_SIZE, 2) + "GB" },
-            total: { show: true, label: "OS RAM", formatter: () => globalFormatDouble(ramOsUsed / GB_SIZE, 2) + "GB" },
-          },
-        },
-      },
-    },
+  // Disk
+  var diskFree = (p.diskFreeSpace && p.diskFreeSpace.space) || 0;
+  var diskTotal = (p.diskTotalSpace && p.diskTotalSpace.space) || 1;
+  var diskUsed = diskTotal - diskFree;
+  $("#summDiskUsed").text(globalFormatSpace(diskUsed));
+  $("#summDiskTotal").text(globalFormatSpace(diskTotal));
+  $("#summDiskBar").css("width", Math.round(diskUsed / diskTotal * 100) + "%");
+
+  // Read Cache
+  var cacheUsed = (p.readCacheUsed && p.readCacheUsed.space) || 0;
+  var cacheMax = (p.cacheMax && p.cacheMax.space) || 1;
+  $("#summCacheUsed").text(globalFormatSpace(cacheUsed));
+  $("#summCacheMax").text(globalFormatSpace(cacheMax));
+  $("#summCacheBar").css("width", Math.round(cacheUsed / cacheMax * 100) + "%");
+
+  // Events
+  $("#summErrors").text(ev.errors || 0);
+  $("#summWarnings").text(ev.warnings || 0);
+  $("#summInfo").text(ev.info || 0);
+  $("#summHints").text(ev.hints || 0);
+
+  // Transaction Operations summary and chart - use server-side rate tracking
+  var opsRates = {
+    "Queries":         { count: (p.queries && p.queries.count) || 0, rate: (p.queries && p.queries.reqPerMinLastMinute) || 0 },
+    "Write Tx":        { count: (p.writeTx && p.writeTx.count) || 0, rate: (p.writeTx && p.writeTx.reqPerMinLastMinute) || 0 },
+    "Read Tx":         { count: (p.readTx && p.readTx.count) || 0, rate: (p.readTx && p.readTx.reqPerMinLastMinute) || 0 },
+    "Tx Rollbacks":    { count: (p.txRollbacks && p.txRollbacks.count) || 0, rate: (p.txRollbacks && p.txRollbacks.reqPerMinLastMinute) || 0 },
+    "MVCC Contention": { count: (p.concurrentModificationExceptions && p.concurrentModificationExceptions.count) || 0, rate: (p.concurrentModificationExceptions && p.concurrentModificationExceptions.reqPerMinLastMinute) || 0 }
   };
 
-  if (serverChartOSRAM != null) serverChartOSRAM.destroy();
-
-  serverChartOSRAM = new ApexCharts(document.querySelector("#serverChartOSRAM"), serverRamOSOptions);
-  serverChartOSRAM.render();
-
-  // OS DISK
-  let diskFreeSpace = serverData.metrics.profiler.diskFreeSpace.space;
-  let diskTotalSpace = serverData.metrics.profiler.diskTotalSpace.space;
-
-  var serverDiskOSOptions = {
-    series: [diskTotalSpace - diskFreeSpace, diskFreeSpace],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: (val) => globalFormatDouble(val / GB_SIZE, 2) + "GB" },
-            total: { show: true, label: "OS DISK", formatter: () => globalFormatDouble((diskTotalSpace - diskFreeSpace) / GB_SIZE, 2) + "GB" },
-          },
-        },
-      },
-    },
-  };
-
-  if (serverChartOSDisk != null) serverChartOSDisk.destroy();
-
-  serverChartOSDisk = new ApexCharts(document.querySelector("#serverChartOSDisk"), serverDiskOSOptions);
-  serverChartOSDisk.render();
-
-  // SERVER RAM
-  let ramHeapUsed = serverData.metrics.profiler.ramHeapUsed.space;
-  let ramHeapMax = serverData.metrics.profiler.ramHeapMax.space;
-
-  var serverRamOptions = {
-    series: [ramHeapUsed, ramHeapMax - ramHeapUsed],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: (val) => globalFormatDouble(val / GB_SIZE, 2) + "GB" },
-            total: { show: true, label: "Server RAM", formatter: () => globalFormatDouble(ramHeapUsed / GB_SIZE, 2) + "GB" },
-          },
-        },
-      },
-    },
-  };
-
-  if (serverChartServerRAM != null) serverChartServerRAM.destroy();
-
-  serverChartServerRAM = new ApexCharts(document.querySelector("#serverChartServerRAM"), serverRamOptions);
-  serverChartServerRAM.render();
-
-  // CACHE
-  let readCacheUsed = serverData.metrics.profiler.readCacheUsed.space;
-  let cacheMax = serverData.metrics.profiler.cacheMax.space;
-
-  var serverCacheOptions = {
-    series: [readCacheUsed, cacheMax - readCacheUsed],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: (val) => globalFormatDouble(val / GB_SIZE, 2) + "GB" },
-            total: { show: true, label: "Server Cache", formatter: () => globalFormatDouble(readCacheUsed / GB_SIZE, 2) + "GB" },
-          },
-        },
-      },
-    },
-  };
-
-  if (serverChartCache != null) serverChartCache.destroy();
-
-  serverChartCache = new ApexCharts(document.querySelector("#serverChartCache"), serverCacheOptions);
-  serverChartCache.render();
-
-  if (serverData.metrics.events) {
-    $("#serverEventsSummaryErrors").html(serverData.metrics.events.errors);
-    $("#serverEventsSummaryWarnings").html(serverData.metrics.events.warnings);
-    $("#serverEventsSummaryInfo").html(serverData.metrics.events.info);
-    $("#serverEventsSummaryHints").html(serverData.metrics.events.hints);
+  var totalOpsPerMin = 0;
+  var totalOps = 0;
+  for (var k in opsRates) {
+    totalOps += opsRates[k].count;
+    totalOpsPerMin += opsRates[k].rate;
   }
+
+  $("#summOpsPerSec").text(globalFormatDouble(totalOpsPerMin, 1));
+  $("#summOpsTotal").text(globalFormatDouble(totalOps, 0));
+
+  // Database Operations line chart
+  var currentDate = new Date();
+  var x = currentDate.getHours() + ":" + String(currentDate.getMinutes()).padStart(2, "0") + ":" + String(currentDate.getSeconds()).padStart(2, "0");
+
+  var series = [];
+  for (var metricName in opsRates) {
+    var opsPerMin = Math.round(opsRates[metricName].rate);
+
+    var array = opsPerSecHistory[metricName];
+    if (!array) {
+      array = [];
+      opsPerSecHistory[metricName] = array;
+    }
+    array.unshift({ x: x, y: opsPerMin });
+
+    if (array.length > 50)
+      array.pop();
+
+    series.push({ name: metricName, data: array });
+  }
+
+  var serverCommandsOptions = {
+    series: series,
+    chart: { type: "line", height: 300, animations: { enabled: false } },
+    legend: { show: true, position: "bottom", horizontalAlign: "center", fontSize: "11px" },
+    tooltip: { enabled: true },
+    fill: { opacity: [0.24, 1, 1] },
+    dataLabels: { enabled: false },
+    stroke: { curve: "smooth", width: 2 },
+    grid: {
+      borderColor: getComputedStyle(document.documentElement).getPropertyValue('--border-ddd').trim() || "#e7e7e7",
+      row: {
+        colors: [getComputedStyle(document.documentElement).getPropertyValue('--bg-sidebar').trim() || "#f3f3f3", "transparent"],
+        opacity: 0.5,
+      },
+    },
+    markers: { size: 1 },
+    yaxis: { title: { text: "Ops/Min" }, labels: { formatter: function(val) { return Math.round(val); } } },
+  };
+
+  if (serverChartCommands != null) serverChartCommands.destroy();
+
+  serverChartCommands = new ApexCharts(document.querySelector("#serverChartCommands"), serverCommandsOptions);
+  serverChartCommands.render();
 }
 
 function displayMetrics() {
-  if ($.fn.dataTable.isDataTable("#serverMetrics"))
-    try {
-      $("#serverMetrics").DataTable().destroy();
-      $("#serverMetrics").empty();
-    } catch (e) {}
+  var p = serverData.metrics.profiler || {};
+  var m = serverData.metrics.meters || {};
 
-  var tableRecords = [];
-
-  for (let name in serverData.metrics.meters) {
-    let meter = serverData.metrics.meters[name];
-
-    let record = [];
-    record.push(escapeHtml(name));
-    record.push(meter.count);
-    record.push(globalFormatDouble(meter.reqPerSecLastMinute));
-    tableRecords.push(record);
+  // Database Operations table (metrics with rate tracking)
+  var rateTrackedMetrics = ["writeTx", "readTx", "txRollbacks", "queries", "concurrentModificationExceptions"];
+  var rateTrackedLabels = { writeTx: "Write Tx", readTx: "Read Tx", txRollbacks: "Tx Rollbacks", queries: "Queries", concurrentModificationExceptions: "MVCC Contention" };
+  var dbOpsHtml = "";
+  for (var i = 0; i < rateTrackedMetrics.length; i++) {
+    var name = rateTrackedMetrics[i];
+    var entry = p[name];
+    if (!entry) continue;
+    var count = entry.count || 0;
+    var reqPerMin = entry.reqPerMinLastMinute || 0;
+    dbOpsHtml += "<tr>";
+    dbOpsHtml += "<td>" + escapeHtml(rateTrackedLabels[name]) + "</td>";
+    dbOpsHtml += "<td class='text-end'>" + count.toLocaleString() + "</td>";
+    dbOpsHtml += "<td class='text-end'>" + globalFormatDouble(reqPerMin, 1) + "</td>";
+    dbOpsHtml += "</tr>";
   }
+  $("#srvMetricDbOpsTable").html(dbOpsHtml || "<tr><td colspan='3' class='text-muted text-center'>No data.</td></tr>");
 
-  for (let name in serverData.metrics.profiler) {
-    let entry = serverData.metrics.profiler[name];
-
-    let record = [];
-    record.push(escapeHtml(name));
-
-    if (entry.perc != null) record.push(globalFormatDouble(entry.perc, 2) + "%");
-    else if (entry.count != null && entry.count != 0) record.push(globalFormatDouble(entry.count, 0));
-    else if (entry.space != null && entry.space != 0) record.push(globalFormatSpace(entry.space));
-    else if (entry.value != null) record.push(entry.value);
+  // Profiler details table (remaining metrics without rate tracking)
+  var skipProfiler = { cpuLoad: 1, ramHeapUsed: 1, ramHeapMax: 1, ramOsUsed: 1, ramOsTotal: 1,
+    diskFreeSpace: 1, diskTotalSpace: 1, readCacheUsed: 1, cacheMax: 1, configuration: 1,
+    writeTx: 1, readTx: 1, txRollbacks: 1, queries: 1, concurrentModificationExceptions: 1 };
+  var profilerHtml = "";
+  var profilerNames = Object.keys(p).sort();
+  for (var i = 0; i < profilerNames.length; i++) {
+    var name = profilerNames[i];
+    if (skipProfiler[name]) continue;
+    var entry = p[name];
+    var val = "";
+    if (entry.perc != null) val = globalFormatDouble(entry.perc, 2) + "%";
+    else if (entry.count != null && entry.count != 0) val = globalFormatDouble(entry.count, 0);
+    else if (entry.space != null && entry.space != 0) val = globalFormatSpace(entry.space);
+    else if (entry.value != null) val = entry.value;
     else continue;
-
-    record.push("");
-
-    tableRecords.push(record);
+    profilerHtml += "<tr><td>" + escapeHtml(name) + "</td><td class='text-end'>" + escapeHtml(String(val)) + "</td></tr>";
   }
+  $("#srvMetricProfilerTable").html(profilerHtml || "<tr><td colspan='2' class='text-muted text-center'>No additional profiler data.</td></tr>");
 
-  $("#serverMetrics").DataTable({
-    paging: false,
-    ordering: false,
-    columns: [{ title: "Metric Name" }, { title: "Value" }, { title: "Req/Sec" }],
-    data: tableRecords,
-  });
+  // HTTP Meters table
+  var meterNames = Object.keys(m).sort();
+  var metersHtml = "";
+  for (var i = 0; i < meterNames.length; i++) {
+    var name = meterNames[i];
+    var meter = m[name];
+    var reqPerMin = meter.reqPerMinLastMinute || 0;
+    metersHtml += "<tr>";
+    metersHtml += "<td>" + escapeHtml(name) + "</td>";
+    metersHtml += "<td class='text-end'>" + (meter.count != null ? Math.round(meter.count).toLocaleString() : "-") + "</td>";
+    metersHtml += "<td class='text-end'>" + globalFormatDouble(reqPerMin, 1) + "</td>";
+    metersHtml += "</tr>";
+  }
+  $("#srvMetricMetersTable").html(metersHtml || "<tr><td colspan='3' class='text-muted text-center'>No HTTP meters available.</td></tr>");
 }
 
 function updateServerSetting(key, value) {
-  let html = "<b>" + key + "</b> = <input id='updateSettingInput' value='" + value + "'>";
+  let html = "<b>" + escapeHtml(key) + "</b> = <input class='form-control mt-2' id='updateSettingInput' value='" + escapeHtml(value) + "' " +
+    "onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
   html += "<br><p><i>The update will not be persistent and will be reset at the next restart of the server.</i></p>";
 
-  Swal.fire({
-    title: "Update Server Setting",
-    html: html,
-    showCancelButton: true,
-    width: 600,
-    confirmButtonColor: "#3ac47d",
-    cancelButtonColor: "red",
-  }).then((result) => {
-    if (result.value) {
-      jQuery
-        .ajax({
-          type: "POST",
-          url: "api/v1/server",
-          data: JSON.stringify({
-            language: "sql",
-            command: "set server setting " + key + " " + $("#updateSettingInput").val(),
-          }),
-          beforeSend: function (xhr) {
-            xhr.setRequestHeader("Authorization", globalCredentials);
-          },
-        })
-        .done(function (data) {
-          if (data.error) {
-            $("#authorizationCodeMessage").html(data.error);
-            return false;
-          }
-          displayServerSettings();
-          return true;
-        });
-    }
+  globalPrompt("Update Server Setting", html, "Update", function() {
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/server",
+        data: JSON.stringify({
+          language: "sql",
+          command: "set server setting " + key + " " + $("#updateSettingInput").val(),
+        }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        if (data.error) {
+          $("#authorizationCodeMessage").html(data.error);
+          return false;
+        }
+        displayServerSettings();
+        return true;
+      });
   });
 }
+
+function toggleServerInfoPopover() {
+  var el = document.getElementById('serverInfoPopover');
+  if (el.style.display === 'none')
+    el.style.display = 'block';
+  else
+    el.style.display = 'none';
+}
+
+// Close popover when clicking outside
+document.addEventListener('click', function(e) {
+  var popover = document.getElementById('serverInfoPopover');
+  var trigger = document.getElementById('serverConnectionCompact');
+  if (popover && trigger && !trigger.contains(e.target) && !popover.contains(e.target))
+    popover.style.display = 'none';
+});
 
 function loadServerSessions() {
   jQuery
@@ -649,6 +545,20 @@ function filterServerEvents() {
     ],
     data: rows,
   });
+}
+
+function refreshCurrentServerTab() {
+  var activeTab = $("#tabs-database .nav-link.active").attr("id");
+  if (activeTab === "tab-server-sessions-sel")
+    loadServerSessions();
+  else if (activeTab === "tab-server-events-sel")
+    getServerEvents();
+  else if (activeTab === "tab-server-backup-sel")
+    loadBackupConfig();
+  else if (activeTab === "tab-server-mcp-sel")
+    loadMCPConfig();
+  else
+    updateServer();
 }
 
 function startServerRefreshTimer(userChange) {
@@ -867,8 +777,210 @@ function saveBackupConfig() {
     });
 }
 
+// MCP configuration
+var mcpConfigData = null;
+var mcpConfigLoaded = false;
+
+function loadMCPConfig() {
+  jQuery
+    .ajax({
+      type: "GET",
+      url: "api/v1/mcp/config",
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      mcpConfigData = data;
+      mcpConfigLoaded = true;
+      populateMCPConfigForm(data);
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      globalNotifyError(jqXHR.responseText);
+      mcpConfigLoaded = false;
+    });
+}
+
+function populateMCPConfigForm(config) {
+  $("#mcpEnabled").val(config.enabled ? "true" : "false");
+  $("#mcpAllowReads").prop("checked", config.allowReads !== false);
+  $("#mcpAllowInsert").prop("checked", config.allowInsert === true);
+  $("#mcpAllowUpdate").prop("checked", config.allowUpdate === true);
+  $("#mcpAllowDelete").prop("checked", config.allowDelete === true);
+  $("#mcpAllowSchemaChange").prop("checked", config.allowSchemaChange === true);
+
+  renderMCPUserList(config.allowedUsers || ["root"]);
+  updateMCPConnectionInfo();
+}
+
+function renderMCPUserList(users) {
+  var html = "";
+  for (var i = 0; i < users.length; i++) {
+    html +=
+      '<span class="badge me-1 mb-1" style="background-color: var(--color-brand);">' +
+      escapeHtml(users[i]) +
+      ' <a href="#" class="mcp-remove-user text-white ms-1" data-username="' +
+      escapeHtml(users[i]) +
+      '"><i class="fa fa-times" style="font-size: 0.7rem;"></i></a></span>';
+  }
+  $("#mcpUserList").html(html);
+}
+
+$(document).on("click", ".mcp-remove-user", function (e) {
+  e.preventDefault();
+  removeMCPUser($(this).data("username"));
+});
+
+function addMCPUser() {
+  var username = $("#mcpNewUser").val().trim();
+  if (!username) return;
+
+  var users = getMCPUsers();
+  if (users.indexOf(username) === -1) {
+    users.push(username);
+    renderMCPUserList(users);
+  }
+  $("#mcpNewUser").val("");
+}
+
+function removeMCPUser(username) {
+  var users = getMCPUsers();
+  users = users.filter(function (u) {
+    return u !== username;
+  });
+  if (users.length === 0) users = ["root"];
+  renderMCPUserList(users);
+}
+
+function getMCPUsers() {
+  var users = [];
+  $("#mcpUserList .badge").each(function () {
+    var text = $(this).clone().children().remove().end().text().trim();
+    if (text) users.push(text);
+  });
+  return users;
+}
+
+function saveMCPConfig() {
+  var config = {
+    enabled: $("#mcpEnabled").val() === "true",
+    allowReads: true,
+    allowInsert: $("#mcpAllowInsert").is(":checked"),
+    allowUpdate: $("#mcpAllowUpdate").is(":checked"),
+    allowDelete: $("#mcpAllowDelete").is(":checked"),
+    allowSchemaChange: $("#mcpAllowSchemaChange").is(":checked"),
+    allowedUsers: getMCPUsers(),
+  };
+
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/mcp/config",
+      data: JSON.stringify(config),
+      contentType: "application/json",
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      mcpConfigData = data;
+      globalNotify("MCP Configuration", "Configuration saved successfully", "success");
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      globalNotifyError(jqXHR.responseText);
+    });
+}
+
+function onMcpAuthMethodChange() {
+  var method = $("#mcpAuthMethod").val();
+  if (method === "apitoken") {
+    $("#mcpTokenSelect").show();
+    loadApiTokensForMCP();
+  } else {
+    $("#mcpTokenSelect").hide();
+  }
+  updateMCPConnectionInfo();
+}
+
+function loadApiTokensForMCP() {
+  jQuery
+    .ajax({
+      type: "GET",
+      url: "api/v1/server/api-tokens",
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      var select = $("#mcpTokenSelect");
+      select.find("option:not(:first)").remove();
+      var tokens = data.result || [];
+      for (var i = 0; i < tokens.length; i++) {
+        select.append(
+          '<option value="' + escapeHtml(tokens[i].token) + '">' +
+          escapeHtml(tokens[i].name) + " (" + escapeHtml(tokens[i].token) + ")" +
+          "</option>"
+        );
+      }
+    });
+}
+
+function updateMCPConnectionInfo() {
+  var host = window.location.hostname;
+  var port = window.location.port || "2480";
+  var url = window.location.protocol + "//" + host + ":" + port + "/api/v1/mcp";
+
+  var authHeader;
+  if ($("#mcpAuthMethod").val() === "apitoken") {
+    var selectedToken = $("#mcpTokenSelect").val();
+    if (selectedToken)
+      authHeader = "Bearer <paste-your-full-token-here>";
+    else
+      authHeader = "Bearer <paste-your-api-token-here>";
+  } else {
+    authHeader = globalBasicAuth || "Basic <base64(username:password)>";
+  }
+
+  // Claude Desktop format (uses npx mcp-remote bridge)
+  var desktopConfig = {
+    mcpServers: {
+      arcadedb: {
+        command: "npx",
+        args: [
+          "mcp-remote",
+          url,
+          "--header",
+          "Authorization: " + authHeader
+        ]
+      }
+    }
+  };
+
+  // Claude Code / Cursor format (direct Streamable HTTP)
+  var codeConfig = {
+    mcpServers: {
+      arcadedb: {
+        url: url,
+        headers: {
+          Authorization: authHeader
+        }
+      }
+    }
+  };
+
+  $("#mcpConfigDesktop").text(JSON.stringify(desktopConfig, null, 2));
+  $("#mcpConfigCode").text(JSON.stringify(codeConfig, null, 2));
+}
+
+function copyMCPConfig(elementId) {
+  var text = $("#" + elementId).text();
+  navigator.clipboard.writeText(text).then(function () {
+    globalNotify("Copied", "MCP configuration copied to clipboard", "success");
+  });
+}
+
 document.addEventListener("DOMContentLoaded", function (event) {
-  $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
+  $('a[data-toggle="tab"], a[data-bs-toggle="tab"]').on("shown.bs.tab", function (e) {
     var activeTab = this.id;
     if (activeTab == "tab-server-sessions-sel") {
       loadServerSessions();
@@ -877,6 +989,10 @@ document.addEventListener("DOMContentLoaded", function (event) {
     } else if (activeTab == "tab-server-backup-sel") {
       if (!backupConfigLoaded) {
         loadBackupConfig();
+      }
+    } else if (activeTab == "tab-server-mcp-sel") {
+      if (!mcpConfigLoaded) {
+        loadMCPConfig();
       }
     }
   });

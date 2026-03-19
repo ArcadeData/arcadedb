@@ -27,8 +27,10 @@ import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Creates optimized execution plans for Cypher statements.
@@ -124,9 +126,19 @@ public class CypherExecutionPlanner {
     if (statement.getMatchClauses() == null || statement.getMatchClauses().isEmpty())
       return false;
 
-    // Phase 4: Only support single MATCH clause (multiple MATCH requires Cartesian product handling)
-    if (statement.getMatchClauses().size() > 1)
-      return false; // Multiple MATCH clauses not yet fully integrated
+    // Multiple MATCH clauses are supported when each MATCH has a simple single-node pattern
+    // (common for edge creation: MATCH (a:T) WHERE... MATCH (b:T) WHERE... CREATE (a)-[]->(b))
+    // These are handled via CartesianProduct operator. Complex multi-MATCH patterns are not yet supported.
+    if (statement.getMatchClauses().size() > 1) {
+      for (final MatchClause match : statement.getMatchClauses()) {
+        if (!match.hasPathPatterns() || match.getPathPatterns().size() != 1)
+          return false;
+        final PathPattern path = match.getPathPatterns().get(0);
+        // Only support single-node patterns (no relationships) for multi-MATCH
+        if (!path.isSingleNode())
+          return false;
+      }
+    }
 
     // For Phase 4: Start with simple queries only
     // Disable optimizer for queries with features not yet fully integrated:
@@ -172,25 +184,66 @@ public class CypherExecutionPlanner {
       }
     }
 
-    // Disable optimizer for FOREACH queries (FOREACH contains write operations)
-    if (statement.getClausesInOrder() != null &&
-        statement.getClausesInOrder().stream().anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH))
-      return false;
+    // The optimizer path (buildExecutionStepsWithOptimizer) only supports a fixed clause
+    // ordering: MATCH(es) → one CREATE → one SET → one DELETE → REMOVE → MERGE → RETURN.
+    // Disable for queries with clauses that break this assumption.
+    if (statement.getClausesInOrder() != null) {
+      int createCount = 0;
+      int mergeCount = 0;
+      int deleteCount = 0;
+      for (final ClauseEntry clause : statement.getClausesInOrder()) {
+        final ClauseEntry.ClauseType type = clause.getType();
+        if (type == ClauseEntry.ClauseType.FOREACH || type == ClauseEntry.ClauseType.WITH
+            || type == ClauseEntry.ClauseType.CALL)
+          return false;
+        if (type == ClauseEntry.ClauseType.CREATE)
+          createCount++;
+        else if (type == ClauseEntry.ClauseType.MERGE)
+          mergeCount++;
+        else if (type == ClauseEntry.ClauseType.DELETE)
+          deleteCount++;
+      }
+      // Multiple CREATE/MERGE/DELETE clauses not handled by optimizer path
+      if (createCount > 1 || mergeCount > 1 || (deleteCount > 0 && mergeCount > 0))
+        return false;
+    }
 
-    // Phase 4: Conservative rollout - only optimize read-only queries
-    // Exclude queries with write operations until Phase 5
-    if (statement.hasCreate() || statement.hasMerge() || statement.hasDelete())
-      return false; // Write operations not yet fully integrated with optimizer
+    // Aggregation queries: the optimizer doesn't enforce Cypher's relationship uniqueness
+    // constraint (each edge matched at most once per MATCH clause). When all edge types in
+    // the pattern are disjoint, uniqueness is automatically satisfied (an edge has exactly
+    // one type), so the optimizer is safe. When types overlap, fall back to the traditional
+    // path which supports edge tracking AND GAV via MatchRelationshipStep.
+    if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()) {
+      for (final MatchClause match : statement.getMatchClauses()) {
+        if (match.hasPathPatterns()) {
+          for (final PathPattern path : match.getPathPatterns()) {
+            if (!allEdgeTypesDisjoint(path))
+              return false;
+          }
+        }
+      }
+    }
 
-    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty())
-      return false; // SET operations not yet fully integrated
+    return true;
+  }
 
-    // Phase 4: Aggregation functions not yet fully integrated with optimizer
-    // The optimizer doesn't handle GROUP BY and aggregation properly yet
-    if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations())
-      return false; // Aggregation queries use traditional execution
-
-    // Enable optimizer for simple read-only single MATCH queries with all labeled nodes
+  /**
+   * Checks whether all edge types across all hops in a path pattern are disjoint
+   * (no type appears in more than one hop). When disjoint, the optimizer is safe
+   * to use even for aggregation queries because edge uniqueness is automatically satisfied.
+   */
+  private static boolean allEdgeTypesDisjoint(final PathPattern pathPattern) {
+    if (pathPattern.getRelationshipCount() <= 1)
+      return true;
+    final Set<String> seenTypes = new HashSet<>();
+    for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      if (!rel.hasTypes())
+        return false; // untyped hop overlaps with everything
+      for (final String type : rel.getTypes())
+        if (!seenTypes.add(type))
+          return false; // duplicate type
+    }
     return true;
   }
 }

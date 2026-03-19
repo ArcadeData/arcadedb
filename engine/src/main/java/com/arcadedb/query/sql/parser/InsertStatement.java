@@ -27,6 +27,9 @@ import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.InsertExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import com.arcadedb.query.OperationType;
+import com.arcadedb.utility.CollectionUtils;
+
 import java.util.*;
 
 public class InsertStatement extends Statement {
@@ -206,6 +209,11 @@ public class InsertStatement extends Statement {
 
   public boolean isUnsafe() {
     return unsafe;
+  }
+
+  @Override
+  public Set<OperationType> getOperationTypes() {
+    return CollectionUtils.singletonSet(OperationType.CREATE);
   }
 }
 /* JavaCC - OriginalChecksum=ccfabcf022d213caed873e6256cb26ad (do not edit this line) */

@@ -113,9 +113,10 @@ class Issue3216Test {
 
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "MATCH (a),(b) WHERE ID(a) = $sourceId and ID(b) = $targetId " +
-              "MERGE (a)-[r:`in`]->(b) " +
-              "RETURN a, b, r",
+          """
+          MATCH (a),(b) WHERE ID(a) = $sourceId and ID(b) = $targetId \
+          MERGE (a)-[r:`in`]->(b) \
+          RETURN a, b, r""",
           Map.of("sourceId", sourceId, "targetId", targetId));
 
       int count = 0;
@@ -157,10 +158,11 @@ class Issue3216Test {
 
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "UNWIND $batch as row " +
-              "MATCH (a),(b) WHERE ID(a) = row.source_id and ID(b) = row.target_id " +
-              "MERGE (a)-[r:`in`]->(b) " +
-              "RETURN a, b, r",
+          """
+          UNWIND $batch as row \
+          MATCH (a),(b) WHERE ID(a) = row.source_id and ID(b) = row.target_id \
+          MERGE (a)-[r:`in`]->(b) \
+          RETURN a, b, r""",
           Map.of("batch", batch));
 
       int count = 0;

@@ -26,6 +26,9 @@ import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -282,10 +285,20 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   // --- CONSOLE LOG statement ---
   @Test
   void consoleLogStatement() {
-    database.transaction(() -> {
-      // Just verify it doesn't throw
-      database.command("sqlscript", "CONSOLE.OUTPUT 'test log message';");
-    });
+    final ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+    final PrintStream originalOut = System.out;
+    try {
+      System.setOut(new PrintStream(outputStream));
+      database.transaction(() -> {
+        // Just verify it doesn't throw
+        database.command("sqlscript", "CONSOLE.OUTPUT 'test log message';");
+      });
+
+      final String output = outputStream.toString().trim();
+      assertThat(output).isEqualTo("test log message");
+    } finally {
+      System.setOut(originalOut);
+    }
   }
 
   // --- Multi-statement script returning last result ---

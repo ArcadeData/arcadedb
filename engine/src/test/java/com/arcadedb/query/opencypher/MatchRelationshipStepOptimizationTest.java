@@ -26,7 +26,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that anonymous relationships use the optimized getVertices() path
  * when edges aren't needed (no edge variable, properties, or path tracking).
  */
-public class MatchRelationshipStepOptimizationTest {
+class MatchRelationshipStepOptimizationTest {
   private Database database;
 
   @BeforeEach
@@ -57,16 +59,19 @@ public class MatchRelationshipStepOptimizationTest {
       database.command("opencypher", "CREATE (d:Person {name: 'Dave', age: 35})");
 
       database.command("opencypher",
-          "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) " +
-              "CREATE (a)-[:KNOWS {since: 2020}]->(b)");
+          """
+          MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) \
+          CREATE (a)-[:KNOWS {since: 2020}]->(b)""");
 
       database.command("opencypher",
-          "MATCH (b:Person {name: 'Bob'}), (c:Person {name: 'Charlie'}) " +
-              "CREATE (b)-[:KNOWS {since: 2021}]->(c)");
+          """
+          MATCH (b:Person {name: 'Bob'}), (c:Person {name: 'Charlie'}) \
+          CREATE (b)-[:KNOWS {since: 2021}]->(c)""");
 
       database.command("opencypher",
-          "MATCH (a:Person {name: 'Alice'}), (d:Person {name: 'Dave'}) " +
-              "CREATE (a)-[:FOLLOWS]->(d)");
+          """
+          MATCH (a:Person {name: 'Alice'}), (d:Person {name: 'Dave'}) \
+          CREATE (a)-[:FOLLOWS]->(d)""");
     });
   }
 
@@ -82,8 +87,9 @@ public class MatchRelationshipStepOptimizationTest {
   void fastPathAnonymousRelationshipSimple() {
     // Fast path should be used: anonymous relationship, no properties, no path
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b) " +
-            "RETURN b.name AS name");
+        """
+        MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b) \
+        RETURN b.name AS name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -96,8 +102,9 @@ public class MatchRelationshipStepOptimizationTest {
   void fastPathAnonymousRelationshipMultipleTypes() {
     // Fast path with multiple edge types
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'})-[:KNOWS|FOLLOWS]->(b) " +
-            "RETURN b.name AS name ORDER BY b.name");
+        """
+        MATCH (a:Person {name: 'Alice'})-[:KNOWS|FOLLOWS]->(b) \
+        RETURN b.name AS name ORDER BY b.name""");
 
     assertThat(result.hasNext()).isTrue();
     final Set<String> names = new HashSet<>();
@@ -112,8 +119,9 @@ public class MatchRelationshipStepOptimizationTest {
   void fastPathMultiHop() {
     // Fast path for multi-hop traversal without edge variables
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->()-[:KNOWS]->(c) " +
-            "RETURN c.name AS name");
+        """
+        MATCH (a:Person {name: 'Alice'})-[:KNOWS]->()-[:KNOWS]->(c) \
+        RETURN c.name AS name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -126,8 +134,9 @@ public class MatchRelationshipStepOptimizationTest {
   void standardPathWithEdgeVariable() {
     // Standard path: edge variable is used
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b) " +
-            "RETURN b.name AS name, r.since AS since");
+        """
+        MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b) \
+        RETURN b.name AS name, r.since AS since""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -141,8 +150,9 @@ public class MatchRelationshipStepOptimizationTest {
   void standardPathWithEdgePropertyFilter() {
     // Standard path: edge property filter requires loading edge
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'})-[:KNOWS {since: 2020}]->(b) " +
-            "RETURN b.name AS name");
+        """
+        MATCH (a:Person {name: 'Alice'})-[:KNOWS {since: 2020}]->(b) \
+        RETURN b.name AS name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -155,8 +165,9 @@ public class MatchRelationshipStepOptimizationTest {
   void standardPathWithPath() {
     // Standard path: path variable requires edge tracking
     final ResultSet result = database.query("opencypher",
-        "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]->(b) " +
-            "RETURN b.name AS name, length(p) AS pathLength");
+        """
+        MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]->(b) \
+        RETURN b.name AS name, length(p) AS pathLength""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -172,17 +183,20 @@ public class MatchRelationshipStepOptimizationTest {
     database.transaction(() -> {
       // Create a triangle: Alice -> Bob -> Charlie -> Alice
       database.command("opencypher",
-          "MATCH (b:Person {name: 'Bob'}), (a:Person {name: 'Alice'}) " +
-              "CREATE (b)-[:KNOWS]->(a)");
+          """
+          MATCH (b:Person {name: 'Bob'}), (a:Person {name: 'Alice'}) \
+          CREATE (b)-[:KNOWS]->(a)""");
       database.command("opencypher",
-          "MATCH (c:Person {name: 'Charlie'}), (a:Person {name: 'Alice'}) " +
-              "CREATE (c)-[:KNOWS]->(a)");
+          """
+          MATCH (c:Person {name: 'Charlie'}), (a:Person {name: 'Alice'}) \
+          CREATE (c)-[:KNOWS]->(a)""");
     });
 
     // This should find paths without reusing the same edge
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->()-[:KNOWS]->(c) " +
-            "RETURN c.name AS name");
+        """
+        MATCH (a:Person {name: 'Alice'})-[:KNOWS]->()-[:KNOWS]->(c) \
+        RETURN c.name AS name""");
 
     // Should find Charlie (Alice -> Bob -> Charlie)
     // Should NOT find Alice (would require reusing Alice->Bob edge)
@@ -199,8 +213,9 @@ public class MatchRelationshipStepOptimizationTest {
   void fastPathBothDirection() {
     // Fast path with BOTH direction
     final ResultSet result = database.query("opencypher",
-        "MATCH (b:Person {name: 'Bob'})-[:KNOWS]-(other) " +
-            "RETURN other.name AS name ORDER BY other.name");
+        """
+        MATCH (b:Person {name: 'Bob'})-[:KNOWS]-(other) \
+        RETURN other.name AS name ORDER BY other.name""");
 
     final Set<String> names = new HashSet<>();
     while (result.hasNext()) {
@@ -215,8 +230,9 @@ public class MatchRelationshipStepOptimizationTest {
   void fastPathWithTargetLabelFilter() {
     // Fast path with target node label filtering
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'})-[:KNOWS|FOLLOWS]->(b:Person) " +
-            "RETURN b.name AS name ORDER BY b.name");
+        """
+        MATCH (a:Person {name: 'Alice'})-[:KNOWS|FOLLOWS]->(b:Person) \
+        RETURN b.name AS name ORDER BY b.name""");
 
     final Set<String> names = new HashSet<>();
     while (result.hasNext()) {
@@ -224,5 +240,73 @@ public class MatchRelationshipStepOptimizationTest {
     }
     assertThat(names).containsExactlyInAnyOrder("Bob", "Dave");
     result.close();
+  }
+
+  /**
+   * Tests that BOTH direction uses the fast path and correctly deduplicates
+   * self-loop edges (which appear once in OUT and once in IN).
+   */
+  @Test
+  void bothDirectionUsesFastPath() {
+    // Alice-[:KNOWS]->Bob, Bob-[:KNOWS]->Charlie, Alice-[:FOLLOWS]->Dave
+    // BOTH from Bob: Alice (via IN KNOWS) and Charlie (via OUT KNOWS) — no self-loops
+    final ResultSet result = database.query("opencypher",
+        "MATCH (a:Person {name: 'Bob'})--(b:Person) RETURN b.name AS name ORDER BY name");
+
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().<String>getProperty("name"));
+    result.close();
+
+    assertThat(names).containsExactly("Alice", "Charlie");
+  }
+
+  /**
+   * Tests that BOTH direction with self-loops produces correct multiplicity.
+   * A single self-loop edge should produce exactly one match, not two.
+   */
+  @Test
+  void bothDirectionSelfLoopDedup() {
+    // Create a self-loop
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)");
+    });
+
+    // BOTH from Alice: Bob (OUT KNOWS), Dave (OUT FOLLOWS), Alice (self-loop, should appear once)
+    final ResultSet result = database.query("opencypher",
+        "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-(b:Person) RETURN b.name AS name ORDER BY name");
+
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().<String>getProperty("name"));
+    result.close();
+
+    // Alice: one self-loop (not doubled), Bob: one KNOWS edge from Alice
+    assertThat(names).containsExactly("Alice", "Bob");
+  }
+
+  /**
+   * Tests that BOTH direction with multiple self-loops preserves correct multiplicity.
+   */
+  @Test
+  void bothDirectionMultipleSelfLoops() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)");
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)");
+    });
+
+    // BOTH from Alice for KNOWS: Bob (1), Alice (2 self-loops, should appear twice)
+    final ResultSet result = database.query("opencypher",
+        "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-(b:Person) RETURN b.name AS name ORDER BY name");
+
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().<String>getProperty("name"));
+    result.close();
+
+    assertThat(names).containsExactly("Alice", "Alice", "Bob");
   }
 }

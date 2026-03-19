@@ -435,8 +435,9 @@ class GremlinTest {
       Result value = graph.gremlin("g.inject(Long.MAX_VALUE, 0).sum()").execute().nextIfAvailable();
       assertThat((long) value.getProperty("result")).isEqualTo(Long.MAX_VALUE);
 
-      value = graph.gremlin("g.inject(Long.MAX_VALUE, 1).sum()").execute().nextIfAvailable();
-      assertThat((long) value.getProperty("result")).isEqualTo(Long.MAX_VALUE + 1);
+      // Since Gremlin 3.8.0, sum() throws ArithmeticException on long overflow instead of silently wrapping
+      assertThatThrownBy(() -> graph.gremlin("g.inject(Long.MAX_VALUE, 1).sum()").execute().nextIfAvailable())
+          .isInstanceOf(ArithmeticException.class);
 
       value = graph.gremlin("g.inject(BigInteger.valueOf(Long.MAX_VALUE), 1).sum()").execute().nextIfAvailable();
       assertThat((BigInteger) value.getProperty("result")).isEqualTo(

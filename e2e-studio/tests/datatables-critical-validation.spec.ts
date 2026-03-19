@@ -187,7 +187,8 @@ test.describe('DataTables Critical Validation', () => {
     await expect(paginationInfo).toBeVisible();
 
     const infoText = await paginationInfo.textContent();
-    expect(infoText).toContain('25');
+    // Pagination info should show "Showing X to Y of Z entries" format
+    expect(infoText).toMatch(/Showing \d+ to \d+ of \d+ entries/);
 
     // Check pagination controls (v2.x uses .dt-paging)
     const pagination = page.locator('#result_wrapper .dt-paging, #result_wrapper .dataTables_paginate');

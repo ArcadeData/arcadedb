@@ -40,6 +40,18 @@ public class ListSliceExpression implements Expression {
     this.toExpression = toExpression;
   }
 
+  public Expression getListExpression() {
+    return listExpression;
+  }
+
+  public Expression getFromExpression() {
+    return fromExpression;
+  }
+
+  public Expression getToExpression() {
+    return toExpression;
+  }
+
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
     final Object listValue = listExpression.evaluate(result, context);

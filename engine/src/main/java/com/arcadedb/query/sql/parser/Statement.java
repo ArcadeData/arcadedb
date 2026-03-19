@@ -26,6 +26,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import com.arcadedb.query.OperationType;
+import com.arcadedb.utility.CollectionUtils;
+
 import java.util.*;
 
 public class Statement extends SimpleNode {
@@ -130,6 +133,19 @@ public class Statement extends SimpleNode {
 
   public boolean isDDL() {
     return this instanceof DDLStatement;
+  }
+
+  /**
+   * Returns the set of operation types this statement performs.
+   * Subclasses should override to provide accurate classification.
+   * Default: if idempotent returns READ, if DDL returns SCHEMA, otherwise CREATE+UPDATE+DELETE.
+   */
+  public Set<OperationType> getOperationTypes() {
+    if (isDDL())
+      return CollectionUtils.singletonSet(OperationType.SCHEMA);
+    if (isIdempotent())
+      return CollectionUtils.singletonSet(OperationType.READ);
+    return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }
 
   public boolean executionPlanCanBeCached() {

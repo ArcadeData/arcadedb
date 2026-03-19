@@ -18,8 +18,8 @@
  */
 package com.arcadedb.server.gremlin;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.test.BaseGraphServerTest;
 import org.apache.tinkerpop.gremlin.driver.Client;
@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -46,7 +47,7 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
 
   @Test
   void concurrentMergeVWithThreadBucketStrategy() throws Exception {
-    final int nOfThreads = 8;
+    final int nOfThreads = Math.max(2, Runtime.getRuntime().availableProcessors());
     final int batchSize = 100;
     final int nOfProperties = 8;
 
@@ -92,22 +93,47 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
 
         @Override
         public String call() {
-          try {
-            List<Map<String, Object>> queryInputParams = createQueryInputParams(batchSize, threadId, nOfProperties);
-            Map<String, Object> params = Map.of("rows", queryInputParams);
+          final int maxRetries = 10;
+          final List<Map<String, Object>> queryInputParams = createQueryInputParams(batchSize, threadId, nOfProperties);
+          final Map<String, Object> params = Map.of("rows", queryInputParams);
+          Exception lastException = null;
 
-            System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
-                ") Importing " + batchSize + " entries");
+          LogManager.instance().log(this, Level.INFO, "%s (id=%d) Importing %d entries",
+              Thread.currentThread().getName(), Thread.currentThread().threadId(), batchSize);
 
-            int nOfResults = client.submit(query, params).all().join().size();
-
-            return Thread.currentThread().getName() + " -> " + nOfResults + " results";
-          } catch (Exception e) {
-            errorCount.incrementAndGet();
-            System.err.println("Error in thread " + Thread.currentThread().getName() + ": " + e.getMessage());
-            e.printStackTrace();
-            throw new RuntimeException(e);
+          for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+              final int nOfResults = client.submit(query, params).all().join().size();
+              return Thread.currentThread().getName() + " -> " + nOfResults + " results";
+            } catch (final Exception e) {
+              lastException = e;
+              if (attempt < maxRetries && isConcurrentModification(e)) {
+                LogManager.instance().log(this, Level.WARNING, "%s retry %d after concurrent modification",
+                    Thread.currentThread().getName(), attempt);
+                try {
+                  Thread.sleep(10L * attempt);
+                } catch (final InterruptedException ie) {
+                  Thread.currentThread().interrupt();
+                  break;
+                }
+                continue;
+              }
+              errorCount.incrementAndGet();
+              throw new RuntimeException(e);
+            }
           }
+          errorCount.incrementAndGet();
+          throw new RuntimeException("Exhausted retries", lastException);
+        }
+
+        private boolean isConcurrentModification(Throwable e) {
+          while (e != null) {
+            final String msg = e.getMessage();
+            if (msg != null && (msg.contains("Concurrent modification") || msg.contains("ConcurrentModificationException")))
+              return true;
+            e = e.getCause();
+          }
+          return false;
         }
 
         private List<Map<String, Object>> createQueryInputParams(int batchSize, int threadId, int nOfProperties) {
@@ -149,16 +175,14 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
       while (receivedResults < nOfThreads) {
         try {
           Future<String> future = completionService.take();
-          String result = future.get();
-          System.out.println("Results from " + result);
+          final String result = future.get();
+          LogManager.instance().log(this, Level.INFO, "Results from %s", result);
           receivedResults++;
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           throw new RuntimeException(e);
-        } catch (ExecutionException e) {
-          System.err.println("Execution exception: " + e.getMessage());
-          e.printStackTrace();
-          // Continue to collect other results
+        } catch (final ExecutionException e) {
+          LogManager.instance().log(this, Level.WARNING, "Execution exception: %s", e.getMessage());
           receivedResults++;
         }
       }
@@ -180,7 +204,7 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
         Number count = (Number) database.query("sql", "SELECT count(*) as count FROM Imported")
             .next().getProperty("count");
 
-        System.out.println("Total vertices created: " + count);
+        LogManager.instance().log(this, Level.INFO, "Total vertices created: %s", count);
         assertThat(count.longValue()).isEqualTo(nOfThreads * batchSize);
       }
 

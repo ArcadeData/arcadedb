@@ -72,6 +72,9 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue(
         "GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
+    // Disable parallel scan to avoid thread-local DatabaseContext contamination
+    // across tests when gRPC thread pool threads retain stale context
+    GlobalConfiguration.QUERY_PARALLEL_SCAN.setValue(false);
   }
 
   @BeforeEach
@@ -175,7 +178,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   // ========== Vertex CRUD ==========
 
   @Test
-  void testCreateVertexRecord() {
+  void createVertexRecord() {
     final GrpcRecord record = GrpcRecord.newBuilder()
         .setType(VERTEX1_TYPE_NAME)
         .putProperties("name", stringValue("CoverageVertex"))
@@ -207,7 +210,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateVertexRecordWithProperties() {
+  void createVertexRecordWithProperties() {
     final String typeName = "CovVertex_" + System.currentTimeMillis();
     createVertexType(typeName);
 
@@ -240,7 +243,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testUpdateVertexRecord() {
+  void updateVertexRecord() {
     // Create a vertex
     final GrpcRecord record = GrpcRecord.newBuilder()
         .setType(VERTEX1_TYPE_NAME)
@@ -292,7 +295,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   // ========== Edge CRUD ==========
 
   @Test
-  void testCreateEdgeRecord() {
+  void createEdgeRecord() {
     // Create two vertices to connect with an edge
     final GrpcRecord v1Record = GrpcRecord.newBuilder()
         .setType(VERTEX1_TYPE_NAME)
@@ -338,7 +341,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateEdgeRecordWithProperties() {
+  void createEdgeRecordWithProperties() {
     // Create two vertices
     final String outRid = authenticatedStub.createRecord(
         CreateRecordRequest.newBuilder()
@@ -379,7 +382,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateEdgeRecordWithoutEndpointsFails() {
+  void createEdgeRecordWithoutEndpointsFails() {
     final GrpcRecord edgeRecord = GrpcRecord.newBuilder()
         .setType(EDGE1_TYPE_NAME)
         .putProperties("weight", doubleValue(1.0))
@@ -400,7 +403,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   // ========== ExecuteCommand transaction paths ==========
 
   @Test
-  void testExecuteCommandWithExplicitBeginCommit() {
+  void executeCommandWithExplicitBeginCommit() {
     final ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
@@ -425,7 +428,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testExecuteCommandWithExplicitBeginRollback() {
+  void executeCommandWithExplicitBeginRollback() {
     final String uniqueName = "RollbackTx_" + System.currentTimeMillis();
 
     final ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
@@ -452,7 +455,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testExecuteCommandReturnRowsWithNonElementResults() {
+  void executeCommandReturnRowsWithNonElementResults() {
     // SELECT count(*) returns a non-element result (just a number property)
     final ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
         .setDatabase(getDatabaseName())
@@ -470,7 +473,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   // ========== ExecuteQuery ==========
 
   @Test
-  void testExecuteQueryWithLimit() {
+  void executeQueryWithLimit() {
     final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
@@ -484,7 +487,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testExecuteQueryWithProjectionSettingsAsMap() {
+  void executeQueryWithProjectionSettingsAsMap() {
     final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
@@ -501,7 +504,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testExecuteQueryWithProjectionSettingsAsLink() {
+  void executeQueryWithProjectionSettingsAsLink() {
     final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
@@ -518,7 +521,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testExecuteQueryWithProjectionSoftLimit() {
+  void executeQueryWithProjectionSoftLimit() {
     final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
@@ -537,7 +540,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   // ========== Transaction edge cases ==========
 
   @Test
-  void testCommitTransactionWithBlankId() {
+  void commitTransactionWithBlankId() {
     final CommitTransactionRequest request = CommitTransactionRequest.newBuilder()
         .setCredentials(credentials())
         .setTransaction(TransactionContext.newBuilder()
@@ -552,7 +555,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCommitTransactionWithNonExistentId() {
+  void commitTransactionWithNonExistentId() {
     final CommitTransactionRequest request = CommitTransactionRequest.newBuilder()
         .setCredentials(credentials())
         .setTransaction(TransactionContext.newBuilder()
@@ -569,7 +572,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRollbackTransactionWithBlankId() {
+  void rollbackTransactionWithBlankId() {
     final RollbackTransactionRequest request = RollbackTransactionRequest.newBuilder()
         .setCredentials(credentials())
         .setTransaction(TransactionContext.newBuilder()
@@ -584,7 +587,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRollbackTransactionWithNonExistentId() {
+  void rollbackTransactionWithNonExistentId() {
     final RollbackTransactionRequest request = RollbackTransactionRequest.newBuilder()
         .setCredentials(credentials())
         .setTransaction(TransactionContext.newBuilder()
@@ -603,7 +606,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   // ========== StreamQuery modes ==========
 
   @Test
-  void testStreamQueryMaterializeAllMode() {
+  void streamQueryMaterializeAllMode() {
     final StreamQueryRequest request = StreamQueryRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
@@ -624,7 +627,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testStreamQueryPagedMode() {
+  void streamQueryPagedMode() {
     final StreamQueryRequest request = StreamQueryRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
@@ -649,7 +652,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testStreamQueryMaterializeAllWithNonElementResults() {
+  void streamQueryMaterializeAllWithNonElementResults() {
     final StreamQueryRequest request = StreamQueryRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
@@ -666,7 +669,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testStreamQueryPagedWithNonElementResults() {
+  void streamQueryPagedWithNonElementResults() {
     final StreamQueryRequest request = StreamQueryRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
@@ -685,7 +688,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   // ========== BulkInsert ==========
 
   @Test
-  void testBulkInsertVertexType() {
+  void bulkInsertVertexType() {
     final String typeName = "BulkVertex_" + System.currentTimeMillis();
     createVertexType(typeName);
 
@@ -716,7 +719,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBulkInsertWithConflictUpdate() {
+  void bulkInsertWithConflictUpdate() {
     final String typeName = "BulkUpsert_" + System.currentTimeMillis();
     createDocumentType(typeName);
 
@@ -776,7 +779,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBulkInsertWithPerRowTransactionMode() {
+  void bulkInsertWithPerRowTransactionMode() {
     final String typeName = "BulkPerRow_" + System.currentTimeMillis();
     createDocumentType(typeName);
 
@@ -804,7 +807,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBulkInsertWithPerRequestTransactionMode() {
+  void bulkInsertWithPerRequestTransactionMode() {
     final String typeName = "BulkPerReq_" + System.currentTimeMillis();
     createDocumentType(typeName);
 
@@ -832,7 +835,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBulkInsertWithPerStreamTransactionMode() {
+  void bulkInsertWithPerStreamTransactionMode() {
     final String typeName = "BulkPerStream_" + System.currentTimeMillis();
     createDocumentType(typeName);
 
@@ -860,7 +863,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBulkInsertWithValidateOnly() {
+  void bulkInsertWithValidateOnly() {
     final String typeName = "BulkValidate_" + System.currentTimeMillis();
     createDocumentType(typeName);
 
@@ -897,7 +900,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBulkInsertVertexWithConflictUpdate() {
+  void bulkInsertVertexWithConflictUpdate() {
     final String typeName = "BulkVUpsert_" + System.currentTimeMillis();
     createVertexType(typeName);
 
@@ -953,7 +956,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   // ========== Data type round-trips ==========
 
   @Test
-  void testCreateAndReadWithBooleanValue() {
+  void createAndReadWithBooleanValue() {
     final GrpcRecord record = GrpcRecord.newBuilder()
         .setType("Person")
         .putProperties("name", stringValue("BoolPerson"))
@@ -981,7 +984,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateAndReadWithFloatDoubleValues() {
+  void createAndReadWithFloatDoubleValues() {
     final GrpcRecord record = GrpcRecord.newBuilder()
         .setType("Person")
         .putProperties("name", stringValue("FloatPerson"))
@@ -1012,7 +1015,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateAndReadWithDateValue() {
+  void createAndReadWithDateValue() {
     final Timestamp ts = Timestamp.newBuilder()
         .setSeconds(1700000000L)
         .setNanos(0)
@@ -1044,7 +1047,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateAndReadWithDecimalValue() {
+  void createAndReadWithDecimalValue() {
     // BigDecimal(12345, 2) = 123.45
     final GrpcDecimal grpcDecimal = GrpcDecimal.newBuilder()
         .setUnscaled(12345L)
@@ -1077,7 +1080,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateAndReadWithListValue() {
+  void createAndReadWithListValue() {
     final GrpcList tagsList = GrpcList.newBuilder()
         .addValues(stringValue("java"))
         .addValues(stringValue("grpc"))
@@ -1114,7 +1117,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateAndReadWithMapValue() {
+  void createAndReadWithMapValue() {
     final GrpcMap addressMap = GrpcMap.newBuilder()
         .putEntries("street", stringValue("Via Roma 1"))
         .putEntries("city", stringValue("Milan"))
@@ -1147,7 +1150,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateAndReadWithBytesValue() {
+  void createAndReadWithBytesValue() {
     final byte[] data = "Hello ArcadeDB gRPC".getBytes(StandardCharsets.UTF_8);
 
     final GrpcRecord record = GrpcRecord.newBuilder()

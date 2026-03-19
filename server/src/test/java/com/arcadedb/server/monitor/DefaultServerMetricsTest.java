@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class DefaultServerMetricsTest {
+class DefaultServerMetricsTest {
 
   @Test
   void shouldCreateNewMeter() {
@@ -90,7 +90,7 @@ public class DefaultServerMetricsTest {
   }
 
   @Test
-  void shouldHandleConcurrentAccess() throws InterruptedException {
+  void shouldHandleConcurrentAccess() throws Exception {
     final DefaultServerMetrics metrics = new DefaultServerMetrics();
 
     final Thread[] threads = new Thread[10];

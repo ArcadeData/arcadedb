@@ -312,6 +312,68 @@ public class OpenCypherSetTest {
     assertThat((String) edge.get("role")).isEqualTo("Engineer");
   }
 
+  /**
+   * Issue #3468: SET (CASE WHEN ... THEN t END).prop = value pattern.
+   * In Neo4j this is a standard pattern for conditionally setting properties.
+   * When the CASE returns null (condition not met), the SET should be a no-op.
+   */
+  @Test
+  void setCaseSubclauseConditionalProperty() {
+    database.getSchema().createVertexType("Thing");
+
+    // Create a node with only propA set
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (t:Thing {id: 'thing1', propA: 'valueA'})");
+    });
+
+    // Use CASE subclause to conditionally set properties
+    // propA is not null, so it should be set; propB is not present, so it should be skipped
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (t:Thing {id: 'thing1'}) " +
+          "SET (CASE WHEN t.propA IS NOT NULL THEN t END).propA = 'updatedA' " +
+          "SET (CASE WHEN t.propB IS NOT NULL THEN t END).propB = 'updatedB'");
+    });
+
+    // Verify: propA should be updated, propB should not exist
+    final ResultSet verify = database.query("opencypher", "MATCH (t:Thing {id: 'thing1'}) RETURN t");
+    assertThat(verify.hasNext()).isTrue();
+    final Vertex v = (Vertex) verify.next().toElement();
+    assertThat((String) v.get("propA")).isEqualTo("updatedA");
+    assertThat(v.get("propB")).isNull();
+  }
+
+  /**
+   * Issue #3468: UNWIND with CASE subclause in SET - full pattern from issue.
+   */
+  @Test
+  void setCaseSubclauseWithUnwind() {
+    database.getSchema().createVertexType("Thing");
+
+    // Use UNWIND with CASE subclause SET pattern
+    database.transaction(() -> {
+      database.command("opencypher",
+          "UNWIND [{id: 'a', propA: 'A1', propB: 'B1'}, {id: 'b', propA: 'A2'}] AS thing " +
+          "MERGE (t:Thing {id: thing.id}) " +
+          "SET (CASE WHEN thing.propA IS NOT NULL THEN t END).propA = thing.propA " +
+          "SET (CASE WHEN thing.propB IS NOT NULL THEN t END).propB = thing.propB");
+    });
+
+    // Verify thing 'a': both propA and propB set
+    final ResultSet verifyA = database.query("opencypher", "MATCH (t:Thing {id: 'a'}) RETURN t");
+    assertThat(verifyA.hasNext()).isTrue();
+    final Vertex va = (Vertex) verifyA.next().toElement();
+    assertThat((String) va.get("propA")).isEqualTo("A1");
+    assertThat((String) va.get("propB")).isEqualTo("B1");
+
+    // Verify thing 'b': propA set, propB not present
+    final ResultSet verifyB = database.query("opencypher", "MATCH (t:Thing {id: 'b'}) RETURN t");
+    assertThat(verifyB.hasNext()).isTrue();
+    final Vertex vb = (Vertex) verifyB.next().toElement();
+    assertThat((String) vb.get("propA")).isEqualTo("A2");
+    assertThat(vb.get("propB")).isNull();
+  }
+
   @Test
   void setAfterCreate() {
     // CREATE and SET in same query

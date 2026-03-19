@@ -33,8 +33,10 @@ import java.io.File;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.util.concurrent.TimeUnit.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -152,6 +154,49 @@ class ServerSecurityIT {
 
     await().atMost(10, SECONDS).until(()-> !security.existsUser("providedUser"));
 
+  }
+
+  @Test
+  void dropUserIsThreadSafeUnderConcurrentAccess() throws Exception {
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
+
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
+    security.startService();
+    security.loadUsers();
+
+    final int threadCount = 10;
+    final int operationsPerThread = 20;
+    final ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+    final List<Future<?>> futures = new ArrayList<>();
+    final AtomicInteger errors = new AtomicInteger(0);
+
+    for (int t = 0; t < threadCount; t++) {
+      final int threadId = t;
+      futures.add(executor.submit(() -> {
+        for (int i = 0; i < operationsPerThread; i++) {
+          final String userName = "threaduser_" + threadId + "_" + i;
+          try {
+            security.createUser(new JSONObject()
+                .put("name", userName)
+                .put("password", security.encodePassword(PASSWORD))
+                .put("databases", new JSONObject()));
+            security.dropUser(userName);
+            // Verify user is gone
+            assertThat(security.existsUser(userName)).isFalse();
+          } catch (final Exception e) {
+            errors.incrementAndGet();
+          }
+        }
+      }));
+    }
+
+    executor.shutdown();
+    assertThat(executor.awaitTermination(30, SECONDS)).isTrue();
+
+    for (final Future<?> future : futures)
+      future.get(); // Propagate any assertion errors
+
+    assertThat(errors.get()).isEqualTo(0);
   }
 
   @Test

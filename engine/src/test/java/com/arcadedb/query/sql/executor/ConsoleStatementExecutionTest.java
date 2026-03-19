@@ -56,6 +56,77 @@ class ConsoleStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void logDocumentSerialization() {
+    // Issue #3520: CONSOLE.log produces faulty serializations for documents
+    database.command("sql", "CREATE DOCUMENT TYPE doc3520");
+    database.begin();
+    database.command("sql", "INSERT INTO doc3520 SET name = 'test'");
+    database.commit();
+
+    final ResultSet result = database.command("sqlscript",
+        "LET $x = (SELECT FROM doc3520);\nCONSOLE.log $x");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    final String msg = item.getProperty("message");
+    // The message should contain the document properties as JSON with metadata
+    assertThat(msg).isNotNull();
+    assertThat(msg).contains("\"name\"");
+    assertThat(msg).contains("\"test\"");
+    assertThat(msg).contains("@rid");
+    assertThat(msg).contains("@type");
+  }
+
+  @Test
+  void logEmptyDocumentSerialization() {
+    // Issue #3520: CONSOLE.log should show metadata even for empty documents
+    database.command("sql", "CREATE DOCUMENT TYPE doc3520empty");
+    database.begin();
+    database.command("sql", "INSERT INTO doc3520empty");
+    database.commit();
+
+    final ResultSet result = database.command("sqlscript",
+        "LET $x = (SELECT FROM doc3520empty);\nCONSOLE.log $x");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    final String msg = item.getProperty("message");
+    // Even an empty document should show @rid and @type, not just {}
+    assertThat(msg).isNotNull();
+    assertThat(msg).contains("@rid");
+    assertThat(msg).contains("@type");
+    assertThat(msg).doesNotContain("[{}]");
+  }
+
+  @Test
+  void logMultiplePropertiesSerialization() {
+    // Issue #3520: CONSOLE.log omits commas between multiple properties
+    final ResultSet result = database.command("sqlscript",
+        "LET $y = (SELECT 1, 'test');\nCONSOLE.log $y");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    final String msg = item.getProperty("message");
+    // The message should contain commas between properties
+    assertThat(msg).isNotNull();
+    assertThat(msg).contains(", ");
+  }
+
+  @Test
+  void letWithAndWithoutParenthesesProduceSameConsoleOutput() {
+    // Issue #3519: LET $x = SELECT 1 vs LET $x = (SELECT 1) produce different CONSOLE.log output
+    final ResultSet resultWithParens = database.command("sqlscript",
+        "LET $x = (SELECT 1);\nCONSOLE.log $x");
+    assertThat(resultWithParens.hasNext()).isTrue();
+    final String msgWithParens = resultWithParens.next().getProperty("message");
+
+    final ResultSet resultWithoutParens = database.command("sqlscript",
+        "LET $x = SELECT 1;\nCONSOLE.log $x");
+    assertThat(resultWithoutParens.hasNext()).isTrue();
+    final String msgWithoutParens = resultWithoutParens.next().getProperty("message");
+
+    // Both should produce the same output (the actual query result, not execution plan)
+    assertThat(msgWithoutParens).isEqualTo(msgWithParens);
+  }
+
+  @Test
   void invalidLevel() {
     try {
       database.command("sqlscript", "console.bla 'foo bar'");

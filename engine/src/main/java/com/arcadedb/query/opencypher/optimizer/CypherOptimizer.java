@@ -19,14 +19,19 @@
 package com.arcadedb.query.opencypher.optimizer;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
+import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
+import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.optimizer.plan.*;
 import com.arcadedb.query.opencypher.optimizer.rules.*;
@@ -66,6 +71,12 @@ import java.util.Set;
  * - Filter pushdown: 2-10x speedup depending on selectivity
  */
 public class CypherOptimizer {
+  // TODO: replace with runtime statistics once the statistics provider tracks per-type average degree
+  private static final double DEFAULT_AVG_DEGREE = 10.0;
+  // TODO: replace with runtime statistics once histogram-based selectivity estimation is implemented
+  private static final double DEFAULT_EXPAND_INTO_SELECTIVITY = 0.1;
+  private static final double DEFAULT_FILTER_SELECTIVITY = 0.5;
+
   private final DatabaseInternal database;
   private final CypherStatement statement;
   private final Map<String, Object> parameters;
@@ -109,6 +120,12 @@ public class CypherOptimizer {
     final List<String> typeNames = extractTypeNames(logicalPlan);
     statisticsProvider.collectStatistics(typeNames);
 
+    // Handle multiple independent MATCH clauses (e.g., MATCH (a:T) MATCH (b:T) CREATE ...)
+    // Each MATCH has a single node pattern — create operators for each and chain with CartesianProduct
+    if (statement.getMatchClauses().size() > 1 && logicalPlan.getRelationships().isEmpty()) {
+      return optimizeMultiMatchIndependent(logicalPlan);
+    }
+
     // 3. Select anchor node (best starting point)
     final AnchorSelection anchor = anchorSelector.selectAnchor(logicalPlan);
 
@@ -131,19 +148,52 @@ public class CypherOptimizer {
     }
 
     // 8. Calculate total cost and cardinality
-    double totalCost = rootOperator.getEstimatedCost();
-    long totalCardinality = rootOperator.getEstimatedCardinality();
+    final double totalCost = rootOperator.getEstimatedCost();
+    final long totalCardinality = rootOperator.getEstimatedCardinality();
 
     // 9. Build physical plan with complete operator tree
-    final PhysicalPlan physicalPlan = new PhysicalPlan(
-        logicalPlan,
-        anchor,
-        rootOperator,
-        totalCost,
-        totalCardinality
-    );
+    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality);
+  }
 
-    return physicalPlan;
+  /**
+   * Optimizes multiple independent MATCH clauses by creating an operator per node
+   * and chaining them with CartesianProduct.
+   * This is optimal for the common edge creation pattern:
+   * MATCH (a:T) WHERE a.id=$x MATCH (b:T) WHERE b.id=$y CREATE (a)-[:E]->(b)
+   */
+  private PhysicalPlan optimizeMultiMatchIndependent(final LogicalPlan logicalPlan) {
+    PhysicalOperator rootOperator = null;
+    AnchorSelection firstAnchor = null;
+    double totalCost = 0;
+    long totalCardinality = 1;
+
+    for (final LogicalNode node : logicalPlan.getNodes().values()) {
+      // Create a temporary single-node plan to use the anchor selector
+      final AnchorSelection anchor = anchorSelector.evaluateNodeDirect(node, logicalPlan);
+      final PhysicalOperator nodeOperator = createAnchorOperator(anchor);
+
+      if (firstAnchor == null)
+        firstAnchor = anchor;
+
+      if (rootOperator == null) {
+        rootOperator = nodeOperator;
+      } else {
+        // Chain with CartesianProduct
+        totalCardinality *= anchor.getEstimatedCardinality();
+        totalCost += anchor.getEstimatedCost();
+        rootOperator = new CartesianProduct(rootOperator, nodeOperator, totalCost, totalCardinality);
+      }
+
+      totalCost += anchor.getEstimatedCost();
+      totalCardinality = Math.max(1, anchor.getEstimatedCardinality());
+    }
+
+    // Apply filters
+    if (!logicalPlan.getWhereFilters().isEmpty())
+      rootOperator = applyFilterPushdown(logicalPlan, rootOperator);
+
+    return new PhysicalPlan(logicalPlan, firstAnchor, rootOperator,
+        rootOperator.getEstimatedCost(), rootOperator.getEstimatedCardinality());
   }
 
   /**
@@ -284,10 +334,20 @@ public class CypherOptimizer {
 
     // Estimate cost and cardinality for this expansion
     final long inputCardinality = input.getEstimatedCardinality();
-    final double avgDegree = 10.0; // TODO: Use statistics to estimate average degree
-    final long outputCardinality = inputCardinality * (long) avgDegree;
-    final double expansionCost = inputCardinality * avgDegree * costModel.EXPAND_COST_PER_ROW;
+    final long outputCardinality = inputCardinality * (long) DEFAULT_AVG_DEGREE;
+    final double expansionCost = inputCardinality * DEFAULT_AVG_DEGREE * costModel.EXPAND_COST_PER_ROW;
     final double totalCost = input.getEstimatedCost() + expansionCost;
+
+    // Check for GAV provider: use CSR-backed expand when edge variable is not captured
+    if (edgeVariable == null) {
+      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
+      if (provider != null) {
+        // GAV expand: ~10x cheaper (array access vs linked list traversal)
+        final double gavCost = input.getEstimatedCost() + inputCardinality * DEFAULT_AVG_DEGREE * costModel.EXPAND_COST_PER_ROW * 0.1;
+        return new GAVExpandAll(input, provider, sourceVariable, targetVariable, direction, edgeTypes,
+            gavCost, outputCardinality);
+      }
+    }
 
     return new ExpandAll(
         input,
@@ -336,10 +396,21 @@ public class CypherOptimizer {
     // Estimate cost and cardinality for ExpandInto
     // ExpandInto is much cheaper than ExpandAll because it's just an existence check
     final long inputCardinality = input.getEstimatedCardinality();
-    final double selectivity = 0.1; // Estimate 10% of input rows have matching connections
+    final double selectivity = DEFAULT_EXPAND_INTO_SELECTIVITY;
     final long outputCardinality = (long) (inputCardinality * selectivity);
     final double expandIntoCost = inputCardinality * 1.0; // O(1) per input row for existence check
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
+
+    // Check for GAV provider: use CSR-backed expand-into when edge variable is not captured
+    if (edgeVariable == null) {
+      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
+      if (provider != null) {
+        // GAV expand-into: binary search on CSR arrays, no edge loading
+        final double gavCost = input.getEstimatedCost() + inputCardinality * 0.1;
+        return new GAVExpandInto(input, provider, sourceVariable, targetVariable, direction, edgeTypes,
+            gavCost, outputCardinality);
+      }
+    }
 
     return new ExpandInto(
         input,
@@ -375,7 +446,7 @@ public class CypherOptimizer {
       if (filterExpression != null) {
         // Estimate cost and cardinality for this filter
         final long inputCardinality = currentOp.getEstimatedCardinality();
-        final double selectivity = 0.5; // Default selectivity estimate (50% pass through)
+        final double selectivity = DEFAULT_FILTER_SELECTIVITY;
         final long outputCardinality = (long) (inputCardinality * selectivity);
         final double filterCost = inputCardinality * costModel.FILTER_COST_PER_ROW;
         final double totalCost = currentOp.getEstimatedCost() + filterCost;

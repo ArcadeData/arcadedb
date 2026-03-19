@@ -42,6 +42,7 @@ public class TransactionIndexContext {
     public final boolean           unique;
     public final Object[]          keyValues;
     public final RID               rid;
+    public       RID               oldRid; // for REPLACE created from same-bucket REMOVE→ADD: the old RID being replaced
     public       IndexKeyOperation operation;
 
     public enum IndexKeyOperation {
@@ -163,6 +164,9 @@ public class TransactionIndexContext {
   }
 
   public void commit() {
+    // REMOVE ENTRIES FOR INDEXES DROPPED DURING THE TRANSACTION (e.g. TYPE DROP)
+    indexEntries.keySet().removeIf(indexName -> !database.getSchema().existsIndex(indexName));
+
     checkUniqueIndexKeys();
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
@@ -174,6 +178,9 @@ public class TransactionIndexContext {
         for (final IndexKey key : values) {
           if (key.operation == IndexKey.IndexKeyOperation.REMOVE)
             index.remove(key.keyValues, key.rid);
+          else if (key.operation == IndexKey.IndexKeyOperation.REPLACE && key.oldRid != null)
+            // REMOVE THE OLD RID THAT WAS REPLACED BY A NEW ONE IN THE SAME BUCKET
+            index.remove(key.keyValues, key.oldRid);
         }
       }
     }
@@ -220,6 +227,10 @@ public class TransactionIndexContext {
     final Set<Index> lockedIndexes = new HashSet<>(indexEntries.size());
 
     for (final String indexName : indexEntries.keySet()) {
+      if (!schema.existsIndex(indexName))
+        // INDEX WAS DROPPED DURING THE TRANSACTION (e.g. TYPE DROP), SKIP IT
+        continue;
+
       final IndexInternal index = (IndexInternal) schema.getIndexByName(indexName);
 
       if (!lockedIndexes.add(index))
@@ -290,6 +301,14 @@ public class TransactionIndexContext {
 
             // REPLACE EXISTENT WITH THIS
             v.operation = IndexKey.IndexKeyOperation.REPLACE;
+            if (entry != null) {
+              if (entry.operation == IndexKey.IndexKeyOperation.REMOVE)
+                // SAVE THE OLD RID SO IT CAN BE PROPERLY REMOVED FROM THE PERSISTED INDEX AT COMMIT TIME
+                v.oldRid = entry.rid;
+              else if (entry.operation == IndexKey.IndexKeyOperation.REPLACE)
+                // PROPAGATE THE OLD RID FROM THE PREVIOUS REPLACE OPERATION (e.g. REMOVE → ADD → ADD)
+                v.oldRid = entry.oldRid;
+            }
           }
         }
       }
@@ -418,9 +437,14 @@ public class TransactionIndexContext {
 
               final ComparableKey key = new ComparableKey(entry.getValue().keyValues);
               final RID existent = entries.get(key);
-              if (existent == null || entry.getValue().operation == IndexKey.IndexKeyOperation.REMOVE)
-                // MULTIPLE OPERATIONS ON THE SAME KEY (DIFFERENT BUCKETS), PREFER THE REMOVE ONE
-                entries.put(key, entry.getKey().rid);
+              if (existent == null || entry.getValue().operation == IndexKey.IndexKeyOperation.REMOVE) {
+                // MULTIPLE OPERATIONS ON THE SAME KEY (DIFFERENT BUCKETS), PREFER THE REMOVE ONE.
+                // For REPLACE entries that originated from a same-bucket REMOVE→ADD merge, use the oldRid (the actual deleted RID).
+                final RID deletedRid = (entry.getValue().operation == IndexKey.IndexKeyOperation.REPLACE && entry.getValue().oldRid != null)
+                    ? entry.getValue().oldRid
+                    : entry.getKey().rid;
+                entries.put(key, deletedRid);
+              }
             }
           }
         }

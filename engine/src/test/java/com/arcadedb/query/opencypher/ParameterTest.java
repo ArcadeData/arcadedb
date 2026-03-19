@@ -74,6 +74,43 @@ class ParameterTest {
     }
   }
 
+  /**
+   * Regression test for issue #3650: WHERE clause equality with string parameter should filter correctly.
+   * Creates multiple nodes to verify that filtering is actually applied (not just that a result exists).
+   */
+  @Test
+  void whereClauseEqualityWithStringParameter() {
+    final Database database = new DatabaseFactory("./target/testparams_eq").create();
+    try {
+      database.getSchema().getOrCreateVertexType("EqTestNode");
+
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (n:EqTestNode {id: 'A001', name: 'alpha'})");
+        database.command("opencypher", "CREATE (n:EqTestNode {id: 'B002', name: 'beta'})");
+        database.command("opencypher", "CREATE (n:EqTestNode {id: 'C003', name: 'gamma'})");
+      });
+
+      // Test equality filter with string parameter - should return exactly 1 result
+      final ResultSet r1 = database.query("opencypher",
+          "MATCH (t:EqTestNode) WHERE t.id = $id RETURN t.name AS name",
+          Map.of("id", "A001"));
+      final List<String> names = new ArrayList<>();
+      while (r1.hasNext())
+        names.add(r1.next().getProperty("name").toString());
+      assertThat(names).as("WHERE clause string equality should return exactly 1 result").hasSize(1);
+      assertThat(names.get(0)).isEqualTo("alpha");
+
+      // Non-matching parameter should return 0 results
+      final ResultSet r2 = database.query("opencypher",
+          "MATCH (t:EqTestNode) WHERE t.id = $id RETURN t.name AS name",
+          Map.of("id", "NONE"));
+      assertThat(r2.hasNext()).as("Non-matching parameter should return 0 results").isFalse();
+
+    } finally {
+      database.drop();
+    }
+  }
+
   @Test
   void positionalParameters() {
     final Database database = new DatabaseFactory("./target/testparams2").create();
@@ -207,5 +244,6 @@ class ParameterTest {
   @AfterEach
   void clean() {
     FileUtils.deleteRecursively(new File("./target/testparams"));
+    FileUtils.deleteRecursively(new File("./target/testparams_eq"));
   }
 }

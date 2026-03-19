@@ -30,12 +30,30 @@ import com.arcadedb.function.sql.coll.SQLFunctionSet;
 import com.arcadedb.function.sql.coll.SQLFunctionSymmetricDifference;
 import com.arcadedb.function.sql.coll.SQLFunctionUnionAll;
 import com.arcadedb.function.sql.geo.SQLFunctionCircle;
-import com.arcadedb.function.sql.geo.SQLFunctionDistance;
-import com.arcadedb.function.sql.geo.SQLFunctionLineString;
-import com.arcadedb.function.sql.geo.SQLFunctionPoint;
-import com.arcadedb.function.sql.geo.SQLFunctionPolygon;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoArea;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoAsGeoJson;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoAsText;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoBuffer;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoContains;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoCrosses;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoDisjoint;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoDistance;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoDWithin;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoEnvelope;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoEquals;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoGeomFromText;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoIntersects;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoLineString;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoOverlaps;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoPoint;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoPolygon;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoTouches;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoWithin;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoX;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoY;
 import com.arcadedb.function.sql.geo.SQLFunctionRectangle;
 import com.arcadedb.function.sql.graph.SQLFunctionAstar;
+import com.arcadedb.function.sql.graph.SQLFunctionBellmanFord;
 import com.arcadedb.function.sql.graph.SQLFunctionBoth;
 import com.arcadedb.function.sql.graph.SQLFunctionBothE;
 import com.arcadedb.function.sql.graph.SQLFunctionBothV;
@@ -85,6 +103,20 @@ import com.arcadedb.function.sql.text.SQLFunctionStrcmpci;
 import com.arcadedb.function.sql.time.SQLFunctionDate;
 import com.arcadedb.function.sql.time.SQLFunctionDuration;
 import com.arcadedb.function.sql.time.SQLFunctionSysdate;
+import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
+import com.arcadedb.function.sql.time.SQLFunctionCorrelate;
+import com.arcadedb.function.sql.time.SQLFunctionDelta;
+import com.arcadedb.function.sql.time.SQLFunctionInterpolate;
+import com.arcadedb.function.sql.time.SQLFunctionMovingAvg;
+import com.arcadedb.function.sql.time.SQLFunctionRate;
+import com.arcadedb.function.sql.time.SQLFunctionTsPercentile;
+import com.arcadedb.function.sql.time.SQLFunctionLag;
+import com.arcadedb.function.sql.time.SQLFunctionLead;
+import com.arcadedb.function.sql.time.SQLFunctionRank;
+import com.arcadedb.function.sql.time.SQLFunctionRowNumber;
+import com.arcadedb.function.sql.time.SQLFunctionTsFirst;
+import com.arcadedb.function.sql.time.SQLFunctionTsLast;
+import com.arcadedb.function.sql.time.SQLFunctionPromQL;
 import com.arcadedb.function.sql.vector.SQLFunctionDenseVectorToSparse;
 import com.arcadedb.function.sql.vector.SQLFunctionMultiVectorScore;
 import com.arcadedb.function.sql.vector.SQLFunctionSparseVectorCreate;
@@ -151,16 +183,38 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
     register(SQLFunctionUnionAll.NAME, SQLFunctionUnionAll.class);
 
-    // Geo
+    // Geo — deprecated aliases for backward compatibility (use geo.* variants instead)
     register(SQLFunctionCircle.NAME, new SQLFunctionCircle());
-    register(SQLFunctionDistance.NAME, new SQLFunctionDistance());
-    register(SQLFunctionLineString.NAME, new SQLFunctionLineString());
-    register(SQLFunctionPoint.NAME, new SQLFunctionPoint());
-    register(SQLFunctionPolygon.NAME, new SQLFunctionPolygon());
     register(SQLFunctionRectangle.NAME, new SQLFunctionRectangle());
+
+    // Geo — geo.* constructor/accessor functions
+    register(SQLFunctionGeoGeomFromText.NAME, new SQLFunctionGeoGeomFromText());
+    register(SQLFunctionGeoPoint.NAME, new SQLFunctionGeoPoint());
+    register(SQLFunctionGeoLineString.NAME, new SQLFunctionGeoLineString());
+    register(SQLFunctionGeoPolygon.NAME, new SQLFunctionGeoPolygon());
+    register(SQLFunctionGeoBuffer.NAME, new SQLFunctionGeoBuffer());
+    register(SQLFunctionGeoEnvelope.NAME, new SQLFunctionGeoEnvelope());
+    register(SQLFunctionGeoDistance.NAME, new SQLFunctionGeoDistance());
+    register(SQLFunctionGeoArea.NAME, new SQLFunctionGeoArea());
+    register(SQLFunctionGeoAsText.NAME, new SQLFunctionGeoAsText());
+    register(SQLFunctionGeoAsGeoJson.NAME, new SQLFunctionGeoAsGeoJson());
+    register(SQLFunctionGeoX.NAME, new SQLFunctionGeoX());
+    register(SQLFunctionGeoY.NAME, new SQLFunctionGeoY());
+
+    // Geo — geo.* spatial predicate functions (IndexableSQLFunction)
+    register(SQLFunctionGeoContains.NAME, new SQLFunctionGeoContains());
+    register(SQLFunctionGeoCrosses.NAME, new SQLFunctionGeoCrosses());
+    register(SQLFunctionGeoDisjoint.NAME, new SQLFunctionGeoDisjoint());
+    register(SQLFunctionGeoDWithin.NAME, new SQLFunctionGeoDWithin());
+    register(SQLFunctionGeoEquals.NAME, new SQLFunctionGeoEquals());
+    register(SQLFunctionGeoIntersects.NAME, new SQLFunctionGeoIntersects());
+    register(SQLFunctionGeoOverlaps.NAME, new SQLFunctionGeoOverlaps());
+    register(SQLFunctionGeoTouches.NAME, new SQLFunctionGeoTouches());
+    register(SQLFunctionGeoWithin.NAME, new SQLFunctionGeoWithin());
 
     // Graph
     register(SQLFunctionAstar.NAME, SQLFunctionAstar.class);
+    register(SQLFunctionBellmanFord.NAME, SQLFunctionBellmanFord.class);
     register(SQLFunctionBoth.NAME, SQLFunctionBoth.class);
     register(SQLFunctionBothE.NAME, SQLFunctionBothE.class);
     register(SQLFunctionBothV.NAME, SQLFunctionBothV.class);
@@ -218,6 +272,22 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionDate.NAME, new SQLFunctionDate());
     register(SQLFunctionDuration.NAME, new SQLFunctionDuration());
     register(SQLFunctionSysdate.NAME, SQLFunctionSysdate.class);
+    // TimeSeries (ts.* namespace)
+    register(SQLFunctionTimeBucket.NAME, new SQLFunctionTimeBucket());
+    register(SQLFunctionCorrelate.NAME, SQLFunctionCorrelate.class);
+    register(SQLFunctionDelta.NAME, SQLFunctionDelta.class);
+    register(SQLFunctionTsFirst.NAME, SQLFunctionTsFirst.class);
+    register(SQLFunctionTsLast.NAME, SQLFunctionTsLast.class);
+    register(SQLFunctionInterpolate.NAME, SQLFunctionInterpolate.class);
+    register(SQLFunctionMovingAvg.NAME, SQLFunctionMovingAvg.class);
+    register(SQLFunctionRate.NAME, SQLFunctionRate.class);
+    register(SQLFunctionTsPercentile.NAME, SQLFunctionTsPercentile.class);
+    register(SQLFunctionPromQL.NAME, new SQLFunctionPromQL());
+    // Window functions
+    register(SQLFunctionLag.NAME, SQLFunctionLag.class);
+    register(SQLFunctionLead.NAME, SQLFunctionLead.class);
+    register(SQLFunctionRowNumber.NAME, SQLFunctionRowNumber.class);
+    register(SQLFunctionRank.NAME, SQLFunctionRank.class);
 
     // Vectors
     // Basic Operations

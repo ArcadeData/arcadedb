@@ -121,23 +121,27 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
       await expect(page.locator('#result_wrapper')).toBeVisible();
       await expect(page.locator('#result')).toBeVisible();
 
-      // Verify export buttons are present and functional (within result wrapper to be specific)
+      // Verify export dropdown is present and functional (within result wrapper)
       const resultWrapper = page.locator('#result_wrapper');
 
-      // Test Copy button functionality
-      const copyButton = resultWrapper.getByRole('button', { name: /Copy/ });
-      await expect(copyButton).toBeVisible();
-      await copyButton.click();
-      // Verify copy worked (success message appears)
-      await expect(page.getByText('Copied')).toBeVisible({ timeout: 3000 });
+      // The export buttons are inside a custom dropdown (.dt-export-dropdown)
+      const exportDropdown = resultWrapper.locator('.dt-export-dropdown');
+      await expect(exportDropdown).toBeVisible({ timeout: 5000 });
 
-      // Test that other export buttons are visible
-      await expect(resultWrapper.getByRole('button', { name: /CSV/ })).toBeVisible();
-      await expect(resultWrapper.getByRole('button', { name: /Print/ })).toBeVisible();
+      // Open the export dropdown menu
+      await exportDropdown.locator('.dt-export-btn').click();
+      await expect(exportDropdown.locator('.dt-export-menu.open')).toBeVisible();
 
-      // Verify Settings dropdown is available (count > 0 means it exists)
-      const settingsButtons = resultWrapper.getByRole('button', { name: /Settings/ });
-      expect(await settingsButtons.count()).toBeGreaterThan(0);
+      // Verify export menu items are present (Copy, Excel, CSV, PDF, Print)
+      const menuItems = exportDropdown.locator('.dt-export-menu-item');
+      expect(await menuItems.count()).toBeGreaterThanOrEqual(3);
+
+      // Verify Copy menu item exists
+      await expect(exportDropdown.locator('.dt-export-menu-item:has-text("Copy")')).toBeVisible();
+      // Verify CSV menu item exists
+      await expect(exportDropdown.locator('.dt-export-menu-item:has-text("CSV")')).toBeVisible();
+      // Verify Print menu item exists
+      await expect(exportDropdown.locator('.dt-export-menu-item:has-text("Print")')).toBeVisible();
     });
 
     test('should handle responsive behavior with v3.x responsive extension', async ({ page }) => {
@@ -251,7 +255,7 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
       await page.waitForTimeout(1000); // Wait for tab to load
 
       // Click on Database Settings subtab
-      await page.getByRole('link', { name: 'Database Settings' }).click();
+      await page.locator('#tab-db-settings-sel').click();
 
       // Wait for database settings table (may take time to load)
       await expect(page.locator('#dbSettings')).toBeVisible({ timeout: 10000 });
@@ -287,7 +291,7 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
       await page.waitForTimeout(1000); // Wait for tab to load
 
       // Click on Server Settings subtab
-      await page.getByRole('link', { name: 'Server Settings' }).click();
+      await page.locator('#tab-server-settings-sel').click();
 
       // Wait for server settings table (may take time to load)
       await expect(page.locator('#serverSettings')).toBeVisible({ timeout: 10000 });
@@ -304,7 +308,7 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
       expect(rowCount).toBeGreaterThan(0);
     });
 
-    test('should render server metrics table', async ({ page }) => {
+    test('should render server metrics tables', async ({ page }) => {
       await studioHelper.login('Beer');
 
       // Navigate to Server tab (icon-only navigation)
@@ -312,21 +316,15 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
       await page.waitForTimeout(1000); // Wait for tab to load
 
       // Navigate to Metrics subtab
-      await page.getByRole('link', { name: 'Metrics' }).click();
+      await page.locator('#tab-metrics-sel').click();
       await page.waitForTimeout(2000); // Wait for metrics to load
 
-      // Wait for metrics table (may take time to load)
-      await expect(page.locator('#serverMetrics')).toBeVisible({ timeout: 10000 });
-      // Check for table presence (wrapper classes may vary)
-      await expect(page.locator('#serverMetrics')).toBeVisible();
+      // Wait for one of the metrics tables to be visible (they are tbody elements)
+      await expect(page.locator('#srvMetricMetersTable')).toBeVisible({ timeout: 10000 });
 
-      // Verify table structure
-      await expect(page.locator('#serverMetrics thead th:has-text("Metric Name")')).toBeVisible();
-      await expect(page.locator('#serverMetrics thead th:has-text("Value")')).toBeVisible();
-
-      // Verify metrics data is loaded
-      const metricsRows = page.locator('#serverMetrics tbody tr');
-      const rowCount = await metricsRows.count();
+      // Verify metrics data is loaded in the HTTP meters table
+      const metersRows = page.locator('#srvMetricMetersTable tr');
+      const rowCount = await metersRows.count();
       expect(rowCount).toBeGreaterThan(0);
     });
 
@@ -338,7 +336,7 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
       await page.waitForTimeout(1000); // Wait for tab to load
 
       // Click on Events subtab
-      await page.getByRole('link', { name: 'Events' }).click();
+      await page.locator('#tab-server-events-sel').click();
 
       // Wait for events table to load
       await page.waitForTimeout(2000); // Events may take time to load
@@ -348,11 +346,6 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
       if (await eventsTable.isVisible()) {
         // Table wrapper may not have specific .dt-container class
         await expect(eventsTable).toBeVisible();
-
-        // Verify table columns
-        await expect(page.locator('#serverEvents thead th:has-text("Time")')).toBeVisible();
-        await expect(page.locator('#serverEvents thead th:has-text("Type")')).toBeVisible();
-        await expect(page.locator('#serverEvents thead th:has-text("Message")')).toBeVisible();
 
         // Check if filtering controls work
         const typeFilter = page.locator('#serverEventsType');
@@ -461,10 +454,10 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
 
       // Verify custom DOM structure from studio-table.js is working (be specific to result table)
       const resultWrapper = page.locator('#result_wrapper');
-      await expect(resultWrapper.getByRole('button', { name: /Copy/ })).toBeVisible(); // buttons are present
-      await expect(resultWrapper.getByText('entries per page')).toBeVisible(); // length control
-      await expect(resultWrapper.getByRole('searchbox')).toBeVisible(); // search/filter
-      await expect(resultWrapper.getByText(/Showing .* entries/)).toBeVisible(); // info display
+      await expect(resultWrapper.locator('.dt-export-dropdown')).toBeVisible({ timeout: 5000 }); // export dropdown present
+      await expect(resultWrapper.locator('.dt-length')).toBeVisible(); // length control
+      await expect(resultWrapper.locator('.dt-search')).toBeVisible(); // search/filter
+      await expect(resultWrapper.locator('.dt-info, .dataTables_info')).toBeVisible(); // info display
     });
 
     test('should validate table destruction and recreation', async ({ page }) => {

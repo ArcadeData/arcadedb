@@ -157,8 +157,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchMultiHop() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx = 0)}-Knows->{type: Person}-Knows->{type: Person, as: c} " +
-            "RETURN a.name as aName, c.name as cName");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx = 0)}-Knows->{type: Person}-Knows->{type: Person, as: c} \
+        RETURN a.name as aName, c.name as cName""");
     assertThat(rs.hasNext()).isTrue();
     final Result item = rs.next();
     assertThat(item.<String>getProperty("aName")).isEqualTo("p0");
@@ -170,8 +171,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchWithWhile() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx = 0)} --> {as: b, while: ($depth < 4)} " +
-            "RETURN a.name as aName, b.name as bName");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx = 0)} --> {as: b, while: ($depth < 4)} \
+        RETURN a.name as aName, b.name as bName""");
     int count = 0;
     while (rs.hasNext()) {
       final Result item = rs.next();
@@ -186,8 +188,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void optionalMatch() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx = 7)}.out('Knows'){OPTIONAL: true, as: b} " +
-            "RETURN a.name as aName, b.name as bName");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx = 7)}.out('Knows'){OPTIONAL: true, as: b} \
+        RETURN a.name as aName, b.name as bName""");
     assertThat(rs.hasNext()).isTrue();
     final Result item = rs.next();
     assertThat(item.<String>getProperty("aName")).isEqualTo("p7");
@@ -199,8 +202,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void optionalMatchWithResults() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx = 0)}.out('Knows'){OPTIONAL: true, as: b} " +
-            "RETURN a.name as aName, b.name as bName");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx = 0)}.out('Knows'){OPTIONAL: true, as: b} \
+        RETURN a.name as aName, b.name as bName""");
     assertThat(rs.hasNext()).isTrue();
     final Result item = rs.next();
     assertThat(item.<String>getProperty("aName")).isEqualTo("p0");
@@ -212,8 +216,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchWithTypeFilter() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: person, WHERE: (idx < 3)}.out('WorksAt'){type: Department, as: dept} " +
-            "RETURN person.name as pName, dept.name as dName");
+        """
+        MATCH {type: Person, as: person, WHERE: (idx < 3)}.out('WorksAt'){type: Department, as: dept} \
+        RETURN person.name as pName, dept.name as dName""");
     int count = 0;
     while (rs.hasNext()) {
       final Result item = rs.next();
@@ -228,8 +233,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchWithWhereOnPattern() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx < 5)}-Knows->{type: Person, as: b, WHERE: (idx > 2)} " +
-            "RETURN a.name as aName, b.name as bName");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx < 5)}-Knows->{type: Person, as: b, WHERE: (idx > 2)} \
+        RETURN a.name as aName, b.name as bName""");
     int count = 0;
     while (rs.hasNext()) {
       final Result item = rs.next();
@@ -243,8 +249,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchBothDirection() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx = 2)}.both('Knows'){type: Person, as: b} " +
-            "RETURN a.name as aName, b.name as bName");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx = 2)}.both('Knows'){type: Person, as: b} \
+        RETURN a.name as aName, b.name as bName""");
     final List<String> names = new ArrayList<>();
     while (rs.hasNext())
       names.add(rs.next().getProperty("bName"));
@@ -257,9 +264,10 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchMultiplePatterns() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx = 0)}-Knows->{type: Person, as: b}, " +
-            "{as: a}.out('Manages'){as: c} " +
-            "RETURN a.name as aName, b.name as bName, c.name as cName");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx = 0)}-Knows->{type: Person, as: b}, \
+        {as: a}.out('Manages'){as: c} \
+        RETURN a.name as aName, b.name as bName, c.name as cName""");
     assertThat(rs.hasNext()).isTrue();
     final Result item = rs.next();
     assertThat(item.<String>getProperty("aName")).isEqualTo("p0");
@@ -270,8 +278,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchReturnFields() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx < 3)}-Knows->{type: Person, as: b} " +
-            "RETURN a.name, a.idx, b.name, b.idx");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx < 3)}-Knows->{type: Person, as: b} \
+        RETURN a.name, a.idx, b.name, b.idx""");
     int count = 0;
     while (rs.hasNext()) {
       final Result item = rs.next();
@@ -286,8 +295,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchIncoming() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: manager}.out('Manages'){type: Person, as: employee} " +
-            "RETURN manager.name as mName, employee.name as eName");
+        """
+        MATCH {type: Person, as: manager}.out('Manages'){type: Person, as: employee} \
+        RETURN manager.name as mName, employee.name as eName""");
     int count = 0;
     while (rs.hasNext()) {
       rs.next();
@@ -301,8 +311,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchWithDepthFilter() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx = 0)} --> {as: b, while: ($depth < 3)} " +
-            "RETURN a.name as aName, b.name as bName");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx = 0)} --> {as: b, while: ($depth < 3)} \
+        RETURN a.name as aName, b.name as bName""");
     int count = 0;
     while (rs.hasNext()) {
       rs.next();
@@ -317,8 +328,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   void matchFilteredPattern() {
     // Find persons who know someone with idx > 5
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx < 3)}-Knows->{type: Person, as: b, WHERE: (idx > 0)} " +
-            "RETURN a.name as aName, b.name as bName");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx < 3)}-Knows->{type: Person, as: b, WHERE: (idx > 0)} \
+        RETURN a.name as aName, b.name as bName""");
     int count = 0;
     while (rs.hasNext()) {
       rs.next();
@@ -332,8 +344,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchWithSpecificEdgeType() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx = 0)}-WorksAt->{type: Department, as: d} " +
-            "RETURN a.name as person, d.name as dept");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx = 0)}-WorksAt->{type: Department, as: d} \
+        RETURN a.name as person, d.name as dept""");
     assertThat(rs.hasNext()).isTrue();
     final Result item = rs.next();
     assertThat(item.<String>getProperty("person")).isEqualTo("p0");
@@ -345,8 +358,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchWithAggregation() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Department, as: d}<-WorksAt-{type: Person, as: p} " +
-            "RETURN d.name as dept, count(p) as empCount GROUP BY dept ORDER BY dept");
+        """
+        MATCH {type: Department, as: d}<-WorksAt-{type: Person, as: p} \
+        RETURN d.name as dept, count(p) as empCount GROUP BY dept ORDER BY dept""");
     final List<String> depts = new ArrayList<>();
     while (rs.hasNext()) {
       final Result item = rs.next();
@@ -361,8 +375,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchWithLimit() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a}-Knows->{type: Person, as: b} " +
-            "RETURN a.name, b.name LIMIT 3");
+        """
+        MATCH {type: Person, as: a}-Knows->{type: Person, as: b} \
+        RETURN a.name, b.name LIMIT 3""");
     int count = 0;
     while (rs.hasNext()) {
       rs.next();
@@ -376,8 +391,9 @@ class SQLMatchAdditionalCoverageTest extends TestHelper {
   @Test
   void matchWithOrderBy() {
     final ResultSet rs = database.query("sql",
-        "MATCH {type: Person, as: a, WHERE: (idx < 5)}-Knows->{type: Person, as: b} " +
-            "RETURN a.idx as aIdx, b.idx as bIdx ORDER BY aIdx ASC");
+        """
+        MATCH {type: Person, as: a, WHERE: (idx < 5)}-Knows->{type: Person, as: b} \
+        RETURN a.idx as aIdx, b.idx as bIdx ORDER BY aIdx ASC""");
     int prevIdx = -1;
     while (rs.hasNext()) {
       final int aIdx = rs.next().getProperty("aIdx");

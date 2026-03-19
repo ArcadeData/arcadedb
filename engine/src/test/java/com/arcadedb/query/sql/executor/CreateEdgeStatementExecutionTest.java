@@ -19,11 +19,15 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.schema.EdgeType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -155,8 +159,9 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
   void createEdgeWithMandatoryDefaultProperty() {
     database.getSchema().createVertexType("testVertex");
     database.getSchema().createEdgeType("transmit");
-    database.command("sql", "CREATE PROPERTY transmit.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT " +
-        "SYSDATE().asLong())");
+    database.command("sql", """
+        CREATE PROPERTY transmit.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT \
+        SYSDATE().asLong())""");
 
     database.transaction(() -> {
       // Create two vertices using the API (like the passing test)
@@ -205,8 +210,9 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
     database.transaction(() -> {
       // Create vertex type with mandatory property that has a default value
       database.command("sql", "CREATE VERTEX TYPE message IF NOT EXISTS");
-      database.command("sql", "CREATE PROPERTY message.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT " +
-          "SYSDATE().asLong())");
+      database.command("sql", """
+          CREATE PROPERTY message.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT \
+          SYSDATE().asLong())""");
     });
 
     // Create vertex with CONTENT but without the mandatory property
@@ -221,6 +227,42 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
       assertThat((String) result.getProperty("test")).isEqualTo("test");
       assertThat((Object) result.getProperty("created_timestamp")).isNotNull();
     });
+  }
+
+  @Test
+  @DisplayName("createEdgeEmptyArrayDestination - test Issue #3518")
+  void createEdgeEmptyArrayDestination() {
+    database.getSchema().createVertexType("V3518", 1);
+    database.getSchema().createEdgeType("E3518", 1);
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO V3518");
+
+      // Empty array as TO destination should create no edges
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE E3518 FROM (SELECT FROM V3518 LIMIT 1) TO []");
+      assertThat(rs.hasNext()).isFalse();
+      rs.close();
+    });
+
+    database.transaction(() -> {
+      // Empty array as FROM source should also create no edges
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE E3518 FROM [] TO (SELECT FROM V3518 LIMIT 1)");
+      assertThat(rs.hasNext()).isFalse();
+      rs.close();
+    });
+
+    database.transaction(() -> {
+      // Using LET with empty array should also work (already works per issue)
+      database.command("sqlscript",
+          "LET $x = []; CREATE EDGE E3518 FROM (SELECT FROM V3518 LIMIT 1) TO $x;");
+    });
+
+    // Verify no edges were created
+    final ResultSet check = database.query("sql", "SELECT FROM E3518");
+    assertThat(check.hasNext()).isFalse();
+    check.close();
   }
 
   @Test
@@ -250,6 +292,83 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
       final Result result = rs.next();
       assertThat(result.isEdge()).isTrue();
       assertThat((Object) result.getProperty("created_timestamp")).isNotNull();
+    });
+  }
+
+  @Test
+  @DisplayName("createEdgeWithVariableModifiers - batch $var[0].rid pattern")
+  void createEdgeWithVariableModifiers() {
+    database.getSchema().createVertexType("VarModV", 1);
+    database.getSchema().createEdgeType("VarModE", 1);
+
+    database.transaction(() -> {
+      // Create a source vertex
+      final MutableVertex v1 = database.newVertex("VarModV").save();
+
+      // Use batch script with LET variable + array index + property accessor
+      final ResultSet rs = database.command("sqlscript", """
+          LET $t0 = INSERT INTO VarModV CONTENT {} RETURN @rid AS rid;
+          CREATE EDGE VarModE FROM %s TO $t0[0].rid;
+          """.formatted(v1.getIdentity()));
+
+      // Verify edge was created
+      final ResultSet edges = database.query("sql", "SELECT FROM VarModE");
+      assertThat(edges.hasNext()).isTrue();
+      final Result edge = edges.next();
+      assertThat(edge.isEdge()).isTrue();
+      assertThat(edges.hasNext()).isFalse();
+      edges.close();
+    });
+  }
+
+  @Test
+  @DisplayName("createEdgeWithVariableArrayIndex - batch $var[0] pattern")
+  void createEdgeWithVariableArrayIndex() {
+    database.getSchema().createVertexType("VarIdxV", 1);
+    database.getSchema().createEdgeType("VarIdxE", 1);
+
+    database.transaction(() -> {
+      // Create a source vertex
+      final MutableVertex v1 = database.newVertex("VarIdxV").save();
+
+      // Use batch script with LET variable + array index (Result contains @rid)
+      final ResultSet rs = database.command("sqlscript", """
+          LET $t0 = INSERT INTO VarIdxV CONTENT {};
+          CREATE EDGE VarIdxE FROM %s TO $t0[0];
+          """.formatted(v1.getIdentity()));
+
+      // Verify edge was created
+      final ResultSet edges = database.query("sql", "SELECT FROM VarIdxE");
+      assertThat(edges.hasNext()).isTrue();
+      final Result edge = edges.next();
+      assertThat(edge.isEdge()).isTrue();
+      assertThat(edges.hasNext()).isFalse();
+      edges.close();
+    });
+  }
+
+  @Test
+  @DisplayName("createEdgeWithBucketTarget - test BUCKET clause in CREATE EDGE")
+  void createEdgeWithBucketTarget() {
+    database.getSchema().createVertexType("BucketV", 1);
+    final EdgeType edgeType = database.getSchema().buildEdgeType().withName("BucketE").withTotalBuckets(3).create();
+
+    final List<Bucket> buckets = edgeType.getBuckets(false);
+    assertThat(buckets.size()).isEqualTo(3);
+    final String targetBucket = buckets.get(1).getName();
+
+    database.transaction(() -> {
+      final MutableVertex v1 = database.newVertex("BucketV").save();
+      final MutableVertex v2 = database.newVertex("BucketV").save();
+
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE BucketE BUCKET " + targetBucket + " FROM " + v1.getIdentity() + " TO " + v2.getIdentity());
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.isEdge()).isTrue();
+
+      final Edge edge = result.getEdge().get();
+      assertThat(edge.getIdentity().getBucketId()).isEqualTo(buckets.get(1).getFileId());
     });
   }
 }

@@ -57,7 +57,7 @@ class OpenCypherStDevTest {
   }
 
   @Test
-  void testStDevReturnsSampleStandardDeviation() {
+  void stDevReturnsSampleStandardDeviation() {
     // For [10, 20, 30]: sample stdev = sqrt(((10-20)^2 + (20-20)^2 + (30-20)^2) / 2) = sqrt(200/2) = 10.0
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Val) RETURN stDev(n.v) as result")) {
       assertThat(rs.hasNext()).isTrue();
@@ -67,7 +67,7 @@ class OpenCypherStDevTest {
   }
 
   @Test
-  void testStDevPReturnsPopulationStandardDeviation() {
+  void stDevPReturnsPopulationStandardDeviation() {
     // For [10, 20, 30]: population stdev = sqrt(((10-20)^2 + (20-20)^2 + (30-20)^2) / 3) = sqrt(200/3) ≈ 8.165
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Val) RETURN stDevP(n.v) as result")) {
       assertThat(rs.hasNext()).isTrue();
@@ -77,7 +77,7 @@ class OpenCypherStDevTest {
   }
 
   @Test
-  void testStDevAndStDevPReturnDifferentValues() {
+  void stDevAndStDevPReturnDifferentValues() {
     // The core of issue #3416: stDev and stDevP must not return the same value
     double stdevResult;
     double stdevpResult;
@@ -97,7 +97,7 @@ class OpenCypherStDevTest {
   }
 
   @Test
-  void testStDevWithSingleValue() {
+  void stDevWithSingleValue() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:Val {v: 999.0})");
     });

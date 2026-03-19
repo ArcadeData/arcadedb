@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CallClause;
@@ -31,21 +32,24 @@ import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
-import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
+import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
+import com.arcadedb.query.opencypher.ast.StarExpression;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
@@ -53,17 +57,25 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
-import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
+import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
+import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
+import com.arcadedb.query.opencypher.executor.steps.CountOp;
+import com.arcadedb.query.opencypher.executor.steps.DegreeProductOp;
+import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
+import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
+import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
+import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
+import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
-import com.arcadedb.query.opencypher.executor.steps.LoadCSVStep;
 import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
+import com.arcadedb.query.opencypher.executor.steps.LoadCSVStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
 import com.arcadedb.query.opencypher.executor.steps.MergeStep;
@@ -85,6 +97,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -96,6 +109,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -126,7 +140,7 @@ public class CypherExecutionPlan {
    * Constructor for backward compatibility (without optimizer, without evaluator).
    */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
-                             final Map<String, Object> parameters, final ContextConfiguration configuration) {
+      final Map<String, Object> parameters, final ContextConfiguration configuration) {
     this(database, statement, parameters, configuration, null, null);
   }
 
@@ -141,8 +155,8 @@ public class CypherExecutionPlan {
    * @param physicalPlan  optional optimized physical plan (null for non-optimized)
    */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
-                             final Map<String, Object> parameters, final ContextConfiguration configuration,
-                             final PhysicalPlan physicalPlan) {
+      final Map<String, Object> parameters, final ContextConfiguration configuration,
+      final PhysicalPlan physicalPlan) {
     this(database, statement, parameters, configuration, physicalPlan, null);
   }
 
@@ -157,8 +171,8 @@ public class CypherExecutionPlan {
    * @param expressionEvaluator shared expression evaluator (stateless and thread-safe)
    */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
-                             final Map<String, Object> parameters, final ContextConfiguration configuration,
-                             final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator) {
+      final Map<String, Object> parameters, final ContextConfiguration configuration,
+      final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator) {
     this(database, statement, parameters, configuration, physicalPlan, expressionEvaluator, null, false);
   }
 
@@ -175,9 +189,9 @@ public class CypherExecutionPlan {
    * @param unionRemoveDuplicates true for UNION (dedup), false for UNION ALL
    */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
-                             final Map<String, Object> parameters, final ContextConfiguration configuration,
-                             final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator,
-                             final List<CypherExecutionPlan> unionSubqueryPlans, final boolean unionRemoveDuplicates) {
+      final Map<String, Object> parameters, final ContextConfiguration configuration,
+      final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator,
+      final List<CypherExecutionPlan> unionSubqueryPlans, final boolean unionRemoveDuplicates) {
     this.database = database;
     this.statement = statement;
     this.parameters = parameters;
@@ -207,28 +221,26 @@ public class CypherExecutionPlan {
 
     AbstractExecutionStep rootStep;
 
-    // Phase 4: Use optimized physical plan if available
-    // BUT: Disable optimizer when UNWIND precedes MATCH in the query
-    // The optimizer doesn't handle clause ordering correctly - it puts the WHERE filter
-    // before UNWIND, which breaks queries like:
-    //   UNWIND $batch as row MATCH (a) WHERE ID(a) = row.source_id
-    // In this case, the WHERE filter needs to run AFTER UNWIND to access 'row'.
-    // Also disable optimizer when CALL subqueries are present, since the optimizer path
-    // doesn't handle SUBQUERY steps.
-    final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
-    final boolean hasSubquery = hasSubqueryClause();
-    final boolean hasWithBeforeMatch = hasWithPrecedingMatch();
+    // FAST PATH: Specialized count-push-down optimizations.
+    // Must be checked BEFORE the optimizer dispatch, because the optimizer produces
+    // GAVExpandAll operators that still materialize individual rows (O(paths) memory).
+    rootStep = tryOptimizeCountStar(context);
 
-    final boolean hasVLP = hasVariableLengthPath();
-    if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasSubquery && !hasWithBeforeMatch && !hasVLP) {
-      // Use optimizer - execute physical operators directly
-      // Note: For Phase 4, we only optimize MATCH patterns
-      // RETURN, ORDER BY, LIMIT are still handled by execution steps
-      rootStep = buildExecutionStepsWithOptimizer(context);
-    } else {
-      // Fall back to non-optimized execution
-      // This path correctly handles clause ordering (UNWIND before MATCH), VLP patterns, etc.
-      rootStep = buildExecutionSteps(context);
+    if (rootStep == null) {
+      // Phase 4: Use optimized physical plan if available
+      // Use pre-computed flags from the cached CypherStatement to avoid scanning clause lists per execution
+      if (physicalPlan != null && physicalPlan.getRootOperator() != null
+          && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
+          && !statement.hasWithBeforeMatch() && !statement.hasVariableLengthPath()) {
+        // Use optimizer - execute physical operators directly
+        // Note: For Phase 4, we only optimize MATCH patterns
+        // RETURN, ORDER BY, LIMIT are still handled by execution steps
+        rootStep = buildExecutionStepsWithOptimizer(context);
+      } else {
+        // Fall back to non-optimized execution
+        // This path correctly handles clause ordering (UNWIND before MATCH), VLP patterns, etc.
+        rootStep = buildExecutionSteps(context);
+      }
     }
 
     if (rootStep == null) {
@@ -242,15 +254,8 @@ public class CypherExecutionPlan {
     // IMPORTANT: For write operations, we need to materialize the ResultSet immediately
     // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE/REMOVE
     // operations to actually execute, even when there's a RETURN clause.
-    final boolean hasForeach = statement.getClausesInOrder() != null &&
-        statement.getClausesInOrder().stream()
-            .anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
-    final boolean hasWriteOps = statement.getCreateClause() != null ||
-        (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) ||
-        (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) ||
-        !statement.getRemoveClauses().isEmpty() ||
-        statement.getMergeClause() != null ||
-        hasForeach;
+    // Use pre-computed readOnly flag to avoid re-checking on every execution.
+    final boolean hasWriteOps = !statement.isReadOnly();
 
     if (hasWriteOps) {
       // Materialize the ResultSet to force write operation execution
@@ -274,6 +279,7 @@ public class CypherExecutionPlan {
    * The seed row provides variables that the inner query's WITH clause can import.
    *
    * @param seedRow the initial row providing outer scope variables
+   *
    * @return result set from the inner query execution
    */
   public ResultSet executeWithSeedRow(final Result seedRow) {
@@ -345,7 +351,7 @@ public class CypherExecutionPlan {
     if (expressionEvaluator != null) {
       final CypherFunctionFactory factory = expressionEvaluator.getFunctionFactory();
       context.setVariable(FunctionCallExpression.FUNCTION_RESOLVER_KEY,
-          (Function<String, com.arcadedb.function.StatelessFunction>) name -> {
+          (Function<String, StatelessFunction>) name -> {
             try {
               return factory.getFunctionExecutor(name);
             } catch (final Exception e) {
@@ -414,14 +420,20 @@ public class CypherExecutionPlan {
         while (resultSet.hasNext())
           results.add(resultSet.next());
       } else {
-        final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
-        final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
+        // FAST PATH: Count-push-down (same logic as execute())
+        rootStep = tryOptimizeCountStar(context);
 
-        final boolean hasVLP2 = hasVariableLengthPath();
-        if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2 && !hasVLP2)
-          rootStep = buildExecutionStepsWithOptimizer(context);
-        else
-          rootStep = buildExecutionSteps(context);
+        if (rootStep == null) {
+          final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
+          final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
+
+          final boolean hasVLP2 = hasVariableLengthPath();
+          if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2
+              && !hasVLP2)
+            rootStep = buildExecutionStepsWithOptimizer(context);
+          else
+            rootStep = buildExecutionSteps(context);
+        }
 
         if (rootStep != null) {
           final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE);
@@ -440,6 +452,8 @@ public class CypherExecutionPlan {
     final StringBuilder profileOutput = new StringBuilder();
     profileOutput.append("OpenCypher Query Profile\n");
     profileOutput.append("========================\n\n");
+    if (Boolean.TRUE.equals(context.getVariable(CommandContext.CSR_ACCELERATED_VAR)))
+      profileOutput.append("CSR-accelerated via Graph Analytical View\n");
     profileOutput.append(String.format("Execution Time: %.3f ms\n", executionTimeMs));
     profileOutput.append(String.format("Rows Returned: %d\n", rowCount));
 
@@ -471,7 +485,18 @@ public class CypherExecutionPlan {
         profileOutput.append("No execution steps generated\n");
     }
 
-    results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString()));
+    // Collect execution steps for structured plan data
+    final List<ExecutionStep> executionSteps = new ArrayList<>();
+    if (rootStep != null) {
+      AbstractExecutionStep current = rootStep;
+      while (current != null) {
+        executionSteps.add(current);
+        current = (AbstractExecutionStep) current.getPrev();
+      }
+      Collections.reverse(executionSteps);
+    }
+
+    results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, endTime - startTime));
     return results;
   }
 
@@ -484,6 +509,7 @@ public class CypherExecutionPlan {
    * - Execution steps handle RETURN, ORDER BY, SKIP, LIMIT (unchanged)
    *
    * @param context command context
+   *
    * @return root execution step
    */
   private AbstractExecutionStep buildExecutionStepsWithOptimizer(final CommandContext context) {
@@ -648,8 +674,12 @@ public class CypherExecutionPlan {
 
     // Step 7: RETURN clause (if any)
     if (statement.getReturnClause() != null) {
-      // Check if RETURN contains aggregation functions
-      if (statement.getReturnClause().hasAggregations()) {
+      // Try count-edges optimization: MATCH (p)-[:TYPE]->(x) RETURN expr, count(x) AS cnt
+      final AbstractExecutionStep countOpt = tryOptimizeMatchCountReturn(
+          statement.getClausesInOrder(), statement.getReturnClause(), currentStep, context);
+      if (countOpt != null) {
+        currentStep = countOpt;
+      } else if (statement.getReturnClause().hasAggregations()) {
         // Check if there are also non-aggregated expressions (implicit GROUP BY)
         if (statement.getReturnClause().hasNonAggregations()) {
           // Use GROUP BY aggregation step (implicit grouping)
@@ -831,7 +861,7 @@ public class CypherExecutionPlan {
    * This is essential for queries like UNWIND...MATCH where UNWIND must run first.
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
-                                                             final List<ClauseEntry> clausesInOrder) {
+      final List<ClauseEntry> clausesInOrder) {
     return buildExecutionStepsWithOrder(context, clausesInOrder, null);
   }
 
@@ -841,8 +871,8 @@ public class CypherExecutionPlan {
    * of the step chain, providing input rows to the first clause.
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
-                                                             final List<ClauseEntry> clausesInOrder,
-                                                             final AbstractExecutionStep initialStep) {
+      final List<ClauseEntry> clausesInOrder,
+      final AbstractExecutionStep initialStep) {
     AbstractExecutionStep currentStep = initialStep;
 
     // Get function factory from evaluator for steps that need it
@@ -858,6 +888,13 @@ public class CypherExecutionPlan {
     final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
     if (typeCountStep != null)
       return typeCountStep;
+
+    // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
+    // Instead of materializing all paths (O(paths) memory), propagates counts through
+    // CSR arrays level-by-level (O(nodes) memory). Critical for large-fanout chains.
+    final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
+    if (countStep != null)
+      return countStep;
 
     // Special case: no MATCH as first clause (standalone expressions, WITH before MATCH, etc.)
     // E.g., RETURN abs(-42), WITH collect([0, 0.0]) AS numbers UNWIND ...
@@ -893,159 +930,168 @@ public class CypherExecutionPlan {
     for (int entryIndex = 0; entryIndex < clausesInOrder.size(); entryIndex++) {
       final ClauseEntry entry = clausesInOrder.get(entryIndex);
       switch (entry.getType()) {
-        case UNWIND:
-          final UnwindClause unwindClause = entry.getTypedClause();
-          final UnwindStep unwindStep =
-              new UnwindStep(unwindClause, context, functionFactory);
-          if (currentStep != null) {
-            unwindStep.setPrevious(currentStep);
-          }
-          currentStep = unwindStep;
-          break;
+      case UNWIND:
+        final UnwindClause unwindClause = entry.getTypedClause();
+        final UnwindStep unwindStep =
+            new UnwindStep(unwindClause, context, functionFactory);
+        if (currentStep != null) {
+          unwindStep.setPrevious(currentStep);
+        }
+        currentStep = unwindStep;
+        // Track the UNWIND variable as bound so subsequent MATCH clauses can
+        // push down WHERE predicates referencing it (e.g., WHERE a.uid = e.src)
+        boundVariables.add(unwindClause.getVariable());
+        break;
 
-        case LOAD_CSV:
-          final LoadCSVClause loadCSVClause = entry.getTypedClause();
-          final LoadCSVStep loadCSVStep =
-              new LoadCSVStep(loadCSVClause, context, functionFactory);
-          if (currentStep != null) {
-            loadCSVStep.setPrevious(currentStep);
-          }
-          currentStep = loadCSVStep;
-          break;
+      case LOAD_CSV:
+        final LoadCSVClause loadCSVClause = entry.getTypedClause();
+        final LoadCSVStep loadCSVStep =
+            new LoadCSVStep(loadCSVClause, context, functionFactory);
+        if (currentStep != null) {
+          loadCSVStep.setPrevious(currentStep);
+        }
+        currentStep = loadCSVStep;
+        boundVariables.add(loadCSVClause.getVariable());
+        break;
 
-        case MATCH:
-          final MatchClause matchClause = entry.getTypedClause();
-          if (matchClause.isOptional()) {
-            // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
-            final AbstractExecutionStep chainedOptimized = tryOptimizeChainedOptionalMatchCount(
-                matchClause, clausesInOrder, entryIndex, currentStep, context, boundVariables);
-            if (chainedOptimized != null) {
-              currentStep = chainedOptimized;
-              entryIndex += 2; // skip both the next OPTIONAL MATCH and the WITH clause
-              // Update boundVariables from the WITH clause
-              final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
-              boundVariables.clear();
-              for (final ReturnClause.ReturnItem item : nextWith.getItems()) {
-                final String alias = item.getAlias();
-                boundVariables.add(alias != null ? alias : item.getExpression().getText());
-              }
-              break;
+      case MATCH:
+        final MatchClause matchClause = entry.getTypedClause();
+        if (matchClause.isOptional()) {
+          // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
+          final AbstractExecutionStep chainedOptimized = tryOptimizeChainedOptionalMatchCount(
+              matchClause, clausesInOrder, entryIndex, currentStep, context, boundVariables);
+          if (chainedOptimized != null) {
+            currentStep = chainedOptimized;
+            entryIndex += 2; // skip both the next OPTIONAL MATCH and the WITH clause
+            // Update boundVariables from the WITH clause
+            final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
+            boundVariables.clear();
+            for (final ReturnClause.ReturnItem item : nextWith.getItems()) {
+              final String alias = item.getAlias();
+              boundVariables.add(alias != null ? alias : item.getExpression().getText());
             }
+            break;
+          }
 
-            // Try single OPTIONAL MATCH count optimization
-            final AbstractExecutionStep optimized = tryOptimizeOptionalMatchCount(
-                matchClause, clausesInOrder, entryIndex, currentStep, context, boundVariables);
-            if (optimized != null) {
-              currentStep = optimized;
-              entryIndex++; // skip the WITH clause (already handled)
-              // Update boundVariables from the WITH clause
-              final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
-              boundVariables.clear();
-              for (final ReturnClause.ReturnItem item : nextWith.getItems()) {
-                final String alias = item.getAlias();
-                boundVariables.add(alias != null ? alias : item.getExpression().getText());
-              }
-              break;
+          // Try single OPTIONAL MATCH count optimization
+          final AbstractExecutionStep optimized = tryOptimizeOptionalMatchCount(
+              matchClause, clausesInOrder, entryIndex, currentStep, context, boundVariables);
+          if (optimized != null) {
+            currentStep = optimized;
+            entryIndex++; // skip the WITH clause (already handled)
+            // Update boundVariables from the WITH clause
+            final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
+            boundVariables.clear();
+            for (final ReturnClause.ReturnItem item : nextWith.getItems()) {
+              final String alias = item.getAlias();
+              boundVariables.add(alias != null ? alias : item.getExpression().getText());
             }
+            break;
           }
-          currentStep = buildMatchStep(matchClause, currentStep, context, boundVariables);
-          break;
+        }
+        currentStep = buildMatchStep(matchClause, currentStep, context, boundVariables);
+        break;
 
-        case WITH:
-          final WithClause withClause = entry.getTypedClause();
-          currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
-          // WITH resets the scope: only WITH output variables are in scope afterwards
-          boundVariables.clear();
-          for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-            final String alias = item.getAlias();
-            boundVariables.add(alias != null ? alias : item.getExpression().getText());
-          }
-          break;
+      case WITH:
+        final WithClause withClause = entry.getTypedClause();
+        currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
+        // WITH resets the scope: only WITH output variables are in scope afterwards
+        boundVariables.clear();
+        for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+          final String alias = item.getAlias();
+          boundVariables.add(alias != null ? alias : item.getExpression().getText());
+        }
+        break;
 
-        case MERGE:
-          final MergeClause mergeClause = entry.getTypedClause();
-          final MergeStep mergeStep =
-              new MergeStep(mergeClause, context, functionFactory);
+      case MERGE:
+        final MergeClause mergeClause = entry.getTypedClause();
+        final MergeStep mergeStep =
+            new MergeStep(mergeClause, context, functionFactory);
+        if (currentStep != null) {
+          mergeStep.setPrevious(currentStep);
+        }
+        currentStep = mergeStep;
+        break;
+
+      case CREATE:
+        final CreateClause createClause = entry.getTypedClause();
+        if (!createClause.isEmpty()) {
+          final CreateStep createStep = new CreateStep(createClause, context, functionFactory);
           if (currentStep != null) {
-            mergeStep.setPrevious(currentStep);
+            createStep.setPrevious(currentStep);
           }
-          currentStep = mergeStep;
-          break;
+          currentStep = createStep;
+        }
+        break;
 
-        case CREATE:
-          final CreateClause createClause = entry.getTypedClause();
-          if (!createClause.isEmpty()) {
-            final CreateStep createStep = new CreateStep(createClause, context, functionFactory);
-            if (currentStep != null) {
-              createStep.setPrevious(currentStep);
-            }
-            currentStep = createStep;
-          }
-          break;
+      case SET:
+        final SetClause setClause = entry.getTypedClause();
+        if (!setClause.isEmpty() && currentStep != null) {
+          final SetStep setStep =
+              new SetStep(setClause, context, functionFactory);
+          setStep.setPrevious(currentStep);
+          currentStep = setStep;
+        }
+        break;
 
-        case SET:
-          final SetClause setClause = entry.getTypedClause();
-          if (!setClause.isEmpty() && currentStep != null) {
-            final SetStep setStep =
-                new SetStep(setClause, context, functionFactory);
-            setStep.setPrevious(currentStep);
-            currentStep = setStep;
-          }
-          break;
+      case REMOVE:
+        final RemoveClause removeClause = entry.getTypedClause();
+        if (!removeClause.isEmpty() && currentStep != null) {
+          final RemoveStep removeStep =
+              new RemoveStep(removeClause, context);
+          removeStep.setPrevious(currentStep);
+          currentStep = removeStep;
+        }
+        break;
 
-        case REMOVE:
-          final RemoveClause removeClause = entry.getTypedClause();
-          if (!removeClause.isEmpty() && currentStep != null) {
-            final RemoveStep removeStep =
-                new RemoveStep(removeClause, context);
-            removeStep.setPrevious(currentStep);
-            currentStep = removeStep;
-          }
-          break;
+      case DELETE:
+        final DeleteClause deleteClause = entry.getTypedClause();
+        if (!deleteClause.isEmpty() && currentStep != null) {
+          final DeleteStep deleteStep =
+              new DeleteStep(deleteClause, context);
+          deleteStep.setPrevious(currentStep);
+          currentStep = deleteStep;
+        }
+        break;
 
-        case DELETE:
-          final DeleteClause deleteClause = entry.getTypedClause();
-          if (!deleteClause.isEmpty() && currentStep != null) {
-            final DeleteStep deleteStep =
-                new DeleteStep(deleteClause, context);
-            deleteStep.setPrevious(currentStep);
-            currentStep = deleteStep;
-          }
-          break;
+      case RETURN:
+        // RETURN is handled at the end
+        break;
 
-        case RETURN:
-          // RETURN is handled at the end
-          break;
+      case CALL:
+        final CallClause callClause = entry.getTypedClause();
+        final CallStep callStep =
+            new CallStep(callClause, context, functionFactory);
+        if (currentStep != null) {
+          callStep.setPrevious(currentStep);
+        }
+        // Detect count-only pattern: CALL ... YIELD ... RETURN count(*)
+        // When detected, enable fast-path that skips per-row Result object creation
+        if (isFollowedByCountOnlyReturn(clausesInOrder, clausesInOrder.indexOf(entry))) {
+          callStep.setCountOnlyOptimization(true);
+        }
+        currentStep = callStep;
+        break;
 
-        case CALL:
-          final CallClause callClause = entry.getTypedClause();
-          final CallStep callStep =
-              new CallStep(callClause, context, functionFactory);
-          if (currentStep != null) {
-            callStep.setPrevious(currentStep);
-          }
-          currentStep = callStep;
-          break;
+      case FOREACH:
+        final ForeachClause foreachClause = entry.getTypedClause();
+        final ForeachStep foreachStep =
+            new ForeachStep(foreachClause, context, functionFactory);
+        if (currentStep != null) {
+          foreachStep.setPrevious(currentStep);
+        }
+        currentStep = foreachStep;
+        break;
 
-        case FOREACH:
-          final ForeachClause foreachClause = entry.getTypedClause();
-          final ForeachStep foreachStep =
-              new ForeachStep(foreachClause, context, functionFactory);
-          if (currentStep != null) {
-            foreachStep.setPrevious(currentStep);
-          }
-          currentStep = foreachStep;
-          break;
-
-        case SUBQUERY:
-          final SubqueryClause subqueryClause = entry.getTypedClause();
-          final SubqueryStep subqueryStep =
-              new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
-          if (currentStep != null) {
-            subqueryStep.setPrevious(currentStep);
-          }
-          currentStep = subqueryStep;
-          break;
+      case SUBQUERY:
+        final SubqueryClause subqueryClause = entry.getTypedClause();
+        final SubqueryStep subqueryStep =
+            new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
+        if (currentStep != null) {
+          subqueryStep.setPrevious(currentStep);
+        }
+        currentStep = subqueryStep;
+        break;
       }
     }
 
@@ -1058,7 +1104,14 @@ public class CypherExecutionPlan {
 
     // Process RETURN clause
     if (statement.getReturnClause() != null && currentStep != null) {
-      if (statement.getReturnClause().hasAggregations()) {
+      // OPTIMIZATION: try CountEdgesReturnStep to avoid materializing target vertices
+      // Only if no statement-level WHERE (which would require filtering before aggregation)
+      final AbstractExecutionStep countOpt = statement.getWhereClause() == null
+          ? tryOptimizeMatchCountReturn(clausesInOrder, statement.getReturnClause(), currentStep, context)
+          : null;
+      if (countOpt != null)
+        currentStep = countOpt;
+      else if (statement.getReturnClause().hasAggregations()) {
         if (statement.getReturnClause().hasNonAggregations()) {
           final GroupByAggregationStep groupByAggStep =
               new GroupByAggregationStep(
@@ -1135,8 +1188,8 @@ public class CypherExecutionPlan {
    * Builds execution step for a WITH clause.
    */
   private AbstractExecutionStep buildWithStep(final WithClause withClause,
-                                              AbstractExecutionStep currentStep, final CommandContext context,
-                                              final CypherFunctionFactory functionFactory) {
+      AbstractExecutionStep currentStep, final CommandContext context,
+      final CypherFunctionFactory functionFactory) {
     if (withClause.hasAggregations()) {
       if (withClause.hasNonAggregations()) {
         final GroupByAggregationStep groupByStep =
@@ -1224,7 +1277,7 @@ public class CypherExecutionPlan {
    * Backward-compatible overload without bound variable tracking.
    */
   private AbstractExecutionStep buildMatchStep(final MatchClause matchClause, AbstractExecutionStep currentStep,
-                                               final CommandContext context) {
+      final CommandContext context) {
     return buildMatchStep(matchClause, currentStep, context, new HashSet<>());
   }
 
@@ -1237,7 +1290,7 @@ public class CypherExecutionPlan {
    * @param boundVariables set of variable names already bound in previous steps (updated in-place)
    */
   private AbstractExecutionStep buildMatchStep(final MatchClause matchClause, AbstractExecutionStep currentStep,
-                                               final CommandContext context, final Set<String> boundVariables) {
+      final CommandContext context, final Set<String> boundVariables) {
     if (!matchClause.hasPathPatterns()) {
       return currentStep;
     }
@@ -1278,7 +1331,11 @@ public class CypherExecutionPlan {
 
         // OPTIMIZATION: Extract ID filter for this variable to avoid Cartesian product
         final String idFilter = extractIdFilter(whereClause, variable);
-        final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter);
+        // OPTIMIZATION: Extract WHERE predicates referencing only available variables for pushdown
+        final BooleanExpression pushdownFilter = extractPushdownFilter(whereClause, variable,
+            boundVariables, matchVariables);
+        final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter,
+            pushdownFilter);
 
         if (isOptional) {
           if (matchChainStart == null) {
@@ -1328,7 +1385,10 @@ public class CypherExecutionPlan {
         // Source node matching (if not already bound)
         if (!boundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
           final String sourceIdFilter = extractIdFilter(whereClause, sourceVar);
-          final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+          final BooleanExpression sourcePushdown = extractPushdownFilter(whereClause, sourceVar,
+              boundVariables, matchVariables);
+          final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+              sourcePushdown);
           if (currentStep != null) {
             sourceStep.setPrevious(currentStep);
           }
@@ -1339,7 +1399,10 @@ public class CypherExecutionPlan {
         // Target node matching (if not already bound)
         if (!boundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
           final String targetIdFilter = extractIdFilter(whereClause, targetVar);
-          final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter);
+          final BooleanExpression targetPushdown = extractPushdownFilter(whereClause, targetVar,
+              boundVariables, matchVariables);
+          final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
+              targetPushdown);
           if (currentStep != null) {
             targetStep.setPrevious(currentStep);
           }
@@ -1397,7 +1460,10 @@ public class CypherExecutionPlan {
         // Always create MatchNodeStep even for bound variables - it handles them
         // correctly (uses bound vertex and validates labels/properties)
         final String sourceIdFilter = sourceAlreadyBound ? null : extractIdFilter(whereClause, sourceVar);
-        final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+        final BooleanExpression sourcePushdown = sourceAlreadyBound ? null :
+            extractPushdownFilter(whereClause, sourceVar, boundVariables, matchVariables);
+        final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+            sourcePushdown);
 
         if (isOptional) {
           if (matchChainStart == null) {
@@ -1437,13 +1503,27 @@ public class CypherExecutionPlan {
         // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
         String currentSourceVar = sourceVar;
 
+        // Smart GAV eligibility: for each anonymous hop, check if its edge types overlap
+        // with any other hop's types in the same pattern. If disjoint, null relVar enables
+        // fast path (GAV/CSR). If overlapping, generate an internal anonymous variable to
+        // force edge-loading for cross-hop uniqueness checking.
+        final boolean[] hopNeedsEdgeTracking = computeHopEdgeTrackingNeeds(pathPattern);
+
         for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
           final RelationshipPattern relPattern = pathPattern.getRelationship(i);
           final NodePattern targetNode = pathPattern.getNode(i + 1);
-          // Generate internal variable name for anonymous relationships to ensure
-          // relationship uniqueness checking works (edges must be stored in results)
-          final String relVar = (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty())
-              ? relPattern.getVariable() : ("  rel" + anonymousVarCounter++);
+          // Named edge: keep user variable if actually referenced in the query or if VLP
+          // (VLP steps always need the variable for pre-bound path validation).
+          // For unreferenced fixed-length edges, treat as anonymous for GAV eligibility.
+          // Anonymous edge: null if GAV-eligible, internal var if edge tracking needed.
+          final String relVar;
+          if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
+            if (relPattern.isVariableLength() || isEdgeVariableReferenced(relPattern.getVariable()))
+              relVar = relPattern.getVariable();
+            else
+              relVar = hopNeedsEdgeTracking[i] ? ("  rel" + anonymousVarCounter++) : null;
+          } else
+            relVar = hopNeedsEdgeTracking[i] ? ("  rel" + anonymousVarCounter++) : null;
           String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
               ("  tgt" + anonymousVarCounter++);
 
@@ -1466,9 +1546,9 @@ public class CypherExecutionPlan {
             directionOverride = null;
           }
 
-          // Always track relationship variables (including anonymous generated ones)
-          // so cross-MATCH uniqueness scoping works correctly
-          matchVariables.add(relVar);
+          // Track relationship and target variables for cross-MATCH uniqueness scoping
+          if (relVar != null)
+            matchVariables.add(relVar);
           matchVariables.add(effectiveTargetVar);
 
           AbstractExecutionStep nextStep;
@@ -1549,6 +1629,11 @@ public class CypherExecutionPlan {
     if (typeCountStep != null)
       return typeCountStep;
 
+    // OPTIMIZATION: Count-push-down for chain/star/triangle/pair-join patterns with RETURN count(*)
+    final AbstractExecutionStep countStep = tryOptimizeCountStar(context);
+    if (countStep != null)
+      return countStep;
+
     // Special case: RETURN without MATCH (standalone expressions)
     // E.g., RETURN abs(-42), RETURN 1+1
     if (statement.getMatchClauses().isEmpty() && statement.getReturnClause() != null) {
@@ -1625,7 +1710,10 @@ public class CypherExecutionPlan {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
                 final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
-                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+                final BooleanExpression sourcePushdown = extractPushdownFilter(matchWhere, sourceVar,
+                    legacyBoundVariables, matchVariables);
+                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+                    sourcePushdown);
                 if (currentStep != null) {
                   sourceStep.setPrevious(currentStep);
                 }
@@ -1638,7 +1726,10 @@ public class CypherExecutionPlan {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
                 final String targetIdFilter = extractIdFilter(matchWhere, targetVar);
-                final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter);
+                final BooleanExpression targetPushdown = extractPushdownFilter(matchWhere, targetVar,
+                    legacyBoundVariables, matchVariables);
+                final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
+                    targetPushdown);
                 if (currentStep != null) {
                   targetStep.setPrevious(currentStep);
                 }
@@ -1674,7 +1765,11 @@ public class CypherExecutionPlan {
               final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                   statement.getWhereClause();
               final String idFilter = extractIdFilter(matchWhere, variable);
-              final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter);
+              // OPTIMIZATION: Extract WHERE predicates for inline pushdown
+              final BooleanExpression pushdownFilter = extractPushdownFilter(matchWhere, variable,
+                  legacyBoundVariables, matchVariables);
+              final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter,
+                  pushdownFilter);
 
               if (isOptional) {
                 // For optional match, chain within the match steps only
@@ -1710,9 +1805,13 @@ public class CypherExecutionPlan {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
                 final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
+                // OPTIMIZATION: Extract WHERE predicates for inline pushdown
+                final BooleanExpression sourcePushdown = extractPushdownFilter(matchWhere, sourceVar,
+                    legacyBoundVariables, matchVariables);
 
                 // Start with source node (or chain if we have previous patterns)
-                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+                    sourcePushdown);
 
                 if (isOptional) {
                   // For optional match, chain within the match steps only
@@ -1766,19 +1865,26 @@ public class CypherExecutionPlan {
               // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
               String currentSourceVar = sourceVar;
 
+              // Smart GAV eligibility: same analysis as ordered path
+              final boolean[] hopNeedsEdgeTrackingLegacy = computeHopEdgeTrackingNeeds(pathPattern);
+
               for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
                 final RelationshipPattern relPattern = pathPattern.getRelationship(i);
                 final NodePattern targetNode = pathPattern.getNode(i + 1);
-                // Generate internal variable name for anonymous relationships to ensure
-                // relationship uniqueness checking works (edges must be stored in results)
-                final String relVar = (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty())
-                    ? relPattern.getVariable() : ("  rel" + anonymousVarCounter++);
+                final String relVar;
+                if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
+                  if (relPattern.isVariableLength() || isEdgeVariableReferenced(relPattern.getVariable()))
+                    relVar = relPattern.getVariable();
+                  else
+                    relVar = hopNeedsEdgeTrackingLegacy[i] ? ("  rel" + anonymousVarCounter++) : null;
+                } else
+                  relVar = hopNeedsEdgeTrackingLegacy[i] ? ("  rel" + anonymousVarCounter++) : null;
                 final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
                     ("  tgt" + anonymousVarCounter++);
 
-                // Always track relationship variables (including anonymous generated ones)
-                // so cross-MATCH uniqueness scoping works correctly
-                matchVariables.add(relVar);
+                // Track relationship and target variables for cross-MATCH uniqueness scoping
+                if (relVar != null)
+                  matchVariables.add(relVar);
                 matchVariables.add(targetVar);
 
                 AbstractExecutionStep nextStep;
@@ -2019,8 +2125,12 @@ public class CypherExecutionPlan {
 
     // Step 7: RETURN clause - project results or aggregate
     if (statement.getReturnClause() != null && currentStep != null) {
-      // Check if RETURN contains aggregation functions
-      if (statement.getReturnClause().hasAggregations()) {
+      // Try count-edges optimization: MATCH (p)-[:TYPE]->(x) RETURN expr, count(x) AS cnt
+      final AbstractExecutionStep countOpt = tryOptimizeMatchCountReturn(
+          statement.getClausesInOrder(), statement.getReturnClause(), currentStep, context);
+      if (countOpt != null) {
+        currentStep = countOpt;
+      } else if (statement.getReturnClause().hasAggregations()) {
         // Check if there are also non-aggregated expressions (implicit GROUP BY)
         if (statement.getReturnClause().hasNonAggregations()) {
           // Use GROUP BY aggregation step (implicit grouping)
@@ -2080,7 +2190,8 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
-      final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
+      final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+          new ResultInternal(),
           context);
       final LimitStep limitStep = new LimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
@@ -2122,11 +2233,11 @@ public class CypherExecutionPlan {
    * @return optimized CountChainedEdgesStep if pattern matches, null otherwise
    */
   private AbstractExecutionStep tryOptimizeChainedOptionalMatchCount(final MatchClause firstMatch,
-                                                                      final List<ClauseEntry> clausesInOrder,
-                                                                      final int currentIndex,
-                                                                      final AbstractExecutionStep currentStep,
-                                                                      final CommandContext context,
-                                                                      final Set<String> boundVariables) {
+      final List<ClauseEntry> clausesInOrder,
+      final int currentIndex,
+      final AbstractExecutionStep currentStep,
+      final CommandContext context,
+      final Set<String> boundVariables) {
     // 1. First OPTIONAL MATCH must have exactly one path pattern (single hop)
     if (!firstMatch.hasPathPatterns() || firstMatch.getPathPatterns().size() != 1)
       return null;
@@ -2402,11 +2513,11 @@ public class CypherExecutionPlan {
    * @return optimized CountEdgesStep if pattern matches, null otherwise
    */
   private AbstractExecutionStep tryOptimizeOptionalMatchCount(final MatchClause matchClause,
-                                                              final List<ClauseEntry> clausesInOrder,
-                                                              final int currentIndex,
-                                                              final AbstractExecutionStep currentStep,
-                                                              final CommandContext context,
-                                                              final Set<String> boundVariables) {
+      final List<ClauseEntry> clausesInOrder,
+      final int currentIndex,
+      final AbstractExecutionStep currentStep,
+      final CommandContext context,
+      final Set<String> boundVariables) {
 
     // 1. Must be OPTIONAL MATCH with exactly one path pattern
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
@@ -2601,6 +2712,175 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Attempts to optimize MATCH + RETURN count() into a direct countEdges() call.
+   * <p>
+   * Detects pattern:
+   * MATCH (p:Label)-[:TYPE]->(x) RETURN expr(p) AS alias, count(x) AS cnt
+   * <p>
+   * Replaces MatchRelationshipStep + GroupByAggregationStep with CountEdgesReturnStep,
+   * avoiding materialization of all target vertices.
+   * <p>
+   * Requirements:
+   * - Exactly one MATCH clause (non-optional) with exactly one single-hop relationship
+   * - No WHERE clause on the MATCH
+   * - RETURN has exactly one count() aggregation on the target variable
+   * - count() is not DISTINCT
+   * - Target variable is not used in grouping expressions
+   * - No relationship property filters
+   * - No target node property filters
+   *
+   * @return optimized CountEdgesReturnStep if pattern matches, null otherwise
+   */
+  private AbstractExecutionStep tryOptimizeMatchCountReturn(
+      final List<ClauseEntry> clausesInOrder,
+      final ReturnClause returnClause,
+      final AbstractExecutionStep currentStep,
+      final CommandContext context) {
+
+    if (returnClause == null || !returnClause.hasAggregations() || !returnClause.hasNonAggregations())
+      return null;
+    if (returnClause.isDistinct())
+      return null;
+
+    // Find the single non-optional MATCH clause
+    MatchClause matchClause = null;
+    int matchCount = 0;
+    for (final ClauseEntry entry : clausesInOrder) {
+      if (entry.getType() == ClauseEntry.ClauseType.MATCH) {
+        final MatchClause mc = entry.getTypedClause();
+        if (!mc.isOptional()) {
+          matchClause = mc;
+          matchCount++;
+        }
+      }
+    }
+    if (matchCount != 1 || matchClause == null)
+      return null;
+
+    // Must have exactly one path pattern with one relationship
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    if (pathPattern.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern relPattern = pathPattern.getRelationship(0);
+    if (relPattern.isVariableLength())
+      return null;
+    if (relPattern.getProperties() != null && !relPattern.getProperties().isEmpty())
+      return null;
+
+    // No WHERE clause
+    if (matchClause.hasWhereClause())
+      return null;
+
+    // Get source and target nodes
+    final NodePattern sourceNode = pathPattern.getFirstNode();
+    final NodePattern targetNode = pathPattern.getLastNode();
+    final String sourceVar = sourceNode.getVariable();
+    final String targetVar = targetNode.getVariable();
+    if (sourceVar == null || targetVar == null)
+      return null;
+
+    // Target node must not have labels (countEdges doesn't filter by target type)
+    if (targetNode.hasLabels())
+      return null;
+    // Target node must not have property filters (would need filtering)
+    if (targetNode.getProperties() != null && !targetNode.getProperties().isEmpty())
+      return null;
+
+    // Classify RETURN items into grouping and aggregation
+    final List<ReturnClause.ReturnItem> groupingItems = new ArrayList<>();
+    FunctionCallExpression countExpr = null;
+    String countAlias = null;
+    int aggregationCount = 0;
+
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+      if (item.getExpression().containsAggregation()) {
+        aggregationCount++;
+        if (!(item.getExpression() instanceof FunctionCallExpression))
+          return null;
+        final FunctionCallExpression funcExpr = (FunctionCallExpression) item.getExpression();
+        if (!"count".equals(funcExpr.getFunctionName()))
+          return null;
+        if (funcExpr.isDistinct())
+          return null;
+        if (funcExpr.getArguments().size() != 1 || !(funcExpr.getArguments().get(0) instanceof VariableExpression))
+          return null;
+        countExpr = funcExpr;
+        countAlias = item.getAlias() != null ? item.getAlias() : item.getExpression().getText();
+      } else
+        groupingItems.add(item);
+    }
+
+    if (aggregationCount != 1 || countExpr == null)
+      return null;
+
+    // The count argument must be the target variable
+    final String countArgVar = ((VariableExpression) countExpr.getArguments().get(0)).getVariableName();
+    if (!countArgVar.equals(targetVar))
+      return null;
+
+    // Grouping expressions must not reference the target variable
+    for (final ReturnClause.ReturnItem item : groupingItems) {
+      if (item.getExpression().getText().contains(targetVar))
+        return null;
+    }
+
+    // Compute direction from source's perspective
+    final Vertex.DIRECTION direction;
+    final Direction relDirection = relPattern.getDirection();
+    if (relDirection == Direction.OUT)
+      direction = Vertex.DIRECTION.OUT;
+    else if (relDirection == Direction.IN)
+      direction = Vertex.DIRECTION.IN;
+    else
+      direction = Vertex.DIRECTION.BOTH;
+
+    // Edge types
+    final List<String> relTypes = relPattern.getTypes();
+    final String[] edgeTypes = (relTypes != null && !relTypes.isEmpty())
+        ? relTypes.toArray(new String[0]) : null;
+
+    // Build grouping expressions and aliases
+    final Expression[] groupingExpressions = new Expression[groupingItems.size()];
+    final String[] groupingAliases = new String[groupingItems.size()];
+    for (int i = 0; i < groupingItems.size(); i++) {
+      final ReturnClause.ReturnItem item = groupingItems.get(i);
+      groupingExpressions[i] = item.getExpression();
+      groupingAliases[i] = item.getAlias() != null ? item.getAlias() : item.getExpression().getText();
+    }
+
+    // The optimized step replaces MatchRelationshipStep + GroupByAggregationStep.
+    // Walk back to find the MatchNodeStep — the previous step chain may vary:
+    // - Legacy path: MatchNodeStep → MatchRelationshipStep (currentStep)
+    // - Optimizer path: physical operator wrapper step (currentStep)
+    // In either case, we need the step that provides source vertices.
+    AbstractExecutionStep nodeStep = currentStep;
+    // Try to find MatchNodeStep: walk back through MatchRelationshipStep if present
+    if (nodeStep instanceof MatchRelationshipStep) {
+      nodeStep = (AbstractExecutionStep) nodeStep.getPrev();
+      if (!(nodeStep instanceof MatchNodeStep))
+        return null;
+    }
+    // For optimizer path: the physical operator wrapper already handles the full traversal,
+    // so we need to rebuild with just a MatchNodeStep for the source variable.
+    if (!(nodeStep instanceof MatchNodeStep)) {
+      // Build a fresh MatchNodeStep for the source variable
+      final NodePattern srcPattern = sourceNode;
+      nodeStep = new MatchNodeStep(sourceVar, srcPattern, context);
+    }
+
+    final CountEdgesReturnStep countStep = new CountEdgesReturnStep(
+        sourceVar, direction, edgeTypes, countAlias,
+        groupingExpressions, groupingAliases, context,
+        expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null);
+    countStep.setPrevious(nodeStep);
+    return countStep;
+  }
+
+  /**
    * Attempts to create an optimized TYPE COUNT step for simple count queries.
    * <p>
    * Optimizes queries matching this pattern:
@@ -2615,6 +2895,7 @@ public class CypherExecutionPlan {
    * Uses O(1) database.countType() instead of O(n) iteration.
    *
    * @param context command context
+   *
    * @return optimized TypeCountStep if pattern matches, null otherwise
    */
   private AbstractExecutionStep tryCreateTypeCountOptimization(final CommandContext context) {
@@ -2746,9 +3027,9 @@ public class CypherExecutionPlan {
    * variables that were kept in the merged scope for ORDER BY evaluation.
    */
   private AbstractExecutionStep addWithProjection(final WithClause withClause,
-                                                  AbstractExecutionStep currentStep, final CommandContext context) {
+      AbstractExecutionStep currentStep, final CommandContext context) {
     // Collect projected variable names from WITH items
-    final Set<String> projectedVars = new java.util.LinkedHashSet<>();
+    final Set<String> projectedVars = new LinkedHashSet<>();
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
       if ("*".equals(item.getOutputName()))
         return currentStep; // WITH * keeps everything
@@ -2762,8 +3043,1293 @@ public class CypherExecutionPlan {
   /**
    * @param whereClause the WHERE clause to analyze
    * @param variable    the variable to extract ID filter for
+   *
    * @return the ID value to filter by, or null if no ID filter found
    */
+
+  /**
+   * Extracts WHERE predicates that can be pushed down into a MatchNodeStep.
+   * Only predicates referencing the current variable (and already-bound variables) are eligible.
+   * The pushed-down predicates are evaluated inline during scanning, reducing pipeline overhead.
+   *
+   * @param whereClause    the WHERE clause to analyze
+   * @param currentVar     the variable being scanned by the MatchNodeStep
+   * @param boundVariables variables bound in previous MATCH clauses
+   * @param matchVariables variables bound earlier in the current MATCH clause
+   * @return the extractable predicate, or null if none qualifies
+   */
+  private static BooleanExpression extractPushdownFilter(final WhereClause whereClause, final String currentVar,
+      final Set<String> boundVariables, final Set<String> matchVariables) {
+    if (whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+
+    // Available variables = already bound + already matched in this clause + the current variable
+    final Set<String> available = new HashSet<>();
+    available.addAll(boundVariables);
+    available.addAll(matchVariables);
+    available.add(currentVar);
+
+    return WhereClause.extractForVariables(whereClause.getConditionExpression(), available);
+  }
+
+  /**
+   * Checks whether an edge variable is actually referenced in the query outside its
+   * MATCH pattern declaration. If the variable appears only in the pattern (e.g.,
+   * {@code [r:KNOWS]}) but is never used elsewhere, it can be treated as anonymous
+   * for GAV/fast-path purposes.
+   * <p>
+   * Rather than enumerating every clause type, this method counts how many times
+   * the variable appears across all relationship patterns in all MATCH clauses.
+   * If it appears more than once, it's a bound reference in another pattern.
+   * Then it checks all expression texts from all other clauses (RETURN, WHERE,
+   * ORDER BY, WITH, UNWIND, SET, DELETE, CREATE, MERGE) for the variable name.
+   *
+   * @param variable the edge variable name to check
+   * @return true if the variable is referenced elsewhere in the query
+   */
+  private boolean isEdgeVariableReferenced(final String variable) {
+    // 1. Check if the variable appears as a relationship variable in OTHER MATCH patterns
+    //    (e.g., MATCH ()-[r:E]-() MATCH p = ()-[r]-() — r is bound in the second MATCH)
+    int relVarCount = 0;
+    for (final MatchClause match : statement.getMatchClauses()) {
+      if (match.hasPathPatterns()) {
+        for (final PathPattern path : match.getPathPatterns()) {
+          for (int i = 0; i < path.getRelationshipCount(); i++) {
+            final RelationshipPattern rel = path.getRelationship(i);
+            if (variable.equals(rel.getVariable()))
+              relVarCount++;
+          }
+        }
+      }
+    }
+    // If the variable appears in more than one relationship pattern, it's referenced elsewhere
+    if (relVarCount > 1)
+      return true;
+
+    // 2. Check all expression texts from non-MATCH clauses.
+    //    Use clausesInOrder to cover everything: RETURN, WHERE, WITH, UNWIND, SET, DELETE, etc.
+    if (statement.getClausesInOrder() != null) {
+      for (final ClauseEntry entry : statement.getClausesInOrder()) {
+        switch (entry.getType()) {
+        case RETURN: {
+          final ReturnClause rc = entry.getTypedClause();
+          for (final ReturnClause.ReturnItem item : rc.getReturnItems())
+            if (expressionReferencesVariable(item.getExpression().getText(), variable))
+              return true;
+          break;
+        }
+        case WITH: {
+          final WithClause wc = entry.getTypedClause();
+          for (final ReturnClause.ReturnItem item : wc.getItems())
+            if (expressionReferencesVariable(item.getExpression().getText(), variable))
+              return true;
+          if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null)
+            if (expressionReferencesVariable(wc.getWhereClause().getConditionExpression().getText(), variable))
+              return true;
+          break;
+        }
+        case UNWIND: {
+          final UnwindClause uc = entry.getTypedClause();
+          if (expressionReferencesVariable(uc.getListExpression().getText(), variable))
+            return true;
+          break;
+        }
+        case SET: {
+          final SetClause sc = entry.getTypedClause();
+          for (final SetClause.SetItem item : sc.getItems())
+            if (variable.equals(item.getVariable()))
+              return true;
+          break;
+        }
+        case DELETE: {
+          final DeleteClause dc = entry.getTypedClause();
+          if (dc.getVariables().contains(variable))
+            return true;
+          break;
+        }
+        default:
+          break;
+        }
+      }
+    }
+
+    // 3. Check statement-level WHERE, ORDER BY (may not be in clausesInOrder)
+    if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
+      if (expressionReferencesVariable(statement.getWhereClause().getConditionExpression().getText(), variable))
+        return true;
+
+    for (final MatchClause match : statement.getMatchClauses())
+      if (match.hasWhereClause() && match.getWhereClause().getConditionExpression() != null)
+        if (expressionReferencesVariable(match.getWhereClause().getConditionExpression().getText(), variable))
+          return true;
+
+    if (statement.getOrderByClause() != null)
+      for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
+        if (expressionReferencesVariable(item.getExpression(), variable))
+          return true;
+
+    // 4. Check RETURN clause (may not be in clausesInOrder for simple queries)
+    if (statement.getReturnClause() != null)
+      for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
+        if (expressionReferencesVariable(item.getExpression().getText(), variable))
+          return true;
+
+    // 5. Check UNWIND clauses (may not be in clausesInOrder for legacy path)
+    for (final UnwindClause uc : statement.getUnwindClauses())
+      if (expressionReferencesVariable(uc.getListExpression().getText(), variable))
+        return true;
+
+    return false;
+  }
+
+  /**
+   * Checks if an expression text references a variable as a standalone identifier.
+   * Uses word-boundary matching to avoid false positives (e.g., "relation" matching "r").
+   */
+  private static boolean expressionReferencesVariable(final String expressionText, final String variable) {
+    if (expressionText == null || variable == null)
+      return false;
+    // Find the variable as a standalone identifier (not part of a longer word)
+    int idx = 0;
+    while ((idx = expressionText.indexOf(variable, idx)) >= 0) {
+      final boolean startOk = idx == 0 || !Character.isLetterOrDigit(expressionText.charAt(idx - 1))
+          && expressionText.charAt(idx - 1) != '_';
+      final int end = idx + variable.length();
+      final boolean endOk = end >= expressionText.length() || !Character.isLetterOrDigit(expressionText.charAt(end))
+          && expressionText.charAt(end) != '_';
+      if (startOk && endOk)
+        return true;
+      idx++;
+    }
+    return false;
+  }
+
+  /**
+   * Determines which hops in a path pattern need edge tracking for Cypher's relationship
+   * uniqueness constraint. A hop needs tracking only if its edge types could overlap with
+   * another hop's types in the same pattern AND the overlapping hops could match the same
+   * physical edge. Two hops with the same edge type but type-disjoint source or target
+   * vertex labels cannot match the same edge.
+   * <p>
+   * Rules:
+   * <ul>
+   *   <li>Single-hop pattern → no tracking needed (no other hop to conflict with)</li>
+   *   <li>Untyped hop (matches all edge types) → always needs tracking</li>
+   *   <li>Typed hop whose types are disjoint from all other hops → no tracking</li>
+   *   <li>Typed hop with type overlap but disjoint vertex labels on the edge endpoints → no tracking</li>
+   *   <li>Typed hop with type overlap and compatible vertex labels → needs tracking</li>
+   * </ul>
+   *
+   * @param pathPattern the path pattern to analyze
+   * @return boolean array, true at index i if hop i needs edge tracking
+   */
+  private boolean[] computeHopEdgeTrackingNeeds(final PathPattern pathPattern) {
+    final int hopCount = pathPattern.getRelationshipCount();
+    final boolean[] needs = new boolean[hopCount];
+    if (hopCount <= 1)
+      return needs; // single-hop: all false
+
+    // Collect edge types per hop (null = untyped, matches all)
+    final List<String>[] hopTypes = new List[hopCount];
+    boolean hasUntyped = false;
+    for (int i = 0; i < hopCount; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      if (rel.hasTypes())
+        hopTypes[i] = rel.getTypes();
+      else {
+        hopTypes[i] = null;
+        hasUntyped = true;
+      }
+    }
+
+    for (int i = 0; i < hopCount; i++) {
+      if (hopTypes[i] == null) {
+        // Untyped hop: overlaps with everything
+        needs[i] = true;
+        continue;
+      }
+      if (hasUntyped) {
+        // Another hop is untyped → overlaps with us
+        needs[i] = true;
+        continue;
+      }
+      // Check if our types overlap with any other hop's types
+      for (int j = 0; j < hopCount; j++) {
+        if (i == j)
+          continue;
+        // Both typed: check intersection
+        for (final String type : hopTypes[i]) {
+          if (hopTypes[j].contains(type)) {
+            // Same edge type — check if the hops are guaranteed to match different
+            // physical edges based on their vertex endpoint labels
+            if (areHopsDisjointByEndpointLabels(pathPattern, i, j))
+              continue; // Disjoint endpoints → skip this overlap
+            needs[i] = true;
+            break;
+          }
+        }
+        if (needs[i])
+          break;
+      }
+    }
+    return needs;
+  }
+
+  /**
+   * Checks if two hops with the same edge type are guaranteed to match different physical edges
+   * based on the vertex labels at their edge endpoints.
+   * <p>
+   * An edge has exactly one OUT vertex and one IN vertex. If we can prove that the OUT vertex
+   * (or IN vertex) for hop i must be of a different type than for hop j, the edges are distinct.
+   * <p>
+   * Uses the pattern direction to map pattern nodes to edge OUT/IN endpoints:
+   * <ul>
+   *   <li>OUT direction: edge OUT = source node (node[i]), edge IN = target node (node[i+1])</li>
+   *   <li>IN direction: edge OUT = target node (node[i+1]), edge IN = source node (node[i])</li>
+   *   <li>BOTH direction: cannot determine mapping → conservative (not disjoint)</li>
+   * </ul>
+   */
+  private boolean areHopsDisjointByEndpointLabels(final PathPattern pathPattern, final int hopI, final int hopJ) {
+    final Direction dirI = pathPattern.getRelationship(hopI).getDirection();
+    final Direction dirJ = pathPattern.getRelationship(hopJ).getDirection();
+
+    // BOTH direction: can't determine which node is the edge's OUT/IN vertex
+    if (dirI == Direction.BOTH || dirJ == Direction.BOTH)
+      return false;
+
+    // Map pattern nodes to edge endpoints based on direction
+    final NodePattern edgeOutI = dirI == Direction.OUT ? pathPattern.getNode(hopI) : pathPattern.getNode(hopI + 1);
+    final NodePattern edgeOutJ = dirJ == Direction.OUT ? pathPattern.getNode(hopJ) : pathPattern.getNode(hopJ + 1);
+    final NodePattern edgeInI = dirI == Direction.OUT ? pathPattern.getNode(hopI + 1) : pathPattern.getNode(hopI);
+    final NodePattern edgeInJ = dirJ == Direction.OUT ? pathPattern.getNode(hopJ + 1) : pathPattern.getNode(hopJ);
+
+    // If the OUT vertex labels are type-disjoint, the edges are different
+    if (nodeLabelsAreTypeDisjoint(edgeOutI, edgeOutJ))
+      return true;
+
+    // If the IN vertex labels are type-disjoint, the edges are different
+    return nodeLabelsAreTypeDisjoint(edgeInI, edgeInJ);
+  }
+
+  /**
+   * Checks whether two node patterns have labels that are type-disjoint in the schema,
+   * meaning no vertex can match both labels simultaneously.
+   * <p>
+   * Two labels are disjoint if neither is a supertype/subtype of the other AND no type
+   * in the schema is a subtype of both (which would allow a vertex to match both labels).
+   */
+  private boolean nodeLabelsAreTypeDisjoint(final NodePattern node1, final NodePattern node2) {
+    if (!node1.hasLabels() || !node2.hasLabels())
+      return false; // Without labels, can't prove disjointness
+
+    // Use the first label from each node for the check
+    final String label1 = node1.getLabels().get(0);
+    final String label2 = node2.getLabels().get(0);
+
+    if (label1.equals(label2))
+      return false; // Same label → not disjoint
+
+    if (!database.getSchema().existsType(label1) || !database.getSchema().existsType(label2))
+      return false; // Unknown type → conservative
+
+    final com.arcadedb.schema.DocumentType type1 = database.getSchema().getType(label1);
+    final com.arcadedb.schema.DocumentType type2 = database.getSchema().getType(label2);
+
+    // Direct hierarchy check: if one extends the other, not disjoint
+    if (type1.instanceOf(label2) || type2.instanceOf(label1))
+      return false;
+
+    // Check for common subtypes: if any type extends both, a vertex could match both labels
+    for (final com.arcadedb.schema.DocumentType schemaType : database.getSchema().getTypes())
+      if (schemaType.instanceOf(label1) && schemaType.instanceOf(label2))
+        return false;
+
+    return true;
+  }
+
+  /**
+   * Attempts to optimize a linear chain MATCH with {@code RETURN count(*)} into a
+   * CSR count-push-down step that avoids materializing intermediate rows.
+   * <p>
+   * Detects pattern:
+   * <pre>
+   *   MATCH (a:A)-[:T1]->(b:B)-[:T2]->(c:C) ... RETURN count(*) AS alias
+   * </pre>
+   * <p>
+   * Requirements:
+   * <ul>
+   *   <li>Exactly one non-optional MATCH clause with exactly one path pattern</li>
+   *   <li>No WHERE clause (neither MATCH-level nor statement-level)</li>
+   *   <li>RETURN has exactly one item: count(*)</li>
+   *   <li>At least one relationship in the path (otherwise use TypeCountStep)</li>
+   *   <li>All relationships are fixed-length and anonymous (no edge variables)</li>
+   *   <li>No path variable</li>
+   *   <li>No other clauses (WITH, CREATE, etc.)</li>
+   * </ul>
+   *
+   * @return optimized CountChainPathsStep if pattern matches, null otherwise
+   */
+  /**
+   * Checks if the clause at the given index in the clause list is followed by a RETURN clause
+   * that contains only count(*) aggregations (no property access needed from procedure results).
+   * Used to enable the count-only fast path in CallStep.
+   */
+  private boolean isFollowedByCountOnlyReturn(final List<ClauseEntry> clausesInOrder, final int callIndex) {
+    if (callIndex < 0)
+      return false;
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || !returnClause.hasAggregations())
+      return false;
+    // Check that RETURN is the only clause after CALL
+    for (int i = callIndex + 1; i < clausesInOrder.size(); i++) {
+      final ClauseEntry.ClauseType type = clausesInOrder.get(i).getType();
+      if (type != ClauseEntry.ClauseType.RETURN)
+        return false; // There's a WITH, ORDER BY, etc. between CALL and RETURN
+    }
+    // Check that ALL return items are aggregation functions (count, sum, avg, etc.)
+    // and none access individual row properties
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+      if (!(item.getExpression() instanceof FunctionCallExpression func))
+        return false;
+      if (!func.isAggregation())
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Checks if the RETURN clause is exactly {@code RETURN count(*) AS alias}.
+   *
+   * @return the alias (or "count(*)"), or null if not a count(*) return
+   */
+  private String isCountStarReturn() {
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.isDistinct())
+      return null;
+    final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
+    if (items.size() != 1)
+      return null;
+    final ReturnClause.ReturnItem item = items.get(0);
+    if (!(item.getExpression() instanceof FunctionCallExpression))
+      return null;
+    final FunctionCallExpression func = (FunctionCallExpression) item.getExpression();
+    if (!"count".equals(func.getFunctionName()))
+      return null;
+    if (func.getArguments().size() != 1 || !(func.getArguments().get(0) instanceof StarExpression))
+      return null;
+    return item.getAlias() != null ? item.getAlias() : "count(*)";
+  }
+
+  /**
+   * Checks that there are no clause types other than MATCH and RETURN.
+   */
+  private boolean hasOnlyMatchAndReturnClauses() {
+    if (statement.getClausesInOrder() == null)
+      return true;
+    for (final ClauseEntry entry : statement.getClausesInOrder()) {
+      final ClauseEntry.ClauseType type = entry.getType();
+      if (type != ClauseEntry.ClauseType.MATCH && type != ClauseEntry.ClauseType.RETURN)
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Unified entry point: tries all count-push-down patterns and wraps the result in a CSRCountStep.
+   */
+  private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context) {
+    CountOp op = tryDetectChainCountStar();
+    if (op == null)
+      op = tryDetectAntiJoinChainCountStar();
+    if (op == null)
+      op = tryDetectStarCountStar();
+    if (op == null)
+      op = tryDetectTriangleCountStar();
+    if (op == null)
+      op = tryDetectPairJoinCountStar();
+    if (op == null)
+      return null;
+    final String alias = isCountStarReturn();
+    return new CSRCountStep(op, alias, context);
+  }
+
+  private CountOp tryDetectChainCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
+
+    // Exactly one MATCH clause
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    if (matchClause.isOptional())
+      return null;
+
+    // WHERE: allow simple inequality (var1 <> var2) or no WHERE
+    String inequalityVar1 = null;
+    String inequalityVar2 = null;
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+    if (whereClause != null) {
+      final String[] ineqPair = extractSimpleInequality(whereClause);
+      if (ineqPair == null)
+        return null;
+      inequalityVar1 = ineqPair[0];
+      inequalityVar2 = ineqPair[1];
+    }
+
+    // Exactly one path pattern with at least one relationship
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    if (pathPattern.getRelationshipCount() < 1)
+      return null;
+    if (pathPattern.hasPathVariable())
+      return null;
+
+    // All relationships must be fixed-length, anonymous, no properties
+    final int hopCount = pathPattern.getRelationshipCount();
+    final String[] nodeLabels = new String[hopCount + 1];
+    final String[] edgeTypes = new String[hopCount];
+    final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hopCount];
+
+    for (int i = 0; i <= hopCount; i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      nodeLabels[i] = node.hasLabels() ? node.getLabels().get(0) : null;
+    }
+
+    for (int i = 0; i < hopCount; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      if (rel.isVariableLength())
+        return null;
+      if (rel.getVariable() != null && !rel.getVariable().isEmpty())
+        return null;
+      if (rel.hasProperties())
+        return null;
+      if (!rel.hasTypes() || rel.getTypes().size() != 1)
+        return null;
+
+      edgeTypes[i] = rel.getTypes().get(0);
+      final Direction dir = rel.getDirection();
+      if (dir == Direction.OUT)
+        directions[i] = Vertex.DIRECTION.OUT;
+      else if (dir == Direction.IN)
+        directions[i] = Vertex.DIRECTION.IN;
+      else
+        directions[i] = Vertex.DIRECTION.BOTH;
+    }
+
+    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when:
+    // (a) all edge types are disjoint, OR
+    // (b) there's an inequality filter
+    final Set<String> seenTypes = new HashSet<>();
+    boolean hasDuplicateTypes = false;
+    for (final String et : edgeTypes)
+      if (!seenTypes.add(et))
+        hasDuplicateTypes = true;
+
+    if (hasDuplicateTypes && inequalityVar1 == null)
+      return null;
+
+    // Resolve inequality variable positions in the chain
+    int inequalityIdxA = -1;
+    int inequalityIdxB = -1;
+    if (inequalityVar1 != null) {
+      for (int i = 0; i <= hopCount; i++) {
+        final NodePattern node = pathPattern.getNode(i);
+        final String nv = node.getVariable();
+        if (nv != null) {
+          if (nv.equals(inequalityVar1))
+            inequalityIdxA = i;
+          else if (nv.equals(inequalityVar2))
+            inequalityIdxB = i;
+        }
+      }
+      if (inequalityIdxA < 0 || inequalityIdxB < 0)
+        return null;
+    }
+
+    return new PropagateChainOp(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB);
+  }
+
+  /**
+   * Attempts to optimize a star-join pattern with {@code RETURN count(*)}.
+   * <p>
+   * Detects patterns where multiple MATCH/OPTIONAL MATCH path patterns share a single
+   * central node variable, and all other nodes are anonymous. For each central node,
+   * the count is the product of degrees (or max(1,degree) for optional arms).
+   * <p>
+   * Covers Q4: {@code MATCH (:Tag)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(:Person), (m)<-[:LIKES]-(:Person), (m)<-[:REPLY_OF]-(:Comment)}
+   * Covers Q7: same mandatory + OPTIONAL MATCH arms
+   *
+   * @return optimized CountStarJoinStep if pattern matches, null otherwise
+   */
+  private CountOp tryDetectStarCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
+
+    // Must have at least one MATCH clause
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().isEmpty())
+      return null;
+
+    // No statement-level WHERE
+    if (statement.getWhereClause() != null)
+      return null;
+
+    // Find the central variable: the one that appears in multiple path patterns.
+    // First pass: count occurrences of each variable across all path patterns.
+    final java.util.HashMap<String, Integer> varCounts = new java.util.HashMap<>();
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.hasPathPatterns())
+        continue;
+      for (final PathPattern pp : mc.getPathPatterns())
+        for (int i = 0; i <= pp.getRelationshipCount(); i++) {
+          final String nv = pp.getNode(i).getVariable();
+          if (nv != null && !nv.isEmpty())
+            varCounts.merge(nv, 1, Integer::sum);
+        }
+    }
+    // The central variable must be the ONLY variable appearing in multiple patterns.
+    // If two or more variables appear in multiple patterns, it's a pair-join, not a star.
+    String centralVar = null;
+    String centralLabel = null;
+    for (final var entry : varCounts.entrySet())
+      if (entry.getValue() > 1) {
+        if (centralVar != null)
+          return null; // two shared variables → not a star join (likely a pair join)
+        centralVar = entry.getKey();
+      }
+    if (centralVar == null)
+      return null; // no variable appears in multiple patterns
+
+    // Find the label for the central variable
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.hasPathPatterns()) continue;
+      for (final PathPattern pp : mc.getPathPatterns())
+        for (int i = 0; i <= pp.getRelationshipCount(); i++) {
+          final NodePattern node = pp.getNode(i);
+          if (centralVar.equals(node.getVariable()) && node.hasLabels()) {
+            centralLabel = node.getLabels().get(0);
+            break;
+          }
+        }
+      if (centralLabel != null) break;
+    }
+
+    final java.util.ArrayList<DegreeProductOp.Arm> armList = new java.util.ArrayList<>();
+
+    for (final MatchClause matchClause : statement.getMatchClauses()) {
+      if (matchClause.hasWhereClause())
+        return null;
+      if (!matchClause.hasPathPatterns())
+        return null;
+      final boolean isOptional = matchClause.isOptional();
+
+      for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
+        if (pathPattern.hasPathVariable())
+          return null;
+
+        if (pathPattern.getRelationshipCount() < 1) {
+          // Single-node pattern: skip (e.g., anchor node for central variable)
+          if (pathPattern.isSingleNode())
+            continue;
+          return null;
+        }
+
+        // Find the central variable's position in this path pattern.
+        // Non-central named variables are ignored — they're endpoint bindings
+        // that don't affect the degree-product logic for count(*).
+        int centralNodeIdx = -1;
+        for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
+          final NodePattern node = pathPattern.getNode(i);
+          if (centralVar.equals(node.getVariable())) {
+            centralNodeIdx = i;
+            break;
+          }
+        }
+
+        if (centralNodeIdx < 0)
+          return null;
+
+        final int totalHops = pathPattern.getRelationshipCount();
+
+        if (centralNodeIdx == 0) {
+          final DegreeProductOp.Arm arm = buildArmForward(pathPattern, 0, totalHops, isOptional);
+          if (arm == null) return null;
+          armList.add(arm);
+        } else if (centralNodeIdx == totalHops) {
+          final DegreeProductOp.Arm arm = buildArmBackward(pathPattern, totalHops, 0, isOptional);
+          if (arm == null) return null;
+          armList.add(arm);
+        } else {
+          final DegreeProductOp.Arm leftArm = buildArmBackward(pathPattern, centralNodeIdx, 0, isOptional);
+          if (leftArm == null) return null;
+          armList.add(leftArm);
+          final DegreeProductOp.Arm rightArm = buildArmForward(pathPattern, centralNodeIdx, totalHops, isOptional);
+          if (rightArm == null) return null;
+          armList.add(rightArm);
+        }
+      }
+    }
+
+    if (centralVar == null || centralLabel == null || armList.isEmpty())
+      return null;
+
+    return new DegreeProductOp(centralLabel, armList.toArray(new DegreeProductOp.Arm[0]));
+  }
+
+  /**
+   * Detects the Q3 "triangle in country" pattern:
+   * <pre>
+   *   MATCH (co:Anchor)
+   *   MATCH (p1:Node)-[:CHAIN1]->(:Mid)-[:CHAIN2]->(co)
+   *   MATCH (p2:Node)-[:CHAIN1]->(:Mid)-[:CHAIN2]->(co)
+   *   MATCH (p3:Node)-[:CHAIN1]->(:Mid)-[:CHAIN2]->(co)
+   *   MATCH (p1)-[:TRI]-(p2)-[:TRI]-(p3)-[:TRI]-(p1)
+   *   RETURN count(*) AS count
+   * </pre>
+   * Requires: 5+ MATCH clauses, no WHERE, RETURN count(*), one cycle MATCH, three partition MATCHes.
+   */
+  private CountOp tryDetectTriangleCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() < 4)
+      return null;
+    if (statement.getWhereClause() != null)
+      return null;
+
+    // No MATCH clause should have WHERE
+    for (final MatchClause mc : statement.getMatchClauses())
+      if (mc.hasWhereClause() || mc.isOptional())
+        return null;
+
+    // Find the cycle MATCH: a path pattern where first and last node share the same variable
+    // e.g., (p1)-[:KNOWS]-(p2)-[:KNOWS]-(p3)-[:KNOWS]-(p1)
+    MatchClause cycleMC = null;
+    PathPattern cyclePP = null;
+    String cycleEdgeType = null;
+    final java.util.ArrayList<String> cycleVars = new java.util.ArrayList<>();
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
+        continue;
+      final PathPattern pp = mc.getPathPatterns().get(0);
+      if (pp.getRelationshipCount() < 3)
+        continue;
+      final String firstVar = pp.getFirstNode().getVariable();
+      final String lastVar = pp.getLastNode().getVariable();
+      if (firstVar != null && firstVar.equals(lastVar) && pp.getRelationshipCount() == 3) {
+        // Check all relationships use the same edge type and are anonymous
+        boolean valid = true;
+        String edgeType = null;
+        for (int i = 0; i < 3; i++) {
+          final RelationshipPattern rel = pp.getRelationship(i);
+          if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
+              || !rel.hasTypes() || rel.getTypes().size() != 1) {
+            valid = false;
+            break;
+          }
+          if (edgeType == null)
+            edgeType = rel.getTypes().get(0);
+          else if (!edgeType.equals(rel.getTypes().get(0))) {
+            valid = false;
+            break;
+          }
+        }
+        if (valid) {
+          cycleMC = mc;
+          cyclePP = pp;
+          cycleEdgeType = edgeType;
+          // Collect the 3 distinct variables (first=last, so 3 unique vars)
+          for (int i = 0; i < 3; i++) {
+            final String nv = pp.getNode(i).getVariable();
+            if (nv != null && !cycleVars.contains(nv))
+              cycleVars.add(nv);
+          }
+          break;
+        }
+      }
+    }
+    if (cycleMC == null || cycleVars.size() != 3)
+      return null;
+
+    // Find the anchor MATCH: single node pattern (e.g., (co:Country))
+    String anchorVar = null;
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (mc == cycleMC)
+        continue;
+      if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
+        continue;
+      final PathPattern pp = mc.getPathPatterns().get(0);
+      if (pp.isSingleNode() && pp.getFirstNode().getVariable() != null) {
+        anchorVar = pp.getFirstNode().getVariable();
+        break;
+      }
+    }
+
+    // Find partition chain MATCHes: each cycle var linked to the anchor via a chain
+    // e.g., (p1:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co)
+    String[] partitionEdgeTypes = null;
+    Vertex.DIRECTION[] partitionDirections = null;
+    int chainMatchCount = 0;
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (mc == cycleMC)
+        continue;
+      if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
+        continue;
+      final PathPattern pp = mc.getPathPatterns().get(0);
+      if (pp.isSingleNode())
+        continue; // anchor match
+
+      // Check: first node is a cycle var, last node is anchor var
+      final String firstVar = pp.getFirstNode().getVariable();
+      final String lastVar = pp.getLastNode().getVariable();
+      if (firstVar == null || lastVar == null)
+        continue;
+      if (!cycleVars.contains(firstVar) || !lastVar.equals(anchorVar))
+        continue;
+
+      // Extract chain edge types and directions
+      final int hops = pp.getRelationshipCount();
+      final String[] chainET = new String[hops];
+      final Vertex.DIRECTION[] chainDir = new Vertex.DIRECTION[hops];
+      boolean valid = true;
+      for (int i = 0; i < hops; i++) {
+        final RelationshipPattern rel = pp.getRelationship(i);
+        if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1) {
+          valid = false;
+          break;
+        }
+        chainET[i] = rel.getTypes().get(0);
+        final Direction d = rel.getDirection();
+        chainDir[i] = d == Direction.OUT ? Vertex.DIRECTION.OUT
+            : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+      }
+      if (!valid)
+        continue;
+
+      // All chain MATCHes must have the same chain structure
+      if (partitionEdgeTypes == null) {
+        partitionEdgeTypes = chainET;
+        partitionDirections = chainDir;
+      } else {
+        if (chainET.length != partitionEdgeTypes.length)
+          return null;
+        for (int i = 0; i < chainET.length; i++)
+          if (!chainET[i].equals(partitionEdgeTypes[i]) || chainDir[i] != partitionDirections[i])
+            return null;
+      }
+      chainMatchCount++;
+    }
+
+    // Must have exactly 3 chain MATCHes (one per cycle variable)
+    if (chainMatchCount != 3 || partitionEdgeTypes == null)
+      return null;
+
+    return new PartitionedTriangleOp(partitionEdgeTypes, partitionDirections, cycleEdgeType);
+  }
+
+  /**
+   * Detects two comma-separated path patterns sharing two endpoint variables + count(*).
+   * One pattern is a single-hop "probe" edge, the other is a multi-hop "build" chain.
+   * <pre>
+   *   MATCH (p1:Person)-[:KNOWS]-(p2:Person),
+   *         (p1)<-[:HAS_CREATOR]-(c:Comment)-[:REPLY_OF]->(po:Post)-[:HAS_CREATOR]->(p2)
+   *   RETURN count(*) AS count
+   * </pre>
+   */
+  private CountOp tryDetectPairJoinCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
+
+    // Exactly one non-optional MATCH with exactly 2 path patterns
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    if (matchClause.isOptional() || matchClause.hasWhereClause())
+      return null;
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 2)
+      return null;
+    if (statement.getWhereClause() != null)
+      return null;
+
+    // Identify probe (single-hop) and build (multi-hop) patterns
+    final PathPattern pp0 = matchClause.getPathPatterns().get(0);
+    final PathPattern pp1 = matchClause.getPathPatterns().get(1);
+
+    PathPattern probePattern, buildPattern;
+    if (pp0.getRelationshipCount() == 1 && pp1.getRelationshipCount() >= 2) {
+      probePattern = pp0;
+      buildPattern = pp1;
+    } else if (pp1.getRelationshipCount() == 1 && pp0.getRelationshipCount() >= 2) {
+      probePattern = pp1;
+      buildPattern = pp0;
+    } else
+      return null; // Neither is single-hop
+
+    // Probe pattern: must be a single anonymous relationship with one edge type
+    final RelationshipPattern probeRel = probePattern.getRelationship(0);
+    if (probeRel.isVariableLength() || !probeRel.hasTypes() || probeRel.getTypes().size() != 1)
+      return null;
+    if (probeRel.getVariable() != null && !probeRel.getVariable().isEmpty())
+      return null;
+    final String probeEdgeType = probeRel.getTypes().get(0);
+    final Direction probeDir = probeRel.getDirection();
+    final Vertex.DIRECTION probeDirection = probeDir == Direction.OUT ? Vertex.DIRECTION.OUT
+        : probeDir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+
+    // Get the two shared endpoint variables from probe pattern
+    final String probeVar1 = probePattern.getFirstNode().getVariable();
+    final String probeVar2 = probePattern.getLastNode().getVariable();
+    if (probeVar1 == null || probeVar2 == null)
+      return null;
+
+    // Build pattern: extract chain and find which hops reach the shared endpoints
+    final int buildHops = buildPattern.getRelationshipCount();
+    final String[] buildEdgeTypes = new String[buildHops];
+    final Vertex.DIRECTION[] buildDirections = new Vertex.DIRECTION[buildHops];
+
+    // Find the build chain's start node (a non-shared variable, e.g., "c" in Q2)
+    // The shared variables (probeVar1, probeVar2) should appear as targets of hops
+    int startNodeIdx = -1;
+    for (int i = 0; i <= buildHops; i++) {
+      final String nv = buildPattern.getNode(i).getVariable();
+      if (nv != null && !nv.equals(probeVar1) && !nv.equals(probeVar2)) {
+        startNodeIdx = i;
+        break;
+      }
+    }
+    // If no non-shared named variable found, try anonymous nodes
+    if (startNodeIdx < 0) {
+      for (int i = 0; i <= buildHops; i++) {
+        final String nv = buildPattern.getNode(i).getVariable();
+        if (nv == null || nv.isEmpty()) {
+          startNodeIdx = i;
+          break;
+        }
+      }
+    }
+    if (startNodeIdx < 0)
+      return null;
+
+    // Determine the build chain start label
+    final NodePattern startNode = buildPattern.getNode(startNodeIdx);
+    final String buildStartLabel = startNode.hasLabels() ? startNode.getLabels().get(0) : null;
+    if (buildStartLabel == null)
+      return null;
+
+    // Build two arms from startNodeIdx: backward (toward position 0) and forward (toward end).
+    // Each arm reaches one of the shared endpoint variables.
+
+    // Walk backward from startNodeIdx to find endpoint reaching probeVar1 or probeVar2
+    final java.util.ArrayList<String> bwdET = new java.util.ArrayList<>();
+    final java.util.ArrayList<Vertex.DIRECTION> bwdDir = new java.util.ArrayList<>();
+    final java.util.ArrayList<String> bwdLabels = new java.util.ArrayList<>();
+    String bwdEndpointVar = null;
+    for (int i = startNodeIdx - 1; i >= 0; i--) {
+      final RelationshipPattern rel = buildPattern.getRelationship(i);
+      if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1
+          || (rel.getVariable() != null && !rel.getVariable().isEmpty()))
+        return null;
+      bwdET.add(rel.getTypes().get(0));
+      final Direction d = rel.getDirection().reverse();
+      bwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
+          : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
+      final NodePattern targetNode = buildPattern.getNode(i);
+      bwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().get(0) : null);
+      final String nodeVar = targetNode.getVariable();
+      if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
+        bwdEndpointVar = nodeVar;
+        break;
+      }
+    }
+
+    // Walk forward from startNodeIdx to find the other endpoint
+    final java.util.ArrayList<String> fwdET = new java.util.ArrayList<>();
+    final java.util.ArrayList<Vertex.DIRECTION> fwdDir = new java.util.ArrayList<>();
+    final java.util.ArrayList<String> fwdLabels = new java.util.ArrayList<>();
+    String fwdEndpointVar = null;
+    for (int i = startNodeIdx; i < buildHops; i++) {
+      final RelationshipPattern rel = buildPattern.getRelationship(i);
+      if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1
+          || (rel.getVariable() != null && !rel.getVariable().isEmpty()))
+        return null;
+      fwdET.add(rel.getTypes().get(0));
+      final Direction d = rel.getDirection();
+      fwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
+          : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
+      final NodePattern targetNode = buildPattern.getNode(i + 1);
+      fwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().get(0) : null);
+      final String nodeVar = targetNode.getVariable();
+      if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
+        fwdEndpointVar = nodeVar;
+        break;
+      }
+    }
+
+    if (bwdEndpointVar == null || fwdEndpointVar == null)
+      return null;
+    if (bwdEndpointVar.equals(fwdEndpointVar))
+      return null; // Both arms reach the same endpoint
+
+    // Arm reaching probeVar1 and arm reaching probeVar2
+    final String[] arm1ET, arm2ET, arm1Labels, arm2Labels;
+    final Vertex.DIRECTION[] arm1Dir, arm2Dir;
+    if (bwdEndpointVar.equals(probeVar1)) {
+      arm1ET = bwdET.toArray(new String[0]);
+      arm1Dir = bwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm1Labels = bwdLabels.toArray(new String[0]);
+      arm2ET = fwdET.toArray(new String[0]);
+      arm2Dir = fwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm2Labels = fwdLabels.toArray(new String[0]);
+    } else {
+      arm1ET = fwdET.toArray(new String[0]);
+      arm1Dir = fwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm1Labels = fwdLabels.toArray(new String[0]);
+      arm2ET = bwdET.toArray(new String[0]);
+      arm2Dir = bwdDir.toArray(new Vertex.DIRECTION[0]);
+      arm2Labels = bwdLabels.toArray(new String[0]);
+    }
+
+    return new PairHashJoinOp(buildStartLabel, arm1ET, arm1Dir, arm1Labels,
+        arm2ET, arm2Dir, arm2Labels, probeEdgeType, probeDirection);
+  }
+
+  /**
+   * Extracts a simple inequality predicate from a WHERE clause.
+   * Returns [var1, var2] if the WHERE is exactly "var1 <> var2", null otherwise.
+   */
+  private static String[] extractSimpleInequality(final WhereClause whereClause) {
+    if (whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+    final BooleanExpression condition = whereClause.getConditionExpression();
+    if (!(condition instanceof ComparisonExpression))
+      return null;
+    final ComparisonExpression cmp = (ComparisonExpression) condition;
+    if (cmp.getOperator() != ComparisonExpression.Operator.NOT_EQUALS)
+      return null;
+    final Expression left = cmp.getLeft();
+    final Expression right = cmp.getRight();
+    if (!(left instanceof VariableExpression) || !(right instanceof VariableExpression))
+      return null;
+    return new String[]{((VariableExpression) left).getVariableName(),
+        ((VariableExpression) right).getVariableName()};
+  }
+
+  /**
+   * Detects a chain pattern with a negative path predicate (anti-join) in WHERE.
+   * <p>
+   * Handles patterns like:
+   * <pre>
+   *   MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag)
+   *   WHERE NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3
+   *   RETURN count(*) AS count
+   * </pre>
+   * The WHERE clause must contain a negated single-hop pattern predicate between two chain nodes,
+   * optionally combined with a simple inequality via AND.
+   */
+  private CountOp tryDetectAntiJoinChainCountStar() {
+    if (isCountStarReturn() == null || !hasOnlyMatchAndReturnClauses())
+      return null;
+
+    // Exactly one MATCH clause
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    if (matchClause.isOptional())
+      return null;
+
+    // Must have a WHERE clause with an anti-join pattern
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+    if (whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+
+    // Parse the WHERE clause: extract anti-join pattern and optional inequality
+    final AntiJoinInfo antiJoin = extractAntiJoinInfo(whereClause);
+    if (antiJoin == null)
+      return null;
+
+    // Exactly one path pattern with at least one relationship
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    if (pathPattern.getRelationshipCount() < 2) // need at least 2 hops for anti-join to make sense
+      return null;
+    if (pathPattern.hasPathVariable())
+      return null;
+
+    // Extract chain structure
+    final int hopCount = pathPattern.getRelationshipCount();
+    final String[] nodeLabels = new String[hopCount + 1];
+    final String[] edgeTypes = new String[hopCount];
+    final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hopCount];
+
+    for (int i = 0; i <= hopCount; i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      nodeLabels[i] = node.hasLabels() ? node.getLabels().get(0) : null;
+    }
+
+    for (int i = 0; i < hopCount; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      if (rel.isVariableLength())
+        return null;
+      if (rel.getVariable() != null && !rel.getVariable().isEmpty())
+        return null;
+      if (rel.hasProperties())
+        return null;
+      if (!rel.hasTypes() || rel.getTypes().size() != 1)
+        return null;
+
+      edgeTypes[i] = rel.getTypes().get(0);
+      final Direction dir = rel.getDirection();
+      if (dir == Direction.OUT)
+        directions[i] = Vertex.DIRECTION.OUT;
+      else if (dir == Direction.IN)
+        directions[i] = Vertex.DIRECTION.IN;
+      else
+        directions[i] = Vertex.DIRECTION.BOTH;
+    }
+
+    // Resolve anti-join variable positions in the chain
+    int antiJoinSourceIdx = -1;
+    int antiJoinTargetIdx = -1;
+    for (int i = 0; i <= hopCount; i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      final String nv = node.getVariable();
+      if (nv != null) {
+        if (nv.equals(antiJoin.sourceVar))
+          antiJoinSourceIdx = i;
+        if (nv.equals(antiJoin.targetVar))
+          antiJoinTargetIdx = i;
+      }
+    }
+    if (antiJoinSourceIdx < 0 || antiJoinTargetIdx < 0)
+      return null;
+
+    // Do NOT swap source/target — the direction depends on the original order.
+    // AntiJoinChainOp handles both cases:
+    //   Case A (Q9): anti-join from anchor(0) to later position → merge-scan
+    //   Case B (Q8): anti-join from later position to anchor(0) → per-frontier binary search
+
+    // Resolve inequality positions (if present)
+    int inequalityIdxA = -1;
+    int inequalityIdxB = -1;
+    if (antiJoin.inequalityVar1 != null) {
+      for (int i = 0; i <= hopCount; i++) {
+        final NodePattern node = pathPattern.getNode(i);
+        final String nv = node.getVariable();
+        if (nv != null) {
+          if (nv.equals(antiJoin.inequalityVar1))
+            inequalityIdxA = i;
+          else if (nv.equals(antiJoin.inequalityVar2))
+            inequalityIdxB = i;
+        }
+      }
+      if (inequalityIdxA < 0 || inequalityIdxB < 0)
+        return null;
+    }
+
+    return new AntiJoinChainOp(nodeLabels, edgeTypes, directions,
+        antiJoinSourceIdx, antiJoinTargetIdx,
+        antiJoin.antiJoinEdgeType, antiJoin.antiJoinDirection,
+        inequalityIdxA, inequalityIdxB);
+  }
+
+  /**
+   * Information extracted from a WHERE clause containing an anti-join pattern.
+   */
+  private static final class AntiJoinInfo {
+    final String sourceVar;
+    final String targetVar;
+    final String antiJoinEdgeType;
+    final Vertex.DIRECTION antiJoinDirection;
+    final String inequalityVar1; // null if no inequality
+    final String inequalityVar2;
+
+    AntiJoinInfo(final String sourceVar, final String targetVar,
+        final String antiJoinEdgeType, final Vertex.DIRECTION antiJoinDirection,
+        final String inequalityVar1, final String inequalityVar2) {
+      this.sourceVar = sourceVar;
+      this.targetVar = targetVar;
+      this.antiJoinEdgeType = antiJoinEdgeType;
+      this.antiJoinDirection = antiJoinDirection;
+      this.inequalityVar1 = inequalityVar1;
+      this.inequalityVar2 = inequalityVar2;
+    }
+  }
+
+  /**
+   * Extracts anti-join pattern info from a WHERE clause.
+   * <p>
+   * Supported forms:
+   * <ul>
+   *   <li>{@code WHERE NOT (a)-[:TYPE]-(b)} — anti-join only</li>
+   *   <li>{@code WHERE NOT (a)-[:TYPE]-(b) AND a <> b} — anti-join + inequality (either order)</li>
+   * </ul>
+   *
+   * @return extracted info, or null if the WHERE clause doesn't match
+   */
+  private static AntiJoinInfo extractAntiJoinInfo(final WhereClause whereClause) {
+    if (whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+
+    final BooleanExpression condition = whereClause.getConditionExpression();
+
+    // Case 1: Simple negated pattern predicate — either PatternPredicateExpression(negated=true)
+    // or LogicalExpression(NOT, PatternPredicateExpression)
+    final PatternPredicateExpression directNeg = extractNegatedPattern(condition);
+    if (directNeg != null)
+      return extractFromPatternPredicate(directNeg, null, null);
+
+    // Case 2: AND of two conditions (anti-join + inequality, in either order)
+    if (condition instanceof LogicalExpression) {
+      final LogicalExpression logical = (LogicalExpression) condition;
+      if (logical.getOperator() != LogicalExpression.Operator.AND)
+        return null;
+
+      final BooleanExpression left = logical.getLeft();
+      final BooleanExpression right = logical.getRight();
+
+      // Try: left = anti-join, right = inequality
+      final PatternPredicateExpression leftNeg = extractNegatedPattern(left);
+      if (leftNeg != null && right instanceof ComparisonExpression) {
+        final String[] ineq = extractInequalityFromComparison((ComparisonExpression) right);
+        if (ineq != null)
+          return extractFromPatternPredicate(leftNeg, ineq[0], ineq[1]);
+      }
+
+      // Try: left = inequality, right = anti-join
+      final PatternPredicateExpression rightNeg = extractNegatedPattern(right);
+      if (rightNeg != null && left instanceof ComparisonExpression) {
+        final String[] ineq = extractInequalityFromComparison((ComparisonExpression) left);
+        if (ineq != null)
+          return extractFromPatternPredicate(rightNeg, ineq[0], ineq[1]);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Extracts a negated pattern predicate from a boolean expression.
+   * Handles two forms:
+   * <ul>
+   *   <li>{@code PatternPredicateExpression(isNegated=true)}</li>
+   *   <li>{@code LogicalExpression(NOT, PatternPredicateExpression)}</li>
+   * </ul>
+   *
+   * @return the pattern predicate (always with isNegated semantics), or null
+   */
+  private static PatternPredicateExpression extractNegatedPattern(final BooleanExpression expr) {
+    if (expr instanceof PatternPredicateExpression) {
+      final PatternPredicateExpression ppe = (PatternPredicateExpression) expr;
+      return ppe.isNegated() ? ppe : null;
+    }
+    if (expr instanceof LogicalExpression) {
+      final LogicalExpression logical = (LogicalExpression) expr;
+      if (logical.getOperator() == LogicalExpression.Operator.NOT
+          && logical.getLeft() instanceof PatternPredicateExpression) {
+        // NOT wrapping a non-negated pattern predicate = negated pattern
+        return (PatternPredicateExpression) logical.getLeft();
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Extracts anti-join info from a negated pattern predicate.
+   * The pattern must be a single-hop, single-type, anonymous relationship between two variables.
+   */
+  /**
+   * Extracts anti-join info from a pattern predicate expression.
+   * The pattern must be a single-hop, single-type, anonymous relationship between two variables.
+   * Note: the negation may come from either PatternPredicateExpression.isNegated() or from
+   * a wrapping LogicalExpression(NOT, ...) — the caller ensures negation semantics.
+   */
+  private static AntiJoinInfo extractFromPatternPredicate(final PatternPredicateExpression ppe,
+      final String inequalityVar1, final String inequalityVar2) {
+    final PathPattern pp = ppe.getPathPattern();
+    if (pp == null || pp.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern rel = pp.getRelationship(0);
+    if (rel.isVariableLength())
+      return null;
+    if (!rel.hasTypes() || rel.getTypes().size() != 1)
+      return null;
+
+    final String sourceVar = pp.getFirstNode().getVariable();
+    final String targetVar = pp.getLastNode().getVariable();
+    if (sourceVar == null || targetVar == null)
+      return null;
+
+    final String edgeType = rel.getTypes().get(0);
+    final Direction dir = rel.getDirection();
+    final Vertex.DIRECTION direction = dir == Direction.OUT ? Vertex.DIRECTION.OUT
+        : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+
+    return new AntiJoinInfo(sourceVar, targetVar, edgeType, direction,
+        inequalityVar1, inequalityVar2);
+  }
+
+  /**
+   * Extracts inequality info from a comparison expression.
+   * Returns [var1, var2] if the expression is "var1 <> var2", null otherwise.
+   */
+  private static String[] extractInequalityFromComparison(final ComparisonExpression cmp) {
+    if (cmp.getOperator() != ComparisonExpression.Operator.NOT_EQUALS)
+      return null;
+    final Expression left = cmp.getLeft();
+    final Expression right = cmp.getRight();
+    if (!(left instanceof VariableExpression) || !(right instanceof VariableExpression))
+      return null;
+    return new String[]{((VariableExpression) left).getVariableName(),
+        ((VariableExpression) right).getVariableName()};
+  }
+
+  /**
+   * Builds a star-join arm going forward from centralIdx toward endIdx in the path pattern.
+   * Direction is preserved as-is from the pattern.
+   */
+  private DegreeProductOp.Arm buildArmForward(final PathPattern pathPattern, final int centralIdx,
+      final int endIdx, final boolean optional) {
+    final int hops = endIdx - centralIdx;
+    final String[] edgeTypes = new String[hops];
+    final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hops];
+    for (int i = 0; i < hops; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(centralIdx + i);
+      if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
+          || rel.hasProperties() || !rel.hasTypes() || rel.getTypes().size() != 1)
+        return null;
+      edgeTypes[i] = rel.getTypes().get(0);
+      final Direction dir = rel.getDirection();
+      directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
+          : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+    }
+    return new DegreeProductOp.Arm(edgeTypes, directions, optional);
+  }
+
+  /**
+   * Builds a star-join arm going backward from centralIdx toward endIdx in the path pattern.
+   * Directions are reversed since we traverse from the central node toward position 0.
+   */
+  private DegreeProductOp.Arm buildArmBackward(final PathPattern pathPattern, final int centralIdx,
+      final int endIdx, final boolean optional) {
+    final int hops = centralIdx - endIdx;
+    final String[] edgeTypes = new String[hops];
+    final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hops];
+    for (int i = 0; i < hops; i++) {
+      // Walk backward from centralIdx: rel at (centralIdx-1), (centralIdx-2), ...
+      final RelationshipPattern rel = pathPattern.getRelationship(centralIdx - 1 - i);
+      if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
+          || rel.hasProperties() || !rel.hasTypes() || rel.getTypes().size() != 1)
+        return null;
+      edgeTypes[i] = rel.getTypes().get(0);
+      // Reverse direction since we're traversing the arm in the opposite direction
+      final Direction dir = rel.getDirection().reverse();
+      directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
+          : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+    }
+    return new DegreeProductOp.Arm(edgeTypes, directions, optional);
+  }
+
   private String extractIdFilter(final WhereClause whereClause, final String variable) {
     if (whereClause == null || whereClause.getConditionExpression() == null)
       return null;

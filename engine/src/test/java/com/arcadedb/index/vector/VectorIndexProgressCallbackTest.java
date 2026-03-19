@@ -123,8 +123,10 @@ class VectorIndexProgressCallbackTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE SimpleDoc IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY SimpleDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON SimpleDoc (vec) LSM_VECTOR " +
-          "METADATA {dimensions: 8, similarity: 'EUCLIDEAN'}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON SimpleDoc (vec) LSM_VECTOR \
+          METADATA {dimensions: 8, similarity: 'EUCLIDEAN'}\
+          """);
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("SimpleDoc[vec]");
@@ -155,8 +157,10 @@ class VectorIndexProgressCallbackTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE RebuildDoc IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY RebuildDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON RebuildDoc (vec) LSM_VECTOR " +
-          "METADATA {dimensions: 16, similarity: 'DOT_PRODUCT'}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON RebuildDoc (vec) LSM_VECTOR \
+          METADATA {dimensions: 16, similarity: 'DOT_PRODUCT'}\
+          """);
     });
 
     // Insert documents first

@@ -1,0 +1,209 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.schema;
+
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.event.AfterRecordCreateListener;
+import com.arcadedb.event.AfterRecordDeleteListener;
+import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Level;
+
+public class MaterializedViewBuilder {
+  private final DatabaseInternal database;
+  private String name;
+  private String query;
+  private MaterializedViewRefreshMode refreshMode = MaterializedViewRefreshMode.MANUAL;
+  private int buckets = 0;
+  private int pageSize = 0;
+  private long refreshInterval = 0;
+  private boolean ifNotExists = false;
+
+  public MaterializedViewBuilder(final DatabaseInternal database) {
+    this.database = database;
+  }
+
+  public MaterializedViewBuilder withName(final String name) {
+    this.name = name;
+    return this;
+  }
+
+  public MaterializedViewBuilder withQuery(final String query) {
+    this.query = query;
+    return this;
+  }
+
+  public MaterializedViewBuilder withRefreshMode(final MaterializedViewRefreshMode mode) {
+    this.refreshMode = mode;
+    return this;
+  }
+
+  public MaterializedViewBuilder withTotalBuckets(final int buckets) {
+    this.buckets = buckets;
+    return this;
+  }
+
+  public MaterializedViewBuilder withPageSize(final int pageSize) {
+    this.pageSize = pageSize;
+    return this;
+  }
+
+  public MaterializedViewBuilder withRefreshInterval(final long intervalMs) {
+    this.refreshInterval = intervalMs;
+    return this;
+  }
+
+  public MaterializedViewBuilder withIgnoreIfExists(final boolean ignore) {
+    this.ifNotExists = ignore;
+    return this;
+  }
+
+  public MaterializedView create() {
+    if (name == null || name.isEmpty())
+      throw new IllegalArgumentException("Materialized view name is required");
+    if (name.contains("`"))
+      throw new IllegalArgumentException("Materialized view name must not contain backtick characters");
+    if (query == null || query.isEmpty())
+      throw new IllegalArgumentException("Materialized view query is required");
+
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+
+    // Check if view already exists
+    if (schema.existsMaterializedView(name)) {
+      if (ifNotExists)
+        return schema.getMaterializedView(name);
+      throw new SchemaException("Materialized view '" + name + "' already exists");
+    }
+
+    // Check if a type with this name already exists (backing type would conflict)
+    if (schema.existsType(name))
+      throw new SchemaException("Cannot create materialized view '" + name +
+          "': a type with the same name already exists");
+
+    // Parse the query to validate syntax and extract source types
+    final List<String> sourceTypeNames = extractSourceTypes(query);
+
+    // Validate source types exist
+    for (final String srcType : sourceTypeNames)
+      if (!schema.existsType(srcType))
+        throw new SchemaException("Source type '" + srcType + "' referenced in materialized view query does not exist");
+
+    // Classify query complexity
+    final boolean simple = MaterializedViewQueryClassifier.isSimple(query, database);
+
+    // Wrap in recordFileChanges so that all schema mutations (backing type creation,
+    // MV metadata registration, and initial data population) are replicated atomically
+    // to HA replicas as a single schema change
+    return schema.recordFileChanges(() -> {
+      // Create the backing document type (schema-less)
+      final TypeBuilder<?> typeBuilder = schema.buildDocumentType().withName(name);
+      if (buckets > 0)
+        typeBuilder.withTotalBuckets(buckets);
+      if (pageSize > 0)
+        typeBuilder.withPageSize(pageSize);
+      typeBuilder.create();
+
+      // Create and register the materialized view; persist BUILDING status before the
+      // initial refresh so crash recovery in readConfiguration() can detect an incomplete
+      // population and mark the view STALE on restart
+      final MaterializedViewImpl view = new MaterializedViewImpl(
+          database, name, query, name, sourceTypeNames,
+          refreshMode, simple, refreshInterval);
+      view.setStatus(MaterializedViewStatus.BUILDING);
+      schema.materializedViews.put(name, view);
+      schema.saveConfiguration();
+
+      // Perform initial full refresh; on failure clean up the orphaned view and backing type
+      try {
+        MaterializedViewRefresher.fullRefresh(database, view);
+      } catch (final Exception e) {
+        // Remove the MV entry first (so dropType's backing-type guard won't block)
+        schema.materializedViews.remove(name);
+        try {
+          schema.dropType(name);
+        } catch (final Exception dropEx) {
+          LogManager.instance().log(MaterializedViewBuilder.class, Level.WARNING,
+              "Failed to clean up backing type '%s' after materialized view creation failure: %s",
+              dropEx, name, dropEx.getMessage());
+        }
+        throw e;
+      }
+      schema.saveConfiguration();
+
+      // Register event listeners for INCREMENTAL mode
+      if (refreshMode == MaterializedViewRefreshMode.INCREMENTAL)
+        registerListeners(schema, view, sourceTypeNames);
+
+      if (refreshMode == MaterializedViewRefreshMode.PERIODIC && refreshInterval > 0)
+        schema.getMaterializedViewScheduler().schedule(database, view);
+
+      return view;
+    });
+  }
+
+  static void registerListeners(final LocalSchema schema, final MaterializedViewImpl view,
+      final List<String> sourceTypeNames) {
+    final MaterializedViewChangeListener listener =
+        new MaterializedViewChangeListener((DatabaseInternal) schema.getDatabase(), view);
+    view.setChangeListener(listener);
+    for (final String srcType : sourceTypeNames) {
+      final DocumentType type = schema.getType(srcType);
+      type.getEvents().registerListener((AfterRecordCreateListener) listener);
+      type.getEvents().registerListener((AfterRecordUpdateListener) listener);
+      type.getEvents().registerListener((AfterRecordDeleteListener) listener);
+    }
+  }
+
+  static void unregisterListeners(final LocalSchema schema, final MaterializedViewImpl view) {
+    final MaterializedViewChangeListener listener = view.getChangeListener();
+    if (listener == null)
+      return;
+    for (final String srcType : view.getSourceTypeNames()) {
+      if (!schema.existsType(srcType))
+        continue;
+      final DocumentType type = schema.getType(srcType);
+      type.getEvents().unregisterListener((AfterRecordCreateListener) listener);
+      type.getEvents().unregisterListener((AfterRecordUpdateListener) listener);
+      type.getEvents().unregisterListener((AfterRecordDeleteListener) listener);
+    }
+    view.setChangeListener(null);
+  }
+
+  private List<String> extractSourceTypes(final String sql) {
+    final List<String> types = new ArrayList<>();
+    final Statement parsed = database.getStatementCache().get(sql);
+    if (parsed instanceof SelectStatement select) {
+      final FromClause from = select.getTarget();
+      if (from != null) {
+        final FromItem item = from.getItem();
+        if (item != null && item.getIdentifier() != null)
+          types.add(item.getIdentifier().getStringValue());
+      }
+    }
+    return types;
+  }
+}

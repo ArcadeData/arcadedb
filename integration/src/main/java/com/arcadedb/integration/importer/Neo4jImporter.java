@@ -28,6 +28,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -568,7 +569,7 @@ public class Neo4jImporter {
         // MULTI LABEL, CREATE A NEW MIXED TYPE THAT EXTEND ALL THE LABELS BY USING INHERITANCE
         final List<String> list = nodeLabels.toList().stream().map(String.class::cast).sorted(Comparator.naturalOrder())
             .collect(Collectors.toList());
-        return new Pair<>(String.join("_", list), list);
+        return new Pair<>(String.join(Labels.LABEL_SEPARATOR, list), list);
       } else
         return new Pair<>((String) nodeLabels.get(0), null);
     }

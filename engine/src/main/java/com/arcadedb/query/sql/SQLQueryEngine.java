@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.query.QueryEngine;
@@ -39,6 +40,8 @@ import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.MultiIterator;
+
+import com.arcadedb.query.OperationType;
 
 import java.util.Iterator;
 import java.util.Map;
@@ -82,7 +85,7 @@ public class SQLQueryEngine implements QueryEngine {
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
-      throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
     return statement.execute(database, parameters);
@@ -92,7 +95,7 @@ public class SQLQueryEngine implements QueryEngine {
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
     final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
-      throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
+      throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
     return statement.execute(database, parameters);
@@ -131,6 +134,19 @@ public class SQLQueryEngine implements QueryEngine {
       @Override
       public boolean isDDL() {
         return statement.isDDL();
+      }
+
+      @Override
+      public Set<OperationType> getOperationTypes() {
+        return statement.getOperationTypes();
+      }
+
+      @Override
+      public ResultSet execute(final Map<String, Object> parameters) {
+        final long resultSetLimit = database.getResultSetLimit();
+        if (resultSetLimit > 0)
+          statement.setLimit(new Limit(JJTLIMIT).setValue((int) resultSetLimit));
+        return statement.execute(database, parameters);
       }
     };
   }

@@ -12,9 +12,11 @@ import os
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
+from statistics import mean
 
 import arcadedb_embedded as arcadedb
 import pytest
+from arcadedb_embedded.exceptions import ArcadeDBError
 
 
 @pytest.fixture
@@ -161,5 +163,113 @@ def test_concurrent_access_limitation(cleanup_db):
     print("   ❌ It would get: LockException")
     print("   ❌ Error: 'Database is locked by another process'")
     print("   💡 This is BY DESIGN to prevent data corruption!")
+
+    db.close()
+
+
+def test_oltp_mixed_workload_threads(cleanup_db):
+    """OLTP-style mixed read/write workload in a single process."""
+    print("\n" + "=" * 70)
+    print("TEST 5: OLTP Mixed Workload (Multi-thread, Single Process)")
+    print("=" * 70)
+
+    db_path = cleanup_db("oltp_db_")
+    db = arcadedb.create_database(db_path)
+    db.schema.create_document_type("Account")
+    db.schema.create_property("Account", "account_id", "INTEGER")
+    db.schema.create_property("Account", "balance", "INTEGER")
+
+    initial_accounts = 10000
+    print(f"\n1. Seeding {initial_accounts} accounts...")
+    with db.transaction():
+        for i in range(initial_accounts):
+            db.command(
+                "sql",
+                f"INSERT INTO Account SET account_id = {i}, balance = 1000",
+            )
+    print("   ✅ Seed complete")
+
+    worker_count = 6
+    ops_per_worker = 600
+    read_ratio = 0.9
+    print(
+        f"\n2. Running {worker_count} threads, "
+        f"{ops_per_worker} ops each (read_ratio={read_ratio})..."
+    )
+
+    def worker(worker_id):
+        import random
+
+        rng = random.Random(42 + worker_id)
+        latencies_ms = []
+        reads = 0
+        writes = 0
+        retries = 0
+
+        for _ in range(ops_per_worker):
+            account_id = rng.randrange(initial_accounts)
+            op = "read" if rng.random() < read_ratio else "write"
+            t0 = time.time()
+            if op == "read":
+                result = db.query(
+                    "sql",
+                    f"SELECT balance FROM Account WHERE account_id = {account_id}",
+                )
+                _ = list(result)
+                reads += 1
+            else:
+                delta = rng.choice([-5, -1, 1, 5])
+                max_retries = 12
+                for attempt in range(max_retries):
+                    try:
+                        with db.transaction():
+                            db.command(
+                                "sql",
+                                "UPDATE Account SET balance = balance + ? "
+                                "WHERE account_id = ?",
+                                delta,
+                                account_id,
+                            )
+                        writes += 1
+                        break
+                    except ArcadeDBError as exc:
+                        if "ConcurrentModificationException" not in str(exc):
+                            raise
+                        retries += 1
+                        time.sleep(0.005 * (attempt + 1))
+                else:
+                    raise AssertionError(
+                        "Write failed after retries due to concurrent modifications"
+                    )
+            latencies_ms.append((time.time() - t0) * 1000.0)
+
+        return {
+            "reads": reads,
+            "writes": writes,
+            "retries": retries,
+            "latencies_ms": latencies_ms,
+        }
+
+    t_start = time.time()
+    results = []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(worker, i) for i in range(worker_count)]
+        for f in futures:
+            results.append(f.result())
+    t_total = time.time() - t_start
+
+    total_reads = sum(r["reads"] for r in results)
+    total_writes = sum(r["writes"] for r in results)
+    total_retries = sum(r["retries"] for r in results)
+    all_lat = [x for r in results for x in r["latencies_ms"]]
+    throughput = (total_reads + total_writes) / t_total if t_total else 0
+
+    print("\n3. Results:")
+    print(f"   Total ops: {total_reads + total_writes}")
+    print(f"   Reads/Writes: {total_reads}/{total_writes}")
+    print(f"   Retries: {total_retries}")
+    print(f"   Throughput: {throughput:,.0f} ops/sec")
+    print(f"   Avg latency: {mean(all_lat):.2f} ms")
+    print(f"   p95 latency: {sorted(all_lat)[int(len(all_lat)*0.95)-1]:.2f} ms")
 
     db.close()

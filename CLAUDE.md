@@ -23,7 +23,8 @@ General design principles:
   - ✅ ALLOWED: Apache 2.0, MIT, BSD (2/3-Clause), EPL 1.0/2.0, UPL 1.0, EDL 1.0, LGPL 2.1+ (for libraries only), CC0/Public Domain
   - ❌ FORBIDDEN: GPL, AGPL, proprietary licenses without explicit permission, SSPL, Commons Clause
   - When adding a dependency, you MUST update ATTRIBUTIONS.md and, if Apache-licensed with a NOTICE file, incorporate required notices into the main NOTICE file
-- for Studio (webapp), limit to jquery and bootsptrap 5. If necessary use 3rd party libs, but they must be Apache 2.0 compatible (see allowed licenses above)
+- for Studio (webapp), limit to jquery and bootstrap 5. If necessary use 3rd party libs, but they must be Apache 2.0 compatible (see allowed licenses above)
+- always bear in mind PERFORMANCE. It must be always your mantra: performance and lightweight on garbage collector. If you can, prefer using arrays of primitives to List of Objects
 - if you need to use JSON, use the class com.arcadedb.serializer.json.JSONObject. Leverage the getter methods that accept the default value as 2nd argument, so you don't need to check if they present or not null = less boilerplate code
 - same thing for JSON arrays: use com.arcadedb.serializer.json.JSONArray class
 - code styles:
@@ -94,23 +95,105 @@ cd package
 - **Run tests with specific pattern**: `mvn test -Dtest="*Pattern*"`
 - **Performance tests**: Located in `src/test/java/performance/` packages
 
+## Codebase Navigation Map
+
+### ANTLR Grammars
+- `engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLLexer.g4` — SQL lexer
+- `engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLParser.g4` — SQL parser
+- `engine/src/main/antlr4/com/arcadedb/query/opencypher/grammar/Cypher25Lexer.g4` — Cypher lexer
+- `engine/src/main/antlr4/com/arcadedb/query/opencypher/grammar/Cypher25Parser.g4` — Cypher parser
+
+### SQL Engine Key Files
+- **Parser AST nodes** (170+ classes): `engine/src/main/java/com/arcadedb/query/sql/parser/`
+  - `SuffixIdentifier.java` — property access (e.g., `record.field`)
+  - `BaseIdentifier.java`, `LevelZeroIdentifier.java` — identifier resolution
+  - `Expression.java`, `BaseExpression.java`, `MathExpression.java` — expression evaluation
+  - `Projection.java`, `ProjectionItem.java` — SELECT projection handling
+  - `SelectStatement.java`, `MatchStatement.java` — statement AST roots
+  - `NestedProjection.java`, `NestedProjectionItem.java` — nested projection (e.g., `{*}`)
+  - `FunctionCall.java`, `MethodCall.java` — function/method invocation
+  - `Modifier.java` — chained modifiers (array selectors, method calls, suffix identifiers)
+  - `WhereClause.java`, `BooleanExpression.java` — filter conditions
+  - `LetClause.java`, `LetItem.java` — LET variable bindings
+- **Executor steps** (158 classes): `engine/src/main/java/com/arcadedb/query/sql/executor/`
+  - `SelectExecutionPlanner.java` — main SELECT execution planner
+  - `ProjectionCalculationStep.java` — projection evaluation step
+  - `LetExpressionStep.java`, `GlobalLetExpressionStep.java` — LET evaluation
+  - `FetchFromTypeStep.java`, `FetchFromIndexStep.java` — data source steps
+  - `FilterStep.java`, `FilterByClustersStep.java` — filtering steps
+- **SQL methods** (50+ classes): `engine/src/main/java/com/arcadedb/query/sql/method/`
+  - `string/` — toLowerCase, toUpperCase, trim, split, etc.
+  - `collection/` — size, keys, values, sort, etc.
+  - `conversion/` — asInteger, asString, asList, asJSON, etc.
+- **SQL functions**: `engine/src/main/java/com/arcadedb/function/sql/`
+  - `graph/` — out, in, both, outE, inE, bothE, shortestPath, dijkstra, etc.
+  - `coll/` — difference, intersect, symmetricDifference
+  - `fulltext/` — search field/index functions
+
+### OpenCypher Engine Key Files
+- **AST** (40+ classes): `engine/src/main/java/com/arcadedb/query/opencypher/ast/`
+  - `CypherStatement.java`, `MatchClause.java`, `ReturnClause.java`, `WhereClause.java`
+  - `CreateClause.java`, `MergeClause.java`, `DeleteClause.java`, `SetClause.java`
+  - `PatternElement.java`, `NodePattern.java`, `RelationshipPattern.java`
+- **Executor**: `engine/src/main/java/com/arcadedb/query/opencypher/executor/`
+- **Optimizer**: `engine/src/main/java/com/arcadedb/query/opencypher/optimizer/`
+- **Planner**: `engine/src/main/java/com/arcadedb/query/opencypher/planner/`
+- **Tests**: `engine/src/test/java/com/arcadedb/query/opencypher/`
+
+### Graph Engine
+- `engine/src/main/java/com/arcadedb/graph/`
+  - `Vertex.java`, `MutableVertex.java`, `ImmutableVertex.java` — vertex types
+  - `Edge.java`, `MutableEdge.java`, `ImmutableEdge.java` — edge types
+  - `GraphEngine.java` — core graph operations
+  - `EdgeSegment.java`, `MutableEdgeSegment.java` — edge storage segments
+  - `EdgeLinkedList.java` — edge linked list structure
+  - `EdgeIterator.java`, `VertexIterator.java` — traversal iterators
+
+### Server / HTTP
+- **HTTP handlers**: `server/src/main/java/com/arcadedb/server/http/handler/`
+  - `DatabaseAbstractHandler.java` — base handler (wraps commands in transactions)
+  - `PostCommandHandler.java` — POST /command endpoint
+  - `PostQueryHandler.java`, `GetQueryHandler.java` — query endpoints
+- **HA**: `server/src/main/java/com/arcadedb/server/ha/`
+- **Security**: `server/src/main/java/com/arcadedb/server/security/`
+
+### Test Locations (by module)
+- `engine/src/test/java/` — 746 test files (SQL, Cypher, graph, storage, schema, indexing)
+- `server/src/test/java/` — 114 test files (HTTP API, HA, security)
+- `gremlin/src/test/java/` — 29 test files
+- `integration/src/test/java/` — 22 test files
+- `bolt/src/test/java/` — 10 test files
+- `graphql/src/test/java/` — 9 test files
+
 ## Architecture Overview
 
 ### Core Modules
-- **engine/**: Core database engine, storage, indexing, query execution
-- **server/**: HTTP/REST API, WebSocket support, clustering/HA functionality
+- **engine/**: Core database engine, storage, indexing, query execution (SQL, OpenCypher, Polyglot)
+- **server/**: HTTP/REST API, WebSocket support, clustering/HA, MCP server
+- **network/**: Network communication layer
+- **console/**: CLI console for interactive database operations
 - **studio/**: Web-based administration interface (JavaScript/Node.js)
+- **metrics/**: Server metrics collection and reporting
+- **integration/**: Integration utilities
+- **test-utils/**: Shared test utilities
+
+#### Wire Protocol Modules
 - **gremlin/**: Apache Tinkerpop Gremlin support
+- **graphql/**: GraphQL API support
 - **mongodbw/**: MongoDB wire protocol compatibility
 - **redisw/**: Redis wire protocol compatibility
-- **graphql/**: GraphQL API support
 - **postgresw/**: PostgreSQL wire protocol compatibility
-- **network/**: Network communication layer
+- **bolt/**: Neo4j Bolt wire protocol compatibility
+- **grpc/**: gRPC protocol definitions
+- **grpcw/**: gRPC wire protocol module
+- **grpc-client/**: gRPC client library
 
 ### Key Engine Components
 - **Database Management**: `com.arcadedb.database.*` - Database lifecycle, transactions, ACID compliance
 - **Storage Engine**: `com.arcadedb.engine.*` - Low-level storage, page management, WAL
-- **Query Processing**: `com.arcadedb.query.sql.*` - SQL query parsing, execution planning
+- **SQL Query Engine**: `com.arcadedb.query.sql.*` - SQL query parsing, execution planning
+- **OpenCypher Engine**: `com.arcadedb.query.opencypher.*` - Native Cypher implementation with ANTLR parser, AST, optimizer (filter pushdown, index selection, expand-into, join ordering), and step-based execution. Has both optimizer and legacy execution paths — changes to clause handling may need updates in multiple paths
+- **Polyglot Engine**: `com.arcadedb.query.polyglot.*` - GraalVM-based scripting support
 - **Schema Management**: `com.arcadedb.schema.*` - Type definitions, property management
 - **Index System**: `com.arcadedb.index.*` - LSM-Tree indexes, full-text, vector indexes
 - **Graph Engine**: `com.arcadedb.graph.*` - Vertex/Edge management, graph traversals
@@ -120,7 +203,8 @@ cd package
 - **HTTP API**: `com.arcadedb.server.http.*` - REST endpoints, request handling
 - **High Availability**: `com.arcadedb.server.ha.*` - Clustering, replication, leader election
 - **Security**: `com.arcadedb.server.security.*` - Authentication, authorization
-- **Monitoring**: `com.arcadedb.server.monitor.*` - Metrics, health checks
+- **Monitoring**: `com.arcadedb.server.monitor.*` - Metrics, query profiling, health checks
+- **MCP**: `com.arcadedb.server.mcp.*` - Model Context Protocol server support
 
 ## Development Guidelines
 
@@ -135,10 +219,11 @@ cd package
 - Thread-safe implementations throughout
 
 ### Testing Approach
+- **Framework**: JUnit 5 (Jupiter) with AssertJ assertions
 - Unit tests in each module's `src/test/java`
 - Integration tests with `IT` suffix
 - Performance tests in `performance/` packages
-- Use TestContainers for external service testing
+- TestContainers used in `e2e/` and `load-tests/` modules for containerized testing
 - Separate test databases in `databases/` for isolation
 
 ### Database Features to Consider
@@ -147,7 +232,7 @@ cd package
 - **Query Languages**: SQL (OrientDB-compatible), Cypher, Gremlin, MongoDB queries
 - **Indexing**: LSM-Tree indexes, full-text (Lucene), vector embeddings
 - **High Availability**: Leader-follower replication, automatic failover
-- **Wire Protocols**: HTTP/JSON, PostgreSQL, MongoDB, Redis compatibility
+- **Wire Protocols**: HTTP/JSON, PostgreSQL, MongoDB, Redis, Neo4j Bolt, gRPC compatibility
 
 ### Common Development Tasks
 
@@ -165,7 +250,9 @@ cd package
 
 #### Query Development
 - SQL parsing in `com.arcadedb.query.sql.*`
-- Execution plans in `com.arcadedb.query.sql.executor.*`
+- SQL execution plans in `com.arcadedb.query.sql.executor.*`
+- OpenCypher engine in `com.arcadedb.query.opencypher.*` — has `ast/`, `parser/`, `executor/`, `optimizer/`, `planner/`, `rewriter/` sub-packages
+- OpenCypher tests in `engine/src/test/java/com/arcadedb/query/opencypher/`
 - Test with various query patterns and data sizes
 
 #### Server Development
@@ -174,7 +261,7 @@ cd package
 - WebSocket support for real-time features
 
 #### Wire Protocol Module Dependencies
-- **Standard**: All wire protocol modules (gremlin, graphql, mongodbw, redisw, postgresw, grpcw) must use `provided` scope for `arcadedb-server` dependency
+- **Standard**: All wire protocol modules (gremlin, graphql, mongodbw, redisw, postgresw, bolt, grpcw) must use `provided` scope for `arcadedb-server` dependency
 - **Rationale**: Server remains the assembly point; prevents dependency duplication in distributions
 - **Pattern**:
   - Main server dependency → scope: `provided`
@@ -203,7 +290,8 @@ cd package
 
 ## Important Notes
 
-- **Pre-commit hooks**: This project uses pre-commit for code quality checks
+- **Pre-commit hooks**: This project uses pre-commit for code quality checks (trailing whitespace, Prettier for Java/XML formatting, etc.)
+- **Code formatting**: Prettier with `requirePragma: true` and `printWidth: 160` — only formats files with a `@format` pragma
 - **Security**: Never log or expose sensitive data (passwords, tokens, etc.)
 - **Performance**: Always consider memory and CPU impact of changes
 - **Compatibility**: Maintain backward compatibility for API changes

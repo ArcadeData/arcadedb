@@ -75,8 +75,9 @@ public class OpenCypherVariableLengthPathTest {
     // Test that path variable IS being stored (even if there are duplicates)
     // This verifies the fix: passing pathVariable instead of relVar to ExpandPathStep
     final ResultSet result = database.query("opencypher",
-        "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b:Person) " +
-            "RETURN p AS path LIMIT 1");
+        """
+        MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b:Person) \
+        RETURN p AS path LIMIT 1""");
 
     assertThat(result.hasNext()).as("Should have at least one result").isTrue();
     final Result row = result.next();
@@ -96,8 +97,9 @@ public class OpenCypherVariableLengthPathTest {
   void namedPathSingleHop() {
     // Single-hop paths should work correctly (no duplication bug)
     final ResultSet result = database.query("opencypher",
-        "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) " +
-            "RETURN p AS path");
+        """
+        MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) \
+        RETURN p AS path""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -119,9 +121,10 @@ public class OpenCypherVariableLengthPathTest {
     try {
       db2.transaction(() -> {
         db2.command("opencypher",
-            "CREATE (a:Artist:A), (b:Artist:B), (c:Artist:C) " +
-                "CREATE (a)-[:WORKED_WITH {year: 1987}]->(b), " +
-                "(b)-[:WORKED_WITH {year: 1988}]->(c)");
+            """
+            CREATE (a:Artist:A), (b:Artist:B), (c:Artist:C) \
+            CREATE (a)-[:WORKED_WITH {year: 1987}]->(b), \
+            (b)-[:WORKED_WITH {year: 1988}]->(c)""");
       });
 
       db2.transaction(() -> {

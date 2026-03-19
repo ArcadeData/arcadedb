@@ -45,6 +45,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -58,7 +59,10 @@ import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.server.monitor.ProfilingResultSet;
+import com.arcadedb.server.monitor.ServerQueryProfiler;
 
 import java.io.*;
 import java.util.*;
@@ -70,10 +74,16 @@ import java.util.concurrent.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ServerDatabase implements DatabaseInternal {
+  private final ArcadeDBServer   server;
   private final DatabaseInternal wrapped;
 
-  public ServerDatabase(final DatabaseInternal wrapped) {
+  public ServerDatabase(final ArcadeDBServer server, final DatabaseInternal wrapped) {
+    this.server = server;
     this.wrapped = wrapped;
+  }
+
+  private ServerQueryProfiler getProfiler() {
+    return server != null ? server.getQueryProfiler() : null;
   }
 
   public DatabaseInternal getWrappedDatabaseInstance() {
@@ -121,6 +131,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Select select() {
     return wrapped.select();
+  }
+
+  @Override
+  public GraphBatch.Builder batch() {
+    return wrapped.batch();
   }
 
   @Override
@@ -461,55 +476,103 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
       final Object... args) {
-    return wrapped.command(language, query, configuration, args);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.command(language, query, configuration, args);
+    final ResultSet rs = wrapped.command(language, query, configuration, args);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
   }
 
   @Override
   public ResultSet command(final String language, final String query) {
-    return wrapped.command(language, query);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.command(language, query);
+    final ResultSet rs = wrapped.command(language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
-    return wrapped.command(language, query, parameters);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.command(language, query, parameters);
+    final ResultSet rs = wrapped.command(language, query, parameters);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> parameters) {
-    return wrapped.command(language, query, parameters);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.command(language, query, parameters);
+    final Map<String, Object> profilingParams = new HashMap<>(parameters);
+    profilingParams.put("$profileExecution", true);
+    final ResultSet rs = wrapped.command(language, query, profilingParams);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
       final Map<String, Object> args) {
-    return wrapped.command(language, query, configuration, args);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.command(language, query, configuration, args);
+    final Map<String, Object> profilingArgs = new HashMap<>(args);
+    profilingArgs.put("$profileExecution", true);
+    final ResultSet rs = wrapped.command(language, query, configuration, profilingArgs);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
   }
 
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> params) {
-    return wrapped.execute(language, script, params);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.execute(language, script, params);
+    final Map<String, Object> profilingParams = new HashMap<>(params);
+    profilingParams.put("$profileExecution", true);
+    final ResultSet rs = wrapped.execute(language, script, profilingParams);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, script);
   }
 
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
-    return wrapped.execute(language, script, args);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.execute(language, script, args);
+    final ResultSet rs = wrapped.execute(language, script, args);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, script);
   }
 
   @Override
   public ResultSet query(final String language, final String query) {
-    return wrapped.query(language, query);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.query(language, query);
+    final ResultSet rs = wrapped.query(language, query);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Object... parameters) {
-    return wrapped.query(language, query, parameters);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.query(language, query, parameters);
+    final ResultSet rs = wrapped.query(language, query, parameters);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> parameters) {
-    return wrapped.query(language, query, parameters);
+    final ServerQueryProfiler profiler = getProfiler();
+    if (profiler == null || !profiler.isRecording())
+      return wrapped.query(language, query, parameters);
+    final Map<String, Object> profilingParams = new HashMap<>(parameters);
+    profilingParams.put("$profileExecution", true);
+    final ResultSet rs = wrapped.query(language, query, profilingParams);
+    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query);
   }
 
   @Override
@@ -616,6 +679,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Map<String, Object> getGlobalVariables() {
     return wrapped.getGlobalVariables();
+  }
+
+  @Override
+  public SecurityManager getSecurity() {
+    return wrapped.getSecurity();
   }
 
   @Override

@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -112,7 +113,7 @@ public class DeleteStep extends AbstractExecutionStep {
               rowCount++;
 
             // Capture type info for relationships before deletion
-            final Map<String, String> relTypes = new java.util.HashMap<>();
+            final Map<String, String> relTypes = new HashMap<>();
             for (final String variable : deleteClause.getVariables()) {
               if (!variable.contains(".") && !variable.contains("[")) {
                 final Object obj = inputResult.getProperty(variable);

@@ -22,7 +22,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +34,7 @@ class BoltChunkedIOTest {
   // ============ BoltChunkedOutput tests ============
 
   @Test
-  void writeEmptyMessage() throws IOException {
+  void writeEmptyMessage() throws Exception {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     final BoltChunkedOutput output = new BoltChunkedOutput(baos);
 
@@ -49,7 +48,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void writeSmallMessage() throws IOException {
+  void writeSmallMessage() throws Exception {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     final BoltChunkedOutput output = new BoltChunkedOutput(baos);
 
@@ -74,7 +73,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void writeMessageExactlyMaxChunkSize() throws IOException {
+  void writeMessageExactlyMaxChunkSize() throws Exception {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     final BoltChunkedOutput output = new BoltChunkedOutput(baos);
 
@@ -92,7 +91,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void writeMessageLargerThanMaxChunkSize() throws IOException {
+  void writeMessageLargerThanMaxChunkSize() throws Exception {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     final BoltChunkedOutput output = new BoltChunkedOutput(baos);
 
@@ -122,7 +121,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void writeRawBytes() throws IOException {
+  void writeRawBytes() throws Exception {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     final BoltChunkedOutput output = new BoltChunkedOutput(baos);
 
@@ -133,7 +132,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void writeRawInt() throws IOException {
+  void writeRawInt() throws Exception {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     final BoltChunkedOutput output = new BoltChunkedOutput(baos);
 
@@ -150,7 +149,7 @@ class BoltChunkedIOTest {
   // ============ BoltChunkedInput tests ============
 
   @Test
-  void readEmptyMessage() throws IOException {
+  void readEmptyMessage() throws Exception {
     // Just end marker
     final byte[] input = { 0x00, 0x00 };
     final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input));
@@ -160,7 +159,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void readSmallMessage() throws IOException {
+  void readSmallMessage() throws Exception {
     // Size (5) + data + end marker
     final byte[] input = {
         0x00, 0x05,  // chunk size = 5
@@ -174,7 +173,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void readMultiChunkMessage() throws IOException {
+  void readMultiChunkMessage() throws Exception {
     // Two chunks: 3 bytes + 2 bytes
     final byte[] input = {
         0x00, 0x03,  // first chunk size = 3
@@ -190,7 +189,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void readRawBytes() throws IOException {
+  void readRawBytes() throws Exception {
     final byte[] input = { 0x60, 0x60, (byte) 0xB0, 0x17, 0x00, 0x00 };
     final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input));
 
@@ -199,7 +198,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void readRawInt() throws IOException {
+  void readRawInt() throws Exception {
     final byte[] input = { 0x00, 0x00, 0x01, 0x04 };
     final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input));
 
@@ -208,7 +207,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void readRawShort() throws IOException {
+  void readRawShort() throws Exception {
     final byte[] input = { 0x00, 0x05 };
     final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input));
 
@@ -217,7 +216,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void readLargeChunkSize() throws IOException {
+  void readLargeChunkSize() throws Exception {
     // Chunk size 0xFFFF (65535)
     final byte[] input = new byte[65535 + 4]; // size header + data + end marker
     input[0] = (byte) 0xFF;
@@ -235,7 +234,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void available() throws IOException {
+  void available() throws Exception {
     final byte[] input = { 0x01, 0x02, 0x03 };
     final BoltChunkedInput chunkedInput = new BoltChunkedInput(new ByteArrayInputStream(input));
 
@@ -245,7 +244,7 @@ class BoltChunkedIOTest {
   // ============ Round-trip tests ============
 
   @Test
-  void roundTripSmallMessage() throws IOException {
+  void roundTripSmallMessage() throws Exception {
     final byte[] originalMessage = { 0x01, 0x02, 0x03, 0x04, 0x05 };
 
     // Write
@@ -261,7 +260,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void roundTripLargeMessage() throws IOException {
+  void roundTripLargeMessage() throws Exception {
     // Message larger than max chunk size
     final byte[] originalMessage = new byte[100000];
     for (int i = 0; i < originalMessage.length; i++) {
@@ -281,7 +280,7 @@ class BoltChunkedIOTest {
   }
 
   @Test
-  void roundTripEmptyMessage() throws IOException {
+  void roundTripEmptyMessage() throws Exception {
     final byte[] originalMessage = new byte[0];
 
     // Write

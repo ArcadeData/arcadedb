@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -248,7 +250,7 @@ class CypherFunctionFactoryExtendedTest {
   void shouldExecuteToFloatFunction() {
     final var result = database.query("opencypher", "RETURN toFloat('3.14') AS result");
     assertThat(result.hasNext()).isTrue();
-    assertThat(result.next().<Number>getProperty("result").doubleValue()).isCloseTo(3.14, org.assertj.core.data.Offset.offset(0.001));
+    assertThat(result.next().<Number>getProperty("result").doubleValue()).isCloseTo(3.14, Offset.offset(0.001));
   }
 
   @Test

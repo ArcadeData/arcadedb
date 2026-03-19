@@ -59,6 +59,7 @@ public class SetClause {
     private final String variable;
     private final String property;
     private final Expression valueExpression;
+    private final Expression targetExpression;
     private final SetType type;
     private final List<String> labels;
 
@@ -66,6 +67,17 @@ public class SetClause {
     public SetItem(final String variable, final String property, final Expression valueExpression) {
       this.variable = variable;
       this.property = property;
+      this.valueExpression = valueExpression;
+      this.targetExpression = null;
+      this.type = SetType.PROPERTY;
+      this.labels = null;
+    }
+
+    /** Property assignment with expression target: SET (CASE ... THEN n END).prop = value */
+    public SetItem(final Expression targetExpression, final String property, final Expression valueExpression) {
+      this.variable = null;
+      this.property = property;
+      this.targetExpression = targetExpression;
       this.valueExpression = valueExpression;
       this.type = SetType.PROPERTY;
       this.labels = null;
@@ -76,6 +88,7 @@ public class SetClause {
       this.variable = variable;
       this.property = null;
       this.valueExpression = valueExpression;
+      this.targetExpression = null;
       this.type = type;
       this.labels = null;
     }
@@ -85,6 +98,7 @@ public class SetClause {
       this.variable = variable;
       this.property = null;
       this.valueExpression = null;
+      this.targetExpression = null;
       this.type = SetType.LABELS;
       this.labels = labels;
     }
@@ -99,6 +113,10 @@ public class SetClause {
 
     public Expression getValueExpression() {
       return valueExpression;
+    }
+
+    public Expression getTargetExpression() {
+      return targetExpression;
     }
 
     public SetType getType() {

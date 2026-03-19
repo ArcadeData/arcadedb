@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
@@ -68,17 +69,29 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.engine.timeseries.AggregationType;
+import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
+import com.arcadedb.engine.timeseries.TagFilter;
+import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
+import com.arcadedb.query.sql.parser.BaseIdentifier;
+import com.arcadedb.query.sql.parser.LevelZeroIdentifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -127,6 +140,66 @@ public class SelectExecutionPlanner {
       info.timeout = new Timeout(-1);
       info.timeout.setValue(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
     }
+
+    info.projectedProperties = computeProjectedProperties(info);
+  }
+
+  /**
+   * Computes the set of property names required by this query for column projection pushdown.
+   * Analyzes SELECT projections, WHERE clause, GROUP BY, and ORDER BY to determine the minimal
+   * set of properties that need to be deserialized from storage.
+   *
+   * @return the set of required property names, or null if all properties are needed (e.g., SELECT *)
+   */
+  private static Set<String> computeProjectedProperties(final QueryPlanningInfo info) {
+    // If there's no projection or it contains *, we need all properties
+    if (info.projection == null)
+      return null;
+
+    for (final ProjectionItem item : info.projection.getItems())
+      if (item.isAll())
+        return null;
+
+    final Set<String> result = new HashSet<>();
+
+    // Extract from SELECT projections
+    for (final ProjectionItem item : info.projection.getItems()) {
+      if (item.getExpression() != null && item.getExpression().isBaseIdentifier())
+        result.add(item.getExpression().getDefaultAlias().getStringValue());
+      else if (item.getExpression() != null)
+        // Complex expression: we can't determine the exact fields needed, need all
+        return null;
+    }
+
+    // Extract from WHERE clause
+    if (info.whereClause != null) {
+      // WHERE can reference arbitrary fields, so we need all properties if we can't analyze it
+      // For safety, return null to indicate all properties needed
+      return null;
+    }
+
+    // Extract from GROUP BY
+    if (info.groupBy != null) {
+      for (final Expression expr : info.groupBy.getItems()) {
+        if (expr.isBaseIdentifier())
+          result.add(expr.getDefaultAlias().getStringValue());
+        else
+          return null;
+      }
+    }
+
+    // Extract from ORDER BY
+    if (info.orderBy != null) {
+      for (final OrderByItem item : info.orderBy.getItems()) {
+        final String alias = item.getAlias();
+        if (alias != null)
+          result.add(alias);
+        else
+          return null;
+      }
+    }
+
+    return result.isEmpty() ? null : result;
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean useCache) {
@@ -365,14 +438,13 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * returns true if the query is minimal, ie. no WHERE condition, no SKIP/LIMIT, no UNWIND, no GROUP/ORDER BY, no LET
-   *
-   * @return
+   * returns true if the query is minimal, ie. no WHERE condition, no UNWIND, no GROUP/ORDER BY, no LET.
+   * SKIP/LIMIT are allowed because all hardwired optimizations (count, max, min) return a single row.
    */
   private boolean isMinimalQuery(final QueryPlanningInfo info) {
     return info.projectionAfterOrderBy == null && info.globalLetClause == null && info.perRecordLetClause == null
         && info.whereClause == null && info.flattenedWhereClause == null && info.groupBy == null && info.orderBy == null
-        && info.unwind == null && info.skip == null && info.limit == null;
+        && info.unwind == null;
   }
 
   private boolean isCountStar(final QueryPlanningInfo info) {
@@ -384,18 +456,27 @@ public class SelectExecutionPlanner {
     return item.getExpression().toString().equalsIgnoreCase("count(*)");
   }
 
-  private static boolean isCountOnly(final QueryPlanningInfo info) {
-    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1 ||
-        info.projection.getItems().stream().filter(x -> !x.getProjectionAliasAsString().startsWith("_$$$ORDER_BY_ALIAS$$$_"))
-            .count() != 1) {
-      return false;
+  /**
+   * Returns the count(*) ProjectionItem if the aggregateProjection contains exactly one true aggregate and it is count(*),
+   * otherwise returns null. Non-aggregate pass-through alias items (added for non-aggregate projections) are ignored.
+   */
+  private static ProjectionItem findCountStarItem(final QueryPlanningInfo info, final CommandContext context) {
+    if (info.aggregateProjection == null)
+      return null;
+
+    ProjectionItem countItem = null;
+    for (final ProjectionItem item : info.aggregateProjection.getItems()) {
+      if (!item.isAggregate(context))
+        continue;
+      if (countItem != null)
+        return null; // more than one aggregate function
+      final Expression exp = item.getExpression();
+      if (exp.getMathExpression() instanceof final BaseExpression base && base.isCount() && base.getModifier() == null)
+        countItem = item;
+      else
+        return null; // aggregate but not count(*)
     }
-    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
-    final Expression exp = item.getExpression();
-    if (exp.getMathExpression() != null && exp.getMathExpression() instanceof final BaseExpression base) {
-      return base.isCount() && base.getModifier() == null;
-    }
-    return false;
+    return countItem;
   }
 
   private boolean isCount(final Projection aggregateProjection, final Projection projection) {
@@ -419,7 +500,16 @@ public class SelectExecutionPlanner {
   private boolean handleHardwiredMaxMinOnIndex(final SelectExecutionPlan result, final QueryPlanningInfo info,
       final CommandContext context) {
     // Must have a type target
-    final Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
+    Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
+    if (targetClass == null && info.target != null) {
+      // Check if the target is specified via a positional/named parameter (e.g., SELECT max(p) FROM ?)
+      final InputParameter inputParam = info.target.getItem().getInputParam();
+      if (inputParam != null) {
+        final Object paramValue = inputParam.getValue(context.getInputParameters());
+        if (paramValue instanceof String string)
+          targetClass = new Identifier(string);
+      }
+    }
     if (targetClass == null)
       return false;
 
@@ -461,6 +551,7 @@ public class SelectExecutionPlanner {
 
   /**
    * Extracts MAX/MIN function info from the query if it's a simple MAX(field) or MIN(field).
+   * Returns null if the projection contains additional operations (e.g., max(field)+1).
    */
   private MaxMinInfo getMaxMinInfo(final QueryPlanningInfo info) {
     if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1
@@ -469,6 +560,14 @@ public class SelectExecutionPlanner {
 
     // preAggregateProjection contains the field expression (e.g., "value AS _$$$OALIAS$$$_1")
     if (info.preAggregateProjection == null || info.preAggregateProjection.getItems().size() != 1)
+      return null;
+
+    // Ensure the projection expression is purely a function call (e.g., max(id)), not a compound
+    // expression like max(id)+1. If the projection has additional arithmetic, the index-optimized
+    // path would skip those operations and return wrong results.
+    final ProjectionItem projItem = info.projection.getItems().getFirst();
+    final Expression projExp = projItem.getExpression();
+    if (projExp.getMathExpression() == null || !(projExp.getMathExpression() instanceof BaseExpression))
       return null;
 
     final ProjectionItem aggregateItem = info.aggregateProjection.getItems().getFirst();
@@ -572,8 +671,9 @@ public class SelectExecutionPlanner {
 
         result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, context,
             info.timeout != null ? info.timeout.getVal().longValue() : -1));
-        if (isCountOnly(info) && info.groupBy == null) {
-          result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection.getItems().getFirst(), context));
+        final ProjectionItem countStarItem = findCountStarItem(info, context);
+        if (countStarItem != null && info.groupBy == null) {
+          result.chain(new GuaranteeEmptyCountStep(countStarItem, info.preAggregateProjection, context));
         }
       }
       result.chain(new ProjectionCalculationStep(info.projection, context));
@@ -1449,7 +1549,20 @@ public class SelectExecutionPlanner {
     case "indexes" -> plan.chain(new FetchFromSchemaIndexesStep(context));
     case "database" -> plan.chain(new FetchFromSchemaDatabaseStep(context));
     case "buckets" -> plan.chain(new FetchFromSchemaBucketsStep(context));
-    default -> throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
+    case "materializedviews" -> plan.chain(new FetchFromSchemaMaterializedViewsStep(context));
+    case "graphanalyticalviews" -> plan.chain(new FetchFromSchemaGraphAnalyticalViewsStep(context));
+    case "continuousaggregates" -> plan.chain(new FetchFromSchemaContinuousAggregatesStep(context));
+    case "stats" -> plan.chain(new FetchFromSchemaStatsStep(context));
+    case "dictionary" -> plan.chain(new FetchFromSchemaDictionaryStep(context));
+    default -> {
+      final String name = metadata.getName().toLowerCase();
+      if (name.startsWith("bucket:"))
+        plan.chain(new FetchFromSchemaBucketDetailStep(metadata.getName().substring("bucket:".length()), context));
+      else if (name.startsWith("index:"))
+        plan.chain(new FetchFromSchemaIndexDetailStep(metadata.getName().substring("index:".length()), context));
+      else
+        throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
+    }
     }
   }
 
@@ -1601,6 +1714,41 @@ public class SelectExecutionPlanner {
   private void handleTypeAsTarget(final SelectExecutionPlan plan, final Set<String> filterClusters, final FromClause from,
       final QueryPlanningInfo info, final CommandContext context) {
     final Identifier identifier = from.getItem().getIdentifier();
+
+    // Check if this is a TimeSeries type — use the engine for range queries
+    final DocumentType docType = context.getDatabase().getSchema().getType(identifier.getStringValue());
+    if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
+      // Extract time range from WHERE clause (if available)
+      long fromTs = Long.MIN_VALUE;
+      long toTs = Long.MAX_VALUE;
+
+      if (info.flattenedWhereClause != null) {
+        for (final AndBlock andBlock : info.flattenedWhereClause) {
+          for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+            final long[] range = extractTimeRange(expr, tsType.getTimestampColumn(), context);
+            if (range != null) {
+              // Tighten bounds: take the most restrictive range
+              if (range[0] != Long.MIN_VALUE)
+                fromTs = Math.max(fromTs, range[0]);
+              if (range[1] != Long.MAX_VALUE)
+                toTs = Math.min(toTs, range[1]);
+            }
+          }
+        }
+      }
+
+      // Extract tag filter from WHERE clause
+      final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, tsType.getTsColumns(),
+          tsType.getTimestampColumn(), context);
+
+      // Try push-down aggregation before falling back to full row fetch
+      if (tryTimeSeriesAggregationPushDown(plan, tsType, fromTs, toTs, info, context))
+        return;
+
+      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, context));
+      return;
+    }
+
     if (handleTypeAsTargetWithIndexedFunction(plan, filterClusters, identifier, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
       return;
@@ -1622,12 +1770,353 @@ public class SelectExecutionPlanner {
     else if (isOrderByRidDesc(info))
       orderByRidAsc = false;
 
+    // Predicate pushdown: if there's a WHERE clause and no index was used, integrate the filter
+    // directly into the scan step to avoid separate FilterStep overhead.
+    // Also passes projectedProperties so that only SELECT-listed fields are deserialized
+    // for matching records (two-phase deserialization optimization).
+    // Skip pushdown when WHERE references LET variables ($), since LET is evaluated after fetch.
+    final boolean whereRefersToLet = info.perRecordLetClause != null && info.whereClause != null
+        && info.whereClause.toString().contains("$");
+    if (info.whereClause != null && info.whereClause.baseExpression != null && !whereRefersToLet) {
+      final FetchFromTypeWithFilterStep fetcher = new FetchFromTypeWithFilterStep(identifier.getStringValue(), filterClusters,
+          info.whereClause, info.projectedProperties, context, orderByRidAsc);
+      if (orderByRidAsc != null)
+        info.orderApplied = true;
+      plan.chain(fetcher);
+      // Mark WHERE as consumed so handleWhere() doesn't add a separate FilterStep
+      info.whereClause = null;
+      return;
+    }
+
     final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), filterClusters, info,
         context, orderByRidAsc);
     if (orderByRidAsc != null)
       info.orderApplied = true;
 
     plan.chain(fetcher);
+  }
+
+  /**
+   * Extracts a time range from a BETWEEN or comparison expression on the timestamp column.
+   * Returns [fromTs, toTs] or null if not a matching expression.
+   * Supports: BETWEEN, >, >=, <, <=, = operators.
+   */
+  private long[] extractTimeRange(final BooleanExpression expr, final String timestampColumn, final CommandContext context) {
+    if (expr instanceof BetweenCondition between) {
+      final String fieldName = between.getFirst() != null ? between.getFirst().toString().trim() : null;
+      if (timestampColumn.equals(fieldName)) {
+        final Object fromVal = between.getSecond().execute((Identifiable) null, context);
+        final Object toVal = between.getThird().execute((Identifiable) null, context);
+        return new long[] { toEpochMs(fromVal), toEpochMs(toVal) };
+      }
+    } else if (expr instanceof BinaryCondition binary) {
+      // Check if one side is the timestamp column and the other is a value
+      final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+      final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+      final boolean leftIsTs = timestampColumn.equals(leftStr);
+      final boolean rightIsTs = timestampColumn.equals(rightStr);
+
+      if (leftIsTs || rightIsTs) {
+        final Expression valueExpr = leftIsTs ? binary.right : binary.left;
+        final Object rawVal = valueExpr.execute((Identifiable) null, context);
+        final long val = toEpochMs(rawVal);
+        if (val == Long.MIN_VALUE)
+          return null;
+
+        final BinaryCompareOperator op = binary.operator;
+        // When field is on the right side, invert the operator semantics
+        if (leftIsTs) {
+          if (op instanceof GtOperator)
+            return new long[] { val + 1, Long.MAX_VALUE };
+          if (op instanceof GeOperator)
+            return new long[] { val, Long.MAX_VALUE };
+          if (op instanceof LtOperator)
+            return new long[] { Long.MIN_VALUE, val - 1 };
+          if (op instanceof LeOperator)
+            return new long[] { Long.MIN_VALUE, val };
+          if (op instanceof EqualsCompareOperator)
+            return new long[] { val, val };
+        } else {
+          // timestamp is on the right: "value > ts" means "ts < value"
+          if (op instanceof GtOperator)
+            return new long[] { Long.MIN_VALUE, val - 1 };
+          if (op instanceof GeOperator)
+            return new long[] { Long.MIN_VALUE, val };
+          if (op instanceof LtOperator)
+            return new long[] { val + 1, Long.MAX_VALUE };
+          if (op instanceof LeOperator)
+            return new long[] { val, Long.MAX_VALUE };
+          if (op instanceof EqualsCompareOperator)
+            return new long[] { val, val };
+        }
+      }
+    }
+    return null;
+  }
+
+  private static long toEpochMs(final Object value) {
+    if (value instanceof Long l)
+      return l;
+    if (value instanceof Date d)
+      return d.getTime();
+    if (value instanceof Number n)
+      return n.longValue();
+    if (value instanceof String s) {
+      try {
+        return Instant.parse(s).toEpochMilli();
+      } catch (final Exception e) {
+        // Try parsing as ISO date without time (assumes UTC)
+        try {
+          return LocalDate.parse(s).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
+        } catch (final Exception e2) {
+          throw new CommandExecutionException("Cannot parse timestamp: '" + s + "'", e);
+        }
+      }
+    }
+    return Long.MIN_VALUE;
+  }
+
+  /**
+   * Extracts a TagFilter from the flattened WHERE clause by matching equality predicates on TAG columns.
+   * Only simple equality conditions (column = 'value') on TAG columns are extracted.
+   */
+  private static TagFilter extractTagFilter(final List<AndBlock> flattenedWhere, final List<ColumnDefinition> columns,
+      final String timestampColumn, final CommandContext context) {
+    if (flattenedWhere == null)
+      return null;
+
+    TagFilter filter = null;
+    for (final AndBlock andBlock : flattenedWhere) {
+      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+        if (!(expr instanceof BinaryCondition binary))
+          continue;
+        if (!(binary.operator instanceof EqualsCompareOperator))
+          continue;
+        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+        if (leftStr == null || rightStr == null)
+          continue;
+        // Skip timestamp predicates — already handled by time range extraction
+        if (timestampColumn.equals(leftStr) || timestampColumn.equals(rightStr))
+          continue;
+
+        // Determine which side is the column name and which is the value
+        for (int i = 0; i < columns.size(); i++) {
+          final ColumnDefinition col = columns.get(i);
+          if (col.getRole() != ColumnDefinition.ColumnRole.TAG)
+            continue;
+          final boolean leftIsCol = col.getName().equals(leftStr);
+          final boolean rightIsCol = col.getName().equals(rightStr);
+          if (!leftIsCol && !rightIsCol)
+            continue;
+          final Expression valueExpr = leftIsCol ? binary.right : binary.left;
+          final Object value = valueExpr.execute((Identifiable) null, context);
+          if (value == null)
+            continue;
+          // Column index for TagFilter is the non-timestamp column index
+          int nonTsIdx = -1;
+          for (int j = 0; j <= i; j++)
+            if (columns.get(j).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+              nonTsIdx++;
+          filter = filter == null ? TagFilter.eq(nonTsIdx, value.toString()) : filter.and(nonTsIdx, value.toString());
+          break;
+        }
+      }
+    }
+    return filter;
+  }
+
+  /**
+   * Returns true if the WHERE clause contains conditions that are NOT consumed by time-series
+   * push-down (i.e., not time-range predicates and not tag equality filters).
+   */
+  private static boolean hasNonPushDownConditions(final List<AndBlock> flattenedWhere,
+      final List<ColumnDefinition> columns, final String timestampColumn) {
+    for (final AndBlock andBlock : flattenedWhere) {
+      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+        if (expr instanceof BetweenCondition between) {
+          final String fieldName = between.getFirst() != null ? between.getFirst().toString().trim() : null;
+          if (timestampColumn.equals(fieldName))
+            continue; // consumed by time-range extraction
+          return true; // BETWEEN on a non-timestamp field — not consumed
+        }
+        if (!(expr instanceof BinaryCondition binary))
+          return true; // unknown condition type — not consumed
+        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+        // Time range predicate on timestamp column
+        if (timestampColumn.equals(leftStr) || timestampColumn.equals(rightStr))
+          continue;
+        // Tag equality predicate
+        if (binary.operator instanceof EqualsCompareOperator) {
+          boolean isTagPredicate = false;
+          for (final ColumnDefinition col : columns)
+            if (col.getRole() == ColumnDefinition.ColumnRole.TAG && (col.getName().equals(leftStr) || col.getName().equals(rightStr))) {
+              isTagPredicate = true;
+              break;
+            }
+          if (isTagPredicate)
+            continue;
+        }
+        return true; // anything else is not consumed by push-down
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Attempts to push down aggregation into the TimeSeries engine.
+   * Eligible queries have: ts.timeBucket GROUP BY, simple aggregate functions (avg, max, min, sum, count),
+   * no DISTINCT, no HAVING, no UNWIND, no LET.
+   */
+  private boolean tryTimeSeriesAggregationPushDown(final SelectExecutionPlan plan, final LocalTimeSeriesType tsType,
+      final long fromTs, final long toTs, final QueryPlanningInfo info, final CommandContext context) {
+    // Must have aggregate projection (set by splitProjectionsForGroupBy)
+    if (info.aggregateProjection == null)
+      return false;
+
+    // No DISTINCT
+    if (info.distinct)
+      return false;
+
+    // Must have exactly one GROUP BY
+    if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().size() != 1)
+      return false;
+
+    // No unsupported clauses
+    if (info.unwind != null || info.perRecordLetClause != null || info.globalLetPresent)
+      return false;
+
+    // The original projection from the statement (before splitting)
+    final Projection originalProjection = statement.getProjection();
+    if (originalProjection == null || originalProjection.getItems() == null)
+      return false;
+
+    // Find the timeBucket item and aggregate items
+    String timeBucketAlias = null;
+    String intervalStr = null;
+    final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
+    final Map<String, String> requestAliasToOutputAlias = new HashMap<>();
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+    for (final ProjectionItem item : originalProjection.getItems()) {
+      final FunctionCall funcCall = extractFunctionCall(item.expression);
+      if (funcCall == null)
+        return false; // not a simple function call — bail out
+
+      final String funcName = funcCall.getName().getStringValue();
+
+      if ("ts.timeBucket".equalsIgnoreCase(funcName)) {
+        // This is the time bucket function
+        if (timeBucketAlias != null)
+          return false; // duplicate timeBucket
+        timeBucketAlias = item.getProjectionAliasAsString();
+        // Extract interval from first parameter
+        if (funcCall.getParams().size() < 2)
+          return false;
+        final Object intervalVal = funcCall.getParams().get(0).execute((Identifiable) null, context);
+        if (!(intervalVal instanceof String))
+          return false;
+        intervalStr = (String) intervalVal;
+      } else {
+        // Must be an aggregate function
+        final String aggFuncName = funcName.toLowerCase();
+        final AggregationType aggType = switch (aggFuncName) {
+          case "avg" -> AggregationType.AVG;
+          case "max" -> AggregationType.MAX;
+          case "min" -> AggregationType.MIN;
+          case "sum" -> AggregationType.SUM;
+          case "count" -> AggregationType.COUNT;
+          default -> null;
+        };
+        if (aggType == null)
+          return false; // unsupported aggregate
+
+        // For COUNT(*), columnIndex doesn't matter
+        int columnIndex = 0;
+        if (aggType != AggregationType.COUNT) {
+          // Extract field name from first parameter
+          if (funcCall.getParams().isEmpty())
+            return false;
+          final String fieldName = funcCall.getParams().get(0).toString().trim();
+          columnIndex = findColumnIndex(columns, fieldName);
+          if (columnIndex < 0)
+            return false; // field not found in timeseries columns
+        }
+
+        final String alias = item.getProjectionAliasAsString();
+        requests.add(new MultiColumnAggregationRequest(columnIndex, aggType, alias));
+        requestAliasToOutputAlias.put(alias, alias);
+      }
+    }
+
+    // Must have found both timeBucket and at least one aggregate
+    if (timeBucketAlias == null || intervalStr == null || requests.isEmpty())
+      return false;
+
+    // Verify GROUP BY references the timeBucket alias
+    final String groupByStr = info.groupBy.getItems().get(0).toString().trim();
+    if (!groupByStr.equals(timeBucketAlias))
+      return false;
+
+    // Parse interval
+    final long bucketIntervalMs;
+    try {
+      bucketIntervalMs = SQLFunctionTimeBucket.parseInterval(intervalStr);
+    } catch (final IllegalArgumentException e) {
+      return false;
+    }
+
+    // Extract tag filter from WHERE clause for push-down
+    final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, columns, tsType.getTimestampColumn(), context);
+
+    // Verify all WHERE conditions are consumed by push-down (time-range or tag equality).
+    // If any field-value predicate remains (e.g., WHERE value > 100), bail out to avoid
+    // silently dropping it — the standard filter step will handle it instead.
+    if (info.flattenedWhereClause != null && hasNonPushDownConditions(info.flattenedWhereClause, columns, tsType.getTimestampColumn()))
+      return false;
+
+    // Chain the push-down step
+    plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs,
+        timeBucketAlias, requestAliasToOutputAlias, tagFilter, context));
+
+    // Null out the aggregate projections so handleProjections doesn't add duplicate steps
+    info.preAggregateProjection = null;
+    info.aggregateProjection = null;
+    info.groupBy = null;
+    info.projectionsCalculated = true;
+    // The time range and tag filters are consumed by the push-down step
+    info.whereClause = null;
+    info.flattenedWhereClause = null;
+
+    return true;
+  }
+
+  /**
+   * Extracts a FunctionCall from an Expression if it's a simple function call.
+   * Returns null if the expression is not a simple function call.
+   */
+  private static FunctionCall extractFunctionCall(final Expression expr) {
+    if (expr == null || expr.mathExpression == null)
+      return null;
+    if (!(expr.mathExpression instanceof BaseExpression base))
+      return null;
+    if (base.identifier == null)
+      return null;
+    if (base.identifier.levelZero != null && base.identifier.levelZero.functionCall != null)
+      return base.identifier.levelZero.functionCall;
+    return null;
+  }
+
+  /**
+   * Finds the index of a column by name in the timeseries column definitions.
+   * Returns -1 if not found.
+   */
+  private static int findColumnIndex(final List<ColumnDefinition> columns, final String fieldName) {
+    for (int i = 0; i < columns.size(); i++)
+      if (columns.get(i).getName().equals(fieldName))
+        return i;
+    return -1;
   }
 
   private boolean handleTypeAsTargetWithIndexedFunction(final SelectExecutionPlan plan, final Set<String> filterClusters,
@@ -1671,11 +2160,15 @@ public class SelectExecutionPlanner {
           if (bestIndex.requiresDistinctStep()) {
             subPlan.chain(new DistinctExecutionStep(context));
           }
-          if (!block.getSubBlocks().isEmpty()) {
-            if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
+          // Use remaining condition (not covered by index) instead of the whole block, to avoid
+          // re-applying index conditions (e.g. CONTAINSTEXT) as plain string filters that use
+          // a different evaluation than the full-text index semantics.
+          final BooleanExpression remaining = bestIndex.getRemainingCondition();
+          if (remaining != null && !remaining.isEmpty()) {
+            if ((info.perRecordLetClause != null && refersToLet(Collections.singletonList(remaining)))) {
               handleLet(subPlan, info, context);
             }
-            subPlan.chain(new FilterStep(createWhereFrom(block), context));
+            subPlan.chain(new FilterStep(createWhereFrom(remaining), context));
           }
           resultSubPlans.add(subPlan);
         } else {
@@ -2055,7 +2548,7 @@ public class SelectExecutionPlanner {
       if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex()))
         info.orderApplied = true;
 
-      if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
+        if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
         if ((info.perRecordLetClause != null
             && refersToLet(Collections.singletonList(desc.getRemainingCondition())))) {
           SelectExecutionPlan stubPlan = new SelectExecutionPlan(context,
@@ -2331,6 +2824,18 @@ public class SelectExecutionPlanner {
         .filter(x -> x.getSubBlocks().size() == maxSubBlocks)
         .toList();
 
+    // Prefer FULL_TEXT indexes when they cover CONTAINSTEXT conditions, because CONTAINSTEXT
+    // has different semantics via full-text index (case-insensitive, tokenized) vs post-filter
+    // (case-sensitive String.contains). If a standard index wins, the CONTAINSTEXT remaining
+    // condition would lose full-text semantics. (Issue #3483 follow-up)
+    if (descriptors.size() > 1) {
+      final List<IndexSearchDescriptor> fullTextDescriptors = descriptors.stream()
+          .filter(d -> d.index.getType().equals(FULL_TEXT))
+          .toList();
+      if (!fullTextDescriptors.isEmpty() && fullTextDescriptors.size() < descriptors.size())
+        descriptors = fullTextDescriptors;
+    }
+
     // If there are multiple indexes covering the same number of conditions,
     // select based on cost (lower is better)
     if (descriptors.size() > 1) {
@@ -2457,27 +2962,27 @@ public class SelectExecutionPlanner {
         final BooleanExpression singleExp = blockIterator.next();
         if (singleExp instanceof ContainsTextCondition textCondition) {
           final Expression left = textCondition.getLeft();
-          if (left.isBaseIdentifier()) {
-            final String fieldName = left.getDefaultAlias().getStringValue();
-            // Strip modifiers to get base field name
-            String baseFieldName = indexField;
-            if (indexField.endsWith(" by key")) {
-              baseFieldName = indexField.substring(0, indexField.length() - 7);
-            } else if (indexField.endsWith(" by value")) {
-              baseFieldName = indexField.substring(0, indexField.length() - 9);
-            } else if (indexField.endsWith(" by item")) {
-              baseFieldName = indexField.substring(0, indexField.length() - 8);
-            }
-            if (baseFieldName.equals(fieldName)) {
-              found = true;
-              indexFieldFound = true;
-              final ContainsTextCondition condition = new ContainsTextCondition(-1);
-              condition.setLeft(left);
-              condition.setRight(textCondition.getRight().copy());
-              indexKeyValue.getSubBlocks().add(condition);
-              blockIterator.remove();
-              break;
-            }
+          // Get field name from expression - handle both simple identifiers (e.g. txt) and dotted
+          // path expressions (e.g. lst.txt) used with BY ITEM nested property indexes
+          final String fieldName = left.getDefaultAlias().getStringValue();
+          // Strip modifiers to get base field name
+          String baseFieldName = indexField;
+          if (indexField.endsWith(" by key")) {
+            baseFieldName = indexField.substring(0, indexField.length() - 7);
+          } else if (indexField.endsWith(" by value")) {
+            baseFieldName = indexField.substring(0, indexField.length() - 9);
+          } else if (indexField.endsWith(" by item")) {
+            baseFieldName = indexField.substring(0, indexField.length() - 8);
+          }
+          if (baseFieldName.equals(fieldName)) {
+            found = true;
+            indexFieldFound = true;
+            final ContainsTextCondition condition = new ContainsTextCondition(-1);
+            condition.setLeft(left);
+            condition.setRight(textCondition.getRight().copy());
+            indexKeyValue.getSubBlocks().add(condition);
+            blockIterator.remove();
+            break;
           }
         }
       }

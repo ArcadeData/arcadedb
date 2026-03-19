@@ -32,10 +32,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.zip.GZIPOutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -46,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Tests for LOAD CSV Cypher clause.
  */
-public class OpenCypherLoadCSVTest {
+class OpenCypherLoadCSVTest {
   private Database database;
   private Path testDataDir;
 
@@ -70,14 +67,14 @@ public class OpenCypherLoadCSVTest {
     // Clean up test CSV files
     if (Files.exists(testDataDir)) {
       Files.walk(testDataDir)
-          .sorted(java.util.Comparator.reverseOrder())
+          .sorted(Comparator.reverseOrder())
           .map(Path::toFile)
           .forEach(File::delete);
     }
   }
 
   @Test
-  void loadCSVWithoutHeaders() throws IOException {
+  void loadCSVWithoutHeaders() throws Exception {
     final Path csvFile = testDataDir.resolve("basic.csv");
     Files.writeString(csvFile, "Alice,30\nBob,25\nCharlie,35\n");
 
@@ -101,7 +98,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVWithHeaders() throws IOException {
+  void loadCSVWithHeaders() throws Exception {
     final Path csvFile = testDataDir.resolve("headers.csv");
     Files.writeString(csvFile, "name,age\nAlice,30\nBob,25\n");
 
@@ -123,7 +120,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVCustomFieldTerminator() throws IOException {
+  void loadCSVCustomFieldTerminator() throws Exception {
     final Path csvFile = testDataDir.resolve("semicolon.csv");
     Files.writeString(csvFile, "name;age\nAlice;30\nBob;25\n");
 
@@ -143,7 +140,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVCreateNodes() throws IOException {
+  void loadCSVCreateNodes() throws Exception {
     final Path csvFile = testDataDir.resolve("people.csv");
     Files.writeString(csvFile, "name,age\nAlice,30\nBob,25\n");
 
@@ -173,7 +170,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVFileAndLineNumberFunctions() throws IOException {
+  void loadCSVFileAndLineNumberFunctions() throws Exception {
     final Path csvFile = testDataDir.resolve("lineno.csv");
     Files.writeString(csvFile, "a,b\nc,d\ne,f\n");
 
@@ -197,7 +194,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVQuotedFieldsWithComma() throws IOException {
+  void loadCSVQuotedFieldsWithComma() throws Exception {
     final Path csvFile = testDataDir.resolve("quoted.csv");
     Files.writeString(csvFile, "name,title\n\"Smith, Jr.\",Manager\nAlice,Developer\n");
 
@@ -218,7 +215,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVEmptyFile() throws IOException {
+  void loadCSVEmptyFile() throws Exception {
     final Path csvFile = testDataDir.resolve("empty.csv");
     Files.writeString(csvFile, "");
 
@@ -236,7 +233,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVWithParameterUrl() throws IOException {
+  void loadCSVWithParameterUrl() throws Exception {
     final Path csvFile = testDataDir.resolve("param.csv");
     Files.writeString(csvFile, "hello,world\n");
 
@@ -258,7 +255,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVWithHeadersEmptyFileReturnsNoRows() throws IOException {
+  void loadCSVWithHeadersEmptyFileReturnsNoRows() throws Exception {
     final Path csvFile = testDataDir.resolve("headers_empty.csv");
     Files.writeString(csvFile, "name,age\n");
 
@@ -276,7 +273,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVBareFilePath() throws IOException {
+  void loadCSVBareFilePath() throws Exception {
     final Path csvFile = testDataDir.resolve("bare.csv");
     Files.writeString(csvFile, "hello,world\n");
 
@@ -299,7 +296,7 @@ public class OpenCypherLoadCSVTest {
   // ===== Security: File URLs disabled =====
 
   @Test
-  void loadCSVFileUrlsDisabled() throws IOException {
+  void loadCSVFileUrlsDisabled() throws Exception {
     final Path csvFile = testDataDir.resolve("security.csv");
     Files.writeString(csvFile, "a,b\n");
 
@@ -317,7 +314,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVBarePathDisabledWhenFileUrlsOff() throws IOException {
+  void loadCSVBarePathDisabledWhenFileUrlsOff() throws Exception {
     final Path csvFile = testDataDir.resolve("security2.csv");
     Files.writeString(csvFile, "a,b\n");
 
@@ -336,7 +333,7 @@ public class OpenCypherLoadCSVTest {
   // ===== Security: Import directory restriction =====
 
   @Test
-  void loadCSVImportDirectoryAllowsFilesInside() throws IOException {
+  void loadCSVImportDirectoryAllowsFilesInside() throws Exception {
     final Path csvFile = testDataDir.resolve("inside.csv");
     Files.writeString(csvFile, "hello,world\n");
 
@@ -359,7 +356,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVImportDirectoryBlocksPathTraversal() throws IOException {
+  void loadCSVImportDirectoryBlocksPathTraversal() throws Exception {
     final Path csvFile = testDataDir.resolve("traversal.csv");
     Files.writeString(csvFile, "a,b\n");
 
@@ -383,7 +380,7 @@ public class OpenCypherLoadCSVTest {
   // ===== Gzip compression =====
 
   @Test
-  void loadCSVGzipCompressed() throws IOException {
+  void loadCSVGzipCompressed() throws Exception {
     final Path gzFile = testDataDir.resolve("data.csv.gz");
     try (final GZIPOutputStream gos = new GZIPOutputStream(new FileOutputStream(gzFile.toFile()))) {
       gos.write("name,age\nAlice,30\nBob,25\n".getBytes());
@@ -409,7 +406,7 @@ public class OpenCypherLoadCSVTest {
   // ===== ZIP compression =====
 
   @Test
-  void loadCSVZipCompressed() throws IOException {
+  void loadCSVZipCompressed() throws Exception {
     final Path zipFile = testDataDir.resolve("data.csv.zip");
     try (final ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile.toFile()))) {
       zos.putNextEntry(new ZipEntry("data.csv"));
@@ -437,7 +434,7 @@ public class OpenCypherLoadCSVTest {
   // ===== Backslash quote escaping =====
 
   @Test
-  void loadCSVBackslashEscaping() throws IOException {
+  void loadCSVBackslashEscaping() throws Exception {
     final Path csvFile = testDataDir.resolve("backslash.csv");
     // Use backslash escaping: \"
     Files.writeString(csvFile, "name,quote\n\"Alice\",\"She said \\\"hello\\\"\"\nBob,world\n");
@@ -462,7 +459,7 @@ public class OpenCypherLoadCSVTest {
   // ===== CALL {} IN TRANSACTIONS =====
 
   @Test
-  void loadCSVCallInTransactionsWithBatchSize() throws IOException {
+  void loadCSVCallInTransactionsWithBatchSize() throws Exception {
     final Path csvFile = testDataDir.resolve("batch.csv");
     final StringBuilder csv = new StringBuilder("name\n");
     for (int i = 0; i < 100; i++)
@@ -496,7 +493,7 @@ public class OpenCypherLoadCSVTest {
   }
 
   @Test
-  void loadCSVCallInTransactionsDefaultBatch() throws IOException {
+  void loadCSVCallInTransactionsDefaultBatch() throws Exception {
     final Path csvFile = testDataDir.resolve("defaultbatch.csv");
     final StringBuilder csv = new StringBuilder("name\n");
     for (int i = 0; i < 50; i++)

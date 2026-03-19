@@ -15,10 +15,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * This query previously caused OOM crashes due to cartesian product explosion.
  * With the streaming optimization (MAX_BUFFER_SIZE = 10,000), it should complete successfully.
  */
-public class StackOverflowQueryTest {
+class StackOverflowQueryTest {
 
   @Test
-  public void testStackOverflowQueryWithStreamingOptimization() {
+  void stackOverflowQueryWithStreamingOptimization() {
     final String dbPath = "../server/databases/stackoverflow_tiny_graph_olap_arcadedb";
     final File dbDir = new File(dbPath);
 
@@ -104,7 +104,7 @@ public class StackOverflowQueryTest {
   }
 
   @Test
-  public void testIncrementalQuery1_JustFirstOptionalMatch() {
+  void incrementalQuery1JustFirstOptionalMatch() {
     final String dbPath = "../server/databases/stackoverflow_tiny_graph_olap_arcadedb";
     final File dbDir = new File(dbPath);
 
@@ -143,7 +143,7 @@ public class StackOverflowQueryTest {
   }
 
   @Test
-  public void testIncrementalQuery2_WithAggregation() {
+  void incrementalQuery2WithAggregation() {
     final String dbPath = "../server/databases/stackoverflow_tiny_graph_olap_arcadedb";
     final File dbDir = new File(dbPath);
 
@@ -183,7 +183,7 @@ public class StackOverflowQueryTest {
   }
 
   @Test
-  public void testIncrementalQuery3_TwoOptionalMatches() {
+  void incrementalQuery3TwoOptionalMatches() {
     final String dbPath = "../server/databases/stackoverflow_tiny_graph_olap_arcadedb";
     final File dbDir = new File(dbPath);
 
@@ -224,7 +224,7 @@ public class StackOverflowQueryTest {
   }
 
   @Test
-  public void testIncrementalQuery4_ThreeOptionalMatches() {
+  void incrementalQuery4ThreeOptionalMatches() {
     final String dbPath = "../server/databases/stackoverflow_tiny_graph_olap_arcadedb";
     final File dbDir = new File(dbPath);
 
@@ -266,7 +266,7 @@ public class StackOverflowQueryTest {
   }
 
   @Test
-  public void testIncrementalQuery5_FullQueryWithOrderBy() {
+  void incrementalQuery5FullQueryWithOrderBy() {
     final String dbPath = "../server/databases/stackoverflow_tiny_graph_olap_arcadedb";
     final File dbDir = new File(dbPath);
 
@@ -313,7 +313,7 @@ public class StackOverflowQueryTest {
   }
 
   @Test
-  public void testStackOverflowQueryWithProfile() {
+  void stackOverflowQueryWithProfile() {
     final String dbPath = "../server/databases/stackoverflow_tiny_graph_olap_arcadedb";
     final File dbDir = new File(dbPath);
 

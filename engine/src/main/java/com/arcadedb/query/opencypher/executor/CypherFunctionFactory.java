@@ -19,21 +19,104 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.function.vector.*;
-import com.arcadedb.function.text.*;
-import com.arcadedb.function.convert.*;
-import com.arcadedb.function.coll.*;
-import com.arcadedb.function.graph.*;
-import com.arcadedb.function.temporal.*;
-import com.arcadedb.function.agg.*;
-import com.arcadedb.function.misc.*;
-import com.arcadedb.function.geo.*;
-import com.arcadedb.function.cypher.*;
-import com.arcadedb.function.math.*;
 import com.arcadedb.function.CypherFunctionRegistry;
-import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.agg.CollectDistinctFunction;
+import com.arcadedb.function.agg.CollectFunction;
+import com.arcadedb.function.agg.CypherAvgFunction;
+import com.arcadedb.function.agg.CypherMaxFunction;
+import com.arcadedb.function.agg.CypherMinFunction;
+import com.arcadedb.function.agg.DistinctAggregationWrapper;
+import com.arcadedb.function.agg.PercentileContFunction;
+import com.arcadedb.function.agg.PercentileDiscFunction;
+import com.arcadedb.function.coll.HeadFunction;
+import com.arcadedb.function.coll.LastFunction;
+import com.arcadedb.function.coll.RangeFunction;
+import com.arcadedb.function.coll.SizeFunction;
+import com.arcadedb.function.coll.TailFunction;
+import com.arcadedb.function.convert.ToBooleanFunction;
+import com.arcadedb.function.convert.ToBooleanListFunction;
+import com.arcadedb.function.convert.ToFloatFunction;
+import com.arcadedb.function.convert.ToFloatListFunction;
+import com.arcadedb.function.convert.ToIntegerFunction;
+import com.arcadedb.function.convert.ToIntegerListFunction;
+import com.arcadedb.function.convert.ToStringFunction;
+import com.arcadedb.function.convert.ToStringListFunction;
+import com.arcadedb.function.convert.ValueTypeFunction;
+import com.arcadedb.function.cypher.CustomFunctionAdapter;
+import com.arcadedb.function.cypher.LoadCSVFileFunction;
+import com.arcadedb.function.cypher.LoadCSVLineNumberFunction;
+import com.arcadedb.function.cypher.SQLFunctionBridge;
+import com.arcadedb.function.geo.CypherPointFunction;
+import com.arcadedb.function.geo.PointWithinBBoxFunction;
+import com.arcadedb.function.graph.ElementIdFunction;
+import com.arcadedb.function.graph.EndNodeFunction;
+import com.arcadedb.function.graph.IdFunction;
+import com.arcadedb.function.graph.KeysFunction;
+import com.arcadedb.function.graph.LabelsFunction;
+import com.arcadedb.function.graph.LengthFunction;
+import com.arcadedb.function.graph.NodesFunction;
+import com.arcadedb.function.graph.PropertiesFunction;
+import com.arcadedb.function.graph.RelationshipsFunction;
+import com.arcadedb.function.graph.StartNodeFunction;
+import com.arcadedb.function.graph.TypeFunction;
+import com.arcadedb.function.math.ConstantFunction;
+import com.arcadedb.function.math.IsNaNFunction;
+import com.arcadedb.function.math.MathBinaryFunction;
+import com.arcadedb.function.math.MathUnaryFunction;
+import com.arcadedb.function.math.RandFunction;
+import com.arcadedb.function.math.RoundFunction;
+import com.arcadedb.function.math.SignFunction;
+import com.arcadedb.function.misc.CoalesceFunction;
+import com.arcadedb.function.misc.ExistsFunction;
+import com.arcadedb.function.misc.IsEmptyFunction;
+import com.arcadedb.function.misc.NullIfFunction;
+import com.arcadedb.function.misc.OrNullFunction;
+import com.arcadedb.function.misc.RandomUuidFunction;
+import com.arcadedb.function.misc.ReverseFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoDistance;
+import com.arcadedb.function.temporal.DateConstructorFunction;
+import com.arcadedb.function.temporal.DateTimeConstructorFunction;
+import com.arcadedb.function.temporal.DateTimeFromEpochFunction;
+import com.arcadedb.function.temporal.DateTimeFromEpochMillisFunction;
+import com.arcadedb.function.temporal.DateTimeTruncateFunction;
+import com.arcadedb.function.temporal.DateTruncateFunction;
+import com.arcadedb.function.temporal.DurationBetweenFunction;
+import com.arcadedb.function.temporal.DurationConstructorFunction;
+import com.arcadedb.function.temporal.DurationInDaysFunction;
+import com.arcadedb.function.temporal.DurationInMonthsFunction;
+import com.arcadedb.function.temporal.DurationInSecondsFunction;
+import com.arcadedb.function.temporal.LocalDateTimeConstructorFunction;
+import com.arcadedb.function.temporal.LocalDateTimeTruncateFunction;
+import com.arcadedb.function.temporal.LocalTimeConstructorFunction;
+import com.arcadedb.function.temporal.LocalTimeTruncateFunction;
+import com.arcadedb.function.temporal.TimeConstructorFunction;
+import com.arcadedb.function.temporal.TimeTruncateFunction;
+import com.arcadedb.function.temporal.TimestampFunction;
+import com.arcadedb.function.text.CharLengthFunction;
+import com.arcadedb.function.text.FormatFunction;
+import com.arcadedb.function.text.LTrimFunction;
+import com.arcadedb.function.text.LeftFunction;
+import com.arcadedb.function.text.NormalizeFunction;
+import com.arcadedb.function.text.RTrimFunction;
+import com.arcadedb.function.text.ReplaceFunction;
+import com.arcadedb.function.text.RightFunction;
+import com.arcadedb.function.text.SplitFunction;
+import com.arcadedb.function.text.SubstringFunction;
+import com.arcadedb.function.text.ToLowerFunction;
+import com.arcadedb.function.text.ToUpperFunction;
+import com.arcadedb.function.text.TrimFunction;
+import com.arcadedb.function.vector.VectorCreateFunction;
+import com.arcadedb.function.vector.VectorDimensionCountFunction;
+import com.arcadedb.function.vector.VectorDistanceCosineFunction;
+import com.arcadedb.function.vector.VectorDistanceEuclideanFunction;
+import com.arcadedb.function.vector.VectorDistanceFunction;
+import com.arcadedb.function.vector.VectorDistanceManhattanFunction;
+import com.arcadedb.function.vector.VectorNormFunction;
+import com.arcadedb.function.vector.VectorSimilarityCosineFunction;
+import com.arcadedb.function.vector.VectorSimilarityEuclideanFunction;
+import com.arcadedb.query.sql.executor.SQLFunction;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -230,9 +313,10 @@ public class CypherFunctionFactory {
       // List functions
       case "size", "head", "tail", "last", "range" -> true;
       // String functions
-      case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "lower", "upper", "ltrim", "rtrim", "btrim" -> true;
+      case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "lower", "upper", "ltrim", "rtrim", "btrim" ->
+          true;
       // String functions (additional)
-      case "trim", "replace", "char_length", "character_length", "normalize" -> true;
+      case "trim", "replace", "char.length", "character.length", "normalize" -> true;
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean",
            "tostringornull", "tointegerornull", "tofloatornull", "tobooleanornull",
@@ -246,8 +330,7 @@ public class CypherFunctionFactory {
       // Temporal constructor functions
       case "date", "localtime", "time", "localdatetime", "datetime", "duration" -> true;
       // Temporal truncation functions
-      case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" ->
-          true;
+      case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" -> true;
       // Temporal epoch functions
       case "datetime.fromepoch", "datetime.fromepochmillis" -> true;
       // Temporal format function
@@ -261,14 +344,14 @@ public class CypherFunctionFactory {
       // Vector construction and distance functions (used by Cypher vector(), vector_norm(), vector_distance())
       // Note: vector_norm and vector_distance with EUCLIDEAN/DOT metrics delegate to SQL functions
       // (vector.magnitude, vector.l1Norm, vector.l2Distance, vector.dotProduct) via the SQL bridge
-      case "vector_create", "vector_distance_manhattan", "vector_distance_cosine",
-           "vector", "vector_dimension_count", "vector_distance" -> true;
+      case "vector.create", "vector.distance.manhattan", "vector.distance.cosine",
+           "vector", "vector.dimension.count", "vector.distance" -> true;
       // Vector distance functions
       case "vector.distance.euclidean" -> true;
       // Vector norm function
       case "vector.norm" -> true;
       // Geo-spatial functions
-      case "point.withinbbox" -> true;
+      case "point", "distance", "point.withinbbox" -> true;
       // Temporal clock functions (realtime/statement/transaction are aliases for current instant)
       case "date.realtime", "date.statement", "date.transaction" -> true;
       case "localtime.realtime", "localtime.statement", "localtime.transaction" -> true;
@@ -355,7 +438,7 @@ public class CypherFunctionFactory {
       case "rtrim" -> new RTrimFunction();
       case "trim", "btrim" -> new TrimFunction();
       case "replace" -> new ReplaceFunction();
-      case "char_length", "character_length" -> new CharLengthFunction();
+      case "char.length", "character.length" -> new CharLengthFunction();
       case "normalize" -> new NormalizeFunction();
       // Type conversion functions
       case "tostring" -> new ToStringFunction();
@@ -392,17 +475,18 @@ public class CypherFunctionFactory {
       case "vector.similarity.cosine" -> new VectorSimilarityCosineFunction();
       case "vector.similarity.euclidean" -> new VectorSimilarityEuclideanFunction();
       // Vector construction and distance functions
-      case "vector_create" -> new VectorCreateFunction();
-      case "vector_distance_manhattan" -> new VectorDistanceManhattanFunction();
-      case "vector_distance_cosine" -> new VectorDistanceCosineFunction();
-      case "vector" -> new VectorCreateFunction();
-      case "vector_dimension_count" -> new VectorDimensionCountFunction();
-      case "vector_distance" -> new VectorDistanceFunction();
+      case "vector", "vector.create" -> new VectorCreateFunction();
+      case "vector.distance.manhattan" -> new VectorDistanceManhattanFunction();
+      case "vector.distance.cosine" -> new VectorDistanceCosineFunction();
+      case "vector.dimension.count" -> new VectorDimensionCountFunction();
+      case "vector.distance" -> new VectorDistanceFunction();
       // Vector distance functions
       case "vector.distance.euclidean" -> new VectorDistanceEuclideanFunction();
       // Vector norm function
       case "vector.norm" -> new VectorNormFunction();
       // Geo-spatial functions
+      case "point" -> new CypherPointFunction();
+      case "distance" -> new SQLFunctionBridge(sqlFunctionFactory.getFunctionInstance(SQLFunctionGeoDistance.NAME), "distance");
       case "point.withinbbox" -> new PointWithinBBoxFunction();
       // Temporal constructor functions
       case "date" -> new DateConstructorFunction();

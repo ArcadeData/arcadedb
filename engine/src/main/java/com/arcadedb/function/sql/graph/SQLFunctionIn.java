@@ -21,8 +21,7 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
-
-import java.util.*;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * Created by luigidellaquila on 03/01/17.
@@ -35,18 +34,8 @@ public class SQLFunctionIn extends SQLFunctionMoveFiltered {
   }
 
   @Override
-  protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels) {
-    return v2v(iRecord, Vertex.DIRECTION.IN, iLabels);
-  }
-
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
-      final Iterable<Identifiable> iPossibleResults) {
-    if (iPossibleResults == null)
-      return v2v(iRecord, Vertex.DIRECTION.IN, iLabels);
-
-    if (!iPossibleResults.iterator().hasNext())
-      return Collections.emptyList();
-
-    return v2v(iRecord, Vertex.DIRECTION.IN, iLabels);
+      final CommandContext context) {
+    return v2v(iRecord, Vertex.DIRECTION.IN, iLabels, context);
   }
 }

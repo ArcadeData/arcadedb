@@ -51,7 +51,7 @@ class PostCommandHandlerLargeContentTest extends BaseGraphServerTest {
    * containing approximately 2MB of random base64-encoded data.
    */
   @Test
-  void testLargeContentViaHTTP() throws Exception {
+  void largeContentViaHTTP() throws Exception {
     // Step 1: Create document type
     executeCommand(0, "sql", "CREATE DOCUMENT TYPE doc");
 

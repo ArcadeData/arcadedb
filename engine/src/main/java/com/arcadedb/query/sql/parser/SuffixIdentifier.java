@@ -37,6 +37,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.IN_PROPERTY;
+import static com.arcadedb.schema.Property.OUT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
@@ -76,8 +78,11 @@ public class SuffixIdentifier extends SimpleNode {
       if (context != null && varName.startsWith("$") && context.getVariable(varName) != null)
         return context.getVariable(varName);
 
-      if (currentRecord != null)
-        return ((Document) currentRecord.getRecord()).get(varName);
+      if (currentRecord != null) {
+        final Record record = currentRecord.getRecord();
+        if (record instanceof Document doc)
+          return doc.get(varName);
+      }
 
       // Return null instead of the variable name for uninitialized variables (issue #1939)
       return null;
@@ -94,9 +99,14 @@ public class SuffixIdentifier extends SimpleNode {
         else if (doc instanceof Edge)
           return "e";
         return "d";
-      }
+      } else if (IN_PROPERTY.equalsIgnoreCase(recordAttribute.name) && currentRecord.getRecord() instanceof Edge edge)
+        return edge.getIn();
+      else if (OUT_PROPERTY.equalsIgnoreCase(recordAttribute.name) && currentRecord.getRecord() instanceof Edge edge)
+        return edge.getOut();
 
-      return ((Document) currentRecord.getRecord()).get(recordAttribute.name);
+      final Record record = currentRecord.getRecord();
+      if (record instanceof Document doc)
+        return doc.get(recordAttribute.name);
     }
     return null;
   }
@@ -386,8 +396,12 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public boolean isDefinedFor(final Record currentRecord) {
-    if (identifier != null)
-      return ((Document) currentRecord.getRecord()).has(identifier.getStringValue());
+    if (identifier != null) {
+      final Record record = currentRecord.getRecord();
+      if (record instanceof Document doc)
+        return doc.has(identifier.getStringValue());
+      return false;
+    }
 
     return true;
   }

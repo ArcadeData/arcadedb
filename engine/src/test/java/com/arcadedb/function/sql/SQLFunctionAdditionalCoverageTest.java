@@ -476,8 +476,9 @@ class SQLFunctionAdditionalCoverageTest extends TestHelper {
   void aggregateFunctionsGroupBy() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql",
-          "SELECT active, count(*) as cnt, sum(amount) as total, min(idx) as minIdx, max(idx) as maxIdx " +
-              "FROM FuncV GROUP BY active ORDER BY active");
+          """
+          SELECT active, count(*) as cnt, sum(amount) as total, min(idx) as minIdx, max(idx) as maxIdx \
+          FROM FuncV GROUP BY active ORDER BY active""");
       int count = 0;
       while (rs.hasNext()) {
         final Result item = rs.next();

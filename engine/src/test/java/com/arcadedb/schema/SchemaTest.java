@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -133,6 +134,10 @@ class SchemaTest extends TestHelper {
     assertThat(database.getSchema().existsType("V11")).isTrue();
     assertThat(database.getSchema().existsType("V111")).isTrue();
 
+    // Verify getTypes() does not return duplicates for aliased types
+    final long v1Count = database.getSchema().getTypes().stream().filter(t -> t.getName().equals("V1")).count();
+    assertThat(v1Count).isEqualTo(1L);
+
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
         database.newVertex("V1").set("id", "id-" + i, "total", i).save();
@@ -169,6 +174,10 @@ class SchemaTest extends TestHelper {
         300L);
     assertThat((Long) database.query("sql", "select count(*) as total from V111").nextIfAvailable().getProperty("total")).isEqualTo(
         300L);
+
+    // Verify getTypes() still does not return duplicates after reopen
+    final long v1CountAfterReopen = database.getSchema().getTypes().stream().filter(t -> t.getName().equals("V1")).count();
+    assertThat(v1CountAfterReopen).isEqualTo(1L);
   }
 
   @Test
@@ -303,5 +312,23 @@ class SchemaTest extends TestHelper {
     assertThat(database.getSchema().existsType("TestType")).isFalse();
     assertThat(database.getSchema().existsType("NewTypeAfterDrop")).isTrue();
     assertThat(database.getSchema().getType("NewTypeAfterDrop").existsProperty("field")).isTrue();
+  }
+
+  @Test
+  void getExtensionReturnsDefensiveCopy() {
+    final JSONObject ext = new JSONObject();
+    ext.put("key", "value");
+    database.getSchema().setExtension("testExt", ext);
+
+    // Mutate the returned object without calling setExtension
+    final JSONObject returned = database.getSchema().getExtension("testExt");
+    assertThat(returned).isNotNull();
+    returned.put("key", "mutated");
+    returned.put("extra", "sneaky");
+
+    // The stored extension must be unaffected
+    final JSONObject stored = database.getSchema().getExtension("testExt");
+    assertThat(stored.getString("key")).isEqualTo("value");
+    assertThat(stored.has("extra")).isFalse();
   }
 }

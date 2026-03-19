@@ -41,7 +41,7 @@ class MultiValueBugfixTest {
    * System.arraycopy(iToAdd, 0, copy, Array.getLength(iObject), Array.getLength(iToAdd));
    */
   @Test
-  void testAddArrayToArrayBugfix() {
+  void addArrayToArrayBugfix() {
     final Object[] original = { "a" };
     final Object[] toAdd = { "b", "c" };
 
@@ -59,7 +59,7 @@ class MultiValueBugfixTest {
    * Test that adding empty array to array works correctly.
    */
   @Test
-  void testAddEmptyArrayToArray() {
+  void addEmptyArrayToArray() {
     final Object[] original = { "a", "b" };
     final Object[] toAdd = {};
 
@@ -76,7 +76,7 @@ class MultiValueBugfixTest {
    * Test that adding array to empty array works correctly.
    */
   @Test
-  void testAddArrayToEmptyArray() {
+  void addArrayToEmptyArray() {
     final Object[] original = {};
     final Object[] toAdd = { "x", "y" };
 
@@ -93,7 +93,7 @@ class MultiValueBugfixTest {
    * Test that adding larger array to smaller array works correctly.
    */
   @Test
-  void testAddLargeArrayToSmallArray() {
+  void addLargeArrayToSmallArray() {
     final Object[] original = { "a" };
     final Object[] toAdd = { "b", "c", "d", "e", "f" };
 

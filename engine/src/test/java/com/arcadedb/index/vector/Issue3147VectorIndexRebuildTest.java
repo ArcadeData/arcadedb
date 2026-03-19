@@ -173,9 +173,11 @@ class Issue3147VectorIndexRebuildTest {
 
       // Create vector index with INT8 quantization
       database.command("sql",
-          "CREATE INDEX ON QuantizedEmbedding (vector) LSM_VECTOR METADATA " +
-              "{dimensions: 64, similarity: 'EUCLIDEAN', quantization: 'INT8', " +
-              "maxConnections: 24, beamWidth: 150}");
+          """
+          CREATE INDEX ON QuantizedEmbedding (vector) LSM_VECTOR METADATA \
+          {dimensions: 64, similarity: 'EUCLIDEAN', quantization: 'INT8', \
+          maxConnections: 24, beamWidth: 150}\
+          """);
 
       // Add test data
       database.begin();
@@ -230,8 +232,10 @@ class Issue3147VectorIndexRebuildTest {
 
       // Create vector index
       database.command("sql",
-          "CREATE INDEX ON VectorDoc (vector) LSM_VECTOR METADATA " +
-              "{dimensions: 32, similarity: 'COSINE', maxConnections: 20, beamWidth: 80}");
+          """
+          CREATE INDEX ON VectorDoc (vector) LSM_VECTOR METADATA \
+          {dimensions: 32, similarity: 'COSINE', maxConnections: 20, beamWidth: 80}\
+          """);
 
       // Add test data
       database.begin();

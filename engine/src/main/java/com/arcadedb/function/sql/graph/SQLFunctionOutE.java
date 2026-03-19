@@ -21,11 +21,12 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * Created by luigidellaquila on 03/01/17.
  */
-public class SQLFunctionOutE extends SQLFunctionMove {
+public class SQLFunctionOutE extends SQLFunctionMoveFiltered {
   public static final String NAME = "outE";
 
   public SQLFunctionOutE() {
@@ -33,7 +34,8 @@ public class SQLFunctionOutE extends SQLFunctionMove {
   }
 
   @Override
-  protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels) {
+  protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
+      final CommandContext context) {
     return v2e(iRecord, Vertex.DIRECTION.OUT, iLabels);
   }
 }

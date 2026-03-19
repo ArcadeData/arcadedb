@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>26.2.1-SNAPSHOT</version>
+        <version>26.4.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -34,14 +34,14 @@
     <name>ArcadeDB Gremlin</name>
 
     <properties>
-        <gremlin.version>3.7.4</gremlin.version>
+        <gremlin.version>3.8.0</gremlin.version>
         <translation.version>1.0.4</translation.version>
-        <snakeyaml.version>2.5</snakeyaml.version>
+        <snakeyaml.version>2.6</snakeyaml.version>
         <netty.version>4.2.10.Final</netty.version>
         <commons-configuration2.version>2.13.0</commons-configuration2.version>
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
         <commons-lang3.version>3.20.0</commons-lang3.version>
-        <groovy.version>4.0.28</groovy.version>
+        <groovy.version>5.0.4</groovy.version>
         <antlr4.version>4.9.1</antlr4.version>
     </properties>
 

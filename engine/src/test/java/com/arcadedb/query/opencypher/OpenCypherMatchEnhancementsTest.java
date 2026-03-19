@@ -63,13 +63,15 @@ public class OpenCypherMatchEnhancementsTest {
 
       // Alice works for TechCorp
       database.command("opencypher",
-          "MATCH (a:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) " +
-              "CREATE (a)-[:WORKS_FOR]->(c)");
+          """
+          MATCH (a:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) \
+          CREATE (a)-[:WORKS_FOR]->(c)""");
 
       // Alice knows Bob
       database.command("opencypher",
-          "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) " +
-              "CREATE (a)-[:KNOWS]->(b)");
+          """
+          MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) \
+          CREATE (a)-[:KNOWS]->(b)""");
     });
   }
 
@@ -86,9 +88,10 @@ public class OpenCypherMatchEnhancementsTest {
     // Two MATCH clauses: first matches Alice, second matches Bob
     // Result should be Cartesian product: Alice + Bob
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}) " +
-            "MATCH (b:Person {name: 'Bob'}) " +
-            "RETURN a.name AS person1, b.name AS person2");
+        """
+        MATCH (a:Person {name: 'Alice'}) \
+        MATCH (b:Person {name: 'Bob'}) \
+        RETURN a.name AS person1, b.name AS person2""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -202,8 +205,9 @@ public class OpenCypherMatchEnhancementsTest {
     // Alice has two outgoing relationships: KNOWS to Bob, WORKS_FOR to TechCorp
     // Query all paths from Alice
     final ResultSet result = database.query("opencypher",
-        "MATCH p = (a:Person {name: 'Alice'})-[r]->(b) " +
-            "RETURN a.name AS person, b.name AS target, p AS path");
+        """
+        MATCH p = (a:Person {name: 'Alice'})-[r]->(b) \
+        RETURN a.name AS person, b.name AS target, p AS path""");
 
     final List<TraversalPath> paths = new ArrayList<>();
     while (result.hasNext()) {
@@ -234,10 +238,11 @@ public class OpenCypherMatchEnhancementsTest {
   void combinedFeatures() {
     // Combine multiple features: multiple MATCH + unlabeled pattern + named path
     final ResultSet result = database.query("opencypher",
-        "MATCH (start) " +
-            "WHERE start.name = 'Alice' " +
-            "MATCH p = (start)-[r]->(target) " +
-            "RETURN start.name AS startName, target.name AS targetName, p AS path");
+        """
+        MATCH (start) \
+        WHERE start.name = 'Alice' \
+        MATCH p = (start)-[r]->(target) \
+        RETURN start.name AS startName, target.name AS targetName, p AS path""");
 
     int pathCount = 0;
     while (result.hasNext()) {

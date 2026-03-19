@@ -487,8 +487,9 @@ class BatchTest extends TestHelper {
 
     database.transaction(() -> {
       // Create a document and get its RID
-      final ResultSet insertResult = database.command("sql", "INSERT INTO TestSelectFromNestedRid SET name = " +
-          "'nested_test'");
+      final ResultSet insertResult = database.command("sql", """
+          INSERT INTO TestSelectFromNestedRid SET name = \
+          'nested_test'""");
       assertThat(insertResult.hasNext()).isTrue();
       final String ridString = insertResult.next().getIdentity().get().toString();
 

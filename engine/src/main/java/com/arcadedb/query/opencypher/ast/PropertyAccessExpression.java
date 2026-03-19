@@ -19,12 +19,18 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,12 +49,17 @@ public class PropertyAccessExpression implements Expression {
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
     final Object variable = result.getProperty(variableName);
-    com.arcadedb.query.opencypher.executor.DeletedEntityMarker.checkNotDeleted(variable);
+    DeletedEntityMarker.checkNotDeleted(variable);
 
     if (variable == null)
       return null;
 
-    if (variable instanceof Document) {
+    if (variable instanceof RID rid) {
+      // Lazy vertex resolution: algorithm procedures store RIDs to avoid loading all vertices upfront.
+      // Only resolve to Document when a property is actually accessed.
+      final Object rawValue = rid.asVertex().get(propertyName);
+      return convertFromStorage(rawValue);
+    } else if (variable instanceof Document) {
       final Object rawValue = ((Document) variable).get(propertyName);
       return convertFromStorage(rawValue);
     } else if (variable instanceof Map) {
@@ -70,7 +81,7 @@ public class PropertyAccessExpression implements Expression {
 
     // Type validation: property access only works on property-bearing types
     // Primitive types (Integer, String, Boolean, List, etc.) don't have properties
-    throw new com.arcadedb.exception.CommandExecutionException(
+    throw new CommandExecutionException(
         "TypeError: Cannot access property '" + propertyName + "' on " +
         variable.getClass().getSimpleName() + " value");
   }
@@ -99,28 +110,21 @@ public class PropertyAccessExpression implements Expression {
    * doesn't have native binary types for them.
    */
   private static Object convertFromStorage(final Object value) {
-    // Handle collections (lists/arrays of temporal values)
-    if (value instanceof java.util.Collection<?> collection) {
-      final java.util.List<Object> converted = new java.util.ArrayList<>(collection.size());
-      for (final Object item : collection) {
-        converted.add(convertFromStorage(item));
-      }
-      return converted;
-    }
-    if (value instanceof Object[] array) {
-      final Object[] converted = new Object[array.length];
-      for (int i = 0; i < array.length; i++) {
-        converted[i] = convertFromStorage(array[i]);
-      }
-      return converted;
-    }
+    // Fast path: common non-temporal types don't need conversion
+    if (value == null || value instanceof Number || value instanceof Boolean)
+      return value;
 
-    // Handle single values
+    // Handle single values - check temporal types before collections
     if (value instanceof LocalDate ld)
       return new CypherDate(ld);
     if (value instanceof LocalDateTime ldt)
       return new CypherLocalDateTime(ldt);
+
     if (value instanceof String str) {
+      // Fast path: short strings and common patterns can't be temporal
+      if (str.length() < 5 || !Character.isDigit(str.charAt(0)) && str.charAt(0) != 'P')
+        return value;
+
       // Duration strings start with P (ISO-8601)
       if (str.length() > 1 && str.charAt(0) == 'P') {
         try {

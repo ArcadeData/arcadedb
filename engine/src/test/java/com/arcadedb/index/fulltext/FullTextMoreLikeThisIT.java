@@ -60,9 +60,10 @@ class FullTextMoreLikeThisIT extends TestHelper {
       // Document 1: Java programming
       javaDocRID = database.newDocument("Article")
         .set("title", "Java Programming Guide")
-        .set("body", "Java is a programming language and computing platform. " +
-                    "Java programming requires understanding of object oriented programming concepts. " +
-                    "Modern Java development uses frameworks and libraries for enterprise applications.")
+        .set("body", """
+                    Java is a programming language and computing platform. \
+                    Java programming requires understanding of object oriented programming concepts. \
+                    Modern Java development uses frameworks and libraries for enterprise applications.""")
         .set("author", "John Doe")
         .save()
         .getIdentity();
@@ -70,9 +71,10 @@ class FullTextMoreLikeThisIT extends TestHelper {
       // Document 2: Python programming (similar to Java)
       pythonDocRID = database.newDocument("Article")
         .set("title", "Python Programming Tutorial")
-        .set("body", "Python is a programming language known for simplicity. " +
-                    "Python programming emphasizes code readability and clean syntax. " +
-                    "Modern Python development uses frameworks like Django and Flask.")
+        .set("body", """
+                    Python is a programming language known for simplicity. \
+                    Python programming emphasizes code readability and clean syntax. \
+                    Modern Python development uses frameworks like Django and Flask.""")
         .set("author", "Jane Smith")
         .save()
         .getIdentity();
@@ -80,9 +82,10 @@ class FullTextMoreLikeThisIT extends TestHelper {
       // Document 3: Advanced Java (very similar to Document 1)
       advancedJavaDocRID = database.newDocument("Article")
         .set("title", "Advanced Java Concepts")
-        .set("body", "Advanced Java programming covers enterprise patterns and frameworks. " +
-                    "Java developers use object oriented programming extensively. " +
-                    "Enterprise Java applications require knowledge of Java frameworks.")
+        .set("body", """
+                    Advanced Java programming covers enterprise patterns and frameworks. \
+                    Java developers use object oriented programming extensively. \
+                    Enterprise Java applications require knowledge of Java frameworks.""")
         .set("author", "Bob Wilson")
         .save()
         .getIdentity();
@@ -90,9 +93,10 @@ class FullTextMoreLikeThisIT extends TestHelper {
       // Document 4: Database systems (different topic)
       dbDocRID = database.newDocument("Article")
         .set("title", "Database Management Systems")
-        .set("body", "Database systems store and retrieve data efficiently. " +
-                    "Modern databases support transactions and ACID properties. " +
-                    "Database optimization requires understanding of indexing.")
+        .set("body", """
+                    Database systems store and retrieve data efficiently. \
+                    Modern databases support transactions and ACID properties. \
+                    Database optimization requires understanding of indexing.""")
         .set("author", "Alice Brown")
         .save()
         .getIdentity();
@@ -100,9 +104,10 @@ class FullTextMoreLikeThisIT extends TestHelper {
       // Document 5: Machine learning (different topic)
       mlDocRID = database.newDocument("Article")
         .set("title", "Introduction to Machine Learning")
-        .set("body", "Machine learning algorithms learn from data patterns. " +
-                    "Neural networks are popular machine learning techniques. " +
-                    "Machine learning applications include image recognition.")
+        .set("body", """
+                    Machine learning algorithms learn from data patterns. \
+                    Neural networks are popular machine learning techniques. \
+                    Machine learning applications include image recognition.""")
         .set("author", "Charlie Green")
         .save()
         .getIdentity();

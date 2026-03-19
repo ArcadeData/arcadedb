@@ -82,14 +82,21 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
-    if (fileId >= fileAccessMap.length) {
-      LogManager.instance().log(this, Level.SEVERE,
-          "Error on requesting access to fileId %d because not found in security configuration (registeredFiles=%d)", fileId,
-          fileAccessMap.length);
-      return false;
+    final boolean[][] currentMap = fileAccessMap;
+    if (currentMap == null)
+      return true;
+
+    if (fileId >= currentMap.length) {
+      // The file was just created but the security map has not been refreshed yet.
+      // Allow access (same as null-permissions default) — the map will be updated
+      // on the next schema operation.
+      LogManager.instance().log(this, Level.INFO,
+          "Requesting access to fileId %d which is not yet in security configuration (registeredFiles=%d), allowing by default",
+          fileId, currentMap.length);
+      return true;
     }
 
-    final boolean[] permissions = fileAccessMap[fileId];
+    final boolean[] permissions = currentMap[fileId];
     final int index = access.ordinal();
     if (permissions != null) {
       if (index >= permissions.length)
@@ -173,7 +180,8 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         configuredGroups.getJSONObject(SecurityManager.ANY) :
         NO_ACCESS_GROUP;
 
-    final JSONObject defaultType = defaultGroup.getJSONObject("types").getJSONObject(SecurityManager.ANY);
+    final JSONObject defaultGroupTypes = defaultGroup.getJSONObject("types");
+    final JSONObject defaultType = defaultGroupTypes.getJSONObject(SecurityManager.ANY);
 
     for (int i = 0; i < newFileAccessMap.length; ++i) {
       final DocumentType type = database.getSchema().getInvolvedTypeByBucketId(i);
@@ -215,9 +223,9 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         newFileAccessMap[i] = new boolean[] { false, false, false, false };
 
         final JSONObject t;
-        if (defaultGroup.has(typeName)) {
+        if (defaultGroupTypes.has(typeName)) {
           // APPLY THE FOUND TYPE FROM DEFAULT GROUP
-          t = defaultGroup.getJSONObject(typeName);
+          t = defaultGroupTypes.getJSONObject(typeName);
         } else
           // APPLY DEFAULT TYPE FROM DEFAULT GROUP
           t = defaultType;

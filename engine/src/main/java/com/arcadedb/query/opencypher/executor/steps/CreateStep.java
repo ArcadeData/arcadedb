@@ -41,6 +41,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.*;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -374,7 +375,10 @@ public class CreateStep extends AbstractExecutionStep {
     // Set properties from pattern
     if (nodePattern.hasProperties()) {
       final long startProps = context.isProfiling() ? System.nanoTime() : 0;
-      setProperties(vertex, nodePattern.getProperties(), currentResult);
+      if (nodePattern.getPropertiesParameterName() != null)
+        setPropertiesFromParameter(vertex, nodePattern.getPropertiesParameterName());
+      else
+        setProperties(vertex, nodePattern.getProperties(), currentResult);
       if (context.isProfiling())
         propertyEvaluationTime += (System.nanoTime() - startProps);
     }
@@ -399,14 +403,19 @@ public class CreateStep extends AbstractExecutionStep {
     final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
 
     // Ensure edge type exists (Cypher auto-creates types)
-    context.getDatabase().getSchema().getOrCreateEdgeType(type);
+    // getOrCreateEdgeType returns quickly if the type already exists (schema cache lookup)
+    if (!context.getDatabase().getSchema().existsType(type))
+      context.getDatabase().getSchema().getOrCreateEdgeType(type);
 
     final MutableEdge edge = fromVertex.newEdge(type, toVertex);
 
     // Set properties from pattern
     if (relPattern.hasProperties()) {
       final long startProps = context.isProfiling() ? System.nanoTime() : 0;
-      setPropertiesOnEdge(edge, relPattern.getProperties(), currentResult);
+      if (relPattern.getPropertiesParameterName() != null)
+        setPropertiesFromParameter(edge, relPattern.getPropertiesParameterName());
+      else
+        setPropertiesOnEdge(edge, relPattern.getProperties(), currentResult);
       if (context.isProfiling())
         propertyEvaluationTime += (System.nanoTime() - startProps);
     }
@@ -456,13 +465,29 @@ public class CreateStep extends AbstractExecutionStep {
   }
 
   /**
+   * Sets properties on a document from a parameter that resolves to a map at runtime.
+   * Used for bare parameter properties syntax (e.g., CREATE (n:User $props)).
+   */
+  @SuppressWarnings("unchecked")
+  private void setPropertiesFromParameter(final MutableDocument document, final String parameterName) {
+    final Object paramValue = context.getInputParameters().get(parameterName);
+    if (paramValue instanceof Map) {
+      for (final Map.Entry<String, Object> entry : ((Map<String, Object>) paramValue).entrySet()) {
+        final Object value = entry.getValue();
+        if (value != null)
+          document.set(entry.getKey(), convertTemporalForStorage(value));
+      }
+    }
+  }
+
+  /**
    * Convert CypherTemporalValue objects to java.time types for ArcadeDB storage.
    * Handles both single values and collections/arrays of temporal values.
    */
   private static Object convertTemporalForStorage(final Object value) {
     // Handle collections (lists/arrays of temporal values)
-    if (value instanceof java.util.Collection<?> collection) {
-      final java.util.List<Object> converted = new java.util.ArrayList<>(collection.size());
+    if (value instanceof Collection<?> collection) {
+      final List<Object> converted = new ArrayList<>(collection.size());
       for (final Object item : collection) {
         converted.add(convertTemporalForStorage(item));
       }

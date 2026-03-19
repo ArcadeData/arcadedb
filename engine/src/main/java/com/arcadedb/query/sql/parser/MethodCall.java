@@ -97,6 +97,8 @@ public class MethodCall extends SimpleNode {
         paramValues.add(expr.execute(identifiable, context));
       } else if (targetObjects instanceof Result result) {
         paramValues.add(expr.execute(result, context));
+      } else if (val == null) {
+        paramValues.add(expr.execute((Identifiable) null, context));
       } else {
         throw new CommandExecutionException("Invalid value for $current: " + val);
       }
@@ -104,11 +106,8 @@ public class MethodCall extends SimpleNode {
     if (isGraphFunction()) {
       final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
       if (function instanceof SQLFunctionFiltered filtered) {
-        Object current = context.getVariable("current");
-        if (current instanceof Result result) {
-          current = result.getElement().orElse(null);
-        }
-        return filtered.execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, context);
+        final Identifiable currentRecord = resolveCurrentAsIdentifiable(context);
+        return filtered.execute(targetObjects, currentRecord, null, paramValues.toArray(), iPossibleResults, context);
       } else {
         final Object current = context.getVariable("current");
         if (current instanceof Identifiable identifiable) {
@@ -124,12 +123,29 @@ public class MethodCall extends SimpleNode {
 
     final SQLMethod method = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getMethod(name);
     if (method != null) {
+      final Identifiable currentRecord;
       if (val instanceof Result result)
-        val = result.getElement().orElse(null);
+        currentRecord = result.getElement().orElse(null);
+      else if (val instanceof Identifiable identifiable)
+        currentRecord = identifiable;
+      else
+        currentRecord = null;
 
-      return method.execute(targetObjects, (Identifiable) val, context, paramValues.toArray());
+      return method.execute(targetObjects, currentRecord, context, paramValues.toArray());
     }
     throw new UnsupportedOperationException("OMethod call, something missing in the implementation...?");
+  }
+
+  /**
+   * Resolves the context variable "current" to an Identifiable, returning null if it cannot be resolved.
+   */
+  private static Identifiable resolveCurrentAsIdentifiable(final CommandContext context) {
+    final Object current = context.getVariable("current");
+    if (current instanceof Identifiable identifiable)
+      return identifiable;
+    else if (current instanceof Result result)
+      return result.getElement().orElse(null);
+    return null;
   }
 
   public Object executeReverse(final Object targetObjects, final CommandContext context) {

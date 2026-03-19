@@ -371,7 +371,7 @@ class CypherExpressionBuilder {
       if (e1.existsExpression() != null)
         return parseExistsExpression(e1.existsExpression());
       if (e1.countStar() != null) {
-        final java.util.List<Expression> e1Args = new java.util.ArrayList<>();
+        final List<Expression> e1Args = new ArrayList<>();
         e1Args.add(new StarExpression());
         return new FunctionCallExpression("count", e1Args, false);
       }
@@ -1666,7 +1666,7 @@ class CypherExpressionBuilder {
     final String upper = subquery.toUpperCase();
     if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ") ||
         upper.contains("MERGE ") || upper.contains("REMOVE "))
-      throw new com.arcadedb.exception.CommandParsingException(
+      throw new CommandParsingException(
           "InvalidClauseComposition: Existential subquery cannot contain update clauses");
 
     // If it's a pattern without MATCH, add MATCH prefix
@@ -2248,11 +2248,15 @@ class CypherExpressionBuilder {
       labels = extractLabels(ctx.labelExpression());
     }
 
-    if (ctx.properties() != null && ctx.properties().map() != null) {
-      properties = parseMapProperties(ctx.properties().map());
+    String propertiesParameterName = null;
+    if (ctx.properties() != null) {
+      if (ctx.properties().parameter() != null)
+        propertiesParameterName = ctx.properties().parameter().parameterName().getText();
+      else if (ctx.properties().map() != null)
+        properties = parseMapProperties(ctx.properties().map());
     }
 
-    return new NodePattern(variable, labels, properties);
+    return new NodePattern(variable, labels, properties, propertiesParameterName);
   }
 
   /**
@@ -2273,8 +2277,12 @@ class CypherExpressionBuilder {
       types = extractLabels(ctx.labelExpression());
     }
 
-    if (ctx.properties() != null && ctx.properties().map() != null) {
-      properties = parseMapProperties(ctx.properties().map());
+    String propertiesParameterName = null;
+    if (ctx.properties() != null) {
+      if (ctx.properties().parameter() != null)
+        propertiesParameterName = ctx.properties().parameter().parameterName().getText();
+      else if (ctx.properties().map() != null)
+        properties = parseMapProperties(ctx.properties().map());
     }
 
     // Path length (variable-length relationships)
@@ -2303,7 +2311,7 @@ class CypherExpressionBuilder {
       direction = Direction.BOTH;
     }
 
-    return new RelationshipPattern(variable, types, direction, properties, minHops, maxHops);
+    return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops);
   }
 
   /**
@@ -2488,13 +2496,13 @@ class CypherExpressionBuilder {
 
   /**
    * Parse vector(values, dimension, type) into a FunctionCallExpression.
-   * Delegates to the "vector_create" Cypher function which converts a list to float[].
+   * Delegates to the "vector.create" Cypher function which converts a list to float[].
    */
   Expression parseVectorFunction(final Cypher25Parser.VectorFunctionContext ctx) {
     final List<Expression> args = new ArrayList<>();
     args.add(parseExpression(ctx.vectorValue));
     args.add(parseExpression(ctx.dimension));
-    return new FunctionCallExpression("vector_create", args, false);
+    return new FunctionCallExpression("vector.create", args, false);
   }
 
   /**
@@ -2522,8 +2530,8 @@ class CypherExpressionBuilder {
     final String metric = ctx.vectorDistanceMetric().getText().toUpperCase();
     final String functionName = switch (metric) {
       case "EUCLIDEAN" -> "vector.l2Distance";
-      case "MANHATTAN" -> "vector_distance_manhattan";
-      case "COSINE" -> "vector_distance_cosine";
+      case "MANHATTAN" -> "vector.distance.manhattan";
+      case "COSINE" -> "vector.distance.cosine";
       case "DOT" -> "vector.dotProduct";
       default -> throw new CommandParsingException("Unsupported vector_distance metric: " + metric);
     };

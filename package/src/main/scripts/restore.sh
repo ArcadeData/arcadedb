@@ -60,7 +60,8 @@ if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
         --add-modules jdk.incubator.vector \
         -Dpolyglot.engine.WarnInterpreterOnly=false \
         -Djava.awt.headless=true -Dfile.encoding=UTF8 \
-        -Djava.util.logging.config.file=config/arcadedb-log.properties"
+        -Djava.util.logging.config.file=config/arcadedb-log.properties \
+        --enable-native-access=ALL-UNNAMED"
 fi
 
 exec "$JAVA" $JAVA_OPTS \

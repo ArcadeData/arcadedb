@@ -108,9 +108,10 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
       console.log('Expansion attempt failed:', error.message);
 
       // Method 3: Use a different query that includes relationships
-      const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-      await queryTextarea.fill('SELECT FROM Beer WHERE out().size() > 0 LIMIT 3');
-      await page.getByRole('button', { name: '' }).first().click();
+      await page.evaluate(() => {
+        (window as any).editor.setValue('SELECT FROM Beer WHERE out().size() > 0 LIMIT 3');
+      });
+      await page.locator('[data-testid="execute-query-button"]').click();
       await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
       await page.waitForLoadState('networkidle');
     }
@@ -166,7 +167,7 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
 
      // Use JavaScript touch event simulation instead of Playwright touchscreen API
      await page.evaluate(async (coords) => {
-       const canvas = document.querySelector('canvas:last-child');
+       const canvas = document.querySelector('#graph canvas');
        if (canvas) {
          // Simulate touch tap
          const touchStart = new TouchEvent('touchstart', {
@@ -198,12 +199,12 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
      }, { x: centerX, y: centerY });
 
      await page.waitForFunction(() => {
-       return document.querySelector('canvas:last-child') !== null;
+       return document.querySelector('#graph canvas') !== null;
      }, { timeout: 2000 });
 
      // Now simulate long press for context menu
      await page.evaluate(async (coords) => {
-       const canvas = document.querySelector('canvas:last-child');
+       const canvas = document.querySelector('#graph canvas');
        if (canvas) {
          const touchStart = new TouchEvent('touchstart', {
            bubbles: true,
@@ -244,7 +245,7 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
      const touchTestResult = await page.evaluate(() => {
        return {
          graphResponsive: typeof globalCy !== 'undefined' && globalCy !== null,
-         canvasAccessible: document.querySelector('canvas:last-child') !== null,
+         canvasAccessible: document.querySelector('#graph canvas') !== null,
          noJavaScriptErrors: true
        };
      });
@@ -376,7 +377,7 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
       return {
         graphFunctional: typeof globalCy !== 'undefined' && globalCy !== null,
         nodeCount: globalCy ? globalCy.nodes().length : 0,
-        canvasIntact: document.querySelector('canvas:last-child') !== null
+        canvasIntact: document.querySelector('#graph canvas') !== null
       };
     });
 

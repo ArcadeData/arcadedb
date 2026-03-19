@@ -49,6 +49,8 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder result = new StringBuilder();
+    if (Boolean.TRUE.equals(context.getVariable(CommandContext.CSR_ACCELERATED_VAR)))
+      result.append("(CSR-accelerated via Graph Analytical View)\n");
     for (int i = 0; i < steps.size(); i++) {
       final ExecutionStepInternal step = steps.get(i);
       result.append(step.prettyPrint(depth, indent));
@@ -98,6 +100,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     result.setProperty("type", "QueryExecutionPlan");
     result.setProperty(JAVA_TYPE, getClass().getName());
     result.setProperty("cost", getCost());
+    result.setProperty("csrAccelerated", Boolean.TRUE.equals(context.getVariable(CommandContext.CSR_ACCELERATED_VAR)));
     result.setProperty("prettyPrint", prettyPrint(0, 2));
     result.setProperty("steps", steps == null ? null : steps.stream().map(x -> x.toResult()).collect(Collectors.toList()));
     return result;

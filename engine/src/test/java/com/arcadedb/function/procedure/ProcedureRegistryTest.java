@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.procedure;
 
+import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import org.junit.jupiter.api.AfterEach;
@@ -42,6 +43,8 @@ class ProcedureRegistryTest {
   @AfterEach
   void tearDown() {
     ProcedureRegistry.clear();
+    // Re-register Cypher built-in procedures into the unified registry so other tests are not affected
+    CypherProcedureRegistry.reset();
   }
 
   @Test

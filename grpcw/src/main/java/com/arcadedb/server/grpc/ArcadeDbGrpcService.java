@@ -33,6 +33,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -78,6 +79,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -97,6 +99,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private static final JsonSerializer SAFE = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false)
       .setUseVertexEdgeSize(true)
       .setUseCollectionSizeForEdges(false).setUseCollectionSize(false);
+
+  private static final int GRAPH_BATCH_VERTEX_BUFFER = 10_000;
 
   // Transaction management - now stores TransactionContext with executor for thread affinity
   private final Map<String, TransactionContext> activeTransactions = new ConcurrentHashMap<>();
@@ -251,8 +255,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Map<String, Object> params = GrpcTypeConverter.convertParameters(req.getParametersMap());
 
-      // Language defaults to "sql" when empty
-      final String language = (req.getLanguage() == null || req.getLanguage().isEmpty()) ? "sql" : req.getLanguage();
+      final String language = langOrDefault(req.getLanguage());
 
       // Transaction: begin if requested
       final boolean hasTx = req.hasTransaction();
@@ -421,55 +424,82 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void createRecord(CreateRecordRequest req, StreamObserver<CreateRecordResponse> resp) {
+    // Check for external transaction
+    final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
+    final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank())
+        ? activeTransactions.get(incomingTxId) : null;
+
+    if (txCtx != null) {
+      // External transaction — execute on its dedicated thread to maintain thread-local state
+      try {
+        final Future<CreateRecordResponse> future = txCtx.executor.submit(() -> createRecordInternal(req, txCtx.db));
+        resp.onNext(future.get());
+        resp.onCompleted();
+      } catch (Exception e) {
+        final Throwable cause = (e instanceof ExecutionException && e.getCause() != null) ? e.getCause() : e;
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord (external tx)", cause);
+        if (cause instanceof IllegalArgumentException)
+          resp.onError(Status.INVALID_ARGUMENT.withDescription("CreateRecord: " + cause.getMessage()).asException());
+        else
+          resp.onError(Status.INTERNAL.withDescription("CreateRecord: " + cause.getMessage()).asException());
+      }
+      return;
+    }
+
+    // No external transaction — inline per-call handling
+    try {
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      resp.onNext(createRecordInternal(req, db));
+      resp.onCompleted();
+    } catch (IllegalArgumentException e) {
+      resp.onError(Status.INVALID_ARGUMENT.withDescription("CreateRecord: " + e.getMessage()).asException());
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord", e);
+      resp.onError(Status.INTERNAL.withDescription("CreateRecord: " + e.getMessage()).asException());
+    }
+  }
+
+  private CreateRecordResponse createRecordInternal(final CreateRecordRequest req, final Database db) {
+    final String cls = req.getType();
+    if (cls == null || cls.isEmpty())
+      throw new IllegalArgumentException("targetClass is required");
+
+    final Schema schema = db.getSchema();
+    final DocumentType dt = schema.getType(cls);
+    if (dt == null)
+      throw new IllegalArgumentException("Class not found: " + cls);
+
+    // All properties from the request (proto map) — nested under "record"
+    final Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();
+
+    final boolean beganHere = !db.isTransactionActive();
+    if (beganHere)
+      db.begin();
 
     try {
-
-      Database db = getDatabase(req.getDatabase(), req.getCredentials());
-
-      final String cls = req.getType(); // or req.getTargetClass() if that's your proto
-      if (cls == null || cls.isEmpty())
-        throw new IllegalArgumentException("targetClass is required");
-
-      Schema schema = db.getSchema();
-      DocumentType dt = schema.getType(cls);
-      if (dt == null)
-        throw new IllegalArgumentException("Class not found: " + cls);
-
-      // All properties from the request (proto map) — nested under "record"
-      final Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();
-
       // --- Vertex ---
       if (dt instanceof VertexType) {
-        MutableVertex v = db.newVertex(cls);
-
-        // apply properties with proper coercion
+        final MutableVertex v = db.newVertex(cls);
         props.forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
-
         v.save();
 
-        // Build response: proto has setRid(String)
-        CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder().setRid(v.getIdentity().toString());
+        if (beganHere)
+          db.commit();
 
-        resp.onNext(b.build());
-        resp.onCompleted();
-        return;
+        return CreateRecordResponse.newBuilder().setRid(v.getIdentity().toString()).build();
       }
 
       // --- Edge ---
       if (dt instanceof EdgeType) {
-
-        // Expect 'out' and 'in' as string RIDs in the properties map
         String outStr = null, inStr = null;
 
         if (props.containsKey("out")) {
-
           GrpcValue pv = props.get("out");
           outStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
               String.valueOf(fromGrpcValue(pv));
         }
 
         if (props.containsKey("in")) {
-
           GrpcValue pv = props.get("in");
           inStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
               String.valueOf(fromGrpcValue(pv));
@@ -478,52 +508,37 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (outStr == null || inStr == null)
           throw new IllegalArgumentException("Edge requires 'out' and 'in' RIDs");
 
-        var outEl = db.lookupByRID(new RID(outStr), false);
-        var inEl = db.lookupByRID(new RID(inStr), false);
-
+        final var outEl = db.lookupByRID(new RID(db, outStr), false);
+        final var inEl = db.lookupByRID(new RID(db, inStr), false);
         final Vertex outV = outEl.asVertex(false);
 
-        if (!db.isTransactionActive())
-          db.begin();
-
-        MutableEdge e = outV.newEdge(cls, inEl);
-
-        // apply remaining properties (skip endpoints)
-
+        final MutableEdge e = outV.newEdge(cls, inEl);
         props.forEach((k, val) -> {
-          if (!"out".equals(k) && !"in".equals(k)) {
+          if (!"out".equals(k) && !"in".equals(k))
             e.set(k, toJavaForProperty(db, e, dt, k, val));
-          }
         });
-
         e.save();
-        db.commit();
 
-        CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder();
+        if (beganHere)
+          db.commit();
 
-        b.setRid(e.getIdentity().toString());
-
-        resp.onNext(b.build());
-        resp.onCompleted();
-
-        return;
+        return CreateRecordResponse.newBuilder().setRid(e.getIdentity().toString()).build();
       }
 
       // --- Document ---
-      MutableDocument d = db.newDocument(cls);
+      final MutableDocument d = db.newDocument(cls);
       props.forEach((k, val) -> d.set(k, toJavaForProperty(db, d, dt, k, val)));
       d.save();
 
-      CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder();
+      if (beganHere)
+        db.commit();
 
-      b.setRid(d.getIdentity().toString());
-
-      resp.onNext(b.build());
-      resp.onCompleted();
-
+      return CreateRecordResponse.newBuilder().setRid(d.getIdentity().toString()).build();
     } catch (Exception e) {
-
-      resp.onError(Status.INVALID_ARGUMENT.withDescription("CreateRecord: " + e.getMessage()).asException());
+      if (beganHere) {
+        try { db.rollback(); } catch (Exception ignore) { }
+      }
+      throw e;
     }
   }
 
@@ -536,7 +551,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (ridStr == null || ridStr.isBlank())
         throw new IllegalArgumentException("rid is required");
 
-      var el = db.lookupByRID(new RID(ridStr), true);
+      var el = db.lookupByRID(new RID(db, ridStr), true);
 
       resp.onNext(LookupByRidResponse.newBuilder().setFound(true).setRecord(convertToGrpcRecord(el.getRecord(), db)).build());
       resp.onCompleted();
@@ -551,30 +566,66 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void updateRecord(final UpdateRecordRequest req, final StreamObserver<UpdateRecordResponse> resp) {
-    Database db = null;
+    // Check for external transaction
+    final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
+    final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank())
+        ? activeTransactions.get(incomingTxId) : null;
+
+    if (txCtx != null) {
+      // External transaction — execute on its dedicated thread to maintain thread-local state
+      try {
+        final Future<UpdateRecordResponse> future = txCtx.executor.submit(() -> updateRecordInternal(req, txCtx.db));
+        resp.onNext(future.get());
+        resp.onCompleted();
+      } catch (Exception e) {
+        final Throwable cause = (e instanceof ExecutionException && e.getCause() != null) ? e.getCause() : e;
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", cause);
+        if (cause instanceof RecordNotFoundException)
+          resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+        else
+          resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + cause.getMessage()).asException());
+      }
+      return;
+    }
+
+    // No external transaction — inline per-call handling
+    try {
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      resp.onNext(updateRecordInternal(req, db));
+      resp.onCompleted();
+    } catch (RecordNotFoundException e) {
+      resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
+      resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + e.getMessage()).asException());
+    }
+  }
+
+  private UpdateRecordResponse updateRecordInternal(final UpdateRecordRequest req, final Database db) {
     boolean beganHere = false;
 
     String ridStr = null;
     try {
-      db = getDatabase(req.getDatabase(), req.getCredentials());
-
       ridStr = req.getRid();
 
       if (ridStr == null || ridStr.isEmpty())
         throw new IllegalArgumentException("rid is required");
 
-      // Begin transaction if requested
+      // Begin transaction if requested by inline tx flags (not external transaction)
       final boolean hasTx = req.hasTransaction();
-
       final var tx = hasTx ? req.getTransaction() : null;
 
       if (hasTx && tx.getBegin()) {
         db.begin();
         beganHere = true;
+      } else if (!db.isTransactionActive()) {
+        db.begin();
+        beganHere = true;
       }
 
-      // Lookup the record by RID
-      var el = db.lookupByRID(new RID(ridStr), true);
+      // Lookup the record by RID (use database-aware constructor so the returned
+      // record's RID carries the database reference needed by modify()/getPageId())
+      var el = db.lookupByRID(new RID(db, ridStr), true);
 
       final var dbRef = db;
 
@@ -637,97 +688,103 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         mdoc.save();
       }
 
-      // Commit/rollback with proper precedence
-      if (hasTx) {
-
-        if (tx.getRollback()) {
+      // Commit/rollback with proper precedence (only for per-call transactions, not external)
+      if (beganHere) {
+        if (hasTx && tx.getRollback())
           db.rollback();
-        } else if (tx.getCommit()) {
+        else
           db.commit();
-        } else if (beganHere) {
-          db.commit();
-        }
       }
 
-      resp.onNext(UpdateRecordResponse.newBuilder().setUpdated(true).setSuccess(true).build());
-
-      resp.onCompleted();
+      return UpdateRecordResponse.newBuilder().setUpdated(true).setSuccess(true).build();
     } catch (RecordNotFoundException e) {
-      resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + ridStr).asException());
+      if (beganHere) {
+        try { db.rollback(); } catch (Exception ignore) { }
+      }
+      throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
-
-      try {
-        if (beganHere && db != null)
-          db.rollback();
-      } catch (Exception ignore) {
-        // ignore rollback errors
+      if (beganHere) {
+        try { db.rollback(); } catch (Exception ignore) { }
       }
-
-      resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + e.getMessage()).asException());
+      throw e;
     }
   }
 
   @Override
   public void deleteRecord(DeleteRecordRequest req, StreamObserver<DeleteRecordResponse> resp) {
-    Database db = null;
-    boolean beganHere = false;
+    // Check for external transaction
+    final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
+    final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank())
+        ? activeTransactions.get(incomingTxId) : null;
 
-    String ridStr = null;
-    try {
-      db = getDatabase(req.getDatabase(), req.getCredentials());
-
-      ridStr = req.getRid();
-      if (ridStr == null || ridStr.isBlank())
-        throw new IllegalArgumentException("rid is required");
-
-      // Optional tx begin
-      if (req.hasTransaction() && req.getTransaction().getBegin()) {
-        db.begin();
-        beganHere = true;
-      }
-
-      var el = db.lookupByRID(new RID(ridStr), false);
-
-      el.delete(); // deletes document/vertex/edge
-
-      // Optional tx end controls
-      if (req.hasTransaction()) {
-        var tx = req.getTransaction();
-        if (tx.getCommit())
-          db.commit();
-        else if (tx.getRollback())
-          db.rollback();
-        else if (beganHere)
-          db.commit(); // began here with no explicit end → commit by default
-      } else if (beganHere) {
-        db.commit();
-      }
-
-      resp.onNext(DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build());
-      resp.onCompleted();
-
-// CURRENT IMPL EXPECTS AN EXCEPTION INSTEAD
-//    } catch (RecordNotFoundException e) {
-//      // Soft "not found"
-//      resp.onNext(DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(false).setMessage("Record not found: "
-//          + ridStr).build());
-//      resp.onCompleted();
-//      // If we began here and no explicit rollback flag, default to commit (or
-//      // rollback—your policy)
-//      if (beganHere && req.hasTransaction() && !req.getTransaction().getRollback())
-//        db.commit();
-    } catch (Exception e) {
-      // Best-effort rollback if we started the tx
+    if (txCtx != null) {
+      // External transaction — execute on its dedicated thread to maintain thread-local state
       try {
-        if (beganHere && db != null)
-          db.rollback();
-      } catch (Exception ignore) {
+        final Future<DeleteRecordResponse> future = txCtx.executor.submit(() -> deleteRecordInternal(req, txCtx.db));
+        resp.onNext(future.get());
+        resp.onCompleted();
+      } catch (Exception e) {
+        final Throwable cause = (e instanceof ExecutionException && e.getCause() != null) ? e.getCause() : e;
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", cause);
+        if (cause instanceof RecordNotFoundException)
+          resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+        else
+          resp.onError(Status.INTERNAL.withDescription("DeleteRecord: " + cause.getMessage()).asException());
       }
+      return;
+    }
 
+    // No external transaction — inline per-call handling
+    try {
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      resp.onNext(deleteRecordInternal(req, db));
+      resp.onCompleted();
+    } catch (RecordNotFoundException e) {
+      resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord", e);
       resp.onError(
           Status.INTERNAL.withDescription("DeleteRecord: " + (e.getMessage() == null ? e.toString() : e.getMessage()))
               .asException());
+    }
+  }
+
+  private DeleteRecordResponse deleteRecordInternal(final DeleteRecordRequest req, final Database db) {
+    final String ridStr = req.getRid();
+    if (ridStr == null || ridStr.isBlank())
+      throw new IllegalArgumentException("rid is required");
+
+    final boolean hasTx = req.hasTransaction();
+    final boolean beganHere;
+
+    if (hasTx && req.getTransaction().getBegin()) {
+      db.begin();
+      beganHere = true;
+    } else if (!db.isTransactionActive()) {
+      db.begin();
+      beganHere = true;
+    } else {
+      beganHere = false;
+    }
+
+    try {
+      final var el = db.lookupByRID(new RID(db, ridStr), false);
+      el.delete();
+
+      if (beganHere) {
+        if (hasTx && req.getTransaction().getRollback())
+          db.rollback();
+        else
+          db.commit();
+      }
+
+      return DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build();
+    } catch (Exception e) {
+      if (beganHere) {
+        try { db.rollback(); } catch (Exception ignore) { }
+      }
+      throw e;
     }
   }
 
@@ -736,8 +793,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       ProjectionConfig projectionConfig = getProjectionConfig(request);
 
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): projectionConfig.include = %s projectionConfig" +
-              ".mode = %s",
+      LogManager.instance().log(this, Level.FINE, """
+              executeQuery(): projectionConfig.include = %s projectionConfig\
+              .mode = %s""",
           projectionConfig.isInclude(),
           projectionConfig.getEnc());
 
@@ -762,9 +820,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Execute the query
       long startTime = System.currentTimeMillis();
 
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): query = %s", request.getQuery());
+      final String language = langOrDefault(request.getLanguage());
 
-      ResultSet resultSet = database.query("sql", request.getQuery(),
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): language = %s query = %s", language, request.getQuery());
+
+      ResultSet resultSet = database.query(language, request.getQuery(),
           GrpcTypeConverter.convertParameters(request.getParametersMap()));
 
       LogManager.instance()
@@ -862,8 +922,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Database database = getDatabase(reqDb, request.getCredentials());
 
-      LogManager.instance().log(this, Level.FINE, "beginTransaction(): resolved database instance dbName=%s class=%s " +
-              "hash=%s",
+      LogManager.instance().log(this, Level.FINE, """
+              beginTransaction(): resolved database instance dbName=%s class=%s \
+              hash=%s""",
           (database != null ? database.getName() : "<null>"), (database != null ?
               database.getClass().getSimpleName() : "<null>"),
           (database != null ? System.identityHashCode(database) : 0));
@@ -874,8 +935,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Create transaction context with dedicated executor thread
       txCtx = new TransactionContext(database, transactionId);
 
-      LogManager.instance().log(this, Level.FINE, "beginTransaction(): calling database.begin() on dedicated thread " +
-          "for txId=%s", transactionId);
+      LogManager.instance().log(this, Level.FINE, """
+          beginTransaction(): calling database.begin() on dedicated thread \
+          for txId=%s""", transactionId);
 
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
       // transactions are thread-local
@@ -944,8 +1006,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      LogManager.instance().log(this, Level.FINE, "commitTransaction(): committing txId=%s on db=%s (on dedicated " +
-          "thread)", txId, txCtx.db.getName());
+      LogManager.instance().log(this, Level.FINE, """
+          commitTransaction(): committing txId=%s on db=%s (on dedicated \
+          thread)""", txId, txCtx.db.getName());
 
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
@@ -998,8 +1061,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rolling back txId=%s on db=%s (on dedicated" +
-          " thread)", txId, txCtx.db.getName());
+      LogManager.instance().log(this, Level.FINE, """
+          rollbackTransaction(): rolling back txId=%s on db=%s (on dedicated\
+           thread)""", txId, txCtx.db.getName());
 
       // Execute rollback ON THE SAME THREAD that began the transaction
       Future<?> rollbackFuture = txCtx.executor.submit(() -> {
@@ -1045,12 +1109,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         beganHere = true;
       }
 
+      final String language = langOrDefault(request.getLanguage());
+
       // --- Dispatch on mode (helpers do NOT manage transactions) ---
+      // PAGED mode uses SQL-specific SKIP/LIMIT wrapping, so fall back to CURSOR for non-SQL languages
       switch (request.getRetrievalMode()) {
-        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig);
-        case PAGED -> streamPaged(db, request, batchSize, scso, cancelled, projectionConfig);
-        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
-        default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
+        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        case PAGED -> {
+          if (!"sql".equalsIgnoreCase(language))
+            streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
+          else
+            streamPaged(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        }
+        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
       }
 
       // If the client cancelled mid-stream, choose rollback unless caller explicitly
@@ -1111,14 +1183,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamCursor(Database db, StreamQueryRequest request, int batchSize,
                             ServerCallStreamObserver<QueryResult> scso,
-                            AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
+                            AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
 
     long running = 0L;
 
     QueryResult.Builder batch = QueryResult.newBuilder();
     int inBatch = 0;
 
-    try (ResultSet rs = db.query("sql", request.getQuery(),
+    try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
 
       while (rs.hasNext()) {
@@ -1182,11 +1254,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamMaterialized(Database db, StreamQueryRequest request, int batchSize,
                                   ServerCallStreamObserver<QueryResult> scso,
-                                  AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
+                                  AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
 
     final List<GrpcRecord> all = new ArrayList<>();
 
-    try (ResultSet rs = db.query("sql", request.getQuery(),
+    try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
 
       while (rs.hasNext()) {
@@ -1235,7 +1307,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamPaged(Database db, StreamQueryRequest request, int batchSize,
                            ServerCallStreamObserver<QueryResult> scso,
-                           AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
+                           AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
 
     final String pagedSql = wrapWithSkipLimit(request.getQuery()); // see helper below
     int offset = 0;
@@ -1253,7 +1325,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       int count = 0;
       QueryResult.Builder b = QueryResult.newBuilder();
 
-      try (ResultSet rs = db.query("sql", pagedSql, params)) {
+      try (ResultSet rs = db.query(language, pagedSql, params)) {
         while (rs.hasNext()) {
           if (cancelled.get())
             return;
@@ -1510,6 +1582,215 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     };
   }
 
+  // --- 3) Client-streaming graph batch load ---
+  @Override
+  public StreamObserver<GraphBatchChunk> graphBatchLoad(final StreamObserver<GraphBatchResult> resp) {
+    final ServerCallStreamObserver<GraphBatchResult> call = (ServerCallStreamObserver<GraphBatchResult>) resp;
+    call.disableAutoInboundFlowControl();
+
+    final long startedAt = System.currentTimeMillis();
+    final AtomicBoolean cancelled = new AtomicBoolean(false);
+    final boolean[] errorSent = { false };
+    final AtomicReference<GraphBatch> batchRef = new AtomicReference<>();
+    final AtomicReference<Database> dbRef = new AtomicReference<>();
+    final Map<String, RID> tempIdMap = new HashMap<>();
+
+    // Vertex accumulation state
+    final List<Object[]> vertexPropsBatch = new ArrayList<>(GRAPH_BATCH_VERTEX_BUFFER);
+    final List<String> vertexTempIds = new ArrayList<>(GRAPH_BATCH_VERTEX_BUFFER);
+    final String[] currentType = { null };
+    final long[] counts = new long[2]; // [0]=vertices, [1]=edges
+    final boolean[] inEdgePhase = { false };
+
+    call.setOnCancelHandler(() -> cancelled.set(true));
+    call.request(1);
+
+    return new StreamObserver<>() {
+
+      @Override
+      public void onNext(final GraphBatchChunk chunk) {
+        if (cancelled.get())
+          return;
+        try {
+          GraphBatch batch = batchRef.get();
+          if (batch == null) {
+            // First chunk: initialize
+            if (chunk.getDatabase().isEmpty())
+              throw new IllegalArgumentException("First chunk must contain the database name");
+            final Database db = getDatabase(chunk.getDatabase(), chunk.getCredentials());
+            dbRef.set(db);
+            final GraphBatch.Builder builder = db.batch();
+            configureGraphBatchOptions(builder, chunk.hasOptions() ? chunk.getOptions() : null);
+            batch = builder.build();
+            batchRef.set(batch);
+          }
+
+          // Process records in this chunk
+          for (final GraphBatchRecord rec : chunk.getRecordsList()) {
+            if (rec.getKind() == GraphBatchRecord.Kind.EDGE) {
+              // Flush remaining vertices on transition to edge phase
+              if (!inEdgePhase[0]) {
+                if (!vertexPropsBatch.isEmpty())
+                  counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
+                inEdgePhase[0] = true;
+              }
+              processEdge(batch, rec, dbRef.get(), tempIdMap);
+              counts[1]++;
+            } else {
+              if (inEdgePhase[0])
+                throw new IllegalArgumentException("Vertex record received after edges. All vertices must appear before edges");
+
+              // Type change -> flush
+              final String prevType = currentType[0];
+              if (prevType != null && !prevType.equals(rec.getTypeName()))
+                counts[0] += flushVertexBatch(batch, prevType, vertexPropsBatch, vertexTempIds, tempIdMap);
+              currentType[0] = rec.getTypeName();
+
+              final Object[] props = rec.getPropertiesMap().isEmpty() ? new Object[0] : toPropertyArray(rec.getPropertiesMap());
+              vertexPropsBatch.add(props);
+              vertexTempIds.add(rec.getTempId().isEmpty() ? null : rec.getTempId());
+
+              if (vertexPropsBatch.size() >= GRAPH_BATCH_VERTEX_BUFFER)
+                counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
+            }
+          }
+        } catch (final Exception e) {
+          errorSent[0] = true;
+          resp.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
+          // Note: closeQuietly may flush/commit partial data. GraphBatch has no rollback path by design
+          // (same as the HTTP batch endpoint). Callers should treat batch loading as non-atomic.
+          closeQuietly(batchRef.get());
+          return;
+        } finally {
+          if (!cancelled.get() && !errorSent[0])
+            call.request(1);
+        }
+      }
+
+      @Override
+      public void onError(final Throwable t) {
+        closeQuietly(batchRef.get());
+      }
+
+      @Override
+      public void onCompleted() {
+        try {
+          final GraphBatch batch = batchRef.get();
+          if (batch == null) {
+            resp.onNext(GraphBatchResult.newBuilder().build());
+            resp.onCompleted();
+            return;
+          }
+
+          // Flush remaining vertices
+          if (!vertexPropsBatch.isEmpty())
+            counts[0] += flushVertexBatch(batch, currentType[0], vertexPropsBatch, vertexTempIds, tempIdMap);
+
+          // Close batch -> flushes edges, connects incoming edges
+          batch.close();
+
+          final GraphBatchResult.Builder result = GraphBatchResult.newBuilder()
+              .setVerticesCreated(counts[0])
+              .setEdgesCreated(counts[1])
+              .setElapsedMs(System.currentTimeMillis() - startedAt);
+
+          for (final Map.Entry<String, RID> entry : tempIdMap.entrySet())
+            result.putIdMapping(entry.getKey(), entry.getValue().toString());
+
+          if (!cancelled.get()) {
+            resp.onNext(result.build());
+            resp.onCompleted();
+          }
+        } catch (final Exception e) {
+          resp.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
+          closeQuietly(batchRef.get());
+        }
+      }
+    };
+  }
+
+  private Object[] toPropertyArray(final Map<String, GrpcValue> properties) {
+    final Object[] result = new Object[properties.size() * 2];
+    int i = 0;
+    for (final Map.Entry<String, GrpcValue> entry : properties.entrySet()) {
+      result[i++] = entry.getKey();
+      result[i++] = GrpcTypeConverter.fromGrpcValue(entry.getValue());
+    }
+    return result;
+  }
+
+  private RID resolveRef(final String ref, final Database db, final Map<String, RID> tempIdMap) {
+    if (ref == null || ref.isEmpty())
+      throw new IllegalArgumentException("Edge record is missing from_ref or to_ref");
+    if (ref.charAt(0) == '#') {
+      final int colonIdx = ref.indexOf(':');
+      if (colonIdx < 0)
+        throw new IllegalArgumentException("Malformed RID '" + ref + "'");
+      final int bucketId = Integer.parseInt(ref.substring(1, colonIdx));
+      final long position = Long.parseLong(ref.substring(colonIdx + 1));
+      return new RID(db, bucketId, position);
+    }
+    final RID rid = tempIdMap.get(ref);
+    if (rid == null)
+      throw new IllegalArgumentException("Unknown temporary ID '" + ref + "'. Vertices must appear before edges that reference them");
+    return rid;
+  }
+
+  private int flushVertexBatch(final GraphBatch batch, final String typeName,
+      final List<Object[]> propsBatch, final List<String> tempIds, final Map<String, RID> tempIdMap) {
+    final int count = propsBatch.size();
+    final Object[][] propsArray = propsBatch.toArray(new Object[count][]);
+    final RID[] rids = batch.createVertices(typeName, propsArray);
+    for (int i = 0; i < count; i++) {
+      final String tempId = tempIds.get(i);
+      if (tempId != null)
+        tempIdMap.put(tempId, rids[i]);
+    }
+    propsBatch.clear();
+    tempIds.clear();
+    return count;
+  }
+
+  private void processEdge(final GraphBatch batch, final GraphBatchRecord rec, final Database db,
+      final Map<String, RID> tempIdMap) {
+    final RID srcRID = resolveRef(rec.getFromRef(), db, tempIdMap);
+    final RID dstRID = resolveRef(rec.getToRef(), db, tempIdMap);
+    if (rec.getPropertiesMap().isEmpty())
+      batch.newEdge(srcRID, rec.getTypeName(), dstRID);
+    else
+      batch.newEdge(srcRID, rec.getTypeName(), dstRID, toPropertyArray(rec.getPropertiesMap()));
+  }
+
+  private void configureGraphBatchOptions(final GraphBatch.Builder builder, final GraphBatchOptions opts) {
+    if (opts == null)
+      return;
+    if (opts.getBatchSize() > 0)
+      builder.withBatchSize(opts.getBatchSize());
+    if (opts.getLightEdges())
+      builder.withLightEdges(true);
+    if (opts.getWal())
+      builder.withWAL(true);
+    // Only need to disable: builder defaults to true; setting true explicitly is a no-op
+    if (opts.hasParallelFlush() && !opts.getParallelFlush())
+      builder.withParallelFlush(false);
+    if (opts.hasPreAllocateEdgeChunks() && !opts.getPreAllocateEdgeChunks())
+      builder.withPreAllocateEdgeChunks(false);
+    if (opts.getEdgeListInitialSize() > 0)
+      builder.withEdgeListInitialSize(opts.getEdgeListInitialSize());
+    if (opts.hasBidirectional() && !opts.getBidirectional())
+      builder.withBidirectional(false);
+    if (opts.getCommitEvery() > 0)
+      builder.withCommitEvery(opts.getCommitEvery());
+    if (opts.getExpectedEdgeCount() > 0)
+      builder.withExpectedEdgeCount(opts.getExpectedEdgeCount());
+  }
+
+  private void closeQuietly(final GraphBatch batch) {
+    if (batch != null) {
+      try { batch.close(); } catch (final Exception ignored) { }
+    }
+  }
+
   /**
    * Minimal consistency check: same "contract" for the stream.
    */
@@ -1565,7 +1846,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             ctx.closeQuietly();
           }
         });
-      } catch (java.util.concurrent.RejectedExecutionException ignore) {
+      } catch (RejectedExecutionException ignore) {
         // Executor already shut down - cleanup was already done
       }
       streamExecutor.shutdown();
@@ -1719,7 +2000,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               ctx.closeQuietly();
             }
           });
-        } catch (java.util.concurrent.RejectedExecutionException ignore) {
+        } catch (RejectedExecutionException ignore) {
           // Executor already shut down
         }
         streamExecutor.shutdown();
@@ -1869,10 +2150,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
                 .setMessage("Edge requires 'out' and 'in'").build());
           } else {
-            var outV = ctx.db.lookupByRID(new RID(outRid), false).asVertex(false);
+            var outV = ctx.db.lookupByRID(new RID(ctx.db, outRid), false).asVertex(false);
 
             // Create edge from the OUT vertex
-            MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), new RID(inRid));
+            MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), new RID(ctx.db, inRid));
             applyGrpcRecord(e, r); // sets edge properties
             e.save();
             c.inserted++;
@@ -2161,8 +2442,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           int add = GrpcTypeConverter.bytesOf(k) + child.getSerializedSize();
           if (pc.wouldExceed(add)) {
             LogManager.instance()
-                .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' " +
-                        "(limit=%s, used~%s)",
+                .log(this, Level.FINE, """
+                        GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' \
+                        (limit=%s, used~%s)""",
                     k,
                     pc.softLimitBytes, pc.used.get());
             pc.truncated = true;
@@ -2200,8 +2482,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Soft limit handling
           if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
             pc.truncated = true;
-            LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; " +
-                    "size=%s limit=%s",
+            LogManager.instance().log(this, Level.FINE, """
+                    GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; \
+                    size=%s limit=%s""",
                 jsonBytes.length,
                 pc.softLimitBytes);
             // Prefer a RID fallback if we have one
@@ -2491,8 +2774,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final String authenticatedUser = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
     if (authenticatedUser != null && !authenticatedUser.isEmpty()) {
       // User already authenticated via interceptor, no need to validate credentials
-      LogManager.instance().log(this, Level.FINE, "validateCredentials(): user already authenticated via interceptor:" +
-          " %s", authenticatedUser);
+      LogManager.instance().log(this, Level.FINE, """
+          validateCredentials(): user already authenticated via interceptor:\
+           %s""", authenticatedUser);
       return;
     }
 
@@ -2998,6 +3282,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   private String generateTransactionId() {
     return "tx_" + System.nanoTime();
+  }
+
+  private static String langOrDefault(String language) {
+    return (language == null || language.isEmpty()) ? "sql" : language;
   }
 
   // ---- Debug helpers ----

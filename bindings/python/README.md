@@ -2,7 +2,7 @@
 
 Native Python bindings for ArcadeDB - the multi-model database that supports Graph, Document, Key/Value, Search Engine, Time Series, and Vector models.
 
-**Status**: ✅ Production Ready | **Tests**: 258 Passing | **Platforms**: 3 Supported
+**Status**: ✅ Production Ready | **Tests**: 260 Passing | **Platforms**: 4 Supported
 
 ---
 
@@ -23,9 +23,10 @@ uv pip install arcadedb-embedded
 **Requirements:**
 
 - **Python 3.10–3.14** (packaged/tested on CPython 3.12) - No Java installation required!
-- **Supported Platforms**: Prebuilt wheels for **3 platforms**
+- **Supported Platforms**: Prebuilt wheels for **4 platforms**
   - Linux: x86_64, ARM64
   - macOS: Apple Silicon (ARM64)
+  - Windows: x86_64
 
 ### 5-Minute Example
 
@@ -58,11 +59,11 @@ with arcadedb.create_database("./mydb") as db:
 
 ## ✨ Features
 
-- ☕ **No Java Installation Required**: Bundled JRE (~249MB uncompressed)
-- 🌍 **3 Platforms Supported**: Linux (x86_64, ARM64), macOS (ARM64)
+- ☕ **No Java Installation Required**: Bundled JRE (~60MB uncompressed)
+- 🌍 **4 Platforms Supported**: Linux (x86_64, ARM64), macOS (ARM64), Windows (x86_64)
 - 🚀 **Embedded Mode**: Direct database access in Python process (no network)
 - 🌐 **Server Mode**: Optional HTTP server with Studio web interface
-- 📦 **Self-contained**: All dependencies bundled (~116MB wheel)
+- 📦 **Self-contained**: All dependencies bundled (~68MB wheel)
 - 🔄 **Multi-model**: Graph, Document, Key/Value, Vector, Time Series
 - 🔍 **Multiple query languages**: SQL, OpenCypher, MongoDB
 - ⚡ **High performance**: Direct JVM integration via JPype
@@ -78,10 +79,10 @@ The `arcadedb-embedded` package is platform-specific and self-contained:
 
 **Package Contents (all platforms):**
 
-- **Wheel size (compressed)**: ~116MB
+- **Wheel size (compressed)**: ~68MB
 - **ArcadeDB JARs (uncompressed)**: ~32MB
-- **Bundled JRE (uncompressed)**: ~249MB (platform-specific Java 25 runtime via jlink)
-- **Total uncompressed size**: ~281MB
+- **Bundled JRE (uncompressed)**: ~60MB (platform-specific Java 25 runtime via jlink)
+- **Total uncompressed size**: ~95MB
 
 **Note**: Some JARs are excluded to optimize package size (e.g., gRPC wire protocol). See [`jar_exclusions.txt`](https://github.com/humemai/arcadedb-embedded-python/blob/main/bindings/python/jar_exclusions.txt) for details.
 
@@ -91,7 +92,7 @@ Import: `import arcadedb_embedded as arcadedb`
 
 ## 🧪 Testing
 
-**Status**: 258 tests + example scripts passing on all 3 platforms
+**Status**: 260 tests + example scripts passing on all 4 platforms
 
 ```bash
 # Run all tests
@@ -107,7 +108,7 @@ See [testing documentation](https://docs.humem.ai/arcadedb/latest/development/te
 
 ## 🔧 Building from Source (Advanced)
 
-Linux uses Docker. macOS uses a native Java 25+ JDK with jlink.
+Linux uses Docker. macOS and Windows use a native Java 25+ JDK with jlink.
 
 ```bash
 cd bindings/python/

@@ -58,8 +58,13 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   @BeforeAll
   static void ensureRegistriesLoaded() {
     // Force loading of CypherProcedureRegistry to ensure its static initializer
-    // registers procedures in the unified ProcedureRegistry
-    CypherProcedureRegistry.size();
+    // registers procedures in the unified ProcedureRegistry.
+    // Clear and reset both registries to ensure unified FunctionRegistry/ProcedureRegistry
+    // are populated with the same instances (other tests may clear the unified registries).
+    FunctionRegistry.clear();
+    ProcedureRegistry.clear();
+    CypherFunctionRegistry.reset();
+    CypherProcedureRegistry.reset();
   }
 
   // ===================== REGISTRY TESTS =====================
@@ -1342,7 +1347,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   // ===== allReduce() tests =====
 
   @Test
-  void testAllReduceEmptyList() {
+  void allReduceEmptyList() {
     // allReduce on empty list should return true (vacuous truth)
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
@@ -1355,7 +1360,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testAllReducePredicateAlwaysTrue() {
+  void allReducePredicateAlwaysTrue() {
     // All intermediate accumulated values satisfy the predicate
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
@@ -1368,7 +1373,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testAllReducePredicateFails() {
+  void allReducePredicateFails() {
     // Predicate fails at some step: 0+1=1<3, 1+2=3 NOT < 3 -> false
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",

@@ -21,6 +21,9 @@ package com.arcadedb.security;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+import java.util.Map;
+import java.util.Set;
+
 /**
  * Base security at server level. In the core package the default implementation throws unsupported exceptions, but if ArcadeDB is running on a server it uses the server security.
  *
@@ -34,4 +37,32 @@ public interface SecurityManager {
    * Notifies the update of the schema.
    */
   void updateSchema(DatabaseInternal database);
+
+  default Set<String> getUsers() {
+    throw new UnsupportedOperationException("User management requires server mode");
+  }
+
+  default boolean existsUser(final String name) {
+    throw new UnsupportedOperationException("User management requires server mode");
+  }
+
+  default Map<String, Object> getUserInfo(final String name) {
+    throw new UnsupportedOperationException("User management requires server mode");
+  }
+
+  default void createUser(final String name, final String password) {
+    throw new UnsupportedOperationException("User management requires server mode");
+  }
+
+  default boolean dropUser(final String name) {
+    throw new UnsupportedOperationException("User management requires server mode");
+  }
+
+  default void setUserPassword(final String name, final String password) {
+    throw new UnsupportedOperationException("User management requires server mode");
+  }
+
+  default String encodePassword(final String password) {
+    throw new UnsupportedOperationException("User management requires server mode");
+  }
 }

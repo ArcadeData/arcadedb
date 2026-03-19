@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.time.temporal.*;
+import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -110,7 +111,7 @@ class RemoteTypesIT extends BaseGraphServerTest {
 
       // DateTime properties (truncate to seconds since milliseconds are not preserved)
       assertThat(v.get("fecha")).isInstanceOf(LocalDateTime.class);
-      assertThat(v.getDate("fecha")).isInstanceOf(java.util.Date.class);
+      assertThat(v.getDate("fecha")).isInstanceOf(Date.class);
       assertThat(v.getLocalDateTime("fecha")).isEqualTo(targetDate.truncatedTo(ChronoUnit.SECONDS));
     });
   }

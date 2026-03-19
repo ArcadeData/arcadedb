@@ -40,7 +40,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   // ===================== #3445: coll.indexOf with null should return null =====================
 
   @Test
-  void testCollIndexOfWithNullValueReturnsNull() {
+  void collIndexOfWithNullValueReturnsNull() {
     // Issue #3445: coll.indexOf(['a'], null) should return null, not -1
     try (final ResultSet rs = database.command("opencypher", "RETURN coll.indexOf(['a'], null) AS result")) {
       assertThat(rs.hasNext()).isTrue();
@@ -49,7 +49,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   }
 
   @Test
-  void testCollIndexOfWithNullListReturnsNull() {
+  void collIndexOfWithNullListReturnsNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN coll.indexOf(null, 'a') AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("result")).isNull();
@@ -57,7 +57,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   }
 
   @Test
-  void testCollIndexOfNormalBehavior() {
+  void collIndexOfNormalBehavior() {
     try (final ResultSet rs = database.command("opencypher", "RETURN coll.indexOf(['a', 'b', 'c'], 'b') AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("result")).longValue()).isEqualTo(1L);
@@ -67,7 +67,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   // ===================== #3446: coll.remove with out-of-bounds index should throw =====================
 
   @Test
-  void testCollRemoveOutOfBoundsThrows() {
+  void collRemoveOutOfBoundsThrows() {
     // Issue #3446: coll.remove([1, 2], 10) should throw an error
     assertThatThrownBy(() -> {
       try (final ResultSet rs = database.command("opencypher", "RETURN coll.remove([1, 2], 10) AS result")) {
@@ -77,7 +77,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   }
 
   @Test
-  void testCollRemoveNegativeIndexThrows() {
+  void collRemoveNegativeIndexThrows() {
     assertThatThrownBy(() -> {
       try (final ResultSet rs = database.command("opencypher", "RETURN coll.remove([1, 2], -1) AS result")) {
         rs.next();
@@ -86,7 +86,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   }
 
   @Test
-  void testCollRemoveNormalBehavior() {
+  void collRemoveNormalBehavior() {
     try (final ResultSet rs = database.command("opencypher", "RETURN coll.remove([1, 2, 3], 1) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       @SuppressWarnings("unchecked")
@@ -100,7 +100,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   // ===================== #3447: isEmpty should not treat null as empty =====================
 
   @Test
-  void testIsEmptyWithNullProperty() {
+  void isEmptyWithNullProperty() {
     // Issue #3447: isEmpty(p.address) where p.address is null should NOT return true
     database.transaction(() -> {
       database.getSchema().createVertexType("PersonTest");
@@ -119,7 +119,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   }
 
   @Test
-  void testIsEmptyWithEmptyString() {
+  void isEmptyWithEmptyString() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty('') AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Boolean>getProperty("result")).isTrue();
@@ -127,7 +127,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   }
 
   @Test
-  void testIsEmptyWithNonEmptyString() {
+  void isEmptyWithNonEmptyString() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty('hello') AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Boolean>getProperty("result")).isFalse();
@@ -135,7 +135,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   }
 
   @Test
-  void testIsEmptyWithNull() {
+  void isEmptyWithNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty(null) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("result")).isNull();
@@ -145,7 +145,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   // ===================== #3448: toBooleanOrNull(1.5) should return null =====================
 
   @Test
-  void testToBooleanOrNullWithFloat() {
+  void toBooleanOrNullWithFloat() {
     // Issue #3448: toBooleanOrNull(1.5) should return null, not true
     try (final ResultSet rs = database.command("opencypher",
         "RETURN toBooleanOrNull('not a boolean') AS str, toBooleanOrNull(1.5) AS float, toBooleanOrNull([]) AS array")) {
@@ -160,7 +160,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   // ===================== #3449: size on vector should return vector length =====================
 
   @Test
-  void testSizeOnVector() {
+  void sizeOnVector() {
     // Issue #3449: size(vector([1, 2, 3, 4, 5], 5, INTEGER)) should return 5
     try (final ResultSet rs = database.command("opencypher",
         "RETURN size(vector([1, 2, 3, 4, 5], 5, INTEGER)) AS sizeResult")) {
@@ -170,7 +170,7 @@ class OpenCypherBugFixesTest extends TestHelper {
   }
 
   @Test
-  void testSizeOnVectorThreeElements() {
+  void sizeOnVectorThreeElements() {
     try (final ResultSet rs = database.command("opencypher",
         "RETURN size(vector([1.0, 2.0, 3.0], 3, FLOAT)) AS sizeResult")) {
       assertThat(rs.hasNext()).isTrue();

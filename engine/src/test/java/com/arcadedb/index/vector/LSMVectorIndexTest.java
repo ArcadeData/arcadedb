@@ -1019,8 +1019,10 @@ class LSMVectorIndexTest extends TestHelper {
       database.command("sql", "CREATE VERTEX TYPE CompactTest IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY CompactTest.id IF NOT EXISTS STRING");
       database.command("sql", "CREATE PROPERTY CompactTest.vec IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON CompactTest (vec) LSM_VECTOR " +
-          "METADATA {dimensions: 4, similarity: 'COSINE'}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON CompactTest (vec) LSM_VECTOR \
+          METADATA {dimensions: 4, similarity: 'COSINE'}\
+          """);
     });
 
     final var typeIndex = (TypeIndex) database.getSchema().getIndexByName("CompactTest[vec]");
@@ -1305,8 +1307,9 @@ class LSMVectorIndexTest extends TestHelper {
     // Test 4: Query with specific product and find its nearest neighbors
     database.transaction(() -> {
       final var result = database.query("sql",
-          "SELECT name, `vector.neighbors`('Product[embedding]', embedding, 3) as neighbors " +
-              "FROM Product WHERE name = 'Product_15'");
+          """
+          SELECT name, `vector.neighbors`('Product[embedding]', embedding, 3) as neighbors \
+          FROM Product WHERE name = 'Product_15'""");
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
       final var doc = result.next();
@@ -1873,8 +1876,9 @@ class LSMVectorIndexTest extends TestHelper {
     // This assertion will FAIL due to Bug: graphFile.close() is never called in LSMVectorIndex.close()
     // Without close() being called, the graph data is never flushed to disk
     assertThat(graphFiles).as(
-        "BUG: Graph file should exist after close, but graphFile.close() is never called in LSMVectorIndex.close() at line 2131. " +
-        "The graph data remains in memory and is never written to disk.")
+        """
+        BUG: Graph file should exist after close, but graphFile.close() is never called in LSMVectorIndex.close() at line 2131. \
+        The graph data remains in memory and is never written to disk.""")
         .isNotNull()
         .isNotEmpty();
 
@@ -2082,8 +2086,9 @@ class LSMVectorIndexTest extends TestHelper {
 
         // Results should be identical if graph was properly persisted
         assertThat(secondQueryResults).as(
-            "BUG: Query results should be identical across cycles if graph is persisted, " +
-            "but differ because graph is rebuilt differently")
+            """
+            BUG: Query results should be identical across cycles if graph is persisted, \
+            but differ because graph is rebuilt differently""")
             .isEqualTo(firstQueryResults);
 
       } finally {

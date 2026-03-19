@@ -19,12 +19,57 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.CallClause;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.ast.CreateClause;
+import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
+import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.DeleteClause;
+import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.ExistsExpression;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.ForeachClause;
+import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.ast.IsNullExpression;
+import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.LoadCSVClause;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
+import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.MergeClause;
+import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.OrderByClause;
+import com.arcadedb.query.opencypher.ast.ParameterExpression;
+import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.RegexExpression;
+import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.RemoveClause;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
+import com.arcadedb.query.opencypher.ast.StringMatchExpression;
+import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
+import com.arcadedb.query.opencypher.ast.UnwindClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.grammar.Cypher25ParserBaseVisitor;
-import com.arcadedb.query.opencypher.rewriter.*;
+import com.arcadedb.query.opencypher.rewriter.BooleanSimplifier;
+import com.arcadedb.query.opencypher.rewriter.ComparisonNormalizer;
+import com.arcadedb.query.opencypher.rewriter.CompositeRewriter;
+import com.arcadedb.query.opencypher.rewriter.ConstantFolder;
+import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -57,11 +102,172 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   @Override
   public CypherStatement visitStatement(final Cypher25Parser.StatementContext ctx) {
-    // For now, focus on queryWithLocalDefinitions (the most common case)
-    if (ctx.queryWithLocalDefinitions() != null) {
+    if (ctx.queryWithLocalDefinitions() != null)
       return (CypherStatement) visit(ctx.queryWithLocalDefinitions());
+    if (ctx.command() != null)
+      return handleCommand(ctx.command());
+    throw new CommandParsingException("Unsupported statement type");
+  }
+
+  private CypherStatement handleCommand(final Cypher25Parser.CommandContext ctx) {
+    if (ctx.createCommand() != null)
+      return handleCreateCommand(ctx.createCommand());
+    if (ctx.dropCommand() != null)
+      return handleDropCommand(ctx.dropCommand());
+    if (ctx.showCommand() != null)
+      return handleShowCommand(ctx.showCommand());
+    if (ctx.alterCommand() != null)
+      return handleAlterCommand(ctx.alterCommand());
+    throw new CommandParsingException("Unsupported command type");
+  }
+
+  private CypherStatement handleCreateCommand(final Cypher25Parser.CreateCommandContext ctx) {
+    if (ctx.createConstraint() != null)
+      return handleCreateConstraint(ctx.createConstraint());
+    if (ctx.createUser() != null)
+      return handleCreateUser(ctx.createUser());
+    throw new CommandParsingException("Only CREATE CONSTRAINT and CREATE USER are currently supported");
+  }
+
+  private CypherStatement handleDropCommand(final Cypher25Parser.DropCommandContext ctx) {
+    if (ctx.dropConstraint() != null)
+      return handleDropConstraint(ctx.dropConstraint());
+    if (ctx.dropUser() != null)
+      return handleDropUser(ctx.dropUser());
+    throw new CommandParsingException("Only DROP CONSTRAINT and DROP USER are currently supported");
+  }
+
+  private CypherAdminStatement handleShowCommand(final Cypher25Parser.ShowCommandContext ctx) {
+    if (ctx.showUsers() != null)
+      return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_USERS, null, null, false, false);
+    if (ctx.showCurrentUser() != null)
+      return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_CURRENT_USER, null, null, false, false);
+    throw new CommandParsingException("Only SHOW USERS and SHOW CURRENT USER are currently supported");
+  }
+
+  private CypherAdminStatement handleAlterCommand(final Cypher25Parser.AlterCommandContext ctx) {
+    if (ctx.alterUser() != null)
+      return handleAlterUser(ctx.alterUser());
+    throw new CommandParsingException("Only ALTER USER is currently supported");
+  }
+
+  private CypherAdminStatement handleCreateUser(final Cypher25Parser.CreateUserContext ctx) {
+    final String userName = stripBackticks(ctx.commandNameExpression().getText());
+    final boolean ifNotExists = ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null;
+
+    String password = null;
+    if (ctx.password() != null && !ctx.password().isEmpty()) {
+      final Cypher25Parser.PasswordContext pwdCtx = ctx.password(0);
+      password = extractPasswordValue(pwdCtx.passwordExpression());
     }
-    throw new CommandParsingException("Command statements not yet supported");
+    if (password == null)
+      throw new CommandParsingException("CREATE USER requires SET PASSWORD");
+
+    return new CypherAdminStatement(CypherAdminStatement.Kind.CREATE_USER, userName, password, ifNotExists, false);
+  }
+
+  private CypherAdminStatement handleDropUser(final Cypher25Parser.DropUserContext ctx) {
+    final String userName = stripBackticks(ctx.commandNameExpression().getText());
+    final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
+    return new CypherAdminStatement(CypherAdminStatement.Kind.DROP_USER, userName, null, false, ifExists);
+  }
+
+  private CypherAdminStatement handleAlterUser(final Cypher25Parser.AlterUserContext ctx) {
+    final String userName = stripBackticks(ctx.commandNameExpression().getText());
+
+    String password = null;
+    if (ctx.password() != null && !ctx.password().isEmpty()) {
+      final Cypher25Parser.PasswordContext pwdCtx = ctx.password(0);
+      password = extractPasswordValue(pwdCtx.passwordExpression());
+    }
+    if (password == null)
+      throw new CommandParsingException("ALTER USER requires SET PASSWORD");
+
+    return new CypherAdminStatement(CypherAdminStatement.Kind.ALTER_USER, userName, password, false, false);
+  }
+
+  private String extractPasswordValue(final Cypher25Parser.PasswordExpressionContext ctx) {
+    if (ctx.stringLiteral() != null) {
+      final String raw = ctx.stringLiteral().getText();
+      return decodeStringLiteral(raw.substring(1, raw.length() - 1));
+    }
+    throw new CommandParsingException("Password must be a string literal");
+  }
+
+  private CypherDDLStatement handleCreateConstraint(final Cypher25Parser.CreateConstraintContext ctx) {
+    // Extract optional constraint name
+    final String constraintName = ctx.symbolicNameOrStringParameter() != null
+        ? stripBackticks(ctx.symbolicNameOrStringParameter().getText()) : null;
+
+    // IF NOT EXISTS
+    final boolean ifNotExists = ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null;
+
+    // Extract label name and determine if it's a node or relationship constraint
+    final boolean forRelationship;
+    final String labelName;
+    if (ctx.commandNodePattern() != null) {
+      forRelationship = false;
+      labelName = stripBackticks(ctx.commandNodePattern().labelType().symbolicNameString().getText());
+    } else if (ctx.commandRelPattern() != null) {
+      forRelationship = true;
+      labelName = stripBackticks(ctx.commandRelPattern().relType().symbolicNameString().getText());
+    } else {
+      throw new CommandParsingException("CREATE CONSTRAINT requires a node or relationship pattern");
+    }
+
+    // Extract property names from constraintType
+    final Cypher25Parser.ConstraintTypeContext constraintType = ctx.constraintType();
+    final List<String> propertyNames = extractPropertyNames(constraintType);
+
+    // Determine constraint kind
+    final CypherDDLStatement.ConstraintKind constraintKind;
+    if (constraintType instanceof Cypher25Parser.ConstraintIsUniqueContext)
+      constraintKind = CypherDDLStatement.ConstraintKind.UNIQUE;
+    else if (constraintType instanceof Cypher25Parser.ConstraintIsNotNullContext)
+      constraintKind = CypherDDLStatement.ConstraintKind.NOT_NULL;
+    else if (constraintType instanceof Cypher25Parser.ConstraintKeyContext)
+      constraintKind = CypherDDLStatement.ConstraintKind.KEY;
+    else
+      throw new CommandParsingException("Unsupported constraint type: " + constraintType.getText());
+
+    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_CONSTRAINT, constraintKind,
+        constraintName, labelName, propertyNames, ifNotExists, false, forRelationship);
+  }
+
+  private CypherDDLStatement handleDropConstraint(final Cypher25Parser.DropConstraintContext ctx) {
+    final String constraintName = stripBackticks(ctx.symbolicNameOrStringParameter().getText());
+    final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
+    return new CypherDDLStatement(CypherDDLStatement.Kind.DROP_CONSTRAINT, null,
+        constraintName, null, null, false, ifExists, false);
+  }
+
+  /**
+   * Extracts property names from a constraintType context.
+   * Handles both single property (p.id) and property list ((p.first, p.last)).
+   */
+  private List<String> extractPropertyNames(final Cypher25Parser.ConstraintTypeContext ctx) {
+    // propertyList() is defined on each specific subclass, not on the base ConstraintTypeContext
+    final Cypher25Parser.PropertyListContext propList;
+    if (ctx instanceof Cypher25Parser.ConstraintIsUniqueContext)
+      propList = ((Cypher25Parser.ConstraintIsUniqueContext) ctx).propertyList();
+    else if (ctx instanceof Cypher25Parser.ConstraintIsNotNullContext)
+      propList = ((Cypher25Parser.ConstraintIsNotNullContext) ctx).propertyList();
+    else if (ctx instanceof Cypher25Parser.ConstraintKeyContext)
+      propList = ((Cypher25Parser.ConstraintKeyContext) ctx).propertyList();
+    else
+      throw new CommandParsingException("Unsupported constraint type for property extraction");
+
+    final List<String> names = new ArrayList<>();
+    if (propList.enclosedPropertyList() != null) {
+      // Parenthesized list: (p.first, p.last)
+      final Cypher25Parser.EnclosedPropertyListContext enclosed = propList.enclosedPropertyList();
+      for (final Cypher25Parser.PropertyContext prop : enclosed.property())
+        names.add(stripBackticks(prop.propertyKeyName().getText()));
+    } else {
+      // Single property: p.id
+      names.add(stripBackticks(propList.property().propertyKeyName().getText()));
+    }
+    return names;
   }
 
   @Override
@@ -149,6 +355,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   @Override
   public MatchClause visitMatchClause(final Cypher25Parser.MatchClauseContext ctx) {
     final List<PathPattern> pathPatterns = visitPatternList(ctx.patternList());
+    validateNoParameterProperties(pathPatterns, "MATCH");
     final boolean optional = ctx.OPTIONAL() != null;
 
     // Extract WHERE clause if present and scoped to this MATCH
@@ -175,15 +382,34 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         // Pattern expressions (e.g., (n)-[:REL]->()) are not allowed in SET values
         if (findPatternExpressionRecursive(propCtx.expression()) != null)
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
-        final String propExpr = propCtx.propertyExpression().getText();
+        final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
         final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
-        if (propExpr.contains(".")) {
-          final String[] parts = propExpr.split("\\.", 2);
-          // Strip parentheses from variable name: (n).name -> n.name
-          String varName = parts[0].trim();
-          if (varName.startsWith("(") && varName.endsWith(")"))
-            varName = varName.substring(1, varName.length() - 1).trim();
-          items.add(new SetClause.SetItem(varName, parts[1], valueExpr));
+        // Build the property name from all property accessors (supports chained access like a.b.c)
+        final StringBuilder propertyName = new StringBuilder();
+        for (final Cypher25Parser.PropertyContext prop : propExprCtx.property())
+          if (propertyName.length() > 0)
+            propertyName.append('.').append(stripBackticks(prop.propertyKeyName().getText()));
+          else
+            propertyName.append(stripBackticks(prop.propertyKeyName().getText()));
+        // Check if the base expression is a simple variable or a complex expression (e.g., CASE)
+        final Cypher25Parser.Expression1Context baseExpr1 = propExprCtx.expression1();
+        if (baseExpr1.variable() != null) {
+          // Simple variable: SET n.prop = value
+          items.add(new SetClause.SetItem(baseExpr1.variable().getText(), propertyName.toString(), valueExpr));
+        } else if (baseExpr1.parenthesizedExpression() != null) {
+          // Check if the parenthesized expression contains just a variable
+          final String innerText = baseExpr1.parenthesizedExpression().expression().getText().trim();
+          // Try to parse as a complex expression (e.g., CASE WHEN ... THEN t END)
+          final Expression targetExpr = expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
+          if (targetExpr instanceof VariableExpression) {
+            items.add(new SetClause.SetItem(((VariableExpression) targetExpr).getVariableName(), propertyName.toString(), valueExpr));
+          } else {
+            items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
+          }
+        } else {
+          // Other expression types as base - parse as expression
+          final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
+          items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
         }
       } else if (itemCtx instanceof Cypher25Parser.SetPropsContext propsCtx) {
         // SET n = {map} — replace all properties
@@ -264,6 +490,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   @Override
   public MergeClause visitMergeClause(final Cypher25Parser.MergeClauseContext ctx) {
     final PathPattern pathPattern = visitPattern(ctx.pattern());
+    validateNoParameterProperties(List.of(pathPattern), "MERGE");
 
     // Parse ON CREATE SET and ON MATCH SET actions
     SetClause onCreateSet = null;
@@ -568,7 +795,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.Expression11Context found = findExpression11(node.getChild(i));
-      if (found != null) return found;
+      if (found != null)
+        return found;
     }
     return null;
   }
@@ -580,7 +808,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.ParenthesizedExpressionContext found =
           findParenthesizedExpressionRecursive(node.getChild(i));
-      if (found != null) return found;
+      if (found != null)
+        return found;
     }
     return null;
   }
@@ -595,7 +824,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.PatternExpressionContext found = findPatternExpressionRecursive(node.getChild(i));
-      if (found != null) return found;
+      if (found != null)
+        return found;
     }
     return null;
   }
@@ -702,13 +932,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           final TerminalNode terminal = (TerminalNode) ctx.getChild(i);
           final int type = terminal.getSymbol().getType();
           ComparisonExpression.Operator op = null;
-          if (type == Cypher25Parser.EQ) op = ComparisonExpression.Operator.EQUALS;
+          if (type == Cypher25Parser.EQ)
+            op = ComparisonExpression.Operator.EQUALS;
           else if (type == Cypher25Parser.NEQ || type == Cypher25Parser.INVALID_NEQ)
             op = ComparisonExpression.Operator.NOT_EQUALS;
-          else if (type == Cypher25Parser.LT) op = ComparisonExpression.Operator.LESS_THAN;
-          else if (type == Cypher25Parser.GT) op = ComparisonExpression.Operator.GREATER_THAN;
-          else if (type == Cypher25Parser.LE) op = ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-          else if (type == Cypher25Parser.GE) op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+          else if (type == Cypher25Parser.LT)
+            op = ComparisonExpression.Operator.LESS_THAN;
+          else if (type == Cypher25Parser.GT)
+            op = ComparisonExpression.Operator.GREATER_THAN;
+          else if (type == Cypher25Parser.LE)
+            op = ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+          else if (type == Cypher25Parser.GE)
+            op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
           if (op != null)
             operators.add(op);
         }
@@ -756,7 +991,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new BooleanExpression() {
         @Override
         public boolean evaluate(final Result result,
-                                final CommandContext context) {
+            final CommandContext context) {
           final Object value = exists.evaluate(result, context);
           return value instanceof Boolean && (Boolean) value;
         }
@@ -898,8 +1133,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final String text = ctx.getText();
 
     // Try to parse as "variable.property operator value"
-    final Pattern pattern = Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)" +
-        "?)");
+    final Pattern pattern = Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)?)");
     final Matcher matcher = pattern.matcher(text);
 
     if (matcher.find()) {
@@ -934,8 +1168,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * labelExpression1 : symbolicNameString  # label name
    */
   private LabelCheckExpression parseLabelCheckExpression(final Expression variableExpr,
-                                                         final Cypher25Parser.LabelExpressionContext labelExprCtx,
-                                                         final String text) {
+      final Cypher25Parser.LabelExpressionContext labelExprCtx,
+      final String text) {
     // Extract labels and operator from the label expression
     final List<String> labels = new ArrayList<>();
     LabelCheckExpression.LabelOperator operator = LabelCheckExpression.LabelOperator.AND;
@@ -1075,6 +1309,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     String variable = null;
     List<String> labels = null;
     Map<String, Object> properties = null;
+    String propertiesParameterName = null;
 
     // Variable
     if (ctx.variable() != null) {
@@ -1088,10 +1323,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Properties
     if (ctx.properties() != null) {
-      properties = visitProperties(ctx.properties());
+      final Cypher25Parser.PropertiesContext propsCtx = ctx.properties();
+      if (propsCtx.parameter() != null)
+        propertiesParameterName = stripBackticks(propsCtx.parameter().parameterName().getText());
+      else
+        properties = visitProperties(propsCtx);
     }
 
-    return new NodePattern(variable, labels, properties);
+    return new NodePattern(variable, labels, properties, propertiesParameterName);
   }
 
   public RelationshipPattern visitRelationshipPattern(final Cypher25Parser.RelationshipPatternContext ctx) {
@@ -1112,8 +1351,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     // Properties
+    String propertiesParameterName = null;
     if (ctx.properties() != null) {
-      properties = visitProperties(ctx.properties());
+      final Cypher25Parser.PropertiesContext propsCtx = ctx.properties();
+      if (propsCtx.parameter() != null)
+        propertiesParameterName = stripBackticks(propsCtx.parameter().parameterName().getText());
+      else
+        properties = visitProperties(propsCtx);
     }
 
     // Path length (variable-length relationships)
@@ -1145,7 +1389,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       direction = Direction.BOTH;
     }
 
-    return new RelationshipPattern(variable, types, direction, properties, minHops, maxHops);
+    return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops);
   }
 
   public Map<String, Object> visitProperties(final Cypher25Parser.PropertiesContext ctx) {
@@ -1218,6 +1462,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Delegates to ParserUtils for implementation.
    *
    * @param name the name potentially wrapped in backticks
+   *
    * @return the name without backticks
    */
   static String stripBackticks(final String name) {
@@ -1228,7 +1473,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Gets the original text from the input stream for a parse tree context,
    * preserving whitespace and case from the query.
    */
-  static String getOriginalText(final org.antlr.v4.runtime.ParserRuleContext ctx) {
+  static String getOriginalText(final ParserRuleContext ctx) {
     if (ctx.getStart() == null || ctx.getStop() == null)
       return ctx.getText();
     return ctx.getStart().getInputStream().getText(
@@ -1295,6 +1540,26 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   /**
+   * Validates that no bare parameter properties are used in patterns.
+   * Per the OpenCypher specification, bare parameter properties (e.g., $props) are only valid
+   * in CREATE patterns, not in MATCH or MERGE.
+   */
+  private static void validateNoParameterProperties(final List<PathPattern> patterns, final String clause) {
+    for (final PathPattern path : patterns) {
+      for (int i = 0; i < path.getNodeCount(); i++) {
+        final NodePattern node = path.getNode(i);
+        if (node.getPropertiesParameterName() != null)
+          throw new CommandParsingException("InvalidParameterUse: Parameters cannot be used as predicates in " + clause + " patterns");
+      }
+      for (int i = 0; i < path.getRelationshipCount(); i++) {
+        final RelationshipPattern rel = path.getRelationship(i);
+        if (rel.getPropertiesParameterName() != null)
+          throw new CommandParsingException("InvalidParameterUse: Parameters cannot be used as predicates in " + clause + " patterns");
+      }
+    }
+  }
+
+  /**
    * Marker class for unresolved parameter references.
    * Used when parsing property values that reference parameters.
    */
@@ -1320,6 +1585,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Delegates to ParserUtils for implementation.
    *
    * @param input the string with escape sequences (without surrounding quotes)
+   *
    * @return the decoded string
    */
   static String decodeStringLiteral(final String input) {

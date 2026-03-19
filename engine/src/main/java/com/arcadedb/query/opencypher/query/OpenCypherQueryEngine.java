@@ -22,19 +22,33 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
+import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
-import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -73,8 +87,32 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
         @Override
         public boolean isDDL() {
-          // Cypher doesn't have DDL statements
-          return false;
+          return statement instanceof CypherDDLStatement;
+        }
+
+        @Override
+        public Set<OperationType> getOperationTypes() {
+          if (statement instanceof CypherAdminStatement)
+            return CollectionUtils.singletonSet(OperationType.ADMIN);
+          if (statement instanceof CypherDDLStatement)
+            return CollectionUtils.singletonSet(OperationType.SCHEMA);
+          if (statement.isReadOnly())
+            return CollectionUtils.singletonSet(OperationType.READ);
+
+          final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
+          if (statement.hasCreate())
+            ops.add(OperationType.CREATE);
+          if (statement.hasMerge()) {
+            ops.add(OperationType.CREATE);
+            ops.add(OperationType.UPDATE);
+          }
+          if (statement.hasDelete())
+            ops.add(OperationType.DELETE);
+          if (statement.getSetClause() != null && !statement.getSetClause().isEmpty())
+            ops.add(OperationType.UPDATE);
+          if (!statement.getRemoveClauses().isEmpty())
+            ops.add(OperationType.UPDATE);
+          return ops.isEmpty() ? Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE) : Set.copyOf(ops);
         }
       };
     } catch (final Exception e) {
@@ -99,14 +137,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
         actualQuery = actualQuery.substring(8).trim();
       }
 
+      // Also check for $profileExecution parameter (set by HTTP handler when Studio sends profileExecution: "detailed")
+      if (!profile && parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution")))
+        profile = true;
+
       // Use statement cache to avoid re-parsing
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
 
       if (!statement.isReadOnly())
-        throw new CommandExecutionException("Query contains write operations. Use command() instead of query()");
+        throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
-    } catch (final CommandExecutionException | CommandParsingException e) {
+    } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException e) {
       throw e;
     } catch (final Exception e) {
       throw new CommandExecutionException("Error executing Cypher query: " + query, e);
@@ -135,10 +177,23 @@ public class OpenCypherQueryEngine implements QueryEngine {
         actualQuery = actualQuery.substring(8).trim();
       }
 
+      // Also check for $profileExecution parameter (set by HTTP handler when Studio sends profileExecution: "detailed")
+      if (!profile && parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution")))
+        profile = true;
+
       // Use statement cache to avoid re-parsing
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
+
+      // DDL statements (constraints) are executed directly without the planner pipeline
+      if (statement instanceof CypherDDLStatement)
+        return executeDDL((CypherDDLStatement) statement);
+
+      // Admin statements (user management) are executed directly against the security manager
+      if (statement instanceof CypherAdminStatement)
+        return executeAdmin((CypherAdminStatement) statement);
+
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
-    } catch (final CommandExecutionException | CommandParsingException e) {
+    } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
       throw e;
     } catch (final Exception e) {
       throw new CommandExecutionException("Error executing Cypher command: " + query, e);
@@ -164,26 +219,30 @@ public class OpenCypherQueryEngine implements QueryEngine {
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile) {
     // Try to get cached physical plan first (saves optimization time: 200-500ms)
-    PhysicalPlan physicalPlan = null;
+    final CypherExecutionPlan plan;
 
     if (!explain && !profile) {
       // Only use plan cache for normal execution (not explain/profile)
-      physicalPlan = database.getCypherPlanCache().get(queryString);
-    }
+      final PhysicalPlan physicalPlan = database.getCypherPlanCache().get(queryString);
+      if (physicalPlan != null) {
+        // Reuse cached physical plan (avoids expensive statistics collection and optimization)
+        plan = new CypherExecutionPlan(
+            database, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
+      } else {
+        // Create new plan from scratch and cache it
+        final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters,
+            EXPRESSION_EVALUATOR);
+        plan = planner.createExecutionPlan(configuration);
 
-    final CypherExecutionPlan plan;
-    if (physicalPlan != null) {
-      // Reuse cached physical plan (avoids expensive statistics collection and optimization)
-      plan = new CypherExecutionPlan(
-          database, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
+        // Cache the physical plan for future use
+        if (plan.getPhysicalPlan() != null)
+          database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan());
+      }
     } else {
-      // Create new plan from scratch and cache it
-      final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters, EXPRESSION_EVALUATOR);
+      // explain/profile mode: always create new plan without caching
+      final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters,
+          EXPRESSION_EVALUATOR);
       plan = planner.createExecutionPlan(configuration);
-
-      // Cache the physical plan for future use (if not explain/profile)
-      if (!explain && !profile && plan.getPhysicalPlan() != null)
-        database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan());
     }
 
     if (explain)
@@ -191,6 +250,136 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (profile)
       return plan.profile();
     return plan.execute();
+  }
+
+  /**
+   * Executes a DDL statement (constraint creation/deletion) directly against the schema.
+   */
+  private ResultSet executeDDL(final CypherDDLStatement ddl) {
+    final Schema schema = database.getSchema();
+
+    switch (ddl.getKind()) {
+    case CREATE_CONSTRAINT:
+      executeCreateConstraint(ddl, schema);
+      break;
+    case DROP_CONSTRAINT:
+      executeDropConstraint(ddl, schema);
+      break;
+    }
+
+    return new InternalResultSet();
+  }
+
+  private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema) {
+    final String typeName = ddl.getLabelName();
+    final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
+
+    // Ensure all properties exist before creating indexes (ArcadeDB requires this)
+    for (final String propName : propertyNames) {
+      if (schema.getType(typeName).getPropertyIfExists(propName) == null)
+        schema.getType(typeName).createProperty(propName, Type.STRING);
+    }
+
+    switch (ddl.getConstraintKind()) {
+    case UNIQUE:
+      schema.buildTypeIndex(typeName, propertyNames)
+          .withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withUnique(true)
+          .withIgnoreIfExists(ddl.isIfNotExists())
+          .create();
+      break;
+
+    case NOT_NULL:
+      for (final String propName : propertyNames)
+        schema.getType(typeName).getPropertyIfExists(propName).setMandatory(true);
+      break;
+
+    case KEY:
+      // NODE KEY = unique index + mandatory properties
+      schema.buildTypeIndex(typeName, propertyNames)
+          .withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withUnique(true)
+          .withIgnoreIfExists(ddl.isIfNotExists())
+          .create();
+      for (final String propName : propertyNames)
+        schema.getType(typeName).getPropertyIfExists(propName).setMandatory(true);
+      break;
+    }
+  }
+
+  /**
+   * Executes an admin statement (user management) directly against the security manager.
+   */
+  private ResultSet executeAdmin(final CypherAdminStatement admin) {
+    final SecurityManager security = database.getSecurity();
+    if (security == null)
+      throw new CommandExecutionException("User management commands require server mode");
+
+    // All admin commands except SHOW CURRENT USER require updateSecurity permission
+    if (admin.getKind() != CypherAdminStatement.Kind.SHOW_CURRENT_USER)
+      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+
+    final InternalResultSet resultSet = new InternalResultSet();
+
+    switch (admin.getKind()) {
+    case SHOW_USERS: {
+      final Set<String> userNames = security.getUsers();
+      for (final String userName : userNames) {
+        final Map<String, Object> info = security.getUserInfo(userName);
+        final ResultInternal result = new ResultInternal();
+        result.setProperty("user", userName);
+        result.setProperty("databases", info != null ? info.get("databases") : Set.of());
+        resultSet.add(result);
+      }
+      break;
+    }
+    case SHOW_CURRENT_USER: {
+      final String currentUser = database.getCurrentUserName();
+      final ResultInternal result = new ResultInternal();
+      result.setProperty("user", currentUser != null ? currentUser : "");
+      if (currentUser != null) {
+        final Map<String, Object> info = security.getUserInfo(currentUser);
+        result.setProperty("databases", info != null ? info.get("databases") : Set.of());
+      } else
+        result.setProperty("databases", Set.of());
+      resultSet.add(result);
+      break;
+    }
+    case CREATE_USER: {
+      if (admin.isIfNotExists() && security.existsUser(admin.getUserName()))
+        break;
+      security.createUser(admin.getUserName(), admin.getPassword());
+      break;
+    }
+    case DROP_USER: {
+      if (admin.isIfExists()) {
+        security.dropUser(admin.getUserName());
+      } else {
+        if (!security.existsUser(admin.getUserName()))
+          throw new CommandExecutionException("User '" + admin.getUserName() + "' does not exist");
+        security.dropUser(admin.getUserName());
+      }
+      break;
+    }
+    case ALTER_USER: {
+      if (!security.existsUser(admin.getUserName()))
+        throw new CommandExecutionException("User '" + admin.getUserName() + "' does not exist");
+      security.setUserPassword(admin.getUserName(), admin.getPassword());
+      break;
+    }
+    }
+
+    return resultSet;
+  }
+
+  private void executeDropConstraint(final CypherDDLStatement ddl, final Schema schema) {
+    final String constraintName = ddl.getConstraintName();
+    if (ddl.isIfExists()) {
+      if (schema.existsIndex(constraintName))
+        schema.dropIndex(constraintName);
+    } else {
+      schema.dropIndex(constraintName);
+    }
   }
 
   /**

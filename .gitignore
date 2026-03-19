@@ -22,6 +22,7 @@
 hs_err_pid*
 
 .idea/
+.claude/settings.local.json
 ### Maven template
 target/
 gen/
@@ -556,3 +557,7 @@ dist
 # Test database files
 *.lsmvecidx
 *.metadata.json
+/.claude/worktrees
+/server/profiler
+/server/chats
+config/ai.json

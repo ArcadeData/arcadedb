@@ -20,9 +20,75 @@ package com.arcadedb.query.opencypher.procedures;
 
 import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.procedures.db.DbIndexVectorQueryNodes;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoAPSP;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAStar;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoAdamicAdar;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAllSimplePaths;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoArticulationPoints;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBellmanFord;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBetweenness;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoArticleRank;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBFS;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBiconnectedComponents;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBipartiteCheck;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBipartiteMatching;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBridges;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoClique;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoClosenessCentrality;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoCommonNeighbors;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoDFS;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoDijkstraSingleSource;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoCycleDetection;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoDensestSubgraph;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoEccentricity;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoGraphColoring;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoKNN;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoLocalClusteringCoefficient;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoLongestPathDAG;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoPreferentialAttachment;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoResourceAllocation;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoFastRP;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoGraphSAGE;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoHashGNN;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoMaxKCut;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoMinSpanningArborescence;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoNode2Vec;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoSLPA;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoSameCommunity;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoSteinerTree;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoTotalNeighbors;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoDegreeCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDijkstra;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoEigenvectorCentrality;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoGraphSummary;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoHITS;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoHarmonicCentrality;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoJaccardSimilarity;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoAssortativity;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoConductance;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoHierarchicalClustering;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoInfluenceMaximization;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoKCore;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoKShortestPaths;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoKTruss;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoLeiden;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoPersonalizedPageRank;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoRichClub;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoKatz;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoLabelPropagation;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoLouvain;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoMST;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoMaxFlow;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoModularityScore;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoPageRank;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoRandomWalk;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoSCC;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoSimRank;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoTopologicalSort;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoTriangleCount;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoVoteRank;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoWCC;
 import com.arcadedb.query.opencypher.procedures.merge.MergeNode;
 import com.arcadedb.query.opencypher.procedures.merge.MergeRelationship;
 import com.arcadedb.query.opencypher.procedures.meta.MetaGraph;
@@ -224,6 +290,8 @@ public final class CypherProcedureRegistry {
     registerPathProcedures();
     // Meta/schema procedures
     registerMetaProcedures();
+    // Database index procedures (Neo4j compatibility)
+    registerDbProcedures();
   }
 
   private static void registerMergeProcedures() {
@@ -235,6 +303,71 @@ public final class CypherProcedureRegistry {
     register(new AlgoDijkstra());
     register(new AlgoAStar());
     register(new AlgoAllSimplePaths());
+    register(new AlgoBellmanFord());
+    register(new AlgoPageRank());
+    register(new AlgoBetweenness());
+    register(new AlgoWCC());
+    register(new AlgoLouvain());
+    register(new AlgoLabelPropagation());
+    register(new AlgoClosenessCentrality());
+    register(new AlgoDegreeCentrality());
+    register(new AlgoTriangleCount());
+    register(new AlgoKCore());
+    register(new AlgoSCC());
+    register(new AlgoMST());
+    register(new AlgoJaccardSimilarity());
+    register(new AlgoRandomWalk());
+    register(new AlgoHITS());
+    register(new AlgoHarmonicCentrality());
+    register(new AlgoEigenvectorCentrality());
+    register(new AlgoArticulationPoints());
+    register(new AlgoBridges());
+    register(new AlgoTopologicalSort());
+    register(new AlgoAPSP());
+    register(new AlgoAdamicAdar());
+    register(new AlgoKatz());
+    register(new AlgoVoteRank());
+    register(new AlgoMaxFlow());
+    register(new AlgoKShortestPaths());
+    register(new AlgoSimRank());
+    register(new AlgoClique());
+    register(new AlgoGraphSummary());
+    register(new AlgoModularityScore());
+    register(new AlgoLeiden());
+    register(new AlgoPersonalizedPageRank());
+    register(new AlgoKTruss());
+    register(new AlgoAssortativity());
+    register(new AlgoRichClub());
+    register(new AlgoInfluenceMaximization());
+    register(new AlgoHierarchicalClustering());
+    register(new AlgoConductance());
+    register(new AlgoBipartiteCheck());
+    register(new AlgoCommonNeighbors());
+    register(new AlgoCycleDetection());
+    register(new AlgoDensestSubgraph());
+    register(new AlgoEccentricity());
+    register(new AlgoGraphColoring());
+    register(new AlgoPreferentialAttachment());
+    register(new AlgoResourceAllocation());
+    register(new AlgoBFS());
+    register(new AlgoDFS());
+    register(new AlgoArticleRank());
+    register(new AlgoLocalClusteringCoefficient());
+    register(new AlgoTotalNeighbors());
+    register(new AlgoSameCommunity());
+    register(new AlgoBipartiteMatching());
+    register(new AlgoKNN());
+    register(new AlgoDijkstraSingleSource());
+    register(new AlgoLongestPathDAG());
+    register(new AlgoSLPA());
+    register(new AlgoBiconnectedComponents());
+    register(new AlgoFastRP());
+    register(new AlgoNode2Vec());
+    register(new AlgoHashGNN());
+    register(new AlgoGraphSAGE());
+    register(new AlgoMinSpanningArborescence());
+    register(new AlgoMaxKCut());
+    register(new AlgoSteinerTree());
   }
 
   private static void registerPathProcedures() {
@@ -243,6 +376,10 @@ public final class CypherProcedureRegistry {
     register(new PathSubgraphNodes());
     register(new PathSubgraphAll());
     register(new PathSpanningTree());
+  }
+
+  private static void registerDbProcedures() {
+    register(new DbIndexVectorQueryNodes());
   }
 
   private static void registerMetaProcedures() {

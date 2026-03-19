@@ -33,6 +33,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.net.ConnectException;
 import java.net.http.HttpResponse;
 import java.util.NoSuchElementException;
 
@@ -331,7 +332,7 @@ class RemoteHttpComponentTest {
   @Test
   void manageExceptionConnectException() {
     final JSONObject json = new JSONObject();
-    json.put("exception", java.net.ConnectException.class.getName());
+    json.put("exception", ConnectException.class.getName());
     json.put("detail", "Connection refused");
 
     final HttpResponse<String> response = createMockResponse(500, json.toString());

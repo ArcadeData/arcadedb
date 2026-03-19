@@ -7,7 +7,12 @@ function renderGraph() {
 
   globalCy = null;
 
-  $("#graphSpacing").val(globalGraphSettings.graphSpacing);
+  loadGraphTypeStyles();
+  $("#settingGraphSpacing").val(globalGraphSettings.graphSpacing);
+  $("#settingGraphSpacingVal").text(globalGraphSettings.graphSpacing);
+  $("#settingNodeSize").val(globalGraphSettings.nodeSize || 25);
+  $("#settingNodeSizeVal").text(globalGraphSettings.nodeSize || 25);
+  $("#settingDefaultLabel").val(globalGraphSettings.defaultLabel != null ? globalGraphSettings.defaultLabel : "");
 
   let elements = [];
   globalRenderedVerticesRID = {};
@@ -16,12 +21,13 @@ function renderGraph() {
 
   for (let i in globalResultset.vertices) {
     let vertex = globalResultset.vertices[i];
-    assignVertexColor(vertex.t);
+    assignTypeColor(vertex.t);
     assignProperties(vertex);
   }
 
   for (let i in globalResultset.edges) {
     let edge = globalResultset.edges[i];
+    assignTypeColor(edge.t);
     assignProperties(edge);
   }
 
@@ -52,13 +58,20 @@ function renderGraph() {
     }
   }
 
+  let randomize = false;
+  if (globalGraphSettings._spacingChanged) {
+    randomize = true;
+    globalGraphSettings._spacingChanged = false;
+  }
+
   globalLayout = {
     name: "fcose",
     animate: true,
     animationDuration: 500,
-    nodeSeparation: globalGraphSettings.graphSpacing * 1.75,
+    nodeSeparation: globalGraphSettings.graphSpacing * 3,
+    idealEdgeLength: globalGraphSettings.graphSpacing * 3,
     quality: "default",
-    randomize: false,
+    randomize: randomize,
     fit: true,
     padding: 30,
   };
@@ -75,7 +88,7 @@ function renderGraph() {
         "text-valign": "center",
         "text-halign": "center",
         "text-wrap": "wrap",
-        "text-max-width": 100,
+        "text-max-width": "data(size)",
         "z-index-compare": "manual",
         "z-index": 2,
       },
@@ -208,14 +221,12 @@ function createVertex(vertex) {
 
   getOrCreateStyleTypeAttrib(type, "element", "v");
 
-  let label = "@type";
-  if (getOrCreateStyleTypeAttrib(type, "labelText") != null) label = getOrCreateStyleTypeAttrib(type, "labelText");
-  if (label == "@type") label = type;
-  else label = vertex["p"][label];
+  let label = resolveLabel(type, vertex["p"]);
 
-  if (label == null) label = "";
+  let nodeSize = globalGraphSettings.nodeSize || 25;
+  let size = label.length > 0 ? nodeSize + 2 * label.length : nodeSize;
 
-  return { id: vertex["r"], label: label, size: 70 + 2 * label.length, type: type, weight: vertex["i"] + vertex["o"], properties: vertex["p"] };
+  return { id: vertex["r"], label: label, size: size, type: type, weight: vertex["i"] + vertex["o"], properties: vertex["p"] };
 }
 
 function createEdge(edge) {
@@ -223,23 +234,53 @@ function createEdge(edge) {
 
   getOrCreateStyleTypeAttrib(type, "element", "e");
 
-  let label = "@type";
-  if (getOrCreateStyleTypeAttrib(type, "labelText") != null) label = getOrCreateStyleTypeAttrib(type, "labelText");
-  if (label == "@type") label = type;
-  else label = edge["p"][label];
-
-  if (label == null) label = "";
+  let label = resolveLabel(type, edge["p"]);
 
   return { id: edge["r"], label: label, type: type, source: edge["o"], target: edge["i"], properties: edge["p"] };
 }
 
-function assignVertexColor(type) {
-  let color = getOrCreateStyleTypeAttrib(type, "shapeColor");
-  if (color == null) {
-    if (globalLastColorIndex >= globalBgColors.length) globalLastColorIndex = 0;
-    getOrCreateStyleTypeAttrib(type, "labelColor", globalFgColors[globalLastColorIndex]);
-    getOrCreateStyleTypeAttrib(type, "shapeColor", globalBgColors[globalLastColorIndex]);
-    ++globalLastColorIndex;
+function resolveLabel(type, properties) {
+  let labelProp = getOrCreateStyleTypeAttrib(type, "labelText");
+  if (labelProp == null) {
+    let defaultLabel = globalGraphSettings.defaultLabel;
+    labelProp = defaultLabel != null ? defaultLabel : "";
+  }
+
+  if (labelProp == "@type") return type;
+  if (labelProp.length == 0) return "";
+
+  let label = properties[labelProp];
+  return label != null ? String(label) : "";
+}
+
+function updateLabelsForType(type) {
+  if (globalCy == null) return;
+
+  let nodeSize = globalGraphSettings.nodeSize || 25;
+  let isEdge = getOrCreateStyleTypeAttrib(type, "element") === "e";
+
+  globalCy.elements("." + type).forEach(function (ele) {
+    let props = ele.data("properties");
+    let label = resolveLabel(type, props || {});
+    ele.data("label", label);
+    if (!isEdge)
+      ele.data("size", label.length > 0 ? nodeSize + 2 * label.length : nodeSize);
+  });
+}
+
+function assignTypeColor(type) {
+  let sidebarColor = typeof globalSidebarTypeColors !== "undefined" ? globalSidebarTypeColors[type] : null;
+  if (sidebarColor != null) {
+    getOrCreateStyleTypeAttrib(type, "shapeColor", sidebarColor);
+    getOrCreateStyleTypeAttrib(type, "labelColor", "white");
+  } else {
+    let color = getOrCreateStyleTypeAttrib(type, "shapeColor");
+    if (color == null) {
+      if (globalLastColorIndex >= globalBgColors.length) globalLastColorIndex = 0;
+      getOrCreateStyleTypeAttrib(type, "labelColor", globalFgColors[globalLastColorIndex]);
+      getOrCreateStyleTypeAttrib(type, "shapeColor", globalBgColors[globalLastColorIndex]);
+      ++globalLastColorIndex;
+    }
   }
 }
 
@@ -273,7 +314,7 @@ function assignStyles(styles) {
     if (shapeSize == null) shapeSize = element == "v" ? "data(size)" : 1;
 
     let labelSize = getOrCreateStyleTypeAttrib(type, "labelSize");
-    if (labelSize == null) labelSize = 1;
+    if (labelSize == null) labelSize = 0.7;
 
     let style = {
       selector: "." + type,
@@ -287,7 +328,11 @@ function assignStyles(styles) {
       },
     };
 
-    if (element == "e") style.style["line-color"] = shapeColor;
+    if (element == "e") {
+      style.style["line-color"] = shapeColor;
+      style.style["target-arrow-color"] = shapeColor;
+      style.style["color"] = shapeColor;
+    }
 
     let labelPosition = getOrCreateStyleTypeAttrib(type, "labelPosition");
     let borderSize = getOrCreateStyleTypeAttrib(type, "borderSize");
@@ -309,7 +354,7 @@ function assignStyles(styles) {
 
       if (borderSize == null) borderSize = 1;
 
-      style.style["text-max-width"] = 100;
+      style.style["text-max-width"] = "data(size)";
     }
 
     style.style["border-color"] = borderColor;
@@ -394,7 +439,7 @@ function removeGraphElement(ele) {
 }
 
 function loadNodeNeighbors(direction, rid) {
-  let database = escapeHtml($(".inputDatabase").val());
+  let database = escapeHtml(getCurrentDatabase());
 
   $("#executeSpinner").show();
 
@@ -425,7 +470,7 @@ function loadNodeNeighbors(direction, rid) {
 
         let vertex = data.result.vertices[i];
 
-        assignVertexColor(vertex.t);
+        assignTypeColor(vertex.t);
         assignProperties(vertex);
 
         globalResultset.vertices.push(vertex);
@@ -446,6 +491,7 @@ function loadNodeNeighbors(direction, rid) {
 
         if (!globalRenderedVerticesRID[edge.i] || !globalRenderedVerticesRID[edge.o]) continue;
 
+        assignTypeColor(edge.t);
         assignProperties(edge);
 
         globalResultset.edges.push(edge);
@@ -508,7 +554,7 @@ function addNodeFromRecord(rid) {
     jQuery
       .ajax({
         type: "POST",
-        url: "api/v1/command/" + escapeHtml($(".inputDatabase").val()),
+        url: "api/v1/command/" + escapeHtml(getCurrentDatabase()),
         async: false,
         data: JSON.stringify({
           language: "sql",
@@ -544,9 +590,62 @@ function getOrCreateStyleTypeAttrib(type, attrib, value) {
     globalGraphSettings.types[type] = style;
   }
 
-  if (typeof value !== "undefined") style[attrib] = value;
+  if (typeof value !== "undefined") {
+    style[attrib] = value;
+    saveGraphTypeStyles();
+  }
 
   return style[attrib];
+}
+
+function saveGraphTypeStyles() {
+  globalStorageSave("graphTypeStyles", JSON.stringify(globalGraphSettings.types));
+}
+
+function saveGraphGlobalSettings() {
+  globalStorageSave("graphGlobalSettings", JSON.stringify({
+    nodeSize: globalGraphSettings.nodeSize,
+    defaultLabel: globalGraphSettings.defaultLabel,
+    graphSpacing: globalGraphSettings.graphSpacing,
+    cumulativeSelection: globalGraphSettings.cumulativeSelection
+  }));
+}
+
+function loadGraphTypeStyles() {
+  var savedGlobal = globalStorageLoad("graphGlobalSettings", null);
+  if (savedGlobal != null) {
+    try {
+      var parsed = JSON.parse(savedGlobal);
+      if (parsed.nodeSize != null) globalGraphSettings.nodeSize = parsed.nodeSize;
+      if (parsed.defaultLabel != null) globalGraphSettings.defaultLabel = parsed.defaultLabel;
+      if (parsed.graphSpacing != null) globalGraphSettings.graphSpacing = parsed.graphSpacing;
+      if (parsed.cumulativeSelection != null) globalGraphSettings.cumulativeSelection = parsed.cumulativeSelection;
+    } catch (e) { /* ignore corrupt data */ }
+  }
+
+  var saved = globalStorageLoad("graphTypeStyles", null);
+  if (saved != null) {
+    try {
+      var parsed = JSON.parse(saved);
+      for (var type in parsed) {
+        if (globalGraphSettings.types[type] == null)
+          globalGraphSettings.types[type] = {};
+        var style = globalGraphSettings.types[type];
+        var savedStyle = parsed[type];
+        for (var attr in savedStyle)
+          style[attr] = savedStyle[attr];
+      }
+    } catch (e) { /* ignore corrupt data */ }
+  }
+}
+
+function resetGraphTypeStyle(type) {
+  delete globalGraphSettings.types[type];
+  saveGraphTypeStyles();
+  renderGraph();
+  // Re-open editor with refreshed appearance
+  if (globalRecordEditorState.active && globalRecordEditorState.source === "graph")
+    renderRecordEditorContent();
 }
 
 function displaySelectedNode() {
@@ -554,375 +653,26 @@ function displaySelectedNode() {
 
   globalSelected = globalCy.elements("node:selected");
   if (globalSelected.length < 1) {
-    $("#customToolbar").empty();
-    $("#graphPropertiesTable").empty();
-    $("#graphPropertiesType").html("Select an element to see its properties");
+    cancelRecordEditor();
     return;
   }
 
   let data = null;
   if (globalSelected.length == 1) {
     data = globalSelected[0].data();
-
-    let summary = "<label class='form-label'>Node&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
-    summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type + "</b></label><br>";
-    summary += "<br><h5>Properties</h5>";
-
-    $("#graphPropertiesType").html(summary);
-
-    let table = "<thead><tr><th scope='col'>Name</th><th scope='col'>Value</th></tr>";
-    table += "<tbody>";
-
-    for (let p in data.properties) {
-      let value = data.properties[p];
-      if (Array.isArray(value) || typeof value === "object") value = JSON.stringify(value);
-      table += "<tr><td>" + escapeHtml(p) + "</td><td>" + escapeHtml(value) + "</td>";
-    }
-
-    $("#graphPropertiesTable").html(table);
-  }
-
-  let selectedElementTypes = {};
-  for (let i = 0; i < globalSelected.length; ++i) {
-    let type = globalSelected[i].data()["type"];
-    selectedElementTypes[type] = true;
-  }
-
-  let type = null;
-  if (Object.keys(selectedElementTypes).length == 1) {
-    type = globalSelected[0].data()["type"];
-    let properties = globalGraphPropertiesPerType[type];
-
-    let labelText = getOrCreateStyleTypeAttrib(type, "labelText");
-    if (labelText == null) labelText = "@type";
-
-    let labelColor = getOrCreateStyleTypeAttrib(type, "labelColor");
-    if (labelColor == null) labelColor = "black";
-
-    let layout = "<div class='row'><div class='col-12'><h5>Layout for type " + type;
-    layout +=
-      "<button class='btn-pill btn-transition btn text-right' style='padding: 1px 5px;' onclick='globalToggleWidget(\"layoutPanel\", \"layoutExpand\")'><i id='layoutExpand' class='fa fa-" +
-      (globalWidgetExpanded["layoutPanel"] ? "minus" : "plus") +
-      "'></i></button></h5></div></div>";
-    layout += "<div class='p-2 " + (globalWidgetExpanded["layoutPanel"] ? "show" : "collapse") + "' id='layoutPanel'>";
-    layout += "<div class='row'>";
-
-    // LABEL
-    layout += "<div class='col-12'><label class='form-label'>Label</label></div>";
-    layout += "<div class='col-9'><select id='graphLabel' class='form-control'>";
-    layout += "<option value='@type'" + (labelText == "@type" ? " selected" : "") + ">@type</option>";
-    for (let p in properties) {
-      layout += "<option value='" + p + "'" + (labelText == p ? " selected" : "") + ">" + p + "</option>";
-    }
-    layout += "</select></div>";
-    layout += "<div class='col-3'><select id='labelColor' class='form-control'>";
-    layout += "  <option value='black'" + (labelColor == "black" ? " selected" : "") + " data-color='black'>Black</option>";
-    layout += "  <option value='white'" + (labelColor == "white" ? " selected" : "") + " data-color='white'>White</option>";
-    layout += "</select></div>";
-
-    let labelPosition = getOrCreateStyleTypeAttrib(type, "labelPosition");
-    if (labelPosition == null) labelPosition = "center center";
-
-    layout +=
-      "<div class='col-6'><select id='graphLabelPosition' class='form-control' oninput='getOrCreateStyleTypeAttrib(\"" +
-      type +
-      '", "labelPosition", this.value);renderGraph()\'>';
-    layout += "  <option value='top left'" + (labelPosition == "top left" ? " selected" : "") + ">Top Left</option>";
-    layout += "  <option value='top center'" + (labelPosition == "top center" ? " selected" : "") + ">Top Center</option>";
-    layout += "  <option value='top right'" + (labelPosition == "top right" ? " selected" : "") + ">Top Right</option>";
-    layout += "  <option value='center left'" + (labelPosition == "center left" ? " selected" : "") + ">Center Left</option>";
-    layout += "  <option value='center center'" + (labelPosition == "center center" ? " selected" : "") + ">Center Center</option>";
-    layout += "  <option value='center right'" + (labelPosition == "center right" ? " selected" : "") + ">Center Right</option>";
-    layout += "  <option value='bottom left'" + (labelPosition == "bottom left" ? " selected" : "") + ">Bottom Left</option>";
-    layout += "  <option value='bottom center'" + (labelPosition == "bottom center" ? " selected" : "") + ">Bottom Center</option>";
-    layout += "  <option value='bottom right'" + (labelPosition == "bottom right" ? " selected" : "") + ">Bottom Right</option>";
-    layout += "</select></div>";
-
-    let labelSize = getOrCreateStyleTypeAttrib(type, "labelSize");
-    if (labelSize == null) labelSize = 1;
-
-    layout +=
-      "<div class='col-6'><input type='range' class='form-control-range form-control' id='labelSize' value='" +
-      labelSize +
-      "' min='1' max='5' step='0.2' oninput='getOrCreateStyleTypeAttrib(\"" +
-      type +
-      '", "labelSize", this.value);renderGraph()\'></div>';
-
-    // ICON
-    let icon = getOrCreateStyleTypeAttrib(type, "icon");
-    if (icon == null) icon = "";
-
-    let iconSize = getOrCreateStyleTypeAttrib(type, "iconSize");
-    if (iconSize == null) iconSize = 2;
-
-    let iconColor = getOrCreateStyleTypeAttrib(type, "iconColor");
-    if (iconColor == null) iconColor = "black";
-
-    layout += "<div class='col-12'><label for='graphIcon' class='form-label'>Icon</label></div>";
-    layout += "<div class='col-9'><div class='btn-group'>";
-    layout +=
-      "<button id='graphIcon' data-selected='graduation-cap' type='button' class='icp icp-dd btn btn-default dropdown-toggle iconpicker-component' data-toggle='dropdown'>";
-    layout += "<i class='fa fa-fw " + icon + "'></i><span class='caret'></span></button>";
-    layout += "<div class='dropdown-menu'></div>";
-    layout +=
-      "<button class='btn' onclick='getOrCreateStyleTypeAttrib(\"" +
-      type +
-      '", "icon", null);$("#graphIcon>svg").attr("class","svg-inline--fa fa-w-16 fa-fw iconpicker-component").remove();renderGraph()\'><i class=\'fa fa-times\'></i></button></div></div>';
-
-    layout += "<div class='col-3'><select id='iconColor' class='form-control'>";
-    for (let i in globalBgColors) {
-      let color = globalBgColors[i];
-      layout += "  <option value='" + color + "'" + (iconColor == color ? " selected" : "") + " data-color='" + color + "'>" + color + "</option>";
-    }
-    layout += "</select></div>";
-
-    let iconPosition = getOrCreateStyleTypeAttrib(type, "iconPosition");
-    if (iconPosition == null) iconPosition = "center center";
-
-    layout +=
-      "<div class='col-6'><select id='graphIconPosition' class='form-control' oninput='getOrCreateStyleTypeAttrib(\"" +
-      type +
-      '", "iconPosition", this.value);renderGraph()\'>';
-    layout += "  <option value='top left'" + (iconPosition == "top left" ? " selected" : "") + ">Top Left</option>";
-    layout += "  <option value='top center'" + (iconPosition == "top center" ? " selected" : "") + ">Top Center</option>";
-    layout += "  <option value='top right'" + (iconPosition == "top right" ? " selected" : "") + ">Top Right</option>";
-    layout += "  <option value='center left'" + (iconPosition == "center left" ? " selected" : "") + ">Center Left</option>";
-    layout += "  <option value='center center'" + (iconPosition == "center center" ? " selected" : "") + ">Center Center</option>";
-    layout += "  <option value='center right'" + (iconPosition == "center right" ? " selected" : "") + ">Center Right</option>";
-    layout += "  <option value='bottom left'" + (iconPosition == "bottom left" ? " selected" : "") + ">Bottom Left</option>";
-    layout += "  <option value='bottom center'" + (iconPosition == "bottom center" ? " selected" : "") + ">Bottom Center</option>";
-    layout += "  <option value='bottom right'" + (iconPosition == "bottom right" ? " selected" : "") + ">Bottom Right</option>";
-    layout += "</select></div>";
-
-    layout +=
-      "<div class='col-6'><input type='range' class='form-control-range form-control' id='iconSize' value='" +
-      iconSize +
-      "' min='1' max='5' step='0.2' oninput='getOrCreateStyleTypeAttrib(\"" +
-      type +
-      '", "iconSize", this.value);renderGraph()\'></div>';
-
-    // BORDER
-    let borderSize = getOrCreateStyleTypeAttrib(type, "borderSize");
-    if (borderSize == null) borderSize = "1";
-
-    let borderColor = getOrCreateStyleTypeAttrib(type, "borderColor");
-    if (borderColor == null) borderColor = "gray";
-
-    layout += "<div class='col-12'><label for='graphBorder' class='form-label'>Border</label></div>";
-    layout +=
-      "<div class='col-9'><input type='range' class='form-control-range form-control' id='borderSize' value='" +
-      borderSize +
-      "' min='0' max='10' step='1' oninput='getOrCreateStyleTypeAttrib(\"" +
-      type +
-      '", "borderSize", this.value);renderGraph()\'></div>';
-    layout += "<div class='col-3'><select id='borderColor' class='form-control'>";
-    for (let i in globalBgColors) {
-      let color = globalBgColors[i];
-      layout += "  <option value='" + color + "'" + (borderColor == color ? " selected" : "") + " data-color='" + color + "'>" + color + "</option>";
-    }
-    layout += "</select></div>";
-
-    // SHAPE
-    let shapeSize = getOrCreateStyleTypeAttrib(type, "shapeSize");
-    if (shapeSize == null) shapeSize = "auto";
-
-    let shapeColor = getOrCreateStyleTypeAttrib(type, "shapeColor");
-    if (shapeColor == null) shapeColor = null;
-
-    layout += "<div class='col-12'><label for='shapeColor' class='form-label'>Shape</label></div>";
-
-    layout +=
-      "<div class='col-6'><select id='shapeSizeType' class='form-control' oninput='getOrCreateStyleTypeAttrib(\"" +
-      type +
-      '", "shapeSize", this.value == "auto" ? null : $("#shapeSize").val() + "px" );renderGraph()\'>';
-    layout += "  <option value='auto'" + (shapeSize == "auto" ? " selected" : "") + ">Auto</option>";
-    layout += "  <option value='custom'" + (shapeSize != "auto" ? " selected" : "") + ">Custom</option>";
-    layout += "</select></div>";
-    layout +=
-      "<div class='col-3'><input type='range' class='form-control-range form-control' id='shapeSize' value='" +
-      shapeSize +
-      "' min='100' max='500' step='20' oninput='getOrCreateStyleTypeAttrib(\"" +
-      type +
-      '", "shapeSize", this.value + "px");renderGraph()\'></div>';
-    layout += "<div class='col-3'><select id='shapeColor' class='form-control colorselector'>";
-    for (let i in globalBgColors) {
-      let color = globalBgColors[i];
-      layout += "  <option value='" + color + "'" + (shapeColor == color ? " selected" : "") + " data-color='" + color + "'>" + color + "</option>";
-    }
-    layout += "</select></div>";
-
-    layout += "</div></div>";
-
-    $("#graphLayout").html(layout);
-    $("#graphLabel").change(function () {
-      getOrCreateStyleTypeAttrib(type, "labelText", $("#graphLabel").val());
-      renderGraph();
-    });
-    $("#graphIcon").iconpicker();
-    $("#graphIcon").on("iconpickerSelected", function (event) {
-      getOrCreateStyleTypeAttrib(type, "icon", event.iconpickerValue);
-      renderGraph();
-    });
-
-    $("#labelColor").colorselector({
-      callback: function (value, color, title) {
-        getOrCreateStyleTypeAttrib(type, "labelColor", value);
-        renderGraph();
-      },
-    });
-
-    $("#iconColor").colorselector({
-      callback: function (value, color, title) {
-        getOrCreateStyleTypeAttrib(type, "iconColor", value);
-        renderGraph();
-      },
-    });
-
-    $("#borderColor").colorselector({
-      callback: function (value, color, title) {
-        getOrCreateStyleTypeAttrib(type, "borderColor", value);
-        renderGraph();
-      },
-    });
-
-    $("#shapeColor").colorselector({
-      callback: function (value, color, title) {
-        getOrCreateStyleTypeAttrib(type, "shapeColor", value);
-        renderGraph();
-      },
-    });
-  }
-
-  if (globalSelected.length == 1) {
-    let actions = "<br><h5>Actions</h5>";
-    actions += "<ul>";
-    actions += "<li>Load adjacent <button class='btn btn-outline-primary btn-sm' onclick='loadNodeNeighbors(\"out\", \"" + data.id + "\")'>outgoing</button>, ";
-    actions += "<button class='btn btn-outline-primary btn-sm' href='#' onclick='loadNodeNeighbors(\"in\", \"" + data.id + "\")'>incoming</button> or ";
-    actions += "<button class='btn btn-outline-primary btn-sm' href='#' onclick='loadNodeNeighbors(\"both\", \"" + data.id + "\")'>both</button></li>";
-    actions += "<li><button class='btn btn-outline-primary btn-sm' href='#' onclick='removeGraphElement(globalSelected)'>Hide</button> selected elements</li>";
-    actions +=
-      "<li>Select all the element of type <button class='btn btn-outline-primary btn-sm' href='#' onclick='selectGraphElementByType(\"" +
-      type +
-      "\")'>" +
-      type +
-      "</button></li>";
-    actions += "</ul>";
-
-    $("#graphActions").html(actions);
+    openRecordEditor(data.id, data.type, data.properties, "graph");
   }
 }
 
 function displaySelectedEdge() {
   globalSelected = globalCy.elements("edge:selected");
   if (globalSelected.length < 1) {
-    $("#customToolbar").empty();
-    $("#graphPropertiesTable").empty();
-    $("#graphPropertiesType").html("Select an element to see its properties");
+    cancelRecordEditor();
     return;
   }
 
-  let data = null;
   if (globalSelected.length == 1) {
-    data = globalSelected[0].data();
-
-    let summary = "<label class='form-label'>Edge&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
-    summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type + "</b></label><br>";
-    summary += "<br><h5>Properties</h5>";
-
-    $("#graphPropertiesType").html(summary);
-
-    let table = "<thead><tr><th scope='col'>Name</th><th scope='col'>Value</th></tr>";
-    table += "<tbody>";
-
-    for (let p in data.properties) {
-      let value = data.properties[p];
-      if (Array.isArray(value) || typeof value === "object") value = JSON.stringify(value);
-      table += "<tr><td>" + escapeHtml(p) + "</td><td>" + escapeHtml(value) + "</td>";
-    }
-    table += "</tbody>";
-
-    $("#graphPropertiesTable").html(table);
-  }
-
-  let selectedElementTypes = {};
-  for (let i = 0; i < globalSelected.length; ++i) {
-    let type = globalSelected[i].data()["type"];
-    selectedElementTypes[type] = true;
-  }
-
-  let type = null;
-  if (Object.keys(selectedElementTypes).length == 1) {
-    type = globalSelected[0].data()["type"];
-    let properties = globalGraphPropertiesPerType[type];
-
-    let sel = getOrCreateStyleTypeAttrib(type, "labelText");
-    if (sel == null) sel = "@type";
-
-    let layout = "<div class='row'><div class='col-12'><h5>Layout for type " + type;
-    layout +=
-      "<button class='btn-pill btn-transition btn text-right' style='padding: 1px 5px;' onclick='globalToggleWidget(\"layoutPanel\", \"layoutExpand\")'><i id='layoutExpand' class='fa fa-" +
-      (globalWidgetExpanded["layoutPanel"] ? "minus" : "plus") +
-      "'></i></button></h5></div></div>";
-
-    layout += "<div class='p-2 " + (globalWidgetExpanded["layoutPanel"] ? "show" : "collapse") + "' id='layoutPanel'>";
-    layout += "<div class='row'><div class='col-3'><label for='graphLabel' class='form-label'>Label</label></div>";
-    layout += "<div class='col-9'><select id='graphLabel' class='form-control'>";
-    layout += "<option value='@type'" + (sel == "@type" ? " selected" : "") + ">@type</option>";
-    for (let p in properties) {
-      layout += "<option value='" + p + "'" + (sel == p ? " selected" : "") + ">" + p + "</option>";
-    }
-    layout += "</select></div>";
-
-    // SHAPE
-    let shapeSize = getOrCreateStyleTypeAttrib(type, "shapeSize");
-    if (shapeSize == null) shapeSize = 1;
-
-    let shapeColor = getOrCreateStyleTypeAttrib(type, "shapeColor");
-    if (shapeColor == null) shapeColor = "gray";
-
-    layout += "<div class='col-12'><label for='shapeColor' class='form-label'>Line</label></div>";
-    layout +=
-      "<div class='col-9'><input type='range' class='form-control-range form-control' id='shapeSize' value='" +
-      shapeSize +
-      "' min='0' max='20' step='1' oninput='getOrCreateStyleTypeAttrib(\"" +
-      type +
-      '", "shapeSize", this.value);renderGraph()\'></div>';
-    layout += "<div class='col-3'><select id='shapeColor' class='form-control colorselector'>";
-    for (let i in globalBgColors) {
-      let color = globalBgColors[i];
-      layout += "  <option value='" + color + "'" + (shapeColor == color ? " selected" : "") + " data-color='" + color + "'>" + color + "</option>";
-    }
-    layout += "</select></div>";
-
-    layout += "</div></div>";
-
-    $("#graphLayout").html(layout);
-
-    $("#shapeColor").colorselector({
-      callback: function (value, color, title) {
-        getOrCreateStyleTypeAttrib(type, "shapeColor", value);
-        renderGraph();
-      },
-    });
-
-    $("#graphLabel").change(function () {
-      getOrCreateStyleTypeAttrib(type, "labelText", $("#graphLabel").val());
-      renderGraph();
-    });
-  }
-
-  if (globalSelected.length == 1) {
-    let actions = "<br><h5>Actions</h5>";
-    actions += "<ul>";
-    actions += "<li><button class='btn btn-outline-primary btn-sm' href='#' onclick='removeGraphElement(globalSelected)'>Hide</button> selected elements</li>";
-    actions +=
-      "<li>Select all the element of type <button class='btn btn-outline-primary btn-sm' href='#' onclick='selectGraphElementByType(\"" +
-      data.type +
-      "\")'>" +
-      data.type +
-      "</button></li>";
-    actions += "</ul>";
-
-    $("#graphActions").html(actions);
+    let data = globalSelected[0].data();
+    openRecordEditor(data.id, data.type, data.properties, "graph");
   }
 }

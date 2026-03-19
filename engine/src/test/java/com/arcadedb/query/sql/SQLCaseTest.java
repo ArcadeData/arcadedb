@@ -75,14 +75,15 @@ class SQLCaseTest {
   void simpleCaseInSelectReturn() {
     // Simple CASE: CASE WHEN condition THEN result
     final ResultSet results = database.query("sql",
-        "SELECT name, " +
-            "CASE " +
-            "  WHEN age < 18 THEN 'minor' " +
-            "  WHEN age < 65 THEN 'adult' " +
-            "  ELSE 'senior' " +
-            "END as category " +
-            "FROM Person WHERE age IS NOT NULL " +
-            "ORDER BY name");
+        """
+        SELECT name, \
+        CASE \
+          WHEN age < 18 THEN 'minor' \
+          WHEN age < 65 THEN 'adult' \
+          ELSE 'senior' \
+        END as category \
+        FROM Person WHERE age IS NOT NULL \
+        ORDER BY name""");
 
     int count = 0;
     while (results.hasNext()) {
@@ -111,12 +112,13 @@ class SQLCaseTest {
   void simpleCaseWithoutElse() {
     // CASE without ELSE clause should return null for non-matching cases
     final ResultSet results = database.query("sql",
-        "SELECT name, " +
-            "CASE " +
-            "  WHEN age < 10 THEN 'child' " +
-            "  WHEN age < 13 THEN 'preteen' " +
-            "END as category " +
-            "FROM Person WHERE name = 'Alice'");
+        """
+        SELECT name, \
+        CASE \
+          WHEN age < 10 THEN 'child' \
+          WHEN age < 13 THEN 'preteen' \
+        END as category \
+        FROM Person WHERE name = 'Alice'""");
 
     assertThat(results.hasNext()).isTrue();
     final Result result = results.next();
@@ -127,14 +129,15 @@ class SQLCaseTest {
   void extendedCaseInSelect() {
     // Extended CASE: CASE expression WHEN value THEN result
     final ResultSet results = database.query("sql",
-        "SELECT name, " +
-            "CASE status " +
-            "  WHEN 'active' THEN 1 " +
-            "  WHEN 'inactive' THEN 0 " +
-            "  ELSE -1 " +
-            "END as statusCode " +
-            "FROM Person WHERE status IS NOT NULL " +
-            "ORDER BY name");
+        """
+        SELECT name, \
+        CASE status \
+          WHEN 'active' THEN 1 \
+          WHEN 'inactive' THEN 0 \
+          ELSE -1 \
+        END as statusCode \
+        FROM Person WHERE status IS NOT NULL \
+        ORDER BY name""");
 
     int count = 0;
     while (results.hasNext()) {
@@ -158,9 +161,10 @@ class SQLCaseTest {
     // Note: People without age (Eve, Frank) will have age < 18 evaluate to NULL,
     // which is treated as false, so they go to ELSE 'adult' and are included
     final ResultSet results = database.query("sql",
-        "SELECT name FROM Person " +
-            "WHERE age IS NOT NULL AND CASE WHEN age < 18 THEN 'minor' ELSE 'adult' END = 'adult' " +
-            "ORDER BY name");
+        """
+        SELECT name FROM Person \
+        WHERE age IS NOT NULL AND CASE WHEN age < 18 THEN 'minor' ELSE 'adult' END = 'adult' \
+        ORDER BY name""");
 
     int count = 0;
     while (results.hasNext()) {
@@ -178,13 +182,14 @@ class SQLCaseTest {
     // CASE in MATCH RETURN clause
     // First test CASE works in SELECT (not MATCH)
     final ResultSet selectResults = database.query("sql",
-        "SELECT name, " +
-            "CASE " +
-            "  WHEN age < 18 THEN 'minor' " +
-            "  WHEN age < 65 THEN 'adult' " +
-            "  ELSE 'senior' " +
-            "END as category " +
-            "FROM Person WHERE age IS NOT NULL ORDER BY name");
+        """
+        SELECT name, \
+        CASE \
+          WHEN age < 18 THEN 'minor' \
+          WHEN age < 65 THEN 'adult' \
+          ELSE 'senior' \
+        END as category \
+        FROM Person WHERE age IS NOT NULL ORDER BY name""");
     int selectCount = 0;
     while (selectResults.hasNext()) {
       final Result result = selectResults.next();
@@ -208,14 +213,15 @@ class SQLCaseTest {
 
     // Test CASE in MATCH RETURN with proper alias alignment
     final ResultSet results = database.query("sql",
-        "MATCH {type: Person, as: p, where: (age IS NOT NULL)} " +
-            "RETURN p.name, " +
-            "CASE " +
-            "  WHEN p.age < 18 THEN 'minor' " +
-            "  WHEN p.age < 65 THEN 'adult' " +
-            "  ELSE 'senior' " +
-            "END as category " +
-            "ORDER BY p.name");
+        """
+        MATCH {type: Person, as: p, where: (age IS NOT NULL)} \
+        RETURN p.name, \
+        CASE \
+          WHEN p.age < 18 THEN 'minor' \
+          WHEN p.age < 65 THEN 'adult' \
+          ELSE 'senior' \
+        END as category \
+        ORDER BY p.name""");
 
     int count = 0;
     while (results.hasNext()) {
@@ -245,9 +251,10 @@ class SQLCaseTest {
     // This is the main use case from GitHub issue #3151
     // Use CASE in MATCH WHERE clause to convert enum values and filter with wildcards
     final ResultSet results = database.query("sql",
-        "MATCH {type: Product, as: prod, " +
-            "where: ((CASE WHEN color = 1 THEN 'red' WHEN color = 2 THEN 'blue' WHEN color = 3 THEN 'green' END) ILIKE '%ed%')} " +
-            "RETURN prod.name ORDER BY prod.name");
+        """
+        MATCH {type: Product, as: prod, \
+        where: ((CASE WHEN color = 1 THEN 'red' WHEN color = 2 THEN 'blue' WHEN color = 3 THEN 'green' END) ILIKE '%ed%')} \
+        RETURN prod.name ORDER BY prod.name""");
 
     int count = 0;
     while (results.hasNext()) {
@@ -264,9 +271,10 @@ class SQLCaseTest {
   void extendedCaseInMatchWhere() {
     // Extended CASE in MATCH WHERE
     final ResultSet results = database.query("sql",
-        "MATCH {type: Product, as: prod, " +
-            "where: (CASE color WHEN 1 THEN 'red' WHEN 2 THEN 'blue' ELSE 'other' END = 'red')} " +
-            "RETURN prod.name ORDER BY prod.name");
+        """
+        MATCH {type: Product, as: prod, \
+        where: (CASE color WHEN 1 THEN 'red' WHEN 2 THEN 'blue' ELSE 'other' END = 'red')} \
+        RETURN prod.name ORDER BY prod.name""");
 
     int count = 0;
     while (results.hasNext()) {
@@ -282,16 +290,17 @@ class SQLCaseTest {
   void nestedCaseExpressions() {
     // Nested CASE expressions
     final ResultSet results = database.query("sql",
-        "SELECT name, " +
-            "CASE " +
-            "  WHEN age < 18 THEN 'minor' " +
-            "  ELSE CASE " +
-            "    WHEN age < 30 THEN 'young adult' " +
-            "    WHEN age < 65 THEN 'adult' " +
-            "    ELSE 'senior' " +
-            "  END " +
-            "END as category " +
-            "FROM Person WHERE name = 'Bob'");
+        """
+        SELECT name, \
+        CASE \
+          WHEN age < 18 THEN 'minor' \
+          ELSE CASE \
+            WHEN age < 30 THEN 'young adult' \
+            WHEN age < 65 THEN 'adult' \
+            ELSE 'senior' \
+          END \
+        END as category \
+        FROM Person WHERE name = 'Bob'""");
 
     assertThat(results.hasNext()).isTrue();
     final Result result = results.next();
@@ -306,13 +315,14 @@ class SQLCaseTest {
     });
 
     final ResultSet results = database.query("sql",
-        "SELECT name, " +
-            "CASE " +
-            "  WHEN age IS NULL THEN 'unknown' " +
-            "  WHEN age < 18 THEN 'minor' " +
-            "  ELSE 'adult' " +
-            "END as category " +
-            "FROM Person WHERE name = 'NoAge'");
+        """
+        SELECT name, \
+        CASE \
+          WHEN age IS NULL THEN 'unknown' \
+          WHEN age < 18 THEN 'minor' \
+          ELSE 'adult' \
+        END as category \
+        FROM Person WHERE name = 'NoAge'""");
 
     assertThat(results.hasNext()).isTrue();
     final Result result = results.next();

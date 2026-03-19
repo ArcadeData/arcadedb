@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class DeleteFromIndexStepTest extends TestHelper {
+class DeleteFromIndexStepTest extends TestHelper {
 
   @Test
   void shouldDeleteWithEqualsOperator() {

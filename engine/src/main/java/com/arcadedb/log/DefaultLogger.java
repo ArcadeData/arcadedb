@@ -21,11 +21,18 @@ package com.arcadedb.log;
 import com.arcadedb.utility.AnsiLogFormatter;
 import com.arcadedb.utility.SystemVariableResolver;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.logging.*;
+import java.util.logging.ConsoleHandler;
+import java.util.logging.Handler;
+import java.util.logging.Level;
 import java.util.logging.LogManager;
+import java.util.logging.LogRecord;
 
 /**
  * Default Logger implementation that writes to the Java Logging Framework.
@@ -33,10 +40,8 @@ import java.util.logging.LogManager;
  */
 public class DefaultLogger implements Logger {
   private static final String DEFAULT_LOG                  = "com.arcadedb";
-  private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb" +
-      ".installCustomFormatter";
-  private static final String FILE_LOG_PROPERTIES          = "arcadedb-log" +
-      ".properties";
+  private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
+  private static final String FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
 
   private volatile boolean initialized = false;
 
@@ -179,8 +184,9 @@ public class DefaultLogger implements Logger {
     // During JVM shutdown, bypass the logging framework and use System.err directly
     // to avoid NPE when handlers are closed (issue #2813)
     if (shuttingDown) {
-      logToSystemErr(message, exception, context, hasParams, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
-          arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+      if (level.intValue() >= Level.INFO.intValue())
+        logToSystemErr(message, exception, context, hasParams, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+            arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
       return;
     }
 

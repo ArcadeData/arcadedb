@@ -26,7 +26,7 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class DistinctExecutionStepTest extends TestHelper {
+class DistinctExecutionStepTest extends TestHelper {
 
   @Test
   void shouldReturnDistinctValues() {

@@ -58,7 +58,10 @@ public final class TypeCountStep extends AbstractExecutionStep {
         rowCount++;
 
       // Use O(1) count operation instead of iterating through all records
-      count = context.getDatabase().countType(typeName, true);
+      if (context.getDatabase().getSchema().existsType(typeName))
+        count = context.getDatabase().countType(typeName, true);
+      else
+        count = 0;
     } finally {
       if (context.isProfiling())
         cost += (System.nanoTime() - begin);

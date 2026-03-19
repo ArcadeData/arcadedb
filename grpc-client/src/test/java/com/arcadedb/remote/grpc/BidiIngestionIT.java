@@ -132,7 +132,7 @@ class BidiIngestionIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("ingestBidi basic flow sends records and receives ACKs")
-  void ingestBidi_basicFlow() throws InterruptedException {
+  void ingestBidi_basicFlow() throws Exception {
     List<Map<String, Object>> rows = generateRows(50);
 
     InsertSummary summary = database.ingestBidi(defaultOptions(), rows, 10, 5, 60_000);
@@ -144,7 +144,7 @@ class BidiIngestionIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("ingestBidi handles backpressure with maxInflight limit")
-  void ingestBidi_backpressure() throws InterruptedException {
+  void ingestBidi_backpressure() throws Exception {
     List<Map<String, Object>> rows = generateRows(200);
 
     // Very low maxInflight to force backpressure
@@ -156,7 +156,7 @@ class BidiIngestionIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("ingestBidi large volume streams without blocking indefinitely")
-  void ingestBidi_largeVolume() throws InterruptedException {
+  void ingestBidi_largeVolume() throws Exception {
     // Reduced from 50K to 5K to avoid timeout issues
     List<Map<String, Object>> rows = generateRows(5_000);
 
@@ -168,7 +168,7 @@ class BidiIngestionIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("ingestBidi with explicit transaction commits correctly")
-  void ingestBidi_withTransaction() throws InterruptedException {
+  void ingestBidi_withTransaction() throws Exception {
     List<Map<String, Object>> rows = generateRows(30);
 
     database.begin();
@@ -181,7 +181,7 @@ class BidiIngestionIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("ingestBidi with conflict mode UPDATE performs upserts")
-  void ingestBidi_upsertOnConflict() throws InterruptedException {
+  void ingestBidi_upsertOnConflict() throws Exception {
     // First insert
     List<Map<String, Object>> rows = generateRows(20);
     InsertOptions opts = InsertOptions.newBuilder()
@@ -239,7 +239,7 @@ class BidiIngestionIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("ingestBidi with empty list returns empty summary")
-  void ingestBidi_emptyList() throws InterruptedException {
+  void ingestBidi_emptyList() throws Exception {
     InsertSummary summary = database.ingestBidi(defaultOptions(), List.of(), 10, 5, 60_000);
 
     assertThat(summary.getReceived()).isEqualTo(0);

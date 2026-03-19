@@ -2276,4 +2276,44 @@ public class MatchStatementExecutionTest extends TestHelper {
       assertThat(rs.stream().count()).isEqualTo(1L);
     }
   }
+
+  @Test
+  void matchWithPrefetchFiltering() {
+    // n1 -> n2, n1 -> n3 (via Friend edges from beginTest)
+    // This MATCH query should use prefetch for the target alias 'b' because it has a where filter,
+    // and the filtering in SQLFunctionMoveFiltered should correctly prune neighbors.
+    final String query = "MATCH {type: Person, as: a, where: (name = 'n1')} -Friend-> {type: Person, as: b, where: (name = 'n2')} RETURN a.name as aName, b.name as bName";
+
+    try (final ResultSet result = database.query("sql", query)) {
+      assertThat(result.hasNext()).isTrue();
+      final Result row = result.next();
+      assertThat(row.<String>getProperty("aName")).isEqualTo("n1");
+      assertThat(row.<String>getProperty("bName")).isEqualTo("n2");
+      assertThat(result.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void matchWithPrefetchFilteringNoMatch() {
+    // n1 -> n2, n1 -> n3, but n1 has no Friend edge to n5
+    final String query = "MATCH {type: Person, as: a, where: (name = 'n1')} -Friend-> {type: Person, as: b, where: (name = 'n5')} RETURN a.name as aName, b.name as bName";
+
+    try (final ResultSet result = database.query("sql", query)) {
+      assertThat(result.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void matchWithPrefetchFilteringMultipleResults() {
+    // n1 -> n2, n1 -> n3. Filter for both n2 and n3 as targets.
+    final String query = "MATCH {type: Person, as: a, where: (name = 'n1')} -Friend-> {type: Person, as: b, where: (name = 'n2' OR name = 'n3')} RETURN b.name as bName ORDER BY bName";
+
+    try (final ResultSet result = database.query("sql", query)) {
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().<String>getProperty("bName")).isEqualTo("n2");
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().<String>getProperty("bName")).isEqualTo("n3");
+      assertThat(result.hasNext()).isFalse();
+    }
+  }
 }

@@ -36,6 +36,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.engine.WALFileFactoryEmbedded;
+import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseIsClosedException;
@@ -48,14 +49,20 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -74,6 +81,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -105,7 +113,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -136,7 +143,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
       LSMVectorIndex.FILE_EXT,
-      LSMVectorIndexGraphFile.FILE_EXT);
+      LSMVectorIndexGraphFile.FILE_EXT,
+      TimeSeriesBucket.BUCKET_EXT,
+      HashIndexBucket.UNIQUE_INDEX_EXT,
+      HashIndexBucket.NOTUNIQUE_INDEX_EXT);
   public final         AtomicLong                                indexCompactions                     =
       new AtomicLong();
   protected final      String                                    name;
@@ -255,6 +265,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
 
     openInternal();
+
+    try {
+      executeCallbacks(CALLBACK_EVENT.DB_AFTER_OPEN);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on executing DB_AFTER_OPEN callbacks", e);
+    }
+
+    // Restore Graph Analytical Views persisted in schema extensions
+    try {
+      GraphAnalyticalViewPersistence.restoreAll(this);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error restoring Graph Analytical Views on database open", e);
+    }
   }
 
   protected void create() {
@@ -463,21 +486,27 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     });
   }
 
-  public void incrementStatsTxCommits() {
-    stats.txCommits.incrementAndGet();
+  public void incrementStatsWriteTx() {
+    stats.writeTx.incrementAndGet();
+  }
+
+  public void incrementStatsReadTx() {
+    stats.readTx.incrementAndGet();
   }
 
   @Override
   public void commit() {
-    stats.txCommits.incrementAndGet();
-
     executeInReadLock(() -> {
       checkTransactionIsActive(false);
 
       final DatabaseContext.DatabaseContextTL current =
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
-        current.getLastTransaction().commit();
+        final Binary result = current.getLastTransaction().commit();
+        if (result != null)
+          stats.writeTx.incrementAndGet();
+        else
+          stats.readTx.incrementAndGet();
       } finally {
         current.popIfNotLastTransaction();
       }
@@ -546,6 +575,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     return (Long) executeInReadLock((Callable<Object>) () -> {
       final DocumentType type = schema.getType(typeName);
+
+      // TimeSeries types store data in their own engine, not in regular buckets
+      if (type instanceof LocalTimeSeriesType tsType) {
+        try {
+          return tsType.getEngine().countSamples();
+        } catch (final IOException e) {
+          throw new DatabaseOperationException("Error counting TimeSeries samples for type '" + typeName + "'", e);
+        }
+      }
 
       long total = 0;
       for (final Bucket b : type.getBuckets(polymorphic))
@@ -979,6 +1017,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
         return;
 
+    stats.updateRecord.incrementAndGet();
+
     executeInReadLock(() -> {
       if (isTransactionActive()) {
         // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
@@ -1101,6 +1141,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         bucket.deleteRecord(record.getIdentity());
 
       success = true;
+      stats.deleteRecord.incrementAndGet();
 
       // INVOKE EVENT CALLBACKS
       events.onAfterDelete(record);
@@ -1239,7 +1280,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Type is null");
 
     final LocalDocumentType type = schema.getType(typeName);
-    if (!type.getClass().equals(LocalDocumentType.class))
+    if (!type.getClass().equals(LocalDocumentType.class) && !(type instanceof LocalTimeSeriesType))
       throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a " +
           "document type");
 
@@ -1522,6 +1563,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public Select select() {
     return new Select(this);
+  }
+
+  @Override
+  public GraphBatch.Builder batch() {
+    return GraphBatch.builder(this);
   }
 
   @Override
@@ -1828,8 +1874,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         async.close();
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database " +
-                "'%s'", e, name);
+            .log(this, Level.WARNING, """
+                Error on stopping asynchronous manager during closing operation for database \
+                '%s'""", e, name);
       }
     }
 
@@ -1845,6 +1892,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
 
+    // Shutdown all Graph Analytical Views before closing the database
+    try {
+      GraphAnalyticalViewRegistry.shutdownAll(this);
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error on shutting down Graph Analytical Views during close for database '%s'", e, name);
+    } finally {
+      // Safety net: clear any orphaned traversal providers that were not cleaned up
+      // by individual view shutdown() calls (e.g., if a view was registered directly
+      // in GraphTraversalProviderRegistry without being in GraphAnalyticalViewRegistry)
+      GraphTraversalProviderRegistry.clearAll(this);
+    }
+
     executeInWriteLock(() -> {
       if (!open)
         return null;
@@ -1854,8 +1914,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           async.close();
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database " +
-                "'%s'", e, name);
+            .log(this, Level.WARNING, """
+                Error on stopping asynchronous manager during closing operation for database \
+                '%s'""", e, name);
       }
 
       if (drop)
@@ -1884,8 +1945,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on clearing transaction status during closing operation for database " +
-                "'%s'", e, name);
+            .log(this, Level.WARNING, """
+                Error on clearing transaction status during closing operation for database \
+                '%s'""", e, name);
       }
 
       for (QueryEngine e : reusableQueryEngines.values())
@@ -1900,8 +1962,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on closing internal components during closing operation for database " +
-                "'%s'", e, name);
+            .log(this, Level.WARNING, """
+                Error on closing internal components during closing operation for database \
+                '%s'""", e, name);
       } finally {
         Profiler.INSTANCE.unregisterDatabase(LocalDatabase.this);
       }
@@ -1932,8 +1995,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     });
 
-    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath)) {
+      GraphAnalyticalView.closeExecutor();
       PageManager.INSTANCE.close();
+    }
   }
 
   private void checkForRecovery() throws IOException {

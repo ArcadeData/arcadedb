@@ -57,7 +57,8 @@ public class ResultInternal implements Result {
   }
 
   public ResultInternal(final Identifiable indent) {
-    this.element = (Document) indent.getRecord();
+    final Record record = indent.getRecord();
+    this.element = record instanceof Document doc ? doc : null;
     this.database = null;
     this.value = null;
   }
@@ -371,11 +372,16 @@ public class ResultInternal implements Result {
   public String toString() {
     if (value != null)
       return value.toString();
-    else if (element != null)
-      return element.toString();
+    else if (element != null) {
+      try {
+        return element.toJSON(true).toString();
+      } catch (final Exception e) {
+        return element.toString();
+      }
+    }
     else if (content != null)
-      return "{" + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b)
-              + "}";
+      return "{" + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue())
+              .collect(Collectors.joining(", ")) + "}";
     return "{}";
   }
 

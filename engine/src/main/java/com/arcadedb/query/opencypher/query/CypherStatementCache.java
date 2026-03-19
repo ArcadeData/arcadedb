@@ -58,10 +58,13 @@ public class CypherStatementCache {
    * @throws CommandParsingException if the query is invalid
    */
   public CypherStatement get(final String query) {
-    CypherStatement statement = cache.get(query);
+    // Strip trailing semicolons - Neo4j clients (e.g., Neo4j Desktop) commonly append them
+    final String normalizedQuery = query.endsWith(";") ? query.substring(0, query.length() - 1).trim() : query;
+
+    CypherStatement statement = cache.get(normalizedQuery);
     if (statement == null) {
-      statement = parse(query);
-      cache.put(query, statement);
+      statement = parse(normalizedQuery);
+      cache.put(normalizedQuery, statement);
     }
     return statement;
   }
@@ -79,6 +82,18 @@ public class CypherStatementCache {
     } catch (final Exception e) {
       throw new CommandParsingException("Error parsing OpenCypher query: " + query, e);
     }
+  }
+
+  /**
+   * Returns whether a query is idempotent (read-only), using the cached statement.
+   * This avoids creating an AnalyzedQuery wrapper object on each call.
+   *
+   * @param query the OpenCypher query string
+   * @return true if the query is read-only
+   * @throws CommandParsingException if the query is invalid
+   */
+  public boolean isIdempotent(final String query) {
+    return get(query).isReadOnly();
   }
 
   /**

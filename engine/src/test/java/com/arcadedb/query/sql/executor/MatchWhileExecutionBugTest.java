@@ -47,22 +47,26 @@ public class MatchWhileExecutionBugTest extends TestHelper {
 
     // p10 works at department7
     database.command("sql",
-        "CREATE EDGE WorksAt FROM (SELECT FROM Employee WHERE name = 'p10') " +
-        "TO (SELECT FROM Department WHERE name = 'department7')");
+        """
+        CREATE EDGE WorksAt FROM (SELECT FROM Employee WHERE name = 'p10') \
+        TO (SELECT FROM Department WHERE name = 'department7')""");
 
     // c manages department7 (this is the manager we're looking for)
     database.command("sql",
-        "CREATE EDGE ManagerOf FROM (SELECT FROM Employee WHERE name = 'c') " +
-        "TO (SELECT FROM Department WHERE name = 'department7')");
+        """
+        CREATE EDGE ManagerOf FROM (SELECT FROM Employee WHERE name = 'c') \
+        TO (SELECT FROM Department WHERE name = 'department7')""");
 
     // Department hierarchy: 7 -> 3 -> 1
     database.command("sql",
-        "CREATE EDGE ParentDepartment FROM (SELECT FROM Department WHERE name = 'department7') " +
-        "TO (SELECT FROM Department WHERE name = 'department3')");
+        """
+        CREATE EDGE ParentDepartment FROM (SELECT FROM Department WHERE name = 'department7') \
+        TO (SELECT FROM Department WHERE name = 'department3')""");
 
     database.command("sql",
-        "CREATE EDGE ParentDepartment FROM (SELECT FROM Department WHERE name = 'department3') " +
-        "TO (SELECT FROM Department WHERE name = 'department1')");
+        """
+        CREATE EDGE ParentDepartment FROM (SELECT FROM Department WHERE name = 'department3') \
+        TO (SELECT FROM Department WHERE name = 'department1')""");
 
     database.commit();
     database.begin();
@@ -74,14 +78,15 @@ public class MatchWhileExecutionBugTest extends TestHelper {
    */
   @Test
   void matchWithWhileStandalone() {
-    String query = "MATCH {type:Employee, where: (name = 'p10')}" +
-        ".out('WorksAt')" +
-        ".out('ParentDepartment'){" +
-        "    while: (in('ManagerOf').size() == 0)," +
-        "    where: (in('ManagerOf').size() > 0)" +
-        "}" +
-        ".in('ManagerOf'){as: manager}" +
-        "RETURN manager";
+    String query = """
+        MATCH {type:Employee, where: (name = 'p10')}\
+        .out('WorksAt')\
+        .out('ParentDepartment'){\
+            while: (in('ManagerOf').size() == 0),\
+            where: (in('ManagerOf').size() > 0)\
+        }\
+        .in('ManagerOf'){as: manager}\
+        RETURN manager""";
 
     ResultSet rs = database.query("sql", query);
 
@@ -103,15 +108,16 @@ public class MatchWhileExecutionBugTest extends TestHelper {
    */
   @Test
   void matchWithWhileInSubquery() {
-    String query = "SELECT expand(manager) FROM (" +
-        "MATCH {type:Employee, where: (name = 'p10')}" +
-        ".out('WorksAt')" +
-        ".out('ParentDepartment'){" +
-        "    while: (in('ManagerOf').size() == 0)," +
-        "    where: (in('ManagerOf').size() > 0)" +
-        "}" +
-        ".in('ManagerOf'){as: manager}" +
-        "RETURN manager)";
+    String query = """
+        SELECT expand(manager) FROM (\
+        MATCH {type:Employee, where: (name = 'p10')}\
+        .out('WorksAt')\
+        .out('ParentDepartment'){\
+            while: (in('ManagerOf').size() == 0),\
+            where: (in('ManagerOf').size() > 0)\
+        }\
+        .in('ManagerOf'){as: manager}\
+        RETURN manager)""";
 
     ResultSet rs = database.query("sql", query);
 
@@ -133,16 +139,17 @@ public class MatchWhileExecutionBugTest extends TestHelper {
    */
   @Test
   void nestedSelectWithMatchAndWhile() {
-    String query = "SELECT @type FROM (" +
-        "SELECT expand(manager) FROM (" +
-        "MATCH {type:Employee, where: (name = 'p10')}" +
-        ".out('WorksAt')" +
-        ".out('ParentDepartment'){" +
-        "    while: (in('ManagerOf').size() == 0)," +
-        "    where: (in('ManagerOf').size() > 0)" +
-        "}" +
-        ".in('ManagerOf'){as: manager}" +
-        "RETURN manager))";
+    String query = """
+        SELECT @type FROM (\
+        SELECT expand(manager) FROM (\
+        MATCH {type:Employee, where: (name = 'p10')}\
+        .out('WorksAt')\
+        .out('ParentDepartment'){\
+            while: (in('ManagerOf').size() == 0),\
+            where: (in('ManagerOf').size() > 0)\
+        }\
+        .in('ManagerOf'){as: manager}\
+        RETURN manager))""";
 
     ResultSet rs = database.query("sql", query);
 
@@ -164,11 +171,12 @@ public class MatchWhileExecutionBugTest extends TestHelper {
    */
   @Test
   void matchWithoutWhileInSubquery() {
-    String query = "SELECT expand(manager) FROM (" +
-        "MATCH {type:Employee, where: (name = 'p10')}" +
-        ".out('WorksAt')" +
-        ".in('ManagerOf'){as: manager}" +
-        "RETURN manager)";
+    String query = """
+        SELECT expand(manager) FROM (\
+        MATCH {type:Employee, where: (name = 'p10')}\
+        .out('WorksAt')\
+        .in('ManagerOf'){as: manager}\
+        RETURN manager)""";
 
     ResultSet rs = database.query("sql", query);
 

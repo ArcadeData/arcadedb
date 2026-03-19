@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -35,19 +36,30 @@ import java.util.NoSuchElementException;
  * Physical operator that performs a full table scan on vertices of a specific type.
  * This is used when no index is available or when the optimizer determines
  * a scan is more efficient than an index seek.
+ * <p>
+ * Supports optional inline WHERE filter (predicate pushdown) to evaluate
+ * predicates during scanning rather than in a separate filter operator.
  *
  * Cost: O(N) where N is the number of vertices of the given type
  * Cardinality: Estimated number of vertices of the type
  */
 public class NodeByLabelScan extends AbstractPhysicalOperator {
-  private final String variable;
-  private final String label;
+  private final String            variable;
+  private final String            label;
+  private final BooleanExpression whereFilter; // Optional inline WHERE predicate (pushdown)
 
   public NodeByLabelScan(final String variable, final String label,
                         final double estimatedCost, final long estimatedCardinality) {
+    this(variable, label, estimatedCost, estimatedCardinality, null);
+  }
+
+  public NodeByLabelScan(final String variable, final String label,
+                        final double estimatedCost, final long estimatedCardinality,
+                        final BooleanExpression whereFilter) {
     super(estimatedCost, estimatedCardinality);
     this.variable = variable;
     this.label = label;
+    this.whereFilter = whereFilter;
   }
 
   @Override
@@ -109,6 +121,11 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           // Create result with vertex bound to variable
           final ResultInternal result = new ResultInternal();
           result.setProperty(variable, vertex);
+
+          // Apply inline WHERE filter (predicate pushdown)
+          if (whereFilter != null && !whereFilter.evaluate(result, context))
+            continue;
+
           buffer.add(result);
         }
 
@@ -136,6 +153,8 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
 
     sb.append(indent).append("+ NodeByLabelScan");
     sb.append("(").append(variable).append(":").append(label).append(")");
+    if (whereFilter != null)
+      sb.append(" [filter: ").append(whereFilter.getText()).append("]");
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

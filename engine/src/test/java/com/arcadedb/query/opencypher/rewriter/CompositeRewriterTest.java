@@ -28,10 +28,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CompositeRewriterTest {
+class CompositeRewriterTest {
 
   @Test
-  public void testChainedRewrites() {
+  void chainedRewrites() {
     // Test: 5 < (1 + 2)
     // Step 1 (ConstantFolder): 5 < (1 + 2) → 5 < 3
     // Step 2 (ComparisonNormalizer): 5 < 3 stays as-is (both are literals, equal interestingness)
@@ -70,7 +70,7 @@ public class CompositeRewriterTest {
   }
 
   @Test
-  public void testEmptyRewriterList() {
+  void emptyRewriterList() {
     // Empty rewriter should return original expression
     final ExpressionRewriter rewriter = new CompositeRewriter();
 
@@ -81,7 +81,7 @@ public class CompositeRewriterTest {
   }
 
   @Test
-  public void testSingleRewriter() {
+  void singleRewriter() {
     // Single rewriter should work like standalone
     final ExpressionRewriter rewriter = new CompositeRewriter(new ConstantFolder());
 
@@ -98,7 +98,7 @@ public class CompositeRewriterTest {
   }
 
   @Test
-  public void testOrderMatters() {
+  void orderMatters() {
     // Test that order of rewrites matters
     // ComparisonNormalizer first, then ConstantFolder
     final PropertyAccessExpression property = new PropertyAccessExpression("n", "age");

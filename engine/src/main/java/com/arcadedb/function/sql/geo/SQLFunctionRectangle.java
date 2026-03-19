@@ -19,16 +19,19 @@
 package com.arcadedb.function.sql.geo;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
 import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.shape.Point;
 
 /**
- * Returns a rectangle shape with the 4 coordinates received as parameters.
+ * Deprecated alias for {@code rectangle()}: returns a rectangle shape from two corner coordinates.
  *
- * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * <p><b>Deprecated</b>: Use {@code geo.geomFromText("POLYGON ((x1 y1, x2 y1, x2 y2, x1 y2, x1 y1))")} instead.</p>
+ *
+ * @deprecated since 25.x — use {@code geo.geomFromText} with an explicit POLYGON WKT
  */
+@Deprecated
 public class SQLFunctionRectangle extends SQLFunctionAbstract {
   public static final String NAME = "rectangle";
 
@@ -36,10 +39,12 @@ public class SQLFunctionRectangle extends SQLFunctionAbstract {
     super(NAME);
   }
 
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length != 4)
-      throw new IllegalArgumentException("rectangle() requires 4 parameters");
+      throw new IllegalArgumentException(
+          "rectangle() requires 4 parameters: rectangle(<top-x>, <top-y>, <bottom-x>, <bottom-y>)");
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
     final Point topLeft = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]));
@@ -47,7 +52,8 @@ public class SQLFunctionRectangle extends SQLFunctionAbstract {
     return spatialContext.getShapeFactory().rect(topLeft, bottomRight);
   }
 
+  @Override
   public String getSyntax() {
-    return "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>)";
+    return "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>) [deprecated: use geo.geomFromText with POLYGON WKT]";
   }
 }

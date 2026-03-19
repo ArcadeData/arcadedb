@@ -213,8 +213,9 @@ public class OrientDBImporter {
       phase = Phase.ANALYZE;
 
       // PARSE THE FILE THE 1ST TIME TO CREATE THE SCHEMA AND CACHE EDGES IN RAM
-      logger.logLine(1, "No `expectedVertex` setting specified: parsing the file to count the total documents and " +
-          "vertex");
+      logger.logLine(1, """
+          No `expectedVertex` setting specified: parsing the file to count the total documents and \
+          vertex""");
       parseInputFile();
       settings.expectedVertices = context.parsedDocumentAndVertices.get();
 
@@ -287,13 +288,15 @@ public class OrientDBImporter {
     if (createSecurityFiles) {
       writeSecurityFiles();
       logger.logLine(1,
-          "- generated file server-users.jsonl to copy under ArcadeDB server 'config' directory. If the server " +
-              "already contains users, instead of replacing it, you can append the content");
+          """
+          - generated file server-users.jsonl to copy under ArcadeDB server 'config' directory. If the server \
+          already contains users, instead of replacing it, you can append the content""");
     } else
       logger.logLine(1,
-          "- users stored in OUser class will not be imported because ArcadeDB has users only at server level. If you" +
-              " want to import such users into ArcadeDB server configuration, please run the importer with the option" +
-              " -s <securityFileDirectory>");
+          """
+          - users stored in OUser class will not be imported because ArcadeDB has users only at server level. If you\
+           want to import such users into ArcadeDB server configuration, please run the importer with the option\
+           -s <securityFileDirectory>""");
 
     if (database != null)
       logger.logLine(1, "- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
@@ -428,8 +431,9 @@ public class OrientDBImporter {
 
       case CREATE_RECORDS:
         logger.logLine(1,
-            "Creation of records completed: created %,d vertices and %,d documents, skipped %,d edges (%,d " +
-                "records/sec elapsed=%,d secs)",
+            """
+            Creation of records completed: created %,d vertices and %,d documents, skipped %,d edges (%,d \
+            records/sec elapsed=%,d secs)""",
             context.createdVertices.get(), context.createdDocuments.get(), context.skippedEdges.get(),
             elapsedInSecs > 0 ? ((context.createdDocuments.get() + context.createdVertices.get()) / elapsedInSecs) : 0,
             elapsedInSecs);
@@ -593,8 +597,9 @@ public class OrientDBImporter {
               parsedIndexes = (List<Map<String, Object>>) attributes.get("indexes");
 
               if (phase == Phase.CREATE_SCHEMA) {
-                logger.logLine(1, "Creation of records started: creating vertices and documents records (edges on the" +
-                    " next phase)");
+                logger.logLine(1, """
+                    Creation of records started: creating vertices and documents records (edges on the\
+                     next phase)""");
                 phase = Phase.CREATE_RECORDS;
                 beginTimeRecordsCreation = System.currentTimeMillis();
               }
@@ -774,8 +779,9 @@ public class OrientDBImporter {
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
         logger.logLine(2,
-            "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the " +
-                "output");
+            """
+            - Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the \
+            output""");
       else if (settings.verboseLevel > 2 || skippedEdgeBecauseMissingVertex < 100)
         logger.logLine(2, "- Skip edge %s because source vertex (out) was not imported", attributes);
 
@@ -790,8 +796,9 @@ public class OrientDBImporter {
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
         logger.logLine(2,
-            "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the " +
-                "output");
+            """
+            - Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the \
+            output""");
       else if (settings.verboseLevel > 2 || skippedEdgeBecauseMissingVertex < 100)
         logger.logLine(2, "- Skip edge %s because destination vertex (in) was not imported", attributes);
 
@@ -1041,8 +1048,9 @@ public class OrientDBImporter {
       final DocumentType type = database.getSchema().getType(className);
       if (!type.existsPolymorphicProperty(fieldName)) {
         if (keyType == null) {
-          logger.logLine(2, "- Skipped %s index creation on %s%s because the property is not defined and the key type" +
-                  " is unknown",
+          logger.logLine(2, """
+                  - Skipped %s index creation on %s%s because the property is not defined and the key type\
+                   is unknown""",
               unique ? "UNIQUE" : "NOTUNIQUE", className, Arrays.toString(properties));
           ++warnings;
           continue;
@@ -1286,8 +1294,9 @@ public class OrientDBImporter {
     logger.errorLine("Use:");
     logger.errorLine("-d <database-path>: create a database from the OrientDB export");
     logger.errorLine("-i <input-file>: path to the OrientDB export file. The default name is export.json.gz");
-    logger.errorLine("-s <security-file>: path to the security file generated from OrientDB users to use in ArcadeDB " +
-        "server");
+    logger.errorLine("""
+        -s <security-file>: path to the security file generated from OrientDB users to use in ArcadeDB \
+        server""");
     logger.errorLine("-v <verbose-level>: 0 = error only, 1 = main steps, 2 = detailed steps, 3 = everything");
   }
 
@@ -1304,11 +1313,13 @@ public class OrientDBImporter {
 
           if (settings.verboseLevel < 3 && skippedRecordBecauseNullKey == 100)
             logger.logLine(2,
-                "- Skipped 100 records where indexed field is null and the index is not accepting NULLs. Not " +
-                    "reporting further case to reduce the output");
+                """
+                - Skipped 100 records where indexed field is null and the index is not accepting NULLs. Not \
+                reporting further case to reduce the output""");
           else if (settings.verboseLevel > 2 || skippedRecordBecauseNullKey < 100)
-            logger.logLine(2, "- Skipped record %s because indexed field '%s' is null and the index is not accepting " +
-                    "NULLs",
+            logger.logLine(2, """
+                    - Skipped record %s because indexed field '%s' is null and the index is not accepting \
+                    NULLs""",
                 properties, indexedPropName);
 
           valid = false;

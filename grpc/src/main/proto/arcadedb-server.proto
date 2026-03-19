@@ -22,8 +22,6 @@ option java_multiple_files = true;
 option java_package = "com.arcadedb.server.grpc";
 option java_outer_classname = "ArcadeDbProto";
 
-import "google/protobuf/empty.proto";
-import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
 
@@ -176,6 +174,9 @@ service ArcadeDbService {
   rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse);
   rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
   rpc RollbackTransaction(RollbackTransactionRequest) returns (RollbackTransactionResponse);
+
+  // Graph batch load (client-streaming)
+  rpc GraphBatchLoad (stream GraphBatchChunk) returns (GraphBatchResult);
 }
 
 // -----------------------------------------------------------------------------
@@ -288,6 +289,7 @@ message ExecuteQueryRequest {
   int32 timeout_ms = 7;
 
   ProjectionSettings projectionSettings = 8;
+  string language = 9; // "sql" if empty (default)
 }
 
 message ExecuteQueryResponse {
@@ -492,6 +494,51 @@ message BatchAck {
 
 message Committed {
   InsertSummary summary = 1; // full-stream totals
+}
+
+// ---------------------------------------------------------------------------
+// Graph Batch Load API
+// ---------------------------------------------------------------------------
+
+message GraphBatchOptions {
+  int32  batch_size               = 1;  // default 100000
+  bool   light_edges              = 2;  // default false
+  bool   wal                      = 3;  // default false
+  optional bool   parallel_flush           = 4;  // default true (unset = true)
+  optional bool   pre_allocate_edge_chunks = 5;  // default true (unset = true)
+  int32  edge_list_initial_size   = 6;  // default 2048
+  optional bool   bidirectional            = 7;  // default true (unset = true)
+  int32  commit_every             = 8;  // default 50000
+  int32  expected_edge_count      = 9;  // default 0
+}
+
+message GraphBatchRecord {
+  enum Kind { VERTEX = 0; EDGE = 1; }
+  Kind   kind      = 1;
+  string type_name = 2;  // vertex or edge type name
+  string temp_id   = 3;  // vertex temp ID (for later edge references)
+  string from_ref  = 4;  // edge source: temp ID or "#bucket:pos"
+  string to_ref    = 5;  // edge target: temp ID or "#bucket:pos"
+  map<string, GrpcValue> properties = 6;
+}
+
+// IMPORTANT: all VERTEX records must appear before any EDGE records across all chunks.
+// Interleaving is not supported and will result in an error.
+message GraphBatchChunk {
+  string database                    = 1;  // required on first chunk
+  DatabaseCredentials credentials    = 2;  // optional if channel-level auth is used
+  GraphBatchOptions options          = 3;  // required on first chunk, ignored after
+  repeated GraphBatchRecord records  = 4;
+}
+
+message GraphBatchResult {
+  int64 vertices_created         = 1;
+  int64 edges_created            = 2;
+  int64 elapsed_ms               = 3;
+  map<string, string> id_mapping = 4;  // temp_id → RID string
+  // Note: for very large batches with many temp IDs, the id_mapping may exceed the default
+  // gRPC message size limit (4 MB). Callers importing millions of vertices with temp IDs should
+  // increase maxInboundMessageSize or avoid temp IDs when RID mapping is not needed.
 }
 
 // -----------------------------------------------------------------------------

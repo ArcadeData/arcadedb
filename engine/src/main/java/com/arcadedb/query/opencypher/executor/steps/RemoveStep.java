@@ -21,6 +21,10 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -206,11 +210,11 @@ public class RemoveStep extends AbstractExecutionStep {
   private void removeLabels(final RemoveClause.RemoveItem item, final Result result) {
     final String variable = item.getVariable();
     final Object obj = result.getProperty(variable);
-    if (!(obj instanceof com.arcadedb.graph.Vertex vertex))
+    if (!(obj instanceof Vertex vertex))
       return;
 
-    final java.util.List<String> currentLabels = com.arcadedb.query.opencypher.Labels.getLabels(vertex);
-    final java.util.List<String> labelsToRemove = item.getLabels();
+    final List<String> currentLabels = Labels.getLabels(vertex);
+    final List<String> labelsToRemove = item.getLabels();
 
     // Check if any of the labels to remove actually exist
     boolean needsChange = false;
@@ -224,7 +228,7 @@ public class RemoveStep extends AbstractExecutionStep {
       return;
 
     // Compute remaining labels
-    final java.util.List<String> remainingLabels = new java.util.ArrayList<>(currentLabels);
+    final List<String> remainingLabels = new ArrayList<>(currentLabels);
     remainingLabels.removeAll(labelsToRemove);
 
     final String newTypeName;
@@ -232,7 +236,7 @@ public class RemoveStep extends AbstractExecutionStep {
       newTypeName = "V";
       context.getDatabase().getSchema().getOrCreateVertexType("V");
     } else {
-      newTypeName = com.arcadedb.query.opencypher.Labels.ensureCompositeType(
+      newTypeName = Labels.ensureCompositeType(
           context.getDatabase().getSchema(), remainingLabels);
     }
 
@@ -240,16 +244,16 @@ public class RemoveStep extends AbstractExecutionStep {
       return;
 
     // Create new vertex with the reduced type, copy properties
-    final com.arcadedb.graph.MutableVertex newVertex = context.getDatabase().newVertex(newTypeName);
+    final MutableVertex newVertex = context.getDatabase().newVertex(newTypeName);
     for (final String prop : vertex.getPropertyNames())
       newVertex.set(prop, vertex.get(prop));
     newVertex.save();
 
     // Migrate edges
-    for (final com.arcadedb.graph.Edge edge : vertex.getEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT))
-      newVertex.newEdge(edge.getTypeName(), edge.getVertex(com.arcadedb.graph.Vertex.DIRECTION.IN));
-    for (final com.arcadedb.graph.Edge edge : vertex.getEdges(com.arcadedb.graph.Vertex.DIRECTION.IN))
-      edge.getVertex(com.arcadedb.graph.Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex);
+    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
+      newVertex.newEdge(edge.getTypeName(), edge.getVertex(Vertex.DIRECTION.IN));
+    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+      edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex);
 
     vertex.delete();
 

@@ -133,10 +133,48 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
 
     // Test HGET - retrieve by index (syntax: HGET <indexName> <key>)
     response = executeCommand(0, "redis", "HGET Person[id] 1");
-    final String docJson = (String) getResultValue(response);
-    final JSONObject doc = new JSONObject(docJson);
+    final JSONArray results = response.getJSONArray("result");
+    assertThat(results.length()).isEqualTo(1);
+    final JSONObject doc = results.getJSONObject(0);
     assertThat(doc.getInt("id")).isEqualTo(1);
     assertThat(doc.getString("name")).isEqualTo("John");
+  }
+
+  @Test
+  void hGetReturnsConsistentFormatWithSQL() throws Exception {
+    // Issue #3470: Redis HGET should return documents in the same format as SQL/OpenCypher
+    // i.e. {"result": [{"@rid":"...","@type":"...","id":1}]}
+    // NOT  {"result": [{"value": "{\"@rid\":\"...\",\"id\":1}"}]}
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    database.command("sql", "CREATE VERTEX TYPE doc");
+    database.command("sql", "CREATE PROPERTY doc.id LONG");
+    database.command("sql", "CREATE INDEX ON doc (id) UNIQUE");
+    database.command("sql", "INSERT INTO doc SET id = 1");
+
+    // Query via SQL
+    final JSONObject sqlResponse = executeQuery(0, "sql", "SELECT FROM doc WHERE id = 1");
+    final JSONArray sqlResults = sqlResponse.getJSONArray("result");
+    assertThat(sqlResults.length()).isEqualTo(1);
+    final JSONObject sqlDoc = sqlResults.getJSONObject(0);
+
+    // Query via Redis HGET
+    final JSONObject redisResponse = executeQuery(0, "redis", "HGET doc[id] 1");
+    final JSONArray redisResults = redisResponse.getJSONArray("result");
+    assertThat(redisResults.length()).isEqualTo(1);
+    final JSONObject redisDoc = redisResults.getJSONObject(0);
+
+    // Both should have the same structure: document properties at the top level, not wrapped in "value"
+    assertThat(redisDoc.has("@rid")).isTrue();
+    assertThat(redisDoc.has("@type")).isTrue();
+    assertThat(redisDoc.getLong("id")).isEqualTo(1L);
+
+    // Should NOT have a "value" wrapper
+    assertThat(redisDoc.has("value")).isFalse();
+
+    // Should match SQL result structure
+    assertThat(redisDoc.getString("@rid")).isEqualTo(sqlDoc.getString("@rid"));
+    assertThat(redisDoc.getString("@type")).isEqualTo(sqlDoc.getString("@type"));
   }
 
   @Test
@@ -389,6 +427,131 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
       return number.longValue();
     }
     return Long.parseLong(value.toString());
+  }
+
+  @Test
+  void hGetNoResultReturnsEmptyArray() throws Exception {
+    // Issue #3470 comment: Redis HGET for non-existing key should return {"result":[]}
+    // consistent with SQL/OpenCypher, not {"result":[{"value":null}]}
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    database.command("sql", "CREATE VERTEX TYPE doc2");
+    database.command("sql", "CREATE PROPERTY doc2.id LONG");
+    database.command("sql", "CREATE INDEX ON doc2 (id) UNIQUE");
+    database.command("sql", "INSERT INTO doc2 SET id = 1");
+
+    // Query for a non-existing key via Redis HGET
+    final JSONObject redisResponse = executeQuery(0, "redis", "HGET doc2[id] 999");
+    final JSONArray redisResults = redisResponse.getJSONArray("result");
+    assertThat(redisResults.length()).isEqualTo(0);
+
+    // Compare with SQL for a non-existing record
+    final JSONObject sqlResponse = executeQuery(0, "sql", "SELECT FROM doc2 WHERE id = 999");
+    final JSONArray sqlResults = sqlResponse.getJSONArray("result");
+    assertThat(sqlResults.length()).isEqualTo(0);
+  }
+
+  @Test
+  void nonIdempotentCommandsRejectedOnQueryEndpoint() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    // Create schema for persistent commands
+    database.command("sql", "CREATE DOCUMENT TYPE doc");
+    database.command("sql", "CREATE PROPERTY doc.id LONG");
+    database.command("sql", "CREATE INDEX ON doc (id) UNIQUE");
+
+    // Insert a document via command endpoint (should work)
+    JSONObject response = executeCommand(0, "redis", "HSET doc {\"id\":1}");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+
+    // Read-only commands via query endpoint should work
+    response = executeQuery(0, "redis", "PING");
+    assertThat(getResultValue(response)).isEqualTo("PONG");
+
+    response = executeQuery(0, "redis", "HGET doc[id] 1");
+    assertThat(response.getJSONArray("result").length()).isEqualTo(1);
+    assertThat(response.getJSONArray("result").getJSONObject(0).has("@rid")).isTrue();
+
+    response = executeQuery(0, "redis", "HEXISTS doc[id] 1");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+
+    // Non-idempotent commands via query endpoint should be rejected
+    final String expectedError = "Non-idempotent Redis command";
+
+    // HSET on query endpoint
+    try {
+      executeQuery(0, "redis", "HSET doc {\"id\":2}");
+      fail("HSET should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // HDEL on query endpoint
+    try {
+      executeQuery(0, "redis", "HDEL doc[id] 1");
+      fail("HDEL should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // SET on query endpoint
+    try {
+      executeQuery(0, "redis", "SET mykey myvalue");
+      fail("SET should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // INCR on query endpoint
+    try {
+      executeQuery(0, "redis", "INCR counter");
+      fail("INCR should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // GETDEL on query endpoint
+    try {
+      executeQuery(0, "redis", "GETDEL somekey");
+      fail("GETDEL should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // Verify the document with id=2 was NOT created (HSET was rejected)
+    response = executeQuery(0, "redis", "HEXISTS doc[id] 2");
+    assertThat(getResultValueAsInt(response)).isEqualTo(0);
+
+    // Verify the document with id=1 still exists (HDEL was rejected)
+    response = executeQuery(0, "redis", "HEXISTS doc[id] 1");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+  }
+
+  protected JSONObject executeQuery(final int serverIndex, final String language, final String command) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + getDatabaseName()).openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject();
+    request.put("language", language);
+    request.put("command", command);
+
+    try (OutputStream os = connection.getOutputStream()) {
+      os.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    final int responseCode = connection.getResponseCode();
+    if (responseCode != 200) {
+      final String error = new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+      throw new RuntimeException("HTTP " + responseCode + ": " + error);
+    }
+
+    final String response = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    return new JSONObject(response);
   }
 
   protected JSONObject executeCommand(final int serverIndex, final String language, final String command) throws Exception {

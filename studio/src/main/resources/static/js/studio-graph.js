@@ -46,13 +46,10 @@ var globalEnableElementPanel = true;
 var globalGraphSettings = {
   graphSpacing: 50,
   cumulativeSelection: false,
+  nodeSize: 25,
+  defaultLabel: "",
   types: {},
 };
-
-function toggleSidebar() {
-  $("#graphPropertiesPanel").toggleClass("collapsed");
-  $("#graphMainPanel").toggleClass("col-md-12 col-md-9");
-}
 
 function importGraph(format) {
   var html = "<center><h5>Copy below the " + format.toUpperCase() + " of the graph to import or upload a file</h5>";

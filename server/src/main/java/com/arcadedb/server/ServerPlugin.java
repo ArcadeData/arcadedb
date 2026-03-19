@@ -48,4 +48,8 @@ public interface ServerPlugin {
   default PluginInstallationPriority getInstallationPriority() {
     return BEFORE_HTTP_ON;
   }
+
+  default boolean isActive() {
+    return true;
+  }
 }

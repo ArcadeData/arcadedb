@@ -26,6 +26,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpHandler;
@@ -100,13 +101,26 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           if (auth.startsWith(AUTHORIZATION_BEARER)) {
             // Bearer token authentication
             final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
-            final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
-            if (authSession == null) {
-              exchange.setStatusCode(401);
-              sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
-              return;
+
+            if (ApiTokenConfiguration.isApiToken(token)) {
+              // API token authentication (at- prefix)
+              try {
+                user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
+              } catch (final ServerSecurityException ex) {
+                exchange.setStatusCode(401);
+                sendErrorResponse(exchange, 401, "Invalid or expired API token", null, null);
+                return;
+              }
+            } else {
+              // Session token authentication (AU- prefix)
+              final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
+              if (authSession == null) {
+                exchange.setStatusCode(401);
+                sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
+                return;
+              }
+              user = authSession.getUser();
             }
-            user = authSession.getUser();
 
           } else if (auth.startsWith(AUTHORIZATION_BASIC)) {
             // Basic authentication
@@ -139,7 +153,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       JSONObject payload = null;
       if (mustExecuteOnWorkerThread()) {
         final String payloadAsString = parseRequestPayload(exchange);
-        if (payloadAsString != null && !payloadAsString.isBlank())
+        if (requiresJsonPayload() && payloadAsString != null && !payloadAsString.isBlank())
           try {
             payload = new JSONObject(payloadAsString.trim());
           } catch (Exception e) {
@@ -153,6 +167,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
     } catch (final ServerSecurityException e) {
       // PASS SecurityException TO THE CLIENT
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+              SecurityException.class.getSimpleName(), e.getMessage());
+      sendErrorResponse(exchange, 403, "Security error", e, null);
+    } catch (final SecurityException e) {
       LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
               SecurityException.class.getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 403, "Security error", e, null);
@@ -176,6 +194,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                       e.getMessage());
       sendErrorResponse(exchange, 404, "Record not found", e, null);
+    } catch (final QueryNotIdempotentException e) {
+      LogManager.instance()
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
+      sendErrorResponse(exchange, 400, "Query is not idempotent", e, null);
     } catch (final IllegalArgumentException e) {
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
@@ -186,20 +209,53 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
+      if (realException instanceof QueryNotIdempotentException) {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 400, "Query is not idempotent", realException, null);
+      } else if (realException instanceof SecurityException) {
+        LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+                SecurityException.class.getSimpleName(), realException.getMessage());
+        sendErrorResponse(exchange, 403, "Security error", realException, null);
+      } else {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        e.getMessage());
+        sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
+      }
     } catch (final TransactionException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
+      if (realException instanceof SecurityException) {
+        LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on transaction execution (%s): %s",
+                SecurityException.class.getSimpleName(), realException.getMessage());
+        sendErrorResponse(exchange, 403, "Security error", realException, null);
+      } else if (realException instanceof QueryNotIdempotentException) {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 400, "Query is not idempotent", realException, null);
+      } else {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
+                        e.getMessage());
+        sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
+      }
     } catch (final Throwable e) {
+      // Check if a SecurityException is wrapped at any depth
+      Throwable cause = e;
+      while (cause != null) {
+        if (cause instanceof SecurityException) {
+          LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+                  SecurityException.class.getSimpleName(), cause.getMessage());
+          sendErrorResponse(exchange, 403, "Security error", cause, null);
+          return;
+        }
+        cause = cause.getCause();
+      }
       LogManager.instance()
               .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
@@ -219,6 +275,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return httpServer.getServer().getSecurity().authenticate(userName, userPassword, null);
   }
 
+  /**
+   * Ensures only the root user can execute server administration commands.
+   * API token-authenticated users have synthetic names like "apitoken:&lt;name&gt;" and will
+   * always fail this check — this is intentional, as token management requires root credentials.
+   */
   protected void checkRootUser(ServerSecurityUser user) {
     if (!"root".equals(user.getName()))
       throw new ServerSecurityException("Only root user is authorized to execute server commands");
@@ -248,6 +309,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected boolean mustExecuteOnWorkerThread() {
     return false;
+  }
+
+  protected boolean requiresJsonPayload() {
+    return true;
   }
 
   protected String encodeError(final String message) {

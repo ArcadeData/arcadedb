@@ -60,14 +60,17 @@ public class Issue3075PropertyPathValidationTest extends TestHelper {
     // Insert test data
     database.transaction(() -> {
       database.command("sql",
-          "INSERT INTO Product SET `product-id` = 1, `category-name` = 'Electronics', " +
-          "tags = [{'@type':'Tag', 'tag-id': 100, 'tag-name': 'new'}, {'@type':'Tag', 'tag-id': 101, 'tag-name': 'featured'}]");
+          """
+          INSERT INTO Product SET `product-id` = 1, `category-name` = 'Electronics', \
+          tags = [{'@type':'Tag', 'tag-id': 100, 'tag-name': 'new'}, {'@type':'Tag', 'tag-id': 101, 'tag-name': 'featured'}]""");
       database.command("sql",
-          "INSERT INTO Product SET `product-id` = 2, `category-name` = 'Books', " +
-          "tags = [{'@type':'Tag', 'tag-id': 100, 'tag-name': 'new'}, {'@type':'Tag', 'tag-id': 102, 'tag-name': 'bestseller'}]");
+          """
+          INSERT INTO Product SET `product-id` = 2, `category-name` = 'Books', \
+          tags = [{'@type':'Tag', 'tag-id': 100, 'tag-name': 'new'}, {'@type':'Tag', 'tag-id': 102, 'tag-name': 'bestseller'}]""");
       database.command("sql",
-          "INSERT INTO Product SET `product-id` = 3, `category-name` = 'Clothing', " +
-          "tags = [{'@type':'Tag', 'tag-id': 103, 'tag-name': 'sale'}]");
+          """
+          INSERT INTO Product SET `product-id` = 3, `category-name` = 'Clothing', \
+          tags = [{'@type':'Tag', 'tag-id': 103, 'tag-name': 'sale'}]""");
     });
 
     database.transaction(() -> {

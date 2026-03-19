@@ -1,36 +1,266 @@
-<div class="modal fade" id="loginPopup" tabindex="-1" role="dialog" aria-labelledby="loginPopupLabel" aria-hidden="true">
-  <div class="modal-dialog" role="document">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="loginPopupLabel">Login to the server</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+<!-- Login Page (replaces modal popup) -->
+<div id="loginPage" style="display: none;">
+  <div class="login-page">
+
+    <!-- Left: Branding Panel -->
+    <div class="login-brand-panel">
+      <canvas id="loginNetworkCanvas" class="login-network-canvas"></canvas>
+      <div class="login-brand-overlay"></div>
+
+      <div class="login-brand-content">
+        <div class="login-brand-logo">
+          <a href="https://arcadedb.com" target="_blank" rel="noopener noreferrer">
+            <img src="images/arcadedb-logo-small.png" alt="ArcadeDB" />
+          </a>
+        </div>
+
+        <h1 class="login-brand-headline">The Next Generation<br/>Multi-Model DBMS</h1>
+        <p class="login-brand-sub">One database. Every data model. Extreme performance.</p>
+
+        <div class="login-features">
+          <div class="login-feature-pill"><i class="fa fa-diagram-project"></i> Graph</div>
+          <div class="login-feature-pill"><i class="fa fa-file-lines"></i> Document</div>
+          <div class="login-feature-pill"><i class="fa fa-key"></i> Key/Value</div>
+          <div class="login-feature-pill"><i class="fa fa-magnifying-glass"></i> Search</div>
+          <div class="login-feature-pill"><i class="fa fa-chart-line"></i> Time Series</div>
+          <div class="login-feature-pill"><i class="fa fa-cube"></i> Vector</div>
+        </div>
+
+        <div class="login-brand-stats">
+          <div class="login-stat">
+            <div class="login-stat-value">6</div>
+            <div class="login-stat-label">Data Models</div>
+          </div>
+          <div class="login-stat-divider"></div>
+          <div class="login-stat">
+            <div class="login-stat-value">5+</div>
+            <div class="login-stat-label">Query Languages</div>
+          </div>
+          <div class="login-stat-divider"></div>
+          <div class="login-stat">
+            <div class="login-stat-value">ACID</div>
+            <div class="login-stat-label">Transactions</div>
+          </div>
+        </div>
       </div>
-      <div class="container-fluid">
-        <div class="row" id="loginForm">
-          <div class="col-sm-9 col-md-7 col-lg-12">
-            <div class="main-card mb-3 card">
-              <div class="card-body">
-                <div class="form-signin">
-                  <div class="form-label-group">
-                    <input type="email" id="inputUserName" class="form-control" placeholder="User Name" autocomplete="username" required autofocus />
-                    <label for="inputUserName">User Name</label>
-                  </div>
 
-                  <div class="form-label-group">
-                    <input type="password" id="inputUserPassword" class="form-control" placeholder="Password" autocomplete="current-password" required />
-                    <label for="inputUserPassword">Password</label>
-                  </div>
+      <div class="login-brand-footer">
+        <div class="login-brand-links">
+          <a href="https://docs.arcadedb.com" target="_blank" rel="noopener noreferrer" class="login-brand-link">
+            <i class="fa fa-book"></i> Docs
+          </a>
+          <span class="login-brand-link-sep">&middot;</span>
+          <a href="https://discord.gg/NEVx3bSh" target="_blank" rel="noopener noreferrer" class="login-brand-link">
+            <i class="fa-brands fa-discord"></i> Discord
+          </a>
+          <span class="login-brand-link-sep">&middot;</span>
+          <a href="https://github.com/ArcadeData/arcadedb/issues" target="_blank" rel="noopener noreferrer" class="login-brand-link">
+            <i class="fa-brands fa-github"></i> Issues
+          </a>
+        </div>
+        <div class="login-brand-copyright">
+          Copyright &copy; 2021-present Arcade Data Ltd &middot; Apache 2.0 License
+        </div>
+      </div>
+    </div>
 
-                  <button onclick="login()" class="btn btn-lg btn-primary w-100" type="submit">
-                    Sign in
-                    <img id="loginSpinner" class="ui-loading" src="images/color-spin-small.svg" style="display: none" />
-                  </button>
-                </div>
-              </div>
+    <!-- Right: Login Form Panel -->
+    <div class="login-form-panel">
+      <div class="login-form-wrapper">
+        <div class="login-form-header">
+          <div class="login-form-icon">
+            <i class="fa fa-terminal"></i>
+          </div>
+          <h2 class="login-form-title">Welcome to Studio</h2>
+          <p class="login-form-subtitle">Sign in to manage your databases</p>
+        </div>
+
+        <div id="loginForm" class="login-form-fields">
+          <div class="login-field-group">
+            <label for="inputUserName" class="login-field-label">Username</label>
+            <div class="login-field-input-wrap">
+              <i class="fa fa-user login-field-icon"></i>
+              <input type="text" id="inputUserName" class="login-field-input" placeholder="Enter your username" autocomplete="username" required autofocus />
             </div>
           </div>
+
+          <div class="login-field-group">
+            <label for="inputUserPassword" class="login-field-label">Password</label>
+            <div class="login-field-input-wrap">
+              <i class="fa fa-lock login-field-icon"></i>
+              <input type="password" id="inputUserPassword" class="login-field-input" placeholder="Enter your password" autocomplete="current-password" required />
+            </div>
+          </div>
+
+          <button onclick="login()" class="login-submit-btn" type="button">
+            <span class="login-submit-text">Sign In</span>
+            <i class="fa fa-arrow-right login-submit-arrow"></i>
+            <img id="loginSpinner" class="login-submit-spinner" src="images/color-spin-small.svg" style="display: none" />
+          </button>
+        </div>
+
+        <div class="login-form-footer">
+          <div class="login-form-footer-line"></div>
+          <span class="login-form-footer-text">ArcadeDB Studio</span>
+          <div class="login-form-footer-line"></div>
         </div>
       </div>
     </div>
   </div>
 </div>
+
+<script>
+// Animated network graph canvas for login page
+(function() {
+  var nodes = [];
+  var edges = [];
+  var canvas, ctx;
+  var animFrame;
+  var isRunning = false;
+  var NODE_COUNT = 50;
+  var CONNECT_DIST = 160;
+  var mouseX = -1000, mouseY = -1000;
+
+  function initNetwork() {
+    canvas = document.getElementById('loginNetworkCanvas');
+    if (!canvas) return;
+    ctx = canvas.getContext('2d');
+    resize();
+    createNodes();
+    isRunning = true;
+    animate();
+
+    canvas.parentElement.addEventListener('mousemove', function(e) {
+      var rect = canvas.getBoundingClientRect();
+      mouseX = e.clientX - rect.left;
+      mouseY = e.clientY - rect.top;
+    });
+
+    canvas.parentElement.addEventListener('mouseleave', function() {
+      mouseX = -1000;
+      mouseY = -1000;
+    });
+
+    window.addEventListener('resize', function() {
+      if (isRunning) resize();
+    });
+  }
+
+  function resize() {
+    if (!canvas || !canvas.parentElement) return;
+    var dpr = window.devicePixelRatio || 1;
+    var rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    ctx.scale(dpr, dpr);
+  }
+
+  function createNodes() {
+    nodes = [];
+    var w = canvas.parentElement.offsetWidth;
+    var h = canvas.parentElement.offsetHeight;
+    for (var i = 0; i < NODE_COUNT; i++) {
+      nodes.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.4,
+        vy: (Math.random() - 0.5) * 0.4,
+        r: Math.random() * 2 + 1.5,
+        pulse: Math.random() * Math.PI * 2
+      });
+    }
+  }
+
+  function animate() {
+    if (!isRunning) return;
+    var w = canvas.parentElement.offsetWidth;
+    var h = canvas.parentElement.offsetHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    // Update positions
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      n.x += n.vx;
+      n.y += n.vy;
+      n.pulse += 0.015;
+
+      // Mouse repulsion
+      var dx = n.x - mouseX;
+      var dy = n.y - mouseY;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 120 && dist > 0) {
+        var force = (120 - dist) / 120 * 0.8;
+        n.vx += (dx / dist) * force;
+        n.vy += (dy / dist) * force;
+      }
+
+      // Damping
+      n.vx *= 0.995;
+      n.vy *= 0.995;
+
+      // Boundaries
+      if (n.x < 0) { n.x = 0; n.vx *= -1; }
+      if (n.x > w) { n.x = w; n.vx *= -1; }
+      if (n.y < 0) { n.y = 0; n.vy *= -1; }
+      if (n.y > h) { n.y = h; n.vy *= -1; }
+    }
+
+    // Draw edges
+    for (var i = 0; i < nodes.length; i++) {
+      for (var j = i + 1; j < nodes.length; j++) {
+        var dx = nodes[i].x - nodes[j].x;
+        var dy = nodes[i].y - nodes[j].y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < CONNECT_DIST) {
+          var alpha = (1 - dist / CONNECT_DIST) * 0.25;
+          ctx.beginPath();
+          ctx.moveTo(nodes[i].x, nodes[i].y);
+          ctx.lineTo(nodes[j].x, nodes[j].y);
+          ctx.strokeStyle = 'rgba(0, 174, 238, ' + alpha + ')';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Draw nodes
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var glow = 0.4 + Math.sin(n.pulse) * 0.3;
+      var r = n.r + Math.sin(n.pulse) * 0.5;
+
+      // Glow
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r + 3, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0, 174, 238, ' + (glow * 0.15) + ')';
+      ctx.fill();
+
+      // Node
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0, 174, 238, ' + glow + ')';
+      ctx.fill();
+    }
+
+    animFrame = requestAnimationFrame(animate);
+  }
+
+  window.loginNetworkInit = initNetwork;
+
+  window.loginNetworkStop = function() {
+    isRunning = false;
+    if (animFrame) cancelAnimationFrame(animFrame);
+  };
+
+  window.loginNetworkStart = function() {
+    if (!isRunning) {
+      isRunning = true;
+      resize();
+      if (nodes.length === 0) createNodes();
+      animate();
+    }
+  };
+})();
+</script>

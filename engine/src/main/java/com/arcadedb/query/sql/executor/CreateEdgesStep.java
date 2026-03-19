@@ -89,7 +89,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        return (currentBatch < nRecords && (toIterator.hasNext() || (!toList.isEmpty() && fromIter.hasNext())));
+        return (currentBatch < nRecords && currentFrom != null && !toList.isEmpty()
+            && (toIterator.hasNext() || fromIter.hasNext()));
       }
 
       @Override
@@ -102,7 +103,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         if (currentTo == null) {
           loadNextFromTo();
           if (edgeToUpdate != null && !ifNotExists) {
-            System.out.println("edgeToUpdate = " + edgeToUpdate);
             currentTo = null;
             currentBatch++;
             return new UpdatableResult(edgeToUpdate);
@@ -299,7 +299,9 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         currentFrom = vertexOpt.get();
       } else {
         // If no vertex, try to extract @rid property (for projection results) - issue #3315
-        final Object rid = result.getProperty("@rid");
+        Object rid = result.getProperty("@rid");
+        if (rid == null)
+          rid = result.getProperty("rid");
         if (rid != null)
           currentFrom = rid;
         else

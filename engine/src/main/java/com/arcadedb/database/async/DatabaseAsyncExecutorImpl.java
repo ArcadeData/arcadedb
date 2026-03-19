@@ -31,12 +31,14 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
 import java.util.Arrays;
@@ -64,6 +66,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private       long                 checkForStalledQueuesMaxDelay = 5_000;
   private final AtomicLong           transactionCounter            = new AtomicLong();
   private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
+  private final AtomicLong           tsAppendCounter               = new AtomicLong();
 
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
@@ -643,6 +646,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       newEdge(sourceRID.asVertex(true), edgeType, destinationRID, lightWeight, callback, properties);
   }
 
+  @Override
+  public void appendSamples(final String typeName, final long[] timestamps, final Object[]... columnValues) {
+    final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
+    final TimeSeriesEngine engine = tsType.getEngine();
+    final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
+    final int slot = getSlot(shardIdx);
+    scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, timestamps, columnValues), true,
+        backPressurePercentage);
+  }
+
   /**
    * Test only API.
    */
@@ -743,8 +756,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       try {
         onOkCallback.call();
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on invoking onOk() callback for asynchronous operation " +
-            "%s", e, this);
+        LogManager.instance().log(this, Level.SEVERE, """
+            Error on invoking onOk() callback for asynchronous operation \
+            %s""", e, this);
       }
     }
   }

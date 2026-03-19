@@ -94,12 +94,19 @@ statement
     | CREATE VERTEX createVertexBody                 # createVertexStmt
     | CREATE EDGE createEdgeBody                     # createEdgeStmt
     | CREATE TRIGGER createTriggerBody               # createTriggerStmt
+    | CREATE MATERIALIZED VIEW createMaterializedViewBody   # createMaterializedViewStmt
+    | CREATE TIMESERIES TYPE createTimeSeriesTypeBody       # createTimeSeriesTypeStmt
+    | CREATE CONTINUOUS AGGREGATE createContinuousAggregateBody  # createContinuousAggregateStmt
+    | CREATE GRAPH ANALYTICAL VIEW createGraphAnalyticalViewBody  # createGraphAnalyticalViewStmt
 
     // DDL Statements - ALTER variants
     | ALTER TYPE alterTypeBody                       # alterTypeStmt
     | ALTER PROPERTY alterPropertyBody               # alterPropertyStmt
     | ALTER BUCKET alterBucketBody                   # alterBucketStmt
     | ALTER DATABASE alterDatabaseBody               # alterDatabaseStmt
+    | ALTER MATERIALIZED VIEW alterMaterializedViewBody     # alterMaterializedViewStmt
+    | ALTER TIMESERIES TYPE alterTimeSeriesTypeBody        # alterTimeSeriesTypeStmt
+    | ALTER GRAPH ANALYTICAL VIEW alterGraphAnalyticalViewBody  # alterGraphAnalyticalViewStmt
 
     // DDL Statements - DROP variants
     | DROP TYPE dropTypeBody                         # dropTypeStmt
@@ -107,11 +114,23 @@ statement
     | DROP INDEX dropIndexBody                       # dropIndexStmt
     | DROP BUCKET dropBucketBody                     # dropBucketStmt
     | DROP TRIGGER dropTriggerBody                   # dropTriggerStmt
+    | DROP MATERIALIZED VIEW dropMaterializedViewBody       # dropMaterializedViewStmt
+    | DROP CONTINUOUS AGGREGATE dropContinuousAggregateBody # dropContinuousAggregateStmt
+    | DROP GRAPH ANALYTICAL VIEW dropGraphAnalyticalViewBody   # dropGraphAnalyticalViewStmt
 
     // DDL Statements - TRUNCATE variants
     | TRUNCATE TYPE truncateTypeBody                 # truncateTypeStmt
     | TRUNCATE BUCKET truncateBucketBody             # truncateBucketStmt
     | TRUNCATE RECORD truncateRecordBody             # truncateRecordStmt
+
+    // Materialized View Refresh
+    | REFRESH MATERIALIZED VIEW refreshMaterializedViewBody # refreshMaterializedViewStmt
+
+    // Continuous Aggregate Refresh
+    | REFRESH CONTINUOUS AGGREGATE refreshContinuousAggregateBody # refreshContinuousAggregateStmt
+
+    // Graph Analytical View Rebuild
+    | REBUILD GRAPH ANALYTICAL VIEW rebuildGraphAnalyticalViewBody # rebuildGraphAnalyticalViewStmt
 
     // Index Management
     | rebuildIndexStatement                          # rebuildIndexStmt
@@ -420,6 +439,51 @@ createTypeBody
     ;
 
 /**
+ * CREATE TIMESERIES TYPE body
+ * Example: CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, humidity DOUBLE) SHARDS 4 RETENTION 90 DAYS COMPACTION_INTERVAL 1 HOURS
+ */
+createTimeSeriesTypeBody
+    : identifier
+      (IF NOT EXISTS)?
+      (TIMESTAMP identifier)?
+      (TAGS LPAREN tsTagColumnDef (COMMA tsTagColumnDef)* RPAREN)?
+      (FIELDS LPAREN tsFieldColumnDef (COMMA tsFieldColumnDef)* RPAREN)?
+      (SHARDS INTEGER_LITERAL)?
+      (RETENTION INTEGER_LITERAL (DAYS | HOURS | MINUTES)?)?
+      (COMPACTION_INTERVAL INTEGER_LITERAL (DAYS | HOURS | MINUTES)?)?
+    ;
+
+tsTagColumnDef
+    : identifier identifier
+    ;
+
+tsFieldColumnDef
+    : identifier identifier
+    ;
+
+/**
+ * ALTER TIMESERIES TYPE body - add or drop downsampling policy
+ * Example: ALTER TIMESERIES TYPE SensorData ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS AFTER 30 DAYS GRANULARITY 1 DAYS
+ * Example: ALTER TIMESERIES TYPE SensorData DROP DOWNSAMPLING POLICY
+ */
+alterTimeSeriesTypeBody
+    : identifier ADD DOWNSAMPLING POLICY downsamplingTierClause+
+    | identifier DROP DOWNSAMPLING POLICY
+    ;
+
+downsamplingTierClause
+    : AFTER INTEGER_LITERAL tsTimeUnit GRANULARITY INTEGER_LITERAL tsTimeUnit
+    ;
+
+tsTimeUnit
+    : DAYS
+    | HOURS
+    | MINUTES
+    | HOUR
+    | MINUTE
+    ;
+
+/**
  * CREATE EDGE TYPE body (supports UNIDIRECTIONAL)
  */
 createEdgeTypeBody
@@ -515,7 +579,7 @@ createVertexBody
  * CREATE EDGE statement (instance creation)
  */
 createEdgeBody
-    : identifier?
+    : (identifier (BUCKET identifier)?)?
       FROM fromItem TO fromItem
       (IF NOT EXISTS)?
       (SET updateItem (COMMA updateItem)*)?
@@ -628,6 +692,135 @@ triggerAction
  */
 dropTriggerBody
     : (IF EXISTS)? identifier
+    ;
+
+// ============================================================================
+// DDL STATEMENTS - MATERIALIZED VIEW
+// ============================================================================
+
+/**
+ * CREATE MATERIALIZED VIEW statement
+ * Syntax: CREATE MATERIALIZED VIEW [IF NOT EXISTS] name AS selectStatement [REFRESH MANUAL|INCREMENTAL|EVERY n SECOND|MINUTE|HOUR] [BUCKETS n]
+ */
+createMaterializedViewBody
+    : (IF NOT EXISTS)? identifier
+      AS selectStatement
+      materializedViewRefreshClause?
+      (BUCKETS INTEGER_LITERAL)?
+    ;
+
+materializedViewRefreshClause
+    : REFRESH MANUAL
+    | REFRESH INCREMENTAL
+    | REFRESH EVERY INTEGER_LITERAL materializedViewTimeUnit
+    ;
+
+materializedViewTimeUnit
+    : SECOND | MINUTE | HOUR
+    ;
+
+/**
+ * DROP MATERIALIZED VIEW statement
+ * Syntax: DROP MATERIALIZED VIEW [IF EXISTS] name
+ */
+dropMaterializedViewBody
+    : (IF EXISTS)? identifier
+    ;
+
+/**
+ * REFRESH MATERIALIZED VIEW statement
+ * Syntax: REFRESH MATERIALIZED VIEW name
+ */
+refreshMaterializedViewBody
+    : identifier
+    ;
+
+/**
+ * ALTER MATERIALIZED VIEW statement
+ * Syntax: ALTER MATERIALIZED VIEW name REFRESH ...
+ */
+alterMaterializedViewBody
+    : identifier materializedViewRefreshClause
+    ;
+
+// ============================================================================
+// DDL STATEMENTS - CONTINUOUS AGGREGATE
+// ============================================================================
+
+/**
+ * CREATE CONTINUOUS AGGREGATE statement
+ * Syntax: CREATE CONTINUOUS AGGREGATE [IF NOT EXISTS] name AS selectStatement
+ */
+createContinuousAggregateBody
+    : (IF NOT EXISTS)? identifier
+      AS selectStatement
+    ;
+
+/**
+ * DROP CONTINUOUS AGGREGATE statement
+ * Syntax: DROP CONTINUOUS AGGREGATE [IF EXISTS] name
+ */
+dropContinuousAggregateBody
+    : (IF EXISTS)? identifier
+    ;
+
+/**
+ * REFRESH CONTINUOUS AGGREGATE statement
+ * Syntax: REFRESH CONTINUOUS AGGREGATE name
+ */
+refreshContinuousAggregateBody
+    : identifier
+    ;
+
+// ============================================================================
+// DDL STATEMENTS - GRAPH ANALYTICAL VIEW
+// ============================================================================
+
+/**
+ * CREATE GRAPH ANALYTICAL VIEW statement
+ * Syntax: CREATE GRAPH ANALYTICAL VIEW [IF NOT EXISTS] name
+ *         [VERTEX TYPES (type1, type2, ...)]
+ *         [EDGE TYPES (type1, type2, ...)]
+ *         [PROPERTIES (prop1, prop2, ...)]
+ *         [EDGE PROPERTIES (prop1, prop2, ...)]
+ *         [UPDATE MODE OFF|SYNCHRONOUS|ASYNCHRONOUS]
+ *         [COMPACTION THRESHOLD n]
+ */
+createGraphAnalyticalViewBody
+    : (IF NOT EXISTS)? viewName=identifier
+      (VERTEX TYPES LPAREN vertexTypeList=gavTypeList RPAREN)?
+      (EDGE TYPES LPAREN edgeTypeList=gavTypeList RPAREN)?
+      (PROPERTIES LPAREN propertyList=gavTypeList RPAREN)?
+      (EDGE PROPERTIES LPAREN edgePropertyList=gavTypeList RPAREN)?
+      (UPDATE MODE updateModeName=identifier)?
+      (COMPACTION THRESHOLD INTEGER_LITERAL)?
+    ;
+
+gavTypeList: identifier (COMMA identifier)*;
+
+/**
+ * ALTER GRAPH ANALYTICAL VIEW statement
+ * Syntax: ALTER GRAPH ANALYTICAL VIEW name UPDATE MODE OFF|SYNCHRONOUS|ASYNCHRONOUS
+ *         ALTER GRAPH ANALYTICAL VIEW name COMPACTION THRESHOLD <n>
+ */
+alterGraphAnalyticalViewBody
+    : identifier (UPDATE MODE identifier | COMPACTION THRESHOLD INTEGER_LITERAL)
+    ;
+
+/**
+ * DROP GRAPH ANALYTICAL VIEW statement
+ * Syntax: DROP GRAPH ANALYTICAL VIEW [IF EXISTS] name
+ */
+dropGraphAnalyticalViewBody
+    : (IF EXISTS)? identifier
+    ;
+
+/**
+ * REBUILD GRAPH ANALYTICAL VIEW statement
+ * Syntax: REBUILD GRAPH ANALYTICAL VIEW name
+ */
+rebuildGraphAnalyticalViewBody
+    : identifier
     ;
 
 // ============================================================================
@@ -829,6 +1022,7 @@ fromClause
 
 fromItem
     : rid (COMMA rid)*                                               # fromRids
+    | LBRACKET RBRACKET                                              # fromEmptyArray
     | LBRACKET rid (COMMA rid)* RBRACKET                            # fromRidArray
     | LBRACKET inputParameter (COMMA inputParameter)* RBRACKET      # fromParamArray
     | inputParameter                                                 # fromParam
@@ -926,7 +1120,8 @@ orderBy
     ;
 
 orderByItem
-    : expression orderDirection?
+    : LPAREN expression orderDirection? RPAREN    // OrientDB-style: (expr ASC/DESC)
+    | expression orderDirection?
     ;
 
 /**
@@ -1251,4 +1446,105 @@ identifier
     | INDEX
     | LANGUAGE
     | DOCUMENT
+    | VIEW
+    | REFRESH
+    | EVERY
+    | SECOND
+    | MINUTE
+    | HOUR
+    | MANUAL
+    | INCREMENTAL
+    | MATERIALIZED
+    | CONTINUOUS
+    | AGGREGATE
+    | TIMESERIES
+    | TAGS
+    | FIELDS
+    | RETENTION
+    | COMPACTION_INTERVAL
+    | SHARDS
+    | DAYS
+    | HOURS
+    | MINUTES
+    | DOWNSAMPLING
+    | POLICY
+    | GRANULARITY
+    // Additional keywords allowed as identifiers (matching JavaCC parser)
+    | PROPERTY
+    | BUCKETS
+    | BUCKETSELECTIONSTRATEGY
+    | DATABASE
+    | SUPERTYPE
+    | EXTENDS
+    | ENGINE
+    | ALTER
+    | DROP
+    | TRUNCATE
+    | REBUILD
+    | EXPORT
+    | IMPORT
+    | CHECK
+    | EXPLAIN
+    | MOVE
+    | BEGIN
+    | COMMIT
+    | ROLLBACK
+    | LOCK
+    | SLEEP
+    | CONSOLE
+    | PUT
+    | REMOVE
+    | MERGE
+    | RECORD
+    | TO
+    | OF
+    | OFFSET
+    | WITH
+    | WITHIN
+    | NEAR
+    | MINDEPTH
+    | ON
+    | OFF
+    | OPTIONAL
+    | EXISTS
+    | ELSE
+    | CONTINUE
+    | FAIL
+    | ITEM
+    | ALIASES
+    | ALIGN
+    | EXCEPTION
+    | FIND
+    | ADDBUCKET
+    | REMOVEBUCKET
+    | FORCE
+    | OPTIMIZE
+    | INVERSE
+    | GRANT
+    | REVOKE
+    | READ
+    | EXECUTE
+    | ALL
+    | NONE
+    | FUNCTION
+    | PARAMETERS
+    | ISOLATION
+    | DEPTH_ALIAS
+    | PATH_ALIAS
+    | IDENTIFIED
+    | SYSTEM
+    | UNIDIRECTIONAL
+    // CONTAINS is allowed as an identifier so that dot-path function calls like geo.contains(...)
+    // parse correctly (the parser sees "contains" as the second segment of the identifier chain).
+    // Note: this means CONTAINS cannot be used as a reserved infix operator in future SQL extensions
+    // (e.g. "WHERE tags CONTAINS 'value'") without introducing a grammar conflict. Any such operator
+    // would need a distinct keyword or a separate production rule.
+    | CONTAINS
+    | MODE
+    | GRAPH
+    | ANALYTICAL
+    | AUTO
+    | PROPERTIES
+    | COMPACTION
+    | THRESHOLD
     ;

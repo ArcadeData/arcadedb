@@ -63,11 +63,6 @@ public class CreateEdgeExecutionPlanner {
 
   public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
 
-    if (targetType.getStringValue().startsWith("$")) {
-      String variable = (String) context.getVariable(targetType.getStringValue());
-      targetType = new Identifier(variable);
-    }
-
     if (targetType == null) {
       if (targetBucketName == null) {
         throw new CommandSQLParsingException("Missing target");
@@ -81,6 +76,11 @@ public class CreateEdgeExecutionPlanner {
           throw new CommandSQLParsingException("Missing target");
         }
       }
+    }
+
+    if (targetType.getStringValue().startsWith("$")) {
+      String variable = (String) context.getVariable(targetType.getStringValue());
+      targetType = new Identifier(variable);
     }
 
     final InsertExecutionPlan result = new InsertExecutionPlan(context);

@@ -27,6 +27,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
 
+import com.arcadedb.query.OperationType;
+import com.arcadedb.utility.CollectionUtils;
+
 import java.util.*;
 import java.util.stream.*;
 
@@ -216,6 +219,13 @@ public class UpdateStatement extends Statement {
 
   public WhereClause getWhereClause() {
     return whereClause;
+  }
+
+  @Override
+  public Set<OperationType> getOperationTypes() {
+    if (upsert)
+      return Set.of(OperationType.UPDATE, OperationType.CREATE);
+    return CollectionUtils.singletonSet(OperationType.UPDATE);
   }
 }
 /* JavaCC - OriginalChecksum=093091d7273f1073ad49f2a2bf709a53 (do not edit this line) */

@@ -31,6 +31,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.*;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -124,6 +125,79 @@ public class RemoteSchema implements Schema {
   @Override
   public void dropTrigger(final String triggerName) {
     remoteDatabase.command("sql", "drop trigger `" + triggerName + "`");
+  }
+
+  @Override
+  public boolean existsMaterializedView(final String viewName) {
+    final ResultSet result = remoteDatabase.command("sql",
+        "SELECT FROM schema:materializedViews WHERE name = :name", Map.of("name", viewName));
+    return result.hasNext();
+  }
+
+  @Override
+  public MaterializedView getMaterializedView(final String viewName) {
+    final ResultSet result = remoteDatabase.command("sql",
+        "SELECT FROM schema:materializedViews WHERE name = :name", Map.of("name", viewName));
+    if (result.hasNext())
+      return new RemoteMaterializedView(result.next());
+    throw new SchemaException("Materialized view '" + viewName + "' not found");
+  }
+
+  @Override
+  public MaterializedView[] getMaterializedViews() {
+    final ResultSet result = remoteDatabase.command("sql", "SELECT FROM schema:materializedViews");
+    final List<MaterializedView> views = new ArrayList<>();
+    while (result.hasNext())
+      views.add(new RemoteMaterializedView(result.next()));
+    return views.toArray(new MaterializedView[0]);
+  }
+
+  @Override
+  public void dropMaterializedView(final String viewName) {
+    remoteDatabase.command("sql", "DROP MATERIALIZED VIEW `" + viewName + "`");
+  }
+
+  @Override
+  public void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
+      final long newIntervalMs) {
+    throw new UnsupportedOperationException(
+        "alterMaterializedView() is not supported remotely. Use SQL ALTER MATERIALIZED VIEW instead.");
+  }
+
+  @Override
+  public MaterializedViewBuilder buildMaterializedView() {
+    throw new UnsupportedOperationException(
+        "buildMaterializedView() is not supported remotely. Use SQL CREATE MATERIALIZED VIEW instead.");
+  }
+
+  @Override
+  public boolean existsContinuousAggregate(final String name) {
+    final ResultSet result = remoteDatabase.command("sql",
+        "SELECT FROM schema:continuousaggregates WHERE name = :name", Map.of("name", name));
+    return result.hasNext();
+  }
+
+  @Override
+  public ContinuousAggregate getContinuousAggregate(final String name) {
+    throw new UnsupportedOperationException(
+        "getContinuousAggregate() is not supported remotely. Use SQL SELECT FROM schema:continuousaggregates instead.");
+  }
+
+  @Override
+  public ContinuousAggregate[] getContinuousAggregates() {
+    throw new UnsupportedOperationException(
+        "getContinuousAggregates() is not supported remotely. Use SQL SELECT FROM schema:continuousaggregates instead.");
+  }
+
+  @Override
+  public void dropContinuousAggregate(final String name) {
+    remoteDatabase.command("sql", "DROP CONTINUOUS AGGREGATE `" + name + "`");
+  }
+
+  @Override
+  public ContinuousAggregateBuilder buildContinuousAggregate() {
+    throw new UnsupportedOperationException(
+        "buildContinuousAggregate() is not supported remotely. Use SQL CREATE CONTINUOUS AGGREGATE instead.");
   }
 
   @Override
@@ -310,6 +384,11 @@ public class RemoteSchema implements Schema {
     throw new UnsupportedOperationException();
   }
 
+  @Override
+  public TimeSeriesTypeBuilder buildTimeSeriesType() {
+    throw new UnsupportedOperationException();
+  }
+
   @Deprecated
   @Override
   public DocumentType createDocumentType(String typeName, List<Bucket> buckets) {
@@ -476,6 +555,16 @@ public class RemoteSchema implements Schema {
   @Override
   public FunctionDefinition getFunction(final String libraryName, final String functionName) throws IllegalArgumentException {
     throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public JSONObject getExtension(final String name) {
+    return null;
+  }
+
+  @Override
+  public void setExtension(final String name, final JSONObject value) {
+
   }
 
   @Deprecated

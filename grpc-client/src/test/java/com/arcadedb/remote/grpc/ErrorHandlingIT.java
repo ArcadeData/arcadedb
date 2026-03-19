@@ -177,7 +177,7 @@ class ErrorHandlingIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("Concurrent modification throws ConcurrentModificationException")
-  void concurrentModification_throwsConcurrentModificationException() throws InterruptedException {
+  void concurrentModification_throwsConcurrentModificationException() throws Exception {
     // Insert a record
     database.command("sql", "INSERT INTO `" + TYPE + "` SET id = 'conc1', name = 'original'");
 

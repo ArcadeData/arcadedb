@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -45,6 +46,7 @@ import java.nio.charset.*;
 import java.security.*;
 import java.security.spec.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.*;
 
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
@@ -54,7 +56,7 @@ import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
 
 public class ServerSecurity implements ServerPlugin, SecurityManager {
 
-  public static final  int                             LATEST_VERSION       = 1;
+  public static final  int                             LATEST_VERSION       = 2;
   private final        ArcadeDBServer                  server;
   private final        SecurityUserFileRepository      usersRepository;
   private final        SecurityGroupFileRepository     groupRepository;
@@ -68,6 +70,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private static final SecureRandom                    RANDOM               = new SecureRandom();
   public static final  int                             SALT_SIZE            = 32;
   private              Timer                           reloadConfigurationTimer;
+  private final        ApiTokenConfiguration           apiTokenConfig;
+  private static final int                                MAX_TOKEN_FAILURES   = 5;
+  private static final long                               TOKEN_LOCKOUT_MS     = 30_000;
+  private final        ConcurrentHashMap<String, long[]>  tokenFailures        = new ConcurrentHashMap<>();
+  private              Timer                               tokenFailureCleanupTimer;
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
@@ -90,6 +97,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       }
       return null;
     });
+
+    apiTokenConfig = new ApiTokenConfiguration(configPath);
 
     try {
       secretKeyFactory = SecretKeyFactory.getInstance(algorithm);
@@ -128,6 +137,20 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       if (users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null))
         askForRootPassword();
 
+      apiTokenConfig.load();
+
+      // Schedule periodic cleanup of stale token failure entries
+      if (tokenFailureCleanupTimer == null) {
+        tokenFailureCleanupTimer = new Timer(true);
+        tokenFailureCleanupTimer.schedule(new TimerTask() {
+          @Override
+          public void run() {
+            final long now = System.currentTimeMillis();
+            tokenFailures.entrySet().removeIf(e -> now - e.getValue()[1] > TOKEN_LOCKOUT_MS);
+          }
+        }, TOKEN_LOCKOUT_MS, TOKEN_LOCKOUT_MS);
+      }
+
       final long fileLastModified = usersRepository.getFileLastModified();
       if (fileLastModified > -1 && reloadConfigurationTimer == null) {
         reloadConfigurationTimer = new Timer();
@@ -151,6 +174,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public void stopService() {
     if (reloadConfigurationTimer != null)
       reloadConfigurationTimer.cancel();
+    if (tokenFailureCleanupTimer != null) {
+      tokenFailureCleanupTimer.cancel();
+      tokenFailureCleanupTimer = null;
+    }
 
     users.clear();
     if (groupRepository != null)
@@ -194,7 +221,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return users.get(userName);
   }
 
-  public ServerSecurityUser createUser(final JSONObject userConfiguration) {
+  public synchronized ServerSecurityUser createUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
     if (users.containsKey(name))
       throw new SecurityException("User '" + name + "' already exists");
@@ -205,12 +232,53 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return user;
   }
 
-  public boolean dropUser(final String userName) {
+  public synchronized ServerSecurityUser updateUser(final JSONObject userConfiguration) {
+    final String name = userConfiguration.getString("name");
+    if (!users.containsKey(name))
+      throw new ServerSecurityException("User '" + name + "' not found");
+
+    final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
+    users.put(name, user);
+    saveUsers();
+    return user;
+  }
+
+  public synchronized boolean dropUser(final String userName) {
     if (users.remove(userName) != null) {
       saveUsers();
       return true;
     }
     return false;
+  }
+
+  @Override
+  public Map<String, Object> getUserInfo(final String userName) {
+    final ServerSecurityUser user = users.get(userName);
+    if (user == null)
+      return null;
+    final Map<String, Object> info = new HashMap<>();
+    info.put("name", user.getName());
+    info.put("databases", user.getAuthorizedDatabases());
+    return info;
+  }
+
+  @Override
+  public void createUser(final String name, final String password) {
+    final String encodedPassword = encodePassword(password);
+    final JSONObject config = new JSONObject();
+    config.put("name", name);
+    config.put("password", encodedPassword);
+    config.put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
+    createUser(config);
+  }
+
+  @Override
+  public void setUserPassword(final String userName, final String password) {
+    final ServerSecurityUser user = users.get(userName);
+    if (user == null)
+      throw new ServerSecurityException("User '" + userName + "' not found");
+    user.setPassword(encodePassword(password));
+    saveUsers();
   }
 
   @Override
@@ -327,6 +395,53 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       LogManager.instance()
           .log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityGroupFileRepository.FILE_NAME);
     }
+  }
+
+  public synchronized void saveGroup(final String database, final String name, final JSONObject groupConfig) {
+    final JSONObject root = groupRepository.getGroups().copy();
+    final JSONObject databases = root.getJSONObject("databases");
+
+    if (!databases.has(database))
+      databases.put(database, new JSONObject().put("groups", new JSONObject()));
+
+    final JSONObject dbEntry = databases.getJSONObject(database);
+    if (!dbEntry.has("groups"))
+      dbEntry.put("groups", new JSONObject());
+
+    dbEntry.getJSONObject("groups").put(name, groupConfig);
+
+    root.put("version", LATEST_VERSION);
+    try {
+      groupRepository.save(root);
+    } catch (final IOException e) {
+      throw new ServerSecurityException("Error saving group configuration", e);
+    }
+  }
+
+  public synchronized boolean deleteGroup(final String database, final String name) {
+    final JSONObject root = groupRepository.getGroups().copy();
+    final JSONObject databases = root.getJSONObject("databases");
+
+    if (!databases.has(database))
+      return false;
+
+    final JSONObject dbEntry = databases.getJSONObject(database);
+    if (!dbEntry.has("groups"))
+      return false;
+
+    final JSONObject groups = dbEntry.getJSONObject("groups");
+    if (!groups.has(name))
+      return false;
+
+    groups.remove(name);
+
+    root.put("version", LATEST_VERSION);
+    try {
+      groupRepository.save(root);
+    } catch (final IOException e) {
+      throw new ServerSecurityException("Error saving group configuration", e);
+    }
+    return true;
   }
 
   protected void askForRootPassword() throws IOException {
@@ -448,6 +563,77 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       saveUsers();
     } else
       createUser(new JSONObject().put("name", "root").put("password", encodedPassword));
+  }
+
+  public ApiTokenConfiguration getApiTokenConfiguration() {
+    return apiTokenConfig;
+  }
+
+  public ServerSecurityUser authenticateByApiToken(final String tokenValue) {
+    // Brute-force protection: track failed attempts by token hash prefix.
+    // Check lockout before looking up the token so locked-out attackers are rejected fast.
+    final String attemptKey = ApiTokenConfiguration.hashToken(tokenValue).substring(0, 8);
+    final long now = System.currentTimeMillis();
+
+    final long[] existing = tokenFailures.get(attemptKey);
+    if (existing != null && existing[0] >= MAX_TOKEN_FAILURES && now - existing[1] < TOKEN_LOCKOUT_MS)
+      throw new ServerSecurityException("Too many failed authentication attempts. Try again later.");
+
+    final JSONObject tokenJson = apiTokenConfig.getToken(tokenValue);
+    if (tokenJson == null) {
+      // Token not found: increment failure count atomically.
+      tokenFailures.compute(attemptKey, (k, entry) -> {
+        final long ts = System.currentTimeMillis();
+        if (entry == null)
+          return new long[] { 1, ts };
+        if (ts - entry[1] > TOKEN_LOCKOUT_MS) {
+          entry[0] = 1;
+          entry[1] = ts;
+        } else
+          entry[0]++;
+        return entry;
+      });
+      throw new ServerSecurityException("Invalid or expired API token");
+    }
+
+    // Clear failure count on successful authentication
+    tokenFailures.remove(attemptKey);
+
+    final String database = tokenJson.getString("database");
+    final String tokenName = tokenJson.getString("name");
+    final String tokenHash = tokenJson.getString("tokenHash");
+    final JSONObject permissions = tokenJson.getJSONObject("permissions");
+
+    // Build synthetic group config from token permissions (use hash prefix for collision resistance)
+    final String syntheticGroupName = "_apitoken_" + tokenHash.substring(0, 16);
+    final JSONObject groupDef = new JSONObject();
+
+    // Types permissions
+    if (permissions.has("types"))
+      groupDef.put("types", permissions.getJSONObject("types"));
+    else
+      groupDef.put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray())));
+
+    // Database-level access
+    if (permissions.has("database"))
+      groupDef.put("access", permissions.getJSONArray("database"));
+    else
+      groupDef.put("access", new JSONArray());
+
+    groupDef.put("resultSetLimit", -1L);
+    groupDef.put("readTimeout", -1L);
+
+    final JSONObject syntheticGroupConfig = new JSONObject();
+    syntheticGroupConfig.put(syntheticGroupName, groupDef);
+
+    // Build synthetic user configuration
+    final JSONObject userConfig = new JSONObject();
+    userConfig.put("name", "apitoken:" + tokenName);
+    userConfig.put("databases", new JSONObject().put(database, new JSONArray().put(syntheticGroupName)));
+
+    final ServerSecurityUser user = new ServerSecurityUser(server, userConfig);
+    user.withSyntheticGroupConfig(syntheticGroupConfig);
+    return user;
   }
 
   protected JSONObject getDatabaseGroupsConfiguration(final String databaseName) {

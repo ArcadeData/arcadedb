@@ -75,4 +75,11 @@ public interface CommandContext {
   void setConfiguration(ContextConfiguration configuration);
 
   CommandContext getContextDeclaredVariable(String varName);
+
+  /** Context variable name set to {@code true} when CSR (Graph Analytical View) acceleration was used during execution. */
+  String CSR_ACCELERATED_VAR = "_csrAccelerated";
+
+  /** Context variable set by algorithm procedures to the total number of results they will yield.
+   *  Used by CallStep to optimize count-only queries by skipping per-row Result object creation. */
+  String RESULT_COUNT_HINT_VAR = "_resultCountHint";
 }

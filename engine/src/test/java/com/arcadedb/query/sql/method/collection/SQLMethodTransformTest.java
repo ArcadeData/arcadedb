@@ -45,6 +45,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -61,6 +62,7 @@ import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.BeforeEach;
@@ -190,6 +192,11 @@ class SQLMethodTransformTest {
 
       @Override
       public DatabaseInternal getWrappedDatabaseInstance() {
+        return null;
+      }
+
+      @Override
+      public SecurityManager getSecurity() {
         return null;
       }
 
@@ -387,6 +394,11 @@ class SQLMethodTransformTest {
 
       @Override
       public Select select() {
+        return null;
+      }
+
+      @Override
+      public GraphBatch.Builder batch() {
         return null;
       }
 

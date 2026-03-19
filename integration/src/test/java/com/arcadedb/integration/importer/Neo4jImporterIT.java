@@ -239,7 +239,7 @@ class Neo4jImporterIT {
           assertThat(cityType).isNotNull();
           assertThat(database.countType("City", true)).isEqualTo(1);
 
-          IndexCursor cursor = database.lookupByKey("City_Place", "id", "0");
+          IndexCursor cursor = database.lookupByKey("City~Place", "id", "0");
           assertThat(cursor.hasNext()).isTrue();
           Vertex v = cursor.next().asVertex();
           assertThat(v.get("name")).isEqualTo("Test");

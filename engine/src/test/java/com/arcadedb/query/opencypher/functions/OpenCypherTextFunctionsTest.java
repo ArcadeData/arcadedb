@@ -465,4 +465,360 @@ class OpenCypherTextFunctionsTest {
     assertThat(fn.getMaxArgs()).isEqualTo(2);
     assertThat(fn.getDescription()).contains("Levenshtein");
   }
+
+  // ============ TextSnakeCase tests ============
+
+  @Test
+  void textSnakeCaseBasic() {
+    final TextSnakeCase fn = new TextSnakeCase();
+    assertThat(fn.getName()).isEqualTo("text.snakeCase");
+
+    assertThat(fn.execute(new Object[]{"helloWorld"}, null)).isEqualTo("hello_world");
+    assertThat(fn.execute(new Object[]{"HelloWorld"}, null)).isEqualTo("hello_world");
+    assertThat(fn.execute(new Object[]{"hello-world"}, null)).isEqualTo("hello_world");
+    // Each uppercase letter is treated as a word boundary, so consecutive uppercase letters each get an underscore prefix
+    assertThat(fn.execute(new Object[]{"HELLO_WORLD"}, null)).isEqualTo("h_e_l_l_o_w_o_r_l_d");
+  }
+
+  @Test
+  void textSnakeCaseEdgeCases() {
+    final TextSnakeCase fn = new TextSnakeCase();
+
+    assertThat(fn.execute(new Object[]{null}, null)).isNull();
+    assertThat(fn.execute(new Object[]{""}, null)).isEqualTo("");
+    assertThat(fn.execute(new Object[]{"a"}, null)).isEqualTo("a");
+    assertThat(fn.execute(new Object[]{"ABC"}, null)).isEqualTo("a_b_c");
+  }
+
+  // ============ TextUpperCamelCase tests ============
+
+  @Test
+  void textUpperCamelCaseBasic() {
+    final TextUpperCamelCase fn = new TextUpperCamelCase();
+    assertThat(fn.getName()).isEqualTo("text.upperCamelCase");
+
+    assertThat(fn.execute(new Object[]{"hello world"}, null)).isEqualTo("HelloWorld");
+    assertThat(fn.execute(new Object[]{"hello-world"}, null)).isEqualTo("HelloWorld");
+    assertThat(fn.execute(new Object[]{"HELLO_WORLD"}, null)).isEqualTo("HelloWorld");
+  }
+
+  @Test
+  void textUpperCamelCaseEdgeCases() {
+    final TextUpperCamelCase fn = new TextUpperCamelCase();
+
+    assertThat(fn.execute(new Object[]{null}, null)).isNull();
+    assertThat(fn.execute(new Object[]{""}, null)).isEqualTo("");
+    assertThat(fn.execute(new Object[]{"a"}, null)).isEqualTo("A");
+  }
+
+  // ============ TextSlug tests ============
+
+  @Test
+  void textSlugBasic() {
+    final TextSlug fn = new TextSlug();
+    assertThat(fn.getName()).isEqualTo("text.slug");
+
+    assertThat(fn.execute(new Object[]{"Hello World"}, null)).isEqualTo("hello-world");
+    assertThat(fn.execute(new Object[]{"Hello World!"}, null)).isEqualTo("hello-world");
+  }
+
+  @Test
+  void textSlugWithCustomDelimiter() {
+    final TextSlug fn = new TextSlug();
+
+    assertThat(fn.execute(new Object[]{"Hello World", "_"}, null)).isEqualTo("hello_world");
+  }
+
+  @Test
+  void textSlugNullHandling() {
+    final TextSlug fn = new TextSlug();
+
+    assertThat(fn.execute(new Object[]{null}, null)).isNull();
+  }
+
+  @Test
+  void textSlugUnicode() {
+    final TextSlug fn = new TextSlug();
+
+    // Unicode characters should be normalized and stripped
+    assertThat(fn.execute(new Object[]{"caf\u00e9 latt\u00e9"}, null)).isEqualTo("cafe-latte");
+  }
+
+  // ============ TextLevenshteinSimilarity tests ============
+
+  @Test
+  void textLevenshteinSimilarityBasic() {
+    final TextLevenshteinSimilarity fn = new TextLevenshteinSimilarity();
+    assertThat(fn.getName()).isEqualTo("text.levenshteinSimilarity");
+
+    // Identical strings
+    assertThat((Double) fn.execute(new Object[]{"hello", "hello"}, null)).isCloseTo(1.0, within(0.001));
+
+    // Completely different strings of same length
+    assertThat((Double) fn.execute(new Object[]{"abc", "xyz"}, null)).isCloseTo(0.0, within(0.001));
+
+    // Both empty
+    assertThat((Double) fn.execute(new Object[]{"", ""}, null)).isCloseTo(1.0, within(0.001));
+  }
+
+  @Test
+  void textLevenshteinSimilarityNullHandling() {
+    final TextLevenshteinSimilarity fn = new TextLevenshteinSimilarity();
+
+    assertThat(fn.execute(new Object[]{null, "test"}, null)).isNull();
+    assertThat(fn.execute(new Object[]{"test", null}, null)).isNull();
+  }
+
+  @Test
+  void textLevenshteinSimilarityPartialMatch() {
+    final TextLevenshteinSimilarity fn = new TextLevenshteinSimilarity();
+
+    // "kitten" vs "sitting": distance=3, maxLen=7, similarity=1-3/7=0.571
+    final double result = (Double) fn.execute(new Object[]{"kitten", "sitting"}, null);
+    assertThat(result).isGreaterThan(0.0).isLessThan(1.0);
+  }
+
+  // ============ TextSorensenDiceSimilarity tests ============
+
+  @Test
+  void textSorensenDiceSimilarityBasic() {
+    final TextSorensenDiceSimilarity fn = new TextSorensenDiceSimilarity();
+    assertThat(fn.getName()).isEqualTo("text.sorensenDiceSimilarity");
+
+    // Identical strings
+    assertThat((Double) fn.execute(new Object[]{"hello", "hello"}, null)).isCloseTo(1.0, within(0.001));
+
+    // Both empty
+    assertThat((Double) fn.execute(new Object[]{"", ""}, null)).isCloseTo(1.0, within(0.001));
+  }
+
+  @Test
+  void textSorensenDiceSimilarityNullHandling() {
+    final TextSorensenDiceSimilarity fn = new TextSorensenDiceSimilarity();
+
+    assertThat(fn.execute(new Object[]{null, "test"}, null)).isNull();
+    assertThat(fn.execute(new Object[]{"test", null}, null)).isNull();
+  }
+
+  @Test
+  void textSorensenDiceSimilarityShortStrings() {
+    final TextSorensenDiceSimilarity fn = new TextSorensenDiceSimilarity();
+
+    // Single char strings fall back to equality
+    assertThat((Double) fn.execute(new Object[]{"a", "a"}, null)).isCloseTo(1.0, within(0.001));
+    assertThat((Double) fn.execute(new Object[]{"a", "b"}, null)).isCloseTo(0.0, within(0.001));
+  }
+
+  @Test
+  void textSorensenDiceSimilarityPartialMatch() {
+    final TextSorensenDiceSimilarity fn = new TextSorensenDiceSimilarity();
+
+    final double result = (Double) fn.execute(new Object[]{"night", "nacht"}, null);
+    assertThat(result).isGreaterThan(0.0).isLessThan(1.0);
+  }
+
+  // ============ TextRpad tests ============
+
+  @Test
+  void textRpadBasic() {
+    final TextRpad fn = new TextRpad();
+    assertThat(fn.getName()).isEqualTo("text.rpad");
+
+    assertThat(fn.execute(new Object[]{"test", 8, "0"}, null)).isEqualTo("test0000");
+    assertThat(fn.execute(new Object[]{"test", 4, "0"}, null)).isEqualTo("test");
+    // No truncation when string length >= target length
+    assertThat(fn.execute(new Object[]{"test", 2, "0"}, null)).isEqualTo("test");
+  }
+
+  @Test
+  void textRpadNull() {
+    final TextRpad fn = new TextRpad();
+    assertThat(fn.execute(new Object[]{null, 8, "0"}, null)).isNull();
+  }
+
+  @Test
+  void textRpadNegativeLength() {
+    final TextRpad fn = new TextRpad();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"test", -1, "0"}, null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  // ============ TextRegexReplace tests ============
+
+  @Test
+  void textRegexReplaceBasic() {
+    final TextRegexReplace fn = new TextRegexReplace();
+    assertThat(fn.getName()).isEqualTo("text.regexReplace");
+
+    assertThat(fn.execute(new Object[]{"hello world", "o", "0"}, null)).isEqualTo("hell0 w0rld");
+    assertThat(fn.execute(new Object[]{"abc123def", "[0-9]+", "NUM"}, null)).isEqualTo("abcNUMdef");
+  }
+
+  @Test
+  void textRegexReplaceNullHandling() {
+    final TextRegexReplace fn = new TextRegexReplace();
+
+    assertThat(fn.execute(new Object[]{null, "x", "y"}, null)).isNull();
+    // Null regex returns original string
+    assertThat(fn.execute(new Object[]{"hello", null, "y"}, null)).isEqualTo("hello");
+    // Null replacement treated as empty string
+    assertThat(fn.execute(new Object[]{"hello", "l", null}, null)).isEqualTo("heo");
+  }
+
+  @Test
+  void textRegexReplaceInvalidPattern() {
+    final TextRegexReplace fn = new TextRegexReplace();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"test", "[invalid", "x"}, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid regex pattern");
+  }
+
+  // ============ TextReplace tests ============
+
+  @Test
+  void textReplaceBasic() {
+    final TextReplace fn = new TextReplace();
+    assertThat(fn.getName()).isEqualTo("text.replace");
+
+    assertThat(fn.execute(new Object[]{"hello world", "world", "there"}, null)).isEqualTo("hello there");
+    assertThat(fn.execute(new Object[]{"aaa", "a", "bb"}, null)).isEqualTo("bbbbbb");
+  }
+
+  @Test
+  void textReplaceNullHandling() {
+    final TextReplace fn = new TextReplace();
+
+    assertThat(fn.execute(new Object[]{null, "a", "b"}, null)).isNull();
+    // Null search returns original
+    assertThat(fn.execute(new Object[]{"hello", null, "b"}, null)).isEqualTo("hello");
+    // Null replacement treated as empty string
+    assertThat(fn.execute(new Object[]{"hello", "l", null}, null)).isEqualTo("heo");
+  }
+
+  // ============ Additional edge case tests for existing functions ============
+
+  @Test
+  void textHammingDistanceUnequalLengths() {
+    final TextHammingDistance fn = new TextHammingDistance();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"abc", "ab"}, null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void textByteCountWithCharset() {
+    final TextByteCount fn = new TextByteCount();
+
+    // UTF-16 should produce 2 bytes per ASCII character
+    assertThat((Long) fn.execute(new Object[]{"hello", "UTF-16BE"}, null)).isEqualTo(10L);
+  }
+
+  @Test
+  void textCharAtOutOfBounds() {
+    final TextCharAt fn = new TextCharAt();
+
+    assertThat(fn.execute(new Object[]{"hello", 10}, null)).isNull();
+  }
+
+  @Test
+  void textCodeEmptyString() {
+    final TextCode fn = new TextCode();
+
+    assertThat(fn.execute(new Object[]{""}, null)).isNull();
+  }
+
+  @Test
+  void textHexValueFromByteArray() {
+    final TextHexValue fn = new TextHexValue();
+
+    assertThat(fn.execute(new Object[]{new byte[]{(byte) 0xFF, (byte) 0x00, (byte) 0xAB}}, null))
+        .isEqualTo("ff00ab");
+  }
+
+  @Test
+  void textFormatMultipleArgs() {
+    final TextFormat fn = new TextFormat();
+
+    assertThat(fn.execute(new Object[]{"%s has %d items", "Cart", 5}, null)).isEqualTo("Cart has 5 items");
+  }
+
+  @Test
+  void textCapitalizeAllEmpty() {
+    final TextCapitalizeAll fn = new TextCapitalizeAll();
+    assertThat(fn.execute(new Object[]{""}, null)).isEqualTo("");
+  }
+
+  @Test
+  void textDecapitalizeAllEmpty() {
+    final TextDecapitalizeAll fn = new TextDecapitalizeAll();
+    assertThat(fn.execute(new Object[]{""}, null)).isEqualTo("");
+  }
+
+  @Test
+  void textRandomNull() {
+    final TextRandom fn = new TextRandom();
+    assertThat(fn.execute(new Object[]{null}, null)).isEqualTo("");
+  }
+
+  @Test
+  void textRandomZeroLength() {
+    final TextRandom fn = new TextRandom();
+
+    final String result = (String) fn.execute(new Object[]{0}, null);
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void textLpadNegativeLength() {
+    final TextLpad fn = new TextLpad();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"test", -1, "0"}, null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void textJaroWinklerDistanceEmptyStrings() {
+    final TextJaroWinklerDistance fn = new TextJaroWinklerDistance();
+
+    assertThat((Double) fn.execute(new Object[]{"", "hello"}, null)).isCloseTo(0.0, within(0.001));
+    assertThat((Double) fn.execute(new Object[]{"hello", ""}, null)).isCloseTo(0.0, within(0.001));
+  }
+
+  @Test
+  void textSplitNullDelimiter() {
+    final TextSplit fn = new TextSplit();
+
+    @SuppressWarnings("unchecked")
+    final List<String> result = (List<String>) fn.execute(new Object[]{"abc", null}, null);
+    assertThat(result).containsExactly("a", "b", "c");
+  }
+
+  // ============ Security boundary tests ============
+
+  @Test
+  void textRegexReplacePatternTooLong() {
+    final TextRegexReplace fn = new TextRegexReplace();
+    final String longPattern = "a".repeat(501);
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"test", longPattern, "x"}, null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void textLpadExceedsMaxLength() {
+    final TextLpad fn = new TextLpad();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"", 10_485_761, "x"}, null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void textRpadExceedsMaxLength() {
+    final TextRpad fn = new TextRpad();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"", 10_485_761, "x"}, null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
 }

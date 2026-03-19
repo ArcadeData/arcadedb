@@ -59,7 +59,6 @@ public class PluginManager {
     this.configuration = configuration;
     this.pluginsDirectory = server.getRootPath() + File.separator + "lib" + File.separator + "plugins";
     configuredPlugins = getConfiguredPlugins();
-
   }
 
   private Set<String> getConfiguredPlugins() {
@@ -147,16 +146,17 @@ public class PluginManager {
         descriptor.setPluginInstance(pluginInstance);
 
         String name = pluginInstance.getName();
-        LogManager.instance().log(this, Level.FINE, "Discovered plugin class: %s", name);
+        LogManager.instance().log(this, Level.INFO, "Discovered plugin class: %s", name);
 
         if (plugins.containsKey(name)) {
           LogManager.instance().log(this, Level.WARNING, "Plugin with name '%s' is already loaded, skipping duplicate from %s",
               name, pluginJar.getName());
-          break; // Exit loop - classloader will be closed in finally block
+          continue;
         }
 
-        if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginName) || configuredPlugins.contains(
-            pluginInstance.getClass().getName())) {
+        if (configuredPlugins.contains(name) ||
+            configuredPlugins.contains(pluginName) ||
+            configuredPlugins.contains(pluginInstance.getClass().getName())) {
           // Register the plugin
           plugins.put(name, descriptor);
           classLoaderMap.put(classLoader, descriptor);
@@ -166,7 +166,6 @@ public class PluginManager {
         } else {
           LogManager.instance().log(this, Level.INFO, "Skipping plugin: %s as not registered in configuration", name);
         }
-        break; // Only load the first plugin from each JAR
       }
     } finally {
       if (!registered) {
@@ -203,8 +202,11 @@ public class PluginManager {
           plugin.configure(server, configuration);
           plugin.startService();
 
-          descriptor.setStarted(true);
-          LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
+          if (plugin.isActive()) {
+            descriptor.setStarted(true);
+            LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
+          } else
+            LogManager.instance().log(this, Level.INFO, "- %s plugin configured but not active", pluginName);
 
         } finally {
           currentThread.setContextClassLoader(originalClassLoader);
@@ -294,5 +296,11 @@ public class PluginManager {
    */
   public PluginDescriptor getPluginDescriptor(final String pluginName) {
     return plugins.get(pluginName);
+  }
+
+  public void registerPlugin(final String pluginName, final ServerPlugin pluginInstance) {
+    final PluginDescriptor descriptor = new PluginDescriptor(pluginName, pluginInstance.getClass().getClassLoader());
+    descriptor.setPluginInstance(pluginInstance);
+    plugins.put(pluginName, descriptor);
   }
 }

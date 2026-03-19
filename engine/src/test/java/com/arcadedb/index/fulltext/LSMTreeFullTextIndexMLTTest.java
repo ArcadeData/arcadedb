@@ -71,22 +71,25 @@ class LSMTreeFullTextIndexMLTTest {
     db.transaction(() -> {
       // Java Guide - focuses on Java programming
       MutableDocument doc1 = db.newDocument("Document");
-      doc1.set("content", "Java is a popular programming language. Java is used for enterprise applications. " +
-          "Java has strong typing and object-oriented features. Java runs on the JVM.");
+      doc1.set("content", """
+          Java is a popular programming language. Java is used for enterprise applications. \
+          Java has strong typing and object-oriented features. Java runs on the JVM.""");
       doc1.save();
       javaGuideRID = doc1.getIdentity();
 
       // Python Guide - focuses on Python programming
       MutableDocument doc2 = db.newDocument("Document");
-      doc2.set("content", "Python is a popular programming language. Python is used for data science. " +
-          "Python has dynamic typing and is easy to learn. Python is great for scripting.");
+      doc2.set("content", """
+          Python is a popular programming language. Python is used for data science. \
+          Python has dynamic typing and is easy to learn. Python is great for scripting.""");
       doc2.save();
       pythonGuideRID = doc2.getIdentity();
 
       // Java Database - focuses on Java and databases
       MutableDocument doc3 = db.newDocument("Document");
-      doc3.set("content", "Java database programming uses JDBC. Java applications connect to databases. " +
-          "Java provides excellent database support. Java is widely used in database applications.");
+      doc3.set("content", """
+          Java database programming uses JDBC. Java applications connect to databases. \
+          Java provides excellent database support. Java is widely used in database applications.""");
       doc3.save();
       javaDatabaseRID = doc3.getIdentity();
     });

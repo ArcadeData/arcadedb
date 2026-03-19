@@ -7,6 +7,15 @@
     <title>ArcadeDB - The Next Generation Multi-Model DBMS</title>
     <link rel="shortcut icon" href="images/arcade-favico.png" type="image/png" />
 
+    <!-- Theme init (before CSS to prevent FOUC) -->
+    <script>
+    (function() {
+      var p = localStorage.getItem('studio-theme') || 'light';
+      var t = p === 'system' ? (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light') : p;
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+    </script>
+
     <!-- SECURE NPM-MANAGED CSS DEPENDENCIES -->
     <link rel="stylesheet" href="dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="dist/css/dataTables.bootstrap5.min.css" />
@@ -14,10 +23,14 @@
     <link rel="stylesheet" href="dist/css/responsive.bootstrap5.min.css" />
     <link rel="stylesheet" href="dist/css/select.bootstrap5.min.css" />
     <link rel="stylesheet" href="dist/css/codemirror.css" />
+    <link rel="stylesheet" href="dist/css/show-hint.css" />
     <link rel="stylesheet" href="dist/css/neo.css" />
     <link rel="stylesheet" href="dist/css/fontawesome.min.css" />
     <link rel="stylesheet" href="dist/css/apexcharts.css" />
-    <link rel="stylesheet" href="dist/css/sweetalert2.min.css" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
     <link rel="stylesheet" href="css/studio.css" />
 
@@ -26,14 +39,13 @@
     <script src="dist/js/jquery.min.js"></script>
     <script src="dist/js/bootstrap.bundle.min.js"></script>
 
-    <!-- UI/Notification Libraries -->
-    <script src="dist/js/sweetalert2.all.min.js"></script>
-
     <!-- Code Editor -->
     <script src="dist/js/codemirror.js"></script>
     <script src="dist/js/cypher.js"></script>
     <script src="dist/js/javascript.js"></script>
     <script src="dist/js/sql.js"></script>
+    <script src="dist/js/show-hint.js"></script>
+    <script src="dist/js/sql-hint.js"></script>
 
     <!-- DataTables Export Dependencies -->
     <script src="dist/js/jszip.min.js"></script>
@@ -66,69 +78,63 @@
     <!-- COMPATIBILITY LAYER -->
     <script>
       // Bootstrap 4 → 5 Compatibility Shims
-      // Map old Bootstrap 4 data attributes to Bootstrap 5
       $(document).ready(function() {
-        // Update data-toggle to data-bs-toggle
         $('[data-toggle]').each(function() {
           const toggle = $(this).attr('data-toggle');
           $(this).attr('data-bs-toggle', toggle);
         });
-
-        // Update data-dismiss to data-bs-dismiss
         $('[data-dismiss]').each(function() {
           const dismiss = $(this).attr('data-dismiss');
           $(this).attr('data-bs-dismiss', dismiss);
         });
       });
 
-      // Initialize SweetAlert2 Toast (replacement for Notyf)
-      let Toast = null;
-      let notificationQueue = [];
-      let isToastReady = false;
+      // Notification system using Bootstrap Toasts
+      var isToastReady = false;
+      var notificationQueue = [];
 
       document.addEventListener('DOMContentLoaded', function() {
-        // Initialize SweetAlert2 Toast mixin
-        Toast = Swal.mixin({
-          toast: true,
-          position: 'top-end',
-          showConfirmButton: false,
-          timer: 4000,
-          timerProgressBar: true,
-          didOpen: (toast) => {
-            toast.onmouseenter = Swal.stopTimer;
-            toast.onmouseleave = Swal.resumeTimer;
-          }
-        });
-
-        // Mark as ready and process queued notifications
         isToastReady = true;
         processNotificationQueue();
       });
 
       function processNotificationQueue() {
         while (notificationQueue.length > 0 && isToastReady) {
-          const notification = notificationQueue.shift();
-          showNotification(notification.title, notification.message, notification.type);
+          var n = notificationQueue.shift();
+          showNotification(n.title, n.message, n.type);
         }
       }
 
       function showNotification(title, message, type) {
-        const icon = (type === 'danger' || type === 'error') ? 'error' : 'success';
-        Toast.fire({
-          icon: icon,
-          title: title || '',
-          text: message
-        });
+        var container = document.getElementById('toastContainer');
+        if (!container) return;
+
+        var isError = (type === 'danger' || type === 'error');
+        var iconClass = isError ? 'fa-circle-exclamation' : (type === 'warning' ? 'fa-triangle-exclamation' : 'fa-circle-check');
+        var iconColor = isError ? '#dc3545' : (type === 'warning' ? '#ffc107' : '#28a745');
+
+        var toastEl = document.createElement('div');
+        toastEl.className = 'toast studio-toast';
+        toastEl.setAttribute('role', 'alert');
+        toastEl.innerHTML =
+          '<div class="toast-header">' +
+            '<i class="fa ' + iconClass + ' me-2" style="color:' + iconColor + '"></i>' +
+            '<strong class="me-auto">' + (title || '') + '</strong>' +
+            '<button type="button" class="btn-close" data-bs-dismiss="toast"></button>' +
+          '</div>' +
+          '<div class="toast-body">' + (message || '') + '</div>';
+
+        container.appendChild(toastEl);
+        var toast = new bootstrap.Toast(toastEl, { delay: 3500 });
+        toast.show();
+        toastEl.addEventListener('hidden.bs.toast', function() { toastEl.remove(); });
       }
 
-      // Global compatibility function for notifications
       function globalNotify(title, message, type) {
         if (!isToastReady) {
-          // Queue notification for later processing
-          notificationQueue.push({ title, message, type });
+          notificationQueue.push({ title: title, message: message, type: type });
           return;
         }
-
         showNotification(title, message, type);
       }
     </script>
@@ -136,32 +142,29 @@
     <script src="js/studio-utils.js"></script>
     <script src="js/studio-database.js"></script>
     <script src="js/studio-server.js"></script>
+    <script src="js/studio-profiler.js"></script>
+    <script src="js/studio-security.js"></script>
     <script src="js/studio-cluster.js"></script>
     <script src="js/studio-table.js"></script>
     <script src="js/studio-graph.js"></script>
     <script src="js/studio-graph-widget.js"></script>
     <script src="js/studio-graph-functions.js"></script>
+    <script src="js/studio-record-editor.js"></script>
+    <script src="js/studio-timeseries.js"></script>
+    <script src="dist/js/marked.min.js"></script>
+    <script src="js/studio-ai.js"></script>
   </head>
   <body>
-    <div class="container" id="welcomePanel">
-      <div class="row" style="height: 400px"></div>
+    <div id="welcomePanel" style="display: none;"></div>
 
-      <div class="row">
-        <div class="col-12 text-center">
-          <img src="images/arcadedb-logo-small.png" />
-          <br /><br />
-        </div>
-      </div>
-    </div>
-
-    <div id="studioPanel" class="card-hover-shadow-2x mb-3 card" style="display: none">
+    <div id="studioPanel" class="card-hover-shadow-2x card" style="display: none">
       <div class="card-header-tab card-header">
         <div class="row">
-          <div class="col-1">
-            <ul class="nav nav-tabs flex-column" id="tabs" style="height: 100%; background-color: white">
-              <li class="nav-item text-center" style="padding: 5px 0px"><img src="images/arcadedb-logo-mini.png" style="width: 100%" /></li>
+          <div class="col-1" id="sidebar-col">
+            <ul class="nav nav-tabs flex-column" id="tabs" style="height: 100%">
+              <li class="nav-item text-center" style="padding: 8px 6px"><img src="images/arcadedb-logo-square.png" style="width: 80%" /></li>
               <li class="nav-item pt-3">
-                <a data-bs-toggle="tab" href="#tab-query" class="vertical-tab nav-link active show" id="tab-query-sel">
+                <a data-bs-toggle="tab" href="#tab-query" class="vertical-tab nav-link active show" id="tab-query-sel" title="Query">
                   <center>
                     <i class="fa fa-terminal" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Query</div>
@@ -169,7 +172,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-database" class="vertical-tab nav-link" id="tab-database-sel">
+                <a data-bs-toggle="tab" href="#tab-database" class="vertical-tab nav-link" id="tab-database-sel" title="Database">
                   <center>
                     <i class="fa fa-database" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Database</div>
@@ -177,7 +180,15 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-server" class="vertical-tab nav-link" id="tab-server-sel">
+                <a data-bs-toggle="tab" href="#tab-timeseries" class="vertical-tab nav-link" id="tab-timeseries-sel" title="TimeSeries">
+                  <center>
+                    <i class="fa fa-chart-line" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">TimeSeries</div>
+                  </center>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-bs-toggle="tab" href="#tab-server" class="vertical-tab nav-link" id="tab-server-sel" title="Server">
                   <center>
                     <i class="fa fa-server" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Server</div>
@@ -185,7 +196,23 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-cluster" class="vertical-tab nav-link" id="tab-cluster-sel">
+                <a data-bs-toggle="tab" href="#tab-profiler" class="vertical-tab nav-link" id="tab-profiler-sel" title="Profiler">
+                  <center>
+                    <i class="fa fa-tachometer-alt" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">Profiler</div>
+                  </center>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-bs-toggle="tab" href="#tab-security" class="vertical-tab nav-link" id="tab-security-sel" title="Security">
+                  <center>
+                    <i class="fa fa-shield-alt" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">Security</div>
+                  </center>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-bs-toggle="tab" href="#tab-cluster" class="vertical-tab nav-link" id="tab-cluster-sel" title="Cluster">
                   <center>
                     <i class="fa fa-network-wired" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Cluster</div>
@@ -193,7 +220,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-api" class="vertical-tab nav-link" id="tab-api-sel">
+                <a data-bs-toggle="tab" href="#tab-api" class="vertical-tab nav-link" id="tab-api-sel" title="API">
                   <center>
                     <i class="fa fa-plug" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">API</div>
@@ -201,7 +228,7 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-resources" class="vertical-tab nav-link" id="tab-resources-sel">
+                <a data-bs-toggle="tab" href="#tab-resources" class="vertical-tab nav-link" id="tab-resources-sel" title="Info">
                   <center>
                     <i class="fa fa-info-circle" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Info</div>
@@ -209,10 +236,31 @@
                 </a>
               </li>
               <li class="nav-item">
+                <a data-bs-toggle="tab" href="#tab-ai" class="vertical-tab nav-link" id="tab-ai-sel" title="AI">
+                  <center>
+                    <i class="fa fa-robot" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">AI</div>
+                  </center>
+                </a>
+              </li>
+              <!-- Spacer pushes Settings + Logout to bottom -->
+              <li style="flex: 1;"></li>
+              <!-- Settings -->
+              <li class="nav-item" style="border-top: 1px solid var(--border-main);">
+                <a data-bs-toggle="tab" href="#tab-settings" class="vertical-tab nav-link" id="tab-settings-sel" title="Settings">
+                  <center>
+                    <i class="fa fa-gear" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">Settings</div>
+                  </center>
+                </a>
+              </li>
+              <!-- Logout (pinned bottom) -->
+              <li class="nav-item">
                 <a
                   href="javascript:logout()"
                   class="vertical-tab nav-link"
                   id="logout-sel"
+                  title="Logout"
                 >
                   <center>
                     <i class="fa fa-power-off" style="font-size: 1.5rem;"></i>
@@ -225,7 +273,7 @@
 
           <div class="col-11">
             <div class="tab-content">
-              ${include:query.html} ${include:database.html} ${include:server.html} ${include:cluster.html} ${include:api.html} ${include:resources.html}
+              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:server.html} ${include:profiler.html} ${include:security.html} ${include:cluster.html} ${include:ai.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
             </div>
           </div>
         </div>
@@ -242,15 +290,32 @@
         </div>
       </div>
     </div>
-    ${include:popup-login.html}
 
-    <div style="text-align: center; vertical-align: bottom">Copyright 2021-present <a href="https://arcadedb.com" rel="nofollow">Arcade Data Ltd</a></div>
+    <!-- Global reusable modal -->
+    <div class="modal fade" id="globalModal" tabindex="-1" style="z-index: 10100">
+      <div class="modal-dialog" id="globalModalDialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <span id="globalModalIcon" class="me-2"></span>
+            <h5 class="modal-title" id="globalModalLabel"></h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body" id="globalModalBody"></div>
+          <div class="modal-footer" id="globalModalFooter"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast container -->
+    <div id="toastContainer" class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 10500;"></div>
+
+    ${include:popup-login.html}
 
     <script>
       var studioCurrentTab = "query";
 
       $(function () {
-        $("#loginForm").keypress(function (e) {
+        $("#loginForm").on("keypress", function (e) {
           if (e.which == 13) {
             login();
           }
@@ -261,9 +326,18 @@
           if (activeTab == "tab-query-sel") {
             studioCurrentTab = "query";
             editorFocus();
+          } else if (activeTab == "tab-timeseries-sel") {
+            studioCurrentTab = "timeseries";
+            initTimeSeries();
           } else if (activeTab == "tab-server-sel") {
             studioCurrentTab = "server";
             updateServer();
+          } else if (activeTab == "tab-profiler-sel") {
+            studioCurrentTab = "profiler";
+            initProfiler();
+          } else if (activeTab == "tab-security-sel") {
+            studioCurrentTab = "security";
+            initSecurity();
           } else if (activeTab == "tab-cluster-sel") {
             studioCurrentTab = "cluster";
             updateCluster();
@@ -273,16 +347,21 @@
             studioCurrentTab = "api";
           } else if (activeTab == "tab-resources-sel") {
             studioCurrentTab = "resources";
+          } else if (activeTab == "tab-ai-sel") {
+            studioCurrentTab = "ai";
+            initAi();
+          } else if (activeTab == "tab-settings-sel") {
+            studioCurrentTab = "settings";
           }
         });
 
-        $("#loginPopup").on("shown.bs.modal", function () {
-          $("#inputUserName").delay(1000).focus().select();
-        });
+        // Initialize searchable database selectors
+        initSearchableDbSelect("queryDbSelectContainer");
+        initSearchableDbSelect("schemaDbSelectContainer");
+        initSearchableDbSelect("tsDbSelectContainer");
 
         // Check for existing session in localStorage
         if (initSessionFromStorage()) {
-          // Session found, try to use it
           console.log("Found stored session, attempting auto-login");
           updateDatabases(function () {
             console.log("Auto-login successful, initializing query editor");

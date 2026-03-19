@@ -20,6 +20,7 @@ class ArcadeDBServer:
         root_path: str = "./databases",
         root_password: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
+        jvm_kwargs: Optional[dict] = None,
     ):
         """
         Initialize ArcadeDB server.
@@ -33,8 +34,10 @@ class ArcadeDBServer:
                 - binary_port: Binary protocol port (default: 2424)
                 - host: Host to bind to (default: 0.0.0.0)
                 - mode: Server mode (default: development)
+            jvm_kwargs: Optional JVM args passed to start_jvm()
+                Example: {"heap_size": "8g"}
         """
-        start_jvm()
+        start_jvm(**(jvm_kwargs or {}))
         from com.arcadedb import ContextConfiguration
         from com.arcadedb.server import ArcadeDBServer as JavaArcadeDBServer
 

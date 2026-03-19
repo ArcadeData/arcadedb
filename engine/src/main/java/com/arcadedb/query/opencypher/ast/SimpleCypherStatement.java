@@ -47,6 +47,11 @@ public class SimpleCypherStatement implements CypherStatement {
   private final boolean            hasMerge;
   private final boolean            hasDelete;
   private final boolean            hasRemove;
+  private final boolean            readOnly;
+  private final boolean            hasVariableLengthPath;
+  private final boolean            hasUnwindBeforeMatch;
+  private final boolean            hasWithBeforeMatch;
+  private final boolean            hasSubquery;
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
@@ -140,11 +145,58 @@ public class SimpleCypherStatement implements CypherStatement {
     this.hasMerge = hasMerge;
     this.hasDelete = hasDelete;
     this.hasRemove = hasRemove;
+    final boolean hasForeach = this.clausesInOrder.stream().anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
+    this.readOnly = !hasCreate && !hasMerge && !hasDelete && !hasRemove && !hasForeach && (setClause == null || setClause.isEmpty());
+
+    // Pre-compute flags used by CypherExecutionPlan.execute() to avoid repeated clause scanning
+    this.hasVariableLengthPath = computeHasVariableLengthPath();
+    this.hasUnwindBeforeMatch = computeHasClauseBeforeMatch(ClauseEntry.ClauseType.UNWIND);
+    this.hasWithBeforeMatch = computeHasClauseBeforeMatch(ClauseEntry.ClauseType.WITH);
+    this.hasSubquery = computeHasSubquery();
+  }
+
+  private boolean computeHasVariableLengthPath() {
+    if (matchClauses == null)
+      return false;
+    for (final MatchClause matchClause : matchClauses)
+      for (final PathPattern path : matchClause.getPathPatterns())
+        for (int i = 0; i < path.getRelationshipCount(); i++)
+          if (path.getRelationship(i).isVariableLength())
+            return true;
+    return false;
+  }
+
+  private boolean computeHasClauseBeforeMatch(final ClauseEntry.ClauseType clauseType) {
+    if (clausesInOrder == null || clausesInOrder.isEmpty()) {
+      if (clauseType == ClauseEntry.ClauseType.UNWIND)
+        return !unwindClauses.isEmpty() && !matchClauses.isEmpty();
+      if (clauseType == ClauseEntry.ClauseType.WITH)
+        return !withClauses.isEmpty() && !matchClauses.isEmpty();
+      return false;
+    }
+    int firstClauseOrder = Integer.MAX_VALUE;
+    int firstMatchOrder = Integer.MAX_VALUE;
+    for (final ClauseEntry entry : clausesInOrder) {
+      if (entry.getType() == clauseType)
+        firstClauseOrder = Math.min(firstClauseOrder, entry.getOrder());
+      else if (entry.getType() == ClauseEntry.ClauseType.MATCH)
+        firstMatchOrder = Math.min(firstMatchOrder, entry.getOrder());
+    }
+    return firstClauseOrder < firstMatchOrder;
+  }
+
+  private boolean computeHasSubquery() {
+    if (clausesInOrder == null || clausesInOrder.isEmpty())
+      return false;
+    for (final ClauseEntry entry : clausesInOrder)
+      if (entry.getType() == ClauseEntry.ClauseType.SUBQUERY)
+        return true;
+    return false;
   }
 
   @Override
   public boolean isReadOnly() {
-    return !hasCreate && !hasMerge && !hasDelete && !hasRemove && (setClause == null || setClause.isEmpty());
+    return readOnly;
   }
 
   @Override
@@ -239,6 +291,26 @@ public class SimpleCypherStatement implements CypherStatement {
 
   public boolean hasRemove() {
     return hasRemove;
+  }
+
+  @Override
+  public boolean hasVariableLengthPath() {
+    return hasVariableLengthPath;
+  }
+
+  @Override
+  public boolean hasUnwindBeforeMatch() {
+    return hasUnwindBeforeMatch;
+  }
+
+  @Override
+  public boolean hasWithBeforeMatch() {
+    return hasWithBeforeMatch;
+  }
+
+  @Override
+  public boolean hasSubquery() {
+    return hasSubquery;
   }
 
   public String getOriginalQuery() {

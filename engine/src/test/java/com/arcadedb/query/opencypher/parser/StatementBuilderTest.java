@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class StatementBuilderTest {
 
   @Test
-  void testEmptyStatement() {
+  void emptyStatement() {
     final StatementBuilder builder = new StatementBuilder();
     final SimpleCypherStatement stmt = builder.build();
 
@@ -47,7 +47,7 @@ class StatementBuilderTest {
   }
 
   @Test
-  void testAddMatch() {
+  void addMatch() {
     final StatementBuilder builder = new StatementBuilder();
     final MatchClause match = new MatchClause(Collections.emptyList(), false, null);
 
@@ -59,7 +59,7 @@ class StatementBuilderTest {
   }
 
   @Test
-  void testSetCreate() {
+  void setCreate() {
     final StatementBuilder builder = new StatementBuilder();
     final CreateClause create = new CreateClause(Collections.emptyList());
 
@@ -71,7 +71,7 @@ class StatementBuilderTest {
   }
 
   @Test
-  void testSetDelete() {
+  void setDelete() {
     final StatementBuilder builder = new StatementBuilder();
     final DeleteClause delete = new DeleteClause(Collections.singletonList("n"), false);
 
@@ -83,7 +83,7 @@ class StatementBuilderTest {
   }
 
   @Test
-  void testSetMerge() {
+  void setMerge() {
     final StatementBuilder builder = new StatementBuilder();
     final NodePattern node = new NodePattern("n", null, null);
     final PathPattern path = new PathPattern(node);
@@ -97,7 +97,7 @@ class StatementBuilderTest {
   }
 
   @Test
-  void testAddRemove() {
+  void addRemove() {
     final StatementBuilder builder = new StatementBuilder();
     final List<RemoveClause.RemoveItem> items = new ArrayList<>();
     items.add(new RemoveClause.RemoveItem("n", "prop"));
@@ -111,7 +111,7 @@ class StatementBuilderTest {
   }
 
   @Test
-  void testSetOrderBySkipLimit() {
+  void setOrderBySkipLimit() {
     final StatementBuilder builder = new StatementBuilder();
     final OrderByClause orderBy = new OrderByClause(Collections.emptyList());
 
@@ -127,7 +127,7 @@ class StatementBuilderTest {
   }
 
   @Test
-  void testClauseOrdering() {
+  void clauseOrdering() {
     final StatementBuilder builder = new StatementBuilder();
 
     final MatchClause match = new MatchClause(Collections.emptyList(), false, null);
@@ -152,7 +152,7 @@ class StatementBuilderTest {
   }
 
   @Test
-  void testMultipleMatchClauses() {
+  void multipleMatchClauses() {
     final StatementBuilder builder = new StatementBuilder();
 
     final MatchClause match1 = new MatchClause(Collections.emptyList(), false, null);

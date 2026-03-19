@@ -23,6 +23,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.schema.Property;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
 
 import java.util.*;
 
@@ -55,7 +56,7 @@ class RemoteMutableEdgeTest {
     attributes.put(Property.OUT_PROPERTY, "#1:0");
     attributes.put(Property.IN_PROPERTY, "#2:0");
 
-    when(mockEdgeType.getPolymorphicPropertyIfExists(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
+    when(mockEdgeType.getPolymorphicPropertyIfExists(ArgumentMatchers.anyString())).thenReturn(null);
 
     final RemoteImmutableEdge immutableEdge = new RemoteImmutableEdge(mockDatabase, attributes);
     edge = new RemoteMutableEdge(immutableEdge);

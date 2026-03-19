@@ -73,6 +73,13 @@ public class QueryPlanningInfo {
   boolean        projectionsCalculated = false;
   AndBlock       ridRangeConditions;
 
+  /**
+   * Set of property names required by this query (from SELECT, WHERE, GROUP BY, ORDER BY).
+   * When null, all properties are needed (e.g., SELECT *).
+   * Used for column projection pushdown to avoid deserializing unused properties.
+   */
+  Set<String> projectedProperties;
+
   public QueryPlanningInfo copy() {
     //TODO check what has to be copied and what can be just referenced as it is
     final QueryPlanningInfo result = new QueryPlanningInfo();
@@ -99,6 +106,7 @@ public class QueryPlanningInfo {
     result.orderApplied = this.orderApplied;
     result.projectionsCalculated = this.projectionsCalculated;
     result.ridRangeConditions = this.ridRangeConditions;
+    result.projectedProperties = this.projectedProperties;
 
     return result;
   }

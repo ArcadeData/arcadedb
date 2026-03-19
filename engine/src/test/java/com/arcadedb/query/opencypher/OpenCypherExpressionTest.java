@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -306,6 +307,26 @@ class OpenCypherExpressionTest {
   }
 
   @Test
+  void listComprehensionInWhereWithLabelsAndToLower() {
+    // TCK List12 Scenario [6]: list comprehension in WHERE with labels() and toLower()
+    // The filter references variables bound in later MATCH steps (b),
+    // so it must not be pushed down to the node scan of (n).
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (a:A {name: 'c'}) CREATE (a)-[:T]->(:B), (a)-[:T]->(:C)");
+    });
+
+    final ResultSet resultSet = database.query("opencypher",
+        "MATCH (n)-->(b) WHERE n.name IN [x IN labels(b) | toLower(x)] RETURN b");
+
+    assertThat(resultSet.hasNext()).as("Should match b=(:C) since toLower('C')='c'=n.name").isTrue();
+    final Result result = resultSet.next();
+    final Object b = result.getProperty("b");
+    assertThat(((Vertex) b).getTypeName()).isEqualTo("C");
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  @Test
   void comparisonWithArithmeticOperands() {
     // Verify that comparisons work when operands contain arithmetic expressions
     final ResultSet resultSet = database.query("opencypher", "RETURN 4 % 2 = 0 AS result");
@@ -377,8 +398,9 @@ class OpenCypherExpressionTest {
   @Test
   void combinedMapWithArithmetic() {
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (n:Person) WHERE n.name = 'Alice' " +
-            "RETURN {name: n.name, nextYearAge: n.age + 1, monthlySalary: n.salary / 12} AS info");
+        """
+        MATCH (n:Person) WHERE n.name = 'Alice' \
+        RETURN {name: n.name, nextYearAge: n.age + 1, monthlySalary: n.salary / 12} AS info""");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();

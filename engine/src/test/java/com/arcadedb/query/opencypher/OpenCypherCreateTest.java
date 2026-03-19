@@ -11,6 +11,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -228,6 +231,57 @@ class OpenCypherCreateTest {
       assertThat((String) alice.get("name")).isEqualTo("Alice");
       assertThat(knows.getTypeName()).isEqualTo("KNOWS");
       assertThat((String) bob.get("name")).isEqualTo("Bob");
+    });
+  }
+
+  @Test
+  void createWithParameterMapProperties() {
+    database.getSchema().createVertexType("User");
+
+    database.transaction(() -> {
+      final Map<String, Object> props = new HashMap<>();
+      props.put("name", "Alice");
+      props.put("id", 42);
+      props.put("userType", "ADMIN");
+
+      final Map<String, Object> params = new HashMap<>();
+      params.put("props", props);
+
+      final ResultSet result = database.command("opencypher", "CREATE (n:User $props) RETURN n", params);
+
+      assertThat(result.hasNext()).isTrue();
+      final Vertex v = (Vertex) result.next().toElement();
+      assertThat(v.getTypeName()).isEqualTo("User");
+      assertThat((String) v.get("name")).isEqualTo("Alice");
+      assertThat((Integer) v.get("id")).isEqualTo(42);
+      assertThat((String) v.get("userType")).isEqualTo("ADMIN");
+    });
+
+    // Verify persistence
+    final ResultSet verify = database.query("opencypher", "MATCH (n:User {name: 'Alice'}) RETURN n");
+    assertThat(verify.hasNext()).isTrue();
+    final Vertex v = (Vertex) verify.next().toElement();
+    assertThat((Integer) v.get("id")).isEqualTo(42);
+    assertThat((String) v.get("userType")).isEqualTo("ADMIN");
+  }
+
+  @Test
+  void createWithParameterMapAndIndividualParams() {
+    database.getSchema().createVertexType("User");
+
+    database.transaction(() -> {
+      // Test using individual parameter references in map syntax
+      final Map<String, Object> params = new HashMap<>();
+      params.put("name", "Bob");
+      params.put("age", 25);
+
+      final ResultSet result = database.command("opencypher",
+          "CREATE (n:User {name: $name, age: $age}) RETURN n", params);
+
+      assertThat(result.hasNext()).isTrue();
+      final Vertex v = (Vertex) result.next().toElement();
+      assertThat((String) v.get("name")).isEqualTo("Bob");
+      assertThat((Integer) v.get("age")).isEqualTo(25);
     });
   }
 

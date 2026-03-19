@@ -207,8 +207,9 @@ public class BackupTask implements Runnable {
       return (String) backupDatabaseMethod.invoke(backup);
 
     } catch (final IllegalAccessException | InstantiationException e) {
-      throw new BackupException("Backup libs not found in classpath. Make sure arcadedb-integration module is " +
-          "included.", e);
+      throw new BackupException("""
+          Backup libs not found in classpath. Make sure arcadedb-integration module is \
+          included.""", e);
     } catch (final InvocationTargetException e) {
       throw new BackupException("Error performing backup for database '" + databaseName + "'", e.getTargetException());
     }

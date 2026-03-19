@@ -26,6 +26,7 @@ import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.*;
@@ -187,11 +188,39 @@ public interface Schema {
    */
   void dropTrigger(String triggerName);
 
+  // -- Materialized View management --
+
+  boolean existsMaterializedView(String viewName);
+
+  MaterializedView getMaterializedView(String viewName);
+
+  MaterializedView[] getMaterializedViews();
+
+  void dropMaterializedView(String viewName);
+
+  void alterMaterializedView(String viewName, MaterializedViewRefreshMode newMode, long newIntervalMs);
+
+  MaterializedViewBuilder buildMaterializedView();
+
+  // -- Continuous Aggregate management --
+
+  boolean existsContinuousAggregate(String name);
+
+  ContinuousAggregate getContinuousAggregate(String name);
+
+  ContinuousAggregate[] getContinuousAggregates();
+
+  void dropContinuousAggregate(String name);
+
+  ContinuousAggregateBuilder buildContinuousAggregate();
+
   TypeBuilder<? extends DocumentType> buildDocumentType();
 
   TypeBuilder<VertexType> buildVertexType();
 
   TypeBuilder<EdgeType> buildEdgeType();
+
+  TimeSeriesTypeBuilder buildTimeSeriesType();
 
   /**
    * Creates a new document type with the default settings of buckets.
@@ -410,7 +439,20 @@ public interface Schema {
    */
   FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException;
 
+  /**
+   * Returns a defensive copy of a named schema extension (module-specific configuration stored in schema.json).
+   * Returns null if the extension is not set. Callers must call {@link #setExtension(String, JSONObject)}
+   * to persist any changes.
+   */
+  JSONObject getExtension(String name);
+
+  /**
+   * Sets a named schema extension. Pass null to remove the extension.
+   * Changes are persisted to schema.json.
+   */
+  void setExtension(String name, JSONObject value);
+
   enum INDEX_TYPE {
-    LSM_TREE, FULL_TEXT, LSM_VECTOR
+    LSM_TREE, FULL_TEXT, LSM_VECTOR, GEOSPATIAL, HASH
   }
 }

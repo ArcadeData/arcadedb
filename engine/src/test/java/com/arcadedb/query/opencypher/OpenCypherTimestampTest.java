@@ -49,7 +49,7 @@ class OpenCypherTimestampTest {
   }
 
   @Test
-  void testTimestampReturnsLong() {
+  void timestampReturnsLong() {
     final long before = System.currentTimeMillis();
     try (final ResultSet rs = database.command("opencypher", "RETURN timestamp() AS ts")) {
       assertThat(rs.hasNext()).isTrue();
@@ -63,7 +63,7 @@ class OpenCypherTimestampTest {
   }
 
   @Test
-  void testTimestampIsNumeric() {
+  void timestampIsNumeric() {
     try (final ResultSet rs = database.command("opencypher", "RETURN timestamp() > 0 AS positive")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -72,7 +72,7 @@ class OpenCypherTimestampTest {
   }
 
   @Test
-  void testTimestampArithmetic() {
+  void timestampArithmetic() {
     try (final ResultSet rs = database.command("opencypher", "RETURN timestamp() - timestamp() AS diff")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();

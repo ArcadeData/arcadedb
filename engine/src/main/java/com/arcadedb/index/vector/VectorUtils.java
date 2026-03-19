@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import io.github.jbellis.jvector.vector.VectorUtil;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
@@ -217,7 +218,7 @@ public final class VectorUtils {
         final VectorizationProvider vp = VectorizationProvider.getInstance();
         final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
         final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
-        return io.github.jbellis.jvector.vector.VectorUtil.dotProduct(jv1, jv2);
+        return VectorUtil.dotProduct(jv1, jv2);
       } catch (final Exception e) {
         // Fallback to scalar
       }

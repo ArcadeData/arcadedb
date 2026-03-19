@@ -19,8 +19,11 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.StarExpression;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -45,9 +48,9 @@ class ExpressionTypeDetector {
     // count(*) - special grammar rule
     final Cypher25Parser.CountStarContext countStarCtx = builder.findCountStarRecursive(ctx);
     if (countStarCtx != null) {
-      final List<Expression> args = new java.util.ArrayList<>();
-      args.add(new com.arcadedb.query.opencypher.ast.StarExpression());
-      return new com.arcadedb.query.opencypher.ast.FunctionCallExpression("count", args, false);
+      final List<Expression> args = new ArrayList<>();
+      args.add(new StarExpression());
+      return new FunctionCallExpression("count", args, false);
     }
 
     // EXISTS expression

@@ -46,7 +46,9 @@ class ImportDatabaseStatementTestParserTest extends AbstractParserTest {
     checkRightSyntax("IMPORT DATABASE WITH vertices=\"file://vertices.csv\"");
     checkRightSyntax("IMPORT DATABASE WITH vertices=\"file://vertices.csv\", verticesFileType=csv, typeIdProperty=Id");
     checkRightSyntax(
-        "IMPORT DATABASE WITH vertices=\"file://vertices.csv\", verticesFileType=csv, typeIdProperty=Id, " +
-            "edges=\"file://edges.csv\", edgesFileType=csv, edgeFromField=\"From\", edgeToField=\"To\"");
+        """
+        IMPORT DATABASE WITH vertices="file://vertices.csv", verticesFileType=csv, typeIdProperty=Id, \
+        edges="file://edges.csv", edgesFileType=csv, edgeFromField="From", edgeToField="To"\
+        """);
   }
 }

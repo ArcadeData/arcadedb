@@ -29,6 +29,22 @@ import org.neo4j.driver.exceptions.ClientException;
 import org.neo4j.driver.summary.ResultSummary;
 import org.neo4j.driver.Values;
 
+import java.io.BufferedReader;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.Socket;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.WebSocket;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Base64;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -1034,6 +1050,201 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
+  void httpDiscoveryOnBoltPort() throws Exception {
+    // Simulates Neo4j Desktop sending an HTTP GET request to the Bolt port for endpoint discovery
+    try (Socket socket = new Socket("localhost", 7687)) {
+      final OutputStream out = socket.getOutputStream();
+      final String httpRequest = "GET / HTTP/1.1\r\nHost: localhost:7687\r\nAccept: application/json\r\n\r\n";
+      out.write(httpRequest.getBytes(StandardCharsets.UTF_8));
+      out.flush();
+
+      // Read the HTTP response
+      final BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      final String statusLine = reader.readLine();
+      assertThat(statusLine).isEqualTo("HTTP/1.1 400 Bad Request");
+
+      // Read headers
+      String line;
+      boolean hasContentType = false;
+      int contentLength = -1;
+      while ((line = reader.readLine()) != null && !line.isEmpty()) {
+        if (line.startsWith("Content-Type:"))
+          hasContentType = line.contains("application/json");
+        if (line.startsWith("Content-Length:"))
+          contentLength = Integer.parseInt(line.substring("Content-Length:".length()).trim());
+      }
+      assertThat(hasContentType).isTrue();
+      assertThat(contentLength).isGreaterThan(0);
+
+      // Read body
+      final char[] body = new char[contentLength];
+      int totalRead = 0;
+      while (totalRead < contentLength)
+        totalRead += reader.read(body, totalRead, contentLength - totalRead);
+      final String jsonBody = new String(body);
+
+      assertThat(jsonBody).contains("Bolt connector");
+      assertThat(jsonBody).contains("bolt://");
+    }
+
+    // Verify that normal BOLT connections still work after HTTP discovery
+    try (Driver driver = getDriver()) {
+      driver.verifyConnectivity();
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        final Result result = session.run("RETURN 1 AS value");
+        assertThat(result.next().get("value").asLong()).isEqualTo(1L);
+      }
+    }
+  }
+
+  @Test
+  void systemDatabaseDbmsComponents() {
+    // Neo4j Desktop queries the "system" database for version info
+    try (final Driver driver = GraphDatabase.driver("bolt://localhost:7687", AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS))) {
+      try (final Session session = driver.session(SessionConfig.forDatabase("system"))) {
+        final var result = session.run("CALL dbms.components()");
+        assertThat(result.hasNext()).isTrue();
+        final Record record = result.next();
+        assertThat(record.get("name").asString()).isEqualTo("Neo4j Kernel");
+        assertThat(record.get("versions").asList()).isNotEmpty();
+        assertThat(record.get("versions").asList().get(0).toString()).contains("5.");
+        assertThat(record.get("edition").asString()).isEqualTo("community");
+      }
+    }
+  }
+
+  @Test
+  void webSocketBoltHandshakeWithJavaClient() throws Exception {
+    // Uses Java's built-in WebSocket client (same kind of implementation as Chrome/Electron)
+    final CompletableFuture<ByteBuffer> responseFuture = new CompletableFuture<>();
+    final CompletableFuture<Void> openFuture = new CompletableFuture<>();
+    final CompletableFuture<String> errorFuture = new CompletableFuture<>();
+
+    final HttpClient client = HttpClient.newHttpClient();
+    final WebSocket ws = client.newWebSocketBuilder()
+        .buildAsync(URI.create("ws://localhost:7687/"), new WebSocket.Listener() {
+          @Override
+          public void onOpen(final WebSocket webSocket) {
+            openFuture.complete(null);
+            webSocket.request(1);
+          }
+
+          @Override
+          public CompletionStage<?> onBinary(final WebSocket webSocket, final ByteBuffer data, final boolean last) {
+            responseFuture.complete(data);
+            return CompletableFuture.completedFuture(null);
+          }
+
+          @Override
+          public void onError(final WebSocket webSocket, final Throwable error) {
+            errorFuture.complete(error.getMessage());
+            openFuture.completeExceptionally(error);
+            responseFuture.completeExceptionally(error);
+          }
+        }).join();
+
+    // Wait for WebSocket to open
+    openFuture.get(5, TimeUnit.SECONDS);
+
+    // Send Bolt handshake: magic (4 bytes) + 4 versions (16 bytes) = 20 bytes
+    final ByteBuffer handshake = ByteBuffer.allocate(20);
+    handshake.put((byte) 0x60).put((byte) 0x60).put((byte) 0xB0).put((byte) 0x17); // magic
+    handshake.putInt(0x00020404); // v4.4 with range 2
+    handshake.putInt(0x00000004); // v4.0
+    handshake.putInt(0x00000003); // v3.0
+    handshake.putInt(0x00000000); // padding
+    handshake.flip();
+    ws.sendBinary(handshake, true).join();
+
+    // Read version response
+    final ByteBuffer response = responseFuture.get(5, TimeUnit.SECONDS);
+    assertThat(response.remaining()).isEqualTo(4);
+    final int negotiatedVersion = response.getInt();
+    assertThat(negotiatedVersion).isEqualTo(0x00000404); // v4.4
+
+    ws.sendClose(WebSocket.NORMAL_CLOSURE, "done").join();
+  }
+
+  @Test
+  void webSocketBoltHandshake() throws Exception {
+    // Simulates Neo4j Desktop connecting via WebSocket transport for Bolt protocol
+    try (Socket socket = new Socket("localhost", 7687)) {
+      final OutputStream rawOut = socket.getOutputStream();
+
+      // Send WebSocket upgrade request
+      final String wsKey = Base64.getEncoder().encodeToString("test-websocket-key!".getBytes());
+      final String upgradeRequest = "GET / HTTP/1.1\r\n"
+          + "Host: localhost:7687\r\n"
+          + "Upgrade: websocket\r\n"
+          + "Connection: Upgrade\r\n"
+          + "Sec-WebSocket-Key: " + wsKey + "\r\n"
+          + "Sec-WebSocket-Version: 13\r\n"
+          + "\r\n";
+      rawOut.write(upgradeRequest.getBytes(StandardCharsets.UTF_8));
+      rawOut.flush();
+
+      // Read WebSocket upgrade response
+      final BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      final String statusLine = reader.readLine();
+      assertThat(statusLine).isEqualTo("HTTP/1.1 101 Switching Protocols");
+
+      // Read remaining headers
+      String line;
+      String acceptValue = null;
+      while ((line = reader.readLine()) != null && !line.isEmpty()) {
+        if (line.toLowerCase().startsWith("sec-websocket-accept:"))
+          acceptValue = line.substring(line.indexOf(':') + 1).trim();
+      }
+
+      // Verify Sec-WebSocket-Accept value per RFC 6455
+      final MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+      final byte[] expectedHash = sha1.digest((wsKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.UTF_8));
+      final String expectedAccept = Base64.getEncoder().encodeToString(expectedHash);
+      assertThat(acceptValue).isEqualTo(expectedAccept);
+
+      // Now send Bolt handshake inside a WebSocket binary frame
+      final byte[] boltHandshake = new byte[20];
+      // Magic bytes: 0x60 0x60 0xB0 0x17
+      boltHandshake[0] = 0x60;
+      boltHandshake[1] = 0x60;
+      boltHandshake[2] = (byte) 0xB0;
+      boltHandshake[3] = 0x17;
+      // Version 4.4 (0x00000404) in big-endian
+      boltHandshake[4] = 0x00;
+      boltHandshake[5] = 0x00;
+      boltHandshake[6] = 0x04;
+      boltHandshake[7] = 0x04;
+      // Remaining 3 version slots = 0 (padding)
+
+      // Build a masked WebSocket binary frame (client-to-server MUST be masked)
+      final byte[] maskKey = { 0x12, 0x34, 0x56, 0x78 };
+      final byte[] maskedPayload = new byte[boltHandshake.length];
+      for (int i = 0; i < boltHandshake.length; i++)
+        maskedPayload[i] = (byte) (boltHandshake[i] ^ maskKey[i % 4]);
+
+      final DataOutputStream dos = new DataOutputStream(rawOut);
+      dos.writeByte(0x82); // FIN + binary opcode
+      dos.writeByte(0x80 | boltHandshake.length); // MASK bit + length
+      dos.write(maskKey);
+      dos.write(maskedPayload);
+      dos.flush();
+
+      // Read WebSocket binary frame with version response (server-to-client, NOT masked)
+      final DataInputStream dis = new DataInputStream(socket.getInputStream());
+      final int respB0 = dis.readUnsignedByte();
+      assertThat(respB0 & 0x0F).isEqualTo(0x02); // binary opcode
+      final int respB1 = dis.readUnsignedByte();
+      final int respLen = respB1 & 0x7F;
+      assertThat(respLen).isEqualTo(4); // version is 4 bytes
+
+      // Read the negotiated version
+      final int negotiatedVersion = dis.readInt();
+      // Should be 0x00000404 (v4.4)
+      assertThat(negotiatedVersion).isEqualTo(0x00000404);
+    }
+  }
+
+  @Test
   void connectionLimit() {
     // Test that connection limiting works if configured
     final int maxConnections = GlobalConfiguration.BOLT_MAX_CONNECTIONS.getValueAsInteger();
@@ -1066,6 +1277,123 @@ public class BoltProtocolIT extends BaseGraphServerTest {
           } catch (Exception e) {
             // Ignore cleanup errors
           }
+        }
+      }
+    }
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3560
+   * Bolt: Parameterized queries fail to match in MATCH property maps.
+   */
+  @Test
+  void parameterInMatchPropertyMap() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Create a test vertex with a string property
+        session.run("CREATE (t:TestParamMap {id: 'ABC123', name: 'test'}) RETURN t");
+
+        // Step 1: Simple parameter — should work
+        final Result r1 = session.run("RETURN $x AS val", Map.of("x", "hello"));
+        assertThat(r1.hasNext()).isTrue();
+        assertThat(r1.next().get("val").asString()).isEqualTo("hello");
+
+        // Step 2: MATCH with property map parameter — this is the reported bug
+        final Result r2 = session.run(
+            "MATCH (t:TestParamMap {id: $id}) RETURN t.name AS name",
+            Map.of("id", "ABC123"));
+        assertThat(r2.hasNext()).as("MATCH with property map parameter should find the vertex").isTrue();
+        assertThat(r2.next().get("name").asString()).isEqualTo("test");
+
+        // Step 3: WHERE clause parameter — should work (workaround)
+        final Result r3 = session.run(
+            "MATCH (t:TestParamMap) WHERE t.id = $id RETURN t.name AS name",
+            Map.of("id", "ABC123"));
+        assertThat(r3.hasNext()).isTrue();
+        assertThat(r3.next().get("name").asString()).isEqualTo("test");
+
+        // Step 4: Literal in query — should work
+        final Result r4 = session.run(
+            "MATCH (t:TestParamMap {id: 'ABC123'}) RETURN t.name AS name");
+        assertThat(r4.hasNext()).isTrue();
+        assertThat(r4.next().get("name").asString()).isEqualTo("test");
+
+        // Step 5: Integer parameter in property map
+        session.run("CREATE (t:TestParamMap {seq: 42, label: 'intTest'}) RETURN t");
+        final Result r5 = session.run(
+            "MATCH (t:TestParamMap {seq: $seq}) RETURN t.label AS label",
+            Map.of("seq", 42));
+        assertThat(r5.hasNext()).as("MATCH with integer property map parameter should find the vertex").isTrue();
+        assertThat(r5.next().get("label").asString()).isEqualTo("intTest");
+
+        // Step 6: Multiple parameters in property map
+        final Result r6 = session.run(
+            "MATCH (t:TestParamMap {id: $id, name: $name}) RETURN t.id AS id",
+            Map.of("id", "ABC123", "name", "test"));
+        assertThat(r6.hasNext()).as("MATCH with multiple property map parameters should find the vertex").isTrue();
+        assertThat(r6.next().get("id").asString()).isEqualTo("ABC123");
+
+        // Clean up
+        session.run("MATCH (t:TestParamMap) DELETE t");
+      }
+    }
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3650
+   * Bolt: WHERE clause parameters not substituted — returns 0 results.
+   * Creates multiple vertices so that broken filtering (no filter = return all) is detectable.
+   */
+  @Test
+  void whereClauseParameterFiltering() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        try {
+          // Create multiple vertices with different id values
+          session.run("CREATE (:WhereParamNode {id: 'A001', name: 'alpha'})");
+          session.run("CREATE (:WhereParamNode {id: 'B002', name: 'beta'})");
+          session.run("CREATE (:WhereParamNode {id: 'C003', name: 'gamma'})");
+
+          // Test 1: WHERE clause with string parameter returns exactly one matching vertex
+          final Result r1 = session.run(
+              "MATCH (t:WhereParamNode) WHERE t.id = $id RETURN t.name AS name",
+              Map.of("id", "A001"));
+          final List<Record> records1 = r1.list();
+          assertThat(records1).as("WHERE clause string parameter should return exactly 1 result").hasSize(1);
+          assertThat(records1.get(0).get("name").asString()).isEqualTo("alpha");
+
+          // Test 2: WHERE clause with different string parameter value
+          final Result r2 = session.run(
+              "MATCH (t:WhereParamNode) WHERE t.id = $id RETURN t.name AS name",
+              Map.of("id", "C003"));
+          final List<Record> records2 = r2.list();
+          assertThat(records2).as("WHERE clause string parameter should return exactly 1 result").hasSize(1);
+          assertThat(records2.get(0).get("name").asString()).isEqualTo("gamma");
+
+          // Test 3: WHERE clause with non-matching parameter returns 0 results
+          final Result r3 = session.run(
+              "MATCH (t:WhereParamNode) WHERE t.id = $id RETURN t.name AS name",
+              Map.of("id", "NONE"));
+          assertThat(r3.hasNext()).as("WHERE clause with non-matching parameter should return 0 results").isFalse();
+
+          // Test 4: WHERE clause with AND conditions and multiple parameters
+          final Result r4 = session.run(
+              "MATCH (t:WhereParamNode) WHERE t.id = $id AND t.name = $name RETURN t.id AS id",
+              Map.of("id", "B002", "name", "beta"));
+          final List<Record> records4 = r4.list();
+          assertThat(records4).as("WHERE clause with multiple parameters (AND) should return exactly 1 result").hasSize(1);
+          assertThat(records4.get(0).get("id").asString()).isEqualTo("B002");
+
+          // Test 5: WHERE clause with integer parameter
+          session.run("CREATE (:WhereParamNode {id: 'D004', seq: 42, name: 'delta'})");
+          final Result r5 = session.run(
+              "MATCH (t:WhereParamNode) WHERE t.seq = $seq RETURN t.name AS name",
+              Map.of("seq", 42));
+          final List<Record> records5 = r5.list();
+          assertThat(records5).as("WHERE clause integer parameter should return exactly 1 result").hasSize(1);
+          assertThat(records5.get(0).get("name").asString()).isEqualTo("delta");
+        } finally {
+          session.run("MATCH (t:WhereParamNode) DETACH DELETE t");
         }
       }
     }

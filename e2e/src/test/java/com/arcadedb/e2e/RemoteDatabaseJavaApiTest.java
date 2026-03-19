@@ -24,6 +24,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.schema.MaterializedView;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -203,6 +204,45 @@ class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
     assertThat(schema.existsType("E1")).isTrue();
     assertThat(schema.existsType("E2")).isTrue();
     assertThat(schema.existsType("E3")).isTrue();
+  }
+
+  @Test
+  void createAndQueryMaterializedView() {
+    // Create a materialized view of high-ABV beers (above 10%) with the brewery name denormalized
+    // via graph traversal: Beer -[HasBrewery]-> Brewery
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW HighAlcoholBeers AS SELECT name, abv, out('HasBrewery')[0].name AS breweryName FROM Beer WHERE abv > 10");
+
+    // Verify the view exists in schema metadata
+    assertThat(database.getSchema().existsMaterializedView("HighAlcoholBeers")).isTrue();
+    final MaterializedView view = database.getSchema().getMaterializedView("HighAlcoholBeers");
+    assertThat(view.getName()).isEqualTo("HighAlcoholBeers");
+    assertThat(view.getQuery()).contains("Beer");
+    assertThat(view.getStatus()).isEqualTo("VALID");
+
+    // Query the materialized view and verify it returns results
+    final long viewCount = database.query("sql", "SELECT count() as count FROM HighAlcoholBeers")
+        .stream().findFirst().get().<Integer>getProperty("count");
+    assertThat(viewCount).isEqualTo(3042);
+
+    // Verify count matches a direct query on the source type
+    final long directCount = database.query("sql", "SELECT count() as count FROM Beer WHERE abv > 10")
+        .stream().findFirst().get().<Integer>getProperty("count");
+    assertThat(viewCount).isEqualTo(directCount);
+
+    // Verify the brewery name was denormalized into the view (every row should have one)
+    database.query("sql", "SELECT name, abv, breweryName FROM HighAlcoholBeers LIMIT 10")
+        .stream().forEach(r -> assertThat(r.<String>getProperty("breweryName")).isNotBlank());
+
+    // Refresh the view and re-verify the count is still consistent
+    database.command("sql", "REFRESH MATERIALIZED VIEW HighAlcoholBeers");
+    final long refreshedCount = database.query("sql", "SELECT count() as count FROM HighAlcoholBeers")
+        .stream().findFirst().get().<Integer>getProperty("count");
+    assertThat(refreshedCount).isEqualTo(directCount);
+
+    // Drop and verify it's removed from the schema
+    database.command("sql", "DROP MATERIALIZED VIEW HighAlcoholBeers");
+    assertThat(database.getSchema().existsMaterializedView("HighAlcoholBeers")).isFalse();
   }
 
   @Test

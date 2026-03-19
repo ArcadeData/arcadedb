@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * These tests are disabled pending implementation of JOIN/CROSS JOIN SQL syntax.
  */
-public class CartesianProductStepTest extends TestHelper {
+class CartesianProductStepTest extends TestHelper {
 
   @Test
   @Disabled("SQL syntax not supported: comma-separated FROM clauses for Cartesian product")

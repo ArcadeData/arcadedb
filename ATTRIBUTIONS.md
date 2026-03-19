@@ -113,6 +113,7 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | org.apache.lucene | lucene-queries | 10.3.2 | Apache 2.0 | https://lucene.apache.org/ |
 | org.apache.lucene | lucene-sandbox | 10.3.2 | Apache 2.0 | https://lucene.apache.org/ |
 | org.apache.lucene | lucene-facet | 10.3.2 | Apache 2.0 | https://lucene.apache.org/ |
+| org.apache.lucene | lucene-spatial-extras | 10.3.2 | Apache 2.0 | https://lucene.apache.org/ |
 
 **Apache Lucene Notice:** Lucene is a registered trademark of The Apache Software Foundation. See the NOTICE file for Lucene's own third-party attributions.
 
@@ -144,6 +145,18 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | org.graalvm.truffle | truffle-runtime | 25.0.2 | UPL 1.0 | https://www.graalvm.org/ |
 
 **License Note:** UPL = Universal Permissive License 1.0
+
+### Studio Frontend Libraries
+
+| Package | Version | License | Homepage |
+|---------|---------|---------|----------|
+| marked | 15.x | MIT | https://github.com/markedjs/marked |
+
+### Compression
+
+| Group ID | Artifact ID | Version | License | Homepage |
+|----------|-------------|---------|---------|----------|
+| org.xerial.snappy | snappy-java | 1.1.10.7 | Apache 2.0 | https://github.com/xerial/snappy-java |
 
 ### Server and Networking
 

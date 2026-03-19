@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Ensure SHA pinned actions
-        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@d5d20e15f2736816ee0e001ba8b24b54d9ffcff4 # v5.0.0
+        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@cc9ffdc62fadb9f83b46dd0979d9ad50408cc6a6 # v5.0.2
       - name: Run pre-commit
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -43,10 +43,10 @@ jobs:
           cache: "maven"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Get project version
         id: get-version
@@ -92,24 +92,25 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Unit Tests with Coverage
-        # verify because it runs the tests and generates the coverage report, ITs are skipped
-        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf -DexcludedGroups=slow -Dtest=!OpenCypherTCKTest
+        # package phase runs surefire (test) and JaCoCo report (prepare-package) without reaching integration-test phase
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!load-tests -DexcludedGroups=slow,benchmark -Dsurefire.includes=**/*Test.java,**/*Suite.java
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Unit Tests Reporter
-        uses: dorny/test-reporter@b082adf0eced0765477756c2a610396589b8c637 # v2.5.0
+        uses: dorny/test-reporter@3d76b34a4535afbd0600d347b09a6ee5deb3ed7f # v2.6.0
         if: success() || failure()
         with:
           name: Unit Tests Report
           path: "**/surefire-reports/TEST*.xml"
-          list-suites: "failed"
-          list-tests: "failed"
+          only-summary: 'true'
+          list-tests: 'failed'
+          list-suites: 'failed'
           reporter: java-junit
 
       - name: Upload unit test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: unit-coverage-reports
           path: |
@@ -136,25 +137,68 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Slow Unit Tests with Coverage
-        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine  -Dgroups=slow -Dtest=!OpenCypherTCKTest
+        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine  -Dgroups=slow
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Unit Tests Reporter
-        uses: dorny/test-reporter@b082adf0eced0765477756c2a610396589b8c637 # v2.5.0
+        uses: dorny/test-reporter@3d76b34a4535afbd0600d347b09a6ee5deb3ed7f # v2.6.0
         if: success() || failure()
         with:
           name: Unit Tests Report
           path: "**/surefire-reports/TEST*.xml"
-          list-suites: "failed"
           list-tests: "failed"
+          list-suites: "failed"
           reporter: java-junit
 
       - name: Upload unit test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: slow-unit-coverage-reports
+          path: |
+            **/jacoco*.xml
+          retention-days: 1
+
+  benchmark-unit-tests:
+    runs-on: ubuntu-latest
+    needs: build-and-package
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+
+      - name: Restore Maven artifacts
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.m2/repository
+          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Run Benchmark Unit Tests with Coverage
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dgroups=benchmark -Dsurefire.includes=**/*Benchmark.java
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Unit Tests Reporter
+        uses: dorny/test-reporter@3d76b34a4535afbd0600d347b09a6ee5deb3ed7f # v2.6.0
+        if: success() || failure()
+        with:
+          name: Unit Tests Report
+          path: "**/surefire-reports/TEST*.xml"
+          list-tests: "failed"
+          list-suites: "failed"
+          reporter: java-junit
+
+      - name: Upload Benchmark unit test coverage reports
+        if: success() || failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: benchmark-unit-coverage-reports
           path: |
             **/jacoco*.xml
           retention-days: 1
@@ -179,23 +223,23 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Integration Tests with Coverage
-        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf
+        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl !e2e,!load-tests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: IT Tests Reporter
-        uses: dorny/test-reporter@b082adf0eced0765477756c2a610396589b8c637 # v2.5.0
+        uses: dorny/test-reporter@3d76b34a4535afbd0600d347b09a6ee5deb3ed7f # v2.6.0
         if: success() || failure()
         with:
           name: IT Tests Report
           path: "**/failsafe-reports/TEST*.xml"
-          list-suites: "failed"
           list-tests: "failed"
+          list-suites: "failed"
           reporter: java-junit
 
       - name: Upload integration test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: integration-coverage-reports
           path: |
@@ -265,7 +309,7 @@ jobs:
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: E2E Tests Reporter
-        uses: dorny/test-reporter@b082adf0eced0765477756c2a610396589b8c637 # v2.5.0
+        uses: dorny/test-reporter@3d76b34a4535afbd0600d347b09a6ee5deb3ed7f # v2.6.0
         if: success() || failure()
         with:
           name: Java E2E Tests Report
@@ -274,7 +318,7 @@ jobs:
           list-tests: "failed"
           reporter: java-junit
 
-  java-e2e-perf-tests:
+  java-load-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
     steps:
@@ -303,17 +347,17 @@ jobs:
         run: docker load < /tmp/arcadedb-image.tar
 
       - name: E2E Perf Tests
-        run: ./mvnw verify -Pintegration -pl e2e-perf
+        run: ./mvnw verify -Pintegration -pl load-tests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: E2E Perf Tests Reporter
-        uses: dorny/test-reporter@b082adf0eced0765477756c2a610396589b8c637 # v2.5.0
+        uses: dorny/test-reporter@3d76b34a4535afbd0600d347b09a6ee5deb3ed7f # v2.6.0
         if: success() || failure()
         with:
-          name: Java E2E Perf Tests Report
-          path: "e2e-perf/target/failsafe-reports/TEST*.xml"
+          name: Java Load Tests Report
+          path: "load-tests/target/failsafe-reports/TEST*.xml"
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
@@ -325,7 +369,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Node
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "22"
           cache: "npm"
@@ -358,7 +402,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Node
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "22"
           cache: "npm"
@@ -388,7 +432,7 @@ jobs:
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: Studio E2E Tests Reporter
-        uses: dorny/test-reporter@b082adf0eced0765477756c2a610396589b8c637 # v2.5.0
+        uses: dorny/test-reporter@3d76b34a4535afbd0600d347b09a6ee5deb3ed7f # v2.6.0
         if: success() || failure()
         with:
           name: Studio E2E Tests Report
@@ -399,7 +443,7 @@ jobs:
 
       - name: Upload Studio E2E test artifacts
         if: success() || failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: studio-e2e-artifacts
           path: |
@@ -446,27 +490,34 @@ jobs:
 
   coverage-report:
     runs-on: ubuntu-latest
-    needs: [ unit-tests, integration-tests, slow-unit-tests ]
+    needs: [ unit-tests, integration-tests, slow-unit-tests, benchmark-unit-tests ]
     if: success() || failure()
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Download unit test coverage reports
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         continue-on-error: true
         with:
           name: unit-coverage-reports
           path: unit-coverage
 
       - name: Download slow unit test coverage reports
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         continue-on-error: true
         with:
           name: slow-unit-coverage-reports
           path: slow-unit-coverage
 
+      - name: Download benchmark unit test coverage reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: benchmark-unit-coverage-reports
+          path: benchmark-unit-coverage
+
       - name: Download integration test coverage reports
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         continue-on-error: true
         with:
           name: integration-coverage-reports
@@ -491,7 +542,7 @@ jobs:
         with:
           fail_ci_if_error: false
           disable_search: true
-          files:  ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
+          files: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: ArcadeData/arcadedb
           verbose: true

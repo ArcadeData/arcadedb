@@ -1002,12 +1002,12 @@ public class CypherSemanticValidator {
     }
   }
 
-  private static final java.util.Set<String> NON_DETERMINISTIC_FUNCTIONS = java.util.Set.of("rand", "randomuuid");
+  private static final Set<String> NON_DETERMINISTIC_FUNCTIONS = Set.of("rand", "randomuuid");
 
   private void checkNonConstantInAggregation(final Expression expr) {
     if (expr instanceof FunctionCallExpression) {
       final FunctionCallExpression func = (FunctionCallExpression) expr;
-      if (NON_DETERMINISTIC_FUNCTIONS.contains(func.getFunctionName().toLowerCase(java.util.Locale.ROOT)))
+      if (NON_DETERMINISTIC_FUNCTIONS.contains(func.getFunctionName().toLowerCase(Locale.ROOT)))
         throw new CommandParsingException("NonConstantExpression: Non-constant expression is not allowed inside aggregation: " + func.getFunctionName());
     }
   }

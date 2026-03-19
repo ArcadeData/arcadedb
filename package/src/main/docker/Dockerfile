@@ -17,6 +17,7 @@
 FROM eclipse-temurin:21-alpine@sha256:c98f0d2e171c898bf896dc4166815d28a56d428e218190a1f35cdc7d82efd61f
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
+LABEL io.modelcontextprotocol.server.name="com.arcadedb/mcp-server"
 
 ENV JAVA_OPTS="-XX:+UseZGC -XX:+ZGenerational"
 

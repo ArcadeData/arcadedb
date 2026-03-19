@@ -30,6 +30,7 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -45,6 +46,7 @@ import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -87,8 +89,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public void commit() {
-    proxied.incrementStatsTxCommits();
-
     final boolean isLeader = isLeader();
 
     proxied.executeInReadLock(() -> {
@@ -102,6 +102,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
         try {
           if (phase1 != null) {
+            proxied.incrementStatsWriteTx();
             final Binary bufferChanges = phase1.result;
 
             if (isLeader)
@@ -114,6 +115,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
               tx.reset();
             }
           } else {
+            proxied.incrementStatsReadTx();
             tx.reset();
           }
         } catch (final NeedRetryException | TransactionException e) {
@@ -160,6 +162,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public DatabaseInternal getWrappedDatabaseInstance() {
     return this;
+  }
+
+  @Override
+  public SecurityManager getSecurity() {
+    return server.getSecurity();
   }
 
   @Override
@@ -355,6 +362,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public Select select() {
     return proxied.select();
+  }
+
+  @Override
+  public GraphBatch.Builder batch() {
+    return proxied.batch();
   }
 
   @Override

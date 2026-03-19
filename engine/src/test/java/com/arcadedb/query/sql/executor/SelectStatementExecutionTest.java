@@ -616,6 +616,58 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void countStarWithLiteralProjectionOnEmptyType() {
+    // Regression test for https://github.com/ArcadeData/arcadedb/issues/3585
+    // SELECT count(*), <non-aggregate> FROM empty_type should return 1 row with count=0
+    final String className = "testCountStarWithLiteralProjectionOnEmptyType";
+    database.getSchema().createDocumentType(className);
+
+    final ResultSet result = database.query("sql", "select count(*), 2 from " + className);
+    assertThat(result.hasNext()).isTrue();
+    final Result next = result.next();
+    assertThat((Object) next.getProperty("count(*)")).isEqualTo(0L);
+    assertThat((Object) next.getProperty("2")).isEqualTo(2);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void countStarWithLetVariableProjectionOnEmptyType() {
+    // Regression test for https://github.com/ArcadeData/arcadedb/issues/3585
+    // SELECT count(*), $x FROM empty_type LET $x = 2 should return 1 row with count=0
+    final String className = "testCountStarWithLetVariableProjectionOnEmptyType";
+    database.getSchema().createDocumentType(className);
+
+    final ResultSet result = database.query("sql", "select count(*), $x from " + className + " let $x = 2");
+    assertThat(result.hasNext()).isTrue();
+    final Result next = result.next();
+    assertThat((Object) next.getProperty("count(*)")).isEqualTo(0L);
+    assertThat((Object) next.getProperty("$x")).isEqualTo(2);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void countStarWithLiteralProjectionOnNonEmptyType() {
+    // Verify count(*) + literal works correctly when the type has records
+    final String className = "testCountStarWithLiteralProjectionOnNonEmptyType";
+    database.getSchema().createDocumentType(className);
+
+    database.begin();
+    for (int i = 0; i < 5; i++)
+      database.newDocument(className).save();
+    database.commit();
+
+    final ResultSet result = database.query("sql", "select count(*), 2 from " + className);
+    assertThat(result.hasNext()).isTrue();
+    final Result next = result.next();
+    assertThat((Object) next.getProperty("count(*)")).isEqualTo(5L);
+    assertThat((Object) next.getProperty("2")).isEqualTo(2);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
   void aggregateMixedWithNonAggregate() {
     final String className = "testAggregateMixedWithNonAggregate";
     database.getSchema().createDocumentType(className);
@@ -2277,7 +2329,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    assertThat(plan.getSteps().getFirst() instanceof FetchFromTypeExecutionStep).isTrue(); // no index used
+    final ExecutionStep firstStep = plan.getSteps().getFirst();
+    assertThat(firstStep instanceof FetchFromTypeExecutionStep || firstStep instanceof FetchFromTypeWithFilterStep).isTrue(); // no index used
     for (int i = 0; i < 2; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
@@ -2326,8 +2379,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
+    final ExecutionStep firstStep4 = plan.getSteps().getFirst();
     assertThat(
-        plan.getSteps().getFirst() instanceof FetchFromTypeExecutionStep).isTrue(); // no index, because the superclass is not empty
+        firstStep4 instanceof FetchFromTypeExecutionStep || firstStep4 instanceof FetchFromTypeWithFilterStep).isTrue(); // no index, because the superclass is not empty
     for (int i = 0; i < 2; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
@@ -2448,7 +2502,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    assertThat(plan.getSteps().getFirst() instanceof FetchFromTypeExecutionStep).isTrue();
+    final ExecutionStep firstStepDiamond = plan.getSteps().getFirst();
+    assertThat(firstStepDiamond instanceof FetchFromTypeExecutionStep || firstStepDiamond instanceof FetchFromTypeWithFilterStep).isTrue();
     for (int i = 0; i < 3; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
@@ -4651,6 +4706,101 @@ public class SelectStatementExecutionTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       assertThat(item.<String>getProperty("equals")).isEqualTo("=");
+    }
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3565
+   * IN (SELECT ...) returns wrong results when the compared field has an index (UNIQUE or NOTUNIQUE).
+   * Root cause: index-based IN lookup used raw Result objects as index keys instead of their unwrapped values.
+   */
+  @Test
+  void inSubqueryWithUniqueIndex() {
+    final DocumentType typeA = database.getSchema().createDocumentType("InSubUniqueA");
+    typeA.createProperty("name", Type.STRING);
+    final DocumentType typeB = database.getSchema().createDocumentType("InSubUniqueB");
+    typeB.createProperty("ref", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+
+    database.begin();
+    database.command("sql", "INSERT INTO InSubUniqueA SET name = 'hello'");
+    database.command("sql", "INSERT INTO InSubUniqueB SET ref = 'hello'");
+    database.commit();
+
+    try (ResultSet rs = database.query("sql", "SELECT FROM InSubUniqueB WHERE ref IN (SELECT name FROM InSubUniqueA)")) {
+      assertThat(rs.hasNext()).as("IN (SELECT ...) must return results when TypeB.ref has a UNIQUE index").isTrue();
+      rs.next();
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Verify count is correct too
+    try (ResultSet rs = database.query("sql",
+        "SELECT count(*) AS cnt FROM InSubUniqueB WHERE ref IN (SELECT name FROM InSubUniqueA)")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(1L);
+    }
+  }
+
+  @Test
+  void inSubqueryWithNotUniqueIndex() {
+    final DocumentType typeA = database.getSchema().createDocumentType("InSubNotUniqueA");
+    typeA.createProperty("name", Type.STRING);
+    final DocumentType typeB = database.getSchema().createDocumentType("InSubNotUniqueB");
+    typeB.createProperty("ref", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+
+    database.begin();
+    database.command("sql", "INSERT INTO InSubNotUniqueA SET name = 'hello'");
+    database.command("sql", "INSERT INTO InSubNotUniqueB SET ref = 'hello'");
+    database.commit();
+
+    try (ResultSet rs = database.query("sql",
+        "SELECT FROM InSubNotUniqueB WHERE ref IN (SELECT name FROM InSubNotUniqueA)")) {
+      assertThat(rs.hasNext()).as("IN (SELECT ...) must return results when TypeB.ref has a NOTUNIQUE index").isTrue();
+      rs.next();
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void inSubqueryWithoutIndex() {
+    final DocumentType typeA = database.getSchema().createDocumentType("InSubNoIndexA");
+    typeA.createProperty("name", Type.STRING);
+    database.getSchema().createDocumentType("InSubNoIndexB").createProperty("ref", Type.STRING);
+
+    database.begin();
+    database.command("sql", "INSERT INTO InSubNoIndexA SET name = 'hello'");
+    database.command("sql", "INSERT INTO InSubNoIndexB SET ref = 'hello'");
+    database.commit();
+
+    try (ResultSet rs = database.query("sql",
+        "SELECT FROM InSubNoIndexB WHERE ref IN (SELECT name FROM InSubNoIndexA)")) {
+      assertThat(rs.hasNext()).as("IN (SELECT ...) must return results without any index").isTrue();
+      rs.next();
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void inSubqueryWithMultipleValuesAndIndex() {
+    final DocumentType typeA = database.getSchema().createDocumentType("InSubMultiA");
+    typeA.createProperty("name", Type.STRING);
+    final DocumentType typeB = database.getSchema().createDocumentType("InSubMultiB");
+    typeB.createProperty("ref", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+
+    database.begin();
+    database.command("sql", "INSERT INTO InSubMultiA SET name = 'hello'");
+    database.command("sql", "INSERT INTO InSubMultiA SET name = 'world'");
+    database.command("sql", "INSERT INTO InSubMultiB SET ref = 'hello'");
+    database.command("sql", "INSERT INTO InSubMultiB SET ref = 'world'");
+    database.command("sql", "INSERT INTO InSubMultiB SET ref = 'other'");
+    database.commit();
+
+    try (ResultSet rs = database.query("sql",
+        "SELECT FROM InSubMultiB WHERE ref IN (SELECT name FROM InSubMultiA) ORDER BY ref ASC")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("ref")).isEqualTo("hello");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("ref")).isEqualTo("world");
+      assertThat(rs.hasNext()).isFalse();
     }
   }
 }

@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -26,6 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.schema.Property;
 import com.arcadedb.utility.CollectionUtils;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -34,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * ANTLR4 visitor that builds ArcadeDB's internal AST from the SQL parse tree.
@@ -45,6 +48,21 @@ import java.util.Map;
  * and executor steps.
  */
 public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
+
+  /**
+   * Namespaces that are recognized as function call prefixes in dotted SQL syntax (e.g. {@code geo.point(x, y)}).
+   * This rewriting is performed in {@link #visitIdentifierChain} for the ANTLR parser only.
+   * The JavaCC parser does not support unquoted dotted function names; use backtick-quoted names
+   * (e.g. {@code `geo.point`(x, y)}) for compatibility with both parsers.
+   * Known function namespace prefixes. When the parser sees {@code namespace.method(args)} and the namespace
+   * is in this set, the AST builder produces a {@link FunctionCall} node with the qualified name
+   * (e.g., "ts.first") instead of an identifier chain with a method modifier.
+   * Identifier prefixes that are treated as function namespaces rather than field names.
+   * When an identifierChain matches "namespace.method(args)", it is rewritten as a
+   * namespace-qualified function call (e.g. "geo.point(x,y)" → FunctionCall("geo.point")).
+   */
+  private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts","geo");
+
 
   private int positionalParamCounter = 0;
 
@@ -1579,6 +1597,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * FROM empty array visitor (e.g., FROM [] or TO []).
+   * Returns a FromItem with an empty rids list, which produces zero results.
+   */
+  @Override
+  public FromItem visitFromEmptyArray(final SQLParser.FromEmptyArrayContext ctx) {
+    final FromItem fromItem = new FromItem(-1);
+    fromItem.rids = new ArrayList<>();
+    return fromItem;
+  }
+
+  /**
    * FROM parameter array visitor (e.g., FROM [:param1, :param2]).
    */
   @Override
@@ -3013,7 +3042,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final FunctionCall funcCall = new FunctionCall(-1);
 
     try {
-      // Function name (using reflection for protected field)
+      // Function name
       final Identifier funcName = (Identifier) visit(ctx.identifier());
       funcCall.name = funcName;
 
@@ -3061,21 +3090,53 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (CollectionUtils.isNotEmpty(ctx.identifier())) {
       final SQLParser.IdentifierContext firstIdCtx = ctx.identifier(0);
 
-      // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this)
-      if (firstIdCtx.RID_ATTR() != null || firstIdCtx.TYPE_ATTR() != null ||
-          firstIdCtx.IN_ATTR() != null || firstIdCtx.OUT_ATTR() != null ||
-          firstIdCtx.THIS() != null) {
-        // Handle record attributes specially
-        final RecordAttribute attr = new RecordAttribute(-1);
-        attr.setName(firstIdCtx.getText());
-        final BaseIdentifier baseId = new BaseIdentifier(attr);
-        baseExpr.identifier = baseId;
-      } else {
-        // Regular identifier
-        final Identifier firstId = (Identifier) visit(firstIdCtx);
-        // Use BaseIdentifier constructor that automatically creates SuffixIdentifier
-        final BaseIdentifier baseId = new BaseIdentifier(firstId);
-        baseExpr.identifier = baseId;
+      // Detect namespace-qualified function calls: geo.methodName(args)
+      // Pattern: exactly one base identifier that is a known namespace, no additional DOT-identifiers,
+      // and exactly one methodCall → rewrite as FunctionCall("namespace.methodName", args).
+      if (ctx.identifier().size() == 1 && CollectionUtils.isNotEmpty(ctx.methodCall()) && ctx.methodCall().size() == 1
+          && firstIdCtx.RID_ATTR() == null && firstIdCtx.TYPE_ATTR() == null
+          && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null) {
+        final String baseIdText = firstIdCtx.getText();
+        if (FUNCTION_NAMESPACES.contains(baseIdText.toLowerCase())) {
+          return buildNamespaceQualifiedFunctionCall(baseIdText, ctx.methodCall(0), ctx);
+        }
+      }
+
+      // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this),
+      // including backtick-quoted variants like `@rid`
+      final SuffixIdentifier firstSuffix = buildSuffixForIdentifier(firstIdCtx);
+      final BaseIdentifier baseId = new BaseIdentifier(-1);
+      baseId.suffix = firstSuffix;
+      baseExpr.identifier = baseId;
+
+      // Check for namespaced function call pattern: namespace.method(args)
+      // e.g., ts.first(value, ts) → builds FunctionCall with name "ts.first"
+      if (ctx.identifier().size() == 1
+          && ctx.methodCall() != null && ctx.methodCall().size() == 1
+          && (ctx.arraySelector() == null || ctx.arraySelector().isEmpty())
+          && (ctx.modifier() == null || ctx.modifier().isEmpty())) {
+        final String baseIdName = ctx.identifier(0).getText();
+
+        if (FUNCTION_NAMESPACES.contains(baseIdName)) {
+          final SQLParser.MethodCallContext methodCtx = ctx.methodCall(0);
+          final String qualifiedName = baseIdName + "." + methodCtx.identifier().getText();
+
+          final FunctionCall funcCall = new FunctionCall(-1);
+          funcCall.name = new Identifier(qualifiedName);
+          funcCall.params = new ArrayList<>();
+          if (methodCtx.expression() != null)
+            for (final SQLParser.ExpressionContext exprCtx : methodCtx.expression())
+              funcCall.params.add((Expression) visit(exprCtx));
+
+          final LevelZeroIdentifier levelZero = new LevelZeroIdentifier(-1);
+          levelZero.functionCall = funcCall;
+
+          final BaseIdentifier baseId2 = new BaseIdentifier(-1);
+          baseId2.levelZero = levelZero;
+
+          baseExpr.identifier = baseId2;
+          return baseExpr;
+        }
       }
 
       // Build modifier chain from additional identifiers, methodCalls, arraySelectors and modifiers
@@ -3092,16 +3153,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             final SuffixIdentifier suffix;
 
             // Check if this identifier is a record attribute (@rid, @type, @in, @out, @this)
-            if (idCtx.RID_ATTR() != null || idCtx.TYPE_ATTR() != null ||
-                idCtx.IN_ATTR() != null || idCtx.OUT_ATTR() != null ||
-                idCtx.THIS() != null) {
-              final RecordAttribute attr = new RecordAttribute(-1);
-              attr.setName(idCtx.getText());
-              suffix = new SuffixIdentifier(attr);
-            } else {
-              final Identifier id = (Identifier) visit(idCtx);
-              suffix = new SuffixIdentifier(id);
-            }
+            suffix = buildSuffixForIdentifier(idCtx);
 
             modifier.suffix = suffix;
 
@@ -3164,6 +3216,83 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (firstModifier != null) {
         baseExpr.modifier = firstModifier;
       }
+    }
+
+    return baseExpr;
+  }
+
+  /**
+   * Builds a namespace-qualified FunctionCall BaseExpression from an identifierChain that looks like
+   * "namespace.functionName(args)" — e.g. "geo.point(x, y)" or "geo.within(geom, geo.point(x, y))".
+   * <p>
+   * The identifierChain grammar rule captures "namespace" as the base identifier and ".functionName(args)"
+   * as a methodCall. This helper recombines them into a proper FunctionCall AST node so that the
+   * execution engine resolves "geo.point" as a registered SQL function rather than a field access.
+   * <p>
+   * Any arraySelectors or modifiers that follow the method call on the identifierChain are preserved
+   * and chained onto the returned BaseExpression.
+   */
+  private BaseExpression buildNamespaceQualifiedFunctionCall(final String namespace,
+      final SQLParser.MethodCallContext methodCtx, final SQLParser.IdentifierChainContext chainCtx) {
+    final BaseExpression baseExpr = new BaseExpression(-1);
+
+    try {
+      // Build the combined function name: "geo.point", "geo.within", etc.
+      final Identifier methodName = (Identifier) visit(methodCtx.identifier());
+      final FunctionCall funcCall = new FunctionCall(-1);
+      funcCall.name = new Identifier(namespace + "." + methodName.getStringValue());
+
+      // Collect arguments from the method call
+      if (CollectionUtils.isNotEmpty(methodCtx.expression())) {
+        final List<Expression> params = new ArrayList<>();
+        for (final SQLParser.ExpressionContext exprCtx : methodCtx.expression()) {
+          params.add((Expression) visit(exprCtx));
+        }
+        funcCall.params = params;
+      }
+
+      // Wrap the FunctionCall in the standard BaseExpression structure
+      final LevelZeroIdentifier levelZero = new LevelZeroIdentifier(-1);
+      levelZero.functionCall = funcCall;
+      final BaseIdentifier baseId = new BaseIdentifier(-1);
+      baseId.levelZero = levelZero;
+      baseExpr.identifier = baseId;
+
+      // Preserve any arraySelectors or modifiers that follow the method call
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+
+      if (CollectionUtils.isNotEmpty(chainCtx.arraySelector())) {
+        for (final SQLParser.ArraySelectorContext selectorCtx : chainCtx.arraySelector()) {
+          final Modifier modifier = createModifierForArraySelector(selectorCtx);
+          if (firstModifier == null) {
+            firstModifier = modifier;
+            currentModifier = modifier;
+          } else {
+            currentModifier.next = modifier;
+            currentModifier = modifier;
+          }
+        }
+      }
+
+      if (CollectionUtils.isNotEmpty(chainCtx.modifier())) {
+        for (final SQLParser.ModifierContext modCtx : chainCtx.modifier()) {
+          final Modifier modifier = (Modifier) visit(modCtx);
+          if (firstModifier == null) {
+            firstModifier = modifier;
+            currentModifier = modifier;
+          } else {
+            currentModifier.next = modifier;
+            currentModifier = modifier;
+          }
+        }
+      }
+
+      if (firstModifier != null)
+        baseExpr.modifier = firstModifier;
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build namespace-qualified function call: " + e.getMessage(), e);
     }
 
     return baseExpr;
@@ -3250,6 +3379,47 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Builds a SuffixIdentifier for the given identifier context, recognising record attributes
+   * ({@code @rid}, {@code @type}, {@code @in}, {@code @out}, {@code @cat}, {@code @this}, etc.)
+   * whether they appear as unquoted tokens (e.g. {@code .@rid}) or as backtick-quoted identifiers
+   * (e.g. {@code .`@rid`}).
+   */
+  private SuffixIdentifier buildSuffixForIdentifier(final SQLParser.IdentifierContext idCtx) {
+    // Unquoted record attribute tokens (@rid, @type, @in, @out, @this)
+    if (idCtx.RID_ATTR() != null || idCtx.TYPE_ATTR() != null ||
+        idCtx.IN_ATTR() != null || idCtx.OUT_ATTR() != null ||
+        idCtx.THIS() != null) {
+      final RecordAttribute attr = new RecordAttribute(-1);
+      attr.setName(idCtx.getText());
+      return new SuffixIdentifier(attr);
+    }
+    // Quoted identifiers (e.g. `@rid`) or plain identifiers whose value matches a record attribute
+    final Identifier id = (Identifier) visit(idCtx);
+    if (isRecordAttributeName(id.getStringValue())) {
+      final RecordAttribute attr = new RecordAttribute(-1);
+      attr.setName(id.getStringValue());
+      return new SuffixIdentifier(attr);
+    }
+    return new SuffixIdentifier(id);
+  }
+
+  /**
+   * Returns true if the given name matches a known internal record attribute
+   * ({@code @rid}, {@code @type}, {@code @in}, {@code @out}, {@code @cat}, {@code @props}, {@code @this}).
+   */
+  private static boolean isRecordAttributeName(final String name) {
+    if (name == null)
+      return false;
+    return name.equalsIgnoreCase(Property.RID_PROPERTY) ||
+        name.equalsIgnoreCase(Property.TYPE_PROPERTY) ||
+        name.equalsIgnoreCase(Property.IN_PROPERTY) ||
+        name.equalsIgnoreCase(Property.OUT_PROPERTY) ||
+        name.equalsIgnoreCase(Property.CAT_PROPERTY) ||
+        name.equalsIgnoreCase(Property.PROPERTY_TYPES_PROPERTY) ||
+        name.equalsIgnoreCase(Property.THIS_PROPERTY);
+  }
+
+  /**
    * Visit modifier (DOT identifier with optional parentheses or array selector).
    * Grammar: modifier: DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)? | arraySelector
    * <p>
@@ -3276,10 +3446,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
           modifier.methodCall = methodCall;
         } else {
-          // Property access: .identifier
-          final Identifier id = (Identifier) visit(ctx.identifier());
-          final SuffixIdentifier suffix = new SuffixIdentifier(id);
-          modifier.suffix = suffix;
+          // Property access: .identifier — may be a record attribute like @rid
+          modifier.suffix = buildSuffixForIdentifier(ctx.identifier());
         }
       } else if (ctx.arraySelector() != null) {
         // Array selector modifier
@@ -4886,9 +5054,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       // Set targetType (edge type identifier)
-      if (bodyCtx.identifier() != null) {
-        final Identifier targetType = (Identifier) visit(bodyCtx.identifier());
+      if (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty()) {
+        final Identifier targetType = (Identifier) visit(bodyCtx.identifier(0));
         stmt.targetType = targetType;
+
+        // Set targetBucketName if BUCKET clause is present
+        if (bodyCtx.BUCKET() != null && bodyCtx.identifier().size() > 1)
+          stmt.setTargetBucketName((Identifier) visit(bodyCtx.identifier(1)));
       }
 
       // Set leftExpression (FROM clause)
@@ -4902,10 +5074,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           parenExpr.setStatement(fromItem.statement);
           leftExpr.mathExpression = parenExpr;
         } else if (fromItem.identifier != null) {
-          leftExpr.mathExpression = new BaseExpression(fromItem.identifier);
-        } else if (CollectionUtils.isNotEmpty(fromItem.rids)) {
-          // Handle RID or array of RIDs
-          if (fromItem.rids.size() == 1) {
+          leftExpr.mathExpression = new BaseExpression(fromItem.identifier, fromItem.modifier);
+        } else if (fromItem.rids != null) {
+          // Handle RID, array of RIDs, or empty array
+          if (fromItem.rids.isEmpty()) {
+            final ArrayLiteralExpression arrayLit = new ArrayLiteralExpression(-1);
+            arrayLit.items = new ArrayList<>();
+            leftExpr.mathExpression = arrayLit;
+          } else if (fromItem.rids.size() == 1) {
             leftExpr.rid = fromItem.rids.get(0);
           } else {
             // Multiple RIDs - create array literal
@@ -4952,10 +5128,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           parenExpr.setStatement(toItem.statement);
           rightExpr.mathExpression = parenExpr;
         } else if (toItem.identifier != null) {
-          rightExpr.mathExpression = new BaseExpression(toItem.identifier);
-        } else if (CollectionUtils.isNotEmpty(toItem.rids)) {
-          // Handle RID or array of RIDs
-          if (toItem.rids.size() == 1) {
+          rightExpr.mathExpression = new BaseExpression(toItem.identifier, toItem.modifier);
+        } else if (toItem.rids != null) {
+          // Handle RID, array of RIDs, or empty array
+          if (toItem.rids.isEmpty()) {
+            final ArrayLiteralExpression arrayLit = new ArrayLiteralExpression(-1);
+            arrayLit.items = new ArrayList<>();
+            rightExpr.mathExpression = arrayLit;
+          } else if (toItem.rids.size() == 1) {
             rightExpr.rid = toItem.rids.get(0);
           } else {
             // Multiple RIDs - create array literal
@@ -5678,6 +5858,375 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // IF EXISTS
     stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
 
+    return stmt;
+  }
+
+  // =========================================================================
+  // MATERIALIZED VIEW MANAGEMENT
+  // =========================================================================
+
+  @Override
+  public CreateMaterializedViewStatement visitCreateMaterializedViewStmt(
+      final SQLParser.CreateMaterializedViewStmtContext ctx) {
+    final CreateMaterializedViewStatement stmt = new CreateMaterializedViewStatement(-1);
+    final SQLParser.CreateMaterializedViewBodyContext bodyCtx = ctx.createMaterializedViewBody();
+
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.selectStatement = (SelectStatement) visit(bodyCtx.selectStatement());
+
+    if (bodyCtx.materializedViewRefreshClause() != null) {
+      final SQLParser.MaterializedViewRefreshClauseContext refreshCtx =
+          bodyCtx.materializedViewRefreshClause();
+      if (refreshCtx.MANUAL() != null)
+        stmt.refreshMode = "MANUAL";
+      else if (refreshCtx.INCREMENTAL() != null)
+        stmt.refreshMode = "INCREMENTAL";
+      else if (refreshCtx.EVERY() != null) {
+        stmt.refreshMode = "PERIODIC";
+        stmt.refreshInterval = Integer.parseInt(refreshCtx.INTEGER_LITERAL().getText());
+        final SQLParser.MaterializedViewTimeUnitContext unitCtx =
+            refreshCtx.materializedViewTimeUnit();
+        if (unitCtx.SECOND() != null)
+          stmt.refreshUnit = "SECOND";
+        else if (unitCtx.MINUTE() != null)
+          stmt.refreshUnit = "MINUTE";
+        else if (unitCtx.HOUR() != null)
+          stmt.refreshUnit = "HOUR";
+      }
+    }
+
+    if (bodyCtx.BUCKETS() != null)
+      stmt.buckets = Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText());
+
+    return stmt;
+  }
+
+  @Override
+  public CreateTimeSeriesTypeStatement visitCreateTimeSeriesTypeStmt(
+      final SQLParser.CreateTimeSeriesTypeStmtContext ctx) {
+    final CreateTimeSeriesTypeStatement stmt = new CreateTimeSeriesTypeStatement(-1);
+    final SQLParser.CreateTimeSeriesTypeBodyContext bodyCtx = ctx.createTimeSeriesTypeBody();
+
+    stmt.name = (Identifier) visit(bodyCtx.identifier(0));
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+
+    // TIMESTAMP column
+    if (bodyCtx.TIMESTAMP() != null && bodyCtx.identifier().size() > 1)
+      stmt.timestampColumn = (Identifier) visit(bodyCtx.identifier(1));
+
+    // TAGS (name type, ...)
+    if (bodyCtx.TAGS() != null) {
+      for (final SQLParser.TsTagColumnDefContext colCtx : bodyCtx.tsTagColumnDef()) {
+        final Identifier colName = (Identifier) visit(colCtx.identifier(0));
+        final Identifier colType = (Identifier) visit(colCtx.identifier(1));
+        stmt.tags.add(new CreateTimeSeriesTypeStatement.ColumnDef(colName, colType));
+      }
+    }
+
+    // FIELDS (name type, ...)
+    if (bodyCtx.FIELDS() != null) {
+      for (final SQLParser.TsFieldColumnDefContext colCtx : bodyCtx.tsFieldColumnDef()) {
+        final Identifier colName = (Identifier) visit(colCtx.identifier(0));
+        final Identifier colType = (Identifier) visit(colCtx.identifier(1));
+        stmt.fields.add(new CreateTimeSeriesTypeStatement.ColumnDef(colName, colType));
+      }
+    }
+
+    // SHARDS count
+    if (bodyCtx.SHARDS() != null) {
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.SHARDS) {
+          // Next INTEGER_LITERAL
+          for (int j = i + 1; j < bodyCtx.children.size(); j++) {
+            if (bodyCtx.children.get(j) instanceof TerminalNode tn2
+                && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+              stmt.shards = new PInteger(-1);
+              stmt.shards.setValue(Integer.parseInt(tn2.getText()));
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    // RETENTION value with optional time unit
+    if (bodyCtx.RETENTION() != null) {
+      long retentionValue = 0;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.RETENTION) {
+          for (int j = i + 1; j < bodyCtx.children.size(); j++) {
+            if (bodyCtx.children.get(j) instanceof TerminalNode tn2
+                && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+              retentionValue = Long.parseLong(tn2.getText());
+              break;
+            }
+          }
+          break;
+        }
+      }
+
+      // Determine time unit by looking at tokens after RETENTION + INTEGER_LITERAL
+      long multiplier = 86400000L; // default: DAYS
+      boolean foundRetention = false;
+      boolean foundValue = false;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn) {
+          if (tn.getSymbol().getType() == SQLParser.RETENTION)
+            foundRetention = true;
+          else if (foundRetention && tn.getSymbol().getType() == SQLParser.INTEGER_LITERAL)
+            foundValue = true;
+          else if (foundRetention && foundValue) {
+            if (tn.getSymbol().getType() == SQLParser.HOURS)
+              multiplier = 3600000L;
+            else if (tn.getSymbol().getType() == SQLParser.MINUTES)
+              multiplier = 60000L;
+            break;
+          }
+        }
+      }
+
+      stmt.retentionMs = retentionValue * multiplier;
+    }
+
+    // COMPACTION_INTERVAL value with optional time unit
+    if (bodyCtx.COMPACTION_INTERVAL() != null) {
+      long compactionValue = 0;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL) {
+          for (int j = i + 1; j < bodyCtx.children.size(); j++) {
+            if (bodyCtx.children.get(j) instanceof TerminalNode tn2
+                && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+              compactionValue = Long.parseLong(tn2.getText());
+              break;
+            }
+          }
+          break;
+        }
+      }
+
+      // Determine time unit (default: HOURS for compaction interval)
+      long multiplier = 3600000L; // HOURS
+      // Check for unit keywords AFTER the COMPACTION_INTERVAL token
+      // We need to look at the remaining children after the integer literal
+      boolean foundCompaction = false;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL)
+          foundCompaction = true;
+        else if (foundCompaction && bodyCtx.children.get(i) instanceof TerminalNode tn) {
+          if (tn.getSymbol().getType() == SQLParser.DAYS) {
+            multiplier = 86400000L;
+            break;
+          } else if (tn.getSymbol().getType() == SQLParser.HOURS) {
+            multiplier = 3600000L;
+            break;
+          } else if (tn.getSymbol().getType() == SQLParser.MINUTES) {
+            multiplier = 60000L;
+            break;
+          }
+        }
+      }
+
+      stmt.compactionIntervalMs = compactionValue * multiplier;
+    }
+
+    return stmt;
+  }
+
+  @Override
+  public AlterTimeSeriesTypeStatement visitAlterTimeSeriesTypeStmt(
+      final SQLParser.AlterTimeSeriesTypeStmtContext ctx) {
+    final AlterTimeSeriesTypeStatement stmt = new AlterTimeSeriesTypeStatement(-1);
+    final SQLParser.AlterTimeSeriesTypeBodyContext bodyCtx = ctx.alterTimeSeriesTypeBody();
+
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+
+    if (bodyCtx.ADD() != null) {
+      stmt.addPolicy = true;
+      for (final SQLParser.DownsamplingTierClauseContext tierCtx : bodyCtx.downsamplingTierClause()) {
+        final long afterValue = Long.parseLong(tierCtx.INTEGER_LITERAL(0).getText());
+        final long afterMs = afterValue * parseTimeUnitMs(tierCtx.tsTimeUnit(0));
+
+        final long granValue = Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText());
+        final long granMs = granValue * parseTimeUnitMs(tierCtx.tsTimeUnit(1));
+
+        stmt.tiers.add(new DownsamplingTier(afterMs, granMs));
+      }
+      // Sort tiers by afterMs ascending
+      stmt.tiers.sort((a, b) -> Long.compare(a.afterMs(), b.afterMs()));
+    } else {
+      stmt.addPolicy = false;
+    }
+
+    return stmt;
+  }
+
+  private static long parseTimeUnitMs(final SQLParser.TsTimeUnitContext unitCtx) {
+    if (unitCtx.DAYS() != null)
+      return 86400000L;
+    if (unitCtx.HOURS() != null || unitCtx.HOUR() != null)
+      return 3600000L;
+    if (unitCtx.MINUTES() != null || unitCtx.MINUTE() != null)
+      return 60000L;
+    return 86400000L; // default to days
+  }
+
+  @Override
+  public DropMaterializedViewStatement visitDropMaterializedViewStmt(
+      final SQLParser.DropMaterializedViewStmtContext ctx) {
+    final DropMaterializedViewStatement stmt = new DropMaterializedViewStatement(-1);
+    final SQLParser.DropMaterializedViewBodyContext bodyCtx = ctx.dropMaterializedViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+    return stmt;
+  }
+
+  @Override
+  public RefreshMaterializedViewStatement visitRefreshMaterializedViewStmt(
+      final SQLParser.RefreshMaterializedViewStmtContext ctx) {
+    final RefreshMaterializedViewStatement stmt = new RefreshMaterializedViewStatement(-1);
+    stmt.name = (Identifier) visit(ctx.refreshMaterializedViewBody().identifier());
+    return stmt;
+  }
+
+  @Override
+  public AlterMaterializedViewStatement visitAlterMaterializedViewStmt(
+      final SQLParser.AlterMaterializedViewStmtContext ctx) {
+    final AlterMaterializedViewStatement stmt = new AlterMaterializedViewStatement(-1);
+    final SQLParser.AlterMaterializedViewBodyContext bodyCtx = ctx.alterMaterializedViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+
+    final SQLParser.MaterializedViewRefreshClauseContext refreshCtx =
+        bodyCtx.materializedViewRefreshClause();
+    if (refreshCtx.MANUAL() != null)
+      stmt.refreshMode = "MANUAL";
+    else if (refreshCtx.INCREMENTAL() != null)
+      stmt.refreshMode = "INCREMENTAL";
+    else if (refreshCtx.EVERY() != null) {
+      stmt.refreshMode = "PERIODIC";
+      stmt.refreshInterval = Integer.parseInt(refreshCtx.INTEGER_LITERAL().getText());
+      final SQLParser.MaterializedViewTimeUnitContext unitCtx =
+          refreshCtx.materializedViewTimeUnit();
+      if (unitCtx.SECOND() != null)
+        stmt.refreshUnit = "SECOND";
+      else if (unitCtx.MINUTE() != null)
+        stmt.refreshUnit = "MINUTE";
+      else if (unitCtx.HOUR() != null)
+        stmt.refreshUnit = "HOUR";
+    }
+
+    return stmt;
+  }
+
+  // =========================================================================
+  // CONTINUOUS AGGREGATE MANAGEMENT
+  // =========================================================================
+
+  @Override
+  public CreateContinuousAggregateStatement visitCreateContinuousAggregateStmt(
+      final SQLParser.CreateContinuousAggregateStmtContext ctx) {
+    final CreateContinuousAggregateStatement stmt = new CreateContinuousAggregateStatement(-1);
+    final SQLParser.CreateContinuousAggregateBodyContext bodyCtx = ctx.createContinuousAggregateBody();
+
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.selectStatement = (SelectStatement) visit(bodyCtx.selectStatement());
+
+    return stmt;
+  }
+
+  @Override
+  public DropContinuousAggregateStatement visitDropContinuousAggregateStmt(
+      final SQLParser.DropContinuousAggregateStmtContext ctx) {
+    final DropContinuousAggregateStatement stmt = new DropContinuousAggregateStatement(-1);
+    final SQLParser.DropContinuousAggregateBodyContext bodyCtx = ctx.dropContinuousAggregateBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+    return stmt;
+  }
+
+  @Override
+  public RefreshContinuousAggregateStatement visitRefreshContinuousAggregateStmt(
+      final SQLParser.RefreshContinuousAggregateStmtContext ctx) {
+    final RefreshContinuousAggregateStatement stmt = new RefreshContinuousAggregateStatement(-1);
+    stmt.name = (Identifier) visit(ctx.refreshContinuousAggregateBody().identifier());
+    return stmt;
+  }
+
+  // ── Graph Analytical View ─────────────────────────────────────────────
+
+  @Override
+  public CreateGraphAnalyticalViewStatement visitCreateGraphAnalyticalViewStmt(
+      final SQLParser.CreateGraphAnalyticalViewStmtContext ctx) {
+    final CreateGraphAnalyticalViewStatement stmt = new CreateGraphAnalyticalViewStatement(-1);
+    final SQLParser.CreateGraphAnalyticalViewBodyContext bodyCtx = ctx.createGraphAnalyticalViewBody();
+
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+    stmt.name = (Identifier) visit(bodyCtx.viewName);
+
+    if (bodyCtx.vertexTypeList != null)
+      stmt.vertexTypes = visitIdentifierList(bodyCtx.vertexTypeList.identifier());
+
+    if (bodyCtx.edgeTypeList != null)
+      stmt.edgeTypes = visitIdentifierList(bodyCtx.edgeTypeList.identifier());
+
+    if (bodyCtx.propertyList != null)
+      stmt.properties = visitIdentifierList(bodyCtx.propertyList.identifier());
+
+    if (bodyCtx.edgePropertyList != null)
+      stmt.edgeProperties = visitIdentifierList(bodyCtx.edgePropertyList.identifier());
+
+    if (bodyCtx.updateModeName != null)
+      stmt.updateModeStr = bodyCtx.updateModeName.getText();
+
+    if (bodyCtx.COMPACTION() != null && bodyCtx.THRESHOLD() != null)
+      stmt.compactionThreshold = parseCompactionThreshold(bodyCtx.INTEGER_LITERAL().getText());
+
+    return stmt;
+  }
+
+  private Identifier[] visitIdentifierList(final List<SQLParser.IdentifierContext> identifiers) {
+    final Identifier[] result = new Identifier[identifiers.size()];
+    for (int i = 0; i < identifiers.size(); i++)
+      result[i] = (Identifier) visit(identifiers.get(i));
+    return result;
+  }
+
+  @Override
+  public DropGraphAnalyticalViewStatement visitDropGraphAnalyticalViewStmt(
+      final SQLParser.DropGraphAnalyticalViewStmtContext ctx) {
+    final DropGraphAnalyticalViewStatement stmt = new DropGraphAnalyticalViewStatement(-1);
+    final SQLParser.DropGraphAnalyticalViewBodyContext bodyCtx = ctx.dropGraphAnalyticalViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+    return stmt;
+  }
+
+  @Override
+  public AlterGraphAnalyticalViewStatement visitAlterGraphAnalyticalViewStmt(
+      final SQLParser.AlterGraphAnalyticalViewStmtContext ctx) {
+    final AlterGraphAnalyticalViewStatement stmt = new AlterGraphAnalyticalViewStatement(-1);
+    final SQLParser.AlterGraphAnalyticalViewBodyContext bodyCtx = ctx.alterGraphAnalyticalViewBody();
+    final var identifiers = bodyCtx.identifier();
+    stmt.name = (Identifier) visit(identifiers.get(0));
+    if (bodyCtx.MODE() != null && identifiers.size() > 1)
+      stmt.updateModeStr = identifiers.get(1).getText();
+    if (bodyCtx.COMPACTION() != null && bodyCtx.THRESHOLD() != null)
+      stmt.compactionThreshold = parseCompactionThreshold(bodyCtx.INTEGER_LITERAL().getText());
+    return stmt;
+  }
+
+  @Override
+  public RebuildGraphAnalyticalViewStatement visitRebuildGraphAnalyticalViewStmt(
+      final SQLParser.RebuildGraphAnalyticalViewStmtContext ctx) {
+    final RebuildGraphAnalyticalViewStatement stmt = new RebuildGraphAnalyticalViewStatement(-1);
+    final SQLParser.RebuildGraphAnalyticalViewBodyContext bodyCtx = ctx.rebuildGraphAnalyticalViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
     return stmt;
   }
 
@@ -6807,6 +7356,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         return Collections.emptyList();
       }
     };
+  }
+
+  private static int parseCompactionThreshold(final String text) {
+    final int value;
+    try {
+      value = Integer.parseInt(text);
+    } catch (final NumberFormatException e) {
+      throw new CommandSQLParsingException("Invalid COMPACTION THRESHOLD value: '" + text + "' (must be a valid integer)");
+    }
+    if (value < 0)
+      throw new CommandSQLParsingException("COMPACTION THRESHOLD must be >= 0 (0 = disabled), got: " + value);
+    if (value == 1)
+      throw new CommandSQLParsingException("COMPACTION THRESHOLD = 1 is not allowed (would trigger compaction after every delta). Use 0 to disable or >= 2 for a valid threshold");
+    return value;
   }
 
 }

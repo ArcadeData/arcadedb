@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class GroupByStepTest extends TestHelper {
+class GroupByStepTest extends TestHelper {
 
   @Test
   void shouldGroupBySingleField() {

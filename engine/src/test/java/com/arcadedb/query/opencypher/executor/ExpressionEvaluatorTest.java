@@ -26,6 +26,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
@@ -414,7 +416,7 @@ class ExpressionEvaluatorTest {
   void shouldEvaluateParameterExpression() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age = $age RETURN p.name AS result",
-        java.util.Map.of("age", 30));
+        Map.of("age", 30));
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
