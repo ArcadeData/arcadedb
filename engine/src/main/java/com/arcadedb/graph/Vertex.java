@@ -77,6 +77,12 @@ public interface Vertex extends Document {
    */
   IterableGraph<Vertex> getVertices(DIRECTION direction, String... edgeTypes);
 
+  /**
+   * Returns connected vertex RIDs without loading vertex records from disk.
+   * This is significantly faster than {@link #getVertices} when only RIDs are needed.
+   */
+  Iterable<RID> getConnectedVertexRIDs(DIRECTION direction, String... edgeTypes);
+
   boolean isConnectedTo(Identifiable toVertex);
 
   boolean isConnectedTo(Identifiable toVertex, DIRECTION direction);

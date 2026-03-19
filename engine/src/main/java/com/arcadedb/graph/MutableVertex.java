@@ -201,6 +201,11 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
+  public Iterable<RID> getConnectedVertexRIDs(final DIRECTION direction, final String... edgeTypes) {
+    return database.getGraphEngine().getConnectedVertexRIDs(this, direction, edgeTypes);
+  }
+
+  @Override
   public boolean isConnectedTo(final Identifiable toVertex) {
     return database.getGraphEngine().isVertexConnectedTo(this, toVertex);
   }

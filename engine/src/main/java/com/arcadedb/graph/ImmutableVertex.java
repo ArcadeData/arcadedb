@@ -173,6 +173,11 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
+  public Iterable<RID> getConnectedVertexRIDs(final DIRECTION direction, final String... edgeTypes) {
+    return database.getGraphEngine().getConnectedVertexRIDs(getMostUpdatedVertex(this), direction, edgeTypes);
+  }
+
+  @Override
   public boolean isConnectedTo(final Identifiable toVertex) {
     return database.getGraphEngine().isVertexConnectedTo(getMostUpdatedVertex(this), toVertex);
   }

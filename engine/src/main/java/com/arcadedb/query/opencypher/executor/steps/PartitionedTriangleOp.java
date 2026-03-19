@@ -239,22 +239,20 @@ public final class PartitionedTriangleOp implements CountOp {
       final Vertex u = (Vertex) db.lookupByRID(entry.getKey(), true);
       final RID uCountry = entry.getValue();
 
-      for (final Iterator<Vertex> vIt = u.getVertices(Vertex.DIRECTION.BOTH, triangleEdgeType).iterator(); vIt.hasNext(); ) {
-        final Vertex vVertex = vIt.next();
-        final RID vCountry = personToPartition.get(vVertex.getIdentity());
+      for (final RID vRid : u.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, triangleEdgeType)) {
+        final RID vCountry = personToPartition.get(vRid);
         if (vCountry == null || !vCountry.equals(uCountry))
           continue;
 
         final Set<RID> uNeighborSet = new HashSet<>();
-        for (final Iterator<Vertex> nIt = u.getVertices(Vertex.DIRECTION.BOTH, triangleEdgeType).iterator(); nIt.hasNext(); ) {
-          final Vertex n = nIt.next();
-          final RID nCountry = personToPartition.get(n.getIdentity());
+        for (final RID nRid : u.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, triangleEdgeType)) {
+          final RID nCountry = personToPartition.get(nRid);
           if (nCountry != null && nCountry.equals(uCountry))
-            uNeighborSet.add(n.getIdentity());
+            uNeighborSet.add(nRid);
         }
-        for (final Iterator<Vertex> wIt = vVertex.getVertices(Vertex.DIRECTION.BOTH, triangleEdgeType).iterator(); wIt.hasNext(); ) {
-          final Vertex w = wIt.next();
-          if (uNeighborSet.contains(w.getIdentity()))
+        final Vertex vVertex = (Vertex) db.lookupByRID(vRid, true);
+        for (final RID wRid : vVertex.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, triangleEdgeType)) {
+          if (uNeighborSet.contains(wRid))
             total++;
         }
       }

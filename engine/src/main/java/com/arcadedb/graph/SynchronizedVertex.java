@@ -117,6 +117,11 @@ public class SynchronizedVertex implements Vertex {
   }
 
   @Override
+  public synchronized Iterable<RID> getConnectedVertexRIDs(final DIRECTION direction, final String... edgeTypes) {
+    return delegate.getConnectedVertexRIDs(direction, edgeTypes);
+  }
+
+  @Override
   public synchronized boolean isConnectedTo(final Identifiable toVertex) {
     return delegate.isConnectedTo(toVertex);
   }

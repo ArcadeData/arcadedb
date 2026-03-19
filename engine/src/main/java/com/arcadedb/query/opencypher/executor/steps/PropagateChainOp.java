@@ -27,6 +27,7 @@ import com.arcadedb.graph.Vertex;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
@@ -410,16 +411,20 @@ public final class PropagateChainOp implements CountOp {
 
     for (int hop = 0; hop < edgeTypes.length; hop++) {
       final String targetLabel = nodeLabels[hop + 1];
+      final Set<Integer> targetBuckets;
+      if (targetLabel != null && db.getSchema().existsType(targetLabel))
+        targetBuckets = new HashSet<>(db.getSchema().getType(targetLabel).getBucketIds(true));
+      else
+        targetBuckets = null;
+
       final HashMap<RID, Long> next = new HashMap<>();
       for (final Map.Entry<RID, Long> entry : current.entrySet()) {
         final Vertex v = (Vertex) db.lookupByRID(entry.getKey(), true);
         final long pathCount = entry.getValue();
-        final Iterator<Vertex> neighbors = v.getVertices(directions[hop], edgeTypes[hop]).iterator();
-        while (neighbors.hasNext()) {
-          final Vertex neighbor = neighbors.next();
-          if (targetLabel != null && !neighbor.getType().instanceOf(targetLabel))
+        for (final RID neighborRid : v.getConnectedVertexRIDs(directions[hop], edgeTypes[hop])) {
+          if (targetBuckets != null && !targetBuckets.contains(neighborRid.getBucketId()))
             continue;
-          next.merge(neighbor.getIdentity(), pathCount, Long::sum);
+          next.merge(neighborRid, pathCount, Long::sum);
         }
       }
       current = next;
@@ -463,15 +468,19 @@ public final class PropagateChainOp implements CountOp {
       for (int h = 0; h < subLength; h++) {
         final int hopIdx = idxA + h;
         final String targetLabel = nodeLabels[hopIdx + 1];
+        final Set<Integer> targetBuckets;
+        if (targetLabel != null && db.getSchema().existsType(targetLabel))
+          targetBuckets = new HashSet<>(db.getSchema().getType(targetLabel).getBucketIds(true));
+        else
+          targetBuckets = null;
+
         final HashMap<RID, Long> next = new HashMap<>();
         for (final Map.Entry<RID, Long> entry : cur.entrySet()) {
           final Vertex v = (Vertex) db.lookupByRID(entry.getKey(), true);
-          final Iterator<Vertex> neighbors = v.getVertices(directions[hopIdx], edgeTypes[hopIdx]).iterator();
-          while (neighbors.hasNext()) {
-            final Vertex neighbor = neighbors.next();
-            if (targetLabel != null && !neighbor.getType().instanceOf(targetLabel))
+          for (final RID neighborRid : v.getConnectedVertexRIDs(directions[hopIdx], edgeTypes[hopIdx])) {
+            if (targetBuckets != null && !targetBuckets.contains(neighborRid.getBucketId()))
               continue;
-            next.merge(neighbor.getIdentity(), entry.getValue(), Long::sum);
+            next.merge(neighborRid, entry.getValue(), Long::sum);
           }
         }
         cur = next;
