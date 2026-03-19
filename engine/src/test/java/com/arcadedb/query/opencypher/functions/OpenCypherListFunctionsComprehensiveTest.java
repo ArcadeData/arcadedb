@@ -238,13 +238,13 @@ class OpenCypherListFunctionsComprehensiveTest {
 
   @Test
   void collInsertNegativeIndexRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN coll.insert([1, 2], -1, 0) AS result"))
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN coll.insert([1, 2], -1, 0) AS result").hasNext())
         .hasMessageContaining("negative");
   }
 
   @Test
   void collInsertIndexTooLargeRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN coll.insert([1, 2], 10, 0) AS result"))
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN coll.insert([1, 2], 10, 0) AS result").hasNext())
         .hasMessageContaining("index");
   }
 
@@ -357,13 +357,13 @@ class OpenCypherListFunctionsComprehensiveTest {
 
   @Test
   void collRemoveNegativeIndexRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN coll.remove([1, 2], -1) AS result"))
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN coll.remove([1, 2], -1) AS result").hasNext())
         .hasMessageContaining("negative");
   }
 
   @Test
   void collRemoveIndexTooLargeRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN coll.remove([1, 2], 10) AS result"))
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN coll.remove([1, 2], 10) AS result").hasNext())
         .hasMessageContaining("index");
   }
 
