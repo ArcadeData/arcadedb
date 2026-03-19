@@ -645,6 +645,48 @@ public class GraphEngine {
     return EMPTY_VERTEX_LIST;
   }
 
+  /**
+   * Returns connected vertex RIDs without loading vertex records from disk.
+   * This is significantly faster than {@link #getVertices} when only RIDs are needed
+   * (e.g., for hash-join neighbor maps, anti-join set construction, connectivity checks).
+   */
+  public Iterable<RID> getConnectedVertexRIDs(final VertexInternal vertex, final Vertex.DIRECTION direction,
+                                               final String... edgeTypes) {
+    if (direction == null)
+      throw new IllegalArgumentException("Direction is null");
+
+    switch (direction) {
+      case BOTH: {
+        final MultiIterator<RID> result = new MultiIterator<>();
+        final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+        if (outEdges != null)
+          result.addIterator(outEdges.ridIterator(edgeTypes));
+        final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+        if (inEdges != null)
+          result.addIterator(inEdges.ridIterator(edgeTypes));
+        return result;
+      }
+
+      case OUT: {
+        final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+        if (outEdges != null)
+          return () -> outEdges.ridIterator(edgeTypes);
+        break;
+      }
+
+      case IN: {
+        final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+        if (inEdges != null)
+          return () -> inEdges.ridIterator(edgeTypes);
+        break;
+      }
+
+      default:
+        throw new IllegalArgumentException("Invalid direction " + direction);
+    }
+    return Collections.emptyList();
+  }
+
   public RID getFirstEdgeConnectedToVertex(final VertexInternal vertex, final Identifiable toVertex,
                                            final int[] edgeBucketFilter) {
     if (toVertex == null)

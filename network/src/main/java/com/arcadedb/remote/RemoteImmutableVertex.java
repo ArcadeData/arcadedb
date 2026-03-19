@@ -82,6 +82,15 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
+  public Iterable<RID> getConnectedVertexRIDs(final DIRECTION direction, final String... edgeTypes) {
+    // Remote vertices fall back to getVertices() — no local edge segments available
+    final List<RID> rids = new ArrayList<>();
+    for (final Vertex v : internal.getVertices(direction, edgeTypes))
+      rids.add(v.getIdentity());
+    return rids;
+  }
+
+  @Override
   public boolean isConnectedTo(final Identifiable toVertex) {
     return internal.isConnectedTo(toVertex);
   }

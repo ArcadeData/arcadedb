@@ -25,9 +25,15 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -300,52 +306,230 @@ public final class AntiJoinChainOp implements CountOp {
     if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
       return 0;
 
+    final int hops = edgeTypes.length;
+    final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
+    final boolean anchorIsSource = (antiJoinSourceIdx == 0);
+
+    // Verify all labels up to checkPos are defined (needed for map construction)
+    for (int i = 0; i <= checkPos; i++) {
+      if (nodeLabels[i] == null || !db.getSchema().existsType(nodeLabels[i]))
+        return executeOLTPRecursive(db);
+    }
+
+    // Pre-compute valid bucket IDs for type filtering at each position
+    @SuppressWarnings("unchecked")
+    final Set<Integer>[] validBuckets = new Set[hops + 1];
+    for (int i = 0; i <= hops; i++) {
+      if (nodeLabels[i] != null && db.getSchema().existsType(nodeLabels[i]))
+        validBuckets[i] = new HashSet<>(db.getSchema().getType(nodeLabels[i]).getBucketIds(true));
+    }
+
+    // Phase 1: Build neighbor RID maps for hops 0..checkPos-1.
+    // Each map: vertex RID → RID[] of neighbors (filtered by target label buckets).
+    @SuppressWarnings("unchecked")
+    final Map<RID, RID[]>[] hopMaps = new Map[checkPos];
+    for (int h = 0; h < checkPos; h++) {
+      boolean reused = false;
+      for (int prev = 0; prev < h; prev++) {
+        if (Objects.equals(nodeLabels[h], nodeLabels[prev])
+            && Objects.equals(edgeTypes[h], edgeTypes[prev])
+            && directions[h] == directions[prev]) {
+          hopMaps[h] = hopMaps[prev];
+          reused = true;
+          break;
+        }
+      }
+      if (!reused)
+        hopMaps[h] = buildNeighborRIDMap(db, nodeLabels[h], edgeTypes[h], directions[h], validBuckets[h + 1]);
+    }
+
+    // Build anti-join neighbor map (reuse hop map if parameters match)
+    final Map<RID, RID[]> antiJoinMap;
+    if (anchorIsSource && checkPos > 0 && antiJoinEdgeType.equals(edgeTypes[0]) && antiJoinDirection == directions[0])
+      antiJoinMap = hopMaps[0];
+    else if (anchorIsSource)
+      antiJoinMap = buildNeighborRIDMap(db, anchorLabel, antiJoinEdgeType, antiJoinDirection, validBuckets[antiJoinTargetIdx]);
+    else
+      antiJoinMap = null;
+
+    // Phase 2: Pre-compute tail counts for vertices at checkPos.
+    // tailCount[rid] = product of countEdges for hops checkPos..end.
+    final Map<RID, Long> tailCounts;
+    if (checkPos < hops)
+      tailCounts = buildTailCounts(db, nodeLabels[checkPos], checkPos);
+    else
+      tailCounts = Collections.emptyMap();
+
+    // Phase 3: Frontier expansion from each anchor.
+    final RID[] EMPTY = new RID[0];
+    long totalCount = 0;
+    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
+      final RID anchorRid = it.next().getIdentity();
+
+      // Get anti-join neighbors for this anchor
+      final Set<RID> antiJoinSet;
+      if (anchorIsSource) {
+        final RID[] antiNbrs = antiJoinMap != null ? antiJoinMap.getOrDefault(anchorRid, EMPTY) : EMPTY;
+        antiJoinSet = new HashSet<>(antiNbrs.length * 2);
+        Collections.addAll(antiJoinSet, antiNbrs);
+      } else {
+        antiJoinSet = null;
+      }
+
+      // Expand frontier through hops 0..checkPos-1
+      RID[] frontier = hopMaps[0] != null ? hopMaps[0].getOrDefault(anchorRid, EMPTY) : EMPTY;
+      for (int h = 1; h < checkPos; h++) {
+        final Map<RID, RID[]> map = hopMaps[h];
+        int totalSize = 0;
+        for (final RID rid : frontier)
+          totalSize += map.getOrDefault(rid, EMPTY).length;
+        if (totalSize == 0) {
+          frontier = EMPTY;
+          break;
+        }
+        final RID[] nextFrontier = new RID[totalSize];
+        int pos = 0;
+        for (final RID rid : frontier) {
+          final RID[] nbrs = map.getOrDefault(rid, EMPTY);
+          System.arraycopy(nbrs, 0, nextFrontier, pos, nbrs.length);
+          pos += nbrs.length;
+        }
+        frontier = nextFrontier;
+      }
+
+      // Apply anti-join, inequality, and compute tail count
+      for (final RID target : frontier) {
+        // Inequality check
+        if (inequalityIdxA >= 0 && inequalityIdxB >= 0
+            && ((inequalityIdxA == 0 && inequalityIdxB == checkPos) || (inequalityIdxA == checkPos && inequalityIdxB == 0))
+            && anchorRid.equals(target))
+          continue;
+
+        if (anchorIsSource) {
+          if (antiJoinSet.contains(target))
+            continue;
+        } else {
+          // Case B: anchor is anti-join target — check if frontier node has edge to anchor
+          if (target.asVertex().isConnectedTo(anchorRid.asVertex(), antiJoinDirection, antiJoinEdgeType))
+            continue;
+        }
+
+        if (checkPos < hops)
+          totalCount += tailCounts.getOrDefault(target, 0L);
+        else
+          totalCount++;
+      }
+    }
+
+    return totalCount;
+  }
+
+  /**
+   * Builds a map: vertex RID → RID[] of neighbors for the given edge type and direction.
+   * Uses the RID-only iterator to avoid loading neighbor vertex records from disk.
+   */
+  private Map<RID, RID[]> buildNeighborRIDMap(final Database db, final String sourceLabel,
+      final String edgeType, final Vertex.DIRECTION direction, final Set<Integer> targetBuckets) {
+    final Map<RID, RID[]> map = new HashMap<>();
+    if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
+      return map;
+
+    for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
+      final Vertex v = it.next().asVertex();
+      final List<RID> neighbors = new ArrayList<>();
+      for (final RID rid : v.getConnectedVertexRIDs(direction, edgeType)) {
+        if (targetBuckets == null || targetBuckets.contains(rid.getBucketId()))
+          neighbors.add(rid);
+      }
+      if (!neighbors.isEmpty())
+        map.put(v.getIdentity(), neighbors.toArray(new RID[0]));
+    }
+    return map;
+  }
+
+  /**
+   * Pre-computes the tail count (product of edge degrees for remaining hops) for each vertex.
+   */
+  private Map<RID, Long> buildTailCounts(final Database db, final String sourceLabel, final int fromHop) {
+    final Map<RID, Long> counts = new HashMap<>();
+    if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
+      return counts;
+
+    for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
+      final Vertex v = it.next().asVertex();
+      long tailCount = 1;
+      for (int h = fromHop; h < edgeTypes.length; h++) {
+        final long degree = v.countEdges(directions[h], edgeTypes[h]);
+        if (degree == 0) {
+          tailCount = 0;
+          break;
+        }
+        tailCount *= degree;
+      }
+      if (tailCount > 0)
+        counts.put(v.getIdentity(), tailCount);
+    }
+    return counts;
+  }
+
+  /**
+   * Recursive fallback for patterns where labels are missing or anti-join endpoints not at position 0.
+   * Includes tail count optimization to avoid loading vertices at the last hops.
+   */
+  private long executeOLTPRecursive(final Database db) {
+    final String anchorLabel = nodeLabels[0];
+    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
+      return 0;
+
     long total = 0;
     for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
       final Vertex anchor = it.next().asVertex();
-      // Build anti-join neighbor set for the source node
-      final Vertex sourceVertex;
-      if (antiJoinSourceIdx == 0) {
-        sourceVertex = anchor;
-      } else {
-        // Would need to propagate to find source vertex — for now handle only source at 0
-        sourceVertex = anchor;
-      }
+      final Set<RID> antiJoinSet = new HashSet<>();
+      for (final RID rid : anchor.getConnectedVertexRIDs(antiJoinDirection, antiJoinEdgeType))
+        antiJoinSet.add(rid);
 
-      final java.util.Set<RID> antiJoinSet = new java.util.HashSet<>();
-      for (final Iterator<Vertex> ajIt = sourceVertex.getVertices(antiJoinDirection, antiJoinEdgeType).iterator(); ajIt.hasNext(); )
-        antiJoinSet.add(ajIt.next().getIdentity());
-
-      total += countPathsFromOLTP(anchor, 0, db, sourceVertex.getIdentity(), antiJoinSet);
+      total += countPathsRec(anchor, 0, db, anchor.getIdentity(), antiJoinSet);
     }
     return total;
   }
 
-  private long countPathsFromOLTP(final Vertex vertex, final int hopIndex, final Database db,
-      final RID sourceRid, final java.util.Set<RID> antiJoinSet) {
+  private long countPathsRec(final Vertex vertex, final int hopIndex, final Database db,
+      final RID sourceRid, final Set<RID> antiJoinSet) {
     if (hopIndex >= edgeTypes.length)
       return 1;
 
+    final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
+
+    // Tail count optimization: after the anti-join check position, use degree multiplication
+    if (hopIndex >= checkPos) {
+      long tailCount = 1;
+      for (int h = hopIndex; h < edgeTypes.length; h++) {
+        final long degree = vertex.countEdges(directions[h], edgeTypes[h]);
+        if (degree == 0)
+          return 0;
+        tailCount *= degree;
+      }
+      return tailCount;
+    }
+
     final String targetLabel = nodeLabels[hopIndex + 1];
+    final Set<Integer> targetBuckets;
+    if (targetLabel != null && db.getSchema().existsType(targetLabel))
+      targetBuckets = new HashSet<>(db.getSchema().getType(targetLabel).getBucketIds(true));
+    else
+      targetBuckets = null;
+
     long count = 0;
-
-    final Iterator<Vertex> neighbors = vertex.getVertices(directions[hopIndex], edgeTypes[hopIndex]).iterator();
-    while (neighbors.hasNext()) {
-      final Vertex neighbor = neighbors.next();
-      if (targetLabel != null && !neighbor.getType().instanceOf(targetLabel))
+    for (final RID neighborRid : vertex.getConnectedVertexRIDs(directions[hopIndex], edgeTypes[hopIndex])) {
+      if (targetBuckets != null && !targetBuckets.contains(neighborRid.getBucketId()))
         continue;
-
-      // Anti-join check at the target position
-      if (hopIndex + 1 == antiJoinTargetIdx && antiJoinSet.contains(neighbor.getIdentity()))
+      if (hopIndex + 1 == antiJoinTargetIdx && antiJoinSet.contains(neighborRid))
         continue;
-
-      // Inequality check
       if (inequalityIdxA >= 0 && inequalityIdxB >= 0
           && inequalityIdxA == antiJoinSourceIdx && (hopIndex + 1) == inequalityIdxB
-          && neighbor.getIdentity().equals(sourceRid))
+          && neighborRid.equals(sourceRid))
         continue;
-
-      count += countPathsFromOLTP(neighbor, hopIndex + 1, db, sourceRid, antiJoinSet);
+      count += countPathsRec(neighborRid.asVertex(), hopIndex + 1, db, sourceRid, antiJoinSet);
     }
     return count;
   }

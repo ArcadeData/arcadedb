@@ -328,6 +328,9 @@ public final class DegreeProductOp implements CountOp {
   private long countArmOLTP(final Vertex vertex, final Arm arm, final int hopIndex) {
     if (hopIndex >= arm.edgeTypes.length)
       return 1;
+    // Tail optimization: at the last hop, use countEdges instead of loading all neighbor vertices
+    if (hopIndex == arm.edgeTypes.length - 1)
+      return vertex.countEdges(arm.directions[hopIndex], arm.edgeTypes[hopIndex]);
     long count = 0;
     final Iterator<Vertex> neighbors = vertex.getVertices(arm.directions[hopIndex], arm.edgeTypes[hopIndex]).iterator();
     while (neighbors.hasNext())

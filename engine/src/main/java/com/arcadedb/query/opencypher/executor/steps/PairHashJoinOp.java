@@ -179,8 +179,8 @@ public final class PairHashJoinOp implements CountOp {
 
     for (final Iterator<? extends Identifiable> it = db.iterateType(buildStartLabel, true); it.hasNext(); ) {
       final Vertex start = it.next().asVertex();
-      final List<RID> ep1List = walkArmOLTP(start, arm1EdgeTypes, arm1Directions, arm1IntermediateLabels);
-      final List<RID> ep2List = walkArmOLTP(start, arm2EdgeTypes, arm2Directions, arm2IntermediateLabels);
+      final List<RID> ep1List = walkArmOLTP(db, start, arm1EdgeTypes, arm1Directions, arm1IntermediateLabels);
+      final List<RID> ep2List = walkArmOLTP(db, start, arm2EdgeTypes, arm2Directions, arm2IntermediateLabels);
       for (final RID ep1 : ep1List)
         for (final RID ep2 : ep2List)
           pairCounts.merge(ep1 + "|" + ep2, 1L, Long::sum);
@@ -192,9 +192,8 @@ public final class PairHashJoinOp implements CountOp {
         continue;
       for (final Iterator<? extends Identifiable> it = db.iterateType(dt.getName(), false); it.hasNext(); ) {
         final Vertex p1 = it.next().asVertex();
-        for (final Iterator<Vertex> vIt = p1.getVertices(probeDirection, probeEdgeType).iterator(); vIt.hasNext(); ) {
-          final Vertex p2 = vIt.next();
-          final Long cnt = pairCounts.get(p1.getIdentity() + "|" + p2.getIdentity());
+        for (final RID p2Rid : p1.getConnectedVertexRIDs(probeDirection, probeEdgeType)) {
+          final Long cnt = pairCounts.get(p1.getIdentity() + "|" + p2Rid);
           if (cnt != null)
             total += cnt;
         }
@@ -203,25 +202,29 @@ public final class PairHashJoinOp implements CountOp {
     return total;
   }
 
-  private List<RID> walkArmOLTP(final Vertex start, final String[] edgeTypes,
+  private List<RID> walkArmOLTP(final Database db, final Vertex start, final String[] edgeTypes,
       final Vertex.DIRECTION[] directions, final String[] intermediateLabels) {
-    List<Vertex> current = List.of(start);
+    List<RID> current = List.of(start.getIdentity());
     for (int hop = 0; hop < edgeTypes.length; hop++) {
+      final Set<Integer> labelBuckets;
       final String label = intermediateLabels != null ? intermediateLabels[hop] : null;
-      final List<Vertex> next = new ArrayList<>();
-      for (final Vertex v : current)
-        for (final Iterator<Vertex> it = v.getVertices(directions[hop], edgeTypes[hop]).iterator(); it.hasNext(); ) {
-          final Vertex neighbor = it.next();
-          if (label != null && !neighbor.getType().instanceOf(label))
+      if (label != null && db.getSchema().existsType(label))
+        labelBuckets = new HashSet<>(db.getSchema().getType(label).getBucketIds(true));
+      else
+        labelBuckets = null;
+
+      final List<RID> next = new ArrayList<>();
+      for (final RID rid : current) {
+        final Vertex v = rid.asVertex();
+        for (final RID neighborRid : v.getConnectedVertexRIDs(directions[hop], edgeTypes[hop])) {
+          if (labelBuckets != null && !labelBuckets.contains(neighborRid.getBucketId()))
             continue;
-          next.add(neighbor);
+          next.add(neighborRid);
         }
+      }
       current = next;
     }
-    final List<RID> result = new ArrayList<>(current.size());
-    for (final Vertex v : current)
-      result.add(v.getIdentity());
-    return result;
+    return current;
   }
 
   /**
