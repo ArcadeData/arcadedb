@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 
 import java.util.Arrays;
@@ -119,18 +120,25 @@ public final class AntiJoinChainOp implements CountOp {
     if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
       return 0;
 
-    // Case A (Q9): anti-join source is at position 0 → precompute anchor's anti-join neighbors
-    //   Check: is frontier node in anchor's neighbor list? (merge-scan)
-    // Case B (Q8): anti-join target is at position 0 → check each frontier node's neighbors for anchor
-    //   Check: is anchor in frontier node's neighbor list? (binary search)
     final boolean anchorIsSource = (antiJoinSourceIdx == 0);
+
+    // Pre-fetch NeighborViews for each hop up to the check position
+    final NeighborView[] hopViews = new NeighborView[laterIdx];
+    for (int h = 0; h < laterIdx; h++)
+      hopViews[h] = provider.getNeighborView(directions[h], edgeTypes[h]);
+
+    // Pre-compute bucket IDs for CSR-based anchor iteration and frontier filtering
+    final int[] bucketIds = new int[nodeCount];
+    for (int v = 0; v < nodeCount; v++)
+      bucketIds[v] = provider.getRID(v).getBucketId();
+    final Set<Integer> anchorBuckets = CSRCountUtils.buildValidBuckets(db, anchorLabel);
+    if (anchorBuckets == null || anchorBuckets.isEmpty())
+      return 0;
 
     long totalCount = 0;
 
-    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
-      final RID rid = it.next().getIdentity();
-      final int anchorId = provider.getNodeId(rid);
-      if (anchorId < 0)
+    for (int anchorId = 0; anchorId < nodeCount; anchorId++) {
+      if (!anchorBuckets.contains(bucketIds[anchorId]))
         continue;
 
       // Pre-compute anti-join neighbors for Case A (anchor is the anti-join source)
@@ -139,7 +147,7 @@ public final class AntiJoinChainOp implements CountOp {
           : null;
 
       final long count = countWithAntiJoin(provider, anchorId, anchorAntiNbrs,
-          anchorIsSource, laterIdx, validBuckets);
+          anchorIsSource, laterIdx, validBuckets, bucketIds, hopViews);
       totalCount += count;
     }
 
@@ -168,33 +176,46 @@ public final class AntiJoinChainOp implements CountOp {
    */
   private long countWithAntiJoin(final GraphTraversalProvider provider, final int anchorId,
       final int[] anchorAntiNbrs, final boolean anchorIsSource,
-      final int checkPosition, final Set<Integer>[] validBuckets) {
+      final int checkPosition, final Set<Integer>[] validBuckets, final int[] bucketIds,
+      final NeighborView[] hopViews) {
     long count = 0;
 
-    // Expand from anchor through hops [0, checkPosition)
+    // Expand from anchor through hops [0, checkPosition) using NeighborViews
     int[] frontier = new int[]{anchorId};
     for (int h = 0; h < checkPosition; h++) {
+      final NeighborView view = hopViews[h];
       int totalNext = 0;
-      for (final int nid : frontier)
-        totalNext += provider.getNeighborIds(nid, directions[h], edgeTypes[h]).length;
+      if (view != null) {
+        for (final int nid : frontier)
+          totalNext += view.degree(nid);
+      } else {
+        for (final int nid : frontier)
+          totalNext += provider.getNeighborIds(nid, directions[h], edgeTypes[h]).length;
+      }
       if (totalNext == 0)
         return 0;
 
       final int[] nextFrontier = new int[totalNext];
       int pos = 0;
-      for (final int nid : frontier) {
-        final int[] neighbors = provider.getNeighborIds(nid, directions[h], edgeTypes[h]);
-        System.arraycopy(neighbors, 0, nextFrontier, pos, neighbors.length);
-        pos += neighbors.length;
+      if (view != null) {
+        final int[] nbrs = view.neighbors();
+        for (final int nid : frontier)
+          for (int j = view.offset(nid), end = view.offsetEnd(nid); j < end; j++)
+            nextFrontier[pos++] = nbrs[j];
+      } else {
+        for (final int nid : frontier) {
+          final int[] neighbors = provider.getNeighborIds(nid, directions[h], edgeTypes[h]);
+          System.arraycopy(neighbors, 0, nextFrontier, pos, neighbors.length);
+          pos += neighbors.length;
+        }
       }
 
-      // Apply type filter
+      // Apply type filter using pre-computed bucket IDs
       final Set<Integer> midBuckets = validBuckets[h + 1];
       if (midBuckets != null && !midBuckets.isEmpty()) {
         int writePos = 0;
         for (int i = 0; i < pos; i++) {
-          final RID rid = provider.getRID(nextFrontier[i]);
-          if (midBuckets.contains(rid.getBucketId()))
+          if (midBuckets.contains(bucketIds[nextFrontier[i]]))
             nextFrontier[writePos++] = nextFrontier[i];
         }
         frontier = Arrays.copyOf(nextFrontier, writePos);

@@ -78,20 +78,22 @@ public final class PropagateChainOp implements CountOp {
 
     // Standard dense array propagation for chains without inequality
     // (or with inequality source not at position 0)
+
+    // Pre-compute bucket IDs once for all filtering operations
+    final int[] bucketIds = precomputeBucketIds(provider, nodeCount);
+
+    // Initialize anchor counts via bucket filtering (avoids OLTP iterateType)
     long[] current = new long[nodeCount];
-    final String anchorLabel = nodeLabels[0];
-    if (anchorLabel != null && db.getSchema().existsType(anchorLabel)) {
-      for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
-        final RID rid = it.next().getIdentity();
-        final int nodeId = provider.getNodeId(rid);
-        if (nodeId >= 0)
-          current[nodeId] = 1;
-      }
+    final Set<Integer> anchorBuckets = validBuckets[0];
+    if (anchorBuckets != null) {
+      for (int v = 0; v < nodeCount; v++)
+        if (anchorBuckets.contains(bucketIds[v]))
+          current[v] = 1;
     }
 
     for (int hop = 0; hop < hops; hop++) {
       current = CSRCountUtils.propagateOneHop(provider, current, directions[hop], edgeTypes[hop]);
-      CSRCountUtils.filterByBuckets(provider, current, validBuckets[hop + 1]);
+      CSRCountUtils.filterByBuckets(bucketIds, current, validBuckets[hop + 1]);
     }
 
     long total = 0;
@@ -124,22 +126,25 @@ public final class PropagateChainOp implements CountOp {
     for (int h = 0; h < idxB; h++)
       views[h] = provider.getNeighborView(directions[h], edgeTypes[h]);
 
-    final String anchorLabel = nodeLabels[0];
-    if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
+    // Pre-compute bucket IDs for all nodes — eliminates per-node getRID calls during
+    // frontier type filtering. One-time O(nodeCount) cost, amortized across all sources.
+    final int[] bucketIds = precomputeBucketIds(provider, nodeCount);
+
+    // Identify anchor nodes via bucket filtering (avoids db.iterateType OLTP reads)
+    final Set<Integer> anchorBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[0]);
+    if (anchorBuckets == null || anchorBuckets.isEmpty())
       return 0;
 
     long totalCount = 0;
 
-    for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
-      final RID rid = it.next().getIdentity();
-      final int srcId = provider.getNodeId(rid);
-      if (srcId < 0)
+    for (int srcId = 0; srcId < nodeCount; srcId++) {
+      if (!anchorBuckets.contains(bucketIds[srcId]))
         continue;
 
       // Expand from srcId through hops [0, idxB)
       int[] frontier = new int[]{srcId};
       for (int h = 0; h < idxB; h++) {
-        frontier = expandFrontier(provider, frontier, views[h], h, validBuckets[h + 1]);
+        frontier = expandFrontierFast(provider, frontier, views[h], h, validBuckets[h + 1], bucketIds);
         if (frontier.length == 0)
           break;
       }
@@ -331,6 +336,62 @@ public final class PropagateChainOp implements CountOp {
       return Arrays.copyOf(next, writePos);
     }
     return pos < next.length ? Arrays.copyOf(next, pos) : next;
+  }
+
+  /**
+   * Like expandFrontier but uses pre-computed bucketIds for type filtering.
+   * Eliminates per-node getRID calls (~200ns each × millions of nodes).
+   */
+  private int[] expandFrontierFast(final GraphTraversalProvider provider, final int[] frontier,
+      final NeighborView view, final int hopIdx, final Set<Integer> targetBuckets,
+      final int[] bucketIds) {
+    int totalNext = 0;
+    if (view != null) {
+      for (final int node : frontier)
+        totalNext += view.degree(node);
+    } else {
+      for (final int node : frontier)
+        totalNext += provider.getNeighborIds(node, directions[hopIdx], edgeTypes[hopIdx]).length;
+    }
+    if (totalNext == 0)
+      return new int[0];
+
+    final int[] next = new int[totalNext];
+    int pos = 0;
+    if (view != null) {
+      final int[] nbrs = view.neighbors();
+      for (final int node : frontier) {
+        for (int j = view.offset(node), end = view.offsetEnd(node); j < end; j++)
+          next[pos++] = nbrs[j];
+      }
+    } else {
+      for (final int node : frontier) {
+        final int[] neighbors = provider.getNeighborIds(node, directions[hopIdx], edgeTypes[hopIdx]);
+        System.arraycopy(neighbors, 0, next, pos, neighbors.length);
+        pos += neighbors.length;
+      }
+    }
+
+    if (targetBuckets != null && !targetBuckets.isEmpty()) {
+      int writePos = 0;
+      for (int i = 0; i < pos; i++) {
+        if (targetBuckets.contains(bucketIds[next[i]]))
+          next[writePos++] = next[i];
+      }
+      return Arrays.copyOf(next, writePos);
+    }
+    return pos < next.length ? Arrays.copyOf(next, pos) : next;
+  }
+
+  /**
+   * Pre-computes bucket IDs for all CSR nodes. One-time O(nodeCount) cost via bulk
+   * getDegrees-style scan, amortized across all per-source expansions.
+   */
+  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeCount) {
+    final int[] bucketIds = new int[nodeCount];
+    for (int v = 0; v < nodeCount; v++)
+      bucketIds[v] = provider.getRID(v).getBucketId();
+    return bucketIds;
   }
 
   @Override

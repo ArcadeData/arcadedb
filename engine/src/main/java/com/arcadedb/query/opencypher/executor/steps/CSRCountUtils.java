@@ -90,6 +90,19 @@ public final class CSRCountUtils {
   }
 
   /**
+   * Zeros out entries using pre-computed bucket IDs (avoids per-node getRID calls).
+   */
+  public static void filterByBuckets(final int[] bucketIds, final long[] counts,
+      final Set<Integer> validBuckets) {
+    if (validBuckets == null || validBuckets.isEmpty())
+      return;
+    for (int v = 0; v < counts.length; v++) {
+      if (counts[v] > 0 && !validBuckets.contains(bucketIds[v]))
+        counts[v] = 0;
+    }
+  }
+
+  /**
    * Pre-computes the set of valid bucket IDs for a vertex type label.
    *
    * @return bucket ID set, or null if no filtering needed
