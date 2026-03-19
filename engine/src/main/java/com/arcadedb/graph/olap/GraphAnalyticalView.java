@@ -435,6 +435,45 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   @Override
+  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+    final Snapshot snap = checkBuilt();
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    final DeltaOverlay ov = snap.overlay;
+    final int n = Math.min(degrees.length, snap.nodeMapping.size());
+
+    if (csr != null) {
+      // Fast path: direct offset subtraction from CSR arrays — no per-node method dispatch
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+        for (int v = 0; v < n; v++)
+          degrees[v] = csr.outDegree(v);
+      }
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+        if (direction == Vertex.DIRECTION.BOTH) {
+          for (int v = 0; v < n; v++)
+            degrees[v] += csr.inDegree(v);
+        } else {
+          for (int v = 0; v < n; v++)
+            degrees[v] = csr.inDegree(v);
+        }
+      }
+    }
+
+    // Apply overlay deltas if active
+    if (ov != null) {
+      for (int v = 0; v < degrees.length; v++) {
+        if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+          degrees[v] += ov.getAddedOutNeighbors(v, edgeType).length;
+          degrees[v] -= ov.countDeletedOutEdges(v, edgeType);
+        }
+        if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+          degrees[v] += ov.getAddedInNeighbors(v, edgeType).length;
+          degrees[v] -= ov.countDeletedInEdges(v, edgeType);
+        }
+      }
+    }
+  }
+
+  @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
     final Snapshot snap = checkBuilt();
 

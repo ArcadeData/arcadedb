@@ -25,7 +25,9 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -148,52 +150,58 @@ public final class DegreeProductOp implements CountOp {
   }
 
   /**
-   * Fallback: per-node CSR iteration. Checks mandatory arm degrees FIRST as a type
-   * filter — nodes with 0 degree on any mandatory arm are skipped immediately.
-   * This replaces the expensive getRID+bucket check (~4μs × 5M = 20s) with
-   * cheap countEdges checks (~200ns × 5M = 1s) that naturally filter by node type.
+   * Pre-compute degree arrays via bulk getDegrees, then scan them.
+   * <p>
+   * Uses the provider's bulk getDegrees API which computes degrees directly from
+   * CSR offset arrays in a single pass per arm — no per-node HashMap lookups,
+   * no volatile reads, no method dispatch. For 5M nodes × 4 arms:
+   * Bulk: 4 array scans × 5M reads ≈ 40ms.
+   * Per-node countEdges: 20M method calls × 150ns ≈ 3s.
    */
   private long executePerNode(final GraphTraversalProvider provider, final Database db,
       final int nodeCount) {
+    // Pre-compute degree arrays: one int[] per arm, indexed by nodeId
+    final int[][] armDegrees = new int[arms.length][];
+    for (int a = 0; a < arms.length; a++) {
+      final int[] degrees = new int[nodeCount];
+      if (arms[a].edgeTypes.length == 1) {
+        // Bulk degree computation — single pass over CSR offset arrays
+        provider.getDegrees(degrees, arms[a].directions[0], arms[a].edgeTypes[0]);
+      } else {
+        for (int v = 0; v < nodeCount; v++)
+          degrees[v] = CSRCountUtils.walkArm(provider, v, arms[a].edgeTypes, arms[a].directions).length;
+      }
+      armDegrees[a] = degrees;
+    }
+
+    // Reorder: mandatory arms first for early exit
+    final int[] mandatoryIdx = new int[arms.length];
+    final int[] optionalIdx = new int[arms.length];
+    int mandatoryCount = 0, optionalCount = 0;
+    for (int a = 0; a < arms.length; a++) {
+      if (arms[a].optional)
+        optionalIdx[optionalCount++] = a;
+      else
+        mandatoryIdx[mandatoryCount++] = a;
+    }
+
+    // Tight scan loop: pure array arithmetic, no method calls
     long total = 0;
-    for (int nodeId = 0; nodeId < nodeCount; nodeId++) {
+    for (int v = 0; v < nodeCount; v++) {
       long product = 1;
       boolean skip = false;
-
-      // Check mandatory arms first — degree=0 skips non-matching node types immediately
-      for (final Arm arm : arms) {
-        final long armCount;
-        if (arm.edgeTypes.length == 1)
-          armCount = provider.countEdges(nodeId, arm.directions[0], arm.edgeTypes[0]);
-        else
-          armCount = CSRCountUtils.walkArm(provider, nodeId, arm.edgeTypes, arm.directions).length;
-
-        if (arm.optional) {
-          // Handle optional after mandatory check
-          continue;
-        } else {
-          if (armCount == 0) {
-            skip = true;
-            break;
-          }
-          product *= armCount;
+      for (int i = 0; i < mandatoryCount; i++) {
+        final int degree = armDegrees[mandatoryIdx[i]][v];
+        if (degree == 0) {
+          skip = true;
+          break;
         }
+        product *= degree;
       }
       if (skip)
         continue;
-
-      // Optional arms: use max(1, degree)
-      for (final Arm arm : arms) {
-        if (!arm.optional)
-          continue;
-        final long armCount;
-        if (arm.edgeTypes.length == 1)
-          armCount = provider.countEdges(nodeId, arm.directions[0], arm.edgeTypes[0]);
-        else
-          armCount = CSRCountUtils.walkArm(provider, nodeId, arm.edgeTypes, arm.directions).length;
-        product *= Math.max(1, armCount);
-      }
-
+      for (int i = 0; i < optionalCount; i++)
+        product *= Math.max(1, armDegrees[optionalIdx[i]][v]);
       total += product;
     }
     return total;
@@ -201,6 +209,96 @@ public final class DegreeProductOp implements CountOp {
 
   @Override
   public long executeOLTP(final Database db) {
+    // Build degree maps by iterating edge types instead of vertex edge lists.
+    // This is O(total_edges_across_all_arms) instead of O(messages × arms × avg_edges_per_list).
+    // For Q4: ~13M edge iterations vs 3.8M × 4 edge-list scans × ~10 edges = 152M reads.
+    //
+    // For each arm: iterate all edges of that type and count per central vertex.
+    // Then do a single pass over the central type to compute degree products.
+
+    // Check if all arms are single-hop (common case for star joins)
+    boolean allSingleHop = true;
+    for (final Arm arm : arms)
+      if (arm.edgeTypes.length != 1) { allSingleHop = false; break; }
+
+    if (allSingleHop)
+      return executeOLTPDegreeMap(db);
+
+    // Fallback for multi-hop arms
+    return executeOLTPPerVertex(db);
+  }
+
+  /**
+   * Degree-map approach: iterate edges to build per-vertex degree maps, then compute products.
+   * Each edge type is iterated once. The degree product is computed on the intersection.
+   */
+  @SuppressWarnings("unchecked")
+  private long executeOLTPDegreeMap(final Database db) {
+    final HashMap<RID, int[]>  degreesPerVertex = new HashMap<>();
+
+    // For each arm, iterate all edges of that type and count per central vertex
+    for (int a = 0; a < arms.length; a++) {
+      final String edgeType = arms[a].edgeTypes[0];
+      final Vertex.DIRECTION dir = arms[a].directions[0];
+
+      for (final Iterator<? extends Identifiable> it = db.iterateType(edgeType, true); it.hasNext(); ) {
+        final com.arcadedb.graph.Edge edge = it.next().asEdge();
+        // The central vertex is the vertex on the "source" side of the arm direction:
+        // If arm direction is OUT, the central vertex is the OUT vertex of the edge.
+        // If arm direction is IN, the central vertex is the IN vertex of the edge.
+        // If BOTH, count from both vertices.
+        final RID centralRid;
+        if (dir == Vertex.DIRECTION.OUT)
+          centralRid = edge.getOut();
+        else if (dir == Vertex.DIRECTION.IN)
+          centralRid = edge.getIn();
+        else {
+          // BOTH: count for both vertices
+          incrementDegree(degreesPerVertex, edge.getOut(), a);
+          incrementDegree(degreesPerVertex, edge.getIn(), a);
+          continue;
+        }
+        incrementDegree(degreesPerVertex, centralRid, a);
+      }
+    }
+
+    // Compute degree products: only vertices with non-zero mandatory arm degrees contribute
+    long total = 0;
+    for (final Map.Entry<RID, int[]> entry : degreesPerVertex.entrySet()) {
+      final int[] degrees = entry.getValue();
+      long product = 1;
+      boolean skip = false;
+      for (int a = 0; a < arms.length; a++) {
+        final int degree = degrees[a];
+        if (arms[a].optional) {
+          product *= Math.max(1, degree);
+        } else {
+          if (degree == 0) {
+            skip = true;
+            break;
+          }
+          product *= degree;
+        }
+      }
+      if (!skip)
+        total += product;
+    }
+    return total;
+  }
+
+  private void incrementDegree(final HashMap<RID, int[]> map, final RID vertex, final int armIndex) {
+    int[] degrees = map.get(vertex);
+    if (degrees == null) {
+      degrees = new int[arms.length];
+      map.put(vertex, degrees);
+    }
+    degrees[armIndex]++;
+  }
+
+  /**
+   * Fallback for multi-hop arms: per-vertex iteration.
+   */
+  private long executeOLTPPerVertex(final Database db) {
     long total = 0;
     for (final Iterator<? extends Identifiable> it = db.iterateType(centralLabel, true); it.hasNext(); ) {
       final Vertex v = it.next().asVertex();
