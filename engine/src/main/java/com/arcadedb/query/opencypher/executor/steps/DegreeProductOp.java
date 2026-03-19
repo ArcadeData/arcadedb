@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 
 import java.util.Iterator;
@@ -74,17 +75,88 @@ public final class DegreeProductOp implements CountOp {
 
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db) {
-    // Iterate CSR node IDs directly with bucket-based type filtering.
-    // This avoids db.iterateType() which reads vertices from OLTP storage — for
-    // 3.8M Messages at ~5μs/read, that's ~19s of pure storage I/O.
-    // CSR iteration with O(1) bucket checks + O(1) degree lookups: <100ms.
+    final int nodeCount = provider.getNodeCount();
+
+    // Fast path: when all arms are single-hop, pre-fetch NeighborViews and scan
+    // degree offset arrays directly. This is pure array arithmetic — no method dispatch,
+    // no getRID calls, no object allocation in the hot loop. Mandatory-arm degree=0
+    // naturally filters non-central-type nodes (e.g., only Messages have both
+    // HAS_TAG OUT > 0 and HAS_CREATOR OUT > 0).
+    final NeighborView[] armViews = new NeighborView[arms.length];
+    boolean allSingleHopViews = true;
+    for (int a = 0; a < arms.length; a++) {
+      if (arms[a].edgeTypes.length != 1) {
+        allSingleHopViews = false;
+        break;
+      }
+      armViews[a] = provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]);
+      if (armViews[a] == null) {
+        allSingleHopViews = false;
+        break;
+      }
+    }
+
+    if (allSingleHopViews)
+      return executeFastScan(armViews, nodeCount);
+
+    // Slow path: per-node CSR lookup (fallback for multi-hop arms or missing views)
+    return executePerNode(provider, db, nodeCount);
+  }
+
+  /**
+   * Vectorized degree-product scan using pre-fetched NeighborView offset arrays.
+   * Pure array arithmetic in the hot loop — no method calls, no object allocation.
+   * <p>
+   * For Q4/Q7 with ~5M CSR nodes and 4 arms: ~40M array reads at ~1ns = ~40ms.
+   * Compared to per-node countEdges: ~20M method calls at ~150ns = ~3s (75x slower).
+   */
+  private long executeFastScan(final NeighborView[] armViews, final int nodeCount) {
+    // Reorder: check mandatory arms first for early exit, optional arms last
+    final int[] mandatoryIdx = new int[arms.length];
+    final int[] optionalIdx = new int[arms.length];
+    int mandatoryCount = 0, optionalCount = 0;
+    for (int a = 0; a < arms.length; a++) {
+      if (arms[a].optional)
+        optionalIdx[optionalCount++] = a;
+      else
+        mandatoryIdx[mandatoryCount++] = a;
+    }
+
+    long total = 0;
+    for (int v = 0; v < nodeCount; v++) {
+      // Mandatory arms: skip if any degree is 0
+      long product = 1;
+      boolean skip = false;
+      for (int i = 0; i < mandatoryCount; i++) {
+        final int degree = armViews[mandatoryIdx[i]].degree(v);
+        if (degree == 0) {
+          skip = true;
+          break;
+        }
+        product *= degree;
+      }
+      if (skip)
+        continue;
+
+      // Optional arms: use max(1, degree)
+      for (int i = 0; i < optionalCount; i++)
+        product *= Math.max(1, armViews[optionalIdx[i]].degree(v));
+
+      total += product;
+    }
+    return total;
+  }
+
+  /**
+   * Fallback: per-node CSR iteration with bucket-based type filtering.
+   */
+  private long executePerNode(final GraphTraversalProvider provider, final Database db,
+      final int nodeCount) {
     final Set<Integer> centralBuckets = CSRCountUtils.buildValidBuckets(db, centralLabel);
     if (centralBuckets == null || centralBuckets.isEmpty())
       return 0;
 
-    final int nodeCount = provider.getNodeCount();
     long total = 0;
-
     for (int nodeId = 0; nodeId < nodeCount; nodeId++) {
       final RID rid = provider.getRID(nodeId);
       if (!centralBuckets.contains(rid.getBucketId()))
