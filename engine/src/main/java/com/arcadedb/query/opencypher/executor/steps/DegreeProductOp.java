@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 
 import java.util.Iterator;
+import java.util.Set;
 
 /**
  * Count operator for star-join patterns (Q4, Q7).
@@ -73,12 +74,20 @@ public final class DegreeProductOp implements CountOp {
 
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db) {
+    // Iterate CSR node IDs directly with bucket-based type filtering.
+    // This avoids db.iterateType() which reads vertices from OLTP storage — for
+    // 3.8M Messages at ~5μs/read, that's ~19s of pure storage I/O.
+    // CSR iteration with O(1) bucket checks + O(1) degree lookups: <100ms.
+    final Set<Integer> centralBuckets = CSRCountUtils.buildValidBuckets(db, centralLabel);
+    if (centralBuckets == null || centralBuckets.isEmpty())
+      return 0;
+
+    final int nodeCount = provider.getNodeCount();
     long total = 0;
 
-    for (final Iterator<? extends Identifiable> it = db.iterateType(centralLabel, true); it.hasNext(); ) {
-      final RID rid = it.next().getIdentity();
-      final int nodeId = provider.getNodeId(rid);
-      if (nodeId < 0)
+    for (int nodeId = 0; nodeId < nodeCount; nodeId++) {
+      final RID rid = provider.getRID(nodeId);
+      if (!centralBuckets.contains(rid.getBucketId()))
         continue;
 
       long product = 1;

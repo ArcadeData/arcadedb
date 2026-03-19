@@ -216,7 +216,8 @@ public final class AntiJoinChainOp implements CountOp {
             && isInequalityViolation(anchorId, target, 0, checkPosition))
           continue;
 
-        // Anti-join: binary search for target in anchor's sorted neighbor list
+        // Anti-join: check if target is in anchor's neighbors (via antiJoinDirection).
+        // The anchorAntiNbrs array is sorted (from getNeighborIds with sorted merge).
         if (Arrays.binarySearch(anchorAntiNbrs, target) >= 0)
           continue;
 
