@@ -225,10 +225,11 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
 
   @Test
   void existsNull() {
+    // exists(null) returns false: null is treated as a non-existent value
     final ResultSet result = database.command("opencypher",
         "RETURN exists(null) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+    assertThat((Boolean) result.next().getProperty("result")).isFalse();
   }
 
   // ==================== isEmpty() Tests ====================

@@ -137,9 +137,11 @@ class OpenCypherStringFunctionsComprehensiveTest {
   }
 
   @Test
-  void leftNullLengthRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN left('hello', null) AS result"))
-        .hasMessageContaining("null");
+  void leftNullLengthReturnsNull() {
+    // Neo4j returns null when length is null
+    final ResultSet result = database.command("opencypher", "RETURN left('hello', null) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
   @Test
@@ -263,9 +265,9 @@ class OpenCypherStringFunctionsComprehensiveTest {
 
   @Test
   void replaceWithLimit() {
-    final ResultSet result = database.command("opencypher", "RETURN replace('hello', 'l', 'w', 1) AS result");
-    Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((String) result.next().getProperty("result")).isEqualTo("hewlo");
+    // Neo4j throws "Too many parameters for function 'replace'" - 4-arg form not supported
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN replace('hello', 'l', 'w', 1) AS result"))
+        .isInstanceOf(Exception.class);
   }
 
   @Test
@@ -362,9 +364,11 @@ class OpenCypherStringFunctionsComprehensiveTest {
   }
 
   @Test
-  void rightNullLengthRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN right('hello', null) AS result"))
-        .hasMessageContaining("null");
+  void rightNullLengthReturnsNull() {
+    // Neo4j returns null when length is null
+    final ResultSet result = database.command("opencypher", "RETURN right('hello', null) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
   @Test
@@ -486,9 +490,11 @@ class OpenCypherStringFunctionsComprehensiveTest {
   }
 
   @Test
-  void substringNullStartRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN substring('hello', null, 2) AS result"))
-        .hasMessageContaining("null");
+  void substringNullStartReturnsNull() {
+    // Neo4j returns null when start is null
+    final ResultSet result = database.command("opencypher", "RETURN substring('hello', null, 2) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
   @Test

@@ -310,10 +310,11 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   }
 
   @Test
-  void cothZeroReturnsNaN() {
+  void cothZeroReturnsInfinity() {
+    // coth(0) = cosh(0)/sinh(0) = 1/0 = +Infinity (mathematically correct)
     final ResultSet result = database.command("opencypher", "RETURN coth(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isNaN();
+    assertThat((Double) result.next().getProperty("result")).isInfinite();
   }
 
   @Test
