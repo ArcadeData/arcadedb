@@ -2330,16 +2330,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.readLock().lock();
       readLockHeld = true;
       try {
-        // Phase 5+: Check if graph needs rebuilding due to pending mutations
-        // With periodic rebuilds (threshold=1000), we may have some pending mutations
-        if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0) {
-          // Graph is out of sync - need to rebuild before searching
+        // Phase 5+: Check if graph needs rebuilding due to pending mutations.
+        // For large graphs, only rebuild when mutations reach the configured threshold to avoid
+        // expensive full rebuilds on every single mutation (see issue #3679).
+        // For small graphs or when graph was never built, rebuild immediately since it's cheap.
+        if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0 && needsGraphRebuild()) {
           lock.readLock().unlock();
           readLockHeld = false;
           lock.writeLock().lock();
           try {
             // Double-check after acquiring write lock
-            if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0) {
+            if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0 && needsGraphRebuild()) {
               LogManager.instance().log(this, Level.FINE,
                   "Rebuilding graph before search (accumulated " + mutationsSinceSerialize.get() + " mutations)");
               buildGraphFromScratch();
@@ -2643,16 +2644,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     lock.readLock().lock();
     readLockHeld = true;
     try {
-      // Phase 5+: Check if graph needs rebuilding due to pending mutations
-      // With periodic rebuilds (threshold=1000), we may have some pending mutations
-      if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0) {
-        // Graph is out of sync - need to rebuild before searching
+      // Phase 5+: Check if graph needs rebuilding due to pending mutations.
+      // For large graphs, only rebuild when mutations reach the configured threshold to avoid
+      // expensive full rebuilds on every single mutation (see issue #3679).
+      // For small graphs or when graph was never built, rebuild immediately since it's cheap.
+      if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0 && needsGraphRebuild()) {
         lock.readLock().unlock();
         readLockHeld = false;
         lock.writeLock().lock();
         try {
           // Double-check after acquiring write lock
-          if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0) {
+          if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0 && needsGraphRebuild()) {
             LogManager.instance().log(this, Level.FINE,
                 "Rebuilding graph before search (accumulated " + mutationsSinceSerialize.get() + " mutations)");
             buildGraphFromScratch();
@@ -3959,6 +3961,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
     return mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE);
+  }
+
+  /**
+   * Determine if the graph needs a rebuild before search.
+   * For large graphs (size >= threshold), only rebuild when mutations reach the configured threshold
+   * to avoid expensive full rebuilds on every single mutation (issue #3679).
+   * For small graphs or when the graph was never built, always rebuild since it's cheap.
+   * Assumes mutationsSinceSerialize > 0 has already been checked by the caller.
+   */
+  private boolean needsGraphRebuild() {
+    if (graphIndex == null)
+      return true; // Graph was never built
+
+    final int threshold = getMutationsBeforeRebuild();
+    if (graphIndex.size() <= threshold)
+      return true; // Small graph — rebuild is cheap
+
+    return mutationsSinceSerialize.get() >= threshold; // Large graph — respect threshold
   }
 
   /**
