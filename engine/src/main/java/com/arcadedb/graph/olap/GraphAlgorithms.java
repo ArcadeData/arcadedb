@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.Vertex.DIRECTION;
 
 import java.util.Arrays;
 import java.util.PriorityQueue;
@@ -136,21 +137,27 @@ public final class GraphAlgorithms {
 
   /**
    * Computes PageRank over the given view for the specified edge types.
-   * Uses pull-based iteration: each node reads contributions FROM its in-neighbors
-   * via backward CSR. Each thread writes to a disjoint range of the next[] array,
+   * Uses pull-based iteration: each node reads contributions FROM its neighbors
+   * via CSR arrays. Each thread writes to a disjoint range of the next[] array,
    * requiring zero synchronization.
+   * <p>
+   * When direction is OUT (directed), out-degree uses forward CSR and pull reads backward CSR.
+   * When direction is BOTH (undirected), out-degree uses forward+backward CSR and pull reads both.
    *
    * @param view       the analytical view (must be built)
    * @param damping    damping factor, typically 0.85
    * @param iterations number of power-iteration steps
+   * @param direction  edge direction: OUT for directed, BOTH for undirected
    * @param edgeTypes  edge types to traverse (null or empty = all)
    * @return double[] of ranks indexed by dense node ID
    */
   public static double[] pageRank(final GraphAnalyticalView view, final double damping,
-      final int iterations, final String... edgeTypes) {
+      final int iterations, final DIRECTION direction, final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
     if (n == 0)
       return new double[0];
+
+    final boolean undirected = direction == DIRECTION.BOTH;
 
     double[] rank = new double[n];
     double[] next = new double[n];
@@ -160,6 +167,7 @@ public final class GraphAlgorithms {
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
     // Precompute outDegree array across all edge types (once, outside iteration loop)
+    // For BOTH direction: degree = forward + backward (undirected total degree)
     final int[] outDeg = new int[n];
     for (final String edgeType : types) {
       final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
@@ -168,6 +176,11 @@ public final class GraphAlgorithms {
       final int[] fwdOffsets = csr.getForwardOffsets();
       for (int u = 0; u < n; u++)
         outDeg[u] += fwdOffsets[u + 1] - fwdOffsets[u];
+      if (undirected) {
+        final int[] bwdOffsets = csr.getBackwardOffsets();
+        for (int u = 0; u < n; u++)
+          outDeg[u] += bwdOffsets[u + 1] - bwdOffsets[u];
+      }
     }
 
     for (int iter = 0; iter < iterations; iter++) {
@@ -175,7 +188,7 @@ public final class GraphAlgorithms {
       final double[] currentRank = rank;
       final double[] nextRank = next;
 
-      // PULL: each node sums contributions from backward neighbors — parallel, zero sync
+      // PULL: each node sums contributions from neighbors — parallel, zero sync
       parallelForRange(n, (start, end) -> {
         for (int u = start; u < end; u++) {
           double sum = 0;
@@ -183,12 +196,23 @@ public final class GraphAlgorithms {
             final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
             if (csr == null)
               continue;
+            // Always pull from backward neighbors (nodes that point to u)
             final int[] bwdOffsets = csr.getBackwardOffsets();
             final int[] bwdNeighbors = csr.getBackwardNeighbors();
             for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
               final int v = bwdNeighbors[j];
               if (outDeg[v] > 0)
                 sum += currentRank[v] / outDeg[v];
+            }
+            // For BOTH direction: also pull from forward neighbors (undirected edges)
+            if (undirected) {
+              final int[] fwdOffsets = csr.getForwardOffsets();
+              final int[] fwdNeighbors = csr.getForwardNeighbors();
+              for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
+                final int v = fwdNeighbors[j];
+                if (outDeg[v] > 0)
+                  sum += currentRank[v] / outDeg[v];
+              }
             }
           }
           nextRank[u] = base + damping * sum;
@@ -215,10 +239,18 @@ public final class GraphAlgorithms {
   }
 
   /**
-   * Computes PageRank with default parameters: damping=0.85, iterations=20.
+   * Computes PageRank over the given view for the specified edge types using directed (OUT) semantics.
+   */
+  public static double[] pageRank(final GraphAnalyticalView view, final double damping,
+      final int iterations, final String... edgeTypes) {
+    return pageRank(view, damping, iterations, DIRECTION.OUT, edgeTypes);
+  }
+
+  /**
+   * Computes PageRank with default parameters: damping=0.85, iterations=20, direction=OUT.
    */
   public static double[] pageRank(final GraphAnalyticalView view, final String... edgeTypes) {
-    return pageRank(view, 0.85, 20, edgeTypes);
+    return pageRank(view, 0.85, 20, DIRECTION.OUT, edgeTypes);
   }
 
   // --- Connected Components (Parallel Min-Label Propagation) ---

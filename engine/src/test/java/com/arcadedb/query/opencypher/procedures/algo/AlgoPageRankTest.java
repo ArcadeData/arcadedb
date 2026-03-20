@@ -182,6 +182,56 @@ class AlgoPageRankTest {
   }
 
   @Test
+  void pageRankBothDirectionCSRAndOLTPProduceIdenticalResults() {
+    // Step 1: Run PageRank with direction=BOTH without GAV → OLTP path
+    final Map<String, Double> oltpScores = new HashMap<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'BOTH'}) " +
+            "YIELD node, score RETURN node.name AS name, score")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        oltpScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
+      }
+    }
+    assertThat(oltpScores).hasSize(3);
+
+    // Step 2: Build a GAV so the CSR path is used
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("pagerank-both-csr")
+        .withVertexTypes("Page")
+        .withEdgeTypes("LINKS")
+        .build();
+    gav.awaitReady(10, TimeUnit.SECONDS);
+
+    // Step 3: Run PageRank with direction=BOTH with GAV → CSR path
+    final Map<String, Double> csrScores = new HashMap<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'BOTH'}) " +
+            "YIELD node, score RETURN node.name AS name, score")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        csrScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
+      }
+    }
+    assertThat(csrScores).hasSize(3);
+
+    // Step 4: Compare — CSR and OLTP paths should match closely
+    for (final Map.Entry<String, Double> entry : oltpScores.entrySet()) {
+      final String name = entry.getKey();
+      assertThat(csrScores).containsKey(name);
+      assertThat(csrScores.get(name)).isCloseTo(entry.getValue(), Offset.offset(1e-4));
+    }
+
+    // Step 5: For undirected graph, scores should be more evenly distributed than directed
+    double sum = 0;
+    for (final double s : csrScores.values())
+      sum += s;
+    assertThat(sum).isBetween(0.9, 1.1);
+
+    gav.shutdown();
+  }
+
+  @Test
   void pageRankEmptyGraph() {
     final DatabaseFactory emptyFactory = new DatabaseFactory("./target/databases/test-algo-pagerank-empty");
     if (emptyFactory.exists())
