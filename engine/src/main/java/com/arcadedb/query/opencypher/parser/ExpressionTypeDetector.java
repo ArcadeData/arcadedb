@@ -217,6 +217,14 @@ class ExpressionTypeDetector {
         return builder.parseVectorNormFunction(vecExpr1.vectorNormFunction());
       if (vecExpr1.vectorDistanceFunction() != null)
         return builder.parseVectorDistanceFunction(vecExpr1.vectorDistanceFunction());
+      // trimFunction and normalizeFunction are special grammar rules in expression1.
+      // Check them BEFORE findFunctionInvocationRecursive, which would otherwise find
+      // an inner function (e.g., toLower inside trim(toLower(...))) and return it
+      // instead of the outer trim/normalize.
+      if (vecExpr1.trimFunction() != null)
+        return builder.parseTrimFunction(vecExpr1.trimFunction());
+      if (vecExpr1.normalizeFunction() != null)
+        return builder.parseNormalizeFunction(vecExpr1.normalizeFunction());
     }
 
     // Check for top-level list literals BEFORE function invocations.

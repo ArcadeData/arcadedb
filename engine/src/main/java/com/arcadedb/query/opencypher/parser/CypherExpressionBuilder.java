@@ -385,6 +385,10 @@ class CypherExpressionBuilder {
         return parseVectorNormFunction(e1.vectorNormFunction());
       if (e1.vectorDistanceFunction() != null)
         return parseVectorDistanceFunction(e1.vectorDistanceFunction());
+      if (e1.trimFunction() != null)
+        return parseTrimFunction(e1.trimFunction());
+      if (e1.normalizeFunction() != null)
+        return parseNormalizeFunction(e1.normalizeFunction());
       // Check for map literal
       final Cypher25Parser.MapContext e1MapCtx = findMapRecursive(e1);
       if (e1MapCtx != null)
@@ -807,7 +811,7 @@ class CypherExpressionBuilder {
    * Parse a trimFunction context into a FunctionCallExpression.
    * Handles both simple trim(source) and extended trim(LEADING/TRAILING/BOTH trimChar FROM source).
    */
-  private Expression parseTrimFunction(final Cypher25Parser.TrimFunctionContext ctx) {
+  Expression parseTrimFunction(final Cypher25Parser.TrimFunctionContext ctx) {
     final List<Expression> args = new ArrayList<>();
 
     if (ctx.FROM() != null) {
@@ -820,11 +824,13 @@ class CypherExpressionBuilder {
 
       args.add(new LiteralExpression(mode, mode));
 
-      // trimCharacterString may be null (e.g., trim(LEADING FROM source))
+      // trimCharacterString may be absent (e.g., trim(LEADING FROM source) - trim whitespace)
+      // vs explicitly null (e.g., trim(null FROM source) - return null per Cypher spec).
+      // Use empty string to signal "default whitespace" when no character is provided.
       if (ctx.trimCharacterString != null)
         args.add(parseExpression(ctx.trimCharacterString));
       else
-        args.add(new LiteralExpression(null, "null"));
+        args.add(new LiteralExpression("", "''"));
 
       args.add(parseExpression(ctx.trimSource));
     } else {
@@ -833,6 +839,19 @@ class CypherExpressionBuilder {
     }
 
     return new FunctionCallExpression("trim", args, false);
+  }
+
+  /**
+   * Parse a normalizeFunction context into a FunctionCallExpression.
+   * Handles normalize(string) and normalize(string, normalForm).
+   * The normalForm keyword (NFC/NFD/NFKC/NFKD) is passed as a string literal argument.
+   */
+  Expression parseNormalizeFunction(final Cypher25Parser.NormalizeFunctionContext ctx) {
+    final List<Expression> args = new ArrayList<>();
+    args.add(parseExpression(ctx.expression()));
+    if (ctx.normalForm() != null)
+      args.add(new LiteralExpression(ctx.normalForm().getText(), ctx.normalForm().getText()));
+    return new FunctionCallExpression("normalize", args, false);
   }
 
   /**
