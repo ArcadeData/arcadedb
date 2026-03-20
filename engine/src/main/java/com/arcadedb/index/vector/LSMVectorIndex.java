@@ -90,6 +90,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -159,11 +160,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile PQVectors            pqVectors;
   private volatile ProductQuantization  productQuantization;
 
-  // Thresholds for graph state transitions
-  // Note: JVector's addGraphNode() is meant for pre-build additions, not post-build incremental updates
-  // Therefore we use periodic rebuilds which amortize cost over many operations (10x better than
-  // rebuild-on-every-search)
-  // Mutation threshold is now configurable via metadata.mutationsBeforeRebuild or GlobalConfiguration
+  // Async graph rebuild support (issue #3679): when mutations reach the configured threshold,
+  // the graph is rebuilt in a background daemon thread and hot-swapped when ready.
+  // This prevents vectorNeighbors queries from blocking for minutes on large indexes.
+  private volatile Thread  asyncRebuildThread     = null;
+  private volatile boolean asyncRebuildInProgress = false;
+
+  // Delta vectors inserted since last graph build, cached in RAM for brute-force scan during search.
+  // Writers (put/remove/rebuild) hold write lock; readers (search) take a volatile snapshot.
+  private static final class DeltaVectorEntry {
+    final int     vectorId;
+    final RID     rid;
+    final float[] vector;
+
+    DeltaVectorEntry(final int vectorId, final RID rid, final float[] vector) {
+      this.vectorId = vectorId;
+      this.rid = rid;
+      this.vector = vector;
+    }
+  }
+
+  private volatile List<DeltaVectorEntry> deltaVectors = new ArrayList<>();
 
   // Compaction support
   private final    AtomicInteger           currentMutablePages;
@@ -993,6 +1010,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param graphCallback Optional callback for graph build progress
    */
   private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback) {
+    // Snapshot the next vector ID so we know which delta entries were included in this build
+    final int deltaSnapshotId = nextId.get();
+
     // Always have a progress reporter: if caller didn't provide one, log throttled progress every ~5s
     final GraphBuildCallback effectiveGraphCallback;
     if (graphCallback != null) {
@@ -1354,6 +1374,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
         metrics.incrementGraphRebuildCount();
         // Reset page tracking since we rebuilt from persisted pages
         currentInsertPageNum = -1;
+
+        // Keep only delta entries inserted DURING the rebuild (vectorId >= snapshot)
+        final List<DeltaVectorEntry> remaining = new ArrayList<>();
+        for (final DeltaVectorEntry e : deltaVectors)
+          if (e.vectorId >= deltaSnapshotId)
+            remaining.add(e);
+        this.deltaVectors = remaining;
       } finally {
         lock.writeLock().unlock();
       }
@@ -1616,6 +1643,87 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.SEVERE, "Error rebuilding graph after mutations", e);
       // Don't throw - allow operations to continue, will retry on next threshold
     }
+  }
+
+  /**
+   * Minimum graph size to use async rebuild. Below this, synchronous rebuild is fast enough.
+   * Above this threshold, a full rebuild can take seconds to minutes, so async is preferred.
+   */
+  private static final int ASYNC_REBUILD_MIN_GRAPH_SIZE = 1000;
+
+  /**
+   * Check if the graph needs rebuilding before a search, and trigger the appropriate rebuild strategy.
+   * <ul>
+   *   <li>If graph was never built (graphIndex == null): synchronous build (no existing graph to search).</li>
+   *   <li>If threshold reached and graph is small (&lt; 1000 vectors): synchronous rebuild (fast enough).</li>
+   *   <li>If threshold reached and graph is large (&ge; 1000 vectors): async rebuild + search the current graph
+   *       (valid but excludes the newest vectors not yet incorporated into the graph topology).</li>
+   *   <li>Below threshold: no rebuild — search uses current graph.</li>
+   * </ul>
+   *
+   * @see <a href="https://github.com/ArcadeData/arcadedb/issues/3679">Issue #3679</a>
+   */
+  private void rebuildGraphBeforeSearch() {
+    if (graphState != GraphState.MUTABLE || mutationsSinceSerialize.get() <= 0)
+      return;
+
+    final int mutations = mutationsSinceSerialize.get();
+    final int threshold = getMutationsBeforeRebuild();
+    final boolean isSmallGraph = graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE;
+
+    if (isSmallGraph) {
+      // Small graph or first-ever build: synchronous rebuild (fast enough to not block noticeably)
+      lock.writeLock().lock();
+      try {
+        if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0
+            && (graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE))
+          buildGraphFromScratch();
+      } finally {
+        lock.writeLock().unlock();
+      }
+    } else if (mutations >= threshold && !asyncRebuildInProgress)
+      // Large graph (>= 1000 vectors): async rebuild only when threshold reached.
+      // Search uses the current graph (valid, just missing newest vectors) while rebuild runs in background.
+      startAsyncGraphRebuild();
+  }
+
+  /**
+   * Start an asynchronous graph rebuild in a background daemon thread (issue #3679).
+   * The current graph remains available for searches while the rebuild is in progress.
+   * When the rebuild completes, the new graph is hot-swapped atomically.
+   * If a rebuild is already in progress, this method does nothing (the next search will check again).
+   */
+  private synchronized void startAsyncGraphRebuild() {
+    if (asyncRebuildInProgress)
+      return; // Another rebuild is already running
+
+    asyncRebuildInProgress = true;
+    final int mutations = mutationsSinceSerialize.get();
+
+    LogManager.instance().log(this, Level.INFO,
+        "Starting async graph rebuild (accumulated %d mutations, threshold: %d, index: %s)",
+        mutations, getMutationsBeforeRebuild(), indexName);
+
+    asyncRebuildThread = new Thread(() -> {
+      try {
+        buildGraphFromScratch();
+        LogManager.instance().log(this, Level.INFO,
+            "Async graph rebuild completed for index: %s", indexName);
+      } catch (final Exception e) {
+        if (Thread.currentThread().isInterrupted()) {
+          LogManager.instance().log(this, Level.INFO,
+              "Async graph rebuild cancelled for index: %s", indexName);
+        } else {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Error during async graph rebuild for index %s: %s", indexName, e.getMessage());
+        }
+      } finally {
+        asyncRebuildInProgress = false;
+        asyncRebuildThread = null;
+      }
+    }, "VectorIndex-AsyncRebuild-" + indexName);
+    asyncRebuildThread.setDaemon(true);
+    asyncRebuildThread.start();
   }
 
   /**
@@ -2271,6 +2379,51 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Brute-force scan of delta vectors (inserted since last graph rebuild) and merge with graph search results.
+   * Cost is negligible for small delta buffers (microseconds for ≤100 vectors).
+   */
+  private void mergeWithDeltaScan(final VectorFloat<?> queryVectorFloat, final int k,
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results) {
+    final List<DeltaVectorEntry> currentDelta = deltaVectors; // volatile snapshot
+    if (currentDelta.isEmpty())
+      return;
+
+    // Collect already-seen RIDs from graph results to avoid duplicates
+    final Set<RID> seenRIDs = new HashSet<>(results.size());
+    for (final Pair<RID, Float> r : results)
+      seenRIDs.add(r.getFirst());
+
+    boolean added = false;
+    for (final DeltaVectorEntry delta : currentDelta) {
+      if (seenRIDs.contains(delta.rid))
+        continue;
+      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(delta.rid))
+        continue;
+      // Check if deleted after being added to delta
+      final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(delta.vectorId);
+      if (loc != null && loc.deleted)
+        continue;
+
+      final VectorFloat<?> deltaVf = vts.createFloatVector(delta.vector);
+      final float score = metadata.similarityFunction.compare(queryVectorFloat, deltaVf);
+      final float distance = switch (metadata.similarityFunction) {
+        case COSINE -> 2.0f * (1.0f - score);
+        case EUCLIDEAN -> score;
+        case DOT_PRODUCT -> -score;
+        default -> score;
+      };
+      results.add(new Pair<>(delta.rid, distance));
+      added = true;
+    }
+
+    if (added) {
+      results.sort((a, b) -> Float.compare(a.getSecond(), b.getSecond()));
+      if (results.size() > k)
+        results.subList(k, results.size()).clear();
+    }
+  }
+
+  /**
    * Search for k nearest neighbors to the given vector and return results with similarity scores.
    * This method is similar to HnswVectorIndex.findNeighborsFromVector and avoids the need to
    * recalculate distances after the search.
@@ -2326,35 +2479,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Ensure graph is available (lazy-load from disk if needed, or build if not persisted)
       ensureGraphAvailable();
 
+      // Issue #3679: rebuild graph if needed (sync for first build or small graphs, async for large graphs)
+      rebuildGraphBeforeSearch();
+
       boolean readLockHeld = false;
       lock.readLock().lock();
       readLockHeld = true;
       try {
-        // Phase 5+: Check if graph needs rebuilding due to pending mutations.
-        // For large graphs, only rebuild when mutations reach the configured threshold to avoid
-        // expensive full rebuilds on every single mutation (see issue #3679).
-        // For small graphs or when graph was never built, rebuild immediately since it's cheap.
-        if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0 && needsGraphRebuild()) {
-          lock.readLock().unlock();
-          readLockHeld = false;
-          lock.writeLock().lock();
-          try {
-            // Double-check after acquiring write lock
-            if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0 && needsGraphRebuild()) {
-              LogManager.instance().log(this, Level.FINE,
-                  "Rebuilding graph before search (accumulated " + mutationsSinceSerialize.get() + " mutations)");
-              buildGraphFromScratch();
-            }
-            // Downgrade to read lock
-            lock.readLock().lock();
-            readLockHeld = true;
-          } finally {
-            lock.writeLock().unlock();
+        if (graphIndex == null || vectorIndex.size() == 0) {
+          // No graph yet — still return delta-only results if available
+          if (!deltaVectors.isEmpty()) {
+            final VectorFloat<?> qvf = vts.createFloatVector(queryVector);
+            final List<Pair<RID, Float>> results = new ArrayList<>();
+            mergeWithDeltaScan(qvf, k, allowedRIDs, results);
+            return results;
           }
-        }
-
-        if (graphIndex == null || vectorIndex.size() == 0)
           return Collections.emptyList();
+        }
 
         // Convert query vector to VectorFloat
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
@@ -2419,6 +2560,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             skippedOutOfBounds++;
           }
         }
+
+        // Merge with delta vectors inserted since last graph rebuild
+        mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
 
         LogManager.instance()
             .log(this, Level.INFO, "Vector search returned %d results (skipped: %d out of bounds, %d deleted/null)",
@@ -2518,8 +2662,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       lock.readLock().lock();
       try {
-        if (graphIndex == null || vectorIndex.size() == 0)
+        if (graphIndex == null || vectorIndex.size() == 0) {
+          // No graph yet — still return delta-only results if available
+          if (!deltaVectors.isEmpty()) {
+            final VectorFloat<?> qvf = vts.createFloatVector(queryVector);
+            final List<Pair<RID, Float>> results = new ArrayList<>();
+            mergeWithDeltaScan(qvf, k, allowedRIDs, results);
+            return results;
+          }
           return Collections.emptyList();
+        }
 
         // Convert query vector to VectorFloat
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
@@ -2578,6 +2730,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             skippedOutOfBounds++;
           }
         }
+
+        // Merge with delta vectors inserted since last graph rebuild
+        mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
 
         // Log performance metrics
         final long elapsedNanos = System.nanoTime() - startTime;
@@ -2640,114 +2795,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Ensure graph is available (lazy-load from disk if needed)
     ensureGraphAvailable();
 
+    // Issue #3679: rebuild graph if needed (sync for first build or small graphs, async for large graphs)
+    rebuildGraphBeforeSearch();
+
     boolean readLockHeld = false;
     lock.readLock().lock();
     readLockHeld = true;
     try {
-      // Phase 5+: Check if graph needs rebuilding due to pending mutations.
-      // For large graphs, only rebuild when mutations reach the configured threshold to avoid
-      // expensive full rebuilds on every single mutation (see issue #3679).
-      // For small graphs or when graph was never built, rebuild immediately since it's cheap.
-      if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0 && needsGraphRebuild()) {
-        lock.readLock().unlock();
-        readLockHeld = false;
-        lock.writeLock().lock();
-        try {
-          // Double-check after acquiring write lock
-          if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0 && needsGraphRebuild()) {
-            LogManager.instance().log(this, Level.FINE,
-                "Rebuilding graph before search (accumulated " + mutationsSinceSerialize.get() + " mutations)");
-            buildGraphFromScratch();
-          }
-          // Downgrade to read lock
-          lock.readLock().lock();
-          readLockHeld = true;
-        } finally {
-          lock.writeLock().unlock();
-        }
-      }
-
-      if (graphIndex == null)
-        return new IndexCursor() {
-          @Override
-          public boolean hasNext() {
-            return false;
-          }
-
-          @Override
-          public Identifiable next() {
-            return null;
-          }
-
-          @Override
-          public Identifiable getRecord() {
-            return null;
-          }
-
-          @Override
-          public Object[] getKeys() {
-            return new Object[0];
-          }
-
-          @Override
-          public byte[] getBinaryKeyTypes() {
-            return new byte[0];
-          }
-
-          @Override
-          public BinaryComparator getComparator() {
-            return null;
-          }
-
-          @Override
-          public long estimateSize() {
-            return 0;
-          }
-
-          @Override
-          public Iterator<Identifiable> iterator() {
-            return Collections.emptyIterator();
-          }
-        };
-
-      // Perform search using JVector 4.0 API
-      final List<RID> resultRIDs = new ArrayList<>();
-
-      if (vectorIndex.size() == 0) {
-        LogManager.instance().log(this, Level.INFO, "No vectors in index, returning empty results");
+      // Perform scored search via findNeighborsFromVector (includes delta scan)
+      final List<RID> resultRIDs;
+      if (graphIndex == null && deltaVectors.isEmpty()) {
+        resultRIDs = Collections.emptyList();
       } else {
-        // Convert query vector to VectorFloat
-        final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
-
-        // Create lazy-loading RandomAccessVectorValues
-        // Vector property name is the first property in the index
-        final String vectorProp =
-            metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) :
-                "vector";
-
-        final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
-            vectorProp,
-            vectorIndex, ordinalToVectorId, this  // Pass LSM index reference for quantization support
-        );
-
-        // Perform search
-        final SearchResult searchResult = GraphSearcher.search(queryVectorFloat, k, vectors,
-            metadata.similarityFunction,
-            graphIndex, Bits.ALL);
-
-        // Extract RIDs from search results using ordinal mapping
-        for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
-          final int ordinal = nodeScore.node;
-          if (ordinal >= 0 && ordinal < ordinalToVectorId.length) {
-            final int vectorId = ordinalToVectorId[ordinal];
-            final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
-            if (loc != null && !loc.deleted) {
-              resultRIDs.add(loc.rid);
-            }
-          }
-        }
-
-        LogManager.instance().log(this, Level.FINE, "Vector search returned " + resultRIDs.size() + " results");
+        final List<Pair<RID, Float>> scoredResults = findNeighborsFromVector(queryVector, k, null);
+        resultRIDs = new ArrayList<>(scoredResults.size());
+        for (final Pair<RID, Float> p : scoredResults)
+          resultRIDs.add(p.getFirst());
       }
 
       return new IndexCursor() {
@@ -2863,6 +2926,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
           persistVectorWithLocation(id, rid, vector);
 
+          // Cache in delta buffer so it's visible to search before the next graph rebuild
+          deltaVectors.add(new DeltaVectorEntry(id, rid, vector));
+
           // Phase 5+: Periodic rebuild strategy (amortizes cost over many operations)
           if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
             // Transition to MUTABLE state to track ongoing mutations
@@ -2930,6 +2996,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Persist deletion tombstones
         if (!deletedIds.isEmpty()) {
           persistDeletionTombstones(deletedIds);
+
+          // Remove matching entries from delta buffer
+          if (!deltaVectors.isEmpty())
+            deltaVectors.removeIf(entry -> entry.rid.equals(rid));
 
           // Phase 5+: Periodic rebuild strategy (amortizes cost over many operations)
           if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
@@ -3299,6 +3369,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public void close() {
+    // Cancel any in-progress async graph rebuild
+    final Thread rebuildThread = asyncRebuildThread;
+    if (rebuildThread != null && rebuildThread.isAlive()) {
+      rebuildThread.interrupt();
+      try {
+        rebuildThread.join(5000); // Wait up to 5 seconds for clean shutdown
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      asyncRebuildThread = null;
+      asyncRebuildInProgress = false;
+    }
     flush();
   }
 
@@ -3395,6 +3477,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD);
     stats.put("mutationsThreshold", metadata.mutationsBeforeRebuild > 0 ?
         (long) metadata.mutationsBeforeRebuild : (long) defaultMutationsThreshold);
+
+    // Delta vectors cached in RAM for brute-force scan between rebuilds
+    stats.put("deltaVectorsCount", (long) deltaVectors.size());
 
     // Populate metrics from LSMVectorIndexMetrics
     metrics.populateStats(stats);
@@ -3961,24 +4046,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
     return mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE);
-  }
-
-  /**
-   * Determine if the graph needs a rebuild before search.
-   * For large graphs (size >= threshold), only rebuild when mutations reach the configured threshold
-   * to avoid expensive full rebuilds on every single mutation (issue #3679).
-   * For small graphs or when the graph was never built, always rebuild since it's cheap.
-   * Assumes mutationsSinceSerialize > 0 has already been checked by the caller.
-   */
-  private boolean needsGraphRebuild() {
-    if (graphIndex == null)
-      return true; // Graph was never built
-
-    final int threshold = getMutationsBeforeRebuild();
-    if (graphIndex.size() <= threshold)
-      return true; // Small graph — rebuild is cheap
-
-    return mutationsSinceSerialize.get() >= threshold; // Large graph — respect threshold
   }
 
   /**
