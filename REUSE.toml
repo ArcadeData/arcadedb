@@ -49,3 +49,8 @@ SPDX-License-Identifier = "Apache-2.0"
 path = ["grpc-client/docs/*.txt"]
 SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
 SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["glama.json","server.json"]
+SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
+SPDX-License-Identifier = "Apache-2.0"
