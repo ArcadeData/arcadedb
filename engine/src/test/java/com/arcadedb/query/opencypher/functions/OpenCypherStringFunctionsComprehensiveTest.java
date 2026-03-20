@@ -146,7 +146,7 @@ class OpenCypherStringFunctionsComprehensiveTest {
 
   @Test
   void leftNegativeLengthRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN left('hello', -1) AS result"))
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN left('hello', -1) AS result").next())
         .hasMessageContaining("negative");
   }
 
@@ -266,7 +266,7 @@ class OpenCypherStringFunctionsComprehensiveTest {
   @Test
   void replaceWithLimit() {
     // Neo4j throws "Too many parameters for function 'replace'" - 4-arg form not supported
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN replace('hello', 'l', 'w', 1) AS result"))
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN replace('hello', 'l', 'w', 1) AS result").next())
         .isInstanceOf(Exception.class);
   }
 
@@ -373,7 +373,7 @@ class OpenCypherStringFunctionsComprehensiveTest {
 
   @Test
   void rightNegativeLengthRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN right('hello', -1) AS result"))
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN right('hello', -1) AS result").next())
         .hasMessageContaining("negative");
   }
 
@@ -499,13 +499,13 @@ class OpenCypherStringFunctionsComprehensiveTest {
 
   @Test
   void substringNegativeStartRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN substring('hello', -1, 2) AS result"))
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN substring('hello', -1, 2) AS result").next())
         .hasMessageContaining("negative");
   }
 
   @Test
   void substringNegativeLengthRaisesError() {
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN substring('hello', 1, -1) AS result"))
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN substring('hello', 1, -1) AS result").next())
         .hasMessageContaining("negative");
   }
 
