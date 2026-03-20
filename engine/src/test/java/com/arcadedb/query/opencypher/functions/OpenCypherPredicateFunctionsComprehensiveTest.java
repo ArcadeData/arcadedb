@@ -206,7 +206,7 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
   void existsWithPattern() {
     final ResultSet result = database.command("opencypher",
         "MATCH (p:Person) " +
-            "RETURN p.name AS name, exists((p)-[:ACTED_IN]->()) AS hasActedIn " +
+            "RETURN p.name AS name, EXISTS { (p)-[:ACTED_IN]->() } AS hasActedIn " +
             "ORDER BY name");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     // Keanu and Carrie acted in The Matrix

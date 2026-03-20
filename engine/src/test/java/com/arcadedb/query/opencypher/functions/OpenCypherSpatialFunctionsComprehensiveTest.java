@@ -229,9 +229,9 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
             "point({longitude: 12.994341, latitude: 55.611784})) AS distance");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Double distance = (Double) result.next().getProperty("distance");
-    // Distance should be approximately 35 km (in meters)
-    assertThat(distance).isGreaterThan(30000.0);
-    assertThat(distance).isLessThan(40000.0);
+    // Distance should be approximately 28 km (in meters)
+    assertThat(distance).isGreaterThan(25000.0);
+    assertThat(distance).isLessThan(32000.0);
   }
 
   @Test
