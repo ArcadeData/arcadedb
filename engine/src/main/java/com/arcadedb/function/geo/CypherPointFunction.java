@@ -47,7 +47,7 @@ public class CypherPointFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args == null || args.length == 0 || args.length > 2)
-      throw new CommandExecutionException("point() requires exactly one map argument: point({...})");
+      throw new CommandExecutionException("point() requires either one map argument (point({...})) or two numeric arguments (point(latitude, longitude))");
 
     // 2-arg positional form: point(latitude, longitude) → WGS-84 2D
     if (args.length == 2) {
