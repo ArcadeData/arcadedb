@@ -40,6 +40,6 @@ public class SQLFunctionStandardDeviation extends SQLFunctionVariance {
     final Object variance = super.getResult();
     if (variance != null)
       return Math.sqrt((Double) variance);
-    return null;
+    return 0.0;
   }
 }
