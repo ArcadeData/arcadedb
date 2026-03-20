@@ -49,6 +49,17 @@ public class TrimFunction implements StatelessFunction {
       return args[0].toString().strip();
     }
 
+    if (args.length == 2) {
+      // 2-arg form: btrim(source, trimCharacter) - trim both sides with specified chars
+      if (args[0] == null || args[1] == null)
+        return null;
+      final String source = args[0].toString();
+      final String trimChar = args[1].toString();
+      if (trimChar.isEmpty())
+        return source.strip();
+      return stripLeading(stripTrailing(source, trimChar), trimChar);
+    }
+
     if (args.length == 3) {
       // Extended form: trim(mode, trimCharacter, source)
       final String mode = args[0].toString();
@@ -57,7 +68,9 @@ public class TrimFunction implements StatelessFunction {
         return null;
 
       final String trimChar = args[1] != null ? args[1].toString() : null;
-      if (trimChar == null || trimChar.isEmpty())
+      if (trimChar == null)
+        return null;
+      if (trimChar.isEmpty())
         return switch (mode) {
           case "LEADING" -> source.stripLeading();
           case "TRAILING" -> source.stripTrailing();
@@ -71,20 +84,20 @@ public class TrimFunction implements StatelessFunction {
       };
     }
 
-    throw new CommandExecutionException("trim() requires 1 or 3 arguments");
+    throw new CommandExecutionException("trim() requires 1, 2, or 3 arguments");
   }
 
-  private static String stripLeading(final String source, final String trimChar) {
+  static String stripLeading(final String source, final String trimChars) {
     int start = 0;
-    while (start < source.length() && source.startsWith(trimChar, start))
-      start += trimChar.length();
+    while (start < source.length() && trimChars.indexOf(source.charAt(start)) >= 0)
+      start++;
     return source.substring(start);
   }
 
-  private static String stripTrailing(final String source, final String trimChar) {
+  static String stripTrailing(final String source, final String trimChars) {
     int end = source.length();
-    while (end >= trimChar.length() && source.startsWith(trimChar, end - trimChar.length()))
-      end -= trimChar.length();
+    while (end > 0 && trimChars.indexOf(source.charAt(end - 1)) >= 0)
+      end--;
     return source.substring(0, end);
   }
 }
