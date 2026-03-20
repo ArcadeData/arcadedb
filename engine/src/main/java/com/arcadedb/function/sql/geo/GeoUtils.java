@@ -32,6 +32,7 @@ import org.locationtech.spatial4j.shape.Shape;
 import org.locationtech.spatial4j.shape.jts.JtsGeometry;
 
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Geospatial utility class.
@@ -69,6 +70,20 @@ public class GeoUtils {
       return null;
     if (value instanceof Shape shape)
       return shape;
+    // Cypher point() returns a Map with x/y or longitude/latitude keys
+    if (value instanceof Map<?, ?> map) {
+      double x, y;
+      if (map.containsKey("x") && map.containsKey("y")) {
+        x = ((Number) map.get("x")).doubleValue();
+        y = ((Number) map.get("y")).doubleValue();
+      } else if (map.containsKey("longitude") && map.containsKey("latitude")) {
+        x = ((Number) map.get("longitude")).doubleValue();
+        y = ((Number) map.get("latitude")).doubleValue();
+      } else {
+        throw new IllegalArgumentException("Cannot parse geometry from map: missing x/y or longitude/latitude keys");
+      }
+      return SPATIAL_CONTEXT.getShapeFactory().pointXY(x, y);
+    }
     final String wkt = value.toString().trim();
     if (wkt.isEmpty())
       return null;
