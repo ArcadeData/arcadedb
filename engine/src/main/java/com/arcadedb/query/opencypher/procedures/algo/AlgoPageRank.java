@@ -115,7 +115,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final GraphTraversalProvider provider = weightProperty == null ? findProvider(db, null) : null;
     if (provider instanceof GraphAnalyticalView gav) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(context, gav, dampingFactor, maxIterations);
+      return executeWithCSR(context, gav, dampingFactor, maxIterations, direction);
     }
 
     // Fall back to OLTP path
@@ -123,12 +123,12 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav,
-      final double dampingFactor, final int maxIterations) {
+      final double dampingFactor, final int maxIterations, final Vertex.DIRECTION direction) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
-    final double[] scores = GraphAlgorithms.pageRank(gav, dampingFactor, maxIterations);
+    final double[] scores = GraphAlgorithms.pageRank(gav, dampingFactor, maxIterations, direction);
 
     // Set result count hint for CallStep count-only optimization
     context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
