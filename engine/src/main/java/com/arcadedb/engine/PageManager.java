@@ -254,8 +254,17 @@ public class PageManager extends LockContext {
       final List<MutablePage> pagesToWrite = new ArrayList<>((newPages != null ? newPages.size() : 0) + modifiedPages.size());
 
       if (newPages != null)
-        for (final MutablePage p : newPages.values())
+        for (final MutablePage p : newPages.values()) {
           pagesToWrite.add(updatePageVersion(p, true));
+
+          // Update page count eagerly so getTotalPages() reflects new pages immediately,
+          // even before the async flush thread writes them to disk
+          final PageId pid = p.getPageId();
+          final PaginatedComponent component = (PaginatedComponent) ((DatabaseInternal) pid.getDatabase()).getSchema()
+                  .getFileByIdIfExists(pid.getFileId());
+          if (component != null)
+            component.updatePageCount(pid.getPageNumber() + 1);
+        }
 
       for (final MutablePage p : modifiedPages.values())
         pagesToWrite.add(updatePageVersion(p, false));

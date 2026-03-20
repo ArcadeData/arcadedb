@@ -640,7 +640,7 @@ class GAVEligibilityTest {
         result.next();
 
       final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
-      System.out.println("Q9 PROFILE with GAV:\n" + planString);
+//      System.out.println("Q9 PROFILE with GAV:\n" + planString);
       assertThat(planString).contains("COUNT ANTI-JOIN CHAIN");
       result.close();
     } finally {

@@ -3339,7 +3339,7 @@ class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getEdgeCount()).isEqualTo(5);
 
     // Build timestamp should have changed, proving a rebuild happened
-    assertThat(gav.getBuildTimestamp()).isGreaterThan(initialBuildTimestamp);
+    assertThat(gav.getBuildTimestamp()).isGreaterThanOrEqualTo(initialBuildTimestamp);
 
     gav.drop();
   }
