@@ -33,10 +33,24 @@ public class LTrimFunction implements StatelessFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("lTrim() requires exactly one argument");
-    if (args[0] == null)
-      return null;
-    return args[0].toString().stripLeading();
+    if (args.length == 1) {
+      if (args[0] == null)
+        return null;
+      return args[0].toString().stripLeading();
+    }
+    if (args.length == 2) {
+      if (args[0] == null || args[1] == null)
+        return null;
+      final String source = args[0].toString();
+      final String trimChar = args[1].toString();
+      if (trimChar.isEmpty())
+        return source.stripLeading();
+      return stripLeading(source, trimChar);
+    }
+    throw new CommandExecutionException("lTrim() requires 1 or 2 arguments");
+  }
+
+  private static String stripLeading(final String source, final String trimChars) {
+    return TrimFunction.stripLeading(source, trimChars);
   }
 }
