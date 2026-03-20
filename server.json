@@ -3,7 +3,7 @@
   "name": "com.arcadedb/mcp-server",
   "title": "ArcadeDB MCP Server",
   "description": "Built-in MCP server for ArcadeDB multi-model database (graph, document, vector, time-series)",
-  "version": "26.4.1-SNAPSHOT",
+  "version": "26.3.2",
   "repository": {
     "url": "https://github.com/ArcadeData/arcadedb",
     "source": "github"
@@ -11,7 +11,7 @@
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "docker.io/arcadedata/arcadedb:26.4.1-SNAPSHOT",
+      "identifier": "docker.io/arcadedata/arcadedb:26.3.2",
       "transport": {
         "type": "stdio"
       }
