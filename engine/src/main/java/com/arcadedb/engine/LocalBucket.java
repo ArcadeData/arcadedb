@@ -1037,12 +1037,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                     .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
             chunkRecordPositionInPage = getRecordPositionInPage(chunkPage, chunkPositionInPage);
             if (chunkRecordPositionInPage == 0)
-              throw new DatabaseOperationException("Error on fetching multi page record " + rid + " chunk " + chunkId);
+              // Chunk was deleted by a concurrent update — signal retry
+              throw new ConcurrentModificationException(
+                      "Multi-page record " + rid + " chunk " + chunkId + " was modified concurrently. Please retry");
 
             recordSize = chunkPage.readNumberAndSize(chunkRecordPositionInPage);
 
             if (recordSize[0] != NEXT_CHUNK)
-              throw new DatabaseOperationException("Error on fetching multi page record " + rid + " chunk " + chunkId);
+              // Chunk was overwritten by a concurrent operation — signal retry
+              throw new ConcurrentModificationException(
+                      "Multi-page record " + rid + " chunk " + chunkId + " was modified concurrently. Please retry");
 
             try {
               deleteRecordInternal(new RID(database, fileId, nextChunkPointer), false, true);
@@ -1316,54 +1320,81 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final long initialFirstPageVersion = firstPage.getVersion();
 
       // READ ALL THE CHUNKS TILL THE END
+      boolean chainInconsistent = false;
       final Binary record = new Binary();
-      BasePage page = firstPage;
-      int currentRecordPositionInPage = recordPositionInPage;
-      long[] currentRecordSize = recordSize;
+      try {
+        BasePage page = firstPage;
+        int currentRecordPositionInPage = recordPositionInPage;
+        long[] currentRecordSize = recordSize;
 
-      while (true) {
-        final int chunkSize = page.readInt((int) (currentRecordPositionInPage + currentRecordSize[1]));
-        final long nextChunkPointer = page.readLong(
-                (int) (currentRecordPositionInPage + currentRecordSize[1] + INT_SERIALIZED_SIZE));
-        final Binary chunk = page.getImmutableView(
-                (int) (currentRecordPositionInPage + currentRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
-                chunkSize);
-        record.append(chunk);
+        while (true) {
+          final int chunkSize = page.readInt((int) (currentRecordPositionInPage + currentRecordSize[1]));
+          final long nextChunkPointer = page.readLong(
+                  (int) (currentRecordPositionInPage + currentRecordSize[1] + INT_SERIALIZED_SIZE));
+          final Binary chunk = page.getImmutableView(
+                  (int) (currentRecordPositionInPage + currentRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
+                  chunkSize);
+          record.append(chunk);
 
-        if (nextChunkPointer == 0)
-          // LAST CHUNK
-          break;
+          if (nextChunkPointer == 0)
+            // LAST CHUNK
+            break;
 
-        final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
-        final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
+          final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
+          final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
-        if (chunkPageId >= getTotalPages())
-          throw new DatabaseOperationException("Invalid pointer to a chunk for record " + originalRID);
+          if (chunkPageId >= getTotalPages()) {
+            chainInconsistent = true;
+            break;
+          }
 
-        final BasePage nextPage = database.getTransaction()
-                .getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
+          final BasePage nextPage = database.getTransaction()
+                  .getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
 
-        final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
-        if (nextRecordPositionInPage == 0)
-          throw new DatabaseOperationException("Chunk of record " + originalRID + " was deleted");
+          final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
+          if (nextRecordPositionInPage == 0) {
+            chainInconsistent = true;
+            break;
+          }
 
-        if (nextPage.equals(page) && currentRecordPositionInPage == nextRecordPositionInPage) {
-          // AVOID INFINITE LOOP?
-          LogManager.instance().log(this, Level.SEVERE,
-                  "Infinite loop on loading multi-page record " + originalRID + " chunk " + chunkPageId + "/"
-                          + chunkPositionInPage);
-          throw new DatabaseOperationException(
-                  "Infinite loop on loading multi-page record " + originalRID + " chunk " + chunkPageId + "/"
-                          + chunkPositionInPage);
+          if (nextPage.equals(page) && currentRecordPositionInPage == nextRecordPositionInPage)
+            throw new DatabaseOperationException(
+                    "Infinite loop on loading multi-page record " + originalRID + " chunk " + chunkPageId + "/"
+                            + chunkPositionInPage);
+
+          page = nextPage;
+          currentRecordPositionInPage = nextRecordPositionInPage;
+
+          currentRecordSize = page.readNumberAndSize(currentRecordPositionInPage);
+
+          if (currentRecordSize[0] != NEXT_CHUNK) {
+            chainInconsistent = true;
+            break;
+          }
         }
+      } catch (final Exception e) {
+        chainInconsistent = true;
+      }
 
-        page = nextPage;
-        currentRecordPositionInPage = nextRecordPositionInPage;
-
-        currentRecordSize = page.readNumberAndSize(currentRecordPositionInPage);
-
-        if (currentRecordSize[0] != NEXT_CHUNK)
-          throw new DatabaseOperationException("Error on fetching multi page record " + originalRID);
+      if (chainInconsistent) {
+        // Chain was modified by a concurrent transaction — retry by re-fetching the first page
+        if (retry < maxRetries) {
+          LogManager.instance().log(this, Level.FINE,
+                  "Multi-page record %s chain inconsistent during read (attempt %d/%d), retrying...", originalRID,
+                  retry + 1, maxRetries);
+          firstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
+          if (firstPage == null)
+            throw new ConcurrentModificationException(
+                    "First page of multi-page record " + originalRID + " was removed during read");
+          recordPositionInPage = getRecordPositionInPage(firstPage, (int) (originalRID.getPosition() % maxRecordsInPage));
+          if (recordPositionInPage == 0)
+            throw new ConcurrentModificationException(
+                    "Multi-page record " + originalRID + " was deleted during read");
+          recordSize = firstPage.readNumberAndSize(recordPositionInPage);
+          continue;
+        }
+        throw new ConcurrentModificationException(
+                "Multi-page record " + originalRID + " chain inconsistent after " + maxRetries + " retries");
       }
 
       // VALIDATE: Check if the first page was modified during our read.
@@ -1452,13 +1483,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (!pageAnalysis.createNewPage) {
         nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
-        newPosition = pageAnalysis.newRecordPositionInPage;
-        recordIdInPage = pageAnalysis.availablePositionIndex;
 
-        nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE, newPosition);
+        if (nextPage.getVersion() != pageAnalysis.page.getVersion()) {
+          // Page was modified by another committed transaction since the space analysis — skip reuse
+          nextPage = null;
+        } else {
+          newPosition = pageAnalysis.newRecordPositionInPage;
+          recordIdInPage = pageAnalysis.availablePositionIndex;
 
-        if (recordIdInPage >= pageAnalysis.totalRecordsInPage)
-          nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
+          // Verify the slot is still available on the actual mutable page (guard against stale analysis)
+          final int existSlotOff = (int) nextPage.readUnsignedInt(
+                  PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
+          final short curRecCount = nextPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+          if (recordIdInPage < curRecCount && existSlotOff != 0) {
+            // Slot was consumed by another operation — fall through to create a new page
+            nextPage = null;
+          } else {
+            nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE, newPosition);
+
+            if (recordIdInPage >= pageAnalysis.totalRecordsInPage)
+              nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
+          }
+        }
       }
 
       if (nextPage == null) {
@@ -1549,12 +1595,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         nextPage = database.getTransaction().getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
         final int recordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
         if (recordPositionInPage == 0)
-          throw new DatabaseOperationException("Error on fetching multi page record " + originalRID);
+          // Chunk was deleted by a concurrent update to the same record — signal retry
+          throw new ConcurrentModificationException(
+                  "Multi-page record " + originalRID + " chunk was modified concurrently. Please retry the operation");
 
         final long[] recordSize = nextPage.readNumberAndSize(recordPositionInPage);
 
         if (recordSize[0] != NEXT_CHUNK)
-          throw new DatabaseOperationException("Error on fetching multi page record " + originalRID);
+          // Chunk was overwritten by a concurrent operation — signal retry
+          throw new ConcurrentModificationException(
+                  "Multi-page record " + originalRID + " chunk was modified concurrently. Please retry the operation");
 
         newPosition = (int) (recordPositionInPage + recordSize[1]);
         chunkSize = nextPage.readInt(newPosition);
@@ -1570,18 +1620,32 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, txPageCounter,
                 true);
         if (!pageAnalysis.createNewPage) {
-          // FOUND IT
           nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
-          newPosition = pageAnalysis.newRecordPositionInPage;
-          recordIdInPage = pageAnalysis.availablePositionIndex;
 
-          nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pageAnalysis.availablePositionIndex * INT_SERIALIZED_SIZE,
-                  newPosition);
+          if (nextPage.getVersion() != pageAnalysis.page.getVersion()) {
+            // Page was modified by another committed transaction since the space analysis — skip reuse
+            nextPage = null;
+          } else {
+            newPosition = pageAnalysis.newRecordPositionInPage;
+            recordIdInPage = pageAnalysis.availablePositionIndex;
 
-          if (recordIdInPage >= pageAnalysis.totalRecordsInPage)
-            nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
+            // Verify the slot is still available on the actual mutable page (guard against stale analysis)
+            final int existSlotOff2 = (int) nextPage.readUnsignedInt(
+                    PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
+            final short curRecCount2 = nextPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+            if (recordIdInPage < curRecCount2 && existSlotOff2 != 0) {
+              // Slot was consumed by another operation — fall through to create a new page
+              nextPage = null;
+            } else {
+              nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pageAnalysis.availablePositionIndex * INT_SERIALIZED_SIZE,
+                      newPosition);
 
-          updatePageStatistics(nextPage.pageId.getPageNumber(), pageAnalysis.spaceAvailableInCurrentPage, -totalSpaceNeeded);
+              if (recordIdInPage >= pageAnalysis.totalRecordsInPage)
+                nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
+
+              updatePageStatistics(nextPage.pageId.getPageNumber(), pageAnalysis.spaceAvailableInCurrentPage, -totalSpaceNeeded);
+            }
+          }
         }
 
         if (nextPage == null) {

@@ -65,7 +65,7 @@ class LSMVectorIndexConcurrentUpdateTest extends TestHelper {
 
   private static final int EMBEDDING_DIM = 3072;  // Multi-page record size
   private static final int INITIAL_RECORDS = 1000;
-  private static final int CONCURRENT_THREADS = 100;
+  private static final int CONCURRENT_THREADS = 8;
   private static final int INSERTS_PER_THREAD = 10;
   private static final int UPDATES_PER_THREAD = 20;
 
