@@ -13,6 +13,9 @@ function renderGraph() {
   $("#settingNodeSize").val(globalGraphSettings.nodeSize || 25);
   $("#settingNodeSizeVal").text(globalGraphSettings.nodeSize || 25);
   $("#settingDefaultLabel").val(globalGraphSettings.defaultLabel != null ? globalGraphSettings.defaultLabel : "");
+  let maxLabelVal = globalGraphSettings.maxLabelLength || 45;
+  $("#settingMaxLabel").val(maxLabelVal);
+  $("#settingMaxLabelVal").text(maxLabelVal == 0 ? "off" : maxLabelVal);
 
   let elements = [];
   globalRenderedVerticesRID = {};
@@ -213,6 +216,30 @@ function initGraph() {
     displaySelectedEdge();
   });
 
+  // Show full label tooltip on hover for truncated labels
+  let tooltipEl = null;
+  globalCy.on("mouseover", "node", function (event) {
+    let node = event.target;
+    let fullLabel = node.data("fullLabel");
+    let label = node.data("label");
+    if (fullLabel && fullLabel !== label) {
+      if (!tooltipEl) {
+        tooltipEl = document.createElement("div");
+        tooltipEl.style.cssText = "position:absolute;background:#333;color:#fff;padding:4px 8px;border-radius:4px;font-size:12px;max-width:400px;word-wrap:break-word;pointer-events:none;z-index:10000;";
+        document.body.appendChild(tooltipEl);
+      }
+      tooltipEl.textContent = fullLabel;
+      let pos = node.renderedPosition();
+      let container = globalCy.container().getBoundingClientRect();
+      tooltipEl.style.left = (container.left + pos.x + 10) + "px";
+      tooltipEl.style.top = (container.top + pos.y - 30) + "px";
+      tooltipEl.style.display = "block";
+    }
+  });
+  globalCy.on("mouseout", "node", function () {
+    if (tooltipEl) tooltipEl.style.display = "none";
+  });
+
   globalCy.layout(globalLayout).run();
 }
 
@@ -222,11 +249,13 @@ function createVertex(vertex) {
   getOrCreateStyleTypeAttrib(type, "element", "v");
 
   let label = resolveLabel(type, vertex["p"]);
+  let fullLabel = resolveFullLabel(type, vertex["p"]);
 
   let nodeSize = globalGraphSettings.nodeSize || 25;
-  let size = label.length > 0 ? nodeSize + 2 * label.length : nodeSize;
+  let maxAutoSize = nodeSize * 4;
+  let size = label.length > 0 ? Math.min(nodeSize + 2 * label.length, maxAutoSize) : nodeSize;
 
-  return { id: vertex["r"], label: label, size: size, type: type, weight: vertex["i"] + vertex["o"], properties: vertex["p"] };
+  return { id: vertex["r"], label: label, fullLabel: fullLabel, size: size, type: type, weight: vertex["i"] + vertex["o"], properties: vertex["p"] };
 }
 
 function createEdge(edge) {
@@ -250,6 +279,26 @@ function resolveLabel(type, properties) {
   if (labelProp.length == 0) return "";
 
   let label = properties[labelProp];
+  if (label == null) return "";
+
+  label = String(label);
+  let maxLen = globalGraphSettings.maxLabelLength || 45;
+  if (maxLen > 0 && label.length > maxLen)
+    label = label.substring(0, maxLen) + "...";
+  return label;
+}
+
+function resolveFullLabel(type, properties) {
+  let labelProp = getOrCreateStyleTypeAttrib(type, "labelText");
+  if (labelProp == null) {
+    let defaultLabel = globalGraphSettings.defaultLabel;
+    labelProp = defaultLabel != null ? defaultLabel : "";
+  }
+
+  if (labelProp == "@type") return type;
+  if (labelProp.length == 0) return "";
+
+  let label = properties[labelProp];
   return label != null ? String(label) : "";
 }
 
@@ -257,14 +306,17 @@ function updateLabelsForType(type) {
   if (globalCy == null) return;
 
   let nodeSize = globalGraphSettings.nodeSize || 25;
+  let maxAutoSize = nodeSize * 4;
   let isEdge = getOrCreateStyleTypeAttrib(type, "element") === "e";
 
   globalCy.elements("." + type).forEach(function (ele) {
     let props = ele.data("properties");
     let label = resolveLabel(type, props || {});
+    let fullLabel = resolveFullLabel(type, props || {});
     ele.data("label", label);
+    ele.data("fullLabel", fullLabel);
     if (!isEdge)
-      ele.data("size", label.length > 0 ? nodeSize + 2 * label.length : nodeSize);
+      ele.data("size", label.length > 0 ? Math.min(nodeSize + 2 * label.length, maxAutoSize) : nodeSize);
   });
 }
 
@@ -607,7 +659,8 @@ function saveGraphGlobalSettings() {
     nodeSize: globalGraphSettings.nodeSize,
     defaultLabel: globalGraphSettings.defaultLabel,
     graphSpacing: globalGraphSettings.graphSpacing,
-    cumulativeSelection: globalGraphSettings.cumulativeSelection
+    cumulativeSelection: globalGraphSettings.cumulativeSelection,
+    maxLabelLength: globalGraphSettings.maxLabelLength
   }));
 }
 
@@ -620,6 +673,7 @@ function loadGraphTypeStyles() {
       if (parsed.defaultLabel != null) globalGraphSettings.defaultLabel = parsed.defaultLabel;
       if (parsed.graphSpacing != null) globalGraphSettings.graphSpacing = parsed.graphSpacing;
       if (parsed.cumulativeSelection != null) globalGraphSettings.cumulativeSelection = parsed.cumulativeSelection;
+      if (parsed.maxLabelLength != null) globalGraphSettings.maxLabelLength = parsed.maxLabelLength;
     } catch (e) { /* ignore corrupt data */ }
   }
 
