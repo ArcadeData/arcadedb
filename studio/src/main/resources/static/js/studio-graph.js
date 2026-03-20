@@ -48,6 +48,7 @@ var globalGraphSettings = {
   cumulativeSelection: false,
   nodeSize: 25,
   defaultLabel: "",
+  maxLabelLength: 45,
   types: {},
 };
 

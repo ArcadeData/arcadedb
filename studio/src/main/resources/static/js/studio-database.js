@@ -2380,6 +2380,7 @@ function populateSettingsPanel() {
   let cumulativeChecked = (globalGraphSettings && globalGraphSettings.cumulativeSelection) ? "checked" : "";
   let nodeSizeVal = globalGraphSettings ? (globalGraphSettings.nodeSize || 25) : 25;
   let defaultLabelVal = globalGraphSettings ? (globalGraphSettings.defaultLabel != null ? globalGraphSettings.defaultLabel : "") : "";
+  let maxLabelVal = globalGraphSettings ? (globalGraphSettings.maxLabelLength || 45) : 45;
 
   html += "<div class='settings-section'>";
   html += "<div class='settings-section-header'>Graph Settings</div>";
@@ -2391,6 +2392,8 @@ function populateSettingsPanel() {
   html += "<option value='name'" + (defaultLabelVal == "name" ? " selected" : "") + ">name</option>";
   html += "<option value='@type'" + (defaultLabelVal == "@type" ? " selected" : "") + ">@type</option>";
   html += "</select></div>";
+  html += "<div class='settings-row'><label>Max Label Length: <span id='settingMaxLabelVal'>" + (maxLabelVal == 0 ? "off" : maxLabelVal) + "</span></label>";
+  html += "<input type='range' class='form-range' id='settingMaxLabel' min='0' max='100' step='5' value='" + maxLabelVal + "' onchange='applyMaxLabelLength(this.value)'></div>";
   html += "<div class='settings-row'><label>Graph Spacing: <span id='settingGraphSpacingVal'>" + spacingVal + "</span></label>";
   html += "<input type='range' class='form-range' id='settingGraphSpacing' min='10' max='150' step='10' value='" + spacingVal + "' onchange='applyGraphSpacing(this.value)'></div>";
   html += "<div class='settings-row'><label>Cumulative Selection</label>";
@@ -2438,6 +2441,13 @@ function applyCumulativeSelection(checked) {
 function applyNodeSize(value) {
   globalGraphSettings.nodeSize = parseInt(value);
   $("#settingNodeSizeVal").text(value);
+  saveGraphGlobalSettings();
+  if (globalCy != null) renderGraph();
+}
+
+function applyMaxLabelLength(value) {
+  globalGraphSettings.maxLabelLength = parseInt(value);
+  $("#settingMaxLabelVal").text(value == 0 ? "off" : value);
   saveGraphGlobalSettings();
   if (globalCy != null) renderGraph();
 }
