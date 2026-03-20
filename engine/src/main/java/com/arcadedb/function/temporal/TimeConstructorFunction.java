@@ -28,6 +28,8 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.time.OffsetTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.Map;
 
@@ -47,8 +49,18 @@ public class TimeConstructorFunction implements StatelessFunction {
       return CypherFunctionHelper.getStatementTime(context).get("time");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String)
-      return CypherTime.parse((String) args[0]);
+    if (args[0] instanceof String) {
+      final String str = (String) args[0];
+      try {
+        return CypherTime.parse(str);
+      } catch (final Exception e) {
+        try {
+          return new CypherTime(OffsetTime.now(ZoneId.of(str)));
+        } catch (final Exception e2) {
+          throw new CommandExecutionException("time() cannot parse '" + str + "' as a time or timezone");
+        }
+      }
+    }
     if (args[0] instanceof Map)
       return CypherTime.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherTime)
