@@ -346,7 +346,7 @@ public class CypherFunctionFactory {
       // Note: vector_norm and vector_distance with EUCLIDEAN/DOT metrics delegate to SQL functions
       // (vector.magnitude, vector.l1Norm, vector.l2Distance, vector.dotProduct) via the SQL bridge
       case "vector.create", "vector.distance.manhattan", "vector.distance.cosine",
-           "vector", "vector.dimension.count", "vector.distance" -> true;
+           "vector", "vector.dimension.count", "vector_dimension_count", "vector.distance" -> true;
       // Vector distance functions
       case "vector.distance.euclidean" -> true;
       // Vector norm function
@@ -479,7 +479,7 @@ public class CypherFunctionFactory {
       case "vector", "vector.create" -> new VectorCreateFunction();
       case "vector.distance.manhattan" -> new VectorDistanceManhattanFunction();
       case "vector.distance.cosine" -> new VectorDistanceCosineFunction();
-      case "vector.dimension.count" -> new VectorDimensionCountFunction();
+      case "vector.dimension.count", "vector_dimension_count" -> new VectorDimensionCountFunction();
       case "vector.distance" -> new VectorDistanceFunction();
       // Vector distance functions
       case "vector.distance.euclidean" -> new VectorDistanceEuclideanFunction();
