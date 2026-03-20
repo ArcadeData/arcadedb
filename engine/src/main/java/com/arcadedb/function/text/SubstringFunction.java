@@ -35,14 +35,18 @@ public class SubstringFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length < 2 || args.length > 3)
       throw new CommandExecutionException("substring() requires 2 or 3 arguments: substring(string, start[, length])");
-    if (args[0] == null)
+    if (args[0] == null || args[1] == null)
       return null;
     final String str = args[0].toString();
     final int start = ((Number) args[1]).intValue();
-    if (start < 0 || start > str.length())
+    if (start < 0)
+      throw new CommandExecutionException("substring(): negative start index is not supported: " + start);
+    if (start > str.length())
       return "";
     if (args.length == 3 && args[2] != null) {
       final int length = ((Number) args[2]).intValue();
+      if (length < 0)
+        throw new CommandExecutionException("substring(): negative length is not supported: " + length);
       return str.substring(start, Math.min(start + length, str.length()));
     }
     return str.substring(start);
