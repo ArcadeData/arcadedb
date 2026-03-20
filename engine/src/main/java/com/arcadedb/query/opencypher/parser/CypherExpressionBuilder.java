@@ -2547,17 +2547,23 @@ class CypherExpressionBuilder {
    */
   Expression parseVectorDistanceFunction(final Cypher25Parser.VectorDistanceFunctionContext ctx) {
     final String metric = ctx.vectorDistanceMetric().getText().toUpperCase();
+
+    final List<Expression> args = new ArrayList<>();
+    args.add(parseExpression(ctx.vector1));
+    args.add(parseExpression(ctx.vector2));
+
     final String functionName = switch (metric) {
       case "EUCLIDEAN" -> "vector.l2Distance";
       case "MANHATTAN" -> "vector.distance.manhattan";
       case "COSINE" -> "vector.distance.cosine";
       case "DOT" -> "vector.dotProduct";
+      case "EUCLIDEAN_SQUARED", "HAMMING" -> {
+        args.add(new LiteralExpression(metric, "'" + metric + "'"));
+        yield "vector.distance";
+      }
       default -> throw new CommandParsingException("Unsupported vector_distance metric: " + metric);
     };
 
-    final List<Expression> args = new ArrayList<>();
-    args.add(parseExpression(ctx.vector1));
-    args.add(parseExpression(ctx.vector2));
     return new FunctionCallExpression(functionName, args, false);
   }
 }

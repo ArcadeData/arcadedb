@@ -127,7 +127,7 @@ public class FunctionValidator {
     registerFunction("abs", 1, 1, "Absolute value", false);
     registerFunction("ceil", 1, 1, "Ceiling", false);
     registerFunction("floor", 1, 1, "Floor", false);
-    registerFunction("round", 1, 2, "Round to integer or precision", false);
+    registerFunction("round", 1, 3, "Round to integer or precision", false);
     registerFunction("sign", 1, 1, "Sign of number", false);
     registerFunction("rand", 0, 0, "Random number", false);
     registerFunction("sqrt", 1, 1, "Square root", false);
@@ -170,6 +170,7 @@ public class FunctionValidator {
     // Vector functions
     registerFunction("vector", 1, 2, "Create vector from list (alias for vector.create)", false);
     registerFunction("vector.dimension.count", 1, 1, "Return dimension count of vector", false);
+    registerFunction("vector_dimension_count", 1, 1, "Return dimension count of vector", false);
     registerFunction("vector.distance", 2, 3, "Calculate distance between vectors", false);
     registerFunction("vector.distance.euclidean", 2, 2, "Euclidean distance between vectors", false);
     registerFunction("vector.norm", 1, 1, "L2 norm (magnitude) of vector", false);
