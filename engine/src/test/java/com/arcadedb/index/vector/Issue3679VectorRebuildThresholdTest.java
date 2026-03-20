@@ -33,27 +33,29 @@ import java.util.Random;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests that vectorNeighbors search respects the mutations-before-rebuild threshold
- * instead of rebuilding the graph on every single mutation.
+ * Tests that vectorNeighbors search does NOT block when mutations are below the rebuild threshold.
+ * When the threshold is reached on a large graph, the rebuild happens asynchronously and the search
+ * returns immediately from the current graph (which is still valid, just missing the newest vectors).
  * <p>
  * Issue: https://github.com/ArcadeData/arcadedb/issues/3679
  * <p>
- * Before the fix, adding even a single vector to a large index would trigger a full
- * graph rebuild on the next vectorNeighbors call, taking minutes for large indexes.
+ * Before the fix, adding even a single vector to a large index would trigger a full synchronous
+ * graph rebuild on the next vectorNeighbors call, blocking for 2-9 minutes on large indexes.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue3679VectorRebuildThresholdTest extends TestHelper {
 
-  private static final int EMBEDDING_DIM = 64;
-  private static final int INITIAL_VECTORS = 200;
+  private static final int EMBEDDING_DIM = 32;
+
+  // Must be >= ASYNC_REBUILD_MIN_GRAPH_SIZE (1000) so the async path is used
+  private static final int LARGE_INDEX_VECTORS = 1100;
 
   @Test
   void searchShouldNotRebuildGraphBelowMutationThreshold() {
-    // Set a threshold smaller than the number of vectors but larger than the single mutation we'll add.
-    // The optimization only applies when graph size > threshold (small graphs always rebuild since it's cheap).
-    final int highThreshold = 100;
-    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, highThreshold);
+    // Threshold of 100: adding 1 vector should NOT trigger any rebuild on a large graph
+    final int threshold = 100;
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, threshold);
 
     // Create schema with vector index
     database.transaction(() -> {
@@ -70,13 +72,13 @@ class Issue3679VectorRebuildThresholdTest extends TestHelper {
 
     final Random random = new Random(42);
 
-    // Insert initial vectors
+    // Insert enough vectors for a "large" graph
     database.transaction(() -> {
-      for (int i = 0; i < INITIAL_VECTORS; i++)
+      for (int i = 0; i < LARGE_INDEX_VECTORS; i++)
         database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
     });
 
-    // First search to trigger initial graph build
+    // First search to trigger initial synchronous graph build (graphIndex was null)
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Embedding[vector]");
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
     final float[] queryVector = generateRandomVector(random);
@@ -96,20 +98,20 @@ class Issue3679VectorRebuildThresholdTest extends TestHelper {
     stats = lsmIndex.getStats();
     assertThat(stats.get("mutationsSinceRebuild")).isEqualTo(1L);
 
-    // Search should NOT trigger a rebuild since 1 < threshold and graph is large (200 > 100)
+    // Search should return immediately without triggering any rebuild (sync or async)
     results = lsmIndex.findNeighborsFromVector(queryVector, 10);
     assertThat(results).isNotEmpty();
 
-    // After search, mutation counter should still be 1 (no rebuild happened)
+    // Mutation counter should still be 1 — no rebuild was triggered
     stats = lsmIndex.getStats();
     assertThat(stats.get("mutationsSinceRebuild"))
-        .as("Mutation counter should NOT be reset to 0 when below threshold (1 < %d)", highThreshold)
+        .as("Mutation counter should NOT be reset when below threshold (1 < %d)", threshold)
         .isEqualTo(1L);
   }
 
   @Test
-  void searchShouldRebuildGraphAtOrAboveMutationThreshold() {
-    // Set a low threshold so that we can easily exceed it
+  void searchShouldTriggerAsyncRebuildAtThreshold() throws InterruptedException {
+    // Low threshold of 5 so we can easily trigger async rebuild
     final int lowThreshold = 5;
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, lowThreshold);
 
@@ -128,20 +130,20 @@ class Issue3679VectorRebuildThresholdTest extends TestHelper {
 
     final Random random = new Random(42);
 
-    // Insert initial vectors
+    // Insert enough vectors for a "large" graph
     database.transaction(() -> {
-      for (int i = 0; i < 50; i++)
+      for (int i = 0; i < LARGE_INDEX_VECTORS; i++)
         database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
     });
 
-    // First search to trigger initial graph build
+    // First search to trigger initial synchronous build
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Embedding[vector]");
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
     final float[] queryVector = generateRandomVector(random);
     List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
     assertThat(results).isNotEmpty();
 
-    // Add enough vectors to meet/exceed the threshold
+    // Add enough vectors to exceed the threshold
     database.transaction(() -> {
       for (int i = 0; i < lowThreshold; i++)
         database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
@@ -151,22 +153,28 @@ class Issue3679VectorRebuildThresholdTest extends TestHelper {
     Map<String, Long> stats = lsmIndex.getStats();
     assertThat(stats.get("mutationsSinceRebuild")).isGreaterThanOrEqualTo((long) lowThreshold);
 
-    // Search should trigger a rebuild now (mutations >= threshold)
+    // Search should return immediately (async rebuild starts in background)
+    final long startTime = System.nanoTime();
     results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+    final long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
     assertThat(results).isNotEmpty();
 
-    // After rebuild, mutation counter should be reset to 0
+    // Search should have returned very fast (not blocked by rebuild)
+    assertThat(elapsedMs).as("Search should not block on async rebuild").isLessThan(5000);
+
+    // Wait for the async rebuild to complete
+    Thread.sleep(5000);
+
+    // After async rebuild completes, mutation counter should be reset to 0
     stats = lsmIndex.getStats();
     assertThat(stats.get("mutationsSinceRebuild"))
-        .as("Mutation counter should be reset to 0 after rebuild (mutations >= %d)", lowThreshold)
+        .as("Mutation counter should be reset to 0 after async rebuild completes")
         .isEqualTo(0L);
   }
 
   @Test
   void searchViaGetShouldAlsoRespectThreshold() {
-    // This tests the get() method path (used by IndexCursor).
-    // Use a threshold smaller than the number of vectors so the graph is "large"
-    // and the threshold optimization kicks in.
+    // Test the get() method path (used by IndexCursor)
     final int threshold = 50;
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, threshold);
 
@@ -185,13 +193,13 @@ class Issue3679VectorRebuildThresholdTest extends TestHelper {
 
     final Random random = new Random(42);
 
-    // Insert enough vectors so graph is larger than threshold
+    // Insert enough vectors for a "large" graph
     database.transaction(() -> {
-      for (int i = 0; i < INITIAL_VECTORS; i++)
+      for (int i = 0; i < LARGE_INDEX_VECTORS; i++)
         database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
     });
 
-    // First query to build graph (use direct API to ensure graph is built)
+    // First query to build graph
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Embedding[vector]");
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
     final float[] queryVector = generateRandomVector(random);
@@ -211,7 +219,7 @@ class Issue3679VectorRebuildThresholdTest extends TestHelper {
     stats = lsmIndex.getStats();
     assertThat(stats.get("mutationsSinceRebuild")).isEqualTo(1L);
 
-    // Second search should NOT rebuild (1 < 50 threshold, graph has 200 > 50 vectors)
+    // Second search should NOT trigger rebuild or async rebuild (1 < 50)
     List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
     assertThat(results).isNotEmpty();
 
