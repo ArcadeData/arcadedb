@@ -1012,6 +1012,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback) {
     // Snapshot the next vector ID so we know which delta entries were included in this build
     final int deltaSnapshotId = nextId.get();
+    // Snapshot mutation counter so we only subtract mutations present at build start (not concurrent ones)
+    final int mutationsAtBuildStart = mutationsSinceSerialize.get();
 
     // Always have a progress reporter: if caller didn't provide one, log throttled progress every ~5s
     final GraphBuildCallback effectiveGraphCallback;
@@ -1259,7 +1261,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       if (filteredVectorIds.length == 0) {
         this.graphIndex = null;
-        this.graphState = GraphState.IMMUTABLE;
+        mutationsSinceSerialize.addAndGet(-mutationsAtBuildStart);
+        this.graphState = deltaVectors.isEmpty() ? GraphState.IMMUTABLE : GraphState.MUTABLE;
         LogManager.instance().log(this, Level.INFO, "No vectors to index, graph is null for index: " + indexName);
         return;
       }
@@ -1369,7 +1372,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.writeLock().lock();
       try {
         this.graphIndex = builtGraph;
-        this.graphState = GraphState.IMMUTABLE;
         // Track graph rebuild metric
         metrics.incrementGraphRebuildCount();
         // Reset page tracking since we rebuilt from persisted pages
@@ -1381,6 +1383,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (e.vectorId >= deltaSnapshotId)
             remaining.add(e);
         this.deltaVectors = remaining;
+
+        // Subtract only mutations present at build start, preserving concurrent ones
+        mutationsSinceSerialize.addAndGet(-mutationsAtBuildStart);
+
+        // Only transition to IMMUTABLE if no new mutations arrived during rebuild
+        this.graphState = remaining.isEmpty() ? GraphState.IMMUTABLE : GraphState.MUTABLE;
       } finally {
         lock.writeLock().unlock();
       }
@@ -1450,7 +1458,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 lock.writeLock().lock();
                 try {
                   this.graphIndex = diskGraph;
-                  this.graphState = GraphState.IMMUTABLE;
+                  if (deltaVectors.isEmpty())
+                    this.graphState = GraphState.IMMUTABLE;
                 } finally {
                   lock.writeLock().unlock();
                 }
@@ -1493,7 +1502,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       } else {
         LogManager.instance().log(this, Level.SEVERE, "PERSIST: graphFile is NULL, cannot persist graph for index: %s", indexName);
       }
-      this.mutationsSinceSerialize.set(0);
 
       LogManager.instance().log(this, Level.INFO, "Built graph for index: " + indexName);
 
