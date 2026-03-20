@@ -38,7 +38,7 @@ public class ReplaceFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 3)
       throw new CommandExecutionException("replace() requires exactly 3 arguments: replace(original, search, replace)");
-    if (args[0] == null)
+    if (args[0] == null || args[1] == null || args[2] == null)
       return null;
     return args[0].toString().replace(args[1].toString(), args[2].toString());
   }
