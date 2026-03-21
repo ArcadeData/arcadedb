@@ -132,7 +132,7 @@ public class TransactionManager {
       }
     }
 
-    if (!cleanWALFiles(drop, false))
+    if (!cleanWALFiles(drop, drop))
       LogManager.instance()
           .log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, inactiveWALFilePool);
     else {
