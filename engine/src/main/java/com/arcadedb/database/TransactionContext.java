@@ -130,9 +130,9 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already in commit phase");
 
     final TransactionPhase1 phase1 = commit1stPhase(true);
-    if (phase1 != null)
+    if (phase1 != null) {
       commit2ndPhase(phase1);
-    else
+    } else
       resetAndFireCallbacks();
 
     if (database.getSchema().getEmbedded().isDirty())
@@ -604,26 +604,21 @@ public class TransactionContext implements Transaction {
     if (status != STATUS.BEGUN)
       throw new TransactionException("Transaction in phase " + status);
 
-    if (updatedRecords != null) {
-      for (final Record rec : updatedRecords.values())
-        try {
-          database.updateRecordNoLock(rec, false);
-        } catch (final RecordNotFoundException e) {
-          // DELETED IN TRANSACTION, THIS IS FULLY MANAGED TO NEVER HAPPEN, BUT IF IT DOES DUE TO THE INTRODUCTION OF A BUG, JUST LOG SOMETHING AND MOVE ON
-          LogManager.instance()
-              .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
-        }
-      updatedRecords = null;
-    }
-
-    if (!hasChanges())
-      // EMPTY TRANSACTION = NO CHANGES
-      return null;
-
+    // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
+    // (which loads pages and follows multi-page record chunk chains) is serialized.
+    // Without this, concurrent updateRecordNoLock calls could both load the same page
+    // at the same version, bypassing MVCC version checks.
     status = STATUS.COMMIT_1ST_PHASE;
 
     try {
       if (isLeader) {
+        // Determine files to lock — must include files from updatedRecords
+        if (updatedRecords != null)
+          for (final Record rec : updatedRecords.values()) {
+            final RID rid = rec.getIdentity();
+            ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
+          }
+
         final Set<Integer> modifiedFiles = lockFilesFromChanges();
 
         if (explicitLockedFiles != null)
@@ -635,6 +630,29 @@ public class TransactionContext implements Transaction {
       } else
         // IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION
         lockedFiles = new ArrayList<>();
+
+      // Process updatedRecords AFTER acquiring locks
+      if (updatedRecords != null) {
+        for (final Record rec : updatedRecords.values())
+          try {
+            database.updateRecordNoLock(rec, false);
+          } catch (final RecordNotFoundException e) {
+            LogManager.instance()
+                .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
+          }
+        updatedRecords = null;
+      }
+
+      if (!isLeader || !hasChanges()) {
+        if (!hasChanges()) {
+          if (lockedFiles != null) {
+            database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
+            lockedFiles = null;
+          }
+          status = STATUS.INACTIVE;
+          return null;
+        }
+      }
 
       if (isLeader)
         // COMMIT INDEX CHANGES (IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION)

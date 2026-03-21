@@ -1316,10 +1316,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final PageId firstPageId = firstPage.pageId;
 
     for (int retry = 0; retry <= maxRetries; retry++) {
-      // Capture the first page version at start for consistency validation
-      final long initialFirstPageVersion = firstPage.getVersion();
+      // Track ALL page versions during the chain walk for consistency validation.
+      // Under READ_COMMITTED isolation, each page is loaded independently from disk/cache.
+      // A concurrent commit between page loads can produce an inconsistent mix of old and new
+      // chunk data, leading to truncated records (BufferUnderflowException on deserialization).
+      final List<long[]> pageVersions = new ArrayList<>(); // [fileId, pageNumber, version]
+      pageVersions.add(new long[] { firstPage.pageId.getFileId(), firstPage.pageId.getPageNumber(), firstPage.getVersion() });
 
-      // READ ALL THE CHUNKS TILL THE END
       boolean chainInconsistent = false;
       final Binary record = new Binary();
       try {
@@ -1337,7 +1340,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           record.append(chunk);
 
           if (nextChunkPointer == 0)
-            // LAST CHUNK
             break;
 
           final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
@@ -1363,6 +1365,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                             + chunkPositionInPage);
 
           page = nextPage;
+          pageVersions.add(new long[] { page.pageId.getFileId(), page.pageId.getPageNumber(), page.getVersion() });
           currentRecordPositionInPage = nextRecordPositionInPage;
 
           currentRecordSize = page.readNumberAndSize(currentRecordPositionInPage);
@@ -1376,62 +1379,44 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         chainInconsistent = true;
       }
 
-      if (chainInconsistent) {
-        // Chain was modified by a concurrent transaction — retry by re-fetching the first page
-        if (retry < maxRetries) {
-          LogManager.instance().log(this, Level.FINE,
-                  "Multi-page record %s chain inconsistent during read (attempt %d/%d), retrying...", originalRID,
-                  retry + 1, maxRetries);
-          firstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
-          if (firstPage == null)
-            throw new ConcurrentModificationException(
-                    "First page of multi-page record " + originalRID + " was removed during read");
-          recordPositionInPage = getRecordPositionInPage(firstPage, (int) (originalRID.getPosition() % maxRecordsInPage));
-          if (recordPositionInPage == 0)
-            throw new ConcurrentModificationException(
-                    "Multi-page record " + originalRID + " was deleted during read");
-          recordSize = firstPage.readNumberAndSize(recordPositionInPage);
-          continue;
+      if (!chainInconsistent) {
+        // Validate ALL page versions: re-check each page to detect concurrent modifications.
+        // If any page was modified during our read, the assembled data may be inconsistent.
+        for (final long[] pv : pageVersions) {
+          final BasePage currentPage = database.getPageManager()
+                  .getImmutablePage(new PageId(database, (int) pv[0], (int) pv[1]), pageSize, false, true);
+          if (currentPage != null && currentPage.getVersion() != pv[2]) {
+            chainInconsistent = true;
+            break;
+          }
         }
-        throw new ConcurrentModificationException(
-                "Multi-page record " + originalRID + " chain inconsistent after " + maxRetries + " retries");
       }
 
-      // VALIDATE: Check if the first page was modified during our read.
-      // If another transaction updated this record, the first page version would have changed,
-      // which means we may have read inconsistent data from different commit points.
-      final BasePage currentFirstPage = database.getPageManager()
-              .getImmutablePage(firstPageId, pageSize, false, true);
-      if (currentFirstPage == null || currentFirstPage.getVersion() == initialFirstPageVersion) {
-        // Version unchanged or page evicted - data is consistent
+      if (!chainInconsistent) {
         record.position(0);
         return record;
       }
 
-      // Version changed - retry by re-fetching the first page with fresh data
+      // Retry by re-fetching the first page with fresh data
       if (retry < maxRetries) {
         LogManager.instance().log(this, Level.FINE,
-                "Multi-page record %s was modified during read (attempt %d/%d), retrying...", originalRID,
+                "Multi-page record %s read inconsistent (attempt %d/%d), retrying...", originalRID,
                 retry + 1, maxRetries);
-        firstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
-        recordPositionInPage = getRecordPositionInPage(firstPage, (int) (originalRID.getPosition() % maxRecordsInPage));
         firstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
         if (firstPage == null)
           throw new ConcurrentModificationException(
-                  "First page of multi-page record " + originalRID + " was removed during read. Please retry the operation");
+                  "First page of multi-page record " + originalRID + " was removed during read");
         recordPositionInPage = getRecordPositionInPage(firstPage, (int) (originalRID.getPosition() % maxRecordsInPage));
         if (recordPositionInPage == 0)
           throw new ConcurrentModificationException(
-                  "Multi-page record " + originalRID + " was deleted during read. Please retry the operation");
+                  "Multi-page record " + originalRID + " was deleted during read");
         recordSize = firstPage.readNumberAndSize(recordPositionInPage);
       } else
         throw new ConcurrentModificationException(
                 "Multi-page record " + originalRID + " was modified during read after " + maxRetries
-                        + " retries (page " + firstPageId + " version changed from " + initialFirstPageVersion
-                        + " to " + currentFirstPage.getVersion() + "). Please retry the operation");
+                        + " retries. Please retry the operation");
     }
 
-    // Should not reach here, but just in case
     throw new DatabaseOperationException("Failed to load multi-page record " + originalRID);
   }
 
