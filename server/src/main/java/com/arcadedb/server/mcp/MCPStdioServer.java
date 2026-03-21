@@ -86,7 +86,7 @@ public class MCPStdioServer {
     final PrintStream mcpOut = System.out;
     System.setOut(System.err);
 
-    final String rootPassword = (String) GlobalConfiguration.SERVER_ROOT_PASSWORD.getValue();
+    final String rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
     if (rootPassword == null || rootPassword.isEmpty()) {
       System.err.println("ERROR: arcadedb.server.rootPassword must be set for MCP stdio mode");
       System.exit(1);
