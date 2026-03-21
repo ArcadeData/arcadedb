@@ -342,10 +342,7 @@ public class PageManager extends LockContext {
   public void writePages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
     if (asyncFlush) {
       for (final MutablePage page : updatedPages)
-        // SAVE A COPY OF THE PAGE IN CACHE BECAUSE IT WILL BE FLUSHED ASYNCHRONOUSLY
         putPageInReadCache(new CachedPage(page, true));
-
-      // ASYNCHRONOUS FLUSH: ONLY IF NOT ALREADY IN THE QUEUE, ENQUEUE THE PAGE TO BE FLUSHED BY A SEPARATE THREAD
       flushThread.scheduleFlushOfPages(updatedPages);
     } else {
       // SYNCHRONOUS FLUSH
