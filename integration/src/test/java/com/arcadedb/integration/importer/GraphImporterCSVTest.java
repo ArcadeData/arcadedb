@@ -132,4 +132,68 @@ class GraphImporterCSVTest {
       }
     });
   }
+
+  @Test
+  void importForeignKeyEdgesFromCSV() throws Exception {
+    final String resourceDir = new File("src/test/resources").getAbsolutePath();
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Department");
+      database.getSchema().createVertexType("Employee");
+      database.getSchema().createEdgeType("WORKS_IN");
+    });
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("Department", new CsvRowSource(resourceDir + "/importer-departments.csv"), v -> {
+          v.id("Id");
+          v.intProperty("deptId", "Id");
+          v.property("name", "Name");
+        })
+        .vertex("Employee", new CsvRowSource(resourceDir + "/importer-employees.csv"), v -> {
+          v.id("Id");
+          v.intProperty("empId", "Id");
+          v.property("name", "Name");
+          v.edgeOut("DeptId", "WORKS_IN", "Department");
+        })
+        .build()) {
+
+      importer.run();
+
+      assertThat(importer.getVertexCount()).isEqualTo(8);
+      assertThat(importer.getEdgeCount()).isEqualTo(5);
+    }
+
+    // Verify edge records exist and are countable
+    database.transaction(() -> {
+      try (ResultSet rs = database.query("sql", "SELECT count(*) as c FROM WORKS_IN")) {
+        assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(5);
+      }
+    });
+
+    // Verify Alice (DeptId=1) works in Engineering
+    database.transaction(() -> {
+      try (ResultSet rs = database.query("sql", "SELECT FROM Employee WHERE name = 'Alice'")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Vertex alice = rs.next().getVertex().get();
+        int outCount = 0;
+        for (final Edge e : alice.getEdges(Vertex.DIRECTION.OUT, "WORKS_IN")) {
+          assertThat(e.getInVertex().asVertex().getString("name")).isEqualTo("Engineering");
+          outCount++;
+        }
+        assertThat(outCount).isEqualTo(1);
+      }
+    });
+
+    // Verify Engineering dept has 2 incoming WORKS_IN edges (Alice, Bob)
+    database.transaction(() -> {
+      try (ResultSet rs = database.query("sql", "SELECT FROM Department WHERE name = 'Engineering'")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Vertex eng = rs.next().getVertex().get();
+        int inCount = 0;
+        for (final Edge ignored : eng.getEdges(Vertex.DIRECTION.IN, "WORKS_IN"))
+          inCount++;
+        assertThat(inCount).isEqualTo(2);
+      }
+    });
+  }
 }
