@@ -50,6 +50,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
   private final String targetVariable;
   private final Direction direction;
   private final String[] edgeTypes;
+  private String targetLabel;
 
   public ExpandAll(final PhysicalOperator child, final String sourceVariable,
                   final String edgeVariable, final String targetVariable,
@@ -61,6 +62,14 @@ public class ExpandAll extends AbstractPhysicalOperator {
     this.targetVariable = targetVariable;
     this.direction = direction;
     this.edgeTypes = edgeTypes;
+  }
+
+  public void setTargetLabel(final String targetLabel) {
+    this.targetLabel = targetLabel;
+  }
+
+  public String getTargetLabel() {
+    return targetLabel;
   }
 
   @Override
@@ -126,6 +135,9 @@ public class ExpandAll extends AbstractPhysicalOperator {
             final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
             final Vertex targetVertex = getTargetVertex(edge, sourceVertex);
 
+            if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
+              continue;
+
             // Copy input result and add edge and target vertex
             final ResultInternal result = new ResultInternal();
             for (final String prop : currentInputResult.getPropertyNames()) {
@@ -172,7 +184,10 @@ public class ExpandAll extends AbstractPhysicalOperator {
     }
     sb.append("]-");
     sb.append(direction == Direction.OUT ? ">" : direction == Direction.IN ? "<" : "");
-    sb.append("(").append(targetVariable).append(")");
+    sb.append("(").append(targetVariable);
+    if (targetLabel != null)
+      sb.append(":").append(targetLabel);
+    sb.append(")");
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

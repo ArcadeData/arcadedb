@@ -56,6 +56,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
   private final String targetVariable;
   private final Direction direction;
   private final String[] edgeTypes;
+  private String targetLabel;
 
   public GAVExpandAll(final PhysicalOperator child, final GraphTraversalProvider provider,
                      final String sourceVariable, final String targetVariable,
@@ -67,6 +68,14 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
     this.targetVariable = targetVariable;
     this.direction = direction;
     this.edgeTypes = edgeTypes;
+  }
+
+  public void setTargetLabel(final String targetLabel) {
+    this.targetLabel = targetLabel;
+  }
+
+  public String getTargetLabel() {
+    return targetLabel;
   }
 
   @Override
@@ -111,6 +120,8 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
               final Edge edge = oltpFallbackEdges.next();
               final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
               final Vertex targetVertex = getTargetVertex(edge, sourceVertex);
+              if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
+                continue;
               addResultWithTarget(targetVertex);
               continue;
             }
@@ -162,6 +173,9 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
               continue; // vertex deleted in OLTP since CSR was built
             }
 
+            if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
+              continue;
+
             addResultWithTarget(targetVertex);
           }
         }
@@ -210,7 +224,10 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       sb.append(":").append(String.join("|", edgeTypes));
     sb.append("]-");
     sb.append(direction == Direction.OUT ? ">" : direction == Direction.IN ? "<" : "");
-    sb.append("(").append(targetVariable).append(")");
+    sb.append("(").append(targetVariable);
+    if (targetLabel != null)
+      sb.append(":").append(targetLabel);
+    sb.append(")");
     sb.append(" [provider=").append(provider.getName());
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
