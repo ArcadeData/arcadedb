@@ -2385,6 +2385,7 @@ div.dt-search {
 [data-theme="dark"] .card {
   background-color: var(--bg-card);
   border-color: var(--border-ddd);
+  color: var(--text-primary);
 }
 
 [data-theme="dark"] .card-header {
