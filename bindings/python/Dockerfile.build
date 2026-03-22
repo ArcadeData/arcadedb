@@ -16,6 +16,7 @@ ARG TARGET_PLATFORM=linux-x64
 # When set to 1, prefer jars provided in bindings/python/local-jars/lib from the build context.
 # If no local jars are present, the build fails fast to avoid silently falling back.
 ARG USE_LOCAL_JARS=0
+ARG LOCAL_JARS_HASH=none
 
 # Stage 1: Use prebuilt ArcadeDB image to obtain compiled JARs
 # JARs are filtered based on jar_exclusions.txt in later stages
@@ -31,6 +32,7 @@ RUN yum -y install findutils binutils && yum clean all
 
 ARG TARGET_PLATFORM
 ARG USE_LOCAL_JARS
+ARG LOCAL_JARS_HASH
 
 WORKDIR /build
 
@@ -40,6 +42,9 @@ COPY --from=java-builder /home/arcadedb/lib /build/upstream-jars/
 
 # Optionally bring in locally built jars from the repo (bindings/python/local-jars/lib)
 COPY bindings/python/local-jars/lib/ /build/local-jars/
+
+# Make local-jar content changes part of Docker's cache key for this stage.
+RUN echo "LOCAL_JARS_HASH=${LOCAL_JARS_HASH}"
 
 # Select jar source: local when requested and available; otherwise fall back to upstream image
 RUN if [ "$USE_LOCAL_JARS" = "1" ]; then \
@@ -73,19 +78,30 @@ RUN echo "🗑️  Removing excluded JARs..." && \
 # We exclude jboss/wildfly JARs because they have broken module descriptors that fail analysis.
 # We also do NOT provide a classpath, forcing jdeps to ignore all missing dependencies (intra-jar or external).
 RUN echo "🔍 Analyzing JARs with jdeps..." && \
-    DETECTED_MODULES=$(find /build/jars -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 | grep -v "Warning" | tr ',' '\n' | grep -v "Warning" | grep -v ":" | grep -v "/" | sort -u | paste -sd "," -) && \
-    REQUIRED_MODULES="${DETECTED_MODULES},jdk.zipfs,jdk.unsupported" && \
+    JMODS_DIR="${JAVA_HOME}/jmods" && \
+    if [ ! -d "$JMODS_DIR" ]; then JMODS_DIR="${JAVA_HOME}/lib/jmods"; fi && \
+    DETECTED_MODULES=$(find /build/jars -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -E '^[a-zA-Z0-9_.]+$' | sort -u | paste -sd "," -) && \
+    if [ -d "$JMODS_DIR" ]; then \
+        AVAILABLE_MODULES=$(find "$JMODS_DIR" -name "*.jmod" -printf "%f\n" | sed 's/\.jmod$//' | sort -u | paste -sd "|" -) ; \
+        FILTERED_MODULES=$(echo "${DETECTED_MODULES}" | tr ',' '\n' | sed '/^$/d' | grep -E "^(${AVAILABLE_MODULES})$" | sort -u | paste -sd "," -) ; \
+    else \
+        FILTERED_MODULES="${DETECTED_MODULES}" ; \
+    fi && \
+    if [ -n "${FILTERED_MODULES}" ]; then \
+        REQUIRED_MODULES="${FILTERED_MODULES},java.se,jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector" ; \
+    else \
+        REQUIRED_MODULES="java.se,jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector" ; \
+    fi && \
     echo "🔨 Building minimal JRE for platform: ${TARGET_PLATFORM}" && \
-    echo "📦 Detected modules: ${DETECTED_MODULES}" && \
+    echo "📦 Detected modules (raw): ${DETECTED_MODULES}" && \
+    echo "📦 Detected modules (filtered): ${FILTERED_MODULES}" && \
     echo "📦 Final modules list: ${REQUIRED_MODULES}" && \
     echo "📦 Required modules:" && \
     echo "$REQUIRED_MODULES" | tr ',' '\n' | sed 's/^/   - /' && \
-    JMODS_DIR="${JAVA_HOME}/jmods" && \
-    if [ ! -d "$JMODS_DIR" ]; then JMODS_DIR="${JAVA_HOME}/lib/jmods"; fi && \
     if [ -d "$JMODS_DIR" ]; then \
         echo "" ; \
         echo "🔨 Running jlink..." ; \
-        jlink \
+        if ! jlink \
             --module-path "$JMODS_DIR" \
             --add-modules "${REQUIRED_MODULES}" \
             --ignore-signing-information \
@@ -93,7 +109,10 @@ RUN echo "🔍 Analyzing JARs with jdeps..." && \
             --no-man-pages \
             --no-header-files \
             --compress zip-9 \
-            --output /build/jre ; \
+            --output /build/jre ; then \
+            echo "❌ jlink failed" ; \
+            exit 1 ; \
+        fi ; \
         echo "" ; \
         echo "✅ JRE build complete!" ; \
     else \

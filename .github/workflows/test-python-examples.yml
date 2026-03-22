@@ -25,7 +25,7 @@ on:
         description: "Glob pattern(s) for examples to run (space-separated, relative to bindings/python/examples)."
         required: false
         type: string
-        default: "0[1-7]_*.py"
+        default: "0[1-9]_*.py 1[0-6]_*.py"
       build-version:
         description: "Override package version (PEP 440) for build.sh"
         required: false
@@ -37,10 +37,10 @@ on:
       examples:
         description: "Glob pattern(s) for examples to run (space-separated, relative to bindings/python/examples)."
         required: false
-        default: "0[1-7]_*.py"
+        default: "0[1-9]_*.py 1[0-6]_*.py"
 
 env:
-  EXAMPLES: ${{ inputs.examples || '0[1-7]_*.py' }}
+  EXAMPLES: ${{ inputs.examples || '0[1-9]_*.py 1[0-6]_*.py' }}
 
 permissions:
   contents: read
@@ -135,7 +135,7 @@ jobs:
           - '3.11'
           - '3.12'
           - '3.13'
-          # - '3.14'  # Temporarily disabled to reduce wheel storage usage
+          - '3.14'
         # Temporarily limit to four platforms (skip macOS x86_64, Windows ARM64)
         # platform: ['linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64']
         platform: ['linux/amd64', 'linux/arm64', 'darwin/arm64', 'windows/amd64']
@@ -247,20 +247,15 @@ jobs:
             python3 download_data.py movielens-small
           fi
 
-          if echo "$examples" | grep -qE '(^|[[:space:]])(08_stackoverflow_tables_oltp|09_stackoverflow_tables_olap|10_stackoverflow_graph_oltp|11_stackoverflow_graph_olap|14_stackoverflow_hybrid_queries)\.py([[:space:]]|$)'; then
-            echo "📥 Downloading Stack Overflow Small dataset..."
-            python3 download_data.py stackoverflow-small --no-vectors
+          if echo "$examples" | grep -qE '(^|[[:space:]])(07_stackoverflow_tables_oltp|08_stackoverflow_tables_olap|09_stackoverflow_graph_oltp|10_stackoverflow_graph_olap|13_stackoverflow_hybrid_queries)\.py([[:space:]]|$)'; then
+            echo "📥 Downloading Stack Overflow Tiny dataset (no vectors)..."
+            python3 download_data.py stackoverflow-tiny --no-vectors
           fi
 
-      - name: Download datasets
-        shell: bash
-        run: |
-          uv pip install --system tqdm py7zr lxml
-          cd bindings/python/examples
-          echo "📥 Downloading MovieLens Small dataset..."
-          python3 download_data.py movielens-small
-          echo "📥 Downloading Stack Overflow Small dataset..."
-          python3 download_data.py stackoverflow-small --no-vectors
+          if echo "$examples" | grep -qE '(^|[[:space:]])(11_vector_index_build|12_vector_search)\.py([[:space:]]|$)'; then
+            echo "📥 Downloading Stack Overflow Tiny dataset (with vectors)..."
+            python3 download_data.py stackoverflow-tiny
+          fi
 
       - name: Install timeout command (macOS only)
         if: matrix.platform == 'darwin/amd64' || matrix.platform == 'darwin/arm64'
@@ -279,9 +274,6 @@ jobs:
       - name: Run all examples
         id: run_examples
         shell: bash
-        env:
-          # Increase JVM heap for large CSV imports (example 04)
-          ARCADEDB_JVM_ARGS: "-Xmx8g -Xms8g"
         run: |
           cd bindings/python/examples
 
@@ -323,21 +315,92 @@ jobs:
                 example_args="--dataset movielens-small --export"
                 example_name="$example (movielens-small dataset with export)"
                 timeout_duration=900  # 15 minutes
+                example_jvm_args="-Xmx8g -Xms8g"
                 ;;
               "05_csv_import_graph.py")
-                example_args="--dataset movielens-small --method java --import-jsonl ./exports/movielens_small_db.jsonl.tgz --export"
-                example_name="$example (movielens-small dataset, embedded java method, import/export)"
+                example_args="--dataset movielens-small --method sql --import-jsonl ./exports/movielens_small_db.jsonl.tgz --export"
+                example_name="$example (movielens-small dataset, embedded sql method, import/export)"
                 timeout_duration=900  # 15 minutes
+                example_jvm_args=""
                 ;;
               "06_vector_search_recommendations.py")
                 example_args="--import-jsonl ./exports/movielens_graph_small_db.jsonl.tgz"
                 example_name="$example (vector search, import from JSONL)"
                 timeout_duration=900  # 15 minutes
+                example_jvm_args=""
+                ;;
+              "07_stackoverflow_tables_oltp.py")
+                example_args="--dataset stackoverflow-tiny --db arcadedb_sql --threads 1 --transactions 1000 --batch-size 500 --mem-limit 2g --run-label ci07"
+                example_name="$example (stackoverflow-tiny, arcadedb_sql, minimal oltp)"
+                timeout_duration=900
+                example_jvm_args=""
+                ;;
+              "08_stackoverflow_tables_olap.py")
+                example_args="--dataset stackoverflow-tiny --db arcadedb_sql --threads 1 --batch-size 500 --query-runs 1 --query-order fixed --mem-limit 2g --run-label ci08"
+                example_name="$example (stackoverflow-tiny, arcadedb_sql, minimal olap)"
+                timeout_duration=900
+                example_jvm_args=""
+                ;;
+              "09_stackoverflow_graph_oltp.py")
+                example_args="--dataset stackoverflow-tiny --db arcadedb_cypher --threads 1 --transactions 1000 --batch-size 500 --mem-limit 2g --run-label ci09"
+                example_name="$example (stackoverflow-tiny graph oltp, arcadedb cypher, minimal)"
+                timeout_duration=900
+                example_jvm_args=""
+                ;;
+              "10_stackoverflow_graph_olap.py")
+                example_args="--dataset stackoverflow-tiny --db arcadedb_cypher --threads 1 --batch-size 500 --query-runs 1 --query-order fixed --mem-limit 2g --run-label ci10"
+                example_name="$example (stackoverflow-tiny graph olap, arcadedb cypher, minimal)"
+                timeout_duration=900
+                example_jvm_args=""
+                ;;
+              "11_vector_index_build.py")
+                example_args="--backend arcadedb_sql --dataset stackoverflow-tiny --threads 1 --mem-limit 2g --batch-size 500 --max-connections 16 --beam-width 100 --quantization NONE --run-label ci11_arcadedb_sql"
+                example_name="$example (vector build, arcadedb_sql backend, minimal)"
+                timeout_duration=1200
+                example_jvm_args=""
+                ;;
+              "12_vector_search.py")
+                db_path=$(find ./my_test_databases -maxdepth 1 -type d -name 'backend=arcadedb_sql_dataset=stackoverflow-tiny_*run=ci11_arcadedb_sql' | head -n 1)
+                if [ -z "$db_path" ]; then
+                  echo "❌ Missing build output for 12_vector_search.py. Ensure 11_vector_index_build.py ran first." | tee -a $results_file
+                  failed=$((failed + 1))
+                  echo ""
+                  continue
+                fi
+                example_args="--backend arcadedb_sql --dataset stackoverflow-tiny --db-path $db_path --overquery-factors 1 --k 10 --query-limit 100 --query-runs 1 --query-order fixed --threads 1 --mem-limit 2g --run-label ci12_arcadedb_sql"
+                example_name="$example (vector search, arcadedb_sql backend, minimal)"
+                timeout_duration=1200
+                example_jvm_args=""
+                ;;
+              "13_stackoverflow_hybrid_queries.py")
+                example_args="--dataset stackoverflow-tiny --batch-size 500 --encode-batch-size 64 --top-k 5 --candidate-limit 100 --min-reputation 100 --infer-sample-limit 5000 --run-label ci13"
+                example_name="$example (hybrid pipeline, tiny + minimal limits)"
+                timeout_duration=1800
+                example_jvm_args=""
+                ;;
+              "14_lifecycle_timing.py")
+                example_args="--runs 1 --table-records 2000 --graph-vertices 500 --vector-records 500 --vector-dimensions 32 --query-runs 10 --jvm-heap 4g"
+                example_name="$example (lifecycle benchmark, minimal)"
+                timeout_duration=900
+                example_jvm_args=""
+                ;;
+              "15_import_database_vs_transactional_table_ingest.py")
+                example_args="--rows-per-table 2000 --tables 2 --columns 6 --string-size 32 --batch-size 500 --async-parallel 1 --parallel 1 --heap-size 4g --work-dir ./my_test_databases/import_vs_txn_dummy_ci"
+                example_name="$example (table ingest benchmark, minimal)"
+                timeout_duration=1200
+                example_jvm_args=""
+                ;;
+              "16_import_database_vs_transactional_graph_ingest.py")
+                example_args="--vertices 2000 --edges 4000 --vertex-int-props 3 --vertex-str-props 2 --edge-int-props 1 --edge-str-props 1 --string-size 32 --batch-size 500 --async-parallel 1 --parallel 1 --heap-size 4g --work-dir ./my_test_databases/import_vs_txn_graph_ci"
+                example_name="$example (graph ingest benchmark, minimal)"
+                timeout_duration=1200
+                example_jvm_args=""
                 ;;
               *)
                 example_args=""
                 example_name="$example"
                 timeout_duration=900  # 15 minutes default
+                example_jvm_args=""
                 ;;
             esac
 
@@ -348,11 +411,23 @@ jobs:
             echo "----------------------------------------"
 
             # Run the example with appropriate parameters
-            if $TIMEOUT_CMD $timeout_duration python "$example" $example_args > "$log_file" 2>&1; then
+            if [ -n "$example_jvm_args" ]; then
+              if ARCADEDB_JVM_ARGS="$example_jvm_args" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration python "$example" $example_args > "$log_file" 2>&1; then
+                exit_code=0
+              else
+                exit_code=$?
+              fi
+            else
+              if ARCADEDB_JVM_ARGS="" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration python "$example" $example_args > "$log_file" 2>&1; then
+                exit_code=0
+              else
+                exit_code=$?
+              fi
+            fi
+            if [ $exit_code -eq 0 ]; then
               echo "✅ PASSED: $example_name" | tee -a $results_file
               passed=$((passed + 1))
             else
-              exit_code=$?
               if [ $exit_code -eq 124 ]; then
                 echo "⏱️  TIMEOUT: $example_name (exceeded $((timeout_duration/60)) minutes)" | tee -a $results_file
                 failed=$((failed + 1))

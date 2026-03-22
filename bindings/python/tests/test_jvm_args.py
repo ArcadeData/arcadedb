@@ -16,6 +16,12 @@ def test_defaults_no_env_vars():
         assert "-Djava.awt.headless=true" in args
         assert "--add-modules=jdk.incubator.vector" in args
         assert "--enable-native-access=ALL-UNNAMED" in args
+        assert "-Dfile.encoding=UTF8" in args
+        assert any("java.base/java.util.concurrent.atomic" in a for a in args)
+        assert any("java.base/java.nio.channels.spi" in a for a in args)
+        assert any("java.base/java.lang=" in a for a in args)
+        assert "-Dpolyglot.engine.WarnInterpreterOnly=false" in args
+        assert "-XX:+UseCompactObjectHeaders" in args
         # Should have default error log
         assert any("hs_err_pid" in arg for arg in args)
 
@@ -37,6 +43,12 @@ def test_custom_jvm_args_merging():
         assert "-Djava.awt.headless=true" in args
         assert "--add-modules=jdk.incubator.vector" in args
         assert "--enable-native-access=ALL-UNNAMED" in args
+        assert "-Dfile.encoding=UTF8" in args
+        assert any("java.base/java.util.concurrent.atomic" in a for a in args)
+        assert any("java.base/java.nio.channels.spi" in a for a in args)
+        assert any("java.base/java.lang=" in a for a in args)
+        assert "-Dpolyglot.engine.WarnInterpreterOnly=false" in args
+        assert "-XX:+UseCompactObjectHeaders" in args
 
 
 def test_dedupe_heap_keeps_max():
@@ -67,7 +79,7 @@ def test_custom_jvm_args_injects_heap_default_when_missing():
 
 def test_custom_jvm_args_no_duplicates():
     """Test that we don't duplicate flags if user provides them."""
-    custom_args = "-Xmx2g -Djava.awt.headless=false --add-modules=jdk.incubator.vector --enable-native-access=ALL-UNNAMED"
+    custom_args = "-Xmx2g -Djava.awt.headless=false --add-modules=jdk.incubator.vector --enable-native-access=ALL-UNNAMED -XX:+UseCompactObjectHeaders"
     with patch.dict(os.environ, {"ARCADEDB_JVM_ARGS": custom_args}, clear=True):
         args = _build_jvm_args(
             heap_size="4g",
@@ -80,10 +92,14 @@ def test_custom_jvm_args_no_duplicates():
         modules_count = sum(1 for a in args if "jdk.incubator.vector" in a)
         headless_count = sum(1 for a in args if "headless" in a)
         native_count = sum(1 for a in args if "enable-native-access" in a)
+        encoding_count = sum(1 for a in args if a.startswith("-Dfile.encoding="))
+        compact_headers_count = sum(1 for a in args if "UseCompactObjectHeaders" in a)
 
         assert modules_count == 1
         assert headless_count == 1
         assert native_count == 1
+        assert encoding_count == 1
+        assert compact_headers_count == 1
 
         # Verify user's explicit choice is respected (e.g., they might want headless=false for some reason)
         # Note: Our logic just checks key presence, it doesn't force overwrite if key exists with different value.

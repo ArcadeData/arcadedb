@@ -97,12 +97,12 @@ class VectorIndex:
            - ~0.0: Very distant vectors
 
         2. **COSINE**:
-           - Returns **Normalized Distance** (Lower is better).
-           - Formula: $(1 - \\cos(\\theta)) / 2$
-           - Range: [0.0, 1.0]
-           - 0.0: Identical vectors (angle 0)
-           - 0.5: Orthogonal vectors (angle 90)
-           - 1.0: Opposite vectors (angle 180)
+        - Returns **Cosine Distance** (Lower is better).
+        - Formula: $1 - \\cos(\\theta)$
+        - Range: [0.0, 2.0]
+            - 0.0: Identical vectors (angle 0)
+            - 1.0: Orthogonal vectors (angle 90)
+            - 2.0: Opposite vectors (angle 180)
 
         3. **DOT_PRODUCT**:
            - Returns **Negative Dot Product** (Lower is better).

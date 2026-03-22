@@ -88,8 +88,7 @@ def test_server_pattern_recommended(cleanup_test_dirs):
     print("\n2. Creating database through server...")
     db = server.create_database("mydb")
 
-    # Schema operations are auto-transactional
-    db.schema.create_document_type("Product")
+    db.command("sql", "CREATE DOCUMENT TYPE Product")
 
     with db.transaction():
         db.command("sql", "INSERT INTO Product SET name = 'Laptop', price = 999")
@@ -139,8 +138,7 @@ def test_server_thread_safety(cleanup_test_dirs):
 
     db = server.create_database("testdb")
 
-    # Schema operations are auto-transactional
-    db.schema.create_document_type("Item")
+    db.command("sql", "CREATE DOCUMENT TYPE `Item`")
 
     with db.transaction():
         for i in range(20):
@@ -211,8 +209,7 @@ def test_server_context_manager(cleanup_test_dirs):
 
         db = server.create_database("contextdb")
 
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("Note")
+        db.command("sql", "CREATE DOCUMENT TYPE Note")
 
         with db.transaction():
             db.command("sql", "INSERT INTO Note SET text = 'Test'")
@@ -230,7 +227,7 @@ def test_server_context_manager(cleanup_test_dirs):
 
 def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
     """
-    Pattern 1: Create database with embedded API first, then start server.
+    Pattern 1: Create database in embedded mode first, then start server.
 
     IMPORTANT: Must close the database before starting server, otherwise
     the file lock prevents server access.
@@ -248,12 +245,11 @@ def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
     db_name = "mydb"
     db_path = os.path.join(root_path, db_name)
 
-    # Step 1: Create database with embedded API
-    print("\n1. Creating database with embedded API...")
+    # Step 1: Create database in embedded mode
+    print("\n1. Creating database in embedded mode...")
     db = arcadedb.create_database(db_path)
 
-    # Schema operations are auto-transactional
-    db.schema.create_document_type("Person")
+    db.command("sql", "CREATE DOCUMENT TYPE Person")
 
     with db.transaction():
         db.command("sql", "INSERT INTO Person SET name = 'Alice', age = 30")
@@ -679,7 +675,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
 
     # Create same test type (already exists, but included for fair comparison)
     try:
-        db.schema.create_document_type("BenchItem")
+        db.command("sql", "CREATE DOCUMENT TYPE BenchItem")
     except Exception:
         pass  # Already exists
 

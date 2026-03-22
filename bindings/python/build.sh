@@ -62,6 +62,14 @@ print_usage() {
     echo "  Directory containing ArcadeDB JARs to embed"
     echo "  If omitted, JARs are pulled from arcadedata/arcadedb:<version>"
     echo ""
+    echo "PYTHON_VERSION:"
+    echo "  Python version for wheel (default: 3.12)"
+    echo "  Examples: 3.10, 3.11, 3.12, 3.13, 3.14"
+    echo ""
+    echo "JAR_LIB_DIR (optional):"
+    echo "  Directory containing ArcadeDB JARs to embed"
+    echo "  If omitted, JARs are pulled from arcadedata/arcadedb:<version>"
+    echo ""
     echo "Build Methods:"
     echo "  Native: macOS builds natively on its platform"
     echo "  Docker: Linux uses Docker for manylinux compliance"
@@ -140,6 +148,8 @@ echo ""
 # Select jar source: explicit directory when provided; otherwise pull from ArcadeDB image
 LOCAL_JARS_DIR="$SCRIPT_DIR/local-jars/lib"
 USE_LOCAL_JARS_ARG=""
+LOCAL_JARS_HASH_ARG=""
+DOCKER_CACHE_ARGS=""
 JAR_SOURCE_DESC="ArcadeDB image"
 mkdir -p "$LOCAL_JARS_DIR"
 
@@ -169,6 +179,9 @@ if [[ -n "$JAR_LIB_DIR" ]]; then
     fi
 
     USE_LOCAL_JARS_ARG="--build-arg USE_LOCAL_JARS=1"
+    LOCAL_JARS_HASH=$(find "$LOCAL_JARS_DIR" -maxdepth 1 -name "*.jar" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+    LOCAL_JARS_HASH_ARG="--build-arg LOCAL_JARS_HASH=${LOCAL_JARS_HASH}"
+    DOCKER_CACHE_ARGS="--no-cache"
 else
     echo -e "${CYAN}📦 Using JARs from ArcadeDB image (no JAR_LIB_DIR provided)${NC}"
 fi
@@ -270,6 +283,7 @@ else
     echo -e "${CYAN}📦 Building Docker image...${NC}"
 
     docker build \
+        $DOCKER_CACHE_ARGS \
         --pull \
         --platform "$DOCKER_PLATFORM" \
         --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
@@ -278,6 +292,7 @@ else
         --build-arg ARCADEDB_TAG="$DOCKER_TAG" \
         --build-arg TARGET_PLATFORM="$TARGET_PLATFORM" \
         $USE_LOCAL_JARS_ARG \
+        $LOCAL_JARS_HASH_ARG \
         $BUILD_VERSION_ARG \
         --target export \
         -t arcadedb-python-package-export \
@@ -287,6 +302,7 @@ else
     # Run tests
     echo -e "${CYAN}🧪 Running tests in Docker...${NC}"
     docker build \
+        $DOCKER_CACHE_ARGS \
         --platform "$DOCKER_PLATFORM" \
         --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
         --build-arg PACKAGE_NAME="$PACKAGE_NAME" \
@@ -294,6 +310,7 @@ else
         --build-arg ARCADEDB_TAG="$DOCKER_TAG" \
         --build-arg TARGET_PLATFORM="$TARGET_PLATFORM" \
         $USE_LOCAL_JARS_ARG \
+        $LOCAL_JARS_HASH_ARG \
         $BUILD_VERSION_ARG \
         --target tester \
         -t arcadedb-python-package \
@@ -315,6 +332,43 @@ else
     else
         echo -e "${RED}❌ Failed to extract wheel file${NC}"
         exit 1
+    fi
+
+    if [[ -n "$JAR_LIB_DIR" ]]; then
+        echo -e "${CYAN}🔎 Verifying embedded local integration JAR...${NC}"
+        python3 - << 'PY'
+import hashlib
+import sys
+import zipfile
+from pathlib import Path
+
+wheel = sorted(Path("dist").glob("arcadedb_embedded-*.whl"))[-1]
+local_jar = Path("local-jars/lib/arcadedb-integration-26.4.1-SNAPSHOT.jar")
+
+if not local_jar.exists():
+    print(f"❌ Local integration JAR not found: {local_jar}", file=sys.stderr)
+    sys.exit(1)
+
+with zipfile.ZipFile(wheel) as zf:
+    matches = [name for name in zf.namelist() if name.endswith("arcadedb-integration-26.4.1-SNAPSHOT.jar")]
+    if not matches:
+        print("❌ Embedded integration JAR not found in wheel", file=sys.stderr)
+        sys.exit(1)
+    wheel_bytes = zf.read(matches[0])
+
+local_bytes = local_jar.read_bytes()
+wheel_hash = hashlib.sha256(wheel_bytes).hexdigest()
+local_hash = hashlib.sha256(local_bytes).hexdigest()
+
+print(f"   wheel integration SHA256: {wheel_hash}")
+print(f"   local integration SHA256: {local_hash}")
+
+if wheel_bytes != local_bytes:
+    print("❌ Wheel embedded integration JAR does not match local-jars/lib", file=sys.stderr)
+    sys.exit(1)
+
+print("✅ Embedded integration JAR matches local-jars/lib")
+PY
     fi
 fi
 

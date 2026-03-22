@@ -8,9 +8,8 @@ import arcadedb_embedded as arcadedb
 def test_count_type(temp_db_path):
     """Test Database.count_type() method."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("User")
-        db.schema.create_document_type("Product")
+        db.command("sql", "CREATE DOCUMENT TYPE User")
+        db.command("sql", "CREATE DOCUMENT TYPE Product")
 
         with db.transaction():
             # Insert users
@@ -53,8 +52,7 @@ def test_drop_database(temp_db_path):
     db = arcadedb.create_database(temp_db_path)
 
     # Create some data
-    # Schema operations are auto-transactional
-    db.schema.create_document_type("Test")
+    db.command("sql", "CREATE DOCUMENT TYPE Test")
     with db.transaction():
         db.command("sql", "INSERT INTO Test SET value = 1")
 
@@ -73,19 +71,13 @@ def test_drop_database(temp_db_path):
 def test_database_methods_integration(temp_db_path):
     """Test using multiple database methods together."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_vertex_type("Person")
-        db.schema.create_edge_type("Knows")
+        db.command("sql", "CREATE VERTEX TYPE Person")
+        db.command("sql", "CREATE EDGE TYPE Knows UNIDIRECTIONAL")
 
         # Insert data
         with db.transaction():
-            alice = db.new_vertex("Person")
-            alice.set("name", "Alice")
-            alice.save()
-
-            bob = db.new_vertex("Person")
-            bob.set("name", "Bob")
-            bob.save()
+            db.command("sql", "CREATE VERTEX Person SET name = 'Alice'")
+            db.command("sql", "CREATE VERTEX Person SET name = 'Bob'")
 
         # Use count_type to verify
         person_count = db.count_type("Person")

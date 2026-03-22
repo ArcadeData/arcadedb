@@ -24,6 +24,8 @@ class IndexType(Enum):
     LSM_TREE = "LSM_TREE"
     FULL_TEXT = "FULL_TEXT"
     LSM_VECTOR = "LSM_VECTOR"
+    GEOSPATIAL = "GEOSPATIAL"
+    HASH = "HASH"
 
 
 class PropertyType(Enum):
@@ -54,7 +56,7 @@ class Schema:
     Provides type-safe methods for creating types, properties, and indexes
     instead of using SQL strings.
 
-    This class wraps the Java Schema interface and provides a Pythonic API.
+    This class wraps the Java Schema interface with Python-friendly methods.
 
     Attributes:
         _java_schema: The underlying Java Schema object
@@ -452,7 +454,7 @@ class Schema:
             type_name: Name of the type
             property_names: List of property names to index
             unique: Whether the index should enforce uniqueness
-            index_type: Type of index (LSM_TREE or FULL_TEXT)
+            index_type: Type of index (LSM_TREE, FULL_TEXT, LSM_VECTOR, GEOSPATIAL, HASH)
 
         Returns:
             Java Index object
@@ -484,7 +486,15 @@ class Schema:
             INDEX_TYPE = jpype.JPackage("com").arcadedb.schema.Schema.INDEX_TYPE
             java_index_type = getattr(INDEX_TYPE, index_type_str)
         except Exception as e:
-            raise ArcadeDBError(f"Invalid index type '{index_type_str}': {e}") from e
+            try:
+                available = [v.name() for v in INDEX_TYPE.values()]
+            except Exception:
+                available = []
+            details = (
+                f"Invalid index type '{index_type_str}'. "
+                f"Available Java index types: {available}"
+            )
+            raise ArcadeDBError(details) from e
 
         try:
             # Convert Python list to Java String array
@@ -513,7 +523,7 @@ class Schema:
             type_name: Name of the type
             property_names: List of property names to index
             unique: Whether the index should enforce uniqueness
-            index_type: Type of index (LSM_TREE or FULL_TEXT)
+            index_type: Type of index (LSM_TREE, FULL_TEXT, LSM_VECTOR, GEOSPATIAL, HASH)
 
         Returns:
             Java Index object
@@ -535,7 +545,15 @@ class Schema:
             INDEX_TYPE = jpype.JPackage("com").arcadedb.schema.Schema.INDEX_TYPE
             java_index_type = getattr(INDEX_TYPE, index_type_str)
         except Exception as e:
-            raise ArcadeDBError(f"Invalid index type '{index_type_str}': {e}") from e
+            try:
+                available = [v.name() for v in INDEX_TYPE.values()]
+            except Exception:
+                available = []
+            details = (
+                f"Invalid index type '{index_type_str}'. "
+                f"Available Java index types: {available}"
+            )
+            raise ArcadeDBError(details) from e
 
         try:
             # Convert Python list to Java String array
