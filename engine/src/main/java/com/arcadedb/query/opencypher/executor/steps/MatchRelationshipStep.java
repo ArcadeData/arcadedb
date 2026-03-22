@@ -201,6 +201,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       private Result lastResult = null;
       private Iterator<Edge> currentEdges = null;
       private Iterator<Vertex> currentVertices = null;
+      // GAV reference path: iterate int[] neighbor IDs directly, zero OLTP
+      private int[] currentGavNeighborIds = null;
+      private int currentGavNeighborIdx = 0;
+      private GraphTraversalProvider currentGavProvider = null;
       // Short-circuit flag: checked lazily after first pull from predecessor
       // (predecessor might create the edge type via CREATE/FOREACH/MERGE)
       private Boolean schemaShortCircuit = null;
@@ -238,8 +242,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         bufferIndex = 0;
 
         while (buffer.size() < n) {
-          // Process using fast path (vertices directly) or standard path (edges)
-          if (useFastPath && currentVertices != null && currentVertices.hasNext()) {
+          // Process using GAV reference path, fast path, or standard path
+          if (currentGavNeighborIds != null && currentGavNeighborIdx < currentGavNeighborIds.length) {
+            processGavReferencePath(n);
+          } else if (useFastPath && currentVertices != null && currentVertices.hasNext()) {
             processFastPath(n);
           } else if (!useFastPath && currentEdges != null && currentEdges.hasNext()) {
             processStandardPath(n);
@@ -275,34 +281,59 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               lastResult = prevResults.next();
               final Object sourceObj = lastResult.getProperty(sourceVariable);
 
-              // Accept GAVVertexReference from a previous deferred-load hop
-              final Vertex sourceVertex;
-              if (sourceObj instanceof com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) {
-                final var ref = (com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) sourceObj;
-                sourceVertex = ref.resolve(context.getDatabase());
-                // Replace the reference with the resolved vertex so downstream steps can use it
-                if (lastResult instanceof ResultInternal)
-                  ((ResultInternal) lastResult).setProperty(sourceVariable, sourceVertex);
+              // Resolve source: accept both Vertex and GAVVertexReference
+              int sourceNodeId = -1;
+              Vertex sourceVertex = null;
+              if (sourceObj instanceof com.arcadedb.query.opencypher.executor.operators.GAVVertexReference gavRef) {
+                sourceNodeId = gavRef.getNodeId();
+                // Don't resolve to Vertex yet — only resolve if we can't use GAV fast path
               } else if (sourceObj instanceof Vertex)
                 sourceVertex = (Vertex) sourceObj;
-              else
-                sourceVertex = null;
 
-              if (sourceVertex != null) {
+              if (sourceVertex != null || sourceNodeId >= 0) {
 
                 // Determine if we can use fast path for this vertex
                 useFastPath = canUseFastPath(lastResult);
 
                 if (useFastPath) {
-                  // Fast path: get vertices directly without loading edges
-                  currentVertices = getVertices(sourceVertex);
-                  currentEdges = null;
-                  seenEdges = null;
+                  // Try GAV reference path first (zero OLTP): use int nodeIds throughout
+                  final GraphTraversalProvider gavProvider = resolveGavProvider(
+                      pattern.hasTypes() ? pattern.getTypes().toArray(new String[0]) : null);
+                  if (gavProvider != null && sourceNodeId < 0 && sourceVertex != null)
+                    sourceNodeId = gavProvider.getNodeId(sourceVertex.getIdentity());
+
+                  if (gavProvider != null && sourceNodeId >= 0) {
+                    // GAV reference path: produce GAVVertexReference, skip all lookupByRID
+                    final Direction dir = getEffectiveDirection();
+                    final String[] types = pattern.hasTypes() ? pattern.getTypes().toArray(new String[0]) : null;
+                    int[] neighborIds = gavProvider.getNeighborIds(sourceNodeId, dir.toArcadeDirection(), types);
+                    if (dir == Direction.BOTH)
+                      neighborIds = deduplicateSelfLoops(neighborIds, sourceNodeId);
+                    currentGavNeighborIds = neighborIds;
+                    currentGavNeighborIdx = 0;
+                    currentGavProvider = gavProvider;
+                    gavUsed = true;
+                    currentVertices = null;
+                    currentEdges = null;
+                    seenEdges = null;
+                  } else {
+                    // Regular fast path: load vertices via getVertices()
+                    if (sourceVertex == null)
+                      sourceVertex = ((com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) sourceObj)
+                          .resolve(context.getDatabase());
+                    currentVertices = getVertices(sourceVertex);
+                    currentGavNeighborIds = null;
+                    currentEdges = null;
+                    seenEdges = null;
+                  }
                 } else {
-                  // Standard path: load edges
+                  // Standard path: load edges (needs full Vertex)
+                  if (sourceVertex == null)
+                    sourceVertex = ((com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) sourceObj)
+                        .resolve(context.getDatabase());
                   currentEdges = getEdges(sourceVertex);
                   currentVertices = null;
-                  // Track seen edges for BOTH direction to deduplicate self-loops
+                  currentGavNeighborIds = null;
                   seenEdges = getEffectiveDirection() == Direction.BOTH ? new HashSet<>() : null;
                 }
               } else {
@@ -318,6 +349,67 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             }
           }
         }
+      }
+
+      /**
+       * GAV reference path: iterate int[] neighbor IDs, produce GAVVertexReference per result.
+       * Zero OLTP vertex loading — label check via bucket ID, property access via column store.
+       */
+      private void processGavReferencePath(final int n) {
+        final Database db = context.getDatabase();
+        while (currentGavNeighborIdx < currentGavNeighborIds.length && buffer.size() < n) {
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
+
+            final int neighborId = currentGavNeighborIds[currentGavNeighborIdx++];
+            final RID targetRid = currentGavProvider.getRID(neighborId);
+            if (targetRid == null)
+              continue;
+
+            // Label filter via bucket ID (no vertex load)
+            if (targetNodePattern != null && targetNodePattern.hasLabels()) {
+              final String targetLabel = targetNodePattern.getLabels().get(0);
+              final String typeName = db.getSchema().getTypeByBucketId(targetRid.getBucketId()).getName();
+              if (!targetLabel.equals(typeName) && !db.getSchema().getType(typeName).instanceOf(targetLabel))
+                continue;
+            }
+
+            // Bound variable identity check (no vertex load)
+            // Compare bucket+offset only — RIDs from GAV may lack the database reference
+            if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
+              final Object boundValue = lastResult.getProperty(targetVariable);
+              final RID boundRid;
+              if (boundValue instanceof Vertex)
+                boundRid = ((Vertex) boundValue).getIdentity();
+              else if (boundValue instanceof com.arcadedb.query.opencypher.executor.operators.GAVVertexReference)
+                boundRid = ((com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) boundValue).getIdentity();
+              else
+                boundRid = null;
+              if (boundRid != null
+                  && (boundRid.getBucketId() != targetRid.getBucketId() || boundRid.getPosition() != targetRid.getPosition()))
+                continue;
+            }
+
+            // Create result with GAVVertexReference (no OLTP load)
+            final ResultInternal result = new ResultInternal();
+            for (final String prop : lastResult.getPropertyNames())
+              result.setProperty(prop, lastResult.getProperty(prop));
+            result.setProperty(targetVariable,
+                new com.arcadedb.query.opencypher.executor.operators.GAVVertexReference(targetRid, neighborId, currentGavProvider));
+
+            buffer.add(result);
+            if (context.isProfiling())
+              gavPathCount++;
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
+        }
+        // Exhausted — clear state so the outer loop fetches the next source
+        if (currentGavNeighborIdx >= currentGavNeighborIds.length)
+          currentGavNeighborIds = null;
       }
 
       private void processFastPath(final int n) {

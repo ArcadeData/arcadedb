@@ -180,6 +180,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
                     iterator = Collections.singletonList((Identifiable) boundVertex).iterator();
                   else
                     iterator = Collections.<Identifiable>emptyList().iterator();
+                } else if (boundValue instanceof com.arcadedb.query.opencypher.executor.operators.GAVVertexReference gavRef) {
+                  // GAV reference: resolve to vertex for label/property checks, then pass through
+                  final Vertex resolved = gavRef.resolve(context.getDatabase());
+                  if (currentInputResult instanceof ResultInternal)
+                    ((ResultInternal) currentInputResult).setProperty(variable, resolved);
+                  if (matchesAllLabelsBound(resolved) && matchesProperties(resolved, currentInputResult))
+                    iterator = Collections.singletonList((Identifiable) resolved).iterator();
+                  else
+                    iterator = Collections.<Identifiable>emptyList().iterator();
                 } else {
                   iterator = Collections.<Identifiable>emptyList().iterator();
                 }
