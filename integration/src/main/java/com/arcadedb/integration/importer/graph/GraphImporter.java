@@ -18,309 +18,995 @@
  */
 package com.arcadedb.integration.importer.graph;
 
-import com.arcadedb.database.Binary;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.VertexInternal;
-import com.arcadedb.index.CompressedAny2RIDIndex;
-import com.arcadedb.index.CompressedRID2RIDsIndex;
-import com.arcadedb.integration.importer.ImporterContext;
-import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.Type;
-import com.arcadedb.utility.Pair;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
- * @deprecated Use {@link com.arcadedb.graph.GraphBatch} instead, which is in the engine module
- * and provides 6-11x better performance through sorted flushes, vectorized segment writes,
- * deferred incoming edge connection, and bulk record creation.
+ * High-performance, declarative graph importer using a CSR-first architecture:
+ * <ol>
+ *   <li><b>Pass 1</b> — Process each data source once: create vertices with full properties,
+ *       collect graph topology as compressed int arrays (~300 MB for 8M vertices / 15M edges).</li>
+ *   <li><b>Pass 2</b> — Create all edges from the in-memory topology, one batch per edge type
+ *       with bidirectional=true for full IN+OUT traversal.</li>
+ * </ol>
+ * <p>
+ * Usage:
+ * <pre>
+ * GraphImporter.builder(database)
+ *     .vertex("User", xmlSource, v -&gt; {
+ *         v.id("Id");
+ *         v.property("displayName", "DisplayName");
+ *         v.intProperty("reputation", "Reputation");
+ *     })
+ *     .vertex("Post", xmlSource, v -&gt; {
+ *         v.id("Id");
+ *         v.property("title", "Title");
+ *         v.edgeIn("OwnerUserId", "Posted", "User");   // User→Post
+ *         v.edgeOut("ParentId", "AnswerOf", "Post");    // Post→Post (deferred)
+ *     })
+ *     .build()
+ *     .run();
+ * </pre>
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @see GraphBatch
  */
-@Deprecated
-public class GraphImporter {
-  private final CompressedAny2RIDIndex       verticesIndex;
-  private final DatabaseInternal             database;
-  private final GraphImporterThreadContext[] threadContexts;
+public class GraphImporter implements AutoCloseable {
 
-  enum Status {IMPORTING_VERTEX, IMPORTING_EDGE, CLOSED}
+  private final Database                            database;
+  private final List<VertexSourceDef>               vertexSources;
+  private final List<EdgeSourceDef>                 edgeSources;
+  private final long                                limit;
+  private final Map<String, TypeState>              typeStates     = new LinkedHashMap<>();
+  private final Map<String, EdgeCollector>          edgeCollectors = new LinkedHashMap<>();
+  private final Map<String, List<DeferredEdgePair>> deferredEdges  = new HashMap<>();
 
-  private Status status = Status.IMPORTING_VERTEX;
+  private long totalVertices;
+  private long totalEdges;
 
-  public class GraphImporterThreadContext {
-    Binary                                vertexIndexThreadBuffer;
-    CompressedRID2RIDsIndex               incomingConnectionsIndexThread;
-    Object                                lastSourceKey    = null;
-    VertexInternal                        lastSourceVertex = null;
-    List<GraphEngine.CreateEdgeOperation> connections      = new ArrayList<>();
-    int                                   importedEdges    = 0;
-
-    public GraphImporterThreadContext(final int expectedVertices, final int expectedEdges) throws ClassNotFoundException {
-      incomingConnectionsIndexThread = new CompressedRID2RIDsIndex(database, expectedVertices, expectedEdges);
-    }
-  }
-
-  public GraphImporter(final DatabaseInternal database, final int expectedVertices, final int expectedEdges, final Type idType)
-      throws ClassNotFoundException {
+  private GraphImporter(final Database database, final List<VertexSourceDef> vertexSources,
+                        final List<EdgeSourceDef> edgeSources, final long limit) {
     this.database = database;
-
-    final int parallel = database.async().getParallelLevel();
-
-    this.verticesIndex = new CompressedAny2RIDIndex(database, idType, expectedVertices);
-
-    final int expectedEdgesPerThread = expectedEdges / parallel;
-
-    threadContexts = new GraphImporterThreadContext[parallel];
-    for (int i = 0; i < parallel; ++i)
-      threadContexts[i] = new GraphImporterThreadContext(expectedVertices, expectedEdgesPerThread);
+    this.vertexSources = vertexSources;
+    this.edgeSources = edgeSources;
+    this.limit = limit;
   }
 
-  public void close() {
-    close(null, null);
-  }
-
-  public void close(final EdgeLinkedCallback callback) {
-    close(callback, null);
-  }
-
-  public void close(final EdgeLinkedCallback callback, final ImporterContext context) {
-    if (database.isTransactionActive())
-      database.commit();
-
-    database.async().waitCompletion();
-
-    // Flush any remaining connections from all thread contexts
-    // This fixes the issue where the last batch of edges for each thread was never created
-    flushRemainingConnections(context);
-
-    for (GraphImporterThreadContext threadContext : threadContexts)
-      threadContext.incomingConnectionsIndexThread.setReadOnly();
-
-    createIncomingEdges(database, callback);
-
-    database.async().waitCompletion();
-
-    Arrays.fill(threadContexts, null);
-
-    status = Status.CLOSED;
-  }
+  // ═══════════════════════════════════════════════════════════════════
+  //  Command-line entry point
+  // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Flushes any remaining edge connections from all thread contexts.
-   * This is called at the end of edge import to ensure the last batch of edges
-   * for each thread is properly created (fixes GitHub issue #1198).
+   * Usage: {@code GraphImporter <json-config-file> <database-path> [data-dir]}
+   * <p>
+   * The JSON file describes vertex/edge sources and mappings. File paths in the JSON are resolved
+   * relative to {@code data-dir} (defaults to the JSON file's parent directory).
+   * The database is created fresh (any existing data is deleted).
    */
-  private void flushRemainingConnections(final ImporterContext context) {
-    // Check if there are any remaining connections to flush
-    boolean hasRemainingConnections = false;
-    for (final GraphImporterThreadContext threadContext : threadContexts) {
-      if (!threadContext.connections.isEmpty() && threadContext.lastSourceVertex != null) {
-        hasRemainingConnections = true;
-        break;
-      }
+  public static void main(final String[] args) throws Exception {
+    if (args.length < 2) {
+      System.err.println("Usage: GraphImporter <json-config-file> <database-path> [data-dir]");
+      System.exit(1);
     }
 
-    if (!hasRemainingConnections)
-      return;
+    final File jsonFile = new File(args[0]);
+    final String dbPath = args[1];
+    final String baseDir = args.length > 2 ? args[2] : jsonFile.getParent();
 
-    // Begin transaction for the flush operation
-    database.begin();
+    final String json = new String(java.nio.file.Files.readAllBytes(jsonFile.toPath()));
+    final JSONObject config = new JSONObject(json);
+
+    com.arcadedb.utility.FileUtils.deleteRecursively(new File(dbPath));
+    final Database database = new com.arcadedb.database.DatabaseFactory(dbPath).create();
 
     try {
-      for (final GraphImporterThreadContext threadContext : threadContexts) {
-        if (!threadContext.connections.isEmpty() && threadContext.lastSourceVertex != null) {
-          // Reload vertex if chunks are not loaded
-          if (threadContext.lastSourceVertex.getOutEdgesHeadChunk() == null)
-            threadContext.lastSourceVertex = (VertexInternal) threadContext.lastSourceVertex.getIdentity().asVertex();
+      // Auto-create schema from the JSON config
+      createSchemaFromConfig(database, config);
 
-          // Create edges for the remaining connections
-          final List<Edge> newEdges = database.getGraphEngine().newEdges(threadContext.lastSourceVertex, threadContext.connections, false);
-
-          // Update statistics
-          if (context != null)
-            context.createdEdges.addAndGet(newEdges.size());
-
-          // Add to incoming connections index for back-linking
-          for (final Edge e : newEdges)
-            threadContext.incomingConnectionsIndexThread.put(e.getIn(), e.getIdentity(), threadContext.lastSourceVertex.getIdentity());
-
-          threadContext.connections.clear();
-        }
+      try (final GraphImporter importer = fromJSON(database, config, baseDir)) {
+        importer.run();
+        System.out.printf("Vertices: %,d%nEdges   : %,d%n", importer.getVertexCount(), importer.getEdgeCount());
       }
-
-      database.commit();
-    } catch (final Exception e) {
-      database.rollback();
-      throw e;
+    } finally {
+      database.close();
     }
   }
 
-  public RID getVertex(final Binary vertexIndexThreadBuffer, final long vertexId) {
-    return verticesIndex.get(vertexIndexThreadBuffer, vertexId);
-  }
-
-  public RID getVertex(final long vertexId) {
-    return verticesIndex.get(vertexId);
-  }
-
-  public RID getVertex(final Binary vertexIndexThreadBuffer, final Object vertexId) {
-    return verticesIndex.get(vertexIndexThreadBuffer, vertexId);
-  }
-
-  public RID getVertex(final Object vertexId) {
-    return verticesIndex.get(vertexId);
-  }
-
-  public void createVertex(final String vertexTypeName, final String vertexId, final Object[] vertexProperties) {
-    final Object transformedVertexId = verticesIndex.getKeyBinaryType().newInstance(vertexId);
-
-    final MutableVertex sourceVertex;
-    final RID sourceVertexRID = verticesIndex.get(transformedVertexId);
-    if (sourceVertexRID == null) {
-      // CREATE THE VERTEX
-      sourceVertex = database.newVertex(vertexTypeName);
-      sourceVertex.set(vertexProperties);
-
-      database.async().createRecord(sourceVertex, newDocument -> {
-        // PRE-CREATE OUT/IN CHUNKS TO SPEEDUP EDGE CREATION
-        database.getGraphEngine().createOutEdgeChunk(sourceVertex);
-        database.getGraphEngine().createInEdgeChunk(sourceVertex);
-
-        verticesIndex.put(transformedVertexId, newDocument.getIdentity());
-      });
-    }
-  }
-
-  /**
-   * Creates an edge with long vertex keys (legacy method for backward compatibility).
-   */
-  public void createEdge(final long sourceVertexKey,
-      final String edgeTypeName,
-      final long destinationVertexKey,
-      final Object[] edgeProperties,
-      final ImporterContext context,
-      final ImporterSettings settings) {
-    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
-    final int slot = async.getSlot((int) sourceVertexKey);
-
-    async.scheduleTask(slot,
-        new CreateEdgeFromImportTask(threadContexts[slot], edgeTypeName, sourceVertexKey, destinationVertexKey, edgeProperties,
-            context, settings), true, 70);
-  }
-
-  /**
-   * Creates an edge with Object vertex keys (supports any ID type including String).
-   * This method was added to fix GitHub issue #1552.
-   */
-  public void createEdge(final Object sourceVertexKey,
-      final String edgeTypeName,
-      final Object destinationVertexKey,
-      final Object[] edgeProperties,
-      final ImporterContext context,
-      final ImporterSettings settings) {
-    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
-    final int slot = async.getSlot(sourceVertexKey.hashCode());
-
-    async.scheduleTask(slot,
-        new CreateEdgeFromImportTask(threadContexts[slot], edgeTypeName, sourceVertexKey, destinationVertexKey, edgeProperties,
-            context, settings), true, 70);
-  }
-
-  public void startImportingEdges() {
-    if (status != Status.IMPORTING_VERTEX)
-      throw new IllegalStateException("Cannot import edges on current status " + status);
-
-    status = Status.IMPORTING_EDGE;
-
-    for (int i = 0; i < threadContexts.length; ++i)
-      threadContexts[i].vertexIndexThreadBuffer = verticesIndex.getInternalBuffer().slice();
-  }
-
-  public CompressedAny2RIDIndex<Object> getVerticesIndex() {
-    return verticesIndex;
-  }
-
-  protected void createIncomingEdges(final DatabaseInternal database, final EdgeLinkedCallback callback) {
-    List<Pair<Identifiable, Identifiable>> connections = new ArrayList<>();
-
-    long browsedVertices = 0;
-    long browsedEdges = 0;
-    long verticesWithNoEdges = 0;
-    long verticesWithEdges = 0;
-
-    LogManager.instance().log(this, Level.INFO, "Linking back edges for %d vertices...", null, verticesIndex.size());
-
-    // Check if vertices index is empty (happens when edges are imported separately from vertices)
-    // In this case, we need to iterate through the incoming connections index instead
-    // This fixes GitHub issue #2267
-    if (verticesIndex.size() == 0) {
-      LogManager.instance()
-          .log(this, Level.INFO,
-              "Vertices index is empty, iterating through incoming connections index instead (separate edge import scenario)");
-
-      // Begin transaction for linking incoming edges
-      database.begin();
-
-      try {
-        // Iterate through all thread contexts and process their incoming connections
-        for (int t = 0; t < threadContexts.length; ++t) {
-          final CompressedRID2RIDsIndex incomingIndex = threadContexts[t].incomingConnectionsIndexThread;
-
-          // Use the existing method in CreateEdgeFromImportTask to process this index
-          CreateEdgeFromImportTask.createIncomingEdgesInBatch(database, incomingIndex, callback);
-        }
-
-        database.commit();
-      } catch (final Exception e) {
-        database.rollback();
-        throw e;
-      }
-
-      LogManager.instance()
-          .log(this, Level.INFO,
-              "Linking back edges completed (separate edge import scenario): browsedVertices=%d browsedEdges=%d verticesWithEdges=%d verticesWithNoEdges=%d",
-              null,
-              browsedVertices, browsedEdges, verticesWithEdges, verticesWithNoEdges);
-      return;
-    }
-
-    // BROWSE ALL THE VERTICES AND COLLECT ALL THE EDGES FROM THE OTHER IN RAM INDEXES
-    for (final CompressedAny2RIDIndex.EntryIterator it = verticesIndex.vertexIterator(); it.hasNext(); ) {
-      final RID destinationVertex = it.next();
-
-      ++browsedVertices;
-
-      for (int t = 0; t < threadContexts.length; ++t) {
-        final List<Pair<RID, RID>> edges = threadContexts[t].incomingConnectionsIndexThread.get(destinationVertex);
-        if (edges != null) {
-          for (final Pair<RID, RID> edge : edges) {
-            connections.add(new Pair<>(edge.getFirst(), edge.getSecond()));
-            ++browsedEdges;
+  /** Creates vertex and edge types declared in the JSON config (if they don't already exist). */
+  public static void createSchemaFromConfig(final Database database, final JSONObject config) {
+    database.transaction(() -> {
+      if (config.has("vertices")) {
+        final JSONArray vertices = config.getJSONArray("vertices");
+        for (int i = 0; i < vertices.length(); i++) {
+          final JSONObject vj = vertices.getJSONObject(i);
+          final String typeName = vj.getString("type");
+          if (!database.getSchema().existsType(typeName))
+            database.getSchema().createVertexType(typeName);
+          if (vj.has("edges")) {
+            final JSONArray edges = vj.getJSONArray("edges");
+            for (int j = 0; j < edges.length(); j++) {
+              final String edgeType = edges.getJSONObject(j).getString("edge");
+              if (!database.getSchema().existsType(edgeType))
+                database.getSchema().createEdgeType(edgeType);
+            }
           }
         }
       }
+      if (config.has("edgeSources")) {
+        final JSONArray edgeSources = config.getJSONArray("edgeSources");
+        for (int i = 0; i < edgeSources.length(); i++) {
+          final String edgeType = edgeSources.getJSONObject(i).getString("edge");
+          if (!database.getSchema().existsType(edgeType))
+            database.getSchema().createEdgeType(edgeType);
+        }
+      }
+    });
+  }
 
-      if (!connections.isEmpty()) {
-        final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
-        final int slot = async.getSlot(destinationVertex.getBucketId());
-        async.scheduleTask(slot, new LinkEdgeFromImportTask(destinationVertex, connections, callback), true, 70);
-        connections = new ArrayList<>();
-        ++verticesWithEdges;
-      } else
-        ++verticesWithNoEdges;
+  // ═══════════════════════════════════════════════════════════════════
+  //  JSON Configuration
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Creates a GraphImporter from a JSON configuration string.
+   * <p>
+   * Format (concise):
+   * <pre>
+   * {
+   *   "vertices": [
+   *     {
+   *       "type": "User", "file": "Users.xml", "id": "Id",
+   *       "properties": { "name": "DisplayName", "score": "int:Score", "active": "bool:Active" },
+   *       "edges": [
+   *         { "attribute": "FriendId", "edge": "Knows", "target": "User" },
+   *         { "attribute": "ManagerId", "edge": "ManagedBy", "target": "User", "direction": "in" },
+   *         { "attribute": "Tags", "edge": "HasTag", "target": "Tag", "split": "|" }
+   *       ]
+   *     }
+   *   ],
+   *   "edgeSources": [
+   *     { "edge": "LinkedTo", "file": "Links.csv", "from": "PostId:Post", "to": "RelatedId:Post",
+   *       "properties": { "linkType": "int:TypeId" } }
+   *   ],
+   *   "limit": 10000
+   * }
+   * </pre>
+   * Property values: {@code "SourceAttr"} (string), {@code "int:SourceAttr"} (integer), {@code "bool:SourceAttr"} (boolean).
+   * File format auto-detected from extension (.xml, .csv, .jsonl). XML defaults to attribute-based {@code <row/>};
+   * add {@code "element": "book"} to read child elements as fields.
+   *
+   * @param database the target database (schema must be pre-created)
+   * @param json     the JSON configuration string
+   * @param baseDir  base directory for resolving relative file paths
+   */
+  public static GraphImporter fromJSON(final Database database, final String json, final String baseDir) {
+    return fromJSON(database, new JSONObject(json), baseDir);
+  }
+
+  /** Creates a GraphImporter from a parsed JSON configuration. */
+  public static GraphImporter fromJSON(final Database database, final JSONObject config, final String baseDir) {
+    final Builder b = builder(database);
+
+    if (config.has("limit"))
+      b.limit(config.getLong("limit"));
+
+    // Vertex sources
+    if (config.has("vertices")) {
+      final JSONArray vertices = config.getJSONArray("vertices");
+      for (int i = 0; i < vertices.length(); i++)
+        parseVertexSource(b, vertices.getJSONObject(i), baseDir);
     }
 
-    LogManager.instance()
-        .log(this, Level.INFO,
-            "Linking back edges completed: browsedVertices=%d browsedEdges=%d verticesWithEdges=%d verticesWithNoEdges=%d", null,
-            browsedVertices, browsedEdges, verticesWithEdges, verticesWithNoEdges);
+    // Edge-only sources
+    if (config.has("edgeSources")) {
+      final JSONArray edgeSources = config.getJSONArray("edgeSources");
+      for (int i = 0; i < edgeSources.length(); i++)
+        parseEdgeSource(b, edgeSources.getJSONObject(i), baseDir);
+    }
+
+    return b.build();
+  }
+
+  private static void parseVertexSource(final Builder b, final JSONObject vj, final String baseDir) {
+    final String typeName = vj.getString("type");
+    final RecordSource source = createRecordSource(vj, baseDir);
+
+    b.vertex(typeName, source, v -> {
+      if (vj.has("id"))
+        v.id(vj.getString("id"));
+      if (vj.has("nameId"))
+        v.idByName(vj.getString("nameId"));
+
+      // Properties: { "dbName": "SourceAttr" } or { "dbName": "int:SourceAttr" }
+      if (vj.has("properties")) {
+        final JSONObject props = vj.getJSONObject("properties");
+        for (final String propName : props.keySet()) {
+          final String spec = props.getString(propName);
+          parsePropertySpec(v, propName, spec);
+        }
+      }
+
+      // Edges
+      if (vj.has("edges")) {
+        final JSONArray edges = vj.getJSONArray("edges");
+        for (int j = 0; j < edges.length(); j++) {
+          final JSONObject ej = edges.getJSONObject(j);
+          final String attr = ej.getString("attribute");
+          final String edgeType = ej.getString("edge");
+          final String target = ej.getString("target");
+
+          if (ej.has("split"))
+            v.splitEdge(attr, edgeType, target, ej.getString("split"));
+          else if ("in".equals(ej.getString("direction", "out")))
+            v.edgeIn(attr, edgeType, target);
+          else
+            v.edgeOut(attr, edgeType, target);
+        }
+      }
+    });
+  }
+
+  private static void parseEdgeSource(final Builder b, final JSONObject ej, final String baseDir) {
+    final String edgeType = ej.getString("edge");
+    final RecordSource source = createRecordSource(ej, baseDir);
+
+    b.edgeSource(edgeType, source, e -> {
+      // "from": "PostId:Post" → attribute:vertexType
+      final String[] fromParts = ej.getString("from").split(":");
+      e.from(fromParts[0], fromParts[1]);
+      final String[] toParts = ej.getString("to").split(":");
+      e.to(toParts[0], toParts[1]);
+
+      if (ej.has("properties")) {
+        final JSONObject props = ej.getJSONObject("properties");
+        for (final String propName : props.keySet()) {
+          final String spec = props.getString(propName);
+          if (spec.startsWith("int:"))
+            e.intProperty(propName, spec.substring(4));
+        }
+      }
+    });
+  }
+
+  private static void parsePropertySpec(final VertexConfig v, final String propName, final String spec) {
+    if (spec.startsWith("int:"))
+      v.intProperty(propName, spec.substring(4));
+    else if (spec.startsWith("bool:"))
+      v.boolProperty(propName, spec.substring(5));
+    else
+      v.property(propName, spec);
+  }
+
+  /** Creates the appropriate RecordSource based on file extension or explicit format. */
+  private static RecordSource createRecordSource(final JSONObject config, final String baseDir) {
+    final String fileName = config.getString("file");
+    final String filePath = new File(baseDir, fileName).getPath();
+    final String autoFormat = fileName.endsWith(".csv") ? "csv" : fileName.endsWith(".jsonl") || fileName.endsWith(".ndjson") ? "jsonl" : "xml";
+    final String format = config.getString("format", autoFormat);
+
+    switch (format) {
+    case "csv":
+      final char delimiter = config.getString("delimiter", ",").charAt(0);
+      final int skipLines = config.getInt("skipLines", 0);
+      return new CsvRowSource(filePath, delimiter, skipLines);
+    case "jsonl":
+      return new JsonlRowSource(filePath);
+    default: // xml
+      final String element = config.getString("element", "row");
+      final boolean childElements = !"row".equals(element) || config.getBoolean("childElements", false);
+      return new XmlRowSource(filePath, element, childElements);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Builder (programmatic API)
+  // ═══════════════════════════════════════════════════════════════════
+
+  public static Builder builder(final Database database) {
+    return new Builder(database);
+  }
+
+  public static class Builder {
+    private final Database              database;
+    private final List<VertexSourceDef> vertexSources = new ArrayList<>();
+    private final List<EdgeSourceDef>   edgeSources   = new ArrayList<>();
+    private       long                  limit;
+
+    Builder(final Database database) {
+      this.database = database;
+    }
+
+    /**
+     * Add a vertex type with its data source and property/edge mappings.
+     * Sources are processed in the order they are added — ensure referenced types are added first.
+     */
+    public Builder vertex(final String typeName, final RecordSource source, final Consumer<VertexConfig> config) {
+      final VertexConfig vc = new VertexConfig(typeName);
+      config.accept(vc);
+      vertexSources.add(new VertexSourceDef(typeName, source, vc));
+      return this;
+    }
+
+    /**
+     * Add an edge-only data source (no vertices created, both endpoints must already exist).
+     */
+    public Builder edgeSource(final String edgeType, final RecordSource source,
+                              final Consumer<EdgeSourceConfig> config) {
+      final EdgeSourceConfig ec = new EdgeSourceConfig(edgeType);
+      config.accept(ec);
+      edgeSources.add(new EdgeSourceDef(edgeType, source, ec));
+      return this;
+    }
+
+    /**
+     * Max records to process per source (0 = unlimited). Useful for testing.
+     */
+    public Builder limit(final long maxRecords) {
+      this.limit = maxRecords;
+      return this;
+    }
+
+    public GraphImporter build() {
+      return new GraphImporter(database, vertexSources, edgeSources, limit);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Configuration classes
+  // ═══════════════════════════════════════════════════════════════════
+
+  public static class VertexConfig {
+    final String typeName;
+    String idAttribute;
+    String nameIdAttribute;
+    final List<PropDef> properties = new ArrayList<>();
+    final List<EdgeDef> edges      = new ArrayList<>();
+
+    VertexConfig(final String typeName) {
+      this.typeName = typeName;
+    }
+
+    /**
+     * Primary ID attribute (integer-valued, used for edge resolution).
+     */
+    public void id(final String attribute) {
+      this.idAttribute = attribute;
+    }
+
+    /**
+     * Secondary name-based ID (string, for split-field edge resolution like tags).
+     */
+    public void idByName(final String attribute) {
+      this.nameIdAttribute = attribute;
+    }
+
+    /**
+     * Map a string property. Null source values are skipped.
+     */
+    public void property(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.STRING));
+    }
+
+    /**
+     * Map an integer property. Missing/empty values default to 0.
+     */
+    public void intProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.INTEGER));
+    }
+
+    /**
+     * Map a boolean property (matches "True"/"true").
+     */
+    public void boolProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.BOOLEAN));
+    }
+
+    /**
+     * Incoming edge: the foreign key references a vertex that points TO this vertex.
+     * Example: Post has OwnerUserId → creates edge User→Post (Posted).
+     */
+    public void edgeIn(final String fkAttribute, final String edgeType, final String targetType) {
+      edges.add(new EdgeDef(fkAttribute, edgeType, targetType, true, false, null));
+    }
+
+    /**
+     * Outgoing edge: this vertex points TO the referenced vertex.
+     * Example: Answer has ParentId → creates edge Answer→Question (AnswerOf).
+     */
+    public void edgeOut(final String fkAttribute, final String edgeType, final String targetType) {
+      edges.add(new EdgeDef(fkAttribute, edgeType, targetType, false, false, null));
+    }
+
+    /**
+     * Split-field edge: a delimited field (e.g. "|java|python|") creates one edge per value.
+     * Values are resolved by name against the target type's nameId.
+     */
+    public void splitEdge(final String attribute, final String edgeType, final String targetType,
+                          final String delimiter) {
+      edges.add(new EdgeDef(attribute, edgeType, targetType, false, true, delimiter));
+    }
+  }
+
+  public static class EdgeSourceConfig {
+    final String edgeType;
+    String fromAttribute, fromVertexType;
+    String toAttribute, toVertexType;
+    final List<PropDef> properties = new ArrayList<>();
+
+    EdgeSourceConfig(final String edgeType) {
+      this.edgeType = edgeType;
+    }
+
+    public void from(final String attribute, final String vertexType) {
+      this.fromAttribute = attribute;
+      this.fromVertexType = vertexType;
+    }
+
+    public void to(final String attribute, final String vertexType) {
+      this.toAttribute = attribute;
+      this.toVertexType = vertexType;
+    }
+
+    public void intProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.INTEGER));
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Data source interface
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Pluggable data source that iterates over records.
+   */
+  public interface RecordSource {
+    void forEach(RecordVisitor visitor) throws Exception;
+  }
+
+  @FunctionalInterface
+  public interface RecordVisitor {
+    void visit(RecordReader record) throws Exception;
+  }
+
+  /**
+   * Read-only access to a record's attributes.
+   */
+  public interface RecordReader {
+    String get(String attribute);
+
+    default int getInt(final String attribute) {
+      final String v = get(attribute);
+      return v != null && !v.isEmpty() ? Integer.parseInt(v) : 0;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Execution
+  // ═══════════════════════════════════════════════════════════════════
+
+  public void run() throws Exception {
+    final long start = System.currentTimeMillis();
+
+    // ── Pass 1: Create vertices + collect topology ──
+    LogManager.instance().log(this, Level.INFO, "Pass 1: Vertices + Topology");
+
+    try (final GraphBatch batch = database.batch()
+        .withBidirectional(false)
+        .withWAL(false)
+        .withPreAllocateEdgeChunks(true)
+        .withCommitEvery(0)
+        .build()) {
+
+      for (final VertexSourceDef vsd : vertexSources)
+        processVertexSource(batch, vsd);
+    }
+
+    // Process edge-only sources
+    for (final EdgeSourceDef esd : edgeSources)
+      processEdgeSource(esd);
+
+    // Free ID maps (edges now use internal indices)
+    for (final TypeState ts : typeStates.values()) {
+      ts.idToIdx = null;
+      ts.nameToIdx = null;
+    }
+
+    LogManager.instance().log(this, Level.INFO, "  Topology: %,d vertices, %,d edge refs", totalVertices,
+        countEdgeRefs());
+
+    // ── Pass 2: Create edges from topology ──
+    LogManager.instance().log(this, Level.INFO, "Pass 2: Edges (bidirectional)");
+
+    for (final Map.Entry<String, EdgeCollector> entry : edgeCollectors.entrySet())
+      flushEdgeType(entry.getKey(), entry.getValue());
+
+    final long elapsed = System.currentTimeMillis() - start;
+    LogManager.instance().log(this, Level.INFO, "Import complete: %,d vertices, %,d edges in %d.%ds",
+        totalVertices, totalEdges, elapsed / 1000, (elapsed % 1000) / 100);
+  }
+
+  public long getVertexCount() {
+    return totalVertices;
+  }
+
+  public long getEdgeCount() {
+    return totalEdges;
+  }
+
+  @Override
+  public void close() {
+    typeStates.clear();
+    edgeCollectors.clear();
+    deferredEdges.clear();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Pass 1: Process vertex sources
+  // ═══════════════════════════════════════════════════════════════════
+
+  private void processVertexSource(final GraphBatch batch, final VertexSourceDef vsd) throws Exception {
+    final long t = System.currentTimeMillis();
+    final VertexConfig vc = vsd.config;
+    final TypeState ts = new TypeState();
+    typeStates.put(vc.typeName, ts);
+
+    final IntList bk = new IntList(100_000);
+    final LongList ps = new LongList(100_000);
+    final List<Object> propBuf = new ArrayList<>(vc.properties.size() * 2 + 4);
+
+    // Prepare edge collectors for this source's edge definitions
+    final List<EdgeDef> resolvedEdges = new ArrayList<>();
+    final List<EdgeDef> deferredEdgeDefs = new ArrayList<>();
+    for (final EdgeDef ed : vc.edges) {
+      // For incoming edges the actual source vertex is the target type
+      if (ed.incoming)
+        getOrCreateEdgeCollector(ed.edgeType, ed.targetType, vc.typeName);
+      else
+        getOrCreateEdgeCollector(ed.edgeType, vc.typeName, ed.targetType);
+      if (ed.targetType.equals(vc.typeName) && !ed.isSplit)
+        deferredEdgeDefs.add(ed);
+      else
+        resolvedEdges.add(ed);
+    }
+
+    // Deferred raw soId pairs for self-referencing edges
+    final Map<String, IntList[]> deferredRaw = new HashMap<>();
+    for (final EdgeDef ed : deferredEdgeDefs)
+      deferredRaw.put(ed.edgeType, new IntList[]{new IntList(100_000), new IntList(100_000)});
+
+    final int[] count = {0};
+    database.begin();
+
+    vsd.source.forEach(record -> {
+      if (limit > 0 && count[0] >= limit)
+        return;
+
+      // Register ID
+      final int idx = count[0];
+      if (vc.idAttribute != null)
+        ts.idToIdx.put(record.getInt(vc.idAttribute), idx);
+      if (vc.nameIdAttribute != null) {
+        final String name = record.get(vc.nameIdAttribute);
+        if (name != null)
+          ts.nameToIdx.put(name, idx);
+      }
+
+      // Build vertex properties
+      propBuf.clear();
+      for (final PropDef pd : vc.properties) {
+        final Object val = readProperty(record, pd);
+        if (val != null) {
+          propBuf.add(pd.name);
+          propBuf.add(val);
+        }
+      }
+
+      final MutableVertex v = batch.createVertex(vc.typeName, propBuf.toArray());
+      bk.add(v.getIdentity().getBucketId());
+      ps.add(v.getIdentity().getPosition());
+
+      // Collect edges
+      for (final EdgeDef ed : resolvedEdges)
+        collectEdge(record, ed, vc.typeName, idx);
+
+      // Collect deferred (self-referencing) edges as raw soIds
+      for (final EdgeDef ed : deferredEdgeDefs) {
+        final int fk = record.getInt(ed.fkAttribute);
+        if (fk != 0) {
+          final int thisSoId = record.getInt(vc.idAttribute);
+          final IntList[] pair = deferredRaw.get(ed.edgeType);
+          pair[0].add(thisSoId);
+          pair[1].add(fk);
+        }
+      }
+
+      count[0]++;
+      if (count[0] % 50_000 == 0) {
+        database.commit();
+        database.begin();
+      }
+    });
+    database.commit();
+
+    ts.buckets = bk.trim();
+    ts.positions = ps.trim();
+    ts.count = count[0];
+    totalVertices += ts.count;
+
+    // Resolve deferred self-referencing edges
+    for (final Map.Entry<String, IntList[]> entry : deferredRaw.entrySet()) {
+      final IntList[] pair = entry.getValue();
+      final EdgeCollector ec = edgeCollectors.get(entry.getKey());
+      for (int i = 0; i < pair[0].size; i++) {
+        final int si = ts.idToIdx.get(pair[0].data[i], -1);
+        final int di = ts.idToIdx.get(pair[1].data[i], -1);
+        if (si >= 0 && di >= 0) {
+          ec.srcIdx.add(si);
+          ec.dstIdx.add(di);
+        }
+      }
+    }
+
+    LogManager.instance().log(this, Level.INFO, "  %-12s %,d vertices (%,d ms)", vc.typeName, ts.count,
+        System.currentTimeMillis() - t);
+  }
+
+  private void collectEdge(final RecordReader record, final EdgeDef ed,
+                           final String thisType, final int thisIdx) {
+    final EdgeCollector ec = edgeCollectors.get(ed.edgeType);
+
+    if (ed.isSplit) {
+      // Split field: e.g. "|java|python|css|"
+      final String fieldVal = record.get(ed.fkAttribute);
+      if (fieldVal == null || fieldVal.length() <= 1)
+        return;
+      final TypeState targetTs = typeStates.get(ed.targetType);
+      if (targetTs == null)
+        return;
+      int start = fieldVal.charAt(0) == ed.delimiter.charAt(0) ? 1 : 0;
+      final char delim = ed.delimiter.charAt(0);
+      int pos;
+      while ((pos = fieldVal.indexOf(delim, start)) != -1) {
+        if (pos > start) {
+          final Integer ti = targetTs.nameToIdx.get(fieldVal.substring(start, pos));
+          if (ti != null) {
+            ec.srcIdx.add(thisIdx);
+            ec.dstIdx.add(ti);
+          }
+        }
+        start = pos + 1;
+      }
+    } else {
+      final int fk = record.getInt(ed.fkAttribute);
+      if (fk == 0)
+        return;
+      final TypeState targetTs = typeStates.get(ed.targetType);
+      if (targetTs == null)
+        return;
+      final int targetIdx = targetTs.idToIdx.get(fk, -1);
+      if (targetIdx < 0)
+        return;
+
+      if (ed.incoming) {
+        ec.srcIdx.add(targetIdx);
+        ec.dstIdx.add(thisIdx);
+      } else {
+        ec.srcIdx.add(thisIdx);
+        ec.dstIdx.add(targetIdx);
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Pass 1: Process edge-only sources
+  // ═══════════════════════════════════════════════════════════════════
+
+  private void processEdgeSource(final EdgeSourceDef esd) throws Exception {
+    final long t = System.currentTimeMillis();
+    final EdgeSourceConfig cfg = esd.config;
+    final TypeState fromTs = typeStates.get(cfg.fromVertexType);
+    final TypeState toTs = typeStates.get(cfg.toVertexType);
+    if (fromTs == null || toTs == null)
+      return;
+
+    final EdgeCollector ec = getOrCreateEdgeCollector(cfg.edgeType, cfg.fromVertexType, cfg.toVertexType);
+    final int[] count = {0};
+
+    esd.source.forEach(record -> {
+      if (limit > 0 && count[0] >= limit)
+        return;
+      final int si = fromTs.idToIdx.get(record.getInt(cfg.fromAttribute), -1);
+      final int di = toTs.idToIdx.get(record.getInt(cfg.toAttribute), -1);
+      if (si >= 0 && di >= 0) {
+        ec.srcIdx.add(si);
+        ec.dstIdx.add(di);
+        for (final PropDef pd : cfg.properties) {
+          if (ec.intProps == null)
+            ec.intProps = new HashMap<>();
+          ec.intProps.computeIfAbsent(pd.name, k -> new IntList(100_000)).add(record.getInt(pd.attribute));
+        }
+      }
+      count[0]++;
+    });
+
+    LogManager.instance().log(this, Level.INFO, "  %-12s %,d edges (%,d ms)",
+        cfg.edgeType, ec.srcIdx.size, System.currentTimeMillis() - t);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Pass 2: Create edges from topology
+  // ═══════════════════════════════════════════════════════════════════
+
+  private void flushEdgeType(final String edgeType, final EdgeCollector ec) {
+    if (ec.srcIdx.size == 0)
+      return;
+    final long t = System.currentTimeMillis();
+    final TypeState srcTs = typeStates.get(ec.srcType);
+    final TypeState dstTs = typeStates.get(ec.dstType);
+
+    try (final GraphBatch batch = database.batch()
+        .withBatchSize(500_000)
+        .withLightEdges(true)
+        .withBidirectional(true)
+        .withWAL(false)
+        .withParallelFlush(false)
+        .withCommitEvery(50_000)
+        .build()) {
+
+      final int[] sSrc = ec.srcIdx.trim();
+      final int[] sDst = ec.dstIdx.trim();
+      final boolean hasIntProps = ec.intProps != null && !ec.intProps.isEmpty();
+
+      for (int i = 0; i < sSrc.length; i++) {
+        final RID src = new RID(null, srcTs.buckets[sSrc[i]], srcTs.positions[sSrc[i]]);
+        final RID dst = new RID(null, dstTs.buckets[sDst[i]], dstTs.positions[sDst[i]]);
+        if (hasIntProps) {
+          final List<Object> props = new ArrayList<>();
+          for (final Map.Entry<String, IntList> pe : ec.intProps.entrySet()) {
+            props.add(pe.getKey());
+            props.add(pe.getValue().data[i]);
+          }
+          batch.newEdge(src, edgeType, dst, props.toArray());
+        } else {
+          batch.newEdge(src, edgeType, dst);
+        }
+      }
+    }
+    totalEdges += ec.srcIdx.size;
+    LogManager.instance().log(this, Level.INFO, "  %-12s %,8d (%,d ms)",
+        edgeType, ec.srcIdx.size, System.currentTimeMillis() - t);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Internal helpers
+  // ═══════════════════════════════════════════════════════════════════
+
+  private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType) {
+    return edgeCollectors.computeIfAbsent(edgeType, k -> new EdgeCollector(srcType, dstType));
+  }
+
+  private static Object readProperty(final RecordReader record, final PropDef pd) {
+    switch (pd.type) {
+      case INTEGER:
+        return record.getInt(pd.attribute);
+      case BOOLEAN:
+        return "True".equalsIgnoreCase(record.get(pd.attribute));
+      default:
+        return record.get(pd.attribute);
+    }
+  }
+
+  private long countEdgeRefs() {
+    long n = 0;
+    for (final EdgeCollector ec : edgeCollectors.values())
+      n += ec.srcIdx.size;
+    return n;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Internal data structures
+  // ═══════════════════════════════════════════════════════════════════
+
+  enum PropType {STRING, INTEGER, BOOLEAN}
+
+  static class PropDef {
+    final String name, attribute;
+    final PropType type;
+
+    PropDef(final String name, final String attr, final PropType type) {
+      this.name = name;
+      this.attribute = attr;
+      this.type = type;
+    }
+  }
+
+  static class EdgeDef {
+    final String fkAttribute, edgeType, targetType;
+    final boolean incoming, isSplit;
+    final String delimiter;
+
+    EdgeDef(final String fk, final String et, final String tt, final boolean in, final boolean split,
+            final String delim) {
+      this.fkAttribute = fk;
+      this.edgeType = et;
+      this.targetType = tt;
+      this.incoming = in;
+      this.isSplit = split;
+      this.delimiter = delim;
+    }
+  }
+
+  static class VertexSourceDef {
+    final String       typeName;
+    final RecordSource source;
+    final VertexConfig config;
+
+    VertexSourceDef(final String tn, final RecordSource s, final VertexConfig c) {
+      this.typeName = tn;
+      this.source = s;
+      this.config = c;
+    }
+  }
+
+  static class EdgeSourceDef {
+    final String           edgeType;
+    final RecordSource     source;
+    final EdgeSourceConfig config;
+
+    EdgeSourceDef(final String et, final RecordSource s, final EdgeSourceConfig c) {
+      this.edgeType = et;
+      this.source = s;
+      this.config = c;
+    }
+  }
+
+  static class TypeState {
+    IntIntMap            idToIdx   = new IntIntMap(100_000);
+    Map<String, Integer> nameToIdx = new HashMap<>();
+    int[]                buckets;
+    long[]               positions;
+    int                  count;
+  }
+
+  static class EdgeCollector {
+    final String srcType, dstType;
+    final IntList srcIdx = new IntList(100_000);
+    final IntList dstIdx = new IntList(100_000);
+    Map<String, IntList> intProps;
+
+    EdgeCollector(final String src, final String dst) {
+      this.srcType = src;
+      this.dstType = dst;
+    }
+  }
+
+  static class DeferredEdgePair {
+    final int srcSoId, dstSoId;
+
+    DeferredEdgePair(final int s, final int d) {
+      this.srcSoId = s;
+      this.dstSoId = d;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Primitive collections (zero boxing, minimal GC)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Open-addressing int→int hash map with Fibonacci hashing.
+   */
+  static final class IntIntMap {
+    private static final int   EMPTY = Integer.MIN_VALUE;
+    private              int[] keys, values;
+    private int mask, size, threshold;
+
+    IntIntMap(final int expected) {
+      int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
+      keys = new int[cap];
+      values = new int[cap];
+      mask = cap - 1;
+      threshold = (int) (cap * 0.7);
+      Arrays.fill(keys, EMPTY);
+    }
+
+    void put(final int key, final int value) {
+      if (size >= threshold)
+        resize();
+      int i = (key * 0x9E3779B9) & mask;
+      while (keys[i] != EMPTY && keys[i] != key)
+        i = (i + 1) & mask;
+      if (keys[i] == EMPTY)
+        size++;
+      keys[i] = key;
+      values[i] = value;
+    }
+
+    int get(final int key, final int def) {
+      int i = (key * 0x9E3779B9) & mask;
+      while (keys[i] != EMPTY) {
+        if (keys[i] == key)
+          return values[i];
+        i = (i + 1) & mask;
+      }
+      return def;
+    }
+
+    private void resize() {
+      final int newCap = keys.length << 1;
+      final int[] ok = keys, ov = values;
+      keys = new int[newCap];
+      values = new int[newCap];
+      mask = newCap - 1;
+      threshold = (int) (newCap * 0.7);
+      Arrays.fill(keys, EMPTY);
+      for (int i = 0; i < ok.length; i++)
+        if (ok[i] != EMPTY) {
+          int j = (ok[i] * 0x9E3779B9) & mask;
+          while (keys[j] != EMPTY)
+            j = (j + 1) & mask;
+          keys[j] = ok[i];
+          values[j] = ov[i];
+        }
+    }
+  }
+
+  /**
+   * Growable int array.
+   */
+  static final class IntList {
+    int[] data;
+    int   size;
+
+    IntList(final int cap) {
+      data = new int[cap];
+    }
+
+    void add(final int v) {
+      if (size == data.length)
+        data = Arrays.copyOf(data, size * 2);
+      data[size++] = v;
+    }
+
+    int[] trim() {
+      return size == data.length ? data : Arrays.copyOf(data, size);
+    }
+  }
+
+  /**
+   * Growable long array.
+   */
+  static final class LongList {
+    long[] data;
+    int    size;
+
+    LongList(final int cap) {
+      data = new long[cap];
+    }
+
+    void add(final long v) {
+      if (size == data.length)
+        data = Arrays.copyOf(data, size * 2);
+      data[size++] = v;
+    }
+
+    long[] trim() {
+      return size == data.length ? data : Arrays.copyOf(data, size);
+    }
   }
 }

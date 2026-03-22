@@ -22,7 +22,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.index.CompressedAny2RIDIndex;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedProperty;
 import com.arcadedb.integration.importer.AnalyzedSchema;
@@ -31,9 +33,8 @@ import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
-import com.arcadedb.integration.importer.graph.GraphImporter;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.Type;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
 import com.univocity.parsers.common.AbstractParser;
 import com.univocity.parsers.common.CommonParserSettings;
@@ -184,12 +185,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     else if (expectedVertices > Integer.MAX_VALUE)
       expectedVertices = Integer.MAX_VALUE;
 
-    try {
-      context.graphImporter = new GraphImporter((DatabaseInternal) database, (int) expectedVertices, (int) settings.expectedEdges,
-          Type.valueOf(settings.typeIdType.toUpperCase(Locale.ENGLISH)));
-    } catch (ClassNotFoundException e) {
-      throw new ImportException("Error on creating internal component", e);
-    }
+    // Ensure the typeIdProperty has a unique index for edge resolution
+    if (!database.getSchema().getType(settings.vertexTypeName).existsProperty(settings.typeIdProperty))
+      database.transaction(
+          () -> database.getSchema().getType(settings.vertexTypeName).createProperty(settings.typeIdProperty, com.arcadedb.schema.Type.STRING));
+    if (database.getSchema().getType(settings.vertexTypeName).getIndexesByProperties(settings.typeIdProperty).isEmpty())
+      database.transaction(
+          () -> database.getSchema().getType(settings.vertexTypeName).createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, settings.typeIdProperty));
 
     final AbstractParser<?> csvParser = createCSVParser(settings);
 
@@ -201,7 +203,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
-      // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1L;
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
@@ -213,31 +214,21 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final List<AnalyzedProperty> properties = new ArrayList<>();
       if (!settings.vertexPropertiesInclude.isEmpty() && !settings.vertexPropertiesInclude.equalsIgnoreCase("*")) {
         final String[] includes = settings.vertexPropertiesInclude.split(",");
-
         final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
-
-        for (final AnalyzedProperty p : entity.getProperties()) {
-          if (propertiesSet.contains(p.getName())) {
+        for (final AnalyzedProperty p : entity.getProperties())
+          if (propertiesSet.contains(p.getName()))
             properties.add(p);
-          }
-        }
       } else {
-        // INCLUDE ALL THE PROPERTIES
         properties.addAll(entity.getProperties());
       }
 
       LogManager.instance().log(this, Level.INFO, "Importing the following vertex properties: %s", null, properties);
 
       String[] row;
-      final Object[] vertexProperties = new Object[properties.size() * 2];
-
-      final CompressedAny2RIDIndex<Object> verticesIndex = context.graphImporter.getVerticesIndex();
-
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
 
         if (skipEntries > 0 && line < skipEntries)
-          // SKIP IT
           continue;
 
         if (idIndex >= row.length) {
@@ -247,23 +238,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           continue;
         }
 
-        final String vertexId = row[idIndex];
-
+        final MutableVertex v = database.newVertex(settings.vertexTypeName);
+        v.set(settings.typeIdProperty, row[idIndex]);
         for (int p = 0; p < properties.size(); ++p) {
           final AnalyzedProperty prop = properties.get(p);
-          vertexProperties[p * 2] = prop.getName();
-          vertexProperties[p * 2 + 1] = row[prop.getIndex()];
+          v.set(prop.getName(), row[prop.getIndex()]);
         }
-
-        context.graphImporter.createVertex(settings.vertexTypeName, vertexId, vertexProperties);
-
-        context.createdVertices.incrementAndGet();
-
-        if (line > 0 && line % 10000000 == 0) {
-          LogManager.instance().log(this, Level.INFO, "Map chunkSize=%s chunkAllocated=%s size=%d totalUsedSlots=%d", null,
-              FileUtils.getSizeAsString(verticesIndex.getChunkSize()), FileUtils.getSizeAsString(verticesIndex.getChunkAllocated()),
-              verticesIndex.size(), verticesIndex.getTotalUsedSlots());
-        }
+        database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
       }
 
       database.async().waitCompletion();
@@ -318,15 +299,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         .log(this, Level.INFO, "Started importing edges from CSV source (expectedVertices=%d expectedEdges=%d)", null,
             expectedVertices, expectedEdges);
 
-    try {
-      if (context.graphImporter == null)
-        context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges,
-            Type.valueOf(settings.typeIdType.toUpperCase(Locale.ENGLISH)));
-    } catch (ClassNotFoundException e) {
-      throw new ImportException("Error on creating internal component", e);
-    }
-    context.graphImporter.startImportingEdges();
-
     database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception));
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
@@ -356,23 +328,28 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following edge properties: %s", null, properties);
 
-      // TODO: LET THE EDGE NAME TO BE HERE ON A SINGLE CONNECTION
       String[] row;
+      database.begin();
+      int txCount = 0;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
 
         if (skipEntries > 0 && line < skipEntries)
-          // SKIP IT
           continue;
 
         try {
-          createEdgeFromRow(row, properties, from, to, context, settings);
+          createEdgeFromRow(database, row, properties, from, to, context, settings);
+          txCount++;
+          if (txCount >= settings.commitEvery) {
+            database.commit();
+            database.begin();
+            txCount = 0;
+          }
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
         }
       }
-
-      context.graphImporter.close(linked -> context.linkedEdges.addAndGet(linked), context);
+      database.commit();
 
     } catch (final IOException e) {
       throw new ImportException("Error on importing CSV", e);
@@ -395,8 +372,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     }
   }
 
-  public void createEdgeFromRow(final String[] row, final List<AnalyzedProperty> properties, final AnalyzedProperty from,
-      final AnalyzedProperty to, final ImporterContext context, final ImporterSettings settings) {
+  public void createEdgeFromRow(final Database database, final String[] row, final List<AnalyzedProperty> properties,
+      final AnalyzedProperty from, final AnalyzedProperty to, final ImporterContext context, final ImporterSettings settings) {
 
     if (from.getIndex() >= row.length || to.getIndex() >= row.length) {
       context.skippedEdges.incrementAndGet();
@@ -427,7 +404,19 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       params = NO_PARAMS;
     }
 
-    context.graphImporter.createEdge(sourceVertexKey, settings.edgeTypeName, destinationVertexKey, params, context, settings);
+    // Look up source and destination vertices by key across all vertex types that have the typeIdProperty indexed
+    final Vertex srcVertex = findVertexByKey(database, settings.typeIdProperty, sourceVertexKey);
+    if (srcVertex == null) {
+      context.skippedEdges.incrementAndGet();
+      return;
+    }
+    final Vertex dstVertex = findVertexByKey(database, settings.typeIdProperty, destinationVertexKey);
+    if (dstVertex == null) {
+      context.skippedEdges.incrementAndGet();
+      return;
+    }
+    srcVertex.newEdge(settings.edgeTypeName, dstVertex.getIdentity(), settings.edgeBidirectional, params);
+    context.createdEdges.incrementAndGet();
   }
 
   /**
@@ -435,6 +424,25 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * This supports any ID type (String, Long, Integer, etc.) based on typeIdType setting.
    * Added to fix GitHub issue #1552.
    */
+  /**
+   * Searches all vertex types for a vertex matching the given key property value.
+   * Needed because edges can connect different vertex types.
+   */
+  private Vertex findVertexByKey(final Database database, final String keyProperty, final Object keyValue) {
+    for (final com.arcadedb.schema.DocumentType type : database.getSchema().getTypes()) {
+      if (!(type instanceof com.arcadedb.schema.VertexType))
+        continue;
+      if (!type.existsProperty(keyProperty))
+        continue;
+      if (type.getIndexesByProperties(keyProperty).isEmpty())
+        continue;
+      final IndexCursor cursor = lookupRecord(database, type.getName(), keyProperty, keyValue);
+      if (cursor.hasNext())
+        return cursor.next().asVertex();
+    }
+    return null;
+  }
+
   private Object parseVertexKey(final String value, final String typeIdType) {
     if (value == null)
       return null;
