@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Imports 10K rows per file from the StackOverflow dataset using JSON configuration
- * (same path as command-line usage). Verifies the graph structure.
+ * with Question/Answer split via row filter. Uses Neo4j edge naming convention.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class StackOverflowImporterConfigTest {
 
   private static final String DATA_DIR = "/Users/luca/Downloads/stackoverflow-large";
-  private static final String DB_PATH  = "target/databases/stackoverflow-generic-test";
+  private static final String DB_PATH  = "target/databases/stackoverflow-config-test";
   private static final long   LIMIT    = 10_000;
 
   private Database database;
@@ -60,23 +60,18 @@ class StackOverflowImporterConfigTest {
   void importData() throws Exception {
     FileUtils.deleteRecursively(new File(DB_PATH));
 
-    // Load JSON config from test resources (same file a CLI user would write)
     final String json = new String(Files.readAllBytes(
         new File("src/test/resources/stackoverflow-import.json").toPath()));
-
-    // Inject the test limit
     final JSONObject config = new JSONObject(json);
     config.put("limit", LIMIT);
 
     final Database db = new DatabaseFactory(DB_PATH).create();
-
-    // Auto-create schema + run import — same as GraphImporter.main() does
     GraphImporter.createSchemaFromConfig(db, config);
 
     try (final GraphImporter importer = GraphImporter.fromJSON(db, config, DATA_DIR)) {
       importer.run();
       assertThat(importer.getVertexCount()).isGreaterThan(30_000);
-      assertThat(importer.getEdgeCount()).isGreaterThan(10_000);
+      assertThat(importer.getEdgeCount()).isGreaterThan(5_000);
     }
 
     database = db;
@@ -94,9 +89,36 @@ class StackOverflowImporterConfigTest {
     database.transaction(() -> {
       assertThat(count("SELECT count(*) as c FROM Tag")).isGreaterThan(0);
       assertThat(count("SELECT count(*) as c FROM User")).isEqualTo(LIMIT);
-      assertThat(count("SELECT count(*) as c FROM Post")).isEqualTo(LIMIT);
+      // Question + Answer together equal LIMIT (both read from Posts.xml with 10K limit each)
+      assertThat(count("SELECT count(*) as c FROM Question")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Answer")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question") + count("SELECT count(*) as c FROM Answer"))
+          .isEqualTo(LIMIT * 2); // 10K limit applied to each filtered pass
       assertThat(count("SELECT count(*) as c FROM Comment")).isEqualTo(LIMIT);
       assertThat(count("SELECT count(*) as c FROM Badge")).isEqualTo(LIMIT);
+    });
+  }
+
+  @Test
+  void questionHasExpectedProperties() {
+    database.transaction(() -> {
+      try (ResultSet rs = database.query("sql", "SELECT FROM Question LIMIT 1")) {
+        assertThat(rs.hasNext()).isTrue();
+        final var q = rs.next().getVertex().get();
+        assertThat((Object) q.get("title")).isNotNull();
+        assertThat(q.getInteger("soId")).isGreaterThan(0);
+      }
+    });
+  }
+
+  @Test
+  void answerHasNoTitle() {
+    database.transaction(() -> {
+      // Answers don't have title in our mapping
+      try (ResultSet rs = database.query("sql", "SELECT FROM Answer LIMIT 1")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().getVertex().get().has("title")).isFalse();
+      }
     });
   }
 
@@ -104,22 +126,36 @@ class StackOverflowImporterConfigTest {
   void bidirectionalEdges() {
     database.transaction(() -> {
       // OUT edges
-      assertThat(count("SELECT count(*) as c FROM User WHERE out('Posted').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Post WHERE out('HasTag').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Post WHERE out('AnswerOf').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM User WHERE out('POSTED').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question WHERE out('HAS_TAG').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Answer WHERE out('HAS_ANSWER').size() > 0")).isGreaterThan(0);
       // IN edges
-      assertThat(count("SELECT count(*) as c FROM Post WHERE in('Posted').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Tag WHERE in('HasTag').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question WHERE in('POSTED').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Tag WHERE in('HAS_TAG').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question WHERE in('HAS_ANSWER').size() > 0")).isGreaterThan(0);
     });
   }
 
   @Test
-  void answerOfConnectsAnswerToQuestion() {
+  void hasAnswerConnectsAnswerToQuestion() {
     database.transaction(() -> {
-      try (ResultSet rs = database.query("sql", "SELECT FROM Post WHERE out('AnswerOf').size() > 0 LIMIT 1")) {
+      try (ResultSet rs = database.query("sql", "SELECT FROM Answer WHERE out('HAS_ANSWER').size() > 0 LIMIT 1")) {
         assertThat(rs.hasNext()).isTrue();
-        assertThat(rs.next().getVertex().get().getInteger("postType")).isEqualTo(2);
+        final var answer = rs.next().getVertex().get();
+        // Follow HAS_ANSWER edge to verify it reaches a Question
+        for (final var e : answer.getEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "HAS_ANSWER"))
+          assertThat(e.getInVertex().asVertex().getTypeName()).isEqualTo("Question");
       }
+    });
+  }
+
+  @Test
+  void commentedOnReachesBothTypes() {
+    database.transaction(() -> {
+      // Comments can point to both Questions and Answers
+      final long onQuestions = count("SELECT count(*) as c FROM Comment WHERE out('COMMENTED_ON')[0].@type = 'Question'");
+      final long onAnswers = count("SELECT count(*) as c FROM Comment WHERE out('COMMENTED_ON')[0].@type = 'Answer'");
+      assertThat(onQuestions + onAnswers).isGreaterThan(0);
     });
   }
 

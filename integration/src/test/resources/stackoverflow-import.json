@@ -5,17 +5,18 @@
   "_format_reference": {
     "vertices[]":       "Each entry defines a vertex type, its source file, and how to map properties and edges",
     "type":             "ArcadeDB vertex type name (auto-created if missing)",
-    "file":             "Source file path, relative to the data directory. Format auto-detected from extension: .xml, .csv, .jsonl",
+    "file":             "Source file path, relative to the data directory. Format auto-detected: .xml, .csv, .jsonl",
     "id":               "Source attribute used as integer primary key for edge resolution between types",
     "nameId":           "Optional string-based secondary key (used by 'split' edges to resolve values by name)",
+    "filter":           "Row filter: 'attribute=value'. Only matching rows are imported. Enables splitting one file into multiple vertex types",
     "element":          "For XML: element name to read (default 'row'). Non-'row' values auto-enable child element reading",
-    "properties{}":     "Maps ArcadeDB property names to source attributes. Format: 'dbName': 'SourceAttr' (string), 'int:Attr' (integer), 'bool:Attr' (boolean)",
+    "properties{}":     "Maps ArcadeDB property names to source attributes. Format: 'dbName': 'SourceAttr' | 'int:Attr' | 'bool:Attr'",
     "edges[]":          "Edges derived from foreign key attributes in this vertex's source file",
     "edges[].attribute":"Source attribute containing the foreign key value",
     "edges[].edge":     "ArcadeDB edge type name (auto-created if missing)",
-    "edges[].target":   "Target vertex type that the foreign key references",
+    "edges[].target":   "Target vertex type the foreign key references",
     "edges[].direction":"'out' (default): this vertex → target. 'in': target → this vertex",
-    "edges[].split":    "Delimiter for multi-value fields (e.g. '|'). Creates one edge per value, resolved by target's nameId",
+    "edges[].split":    "Delimiter for multi-value fields (e.g. '|'). One edge per value, resolved by target's nameId",
     "edgeSources[]":    "Edge-only sources: no vertices created, both endpoints must already exist",
     "edgeSources.from": "Compact 'attribute:vertexType' — source attribute and its vertex type",
     "edgeSources.to":   "Compact 'attribute:vertexType' — target attribute and its vertex type",
@@ -24,12 +25,12 @@
 
   "vertices": [
     {
-      "_": "Tags: small lookup table. 'nameId' enables split-field resolution from Post.Tags",
+      "_": "Tags: small lookup table. 'nameId' enables split-field resolution from Question.Tags",
       "type": "Tag", "file": "Tags.xml", "id": "Id", "nameId": "TagName",
       "properties": { "soId": "int:Id", "name": "TagName", "count": "int:Count" }
     },
     {
-      "_": "Users: referenced by Posts, Comments, and Badges via foreign keys",
+      "_": "Users: referenced by Questions, Answers, Comments, and Badges via foreign keys",
       "type": "User", "file": "Users.xml", "id": "Id",
       "properties": {
         "soId": "int:Id", "displayName": "DisplayName", "reputation": "int:Reputation",
@@ -37,33 +38,45 @@
       }
     },
     {
-      "_": "Posts (questions + answers). Most edges originate here",
-      "type": "Post", "file": "Posts.xml", "id": "Id",
+      "_": "Questions (PostTypeId=1). Filtered from Posts.xml. Must appear before Answer for edge resolution",
+      "type": "Question", "file": "Posts.xml", "id": "Id", "filter": "PostTypeId=1",
       "properties": {
-        "soId": "int:Id", "postType": "int:PostTypeId", "title": "Title", "body": "Body",
-        "score": "int:Score", "viewCount": "int:ViewCount", "creationDate": "CreationDate",
+        "soId": "int:Id", "title": "Title", "body": "Body", "score": "int:Score",
+        "viewCount": "int:ViewCount", "creationDate": "CreationDate",
         "answerCount": "int:AnswerCount", "commentCount": "int:CommentCount", "tags": "Tags"
       },
       "edges": [
-        { "_": "User authored this post (edge: User → Post)",
-          "attribute": "OwnerUserId", "edge": "Posted", "target": "User", "direction": "in" },
-        { "_": "Answer links to its parent question (edge: Answer → Question)",
-          "attribute": "ParentId", "edge": "AnswerOf", "target": "Post" },
-        { "_": "Question links to its accepted answer (edge: Question → Answer)",
-          "attribute": "AcceptedAnswerId", "edge": "Accepted", "target": "Post" },
-        { "_": "Tags field '|java|python|' split into one HasTag edge per tag, resolved by Tag.nameId",
-          "attribute": "Tags", "edge": "HasTag", "target": "Tag", "split": "|" }
+        { "_": "User authored this question (edge: User → Question)",
+          "attribute": "OwnerUserId", "edge": "POSTED", "target": "User", "direction": "in" },
+        { "_": "Question accepted this answer (edge: Question → Answer)",
+          "attribute": "AcceptedAnswerId", "edge": "ACCEPTED", "target": "Answer" },
+        { "_": "Tags field '|java|python|' split into one edge per tag, resolved by Tag.nameId",
+          "attribute": "Tags", "edge": "HAS_TAG", "target": "Tag", "split": "|" }
       ]
     },
     {
-      "_": "Comments on posts",
+      "_": "Answers (PostTypeId=2). Filtered from Posts.xml. References Question via ParentId",
+      "type": "Answer", "file": "Posts.xml", "id": "Id", "filter": "PostTypeId=2",
+      "properties": {
+        "soId": "int:Id", "body": "Body", "score": "int:Score", "creationDate": "CreationDate",
+        "commentCount": "int:CommentCount"
+      },
+      "edges": [
+        { "_": "User authored this answer (edge: User → Answer)",
+          "attribute": "OwnerUserId", "edge": "POSTED", "target": "User", "direction": "in" },
+        { "_": "Answer belongs to this question (edge: Answer → Question)",
+          "attribute": "ParentId", "edge": "HAS_ANSWER", "target": "Question" }
+      ]
+    },
+    {
+      "_": "Comments on questions or answers. Two COMMENTED_ON edges target both types (lookup fails silently for the wrong type)",
       "type": "Comment", "file": "Comments.xml", "id": "Id",
       "properties": { "soId": "int:Id", "score": "int:Score", "creationDate": "CreationDate", "text": "Text" },
       "edges": [
-        { "_": "Comment is on this post (edge: Comment → Post)",
-          "attribute": "PostId", "edge": "CommentOn", "target": "Post" },
+        { "attribute": "PostId", "edge": "COMMENTED_ON", "target": "Question" },
+        { "attribute": "PostId", "edge": "COMMENTED_ON", "target": "Answer" },
         { "_": "User wrote this comment (edge: User → Comment)",
-          "attribute": "UserId", "edge": "Commented", "target": "User", "direction": "in" }
+          "attribute": "UserId", "edge": "WROTE_COMMENT", "target": "User", "direction": "in" }
       ]
     },
     {
@@ -72,16 +85,16 @@
       "properties": { "soId": "int:Id", "name": "Name", "date": "Date", "badgeClass": "int:Class", "tagBased": "bool:TagBased" },
       "edges": [
         { "_": "User earned this badge (edge: User → Badge)",
-          "attribute": "UserId", "edge": "Earned", "target": "User", "direction": "in" }
+          "attribute": "UserId", "edge": "EARNED", "target": "User", "direction": "in" }
       ]
     }
   ],
 
   "edgeSources": [
     {
-      "_": "Post-to-post links (duplicates, related questions). Separate file with no vertices — both Posts must exist",
-      "edge": "LinkedTo", "file": "PostLinks.xml",
-      "from": "PostId:Post", "to": "RelatedPostId:Post",
+      "_": "Post-to-post links. Both endpoints can be Questions (most common for duplicate/related links)",
+      "edge": "LINKED_TO", "file": "PostLinks.xml",
+      "from": "PostId:Question", "to": "RelatedPostId:Question",
       "properties": { "linkType": "int:LinkTypeId" }
     }
   ]

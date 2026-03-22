@@ -231,6 +231,10 @@ public class GraphImporter implements AutoCloseable {
         v.id(vj.getString("id"));
       if (vj.has("nameId"))
         v.idByName(vj.getString("nameId"));
+      if (vj.has("filter")) {
+        final String[] parts = vj.getString("filter").split("=", 2);
+        v.filter(parts[0], parts[1]);
+      }
 
       // Properties: { "dbName": "SourceAttr" } or { "dbName": "int:SourceAttr" }
       if (vj.has("properties")) {
@@ -374,11 +378,23 @@ public class GraphImporter implements AutoCloseable {
     final String typeName;
     String idAttribute;
     String nameIdAttribute;
+    String filterAttribute;
+    String filterValue;
     final List<PropDef> properties = new ArrayList<>();
     final List<EdgeDef> edges      = new ArrayList<>();
 
     VertexConfig(final String typeName) {
       this.typeName = typeName;
+    }
+
+    /**
+     * Filter rows: only rows where the attribute equals the given value are imported.
+     * Enables splitting one file into multiple vertex types (e.g. Posts.xml → Question + Answer).
+     * Format: {@code filter("PostTypeId", "1")} or in JSON: {@code "filter": "PostTypeId=1"}.
+     */
+    public void filter(final String attribute, final String value) {
+      this.filterAttribute = attribute;
+      this.filterValue = value;
     }
 
     /**
@@ -592,9 +608,19 @@ public class GraphImporter implements AutoCloseable {
     final int[] count = {0};
     database.begin();
 
+    final String filterAttr = vc.filterAttribute;
+    final String filterVal = vc.filterValue;
+
     vsd.source.forEach(record -> {
       if (limit > 0 && count[0] >= limit)
         return;
+
+      // Apply row filter (e.g. PostTypeId=1 for questions only)
+      if (filterAttr != null) {
+        final String v = record.get(filterAttr);
+        if (v == null || !v.equals(filterVal))
+          return;
+      }
 
       // Register ID
       final int idx = count[0];
