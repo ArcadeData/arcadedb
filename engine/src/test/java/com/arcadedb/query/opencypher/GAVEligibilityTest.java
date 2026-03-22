@@ -820,4 +820,76 @@ class GAVEligibilityTest {
       gav.shutdown();
     }
   }
+
+  // --- Label filter pushdown into GAVExpandAll ---
+
+  @Test
+  void labelFilterPushedIntoGAVExpandAllWithCountAggregation() {
+    // Regression test: MATCH (source:Label)-[:TYPE]->(target:OtherLabel)
+    // RETURN source.prop, count(target) ORDER BY ... LIMIT ...
+    // The target label filter must work when pushed into GAVExpandAll
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person)-[:HAS_CREATOR]-(m:Comment) " +
+        "RETURN p.name AS name, count(m) AS msgs ORDER BY msgs DESC LIMIT 10");
+
+    assertThat(result.hasNext()).isTrue();
+    final var first = result.next();
+    final String name = first.getProperty("name");
+    final long msgs = first.getProperty("msgs");
+    // Alice has 1 Comment via HAS_CREATOR
+    assertThat(name).isEqualTo("Alice");
+    assertThat(msgs).isEqualTo(1L);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void labelFilterPushedIntoGAVExpandAllReturnsCorrectResults() {
+    // Verify label filter inside GAVExpandAll correctly filters target vertices
+    // HAS_TAG connects both Comment->Tag and Post->Tag.
+    // When expanding from Tag via IN direction, we should only get Comment vertices
+    // when the pattern specifies :Comment
+    final ResultSet result = database.query("opencypher",
+        "MATCH (t:Tag)<-[:HAS_TAG]-(c:Comment) RETURN t.name AS tag, c.text AS text");
+
+    assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    assertThat(row.<String>getProperty("tag")).isEqualTo("Java");
+    assertThat(row.<String>getProperty("text")).isEqualTo("hello");
+    assertThat(result.hasNext()).isFalse(); // Only 1 Comment has HAS_TAG to Tag
+    result.close();
+  }
+
+  @Test
+  void labelFilterPushedIntoGAVWithMixedTargetTypes() {
+    // Simulate a scenario like stackoverflow: User-ASKED->Question
+    // where the edge type also connects to other vertex types
+    // IS_LOCATED_IN connects Person->City but NOT Person->Country directly
+    // We test that label filtering correctly selects only City targets
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person)-[:IS_LOCATED_IN]->(c:City) RETURN p.name AS name, c.name AS city");
+
+    assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    assertThat(row.<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(row.<String>getProperty("city")).isEqualTo("Rome");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void labelFilterPushdownPlanShowsLabelInExpand() {
+    // Verify that the EXPLAIN plan shows the label in the expand step
+    // (no separate Filter step for target label)
+    final ResultSet result = database.query("opencypher",
+        "EXPLAIN MATCH (p:Person)-[:KNOWS]->(friend:Person) RETURN p, friend");
+
+    final String plan = result.getExecutionPlan().get().prettyPrint(0, 2);
+    result.close();
+
+    // The expand step should show the target label inline
+    assertThat(plan).contains("(friend:Person)");
+    // Should NOT have a separate Filter for labels(friend) = ['Person']
+    assertThat(plan).doesNotContain("labels(friend)");
+  }
 }
