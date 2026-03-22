@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
+import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.optimizer.plan.*;
 import com.arcadedb.query.opencypher.optimizer.rules.*;
@@ -150,15 +151,18 @@ public class CypherOptimizer {
       rootOperator = applyFilterPushdown(logicalPlan, rootOperator);
     }
 
-    // 8. Defer vertex loading for intermediate GAVExpandAll hops
-    // Variables only used for traversal (not in WHERE/WITH/RETURN) skip OLTP vertex load
+    // 8. Fuse consecutive GAVExpandAll operators into a single GAVFusedChainOperator
+    // This eliminates ALL intermediate ResultInternal/HashMap/Vertex allocations
+    rootOperator = fuseGAVExpandChain(rootOperator);
+
+    // 9. Defer vertex loading for remaining (non-fused) intermediate GAVExpandAll hops
     applyDeferredVertexLoading(rootOperator);
 
-    // 9. Calculate total cost and cardinality
+    // 10. Calculate total cost and cardinality
     final double totalCost = rootOperator.getEstimatedCost();
     final long totalCardinality = rootOperator.getEstimatedCardinality();
 
-    // 10. Build physical plan with complete operator tree
+    // 11. Build physical plan with complete operator tree
     return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality);
   }
 
@@ -469,6 +473,108 @@ public class CypherOptimizer {
     }
 
     return currentOp;
+  }
+
+  /**
+   * Detects chains of consecutive GAVExpandAll operators and fuses them into a single
+   * GAVFusedChainOperator. This eliminates ALL intermediate ResultInternal allocations
+   * (HashMap, Vertex objects) during multi-hop traversal — the chain runs entirely
+   * with int nodeIds from CSR arrays.
+   * <p>
+   * Requires at least 2 consecutive GAVExpandAll operators sharing the same provider.
+   */
+  private PhysicalOperator fuseGAVExpandChain(PhysicalOperator rootOperator) {
+    // Walk from root down to collect the GAVExpandAll chain
+    final List<GAVExpandAll> chain = new ArrayList<>();
+    PhysicalOperator current = rootOperator;
+
+    // Skip filters at the top (they sit above the expand chain)
+    PhysicalOperator topFilter = null;
+    if (current instanceof FilterOperator) {
+      topFilter = current;
+      current = ((FilterOperator) current).getChild();
+    }
+
+    while (current instanceof GAVExpandAll) {
+      chain.add((GAVExpandAll) current);
+      current = current.getChild();
+    }
+
+    // Need at least 2 GAVExpandAll for fusion to be worthwhile
+    if (chain.size() < 2)
+      return rootOperator;
+
+    // Verify all use the same provider
+    final GraphTraversalProvider provider = chain.get(0).getProvider();
+    for (int i = 1; i < chain.size(); i++)
+      if (chain.get(i).getProvider() != provider)
+        return rootOperator;
+
+    // chain[0] is the outermost (root), chain[last] is the innermost (closest to scan)
+    // Reverse to get traversal order: innermost first
+    final int chainLen = chain.size();
+
+    // Build hop arrays (in traversal order: innermost → outermost)
+    final Vertex.DIRECTION[] hopDirs = new Vertex.DIRECTION[chainLen];
+    final String[][] hopEdgeTypes = new String[chainLen][];
+    final String[] hopTargetVars = new String[chainLen];
+    final int[][] hopTargetBuckets = new int[chainLen][];
+
+    for (int i = 0; i < chainLen; i++) {
+      final GAVExpandAll gav = chain.get(chainLen - 1 - i); // reverse order
+      hopDirs[i] = gav.getDirection().toArcadeDirection();
+      hopEdgeTypes[i] = gav.getEdgeTypes();
+      hopTargetVars[i] = gav.getTargetVariable();
+
+      // Resolve target label to bucket IDs for fast filtering
+      final String targetLabel = gav.getTargetLabel();
+      if (targetLabel != null && database.getSchema().existsType(targetLabel)) {
+        final var buckets = database.getSchema().getType(targetLabel).getBuckets(false);
+        final int[] ids = new int[buckets.size()];
+        for (int b = 0; b < buckets.size(); b++)
+          ids[b] = buckets.get(b).getFileId();
+        hopTargetBuckets[i] = ids;
+      }
+    }
+
+    // Source variable = innermost GAVExpandAll's source variable
+    final String sourceVar = chain.get(chainLen - 1).getSourceVariable();
+
+    // Determine which variables need materialization (referenced in WHERE/WITH/RETURN)
+    final Set<String> usedVariables = new HashSet<>();
+    if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
+      usedVariables.addAll(WhereClause.collectVariables(statement.getWhereClause().getConditionExpression()));
+    for (final MatchClause mc : statement.getMatchClauses())
+      if (mc.hasWhereClause() && mc.getWhereClause().getConditionExpression() != null)
+        usedVariables.addAll(WhereClause.collectVariables(mc.getWhereClause().getConditionExpression()));
+    if (statement.getReturnClause() != null)
+      for (final var item : statement.getReturnClause().getReturnItems())
+        collectExpressionVariables(item.getExpression(), usedVariables);
+    for (final var wc : statement.getWithClauses())
+      for (final var item : wc.getItems())
+        collectExpressionVariables(item.getExpression(), usedVariables);
+
+    final boolean[] materialize = new boolean[chainLen + 1];
+    materialize[0] = usedVariables.contains(sourceVar); // source
+    for (int i = 0; i < chainLen; i++)
+      materialize[i + 1] = hopTargetVars[i] != null && usedVariables.contains(hopTargetVars[i]);
+
+    // The child of the innermost GAVExpandAll is the data source (e.g., NodeByLabelScan)
+    final PhysicalOperator dataSource = current;
+
+    final GAVFusedChainOperator fused = new GAVFusedChainOperator(
+        dataSource, provider, sourceVar,
+        hopDirs, hopEdgeTypes, hopTargetVars, hopTargetBuckets, materialize,
+        rootOperator.getEstimatedCost() * 0.5, // fusion is cheaper
+        rootOperator.getEstimatedCardinality());
+
+    // Re-attach filter on top if present
+    if (topFilter instanceof FilterOperator) {
+      return new FilterOperator(fused,
+          ((FilterOperator) topFilter).getPredicate(),
+          topFilter.getEstimatedCost(), topFilter.getEstimatedCardinality());
+    }
+    return fused;
   }
 
   /**

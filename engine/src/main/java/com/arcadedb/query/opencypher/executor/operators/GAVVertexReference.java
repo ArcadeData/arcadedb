@@ -27,10 +27,11 @@ import com.arcadedb.graph.Vertex;
  * Lightweight vertex reference for GAV-accelerated traversal.
  * Stores only the RID and CSR nodeId, avoiding the expensive OLTP vertex load.
  * <p>
- * Used by {@link GAVExpandAll} for intermediate hops where vertex properties
- * are not needed — only the identity and CSR adjacency matter.
- * <p>
- * If properties ARE needed, call {@link #resolve(Database)} to load the full vertex.
+ * Properties can be read directly from the GAV column store via {@link #get(String)},
+ * avoiding OLTP I/O entirely when the property is materialized in the GAV.
+ * Falls back to full vertex load via {@link #resolve(Database)} only when needed.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class GAVVertexReference {
   private final RID rid;
@@ -56,9 +57,43 @@ public final class GAVVertexReference {
   }
 
   /**
-   * Loads the full vertex from OLTP storage. Call only when properties are needed.
+   * Reads a property from the GAV column store. Returns null if the property
+   * is not materialized in the GAV (caller should fall back to {@link #resolve(Database)}).
+   */
+  public Object get(final String propertyName) {
+    return provider.getProperty(nodeId, propertyName);
+  }
+
+  /**
+   * Returns the vertex type name from the schema via bucket ID lookup.
+   */
+  public String getTypeName(final Database database) {
+    return database.getSchema().getTypeByBucketId(rid.getBucketId()).getName();
+  }
+
+  /**
+   * Loads the full vertex from OLTP storage. Call only when column store doesn't have the needed property.
    */
   public Vertex resolve(final Database database) {
     return (Vertex) database.lookupByRID(rid, true);
+  }
+
+  @Override
+  public int hashCode() {
+    return rid.hashCode();
+  }
+
+  @Override
+  public boolean equals(final Object obj) {
+    if (this == obj)
+      return true;
+    if (obj instanceof GAVVertexReference other)
+      return rid.equals(other.rid);
+    return false;
+  }
+
+  @Override
+  public String toString() {
+    return "GAVRef(" + rid + ",#" + nodeId + ")";
   }
 }
