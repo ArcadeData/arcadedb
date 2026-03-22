@@ -71,8 +71,17 @@ public abstract class PaginatedComponent extends Component {
   public void rename(final String newName) throws IOException {
     PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database);
     file.rename(newName);
-    database.getFileManager().renameFile(componentName, newName);
-    componentName = newName;
+
+    // Derive the new component name from the renamed OS file name.
+    // PaginatedComponentFile.rename() preserves the bucket suffix in the filename
+    // (e.g., "ASKED_0.3.65536.v1.bucket"), so extract everything before the first "."
+    // to get the correct component name including the bucket index.
+    final String newOsFileName = file.getOSFile().getName();
+    final int dotPos = newOsFileName.indexOf('.');
+    final String newComponentName = dotPos >= 0 ? newOsFileName.substring(0, dotPos) : newName;
+
+    database.getFileManager().renameFile(componentName, newComponentName);
+    componentName = newComponentName;
   }
 
   public PaginatedComponentFile getComponentFile() {

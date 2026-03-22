@@ -122,6 +122,60 @@ class SchemaTest extends TestHelper {
   }
 
   @Test
+  void renameEdgeTypeWithDataSurvivesReopen() {
+    // Create schema and data
+    database.getSchema().createVertexType("User");
+    database.getSchema().createVertexType("Question");
+    database.getSchema().createEdgeType("POSTED");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++) {
+        final var user = database.newVertex("User").set("name", "user" + i).save();
+        final var question = database.newVertex("Question").set("title", "q" + i).save();
+        user.newEdge("POSTED", question, true, new Object[0]);
+      }
+    });
+
+    // Verify edges exist before rename
+    assertThat(database.countType("POSTED", true)).isEqualTo(50L);
+
+    // Rename edge type
+    database.getSchema().getType("POSTED").rename("ASKED");
+
+    // Verify edges accessible immediately after rename
+    assertThat(database.getSchema().existsType("POSTED")).isFalse();
+    assertThat(database.getSchema().existsType("ASKED")).isTrue();
+    assertThat(database.countType("ASKED", true)).isEqualTo(50L);
+
+    // Verify bucket names are unique (each should have a distinct suffix)
+    final var buckets = database.getSchema().getType("ASKED").getBuckets(false);
+    final Set<String> bucketNames = new HashSet<>();
+    for (final var bucket : buckets) {
+      assertThat(bucket.getName()).startsWith("ASKED_");
+      assertThat(bucketNames.add(bucket.getName()))
+          .as("Bucket name '%s' is duplicated", bucket.getName()).isTrue();
+    }
+
+    // Close and reopen database
+    final String dbPath = database.getDatabasePath();
+    database.close();
+    database = new com.arcadedb.database.DatabaseFactory(dbPath).open();
+
+    // Verify data survives reopen
+    assertThat(database.getSchema().existsType("ASKED")).isTrue();
+    assertThat(database.countType("ASKED", true)).isEqualTo(50L);
+
+    // Verify traversal works after reopen
+    database.transaction(() -> {
+      final var result = database.query("sql",
+          "SELECT count(*) as cnt FROM ASKED");
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(50L);
+      result.close();
+    });
+  }
+
+  @Test
   void aliases() {
     final VertexType type = database.getSchema().createVertexType("V1");
     type.createProperty("id", Type.STRING);
