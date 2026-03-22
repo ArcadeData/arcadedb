@@ -18,7 +18,10 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -33,12 +36,7 @@ import java.util.Map;
 
 /**
  * Optimized execution step that replaces OPTIONAL MATCH + count() aggregation
- * with a direct Vertex.countEdges() call.
- * <p>
- * Instead of materializing all edges/vertices via OptionalMatchStep and then
- * grouping+counting via GroupByAggregationStep, this step directly calls
- * vertex.countEdges(direction, edgeTypes) which iterates edge metadata
- * without materializing Edge objects.
+ * with a direct edge-count call. Uses GAV/CSR when available for O(1) counting.
  * <p>
  * Pattern detected:
  * OPTIONAL MATCH (x)-[r:TYPE]->(y) ... WITH y, count(x) AS cnt
@@ -51,14 +49,6 @@ public final class CountEdgesStep extends AbstractExecutionStep {
   private final String countOutputAlias;
   private final Map<String, String> passThroughAliases;
 
-  /**
-   * @param boundVertexVariable variable name of the already-bound vertex
-   * @param direction           edge traversal direction relative to the bound vertex
-   * @param edgeTypes           edge type filter (null or empty for all types)
-   * @param countOutputAlias    output property name for the count
-   * @param passThroughAliases  maps WITH output alias to input variable name for grouping keys
-   * @param context             command context
-   */
   public CountEdgesStep(final String boundVertexVariable, final Vertex.DIRECTION direction,
       final String[] edgeTypes, final String countOutputAlias,
       final Map<String, String> passThroughAliases, final CommandContext context) {
@@ -73,6 +63,10 @@ public final class CountEdgesStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet prevResult = checkForPrevious("CountEdgesStep").syncPull(context, nRecords);
+
+    // Try GAV provider for accelerated counting
+    final Database db = context.getDatabase();
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
 
     final List<Result> results = new ArrayList<>();
     while (prevResult.hasNext()) {
@@ -93,7 +87,12 @@ public final class CountEdgesStep extends AbstractExecutionStep {
         final long count;
         if (vertexObj instanceof Vertex) {
           final Vertex vertex = (Vertex) vertexObj;
-          count = vertex.countEdges(direction, edgeTypes);
+          if (provider != null) {
+            // GAV/CSR path: O(1) count from offset arrays
+            final int nodeId = provider.getNodeId(vertex.getIdentity());
+            count = nodeId >= 0 ? provider.countEdges(nodeId, direction, edgeTypes) : vertex.countEdges(direction, edgeTypes);
+          } else
+            count = vertex.countEdges(direction, edgeTypes);
         } else
           count = 0L; // NULL vertex = LEFT OUTER JOIN semantics
 

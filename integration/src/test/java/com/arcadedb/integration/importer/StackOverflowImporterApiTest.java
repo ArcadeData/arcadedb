@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Imports 10K rows per file from the StackOverflow dataset using the programmatic Java API
- * with Question/Answer split via row filter. Uses Neo4j edge naming convention.
+ * with Question/Answer split via row filter.
  * Mirror of {@link StackOverflowImporterConfigTest} which uses JSON configuration.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -69,11 +69,13 @@ class StackOverflowImporterApiTest {
       db.getSchema().createVertexType("Answer");
       db.getSchema().createVertexType("Comment");
       db.getSchema().createVertexType("Badge");
-      db.getSchema().createEdgeType("POSTED");
-      db.getSchema().createEdgeType("HAS_TAG");
+      db.getSchema().createEdgeType("ASKED");
+      db.getSchema().createEdgeType("ANSWERED");
+      db.getSchema().createEdgeType("TAGGED_WITH");
       db.getSchema().createEdgeType("HAS_ANSWER");
-      db.getSchema().createEdgeType("ACCEPTED");
+      db.getSchema().createEdgeType("ACCEPTED_ANSWER");
       db.getSchema().createEdgeType("COMMENTED_ON");
+      db.getSchema().createEdgeType("COMMENTED_ON_ANSWER");
       db.getSchema().createEdgeType("WROTE_COMMENT");
       db.getSchema().createEdgeType("EARNED");
       db.getSchema().createEdgeType("LINKED_TO");
@@ -84,70 +86,73 @@ class StackOverflowImporterApiTest {
         .vertex("Tag", XmlRowSource.from(DATA_DIR, "Tags.xml"), v -> {
           v.id("Id");
           v.idByName("TagName");
-          v.intProperty("soId", "Id");
-          v.property("name", "TagName");
-          v.intProperty("count", "Count");
+          v.intProperty("Id", "Id");
+          v.property("TagName", "TagName");
+          v.intProperty("Count", "Count");
         })
         .vertex("User", XmlRowSource.from(DATA_DIR, "Users.xml"), v -> {
           v.id("Id");
-          v.intProperty("soId", "Id");
-          v.property("displayName", "DisplayName");
-          v.intProperty("reputation", "Reputation");
-          v.property("creationDate", "CreationDate");
-          v.intProperty("views", "Views");
-          v.intProperty("upVotes", "UpVotes");
-          v.intProperty("downVotes", "DownVotes");
+          v.intProperty("Id", "Id");
+          v.property("DisplayName", "DisplayName");
+          v.intProperty("Reputation", "Reputation");
+          v.property("CreationDate", "CreationDate");
+          v.intProperty("Views", "Views");
+          v.intProperty("UpVotes", "UpVotes");
+          v.intProperty("DownVotes", "DownVotes");
         })
         .vertex("Question", XmlRowSource.from(DATA_DIR, "Posts.xml"), v -> {
           v.filter("PostTypeId", "1");
           v.id("Id");
-          v.intProperty("soId", "Id");
-          v.property("title", "Title");
-          v.property("body", "Body");
-          v.intProperty("score", "Score");
-          v.intProperty("viewCount", "ViewCount");
-          v.property("creationDate", "CreationDate");
-          v.intProperty("answerCount", "AnswerCount");
-          v.intProperty("commentCount", "CommentCount");
-          v.property("tags", "Tags");
-          v.edgeIn("OwnerUserId", "POSTED", "User");
-          v.edgeOut("AcceptedAnswerId", "ACCEPTED", "Answer");
-          v.splitEdge("Tags", "HAS_TAG", "Tag", "|");
+          v.intProperty("Id", "Id");
+          v.property("Title", "Title");
+          v.property("Body", "Body");
+          v.intProperty("Score", "Score");
+          v.intProperty("ViewCount", "ViewCount");
+          v.property("CreationDate", "CreationDate");
+          v.intProperty("AnswerCount", "AnswerCount");
+          v.intProperty("CommentCount", "CommentCount");
+          v.property("Tags", "Tags");
+          v.edgeIn("OwnerUserId", "ASKED", "User");
+          v.splitEdge("Tags", "TAGGED_WITH", "Tag", "|");
         })
         .vertex("Answer", XmlRowSource.from(DATA_DIR, "Posts.xml"), v -> {
           v.filter("PostTypeId", "2");
           v.id("Id");
-          v.intProperty("soId", "Id");
-          v.property("body", "Body");
-          v.intProperty("score", "Score");
-          v.property("creationDate", "CreationDate");
-          v.intProperty("commentCount", "CommentCount");
-          v.edgeIn("OwnerUserId", "POSTED", "User");
-          v.edgeOut("ParentId", "HAS_ANSWER", "Question");
+          v.intProperty("Id", "Id");
+          v.property("Body", "Body");
+          v.intProperty("Score", "Score");
+          v.property("CreationDate", "CreationDate");
+          v.intProperty("CommentCount", "CommentCount");
+          v.edgeIn("OwnerUserId", "ANSWERED", "User");
+          v.edgeIn("ParentId", "HAS_ANSWER", "Question");
         })
         .vertex("Comment", XmlRowSource.from(DATA_DIR, "Comments.xml"), v -> {
           v.id("Id");
-          v.intProperty("soId", "Id");
-          v.intProperty("score", "Score");
-          v.property("creationDate", "CreationDate");
-          v.property("text", "Text");
+          v.intProperty("Id", "Id");
+          v.intProperty("Score", "Score");
+          v.property("CreationDate", "CreationDate");
+          v.property("Text", "Text");
           v.edgeOut("PostId", "COMMENTED_ON", "Question");
-          v.edgeOut("PostId", "COMMENTED_ON", "Answer");
+          v.edgeOut("PostId", "COMMENTED_ON_ANSWER", "Answer");
           v.edgeIn("UserId", "WROTE_COMMENT", "User");
         })
         .vertex("Badge", XmlRowSource.from(DATA_DIR, "Badges.xml"), v -> {
           v.id("Id");
-          v.intProperty("soId", "Id");
-          v.property("name", "Name");
-          v.property("date", "Date");
-          v.intProperty("badgeClass", "Class");
-          v.boolProperty("tagBased", "TagBased");
+          v.intProperty("Id", "Id");
+          v.property("Name", "Name");
+          v.property("Date", "Date");
+          v.intProperty("BadgeClass", "Class");
+          v.boolProperty("TagBased", "TagBased");
           v.edgeIn("UserId", "EARNED", "User");
+        })
+        .edgeSource("ACCEPTED_ANSWER", XmlRowSource.from(DATA_DIR, "Posts.xml"), e -> {
+          e.from("Id", "Question");
+          e.to("AcceptedAnswerId", "Answer");
         })
         .edgeSource("LINKED_TO", XmlRowSource.from(DATA_DIR, "PostLinks.xml"), e -> {
           e.from("PostId", "Question");
           e.to("RelatedPostId", "Question");
-          e.intProperty("linkType", "LinkTypeId");
+          e.intProperty("LinkType", "LinkTypeId");
         })
         .build()) {
 
@@ -181,21 +186,21 @@ class StackOverflowImporterApiTest {
   @Test
   void bidirectionalEdges() {
     database.transaction(() -> {
-      assertThat(count("SELECT count(*) as c FROM User WHERE out('POSTED').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Question WHERE out('HAS_TAG').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Answer WHERE out('HAS_ANSWER').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Question WHERE in('POSTED').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Question WHERE in('HAS_ANSWER').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM User WHERE out('ANSWERED').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question WHERE out('TAGGED_WITH').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question WHERE out('HAS_ANSWER').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question WHERE in('ASKED').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Answer WHERE in('HAS_ANSWER').size() > 0")).isGreaterThan(0);
     });
   }
 
   @Test
   void hasAnswerConnectsAnswerToQuestion() {
     database.transaction(() -> {
-      try (ResultSet rs = database.query("sql", "SELECT FROM Answer WHERE out('HAS_ANSWER').size() > 0 LIMIT 1")) {
+      try (ResultSet rs = database.query("sql", "SELECT FROM Question WHERE out('HAS_ANSWER').size() > 0 LIMIT 1")) {
         assertThat(rs.hasNext()).isTrue();
         for (final var e : rs.next().getVertex().get().getEdges(Vertex.DIRECTION.OUT, "HAS_ANSWER"))
-          assertThat(e.getInVertex().asVertex().getTypeName()).isEqualTo("Question");
+          assertThat(e.getInVertex().asVertex().getTypeName()).isEqualTo("Answer");
       }
     });
   }

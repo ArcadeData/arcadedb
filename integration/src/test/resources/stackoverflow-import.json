@@ -27,31 +27,29 @@
     {
       "_": "Tags: small lookup table. 'nameId' enables split-field resolution from Question.Tags",
       "type": "Tag", "file": "Tags.xml", "id": "Id", "nameId": "TagName",
-      "properties": { "soId": "int:Id", "name": "TagName", "count": "int:Count" }
+      "properties": { "Id": "int:Id", "TagName": "TagName", "Count": "int:Count" }
     },
     {
       "_": "Users: referenced by Questions, Answers, Comments, and Badges via foreign keys",
       "type": "User", "file": "Users.xml", "id": "Id",
       "properties": {
-        "soId": "int:Id", "displayName": "DisplayName", "reputation": "int:Reputation",
-        "creationDate": "CreationDate", "views": "int:Views", "upVotes": "int:UpVotes", "downVotes": "int:DownVotes"
+        "Id": "int:Id", "DisplayName": "DisplayName", "Reputation": "int:Reputation",
+        "CreationDate": "CreationDate", "Views": "int:Views", "UpVotes": "int:UpVotes", "DownVotes": "int:DownVotes"
       }
     },
     {
       "_": "Questions (PostTypeId=1). Filtered from Posts.xml. Must appear before Answer for edge resolution",
       "type": "Question", "file": "Posts.xml", "id": "Id", "filter": "PostTypeId=1",
       "properties": {
-        "soId": "int:Id", "title": "Title", "body": "Body", "score": "int:Score",
-        "viewCount": "int:ViewCount", "creationDate": "CreationDate",
-        "answerCount": "int:AnswerCount", "commentCount": "int:CommentCount", "tags": "Tags"
+        "Id": "int:Id", "Title": "Title", "Body": "Body", "Score": "int:Score",
+        "ViewCount": "int:ViewCount", "CreationDate": "CreationDate",
+        "AnswerCount": "int:AnswerCount", "CommentCount": "int:CommentCount", "Tags": "Tags"
       },
       "edges": [
         { "_": "User authored this question (edge: User → Question)",
           "attribute": "OwnerUserId", "edge": "ASKED", "target": "User", "direction": "in" },
-        { "_": "Question accepted this answer (edge: Question → Answer)",
-          "attribute": "AcceptedAnswerId", "edge": "ACCEPTED", "target": "Answer" },
         { "_": "Tags field '|java|python|' split into one edge per tag, resolved by Tag.nameId",
-          "attribute": "Tags", "edge": "HAS_TAG", "target": "Tag", "split": "|" }
+          "attribute": "Tags", "edge": "TAGGED_WITH", "target": "Tag", "split": "|" }
       ]
     },
     {
@@ -59,22 +57,23 @@
       "type": "Answer", "file": "Posts.xml", "id": "Id", "filter": "PostTypeId=2",
       "properties": {
         "soId": "int:Id", "body": "Body", "score": "int:Score", "creationDate": "CreationDate",
-        "commentCount": "int:CommentCount"
+        "Id": "int:Id", "Body": "Body", "Score": "int:Score", "CreationDate": "CreationDate",
+        "CommentCount": "int:CommentCount"
       },
       "edges": [
         { "_": "User authored this answer (edge: User → Answer)",
-          "attribute": "OwnerUserId", "edge": "POSTED", "target": "User", "direction": "in" },
-        { "_": "Answer belongs to this question (edge: Answer → Question)",
-          "attribute": "ParentId", "edge": "HAS_ANSWER", "target": "Question" }
+          "attribute": "OwnerUserId", "edge": "ANSWERED", "target": "User", "direction": "in" },
+        { "_": "This answer belongs to a question (edge: Question → Answer)",
+          "attribute": "ParentId", "edge": "HAS_ANSWER", "target": "Question", "direction": "in" }
       ]
     },
     {
-      "_": "Comments on questions or answers. Two COMMENTED_ON edges target both types (lookup fails silently for the wrong type)",
+      "_": "Comments on questions or answers. Separate edge types for Question vs Answer targets",
       "type": "Comment", "file": "Comments.xml", "id": "Id",
-      "properties": { "soId": "int:Id", "score": "int:Score", "creationDate": "CreationDate", "text": "Text" },
+      "properties": { "Id": "int:Id", "Score": "int:Score", "CreationDate": "CreationDate", "Text": "Text" },
       "edges": [
         { "attribute": "PostId", "edge": "COMMENTED_ON", "target": "Question" },
-        { "attribute": "PostId", "edge": "COMMENTED_ON", "target": "Answer" },
+        { "attribute": "PostId", "edge": "COMMENTED_ON_ANSWER", "target": "Answer" },
         { "_": "User wrote this comment (edge: User → Comment)",
           "attribute": "UserId", "edge": "WROTE_COMMENT", "target": "User", "direction": "in" }
       ]
@@ -82,7 +81,7 @@
     {
       "_": "Badges earned by users",
       "type": "Badge", "file": "Badges.xml", "id": "Id",
-      "properties": { "soId": "int:Id", "name": "Name", "date": "Date", "badgeClass": "int:Class", "tagBased": "bool:TagBased" },
+      "properties": { "Id": "int:Id", "Name": "Name", "Date": "Date", "BadgeClass": "int:Class", "TagBased": "bool:TagBased" },
       "edges": [
         { "_": "User earned this badge (edge: User → Badge)",
           "attribute": "UserId", "edge": "EARNED", "target": "User", "direction": "in" }
@@ -92,10 +91,15 @@
 
   "edgeSources": [
     {
+      "_": "Question accepted an answer (edge: Question → Answer). Runs as edge source because Answer vertices must exist first",
+      "edge": "ACCEPTED_ANSWER", "file": "Posts.xml",
+      "from": "Id:Question", "to": "AcceptedAnswerId:Answer"
+    },
+    {
       "_": "Post-to-post links. Both endpoints can be Questions (most common for duplicate/related links)",
       "edge": "LINKED_TO", "file": "PostLinks.xml",
       "from": "PostId:Question", "to": "RelatedPostId:Question",
-      "properties": { "linkType": "int:LinkTypeId" }
+      "properties": { "LinkType": "int:LinkTypeId" }
     }
   ]
 }

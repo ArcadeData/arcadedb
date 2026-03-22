@@ -18,8 +18,13 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -58,6 +63,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
   private final Vertex.DIRECTION    direction;
   private final String[]            edgeTypes;
   private final String              countAlias;
+  private final String              targetLabel;
   private final Expression[]        groupingExpressions;
   private final String[]            groupingAliases;
   private final ExpressionEvaluator evaluator;
@@ -67,13 +73,14 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
    * @param direction           edge traversal direction
    * @param edgeTypes           edge type filter (null or empty for all types)
    * @param countAlias          output alias for the count aggregation
+   * @param targetLabel         target vertex type label to filter by (null for no filter)
    * @param groupingExpressions expressions for grouping (e.g., p.name)
    * @param groupingAliases     output aliases for grouping expressions
    * @param context             command context
    * @param functionFactory     function factory for expression evaluation
    */
   public CountEdgesReturnStep(final String sourceVariable, final Vertex.DIRECTION direction,
-      final String[] edgeTypes, final String countAlias,
+      final String[] edgeTypes, final String countAlias, final String targetLabel,
       final Expression[] groupingExpressions, final String[] groupingAliases,
       final CommandContext context, final CypherFunctionFactory functionFactory) {
     super(context);
@@ -81,6 +88,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
     this.direction = direction;
     this.edgeTypes = edgeTypes;
     this.countAlias = countAlias;
+    this.targetLabel = targetLabel;
     this.groupingExpressions = groupingExpressions;
     this.groupingAliases = groupingAliases;
     this.evaluator = functionFactory != null ? new ExpressionEvaluator(functionFactory) : null;
@@ -89,6 +97,10 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet prevResult = checkForPrevious("CountEdgesReturnStep").syncPull(context, nRecords);
+
+    // Try GAV provider for accelerated edge counting
+    final Database db = context.getDatabase();
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
 
     if (groupingExpressions.length == 1) {
       // Single-key fast path: use raw Object as map key
@@ -105,7 +117,9 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
           if (!(vertexObj instanceof Vertex))
             continue;
 
-          final long count = ((Vertex) vertexObj).countEdges(direction, edgeTypes);
+          final Vertex vertex = (Vertex) vertexObj;
+          final long count = countEdgesFiltered(vertex, provider, db);
+
           if (count == 0)
             continue; // MATCH semantics: no edges = no match
 
@@ -144,7 +158,9 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
         if (!(vertexObj instanceof Vertex))
           continue;
 
-        final long count = ((Vertex) vertexObj).countEdges(direction, edgeTypes);
+        final Vertex vertex = (Vertex) vertexObj;
+        final long count = countEdgesFiltered(vertex, provider, db);
+
         if (count == 0)
           continue;
 
@@ -171,6 +187,80 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
       results.add(result);
     }
     return new IteratorResultSet(results.iterator());
+  }
+
+  /**
+   * Counts edges, optionally filtering by target vertex type.
+   * Uses GAV/CSR when available for O(1) or O(degree) counting.
+   */
+  private long countEdgesFiltered(final Vertex vertex, final GraphTraversalProvider provider, final Database db) {
+    if (targetLabel == null) {
+      // No target filter — fast O(1) count
+      if (provider != null) {
+        final int nodeId = provider.getNodeId(vertex.getIdentity());
+        if (nodeId >= 0)
+          return provider.countEdges(nodeId, direction, edgeTypes);
+      }
+      return vertex.countEdges(direction, edgeTypes);
+    }
+
+    // Target label specified — count only neighbors matching the label
+    if (provider != null) {
+      final int nodeId = provider.getNodeId(vertex.getIdentity());
+      if (nodeId >= 0) {
+        final int[] neighborIds = provider.getNeighborIds(nodeId, direction, edgeTypes);
+        final int[] targetBuckets = resolveTargetBuckets(db);
+        if (targetBuckets != null) {
+          int count = 0;
+          for (final int nid : neighborIds) {
+            final RID rid = provider.getRID(nid);
+            if (matchesBucket(rid.getBucketId(), targetBuckets))
+              count++;
+          }
+          return count;
+        }
+        // Fallback: check type name per neighbor
+        int count = 0;
+        for (final int nid : neighborIds) {
+          final RID rid = provider.getRID(nid);
+          final String typeName = db.getSchema().getTypeByBucketId(rid.getBucketId()).getName();
+          if (targetLabel.equals(typeName))
+            count++;
+        }
+        return count;
+      }
+    }
+
+    // OLTP fallback with target filtering
+    long count = 0;
+    for (final Vertex neighbor : vertex.getVertices(direction, edgeTypes)) {
+      if (targetLabel.equals(neighbor.getTypeName()))
+        count++;
+    }
+    return count;
+  }
+
+  private volatile int[] cachedTargetBuckets;
+
+  private int[] resolveTargetBuckets(final Database db) {
+    if (cachedTargetBuckets != null)
+      return cachedTargetBuckets;
+    final DocumentType type = db.getSchema().getType(targetLabel);
+    if (type == null)
+      return null;
+    final var buckets = type.getBuckets(false);
+    final int[] ids = new int[buckets.size()];
+    for (int i = 0; i < buckets.size(); i++)
+      ids[i] = buckets.get(i).getFileId();
+    cachedTargetBuckets = ids;
+    return ids;
+  }
+
+  private static boolean matchesBucket(final int bucketId, final int[] targetBuckets) {
+    for (final int tb : targetBuckets)
+      if (tb == bucketId)
+        return true;
+    return false;
   }
 
   private static final class GroupKey {

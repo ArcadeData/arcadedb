@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Imports 10K rows per file from the StackOverflow dataset using JSON configuration
- * with Question/Answer split via row filter. Uses Neo4j edge naming convention.
+ * with Question/Answer split via row filter.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -105,8 +105,8 @@ class StackOverflowImporterConfigTest {
       try (ResultSet rs = database.query("sql", "SELECT FROM Question LIMIT 1")) {
         assertThat(rs.hasNext()).isTrue();
         final var q = rs.next().getVertex().get();
-        assertThat((Object) q.get("title")).isNotNull();
-        assertThat(q.getInteger("soId")).isGreaterThan(0);
+        assertThat((Object) q.get("Title")).isNotNull();
+        assertThat(q.getInteger("Id")).isGreaterThan(0);
       }
     });
   }
@@ -117,7 +117,7 @@ class StackOverflowImporterConfigTest {
       // Answers don't have title in our mapping
       try (ResultSet rs = database.query("sql", "SELECT FROM Answer LIMIT 1")) {
         assertThat(rs.hasNext()).isTrue();
-        assertThat(rs.next().getVertex().get().has("title")).isFalse();
+        assertThat(rs.next().getVertex().get().has("Title")).isFalse();
       }
     });
   }
@@ -126,25 +126,25 @@ class StackOverflowImporterConfigTest {
   void bidirectionalEdges() {
     database.transaction(() -> {
       // OUT edges
-      assertThat(count("SELECT count(*) as c FROM User WHERE out('POSTED').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Question WHERE out('HAS_TAG').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Answer WHERE out('HAS_ANSWER').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM User WHERE out('ANSWERED').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question WHERE out('TAGGED_WITH').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question WHERE out('HAS_ANSWER').size() > 0")).isGreaterThan(0);
       // IN edges
-      assertThat(count("SELECT count(*) as c FROM Question WHERE in('POSTED').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Tag WHERE in('HAS_TAG').size() > 0")).isGreaterThan(0);
-      assertThat(count("SELECT count(*) as c FROM Question WHERE in('HAS_ANSWER').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Question WHERE in('ASKED').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Tag WHERE in('TAGGED_WITH').size() > 0")).isGreaterThan(0);
+      assertThat(count("SELECT count(*) as c FROM Answer WHERE in('HAS_ANSWER').size() > 0")).isGreaterThan(0);
     });
   }
 
   @Test
   void hasAnswerConnectsAnswerToQuestion() {
     database.transaction(() -> {
-      try (ResultSet rs = database.query("sql", "SELECT FROM Answer WHERE out('HAS_ANSWER').size() > 0 LIMIT 1")) {
+      try (ResultSet rs = database.query("sql", "SELECT FROM Question WHERE out('HAS_ANSWER').size() > 0 LIMIT 1")) {
         assertThat(rs.hasNext()).isTrue();
-        final var answer = rs.next().getVertex().get();
-        // Follow HAS_ANSWER edge to verify it reaches a Question
-        for (final var e : answer.getEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "HAS_ANSWER"))
-          assertThat(e.getInVertex().asVertex().getTypeName()).isEqualTo("Question");
+        final var question = rs.next().getVertex().get();
+        // Follow HAS_ANSWER edge to verify it reaches an Answer
+        for (final var e : question.getEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "HAS_ANSWER"))
+          assertThat(e.getInVertex().asVertex().getTypeName()).isEqualTo("Answer");
       }
     });
   }
@@ -152,9 +152,9 @@ class StackOverflowImporterConfigTest {
   @Test
   void commentedOnReachesBothTypes() {
     database.transaction(() -> {
-      // Comments can point to both Questions and Answers
-      final long onQuestions = count("SELECT count(*) as c FROM Comment WHERE out('COMMENTED_ON')[0].@type = 'Question'");
-      final long onAnswers = count("SELECT count(*) as c FROM Comment WHERE out('COMMENTED_ON')[0].@type = 'Answer'");
+      // Comments point to Questions via COMMENTED_ON and Answers via COMMENTED_ON_ANSWER
+      final long onQuestions = count("SELECT count(*) as c FROM Comment WHERE out('COMMENTED_ON').size() > 0");
+      final long onAnswers = count("SELECT count(*) as c FROM Comment WHERE out('COMMENTED_ON_ANSWER').size() > 0");
       assertThat(onQuestions + onAnswers).isGreaterThan(0);
     });
   }
