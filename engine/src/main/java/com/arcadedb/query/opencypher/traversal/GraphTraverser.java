@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.PathMode;
 
 import java.util.Collections;
 import java.util.HashSet;
@@ -41,6 +42,7 @@ public abstract class GraphTraverser {
   protected final int maxHops;
   protected final boolean trackPaths;
   protected final boolean detectCycles;
+  protected final PathMode pathMode;
 
   /**
    * Creates a graph traverser with specified parameters.
@@ -60,16 +62,21 @@ public abstract class GraphTraverser {
   protected GraphTraverser(final Direction direction, final String[] relationshipTypes,
       final Map<String, Object> edgePropertyFilters, final int minHops, final int maxHops,
       final boolean trackPaths, final boolean detectCycles) {
+    this(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths,
+        detectCycles ? PathMode.ACYCLIC : PathMode.WALK);
+  }
+
+  protected GraphTraverser(final Direction direction, final String[] relationshipTypes,
+      final Map<String, Object> edgePropertyFilters, final int minHops, final int maxHops,
+      final boolean trackPaths, final PathMode pathMode) {
     this.direction = direction != null ? direction : Direction.BOTH;
     this.relationshipTypes = relationshipTypes;
     this.edgePropertyFilters = edgePropertyFilters != null ? edgePropertyFilters : Collections.emptyMap();
     this.minHops = Math.max(0, minHops);
     this.maxHops = maxHops >= 0 ? maxHops : Integer.MAX_VALUE;
     this.trackPaths = trackPaths;
-    this.detectCycles = detectCycles;
-
-    // When minHops > maxHops, traversal naturally returns empty results
-    // (no path can satisfy depth >= minHops AND depth <= maxHops)
+    this.pathMode = pathMode != null ? pathMode : PathMode.TRAIL;
+    this.detectCycles = this.pathMode != PathMode.WALK;
   }
 
   /**

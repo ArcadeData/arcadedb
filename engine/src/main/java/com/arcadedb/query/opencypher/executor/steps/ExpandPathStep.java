@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
+import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -53,6 +54,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
   private final RelationshipPattern pattern;
   private final NodePattern targetNodePattern;
   private final boolean useBFS;
+  private final PathMode pathMode;
 
   /**
    * Creates an expand path step.
@@ -68,11 +70,17 @@ public class ExpandPathStep extends AbstractExecutionStep {
   public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
       final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
       final NodePattern targetNodePattern, final CommandContext context) {
+    this(sourceVariable, pathVariable, relationshipVariable, targetVariable, pattern, useBFS,
+        targetNodePattern, null, context);
+  }
+
+  public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
+      final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
+      final NodePattern targetNodePattern, final PathMode pathMode, final CommandContext context) {
     super(context);
 
-    if (!pattern.isVariableLength()) {
+    if (!pattern.isVariableLength())
       throw new IllegalArgumentException("ExpandPathStep requires a variable-length relationship pattern");
-    }
 
     this.sourceVariable = sourceVariable;
     this.pathVariable = pathVariable;
@@ -81,6 +89,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
     this.pattern = pattern;
     this.targetNodePattern = targetNodePattern;
     this.useBFS = useBFS;
+    this.pathMode = pathMode;
   }
 
   /**
@@ -249,15 +258,16 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
     final Map<String, Object> props = pattern.hasProperties() ? pattern.getProperties() : null;
 
+    if (pathMode != null)
+      return new VariableLengthPathTraverser(
+          pattern.getDirection(), types, props,
+          pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
+          true, useBFS, pathMode);
+
     return new VariableLengthPathTraverser(
-        pattern.getDirection(),
-        types,
-        props,
-        pattern.getEffectiveMinHops(),
-        pattern.getEffectiveMaxHops(),
-        true, // always track paths
-        useBFS
-    );
+        pattern.getDirection(), types, props,
+        pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
+        true, useBFS);
   }
 
   /**

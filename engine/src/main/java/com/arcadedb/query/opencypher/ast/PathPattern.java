@@ -35,16 +35,18 @@ public class PathPattern {
   private final List<NodePattern> nodes;
   private final List<RelationshipPattern> relationships;
   private final String pathVariable;
+  private final PathMode pathMode;
 
   /**
-   * Creates a path pattern with nodes and relationships.
+   * Creates a path pattern with nodes, relationships, path variable, and path mode.
    *
    * @param nodes         list of node patterns
    * @param relationships list of relationship patterns
    * @param pathVariable  optional variable name for the entire path
+   * @param pathMode      optional path mode (WALK, TRAIL, ACYCLIC); null means use default (TRAIL)
    */
   public PathPattern(final List<NodePattern> nodes, final List<RelationshipPattern> relationships,
-      final String pathVariable) {
+      final String pathVariable, final PathMode pathMode) {
     if (nodes == null || nodes.isEmpty()) {
       throw new IllegalArgumentException("Path pattern must have at least one node");
     }
@@ -57,36 +59,36 @@ public class PathPattern {
     this.nodes = new ArrayList<>(nodes);
     this.relationships = relationships != null ? new ArrayList<>(relationships) : Collections.emptyList();
     this.pathVariable = pathVariable;
+    this.pathMode = pathMode;
+  }
+
+  /**
+   * Creates a path pattern with nodes and relationships.
+   */
+  public PathPattern(final List<NodePattern> nodes, final List<RelationshipPattern> relationships,
+      final String pathVariable) {
+    this(nodes, relationships, pathVariable, null);
   }
 
   /**
    * Creates a simple path pattern with a single node.
-   *
-   * @param node single node pattern
    */
   public PathPattern(final NodePattern node) {
-    this(Collections.singletonList(node), Collections.emptyList(), null);
+    this(Collections.singletonList(node), Collections.emptyList(), null, null);
   }
 
   /**
    * Creates a simple path pattern with two nodes and one relationship.
-   *
-   * @param node1        first node
-   * @param relationship relationship between nodes
-   * @param node2        second node
    */
   public PathPattern(final NodePattern node1, final RelationshipPattern relationship, final NodePattern node2) {
-    this(List.of(node1, node2), List.of(relationship), null);
+    this(List.of(node1, node2), List.of(relationship), null, null);
   }
 
   /**
    * Creates a path pattern with nodes and relationships (no path variable).
-   *
-   * @param nodes         list of node patterns
-   * @param relationships list of relationship patterns
    */
   public PathPattern(final List<NodePattern> nodes, final List<RelationshipPattern> relationships) {
-    this(nodes, relationships, null);
+    this(nodes, relationships, null, null);
   }
 
   /**
@@ -114,6 +116,20 @@ public class PathPattern {
    */
   public String getPathVariable() {
     return pathVariable;
+  }
+
+  /**
+   * Returns the path mode (WALK, TRAIL, ACYCLIC) or null if not explicitly set.
+   */
+  public PathMode getPathMode() {
+    return pathMode;
+  }
+
+  /**
+   * Returns the effective path mode: the explicit mode if set, otherwise TRAIL (the GQL default).
+   */
+  public PathMode getEffectivePathMode() {
+    return pathMode != null ? pathMode : PathMode.TRAIL;
   }
 
   /**
@@ -202,9 +218,10 @@ public class PathPattern {
   @Override
   public String toString() {
     final StringBuilder sb = new StringBuilder();
-    if (pathVariable != null) {
+    if (pathMode != null)
+      sb.append(pathMode.name()).append(' ');
+    if (pathVariable != null)
       sb.append(pathVariable).append(" = ");
-    }
 
     for (int i = 0; i < nodes.size(); i++) {
       sb.append(nodes.get(i));

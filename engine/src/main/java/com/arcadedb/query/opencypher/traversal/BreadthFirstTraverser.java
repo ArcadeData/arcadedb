@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.PathMode;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -49,6 +50,12 @@ public class BreadthFirstTraverser extends GraphTraverser {
       final Map<String, Object> edgePropertyFilters, final int minHops,
       final int maxHops, final boolean trackPaths, final boolean detectCycles) {
     super(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, detectCycles);
+  }
+
+  public BreadthFirstTraverser(final Direction direction, final String[] relationshipTypes,
+      final Map<String, Object> edgePropertyFilters, final int minHops,
+      final int maxHops, final boolean trackPaths, final PathMode pathMode) {
+    super(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, pathMode);
   }
 
   @Override
@@ -170,11 +177,16 @@ public class BreadthFirstTraverser extends GraphTraverser {
           if (!matchesPropertyFilter(edge))
             continue;
 
-          // Cypher relationship uniqueness: skip edges already used in this path
-          if (detectCycles && pathContainsEdge(path, edge))
+          // Path mode: TRAIL/ACYCLIC = edge uniqueness, WALK = no restriction
+          if (pathMode != PathMode.WALK && pathContainsEdge(path, edge))
             continue;
 
           final Vertex nextVertex = getOtherVertex(edge, vertex);
+
+          // ACYCLIC: also enforce vertex uniqueness
+          if (pathMode == PathMode.ACYCLIC && path.containsVertex(nextVertex))
+            continue;
+
           final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
           queue.add(new PathWithDepth(newPath, depth + 1));
         }

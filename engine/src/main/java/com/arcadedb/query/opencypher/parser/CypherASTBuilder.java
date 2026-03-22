@@ -44,6 +44,7 @@ import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
+import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
@@ -1228,23 +1229,35 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Extract path variable if present (e.g., p = (a)-[r]->(b))
 
     String pathVariable = null;
-    if (ctx.variable() != null) {
+    if (ctx.variable() != null)
       pathVariable = stripBackticks(ctx.variable().getText());
+
+    // Extract path mode (WALK, TRAIL, ACYCLIC) from pathPatternPrefix if present.
+    // The grammar has labeled alternatives (AllPath, AnyShortestPath, etc.) that each may contain pathMode().
+    // Use getRuleContext on the base class to find PathModeContext regardless of which alternative matched.
+    PathMode pathMode = null;
+    if (ctx.pathPatternPrefix() != null) {
+      final Cypher25Parser.PathModeContext pm = ctx.pathPatternPrefix().getRuleContext(
+          Cypher25Parser.PathModeContext.class, 0);
+      if (pm != null) {
+        if (pm.WALK() != null) pathMode = PathMode.WALK;
+        else if (pm.TRAIL() != null) pathMode = PathMode.TRAIL;
+        else if (pm.ACYCLIC() != null) pathMode = PathMode.ACYCLIC;
+      }
     }
 
     // Visit the anonymous pattern to get the base path
     final PathPattern basePath = visitAnonymousPattern(ctx.anonymousPattern());
 
-    // If there's a path variable, create a new PathPattern/ShortestPathPattern with it
-    // IMPORTANT: Preserve the ShortestPathPattern type if the base path is one
-    if (pathVariable != null) {
+    // If there's a path variable or path mode, create a new PathPattern with them
+    if (pathVariable != null || pathMode != null) {
       if (basePath instanceof ShortestPathPattern) {
-        // Preserve ShortestPathPattern type
         final ShortestPathPattern shortestBase = (ShortestPathPattern) basePath;
-        return new ShortestPathPattern(basePath.getNodes(), basePath.getRelationships(), pathVariable,
-            shortestBase.isAllPaths());
+        return new ShortestPathPattern(basePath.getNodes(), basePath.getRelationships(),
+            pathVariable != null ? pathVariable : basePath.getPathVariable(), shortestBase.isAllPaths());
       }
-      return new PathPattern(basePath.getNodes(), basePath.getRelationships(), pathVariable);
+      return new PathPattern(basePath.getNodes(), basePath.getRelationships(),
+          pathVariable != null ? pathVariable : basePath.getPathVariable(), pathMode);
     }
 
     return basePath;
