@@ -791,7 +791,6 @@ public class GraphImporter implements AutoCloseable {
 
     try (final GraphBatch batch = database.batch()
         .withBatchSize(500_000)
-        .withLightEdges(true)
         .withBidirectional(true)
         .withWAL(false)
         .withParallelFlush(false)
