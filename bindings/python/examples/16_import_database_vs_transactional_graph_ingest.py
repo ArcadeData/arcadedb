@@ -57,7 +57,7 @@ import argparse
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import arcadedb_embedded as arcadedb
 
@@ -150,10 +150,24 @@ def sample_ids(total: int) -> List[int]:
     return sorted(values)
 
 
+def query_one_or_none(result_set):
+    try:
+        return result_set.one()
+    except ValueError as exc:
+        if str(exc) == "Query returned no results":
+            return None
+        raise
+
+
 def collect_vertex_sample(
     db, vertex_type: str, vertex_id: int, props: List[ColumnDef]
 ) -> dict:
-    row = db.query("sql", f"SELECT FROM {vertex_type} WHERE Id = {vertex_id}").one()
+    row = query_one_or_none(
+        db.query("sql", f"SELECT FROM {vertex_type} WHERE Id = {vertex_id}")
+    )
+    if row is None:
+        return {"Id": vertex_id, "missing": True}
+
     sample = {"Id": int(row.get("Id"))}
     for column_name, _ in props:
         sample[column_name] = row.get(column_name)
@@ -169,14 +183,18 @@ def collect_edge_sample(
         "r.Id AS Id",
     ] + [f"r.{column_name} AS {column_name}" for column_name, _ in props]
 
-    row = db.query(
-        "opencypher",
-        (
-            f"MATCH (a)-[r:{edge_type}]->(b) "
-            f"WHERE r.Id = {edge_id} "
-            f"RETURN {', '.join(projections)}"
-        ),
-    ).one()
+    row = query_one_or_none(
+        db.query(
+            "opencypher",
+            (
+                f"MATCH (a)-[r:{edge_type}]->(b) "
+                f"WHERE r.Id = {edge_id} "
+                f"RETURN {', '.join(projections)}"
+            ),
+        )
+    )
+    if row is None:
+        return {"Id": edge_id, "missing": True}
 
     sample = {
         "from_id": int(row.get("from_id")),
@@ -216,21 +234,33 @@ def collect_graph_signature(
             "max(Id) AS max_id",
         ] + [f"sum({name}) AS sum_{name}" for name in vertex_int_props]
 
-        edge_aggregate_fields = [
-            "count(*) AS count",
-            "sum(Id) AS sum_id",
-            "min(Id) AS min_id",
-            "max(Id) AS max_id",
-        ] + [f"sum({name}) AS sum_{name}" for name in edge_int_props]
+        edge_match_aggregate_fields = [
+            "count(r) AS count",
+            "sum(r.Id) AS sum_id",
+            "min(r.Id) AS min_id",
+            "max(r.Id) AS max_id",
+        ] + [f"sum(r.{name}) AS sum_{name}" for name in edge_int_props]
 
-        vertex_aggregate = db.query(
-            "sql",
-            f"SELECT {', '.join(vertex_aggregate_fields)} FROM {vertex_type}",
-        ).one()
-        edge_aggregate = db.query(
-            "sql",
-            f"SELECT {', '.join(edge_aggregate_fields)} FROM {edge_type}",
-        ).one()
+        vertex_aggregate = query_one_or_none(
+            db.query(
+                "sql",
+                f"SELECT {', '.join(vertex_aggregate_fields)} FROM {vertex_type}",
+            )
+        )
+        edge_aggregate = query_one_or_none(
+            db.query(
+                "opencypher",
+                (
+                    f"MATCH ()-[r:{edge_type}]->() "
+                    f"RETURN {', '.join(edge_match_aggregate_fields)}"
+                ),
+            )
+        )
+
+        if vertex_aggregate is None:
+            vertex_aggregate = {}
+        if edge_aggregate is None:
+            edge_aggregate = {}
 
         return {
             "vertex_aggregate": {
