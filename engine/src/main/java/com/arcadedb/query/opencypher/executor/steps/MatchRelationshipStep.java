@@ -275,8 +275,20 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               lastResult = prevResults.next();
               final Object sourceObj = lastResult.getProperty(sourceVariable);
 
-              if (sourceObj instanceof Vertex) {
-                final Vertex sourceVertex = (Vertex) sourceObj;
+              // Accept GAVVertexReference from a previous deferred-load hop
+              final Vertex sourceVertex;
+              if (sourceObj instanceof com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) {
+                final var ref = (com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) sourceObj;
+                sourceVertex = ref.resolve(context.getDatabase());
+                // Replace the reference with the resolved vertex so downstream steps can use it
+                if (lastResult instanceof ResultInternal)
+                  ((ResultInternal) lastResult).setProperty(sourceVariable, sourceVertex);
+              } else if (sourceObj instanceof Vertex)
+                sourceVertex = (Vertex) sourceObj;
+              else
+                sourceVertex = null;
+
+              if (sourceVertex != null) {
 
                 // Determine if we can use fast path for this vertex
                 useFastPath = canUseFastPath(lastResult);
