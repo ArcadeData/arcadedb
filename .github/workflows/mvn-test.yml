@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Ensure SHA pinned actions
-        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@cc9ffdc62fadb9f83b46dd0979d9ad50408cc6a6 # v5.0.2
+        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@471d5ace1f08e3c4df1c4c2f7e6341aa75da434a # v5.0.3
       - name: Run pre-commit
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -61,13 +61,13 @@ jobs:
         run: docker save arcadedata/arcadedb:latest > /tmp/arcadedb-image.tar
 
       - name: Cache Docker image
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Cache Maven artifacts
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -86,7 +86,7 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -131,7 +131,7 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -174,7 +174,7 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -217,7 +217,7 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -260,7 +260,7 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -288,13 +288,13 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Restore Docker image
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -332,13 +332,13 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Restore Docker image
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -376,7 +376,7 @@ jobs:
           cache-dependency-path: "e2e-js/package-lock.json"
 
       - name: Restore Docker image
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -409,7 +409,7 @@ jobs:
           cache-dependency-path: "e2e-studio/package-lock.json"
 
       - name: Restore Docker image
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -470,7 +470,7 @@ jobs:
           uv --version
 
       - name: Restore Docker image
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -537,7 +537,7 @@ jobs:
           coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
         if: success() || failure()
         with:
           fail_ci_if_error: false
