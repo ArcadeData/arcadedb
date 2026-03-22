@@ -1554,7 +1554,7 @@ public class CypherExecutionPlan {
           AbstractExecutionStep nextStep;
           if (relPattern.isVariableLength()) {
             nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
-                true, effectiveTargetNode, context);
+                true, effectiveTargetNode, pathPattern.getEffectivePathMode(), context);
           } else {
             // Pass target node pattern for label filtering, bound variables for identity
             // checking, and a snapshot for relationship uniqueness scoping.
@@ -1892,7 +1892,7 @@ public class CypherExecutionPlan {
                   // Variable-length path - pass path variable, relationship variable, and target node for label
                   // filtering
                   nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, true,
-                      targetNode, context);
+                      targetNode, pathPattern.getEffectivePathMode(), context);
                 } else {
                   // Fixed-length relationship - pass path variable, target node pattern, and bound variables
                   nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,

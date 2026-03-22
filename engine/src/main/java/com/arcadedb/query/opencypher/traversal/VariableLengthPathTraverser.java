@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.traversal;
 
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.PathMode;
 
 import java.util.Iterator;
 import java.util.Map;
@@ -45,7 +46,7 @@ public class VariableLengthPathTraverser extends GraphTraverser {
    */
   public VariableLengthPathTraverser(final Direction direction, final String[] relationshipTypes, final int minHops,
       final int maxHops, final boolean trackPaths, final boolean useBFS) {
-    super(direction, relationshipTypes, minHops, maxHops, trackPaths, true); // Always detect cycles
+    super(direction, relationshipTypes, minHops, maxHops, trackPaths, true); // Legacy: always detect cycles
     this.useBFS = useBFS;
   }
 
@@ -57,14 +58,28 @@ public class VariableLengthPathTraverser extends GraphTraverser {
   }
 
   /**
-   * Creates a variable-length path traverser with BFS (default).
+   * Creates a variable-length path traverser with explicit path mode.
    *
    * @param direction         direction to traverse
    * @param relationshipTypes relationship types to follow
+   * @param edgePropertyFilters optional edge property filters
    * @param minHops           minimum number of hops
    * @param maxHops           maximum number of hops
    * @param trackPaths        whether to track full paths
+   * @param useBFS            true for BFS, false for DFS
+   * @param pathMode          WALK, TRAIL, or ACYCLIC
    */
+  public VariableLengthPathTraverser(final Direction direction, final String[] relationshipTypes,
+      final Map<String, Object> edgePropertyFilters, final int minHops,
+      final int maxHops, final boolean trackPaths, final boolean useBFS, final PathMode pathMode) {
+    super(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, pathMode);
+    this.useBFS = useBFS;
+    // WALK mode requires explicit maxHops to prevent infinite traversal
+    if (pathMode == PathMode.WALK && this.maxHops == Integer.MAX_VALUE)
+      throw new IllegalArgumentException("WALK path mode requires an explicit maximum hop bound (e.g., -[*..10]->)");
+  }
+
+  /** Creates a variable-length path traverser with BFS (default). */
   public VariableLengthPathTraverser(final Direction direction, final String[] relationshipTypes, final int minHops,
       final int maxHops, final boolean trackPaths) {
     this(direction, relationshipTypes, minHops, maxHops, trackPaths, true);
@@ -74,11 +89,11 @@ public class VariableLengthPathTraverser extends GraphTraverser {
   public Iterator<Vertex> traverse(final Vertex startVertex) {
     if (useBFS) {
       final BreadthFirstTraverser bfs = new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
-          minHops, maxHops, trackPaths, detectCycles);
+          minHops, maxHops, trackPaths, pathMode);
       return bfs.traverse(startVertex);
     } else {
       final DepthFirstTraverser dfs = new DepthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
-          minHops, maxHops, trackPaths, detectCycles);
+          minHops, maxHops, trackPaths, pathMode);
       return dfs.traverse(startVertex);
     }
   }
@@ -87,11 +102,11 @@ public class VariableLengthPathTraverser extends GraphTraverser {
   public Iterator<TraversalPath> traversePaths(final Vertex startVertex) {
     if (useBFS) {
       final BreadthFirstTraverser bfs = new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
-          minHops, maxHops, trackPaths, detectCycles);
+          minHops, maxHops, trackPaths, pathMode);
       return bfs.traversePaths(startVertex);
     } else {
       final DepthFirstTraverser dfs = new DepthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
-          minHops, maxHops, trackPaths, detectCycles);
+          minHops, maxHops, trackPaths, pathMode);
       return dfs.traversePaths(startVertex);
     }
   }

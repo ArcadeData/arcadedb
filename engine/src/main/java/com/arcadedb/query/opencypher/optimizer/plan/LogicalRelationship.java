@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.optimizer.plan;
 
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.PathMode;
 
 import java.util.Collections;
 import java.util.List;
@@ -38,10 +39,17 @@ public class LogicalRelationship {
   private final boolean isVariableLength;
   private final Integer minHops;
   private final Integer maxHops;
+  private final PathMode pathMode;
 
   public LogicalRelationship(final String variable, final String sourceVariable, final String targetVariable,
                             final List<String> types, final Direction direction, final Map<String, Object> properties,
                             final Integer minHops, final Integer maxHops) {
+    this(variable, sourceVariable, targetVariable, types, direction, properties, minHops, maxHops, null);
+  }
+
+  public LogicalRelationship(final String variable, final String sourceVariable, final String targetVariable,
+                            final List<String> types, final Direction direction, final Map<String, Object> properties,
+                            final Integer minHops, final Integer maxHops, final PathMode pathMode) {
     this.variable = variable;
     this.sourceVariable = sourceVariable;
     this.targetVariable = targetVariable;
@@ -51,6 +59,7 @@ public class LogicalRelationship {
     this.minHops = minHops;
     this.maxHops = maxHops;
     this.isVariableLength = minHops != null || maxHops != null;
+    this.pathMode = pathMode;
   }
 
   public String getVariable() {
@@ -87,6 +96,10 @@ public class LogicalRelationship {
 
   public Integer getMaxHops() {
     return maxHops;
+  }
+
+  public PathMode getPathMode() {
+    return pathMode;
   }
 
   public boolean hasTypes() {

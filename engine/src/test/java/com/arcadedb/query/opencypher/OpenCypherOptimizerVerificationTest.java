@@ -181,7 +181,7 @@ public class OpenCypherOptimizerVerificationTest {
     assertThat(plan).contains("NodeIndexSeek(a:Person)");
     assertThat(plan).contains("index=Person[id]");
     assertThat(plan).contains("id=10");
-    assertThat(plan).contains("ExpandAll(a)-[r:KNOWS]->(b)");
+    assertThat(plan).contains("ExpandAll(a)-[r:KNOWS]->(b:Person)");
   }
 
   @Test
@@ -234,7 +234,7 @@ public class OpenCypherOptimizerVerificationTest {
     assertThat(plan).contains("NodeIndexSeek(p:Person)");
     assertThat(plan).contains("index=Person[id]");
     assertThat(plan).contains("id=25");
-    assertThat(plan).contains("ExpandAll(p)-[r:WORKS_AT]->(c)");
+    assertThat(plan).contains("ExpandAll(p)-[r:WORKS_AT]->(c:Company)");
   }
 
   @Test
@@ -262,7 +262,7 @@ public class OpenCypherOptimizerVerificationTest {
     assertThat(plan).contains("index=Company[name]");
     assertThat(plan).contains("name=Company5");
     // Should use reverse traversal from Company to Person
-    assertThat(plan).contains("ExpandAll(c)-[:WORKS_AT]-<(p)");
+    assertThat(plan).contains("ExpandAll(c)-[:WORKS_AT]-<(p:Person)");
   }
 
   @Test

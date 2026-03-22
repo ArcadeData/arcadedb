@@ -476,32 +476,47 @@ public class CypherOptimizer {
   private PhysicalOperator addTargetLabelFilter(final LogicalPlan logicalPlan,
                                                  final LogicalRelationship rel,
                                                  final PhysicalOperator input) {
-    // Get the target variable
-    final String targetVariable = rel.getTargetVariable();
+    // Determine the actual expand target variable (may differ from rel.getTargetVariable()
+    // when the optimizer reverses traversal direction)
+    final String expandTargetVariable;
+    if (input instanceof GAVExpandAll)
+      expandTargetVariable = ((GAVExpandAll) input).getTargetVariable();
+    else if (input instanceof ExpandAll)
+      expandTargetVariable = ((ExpandAll) input).getTargetVariable();
+    else
+      expandTargetVariable = rel.getTargetVariable();
 
-    // Look up the LogicalNode for the target variable
+    // Look up the LogicalNode for the expand target variable
     final LogicalNode targetNode =
-        logicalPlan.getNodes().get(targetVariable);
+        logicalPlan.getNodes().get(expandTargetVariable);
 
-    if (targetNode == null || !targetNode.hasLabels()) {
-      // No label to filter on, return input unchanged
+    if (targetNode == null || !targetNode.hasLabels())
       return input;
-    }
 
     // Get the first label (for now we only support single labels)
     final String targetLabel = targetNode.getFirstLabel();
 
-    if (targetLabel == null) {
+    if (targetLabel == null)
+      return input;
+
+    // Push label filter directly into the expand operator for early filtering
+    // instead of wrapping with a separate FilterOperator (avoids materializing
+    // rows that will be immediately discarded)
+    if (input instanceof GAVExpandAll) {
+      ((GAVExpandAll) input).setTargetLabel(targetLabel);
+      return input;
+    }
+    if (input instanceof ExpandAll) {
+      ((ExpandAll) input).setTargetLabel(targetLabel);
       return input;
     }
 
-    // Create a label filter expression: vertex.getTypeName() == targetLabel
-    // We create a custom BooleanExpression that checks the vertex type
+    // Fallback: wrap with FilterOperator for other operator types
     final BooleanExpression labelFilter = new BooleanExpression() {
       @Override
       public boolean evaluate(final Result result,
                               final CommandContext context) {
-        final Object vertexObj = result.getProperty(targetVariable);
+        final Object vertexObj = result.getProperty(expandTargetVariable);
         if (vertexObj instanceof Vertex) {
           final Vertex vertex = (Vertex) vertexObj;
           return vertex.getType().instanceOf(targetLabel);
@@ -511,23 +526,19 @@ public class CypherOptimizer {
 
       @Override
       public String getText() {
-        return "labels(" + targetVariable + ") = ['" + targetLabel + "']";
+        return "labels(" + expandTargetVariable + ") = ['" + targetLabel + "']";
       }
     };
 
-    // Estimate cost and cardinality for this filter
     final long inputCardinality = input.getEstimatedCardinality();
-    final double selectivity = 1.0; // Assume most expanded vertices match the type (optimistic)
-    final long outputCardinality = (long) (inputCardinality * selectivity);
     final double filterCost = inputCardinality * costModel.FILTER_COST_PER_ROW;
     final double totalCost = input.getEstimatedCost() + filterCost;
 
-    // Wrap with FilterOperator
     return new FilterOperator(
         input,
         labelFilter,
         totalCost,
-        outputCardinality
+        inputCardinality
     );
   }
 
