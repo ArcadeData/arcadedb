@@ -2,6 +2,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -32,15 +33,17 @@ class StackOverflowBenchmarkTest {
   void open() {
     database = new DatabaseFactory(DB_PATH).open();
 
-    // Create GAV covering all benchmark edge types
-    final long t = System.currentTimeMillis();
-    GraphAnalyticalView.builder(database)
-        .withName("bench_gav")
-        .withEdgeTypes("ASKED", "ANSWERED", "HAS_ANSWER", "ACCEPTED_ANSWER",
-            "TAGGED_WITH", "COMMENTED_ON", "COMMENTED_ON_ANSWER", "EARNED", "LINKED_TO")
-        .skipPersistence()
-        .build();
-    System.out.printf("GAV built in %d ms%n", System.currentTimeMillis() - t);
+    // Use the GAV persisted by the importer's postImportCommands, or create one if missing
+    if (GraphTraversalProviderRegistry.findProvider(database) == null) {
+      final long t = System.currentTimeMillis();
+      GraphAnalyticalView.builder(database)
+          .withName("bench_gav")
+          .withProperties("!Body", "!Text")
+          .skipPersistence()
+          .build();
+      System.out.printf("GAV built in %d ms%n", System.currentTimeMillis() - t);
+    } else
+      System.out.println("Using persisted GAV from import");
   }
 
   @AfterAll
@@ -56,7 +59,7 @@ class StackOverflowBenchmarkTest {
   @Test @Order(5) void q5_tagCooccurrence()        { runQuery("Q5", Q5); }
   @Test @Order(6) void q6_questionScores()         { runQuery("Q6", Q6); }
   @Test @Order(7) void q7_answerCounts()           { runQuery("Q7", Q7); }
-  @Test @Order(8) void q8_userInteractionPairs()   { /* Skip for now - OOM on 4-hop pattern */ }
+  @Test @Order(8) void q8_userInteractionPairs()   { runQuery("Q8", Q8); }
   @Test @Order(9) void q9_badgeDistribution()      { runQuery("Q9", Q9); }
   @Test @Order(10) void q10_commentVolumes()       { runQuery("Q10", Q10); }
 

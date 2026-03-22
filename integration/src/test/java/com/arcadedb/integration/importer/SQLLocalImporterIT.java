@@ -41,7 +41,7 @@ class SQLLocalImporterIT {
       database.getConfiguration()
           .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
 
-      //database.command("sql", "import database " + "file:///Users/luca/Downloads/Reactome.gz");
+      //database.command("sql", "import database " + "file:///tmp/Reactome.gz");
       database.command("sql", "import database file://" + inputFile.getFile());
 
       assertThat(database.countType("Person", false)).isEqualTo(500);

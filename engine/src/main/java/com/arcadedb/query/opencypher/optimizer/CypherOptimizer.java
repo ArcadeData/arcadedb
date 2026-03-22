@@ -23,7 +23,9 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
@@ -41,6 +43,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -147,11 +150,15 @@ public class CypherOptimizer {
       rootOperator = applyFilterPushdown(logicalPlan, rootOperator);
     }
 
-    // 8. Calculate total cost and cardinality
+    // 8. Defer vertex loading for intermediate GAVExpandAll hops
+    // Variables only used for traversal (not in WHERE/WITH/RETURN) skip OLTP vertex load
+    applyDeferredVertexLoading(rootOperator);
+
+    // 9. Calculate total cost and cardinality
     final double totalCost = rootOperator.getEstimatedCost();
     final long totalCardinality = rootOperator.getEstimatedCardinality();
 
-    // 9. Build physical plan with complete operator tree
+    // 10. Build physical plan with complete operator tree
     return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality);
   }
 
@@ -462,6 +469,62 @@ public class CypherOptimizer {
     }
 
     return currentOp;
+  }
+
+  /**
+   * Marks intermediate GAVExpandAll operators for deferred vertex loading.
+   * A variable is "intermediate" if it is not referenced in any WHERE, WITH, or RETURN expression —
+   * it only serves as a stepping stone for further traversal.
+   * Skipping the OLTP vertex load for these variables can save ~2μs per row.
+   */
+  private void applyDeferredVertexLoading(final PhysicalOperator rootOperator) {
+    // Collect variables referenced in WHERE/WITH/RETURN expressions
+    final Set<String> usedVariables = new HashSet<>();
+    // From WHERE
+    if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
+      usedVariables.addAll(WhereClause.collectVariables(statement.getWhereClause().getConditionExpression()));
+    for (final MatchClause mc : statement.getMatchClauses())
+      if (mc.hasWhereClause() && mc.getWhereClause().getConditionExpression() != null)
+        usedVariables.addAll(WhereClause.collectVariables(mc.getWhereClause().getConditionExpression()));
+    // From RETURN
+    if (statement.getReturnClause() != null)
+      for (final var item : statement.getReturnClause().getReturnItems())
+        collectExpressionVariables(item.getExpression(), usedVariables);
+    // From WITH
+    for (final var wc : statement.getWithClauses())
+      for (final var item : wc.getItems())
+        collectExpressionVariables(item.getExpression(), usedVariables);
+
+    // Walk the operator tree and mark GAVExpandAll operators for deferred loading
+    // The root operator's target should NOT be deferred (it's the final output)
+    markDeferredRecursive(rootOperator, usedVariables, true);
+  }
+
+  private void markDeferredRecursive(final PhysicalOperator op, final Set<String> usedVariables, final boolean isRoot) {
+    if (op instanceof GAVExpandAll) {
+      final GAVExpandAll gav = (GAVExpandAll) op;
+      if (!isRoot) {
+        final String targetVar = gav.getTargetVariable();
+        if (targetVar != null && !usedVariables.contains(targetVar))
+          gav.setDeferTargetLoad(true);
+      }
+      if (gav.getChild() != null)
+        markDeferredRecursive(gav.getChild(), usedVariables, false);
+    } else if (op instanceof FilterOperator) {
+      if (((FilterOperator) op).getChild() != null)
+        markDeferredRecursive(((FilterOperator) op).getChild(), usedVariables, false);
+    }
+  }
+
+  private static void collectExpressionVariables(final Expression expr, final Set<String> vars) {
+    final String text = expr.getText();
+    // Extract variable references: "var.prop" → "var", bare "var" → "var"
+    for (final String token : text.split("[^a-zA-Z0-9_.]")) {
+      if (!token.isEmpty()) {
+        final int dot = token.indexOf('.');
+        vars.add(dot >= 0 ? token.substring(0, dot) : token);
+      }
+    }
   }
 
   /**

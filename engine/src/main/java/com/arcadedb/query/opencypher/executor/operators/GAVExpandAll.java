@@ -57,6 +57,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
   private final Direction direction;
   private final String[] edgeTypes;
   private String targetLabel;
+  private boolean deferTargetLoad;
 
   public GAVExpandAll(final PhysicalOperator child, final GraphTraversalProvider provider,
                      final String sourceVariable, final String targetVariable,
@@ -76,6 +77,15 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
 
   public String getTargetLabel() {
     return targetLabel;
+  }
+
+  /**
+   * When true, target vertices are stored as {@link GAVVertexReference} instead of loading
+   * from OLTP. This avoids expensive lookupByRID for intermediate hops where vertex
+   * properties are not accessed.
+   */
+  public void setDeferTargetLoad(final boolean deferTargetLoad) {
+    this.deferTargetLoad = deferTargetLoad;
   }
 
   @Override
@@ -136,18 +146,29 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
             }
 
             currentInputResult = inputResults.next();
-            final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
-            if (sourceVertex == null) {
+            final Object sourceObj = currentInputResult.getProperty(sourceVariable);
+            if (sourceObj == null) {
               neighborIds = null;
               continue;
             }
 
-            // CSR lookup: RID → dense ID → neighbor IDs (O(1) array slice)
-            final int nodeId = provider.getNodeId(sourceVertex.getIdentity());
+            // CSR lookup: accept both Vertex and GAVVertexReference as source
+            final int nodeId;
+            if (sourceObj instanceof GAVVertexReference)
+              nodeId = ((GAVVertexReference) sourceObj).getNodeId();
+            else if (sourceObj instanceof Vertex)
+              nodeId = provider.getNodeId(((Vertex) sourceObj).getIdentity());
+            else {
+              neighborIds = null;
+              continue;
+            }
+
             if (nodeId < 0) {
               // Vertex not in GAV mapping (created after last build) — fall back to OLTP
-              final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-              oltpFallbackEdges = sourceVertex.getEdges(arcadeDirection, edgeTypes).iterator();
+              if (sourceObj instanceof Vertex) {
+                final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+                oltpFallbackEdges = ((Vertex) sourceObj).getEdges(arcadeDirection, edgeTypes).iterator();
+              }
               neighborIds = null;
               continue;
             }
@@ -159,24 +180,36 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
 
           // Produce target vertex from neighbor ID
           if (neighborIdx < neighborIds.length) {
-            final RID targetRID = provider.getRID(neighborIds[neighborIdx++]);
+            final int targetNodeId = neighborIds[neighborIdx++];
+            final RID targetRID = provider.getRID(targetNodeId);
             if (targetRID == null)
               continue; // stale node ID — vertex deleted since last CSR build
 
-            final Vertex targetVertex;
-            try {
-              final var record = context.getDatabase().lookupByRID(targetRID, true);
-              if (!(record instanceof Vertex))
-                continue; // non-vertex record (edge, document) — skip
-              targetVertex = (Vertex) record;
-            } catch (final RecordNotFoundException e) {
-              continue; // vertex deleted in OLTP since CSR was built
+            if (deferTargetLoad) {
+              // Deferred mode: store lightweight reference, skip OLTP load
+              if (targetLabel != null) {
+                final String typeName = context.getDatabase().getSchema().getTypeByBucketId(targetRID.getBucketId()).getName();
+                if (!targetLabel.equals(typeName))
+                  continue;
+              }
+              addResultWithReference(new GAVVertexReference(targetRID, targetNodeId, provider));
+            } else {
+              // Full mode: load vertex from OLTP
+              final Vertex targetVertex;
+              try {
+                final var record = context.getDatabase().lookupByRID(targetRID, true);
+                if (!(record instanceof Vertex))
+                  continue;
+                targetVertex = (Vertex) record;
+              } catch (final RecordNotFoundException e) {
+                continue;
+              }
+
+              if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
+                continue;
+
+              addResultWithTarget(targetVertex);
             }
-
-            if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
-              continue;
-
-            addResultWithTarget(targetVertex);
           }
         }
       }
@@ -187,6 +220,15 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
           result.setProperty(prop, currentInputResult.getProperty(prop));
         if (targetVariable != null)
           result.setProperty(targetVariable, targetVertex);
+        buffer.add(result);
+      }
+
+      private void addResultWithReference(final GAVVertexReference ref) {
+        final ResultInternal result = new ResultInternal();
+        for (final String prop : currentInputResult.getPropertyNames())
+          result.setProperty(prop, currentInputResult.getProperty(prop));
+        if (targetVariable != null)
+          result.setProperty(targetVariable, ref);
         buffer.add(result);
       }
 

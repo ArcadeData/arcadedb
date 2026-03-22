@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIf("datasetExists")
 class StackOverflowImporterApiTest {
 
-  private static final String DATA_DIR = "/Users/luca/Downloads/stackoverflow-large";
+  private static final String DATA_DIR = "/tmp/stackoverflow-large";
   private static final String DB_PATH  = "target/databases/stackoverflow-api-test";
   private static final long   LIMIT    = 10_000;
 

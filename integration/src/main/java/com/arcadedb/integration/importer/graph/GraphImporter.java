@@ -22,6 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -122,6 +124,9 @@ public class GraphImporter implements AutoCloseable {
         importer.run();
         System.out.printf("Vertices: %,d%nEdges   : %,d%n", importer.getVertexCount(), importer.getEdgeCount());
       }
+
+      // Execute post-import commands (e.g., CREATE GRAPH ANALYTICAL VIEW)
+      executePostImportCommands(database, config);
     } finally {
       database.close();
     }
@@ -156,6 +161,44 @@ public class GraphImporter implements AutoCloseable {
         }
       }
     });
+  }
+
+  /**
+   * Executes post-import commands defined in the JSON config.
+   * <p>
+   * Format:
+   * <pre>
+   * "postImportCommands": [
+   *   { "language": "sql", "command": "CREATE GRAPH ANALYTICAL VIEW ..." }
+   * ]
+   * </pre>
+   */
+  public static void executePostImportCommands(final Database database, final JSONObject config) {
+    if (!config.has("postImportCommands"))
+      return;
+
+    final JSONArray commands = config.getJSONArray("postImportCommands");
+    for (int i = 0; i < commands.length(); i++) {
+      final JSONObject cmd = commands.getJSONObject(i);
+      final String language = cmd.getString("language");
+      final String command = cmd.getString("command");
+
+      LogManager.instance().log(GraphImporter.class, Level.INFO, "Executing post-import command [%s]: %s", language, command);
+      try {
+        database.command(language, command).close();
+      } catch (final Exception e) {
+        LogManager.instance().log(GraphImporter.class, Level.WARNING, "Post-import command failed: %s", e, command);
+      }
+    }
+
+    // Wait for any async GAV builds triggered by post-import commands
+    for (final GraphAnalyticalView gav : GraphAnalyticalViewRegistry.getAll(database).values()) {
+      if (gav.getStatus() != GraphAnalyticalView.Status.READY) {
+        LogManager.instance().log(GraphImporter.class, Level.INFO, "Waiting for GraphAnalyticalView '%s' to finish building...", gav.getName());
+        gav.awaitReady(10, java.util.concurrent.TimeUnit.MINUTES);
+        LogManager.instance().log(GraphImporter.class, Level.INFO, "GraphAnalyticalView '%s' is ready", gav.getName());
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
