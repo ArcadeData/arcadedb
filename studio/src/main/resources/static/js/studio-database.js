@@ -3674,11 +3674,13 @@ function createGraphAnalyticalView() {
   let edgeTypes = [];
   let typeCounts = {}; // name -> count
   let typeProperties = {}; // name -> number of properties
+  let typePropertyNames = {}; // name -> array of property names
   if (window._schemaTypes) {
     for (let i in window._schemaTypes) {
       let t = window._schemaTypes[i];
       typeCounts[t.name] = t.records || 0;
       typeProperties[t.name] = (t.properties && t.properties.length) || 0;
+      typePropertyNames[t.name] = t.properties ? t.properties.map(function (p) { return p.name; }) : [];
       if (t.type === "vertex")
         vertexTypes.push(t.name);
       else if (t.type === "edge")
@@ -3691,6 +3693,7 @@ function createGraphAnalyticalView() {
   // Store for RAM estimation
   window._gavCreateTypeCounts = typeCounts;
   window._gavCreateTypeProperties = typeProperties;
+  window._gavCreateTypePropertyNames = typePropertyNames;
   window._gavCreateVertexTypes = vertexTypes;
   window._gavCreateEdgeTypes = edgeTypes;
 
@@ -3937,6 +3940,7 @@ function createGraphAnalyticalView() {
 function gavUpdateRamEstimate() {
   let typeCounts = window._gavCreateTypeCounts || {};
   let typeProperties = window._gavCreateTypeProperties || {};
+  let typePropertyNames = window._gavCreateTypePropertyNames || {};
   let allVertexTypes = window._gavCreateVertexTypes || [];
   let allEdgeTypes = window._gavCreateEdgeTypes || [];
 
@@ -3954,31 +3958,42 @@ function gavUpdateRamEstimate() {
   for (let i = 0; i < etList.length; i++)
     totalEdges += typeCounts[etList[i]] || 0;
 
-  // Count properties
-  let vertexPropInput = ($("#inputGavProperties").val() || "").trim();
-  let numVertexProps = 0;
-  if (vertexPropInput) {
-    let propEntries = vertexPropInput.split(",").filter(function (p) { return p.trim() !== ""; });
+  // Helper: count effective properties for a list of types given a user input string
+  // Returns the max effective property count across all types in the list
+  function countEffectiveProps(propInput, typeList) {
+    if (!propInput) {
+      // All properties — use max from schema
+      let maxProps = 0;
+      for (let i = 0; i < typeList.length; i++)
+        maxProps = Math.max(maxProps, typeProperties[typeList[i]] || 0);
+      return maxProps;
+    }
+    let propEntries = propInput.split(",").filter(function (p) { return p.trim() !== ""; });
     let hasExclusions = propEntries.some(function (p) { return p.trim().startsWith("!"); });
     if (hasExclusions) {
-      // Exclusion mode: all schema properties minus excluded count
-      let maxSchemaProps = 0;
-      for (let i = 0; i < vtList.length; i++)
-        maxSchemaProps = Math.max(maxSchemaProps, typeProperties[vtList[i]] || 0);
-      let excludeCount = propEntries.filter(function (p) { return p.trim().startsWith("!"); }).length;
-      numVertexProps = Math.max(0, maxSchemaProps - excludeCount);
-    } else
-      numVertexProps = propEntries.length;
-  } else {
-    // All properties — estimate from schema
-    for (let i = 0; i < vtList.length; i++)
-      numVertexProps = Math.max(numVertexProps, typeProperties[vtList[i]] || 0);
+      // Exclusion mode: for each type, count schema properties that are NOT excluded
+      let excludedNames = propEntries
+        .filter(function (p) { return p.trim().startsWith("!"); })
+        .map(function (p) { return p.trim().substring(1).trim().toLowerCase(); });
+      let maxProps = 0;
+      for (let i = 0; i < typeList.length; i++) {
+        let names = typePropertyNames[typeList[i]] || [];
+        let remaining = names.filter(function (n) {
+          return excludedNames.indexOf(n.toLowerCase()) < 0;
+        }).length;
+        maxProps = Math.max(maxProps, remaining);
+      }
+      return maxProps;
+    }
+    return propEntries.length;
   }
 
+  // Count properties
+  let vertexPropInput = ($("#inputGavProperties").val() || "").trim();
+  let numVertexProps = countEffectiveProps(vertexPropInput, vtList);
+
   let edgePropInput = ($("#inputGavEdgeProperties").val() || "").trim();
-  let numEdgeProps = 0;
-  if (edgePropInput)
-    numEdgeProps = edgePropInput.split(",").filter(function (p) { return p.trim() !== ""; }).length;
+  let numEdgeProps = countEffectiveProps(edgePropInput, etList);
 
   let updateMode = $("#inputGavUpdateMode").val();
 
