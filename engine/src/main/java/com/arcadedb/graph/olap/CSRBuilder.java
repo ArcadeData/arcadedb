@@ -97,6 +97,10 @@ public class CSRBuilder {
   }
 
   private CSRResult buildClean(final String[] vertexTypes, final String[] edgeTypes, final long startTime) {
+    LogManager.instance().log(this, Level.INFO, "CSR build started for vertex types %s, edge types %s...",
+        vertexTypes != null ? Arrays.toString(vertexTypes) : "[all]",
+        edgeTypes != null ? Arrays.toString(edgeTypes) : "[all]");
+
     final Map<Integer, String> bucketToEdgeType = buildBucketToEdgeTypeMap(edgeTypes);
     final boolean extractProps = propertyFilterSet == null || !propertyFilterSet.isEmpty();
 
