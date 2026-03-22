@@ -548,8 +548,8 @@ public class GraphImporter implements AutoCloseable {
     // ── Pass 2: Create edges from topology ──
     LogManager.instance().log(this, Level.INFO, "Pass 2: Edges (bidirectional)");
 
-    for (final Map.Entry<String, EdgeCollector> entry : edgeCollectors.entrySet())
-      flushEdgeType(entry.getKey(), entry.getValue());
+    for (final EdgeCollector ec : edgeCollectors.values())
+      flushEdgeType(ec);
 
     final long elapsed = System.currentTimeMillis() - start;
     LogManager.instance().log(this, Level.INFO, "Import complete: %,d vertices, %,d edges in %d.%ds",
@@ -674,10 +674,10 @@ public class GraphImporter implements AutoCloseable {
     ts.count = count[0];
     totalVertices += ts.count;
 
-    // Resolve deferred self-referencing edges
+    // Resolve deferred self-referencing edges (srcType == dstType == thisType)
     for (final Map.Entry<String, IntList[]> entry : deferredRaw.entrySet()) {
       final IntList[] pair = entry.getValue();
-      final EdgeCollector ec = edgeCollectors.get(entry.getKey());
+      final EdgeCollector ec = edgeCollectors.get(entry.getKey() + "|" + vc.typeName + "|" + vc.typeName);
       for (int i = 0; i < pair[0].size; i++) {
         final int si = ts.idToIdx.get(pair[0].data[i], -1);
         final int di = ts.idToIdx.get(pair[1].data[i], -1);
@@ -694,7 +694,10 @@ public class GraphImporter implements AutoCloseable {
 
   private void collectEdge(final RecordReader record, final EdgeDef ed,
                            final String thisType, final int thisIdx) {
-    final EdgeCollector ec = edgeCollectors.get(ed.edgeType);
+    // Lookup by composite key matching how the collector was created
+    final String srcType = ed.incoming ? ed.targetType : thisType;
+    final String dstType = ed.incoming ? thisType : ed.targetType;
+    final EdgeCollector ec = edgeCollectors.get(ed.edgeType + "|" + srcType + "|" + dstType);
 
     if (ed.isSplit) {
       // Split field: e.g. "|java|python|css|"
@@ -778,10 +781,11 @@ public class GraphImporter implements AutoCloseable {
   //  Pass 2: Create edges from topology
   // ═══════════════════════════════════════════════════════════════════
 
-  private void flushEdgeType(final String edgeType, final EdgeCollector ec) {
+  private void flushEdgeType(final EdgeCollector ec) {
     if (ec.srcIdx.size == 0)
       return;
     final long t = System.currentTimeMillis();
+    final String edgeType = ec.edgeTypeName;
     final TypeState srcTs = typeStates.get(ec.srcType);
     final TypeState dstTs = typeStates.get(ec.dstType);
 
@@ -814,8 +818,8 @@ public class GraphImporter implements AutoCloseable {
       }
     }
     totalEdges += ec.srcIdx.size;
-    LogManager.instance().log(this, Level.INFO, "  %-12s %,8d (%,d ms)",
-        edgeType, ec.srcIdx.size, System.currentTimeMillis() - t);
+    LogManager.instance().log(this, Level.INFO, "  %-12s %,8d (%s→%s, %,d ms)",
+        edgeType, ec.srcIdx.size, ec.srcType, ec.dstType, System.currentTimeMillis() - t);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -823,7 +827,10 @@ public class GraphImporter implements AutoCloseable {
   // ═══════════════════════════════════════════════════════════════════
 
   private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType) {
-    return edgeCollectors.computeIfAbsent(edgeType, k -> new EdgeCollector(srcType, dstType));
+    // Key by (edgeType, srcType, dstType) — same edge type can connect different vertex type pairs
+    // (e.g. POSTED: User→Question and POSTED: User→Answer)
+    final String key = edgeType + "|" + srcType + "|" + dstType;
+    return edgeCollectors.computeIfAbsent(key, k -> new EdgeCollector(edgeType, srcType, dstType));
   }
 
   private static Object readProperty(final RecordReader record, final PropDef pd) {
@@ -910,12 +917,13 @@ public class GraphImporter implements AutoCloseable {
   }
 
   static class EdgeCollector {
-    final String srcType, dstType;
+    final String edgeTypeName, srcType, dstType;
     final IntList srcIdx = new IntList(100_000);
     final IntList dstIdx = new IntList(100_000);
     Map<String, IntList> intProps;
 
-    EdgeCollector(final String src, final String dst) {
+    EdgeCollector(final String edgeTypeName, final String src, final String dst) {
+      this.edgeTypeName = edgeTypeName;
       this.srcType = src;
       this.dstType = dst;
     }
