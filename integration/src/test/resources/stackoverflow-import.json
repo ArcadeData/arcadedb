@@ -47,7 +47,7 @@
       },
       "edges": [
         { "_": "User authored this question (edge: User → Question)",
-          "attribute": "OwnerUserId", "edge": "POSTED", "target": "User", "direction": "in" },
+          "attribute": "OwnerUserId", "edge": "ASKED", "target": "User", "direction": "in" },
         { "_": "Question accepted this answer (edge: Question → Answer)",
           "attribute": "AcceptedAnswerId", "edge": "ACCEPTED", "target": "Answer" },
         { "_": "Tags field '|java|python|' split into one edge per tag, resolved by Tag.nameId",
