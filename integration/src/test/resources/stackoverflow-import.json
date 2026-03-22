@@ -56,7 +56,6 @@
       "_": "Answers (PostTypeId=2). Filtered from Posts.xml. References Question via ParentId",
       "type": "Answer", "file": "Posts.xml", "id": "Id", "filter": "PostTypeId=2",
       "properties": {
-        "soId": "int:Id", "body": "Body", "score": "int:Score", "creationDate": "CreationDate",
         "Id": "int:Id", "Body": "Body", "Score": "int:Score", "CreationDate": "CreationDate",
         "CommentCount": "int:CommentCount"
       },
