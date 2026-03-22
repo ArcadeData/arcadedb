@@ -59,7 +59,8 @@ public class CSRBuilder {
   static final int DEFAULT_PROPERTY_SAMPLE_SIZE = 100;
 
   private final Database database;
-  private final Set<String> propertyFilterSet; // null = all properties, empty = no properties
+  private final Set<String> propertyIncludeSet;  // non-null = include only these properties
+  private final Set<String> propertyExcludeSet;  // non-null = include all EXCEPT these properties
   private final Set<String> edgePropertyFilterSet; // null = no edge properties (default)
   private final int propertySampleSize;
 
@@ -78,10 +79,44 @@ public class CSRBuilder {
   public CSRBuilder(final Database database, final String[] propertyFilter, final String[] edgePropertyFilter,
       final int propertySampleSize) {
     this.database = database;
-    this.propertyFilterSet = propertyFilter != null ? new HashSet<>(Arrays.asList(propertyFilter)) : null;
     this.edgePropertyFilterSet = edgePropertyFilter != null && edgePropertyFilter.length > 0
         ? new HashSet<>(Arrays.asList(edgePropertyFilter)) : null;
     this.propertySampleSize = propertySampleSize;
+
+    // Parse property filter: entries starting with '!' are exclusions, others are inclusions.
+    // All entries must be the same mode (all include or all exclude).
+    if (propertyFilter != null) {
+      final Set<String> includes = new HashSet<>();
+      final Set<String> excludes = new HashSet<>();
+      for (final String p : propertyFilter) {
+        if (p.startsWith("!"))
+          excludes.add(p.substring(1));
+        else
+          includes.add(p);
+      }
+      if (!excludes.isEmpty()) {
+        propertyExcludeSet = excludes;
+        propertyIncludeSet = null;
+      } else {
+        propertyIncludeSet = includes;
+        propertyExcludeSet = null;
+      }
+    } else {
+      propertyIncludeSet = null;
+      propertyExcludeSet = null;
+    }
+  }
+
+  /**
+   * Checks whether a property name passes the filter.
+   * Returns true if the property should be included in the columnar store.
+   */
+  private boolean isPropertyIncluded(final String propName) {
+    if (propertyExcludeSet != null)
+      return !propertyExcludeSet.contains(propName);
+    if (propertyIncludeSet != null)
+      return propertyIncludeSet.contains(propName);
+    return true; // null filter = include all
   }
 
   /**
@@ -102,7 +137,7 @@ public class CSRBuilder {
         edgeTypes != null ? Arrays.toString(edgeTypes) : "[all]");
 
     final Map<Integer, String> bucketToEdgeType = buildBucketToEdgeTypeMap(edgeTypes);
-    final boolean extractProps = propertyFilterSet == null || !propertyFilterSet.isEmpty();
+    final boolean extractProps = propertyIncludeSet == null || !propertyIncludeSet.isEmpty() || propertyExcludeSet != null;
 
     // --- Phase A: Collect RID positions for node ID mapping ---
     final NodeIdMapping mapping = new NodeIdMapping(16);
@@ -168,7 +203,7 @@ public class CSRBuilder {
         for (final String propName : vertex.getPropertyNames()) {
           if (detectedTypes.containsKey(propName))
             continue;
-          if (propertyFilterSet != null && !propertyFilterSet.contains(propName))
+          if (!isPropertyIncluded(propName))
             continue;
           final Object value = vertex.get(propName);
           if (value == null)
@@ -526,7 +561,7 @@ public class CSRBuilder {
 
   private void collectSchemaProperties(final DocumentType type, final Map<String, Column.Type> result) {
     for (final Property prop : type.getProperties()) {
-      if (propertyFilterSet != null && !propertyFilterSet.contains(prop.getName()))
+      if (!isPropertyIncluded(prop.getName()))
         continue;
       final Column.Type colType = schemaTypeToColumnType(prop.getType());
       if (colType == null)

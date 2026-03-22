@@ -185,7 +185,7 @@ public class CypherExecutionPlanner {
     }
 
     // The optimizer path (buildExecutionStepsWithOptimizer) only supports a fixed clause
-    // ordering: MATCH(es) → one CREATE → one SET → one DELETE → REMOVE → MERGE → RETURN.
+    // ordering: MATCH(es) → WITH → RETURN. Write clauses (CREATE/SET/DELETE/MERGE) are also handled.
     // Disable for queries with clauses that break this assumption.
     if (statement.getClausesInOrder() != null) {
       int createCount = 0;
@@ -193,8 +193,7 @@ public class CypherExecutionPlanner {
       int deleteCount = 0;
       for (final ClauseEntry clause : statement.getClausesInOrder()) {
         final ClauseEntry.ClauseType type = clause.getType();
-        if (type == ClauseEntry.ClauseType.FOREACH || type == ClauseEntry.ClauseType.WITH
-            || type == ClauseEntry.ClauseType.CALL)
+        if (type == ClauseEntry.ClauseType.FOREACH || type == ClauseEntry.ClauseType.CALL)
           return false;
         if (type == ClauseEntry.ClauseType.CREATE)
           createCount++;

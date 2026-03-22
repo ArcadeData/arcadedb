@@ -3710,8 +3710,9 @@ function createGraphAnalyticalView() {
   html += "<div id='gavNameFeedback' style='font-size:0.78rem;min-height:20px;margin-bottom:8px;'></div>";
 
   // -- Vertex types multi-select --
-  html += "<label>Vertex Types <small class='text-muted'>(optional, leave empty for all)</small></label>";
+  html += "<label>Vertex Types</label>";
   html += "<select class='form-select mt-1 mb-2' id='inputGavVertexTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
+  html += "<option value='__ALL__' selected style='font-style:italic;'>All types</option>";
   for (let i = 0; i < vertexTypes.length; i++) {
     let cnt = typeCounts[vertexTypes[i]] || 0;
     html += "<option value='" + escapeHtml(vertexTypes[i]) + "'>" + escapeHtml(vertexTypes[i]) + " (" + cnt.toLocaleString() + ")</option>";
@@ -3721,8 +3722,9 @@ function createGraphAnalyticalView() {
     html += "<small class='text-muted' style='display:block;margin-top:-4px;margin-bottom:10px;'>No vertex types defined yet.</small>";
 
   // -- Edge types multi-select --
-  html += "<label>Edge Types <small class='text-muted'>(optional, leave empty for all)</small></label>";
+  html += "<label>Edge Types</label>";
   html += "<select class='form-select mt-1 mb-2' id='inputGavEdgeTypes' multiple style='height:auto;min-height:38px;max-height:120px;'>";
+  html += "<option value='__ALL__' selected style='font-style:italic;'>All types</option>";
   for (let i = 0; i < edgeTypes.length; i++) {
     let cnt = typeCounts[edgeTypes[i]] || 0;
     html += "<option value='" + escapeHtml(edgeTypes[i]) + "'>" + escapeHtml(edgeTypes[i]) + " (" + cnt.toLocaleString() + ")</option>";
@@ -3733,8 +3735,8 @@ function createGraphAnalyticalView() {
 
   // -- Vertex Properties filter --
   html += "<label for='inputGavProperties'>Vertex Properties <small class='text-muted'>(optional, comma-separated)</small></label>";
-  html += "<input class='form-control mt-1 mb-1' id='inputGavProperties' placeholder='e.g. name, age, score'>";
-  html += "<small class='text-muted' style='display:block;margin-bottom:10px;'>Materialized in columnar storage for fast analytical scans. Leave empty for all.</small>";
+  html += "<input class='form-control mt-1 mb-1' id='inputGavProperties' placeholder='e.g. name, age, score  or  !Body, !Text'>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:10px;'>Materialized in columnar storage. Leave empty for all. Prefix with <code>!</code> to exclude (e.g. <code>!Body, !Text</code> = all except Body and Text).</small>";
 
   // -- Edge Properties (new) --
   html += "<div class='gav-section-header'><label for='inputGavEdgeProperties'>Edge Properties</label>";
@@ -3787,10 +3789,15 @@ function createGraphAnalyticalView() {
     command += " `" + name + "`";
 
     let vt = $("#inputGavVertexTypes").val();
+    // Filter out the "All types" sentinel — no VERTEX TYPES clause means all
+    if (vt)
+      vt = vt.filter(function (v) { return v !== "__ALL__"; });
     if (vt && vt.length > 0)
       command += " VERTEX TYPES (" + vt.map(function (v) { return "`" + v + "`"; }).join(", ") + ")";
 
     let et = $("#inputGavEdgeTypes").val();
+    if (et)
+      et = et.filter(function (e) { return e !== "__ALL__"; });
     if (et && et.length > 0)
       command += " EDGE TYPES (" + et.map(function (e) { return "`" + e + "`"; }).join(", ") + ")";
 
@@ -3888,6 +3895,25 @@ function createGraphAnalyticalView() {
       icon.toggleClass("fa-chevron-right fa-chevron-down");
     });
 
+    // "All types" mutual exclusion: selecting specific types deselects "All types" and vice versa
+    $("#inputGavVertexTypes, #inputGavEdgeTypes").on("change", function () {
+      let sel = $(this);
+      let vals = sel.val() || [];
+      if (vals.includes("__ALL__") && vals.length > 1) {
+        // User clicked "All types" while specific types were selected -> select only "All types"
+        // OR user clicked a specific type while "All types" was selected -> deselect "All types"
+        let allWasSelected = sel.data("prevHadAll");
+        if (allWasSelected)
+          sel.val(vals.filter(function (v) { return v !== "__ALL__"; }));
+        else
+          sel.val(["__ALL__"]);
+      }
+      sel.data("prevHadAll", (sel.val() || []).includes("__ALL__"));
+    });
+    // Initialize prevHadAll
+    $("#inputGavVertexTypes").data("prevHadAll", true);
+    $("#inputGavEdgeTypes").data("prevHadAll", true);
+
     // Live RAM estimation on any input change
     $("#inputGavVertexTypes, #inputGavEdgeTypes").on("change", gavUpdateRamEstimate);
     $("#inputGavProperties, #inputGavEdgeProperties").on("input", gavUpdateRamEstimate);
@@ -3914,11 +3940,11 @@ function gavUpdateRamEstimate() {
   let allVertexTypes = window._gavCreateVertexTypes || [];
   let allEdgeTypes = window._gavCreateEdgeTypes || [];
 
-  // Selected types (empty = all)
-  let selectedVT = $("#inputGavVertexTypes").val();
-  let selectedET = $("#inputGavEdgeTypes").val();
-  let vtList = (selectedVT && selectedVT.length > 0) ? selectedVT : allVertexTypes;
-  let etList = (selectedET && selectedET.length > 0) ? selectedET : allEdgeTypes;
+  // Selected types (empty or "All types" = all)
+  let selectedVT = ($("#inputGavVertexTypes").val() || []).filter(function (v) { return v !== "__ALL__"; });
+  let selectedET = ($("#inputGavEdgeTypes").val() || []).filter(function (v) { return v !== "__ALL__"; });
+  let vtList = selectedVT.length > 0 ? selectedVT : allVertexTypes;
+  let etList = selectedET.length > 0 ? selectedET : allEdgeTypes;
 
   // Count nodes and edges
   let totalNodes = 0;
@@ -3932,7 +3958,17 @@ function gavUpdateRamEstimate() {
   let vertexPropInput = ($("#inputGavProperties").val() || "").trim();
   let numVertexProps = 0;
   if (vertexPropInput) {
-    numVertexProps = vertexPropInput.split(",").filter(function (p) { return p.trim() !== ""; }).length;
+    let propEntries = vertexPropInput.split(",").filter(function (p) { return p.trim() !== ""; });
+    let hasExclusions = propEntries.some(function (p) { return p.trim().startsWith("!"); });
+    if (hasExclusions) {
+      // Exclusion mode: all schema properties minus excluded count
+      let maxSchemaProps = 0;
+      for (let i = 0; i < vtList.length; i++)
+        maxSchemaProps = Math.max(maxSchemaProps, typeProperties[vtList[i]] || 0);
+      let excludeCount = propEntries.filter(function (p) { return p.trim().startsWith("!"); }).length;
+      numVertexProps = Math.max(0, maxSchemaProps - excludeCount);
+    } else
+      numVertexProps = propEntries.length;
   } else {
     // All properties — estimate from schema
     for (let i = 0; i < vtList.length; i++)

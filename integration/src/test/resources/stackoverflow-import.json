@@ -20,7 +20,10 @@
     "edgeSources[]":    "Edge-only sources: no vertices created, both endpoints must already exist",
     "edgeSources.from": "Compact 'attribute:vertexType' — source attribute and its vertex type",
     "edgeSources.to":   "Compact 'attribute:vertexType' — target attribute and its vertex type",
-    "limit":            "Optional: max records per source (for testing). Omit or 0 for unlimited"
+    "limit":            "Optional: max records per source (for testing). Omit or 0 for unlimited",
+    "postImportCommands[]": "Commands to execute after import completes (e.g., CREATE GRAPH ANALYTICAL VIEW)",
+    "postImportCommands.language": "Query language: sql, opencypher, etc.",
+    "postImportCommands.command":  "The command text to execute"
   },
 
   "vertices": [
@@ -99,6 +102,14 @@
       "edge": "LINKED_TO", "file": "PostLinks.xml",
       "from": "PostId:Question", "to": "RelatedPostId:Question",
       "properties": { "LinkType": "int:LinkTypeId" }
+    }
+  ],
+
+  "postImportCommands": [
+    {
+      "_": "Create GAV on the whole graph excluding large text properties for fast OLAP queries",
+      "language": "sql",
+      "command": "CREATE GRAPH ANALYTICAL VIEW IF NOT EXISTS stackoverflow PROPERTIES (`!Body`, `!Text`) UPDATE MODE SYNCHRONOUS"
     }
   ]
 }
