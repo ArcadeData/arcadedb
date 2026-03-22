@@ -18,7 +18,10 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -34,18 +37,12 @@ import java.util.Map;
 
 /**
  * Optimized execution step for chained OPTIONAL MATCH + count() pattern.
+ * Uses GAV/CSR when available for O(1) neighbor lookup and edge counting.
  * <p>
  * Handles pattern:
  * OPTIONAL MATCH (bound)-[r1:TYPE1]->(intermediate)
  * OPTIONAL MATCH (target)-[r2:TYPE2]->(intermediate)
  * WITH bound, count(target) AS cnt
- * <p>
- * Instead of materializing all edges/vertices, this step:
- * 1. Traverses from bound to intermediate vertices
- * 2. For each intermediate, counts edges using countEdges() API
- * 3. Sums counts grouped by bound vertex
- * <p>
- * This is much faster than loading all vertices when you only need counts.
  */
 public final class CountChainedEdgesStep extends AbstractExecutionStep {
   private final String boundVertexVariable;
@@ -56,18 +53,6 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
   private final String countOutputAlias;
   private final Map<String, String> passThroughAliases;
 
-  /**
-   * Creates a count chained edges step.
-   *
-   * @param boundVertexVariable  variable name of the already-bound vertex
-   * @param firstHopDirection    direction for first hop (bound -> intermediate)
-   * @param firstHopTypes        edge types for first hop (null for all types)
-   * @param secondHopDirection   direction for second hop (target -> intermediate)
-   * @param secondHopTypes       edge types for second hop (null for all types)
-   * @param countOutputAlias     output property name for the count
-   * @param passThroughAliases   maps WITH output alias to input variable name
-   * @param context              command context
-   */
   public CountChainedEdgesStep(final String boundVertexVariable,
       final Vertex.DIRECTION firstHopDirection,
       final String[] firstHopTypes,
@@ -90,6 +75,12 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet prevResult = checkForPrevious("CountChainedEdgesStep").syncPull(context, nRecords);
 
+    // Try GAV provider for accelerated traversal and counting
+    final Database db = context.getDatabase();
+    // Need a provider that covers both first-hop and second-hop edge types
+    final String[] allTypes = mergeEdgeTypes(firstHopTypes, secondHopTypes);
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, allTypes);
+
     final List<Result> results = new ArrayList<>();
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
@@ -111,18 +102,21 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
         if (vertexObj instanceof Vertex) {
           final Vertex boundVertex = (Vertex) vertexObj;
 
-          // Traverse first hop to get intermediate vertices
-          final Iterator<Vertex> intermediates = firstHopTypes == null || firstHopTypes.length == 0 ?
-              boundVertex.getVertices(firstHopDirection).iterator() :
-              boundVertex.getVertices(firstHopDirection, firstHopTypes).iterator();
-
-          // For each intermediate, count second hop edges
-          long count = 0;
-          while (intermediates.hasNext()) {
-            final Vertex intermediate = intermediates.next();
-            count += intermediate.countEdges(secondHopDirection, secondHopTypes);
-          }
-          totalCount = count;
+          if (provider != null) {
+            // GAV/CSR path: array lookups instead of linked list traversal
+            final int nodeId = provider.getNodeId(boundVertex.getIdentity());
+            if (nodeId >= 0) {
+              // First hop: get intermediate neighbors via CSR
+              final int[] intermediateIds = provider.getNeighborIds(nodeId, firstHopDirection, firstHopTypes);
+              // Second hop: count edges for each intermediate via CSR
+              long count = 0;
+              for (final int intermediateId : intermediateIds)
+                count += provider.countEdges(intermediateId, secondHopDirection, secondHopTypes);
+              totalCount = count;
+            } else
+              totalCount = countOLTP(boundVertex);
+          } else
+            totalCount = countOLTP(boundVertex);
         } else {
           totalCount = 0L; // NULL vertex = LEFT OUTER JOIN semantics
         }
@@ -136,6 +130,35 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     }
 
     return new IteratorResultSet(results.iterator());
+  }
+
+  /**
+   * OLTP fallback for vertices not in the GAV mapping.
+   */
+  private long countOLTP(final Vertex boundVertex) {
+    final Iterator<Vertex> intermediates = firstHopTypes == null || firstHopTypes.length == 0 ?
+        boundVertex.getVertices(firstHopDirection).iterator() :
+        boundVertex.getVertices(firstHopDirection, firstHopTypes).iterator();
+
+    long count = 0;
+    while (intermediates.hasNext()) {
+      final Vertex intermediate = intermediates.next();
+      count += intermediate.countEdges(secondHopDirection, secondHopTypes);
+    }
+    return count;
+  }
+
+  private static String[] mergeEdgeTypes(final String[] a, final String[] b) {
+    if ((a == null || a.length == 0) && (b == null || b.length == 0))
+      return null;
+    final int lenA = a != null ? a.length : 0;
+    final int lenB = b != null ? b.length : 0;
+    final String[] merged = new String[lenA + lenB];
+    if (lenA > 0)
+      System.arraycopy(a, 0, merged, 0, lenA);
+    if (lenB > 0)
+      System.arraycopy(b, 0, merged, lenA, lenB);
+    return merged;
   }
 
   @Override

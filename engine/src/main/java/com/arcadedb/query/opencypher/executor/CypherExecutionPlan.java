@@ -2780,14 +2780,16 @@ public class CypherExecutionPlan {
     final NodePattern targetNode = pathPattern.getLastNode();
     final String sourceVar = sourceNode.getVariable();
     final String targetVar = targetNode.getVariable();
-    if (sourceVar == null || targetVar == null)
+
+    // At least one side must have a variable
+    if (sourceVar == null && targetVar == null)
       return null;
 
-    // Target node must not have labels (countEdges doesn't filter by target type)
-    if (targetNode.hasLabels())
-      return null;
     // Target node must not have property filters (would need filtering)
     if (targetNode.getProperties() != null && !targetNode.getProperties().isEmpty())
+      return null;
+    // Source node must not have property filters
+    if (sourceNode.getProperties() != null && !sourceNode.getProperties().isEmpty())
       return null;
 
     // Classify RETURN items into grouping and aggregation
@@ -2806,8 +2808,15 @@ public class CypherExecutionPlan {
           return null;
         if (funcExpr.isDistinct())
           return null;
-        if (funcExpr.getArguments().size() != 1 || !(funcExpr.getArguments().get(0) instanceof VariableExpression))
+
+        // Accept count(variable) or count(*) — in a single-hop MATCH, count(*) equals count(targetVar)
+        if (funcExpr.getArguments().size() == 1 && funcExpr.getArguments().get(0) instanceof VariableExpression) {
+          // count(variable) — variable must be target or source (the expand endpoint)
+        } else if (funcExpr.getArguments().size() == 1 && funcExpr.getArguments().get(0) instanceof StarExpression) {
+          // count(*) — equivalent to counting edges in single-hop MATCH
+        } else
           return null;
+
         countExpr = funcExpr;
         countAlias = item.getAlias() != null ? item.getAlias() : item.getExpression().getText();
       } else
@@ -2817,26 +2826,49 @@ public class CypherExecutionPlan {
     if (aggregationCount != 1 || countExpr == null)
       return null;
 
-    // The count argument must be the target variable
-    final String countArgVar = ((VariableExpression) countExpr.getArguments().get(0)).getVariableName();
-    if (!countArgVar.equals(targetVar))
+    // Determine which side is the anchor (the one with grouping keys) and which is the counted side
+    // Standard pattern: MATCH (anchor)-[:TYPE]->(counted) RETURN anchor.prop, count(counted)
+    // Reverse pattern: MATCH (:Type)-[:TYPE]->(anchor) RETURN anchor.prop, count(*)
+    final String countArgVar;
+    if (countExpr.getArguments().get(0) instanceof StarExpression)
+      countArgVar = null; // count(*) — edges will be counted from anchor side
+    else
+      countArgVar = ((VariableExpression) countExpr.getArguments().get(0)).getVariableName();
+
+    // Determine the anchor variable: the one used in grouping (non-aggregated RETURN items)
+    // For normal pattern: anchor=sourceVar, counted=targetVar
+    // For reverse pattern (Q9): anchor=targetVar (b:Badge), source has no variable
+    final String anchorVar;
+    final NodePattern anchorNode;
+    final Vertex.DIRECTION countDirection;
+
+    if (sourceVar != null && (countArgVar == null || countArgVar.equals(targetVar))) {
+      // Normal: anchor=source, count target's edges
+      anchorVar = sourceVar;
+      anchorNode = sourceNode;
+      final Direction relDirection = relPattern.getDirection();
+      countDirection = relDirection == Direction.OUT ? Vertex.DIRECTION.OUT
+          : relDirection == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
+    } else if (targetVar != null && (countArgVar == null || countArgVar.equals(sourceVar))) {
+      // Reverse: anchor=target, count source's edges (reverse direction)
+      anchorVar = targetVar;
+      anchorNode = targetNode;
+      final Direction relDirection = relPattern.getDirection();
+      // Reverse direction since we're counting from the other end
+      countDirection = relDirection == Direction.OUT ? Vertex.DIRECTION.IN
+          : relDirection == Direction.IN ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
+    } else
       return null;
 
-    // Grouping expressions must not reference the target variable
-    for (final ReturnClause.ReturnItem item : groupingItems) {
-      if (item.getExpression().getText().contains(targetVar))
-        return null;
+    // Grouping expressions must not reference the counted variable
+    if (countArgVar != null) {
+      for (final ReturnClause.ReturnItem item : groupingItems) {
+        final String text = item.getExpression().getText();
+        // Check for exact variable reference or property access (e.g., "a" or "a.name")
+        if (text.equals(countArgVar) || text.startsWith(countArgVar + "."))
+          return null;
+      }
     }
-
-    // Compute direction from source's perspective
-    final Vertex.DIRECTION direction;
-    final Direction relDirection = relPattern.getDirection();
-    if (relDirection == Direction.OUT)
-      direction = Vertex.DIRECTION.OUT;
-    else if (relDirection == Direction.IN)
-      direction = Vertex.DIRECTION.IN;
-    else
-      direction = Vertex.DIRECTION.BOTH;
 
     // Edge types
     final List<String> relTypes = relPattern.getTypes();
@@ -2856,7 +2888,7 @@ public class CypherExecutionPlan {
     // Walk back to find the MatchNodeStep — the previous step chain may vary:
     // - Legacy path: MatchNodeStep → MatchRelationshipStep (currentStep)
     // - Optimizer path: physical operator wrapper step (currentStep)
-    // In either case, we need the step that provides source vertices.
+    // In either case, we need the step that provides anchor vertices.
     AbstractExecutionStep nodeStep = currentStep;
     // Try to find MatchNodeStep: walk back through MatchRelationshipStep if present
     if (nodeStep instanceof MatchRelationshipStep) {
@@ -2865,15 +2897,16 @@ public class CypherExecutionPlan {
         return null;
     }
     // For optimizer path: the physical operator wrapper already handles the full traversal,
-    // so we need to rebuild with just a MatchNodeStep for the source variable.
-    if (!(nodeStep instanceof MatchNodeStep)) {
-      // Build a fresh MatchNodeStep for the source variable
-      final NodePattern srcPattern = sourceNode;
-      nodeStep = new MatchNodeStep(sourceVar, srcPattern, context);
-    }
+    // so we need to rebuild with just a MatchNodeStep for the anchor variable.
+    if (!(nodeStep instanceof MatchNodeStep))
+      nodeStep = new MatchNodeStep(anchorVar, anchorNode, context);
+
+    // Determine target label for filtering (the counted node's label, if any)
+    final NodePattern countedNode = anchorNode == sourceNode ? targetNode : sourceNode;
+    final String targetLabel = countedNode.hasLabels() ? countedNode.getLabels().get(0) : null;
 
     final CountEdgesReturnStep countStep = new CountEdgesReturnStep(
-        sourceVar, direction, edgeTypes, countAlias,
+        anchorVar, countDirection, edgeTypes, countAlias, targetLabel,
         groupingExpressions, groupingAliases, context,
         expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null);
     countStep.setPrevious(nodeStep);
