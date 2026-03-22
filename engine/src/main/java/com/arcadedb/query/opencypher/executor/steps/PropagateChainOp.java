@@ -397,6 +397,9 @@ public final class PropagateChainOp implements CountOp {
 
   @Override
   public long executeOLTP(final Database db) {
+    // Try to find a GAV provider for accelerated neighbor lookups even in the OLTP path
+    final GraphTraversalProvider provider = com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+
     final String anchorLabel = nodeLabels[0];
     if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
       return 0;
@@ -419,13 +422,9 @@ public final class PropagateChainOp implements CountOp {
 
       final HashMap<RID, Long> next = new HashMap<>();
       for (final Map.Entry<RID, Long> entry : current.entrySet()) {
-        final Vertex v = (Vertex) db.lookupByRID(entry.getKey(), true);
         final long pathCount = entry.getValue();
-        for (final RID neighborRid : v.getConnectedVertexRIDs(directions[hop], edgeTypes[hop])) {
-          if (targetBuckets != null && !targetBuckets.contains(neighborRid.getBucketId()))
-            continue;
-          next.merge(neighborRid, pathCount, Long::sum);
-        }
+        expandNeighbors(db, provider, entry.getKey(), directions[hop], edgeTypes[hop], targetBuckets,
+            (neighborRid) -> next.merge(neighborRid, pathCount, Long::sum));
       }
       current = next;
     }
@@ -436,7 +435,7 @@ public final class PropagateChainOp implements CountOp {
 
     // Subtract self-loop paths for inequality
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
-      total -= countSelfLoopPathsOLTP(db);
+      total -= countSelfLoopPathsOLTP(db, provider);
 
     return total;
   }
@@ -445,7 +444,33 @@ public final class PropagateChainOp implements CountOp {
    * OLTP self-loop counting: for each anchor vertex, BFS through the sub-chain
    * and check for paths that return to the anchor.
    */
-  private long countSelfLoopPathsOLTP(final Database db) {
+  /**
+   * Expands neighbors from a vertex RID, using GAV/CSR when available, falling back to OLTP.
+   */
+  private static void expandNeighbors(final Database db, final GraphTraversalProvider provider,
+      final RID vertexRid, final Vertex.DIRECTION direction, final String edgeType,
+      final Set<Integer> targetBuckets, final java.util.function.Consumer<RID> consumer) {
+    if (provider != null) {
+      final int nodeId = provider.getNodeId(vertexRid);
+      if (nodeId >= 0) {
+        final int[] neighborIds = provider.getNeighborIds(nodeId, direction, edgeType);
+        for (final int nid : neighborIds) {
+          final RID neighborRid = provider.getRID(nid);
+          if (neighborRid != null && (targetBuckets == null || targetBuckets.contains(neighborRid.getBucketId())))
+            consumer.accept(neighborRid);
+        }
+        return;
+      }
+    }
+    // OLTP fallback
+    final Vertex v = (Vertex) db.lookupByRID(vertexRid, true);
+    for (final RID neighborRid : v.getConnectedVertexRIDs(direction, edgeType)) {
+      if (targetBuckets == null || targetBuckets.contains(neighborRid.getBucketId()))
+        consumer.accept(neighborRid);
+    }
+  }
+
+  private long countSelfLoopPathsOLTP(final Database db, final GraphTraversalProvider provider) {
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
     final int subLength = idxB - idxA;
@@ -476,12 +501,9 @@ public final class PropagateChainOp implements CountOp {
 
         final HashMap<RID, Long> next = new HashMap<>();
         for (final Map.Entry<RID, Long> entry : cur.entrySet()) {
-          final Vertex v = (Vertex) db.lookupByRID(entry.getKey(), true);
-          for (final RID neighborRid : v.getConnectedVertexRIDs(directions[hopIdx], edgeTypes[hopIdx])) {
-            if (targetBuckets != null && !targetBuckets.contains(neighborRid.getBucketId()))
-              continue;
-            next.merge(neighborRid, entry.getValue(), Long::sum);
-          }
+          final long pathCount = entry.getValue();
+          expandNeighbors(db, provider, entry.getKey(), directions[hopIdx], edgeTypes[hopIdx], targetBuckets,
+              (neighborRid) -> next.merge(neighborRid, pathCount, Long::sum));
         }
         cur = next;
       }

@@ -434,15 +434,34 @@ public final class AntiJoinChainOp implements CountOp {
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return map;
 
+    // Try GAV provider for accelerated neighbor lookups
+    final GraphTraversalProvider gavProvider = com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(db, edgeType);
+
     for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
-      final Vertex v = it.next().asVertex();
+      final RID vertexRid = it.next().getIdentity();
       final List<RID> neighbors = new ArrayList<>();
+
+      if (gavProvider != null) {
+        final int nodeId = gavProvider.getNodeId(vertexRid);
+        if (nodeId >= 0) {
+          for (final int nid : gavProvider.getNeighborIds(nodeId, direction, edgeType)) {
+            final RID rid = gavProvider.getRID(nid);
+            if (rid != null && (targetBuckets == null || targetBuckets.contains(rid.getBucketId())))
+              neighbors.add(rid);
+          }
+          if (!neighbors.isEmpty())
+            map.put(vertexRid, neighbors.toArray(new RID[0]));
+          continue;
+        }
+      }
+      // OLTP fallback
+      final Vertex v = (Vertex) db.lookupByRID(vertexRid, true);
       for (final RID rid : v.getConnectedVertexRIDs(direction, edgeType)) {
         if (targetBuckets == null || targetBuckets.contains(rid.getBucketId()))
           neighbors.add(rid);
       }
       if (!neighbors.isEmpty())
-        map.put(v.getIdentity(), neighbors.toArray(new RID[0]));
+        map.put(vertexRid, neighbors.toArray(new RID[0]));
     }
     return map;
   }
@@ -455,11 +474,20 @@ public final class AntiJoinChainOp implements CountOp {
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return counts;
 
+    // Try GAV provider for accelerated degree counting
+    final GraphTraversalProvider gavProvider = com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+
     for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
-      final Vertex v = it.next().asVertex();
+      final RID vertexRid = it.next().getIdentity();
       long tailCount = 1;
       for (int h = fromHop; h < edgeTypes.length; h++) {
-        final long degree = v.countEdges(directions[h], edgeTypes[h]);
+        final long degree;
+        if (gavProvider != null) {
+          final int nodeId = gavProvider.getNodeId(vertexRid);
+          degree = nodeId >= 0 ? gavProvider.countEdges(nodeId, directions[h], edgeTypes[h])
+              : ((Vertex) db.lookupByRID(vertexRid, true)).countEdges(directions[h], edgeTypes[h]);
+        } else
+          degree = ((Vertex) db.lookupByRID(vertexRid, true)).countEdges(directions[h], edgeTypes[h]);
         if (degree == 0) {
           tailCount = 0;
           break;
@@ -467,7 +495,7 @@ public final class AntiJoinChainOp implements CountOp {
         tailCount *= degree;
       }
       if (tailCount > 0)
-        counts.put(v.getIdentity(), tailCount);
+        counts.put(vertexRid, tailCount);
     }
     return counts;
   }

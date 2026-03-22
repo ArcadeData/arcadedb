@@ -234,30 +234,57 @@ public final class PartitionedTriangleOp implements CountOp {
       }
     }
 
+    // Try GAV provider for accelerated neighbor lookups
+    final GraphTraversalProvider gavProvider = com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(db, triangleEdgeType);
+
     long total = 0;
     for (final Map.Entry<RID, RID> entry : personToPartition.entrySet()) {
-      final Vertex u = (Vertex) db.lookupByRID(entry.getKey(), true);
+      final RID uRid = entry.getKey();
       final RID uCountry = entry.getValue();
 
-      for (final RID vRid : u.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, triangleEdgeType)) {
+      final RID[] uNeighbors = getNeighborRIDs(db, gavProvider, uRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
+      for (final RID vRid : uNeighbors) {
         final RID vCountry = personToPartition.get(vRid);
         if (vCountry == null || !vCountry.equals(uCountry))
           continue;
 
         final Set<RID> uNeighborSet = new HashSet<>();
-        for (final RID nRid : u.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, triangleEdgeType)) {
+        for (final RID nRid : uNeighbors) {
           final RID nCountry = personToPartition.get(nRid);
           if (nCountry != null && nCountry.equals(uCountry))
             uNeighborSet.add(nRid);
         }
-        final Vertex vVertex = (Vertex) db.lookupByRID(vRid, true);
-        for (final RID wRid : vVertex.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, triangleEdgeType)) {
+        final RID[] vNeighbors = getNeighborRIDs(db, gavProvider, vRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
+        for (final RID wRid : vNeighbors) {
           if (uNeighborSet.contains(wRid))
             total++;
         }
       }
     }
     return total;
+  }
+
+  /**
+   * Gets neighbor RIDs using GAV/CSR when available, falling back to OLTP.
+   */
+  private static RID[] getNeighborRIDs(final Database db, final GraphTraversalProvider provider,
+      final RID vertexRid, final Vertex.DIRECTION direction, final String edgeType) {
+    if (provider != null) {
+      final int nodeId = provider.getNodeId(vertexRid);
+      if (nodeId >= 0) {
+        final int[] neighborIds = provider.getNeighborIds(nodeId, direction, edgeType);
+        final RID[] rids = new RID[neighborIds.length];
+        for (int i = 0; i < neighborIds.length; i++)
+          rids[i] = provider.getRID(neighborIds[i]);
+        return rids;
+      }
+    }
+    // OLTP fallback
+    final Vertex v = (Vertex) db.lookupByRID(vertexRid, true);
+    final java.util.List<RID> list = new java.util.ArrayList<>();
+    for (final RID rid : v.getConnectedVertexRIDs(direction, edgeType))
+      list.add(rid);
+    return list.toArray(new RID[0]);
   }
 
   @Override
