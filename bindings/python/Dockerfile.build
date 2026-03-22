@@ -80,7 +80,7 @@ RUN echo "🗑️  Removing excluded JARs..." && \
 RUN echo "🔍 Analyzing JARs with jdeps..." && \
     JMODS_DIR="${JAVA_HOME}/jmods" && \
     if [ ! -d "$JMODS_DIR" ]; then JMODS_DIR="${JAVA_HOME}/lib/jmods"; fi && \
-    DETECTED_MODULES=$(find /build/jars -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -E '^[a-zA-Z0-9_.]+$' | sort -u | paste -sd "," -) && \
+    DETECTED_MODULES=$(find /build/jars -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 2>&1 | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -E '^[a-zA-Z0-9_.]+$' | sort -u | paste -sd "," -) && \
     if [ -d "$JMODS_DIR" ]; then \
         AVAILABLE_MODULES=$(find "$JMODS_DIR" -name "*.jmod" -printf "%f\n" | sed 's/\.jmod$//' | sort -u | paste -sd "|" -) ; \
         FILTERED_MODULES=$(echo "${DETECTED_MODULES}" | tr ',' '\n' | sed '/^$/d' | grep -E "^(${AVAILABLE_MODULES})$" | sort -u | paste -sd "," -) ; \
