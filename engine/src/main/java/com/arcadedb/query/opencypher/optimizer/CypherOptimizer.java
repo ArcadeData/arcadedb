@@ -40,6 +40,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.*;
 import com.arcadedb.query.opencypher.optimizer.rules.*;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -131,7 +132,14 @@ public class CypherOptimizer {
     }
 
     // 3. Select anchor node (best starting point)
-    final AnchorSelection anchor = anchorSelector.selectAnchor(logicalPlan);
+    AnchorSelection anchor = anchorSelector.selectAnchor(logicalPlan);
+
+    // 3a. Validate anchor against UNIDIRECTIONAL edge constraints.
+    // UNIDIRECTIONAL edges only store outgoing links on the source vertex,
+    // so reverse traversal (incoming from target) finds nothing. If the selected
+    // anchor would force reverse traversal of a UNIDIRECTIONAL edge, re-select
+    // the source side as anchor instead.
+    anchor = validateAnchorForUnidirectionalEdges(anchor, logicalPlan);
 
     // 4. Create anchor operator (index seek or scan)
     final PhysicalOperator anchorOperator = createAnchorOperator(anchor);
@@ -242,6 +250,40 @@ public class CypherOptimizer {
     });
 
     return typeNames;
+  }
+
+  /**
+   * Validates the selected anchor against UNIDIRECTIONAL edge constraints.
+   * If the anchor is on the target side of a directed UNIDIRECTIONAL edge,
+   * the expand operator would need to traverse incoming edges which don't exist.
+   * In that case, force the source side as the anchor instead.
+   */
+  private AnchorSelection validateAnchorForUnidirectionalEdges(final AnchorSelection anchor,
+      final LogicalPlan logicalPlan) {
+    final String anchorVar = anchor.getVariable();
+    final var schema = database.getSchema();
+
+    for (final LogicalRelationship rel : logicalPlan.getRelationships()) {
+      // Check if the anchor is the target of an OUT relationship (would need IN traversal)
+      // or the source of an IN relationship (would need OUT traversal from the other side)
+      final boolean anchorIsTarget = anchorVar.equals(rel.getTargetVariable()) && rel.getDirection() == Direction.OUT;
+      final boolean anchorIsSource = anchorVar.equals(rel.getSourceVariable()) && rel.getDirection() == Direction.IN;
+
+      if (anchorIsTarget || anchorIsSource) {
+        // Check if any edge type in this relationship is UNIDIRECTIONAL
+        for (final String edgeTypeName : rel.getTypes()) {
+          if (schema.existsType(edgeTypeName) && schema.getType(edgeTypeName) instanceof EdgeType et && !et.isBidirectional()) {
+            // Force the other side as the anchor
+            final String correctAnchorVar = anchorIsTarget ? rel.getSourceVariable() : rel.getTargetVariable();
+            final LogicalNode correctNode = logicalPlan.getNodes().get(correctAnchorVar);
+            if (correctNode != null)
+              return anchorSelector.evaluateNodeDirect(correctNode, logicalPlan);
+            break;
+          }
+        }
+      }
+    }
+    return anchor;
   }
 
   /**
