@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -140,10 +141,10 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
             currentInputResult = inputResults.next();
             final Object sourceObj = currentInputResult.getProperty(sourceVariable);
 
-            if (sourceObj instanceof Vertex)
+            if (sourceObj instanceof GAVVertex)
+              sourceNodeId = ((GAVVertex) sourceObj).getNodeId();
+            else if (sourceObj instanceof Vertex)
               sourceNodeId = provider.getNodeId(((Vertex) sourceObj).getIdentity());
-            else if (sourceObj instanceof GAVVertexReference)
-              sourceNodeId = ((GAVVertexReference) sourceObj).getNodeId();
             else {
               sourceNodeId = -1;
               continue;
@@ -206,8 +207,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
         // Source variable: pass through from input (already a Vertex from NodeByLabelScan)
         if (materializeVariable[0]) {
-          // Use GAVVertexReference — properties read from column store, no OLTP load
-          result.setProperty(sourceVariable, makeReference(stackNodeId[0]));
+          // Use GAVVertex — properties read from column store, no OLTP load
+          result.setProperty(sourceVariable, makeReference(stackNodeId[0], database));
         } else {
           for (final String prop : currentInputResult.getPropertyNames())
             result.setProperty(prop, currentInputResult.getProperty(prop));
@@ -216,15 +217,15 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         // Hop target variables
         for (int i = 0; i < hopTargetVariables.length; i++) {
           if (hopTargetVariables[i] != null && materializeVariable[i + 1])
-            result.setProperty(hopTargetVariables[i], makeReference(stackNodeId[i + 1]));
+            result.setProperty(hopTargetVariables[i], makeReference(stackNodeId[i + 1], database));
         }
 
         buffer.add(result);
       }
 
-      private GAVVertexReference makeReference(final int nodeId) {
+      private GAVVertex makeReference(final int nodeId, final Database database) {
         final RID rid = provider.getRID(nodeId);
-        return rid != null ? new GAVVertexReference(rid, nodeId, provider) : null;
+        return rid != null ? new GAVVertex(rid, nodeId, provider, database) : null;
       }
 
       @Override

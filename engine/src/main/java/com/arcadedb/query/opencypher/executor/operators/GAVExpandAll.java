@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -80,7 +81,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
   }
 
   /**
-   * When true, target vertices are stored as {@link GAVVertexReference} instead of loading
+   * When true, target vertices are stored as {@link GAVVertex} instead of loading
    * from OLTP. This avoids expensive lookupByRID for intermediate hops where vertex
    * properties are not accessed.
    */
@@ -152,10 +153,10 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
               continue;
             }
 
-            // CSR lookup: accept both Vertex and GAVVertexReference as source
+            // CSR lookup: accept both GAVVertex and Vertex as source
             final int nodeId;
-            if (sourceObj instanceof GAVVertexReference)
-              nodeId = ((GAVVertexReference) sourceObj).getNodeId();
+            if (sourceObj instanceof GAVVertex)
+              nodeId = ((GAVVertex) sourceObj).getNodeId();
             else if (sourceObj instanceof Vertex)
               nodeId = provider.getNodeId(((Vertex) sourceObj).getIdentity());
             else {
@@ -192,7 +193,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
                 if (!targetLabel.equals(typeName))
                   continue;
               }
-              addResultWithReference(new GAVVertexReference(targetRID, targetNodeId, provider));
+              addResultWithReference(new GAVVertex(targetRID, targetNodeId, provider, context.getDatabase()));
             } else {
               // Full mode: load vertex from OLTP
               final Vertex targetVertex;
@@ -223,7 +224,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
         buffer.add(result);
       }
 
-      private void addResultWithReference(final GAVVertexReference ref) {
+      private void addResultWithReference(final GAVVertex ref) {
         final ResultInternal result = new ResultInternal();
         for (final String prop : currentInputResult.getPropertyNames())
           result.setProperty(prop, currentInputResult.getProperty(prop));

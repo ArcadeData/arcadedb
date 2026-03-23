@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
@@ -281,11 +282,11 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               lastResult = prevResults.next();
               final Object sourceObj = lastResult.getProperty(sourceVariable);
 
-              // Resolve source: accept both Vertex and GAVVertexReference
+              // Resolve source: accept both GAVVertex and Vertex
               int sourceNodeId = -1;
               Vertex sourceVertex = null;
-              if (sourceObj instanceof com.arcadedb.query.opencypher.executor.operators.GAVVertexReference gavRef) {
-                sourceNodeId = gavRef.getNodeId();
+              if (sourceObj instanceof GAVVertex gavVertex) {
+                sourceNodeId = gavVertex.getNodeId();
                 // Don't resolve to Vertex yet — only resolve if we can't use GAV fast path
               } else if (sourceObj instanceof Vertex)
                 sourceVertex = (Vertex) sourceObj;
@@ -303,7 +304,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                     sourceNodeId = gavProvider.getNodeId(sourceVertex.getIdentity());
 
                   if (gavProvider != null && sourceNodeId >= 0) {
-                    // GAV reference path: produce GAVVertexReference, skip all lookupByRID
+                    // GAV reference path: produce GAVVertex, skip all lookupByRID
                     final Direction dir = getEffectiveDirection();
                     final String[] types = pattern.hasTypes() ? pattern.getTypes().toArray(new String[0]) : null;
                     int[] neighborIds = gavProvider.getNeighborIds(sourceNodeId, dir.toArcadeDirection(), types);
@@ -319,8 +320,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                   } else {
                     // Regular fast path: load vertices via getVertices()
                     if (sourceVertex == null)
-                      sourceVertex = ((com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) sourceObj)
-                          .resolve(context.getDatabase());
+                      sourceVertex = (Vertex) sourceObj;
                     currentVertices = getVertices(sourceVertex);
                     currentGavNeighborIds = null;
                     currentEdges = null;
@@ -329,8 +329,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                 } else {
                   // Standard path: load edges (needs full Vertex)
                   if (sourceVertex == null)
-                    sourceVertex = ((com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) sourceObj)
-                        .resolve(context.getDatabase());
+                    sourceVertex = (Vertex) sourceObj;
                   currentEdges = getEdges(sourceVertex);
                   currentVertices = null;
                   currentGavNeighborIds = null;
@@ -352,7 +351,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       }
 
       /**
-       * GAV reference path: iterate int[] neighbor IDs, produce GAVVertexReference per result.
+       * GAV reference path: iterate int[] neighbor IDs, produce GAVVertex per result.
        * Zero OLTP vertex loading — label check via bucket ID, property access via column store.
        */
       private void processGavReferencePath(final int n) {
@@ -383,8 +382,6 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               final RID boundRid;
               if (boundValue instanceof Vertex)
                 boundRid = ((Vertex) boundValue).getIdentity();
-              else if (boundValue instanceof com.arcadedb.query.opencypher.executor.operators.GAVVertexReference)
-                boundRid = ((com.arcadedb.query.opencypher.executor.operators.GAVVertexReference) boundValue).getIdentity();
               else
                 boundRid = null;
               if (boundRid != null
@@ -392,12 +389,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                 continue;
             }
 
-            // Create result with GAVVertexReference (no OLTP load)
+            // Create result with GAVVertex (no OLTP load)
             final ResultInternal result = new ResultInternal();
             for (final String prop : lastResult.getPropertyNames())
               result.setProperty(prop, lastResult.getProperty(prop));
             result.setProperty(targetVariable,
-                new com.arcadedb.query.opencypher.executor.operators.GAVVertexReference(targetRid, neighborId, currentGavProvider));
+                new GAVVertex(targetRid, neighborId, currentGavProvider, db));
 
             buffer.add(result);
             if (context.isProfiling())
