@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -55,17 +54,7 @@ public class PropertyAccessExpression implements Expression {
     if (variable == null)
       return null;
 
-    if (variable instanceof com.arcadedb.query.opencypher.executor.operators.GAVVertexReference gavRef) {
-      // GAV column store fast path: read property directly from CSR columnar storage.
-      // Falls back to OLTP vertex load only for properties not in the column store.
-      final Object colValue = gavRef.get(propertyName);
-      if (colValue != null)
-        return convertFromStorage(colValue);
-      // Property not in column store — resolve to full vertex via OLTP
-      final Database db = context != null ? context.getDatabase() : (Database) gavRef.getIdentity().getDatabase();
-      final Object rawValue = gavRef.resolve(db).get(propertyName);
-      return convertFromStorage(rawValue);
-    } else if (variable instanceof RID rid) {
+    if (variable instanceof RID rid) {
       // Lazy vertex resolution: algorithm procedures store RIDs to avoid loading all vertices upfront.
       // Only resolve to Document when a property is actually accessed.
       final Object rawValue = rid.asVertex().get(propertyName);
