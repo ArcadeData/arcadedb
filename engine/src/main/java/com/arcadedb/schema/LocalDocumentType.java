@@ -1055,9 +1055,11 @@ public class LocalDocumentType implements DocumentType {
       kind = "t";
     else if (this instanceof LocalVertexType)
       kind = "v";
-    else if (this instanceof LocalEdgeType)
+    else if (this instanceof LocalEdgeType edgeType) {
       kind = "e";
-    else
+      if (!edgeType.isBidirectional())
+        type.put("bidirectional", false);
+    } else
       kind = "d";
     type.put("type", kind);
 
