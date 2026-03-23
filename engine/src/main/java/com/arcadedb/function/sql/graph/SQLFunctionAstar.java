@@ -24,6 +24,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -164,24 +166,24 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       }
 
       closedSet.add(current);
-      for (final Edge neighborEdge : getNeighborEdges(current)) {
 
-        final Vertex neighbor = getNeighbor(current, neighborEdge, graph);
+      // Try CSR + edge property columns first for O(1) neighbor + weight access
+      final Map<Vertex, Double> neighborWeights = getNeighborWeightsCSR(current, ctx);
+      for (final Map.Entry<Vertex, Double> entry : neighborWeights.entrySet()) {
+        final Vertex neighbor = entry.getKey();
         // Ignore the neighbor which is already evaluated.
-        if (closedSet.contains(neighbor)) {
+        if (closedSet.contains(neighbor))
           continue;
-        }
         // The distance from start to a neighbor
-        final double tentative_gScore = gScore.get(current) + getDistance(neighborEdge);
+        final double tentative_gScore = gScore.get(current) + entry.getValue();
         final boolean contains = open.contains(neighbor);
 
         if (!contains || tentative_gScore < gScore.get(neighbor)) {
           gScore.put(neighbor, tentative_gScore);
           fScore.put(neighbor, tentative_gScore + getHeuristicCost(neighbor, current, goal, ctx));
 
-          if (contains) {
+          if (contains)
             open.remove(neighbor);
-          }
           open.offer(neighbor);
           cameFrom.put(neighbor, current);
         }
@@ -218,12 +220,58 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     final Set<Edge> neighbors = new HashSet<Edge>();
     if (node != null) {
       for (final Edge v : node.getEdges(paramDirection, paramEdgeTypeNames)) {
-        final Edge ov = v;
-        if (ov != null)
-          neighbors.add(ov);
+        if (v != null)
+          neighbors.add(v);
       }
     }
     return neighbors;
+  }
+
+  /**
+   * Returns neighbor vertices with their edge weights using CSR + edge property columns when available.
+   * Falls back to OLTP edge traversal when GAV doesn't have edge properties or doesn't cover the node.
+   */
+  protected Map<Vertex, Double> getNeighborWeightsCSR(final Vertex node, final CommandContext ctx) {
+    final Map<Vertex, Double> result = new HashMap<>();
+    if (node == null)
+      return result;
+
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(
+        ctx.getDatabase(), paramEdgeTypeNames);
+    if (provider != null && provider.hasEdgeProperties()) {
+      final int nodeId = provider.getNodeId(node.getIdentity());
+      if (nodeId >= 0) {
+        final int[] neighborIds = paramEdgeTypeNames != null && paramEdgeTypeNames.length > 0
+            ? provider.getNeighborIds(nodeId, paramDirection, paramEdgeTypeNames)
+            : provider.getNeighborIds(nodeId, paramDirection);
+        final String edgeType = paramEdgeTypeNames != null && paramEdgeTypeNames.length > 0 ? paramEdgeTypeNames[0] : null;
+        for (int i = 0; i < neighborIds.length; i++) {
+          final RID neighborRid = provider.getRID(neighborIds[i]);
+          if (neighborRid != null) {
+            double weight = MIN;
+            if (edgeType != null) {
+              final Object wObj = provider.getEdgeProperty(nodeId, i, paramDirection, edgeType, paramWeightFieldName);
+              if (wObj instanceof Number num)
+                weight = num.doubleValue();
+            }
+            try {
+              result.put(neighborRid.asVertex(), weight);
+            } catch (final Exception e) {
+              // deleted vertex — skip
+            }
+          }
+        }
+        return result;
+      }
+    }
+
+    // OLTP fallback
+    for (final Edge edge : node.getEdges(paramDirection, paramEdgeTypeNames)) {
+      final Vertex neighbor = getNeighbor(node, edge, ctx.getDatabase());
+      if (neighbor != null)
+        result.put(neighbor, getDistance(edge));
+    }
+    return result;
   }
 
   private void bindAdditionalParams(final Object additionalParams, final SQLFunctionAstar context) {

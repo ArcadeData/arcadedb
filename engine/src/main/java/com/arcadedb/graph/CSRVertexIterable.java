@@ -26,6 +26,11 @@ import java.util.NoSuchElementException;
 /**
  * Lazy iterable that converts CSR dense node IDs to Vertex objects on demand.
  * Used by SQL graph functions (out/in/both) when a GAV provider is available.
+ * <p>
+ * Provides an O(1) {@link #size()} method that returns the neighbor count directly
+ * from the CSR array length, avoiding the need to iterate all elements.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CSRVertexIterable implements Iterable<Vertex> {
   private final GraphTraversalProvider provider;
@@ -34,6 +39,14 @@ public class CSRVertexIterable implements Iterable<Vertex> {
   public CSRVertexIterable(final GraphTraversalProvider provider, final int[] neighborIds) {
     this.provider = provider;
     this.neighborIds = neighborIds;
+  }
+
+  /**
+   * Returns the neighbor count in O(1) directly from the CSR array length.
+   * This avoids materializing all vertices just to count them.
+   */
+  public int size() {
+    return neighborIds.length;
   }
 
   @Override
