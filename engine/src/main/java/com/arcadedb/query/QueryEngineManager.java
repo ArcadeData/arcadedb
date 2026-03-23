@@ -36,12 +36,14 @@ public class QueryEngineManager {
 
   private QueryEngineManager() {
     final int maxThreads = Math.max(2, Runtime.getRuntime().availableProcessors());
-    executorService = new ThreadPoolExecutor(0, maxThreads, 60L, TimeUnit.SECONDS,
+    final ThreadPoolExecutor pool = new ThreadPoolExecutor(maxThreads, maxThreads, 60L, TimeUnit.SECONDS,
         new LinkedBlockingQueue<>(), r -> {
       final Thread t = new Thread(r, "ArcadeDB-QueryWorker");
       t.setDaemon(true);
       return t;
     });
+    pool.allowCoreThreadTimeOut(true);
+    executorService = pool;
 
     // REGISTER ALL THE SUPPORTED LANGUAGE FROM POLYGLOT ENGINE
     for (final String language : PolyglotQueryEngine.PolyglotQueryEngineFactory.getSupportedLanguages())

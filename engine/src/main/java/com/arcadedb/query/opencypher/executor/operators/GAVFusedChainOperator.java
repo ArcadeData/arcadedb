@@ -32,13 +32,17 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.LongLongHashMap;
 
+import com.arcadedb.query.QueryEngineManager;
+
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 
 /**
  * Fused multi-hop GAV traversal operator — zero intermediate object allocation.
@@ -177,7 +181,6 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // Parallel DFS: each thread processes a chunk of source vertices with its own stack
     @SuppressWarnings("unchecked")
     final List<Result>[] threadResults = new List[Math.min(parallelism, Math.max(1, (totalSources + chunkSize - 1) / chunkSize))];
-    final AtomicReference<Throwable> firstError = new AtomicReference<>();
 
     final int threadCount;
     if (totalSources < 8192) {
@@ -186,8 +189,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       traverseChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, outputNames, db, context, threadResults[0]);
       threadCount = 1;
     } else {
-      // Parallel execution
-      final Thread[] threads = new Thread[threadResults.length];
+      // Parallel execution using shared query worker pool
+      final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
+      final Future<?>[] futures = new Future<?>[threadResults.length];
       int launched = 0;
       for (int t = 0; t < threadResults.length; t++) {
         final int start = t * chunkSize;
@@ -196,29 +200,21 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
           break;
         threadResults[t] = new ArrayList<>();
         final int threadIdx = t;
-        threads[t] = new Thread(() -> {
-          try {
-            traverseChunk(sourceNodeIds, start, end, hopViews, chainLength, outputNames, db, context, threadResults[threadIdx]);
-          } catch (final Throwable e) {
-            firstError.compareAndSet(null, e);
-          }
-        });
-        threads[t].setDaemon(true);
-        threads[t].setName("gav-chain-" + t);
-        threads[t].start();
+        futures[t] = executor.submit(() ->
+            traverseChunk(sourceNodeIds, start, end, hopViews, chainLength, outputNames, db, context, threadResults[threadIdx]));
         launched++;
       }
-      // Wait for all threads
+      // Wait for all tasks
       for (int t = 0; t < launched; t++) {
         try {
-          threads[t].join();
+          futures[t].get();
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           break;
+        } catch (final ExecutionException e) {
+          throw new RuntimeException("Parallel GAV traversal failed", e.getCause());
         }
       }
-      if (firstError.get() != null)
-        throw new RuntimeException("Parallel GAV traversal failed", (Exception) firstError.get());
       threadCount = launched;
     }
 
@@ -275,15 +271,14 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     final int numThreads = Math.min(parallelism, Math.max(1, (totalSources + chunkSize - 1) / chunkSize));
     @SuppressWarnings("unchecked")
     final LongLongHashMap[] threadMaps = new LongLongHashMap[numThreads];
-    final AtomicReference<Throwable> firstError = new AtomicReference<>();
-
     if (totalSources < 8192) {
       // Single-threaded
       threadMaps[0] = new LongLongHashMap();
       aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, groupKeySlots, db, context, threadMaps[0]);
     } else {
-      // Parallel
-      final Thread[] threads = new Thread[numThreads];
+      // Parallel using shared query worker pool
+      final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
+      final Future<?>[] futures = new Future<?>[numThreads];
       int launched = 0;
       for (int t = 0; t < numThreads; t++) {
         final int start = t * chunkSize;
@@ -292,28 +287,20 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
           break;
         threadMaps[t] = new LongLongHashMap();
         final int threadIdx = t;
-        threads[t] = new Thread(() -> {
-          try {
-            aggregateChunk(sourceNodeIds, start, end, hopViews, chainLength, groupKeySlots, db, context, threadMaps[threadIdx]);
-          } catch (final Throwable e) {
-            firstError.compareAndSet(null, e);
-          }
-        });
-        threads[t].setDaemon(true);
-        threads[t].setName("gav-agg-" + t);
-        threads[t].start();
+        futures[t] = executor.submit(() ->
+            aggregateChunk(sourceNodeIds, start, end, hopViews, chainLength, groupKeySlots, db, context, threadMaps[threadIdx]));
         launched++;
       }
       for (int t = 0; t < launched; t++) {
         try {
-          threads[t].join();
+          futures[t].get();
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           break;
+        } catch (final ExecutionException e) {
+          throw new RuntimeException("Parallel GAV aggregation failed", e.getCause());
         }
       }
-      if (firstError.get() != null)
-        throw new RuntimeException("Parallel GAV aggregation failed", (Exception) firstError.get());
     }
 
     // Merge thread-local maps (zero boxing — primitive long operations)

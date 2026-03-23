@@ -27,12 +27,17 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 
+import com.arcadedb.query.QueryEngineManager;
+
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 
 /**
  * Count operator for country-partitioned triangle patterns (Q3).
@@ -78,22 +83,24 @@ public final class PartitionedTriangleOp implements CountOp {
     if (nodeCount < 1000) {
       partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, nodeCount);
     } else {
-      final Thread[] threads = new Thread[threadCount];
+      final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
+      final Future<?>[] futures = new Future<?>[threadCount];
       final int chunkSize = (nodeCount + threadCount - 1) / threadCount;
       for (int t = 0; t < threadCount; t++) {
         final int start = t * chunkSize;
         final int end = Math.min(start + chunkSize, nodeCount);
         final int threadIdx = t;
-        threads[t] = new Thread(() ->
+        futures[t] = executor.submit(() ->
             partialCounts[threadIdx] = countRange(knowsView, nbrs, personPartition, start, end));
-        threads[t].start();
       }
-      for (final Thread thread : threads) {
+      for (final Future<?> future : futures) {
         try {
-          thread.join();
+          future.get();
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           break;
+        } catch (final ExecutionException e) {
+          throw new RuntimeException("Parallel triangle counting failed", e.getCause());
         }
       }
     }
