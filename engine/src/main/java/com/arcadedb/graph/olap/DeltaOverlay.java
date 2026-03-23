@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.IntIntHashMap;
 
 import java.util.*;
 
@@ -58,8 +59,8 @@ class DeltaOverlay {
   private final Map<String, Set<Long>>      deletedEdgesPerType;
 
   // Per-node deleted edge counts for O(1) lookup: edgeType -> nodeId -> count
-  private final Map<String, Map<Integer, Integer>> deletedOutEdgeCounts;
-  private final Map<String, Map<Integer, Integer>> deletedInEdgeCounts;
+  private final Map<String, IntIntHashMap> deletedOutEdgeCounts;
+  private final Map<String, IntIntHashMap> deletedInEdgeCounts;
 
   // Property overrides for base nodes: globalId -> (propName -> value)
   private final Map<Integer, Map<String, Object>> propertyOverrides;
@@ -97,8 +98,8 @@ class DeltaOverlay {
       final BitSet deletedBaseNodes, final BitSet deletedOverflowNodes,
       final Map<String, List<long[]>> addedEdgesPerType,
       final Map<String, Set<Long>> deletedEdgesPerType,
-      final Map<String, Map<Integer, Integer>> deletedOutEdgeCounts,
-      final Map<String, Map<Integer, Integer>> deletedInEdgeCounts,
+      final Map<String, IntIntHashMap> deletedOutEdgeCounts,
+      final Map<String, IntIntHashMap> deletedInEdgeCounts,
       final Map<Integer, Map<String, Object>> propertyOverrides,
       final Map<String, Map<Integer, int[]>> outNeighborIndex,
       final Map<String, Map<Integer, int[]>> inNeighborIndex,
@@ -204,8 +205,8 @@ class DeltaOverlay {
     final Map<String, Map<Integer, int[]>> newInIndex = buildNeighborIndex(newAddedEdges, false);
 
     // Build per-node deleted edge count indexes for O(1) lookup
-    final Map<String, Map<Integer, Integer>> newDelOutCounts = buildDeletedEdgeCounts(newDeletedEdges, true);
-    final Map<String, Map<Integer, Integer>> newDelInCounts = buildDeletedEdgeCounts(newDeletedEdges, false);
+    final Map<String, IntIntHashMap> newDelOutCounts = buildDeletedEdgeCounts(newDeletedEdges, true);
+    final Map<String, IntIntHashMap> newDelInCounts = buildDeletedEdgeCounts(newDeletedEdges, false);
 
     return new DeltaOverlay(baseNodeCount,
         Collections.unmodifiableMap(newOverflowIds),
@@ -266,20 +267,20 @@ class DeltaOverlay {
    * Counts the number of deleted outgoing edges from {@code nodeId} for the given edge type. O(1).
    */
   int countDeletedOutEdges(final int nodeId, final String edgeType) {
-    final Map<Integer, Integer> counts = deletedOutEdgeCounts.get(edgeType);
+    final IntIntHashMap counts = deletedOutEdgeCounts.get(edgeType);
     if (counts == null)
       return 0;
-    return counts.getOrDefault(nodeId, 0);
+    return counts.get(nodeId, 0);
   }
 
   /**
    * Counts the number of deleted incoming edges to {@code nodeId} for the given edge type. O(1).
    */
   int countDeletedInEdges(final int nodeId, final String edgeType) {
-    final Map<Integer, Integer> counts = deletedInEdgeCounts.get(edgeType);
+    final IntIntHashMap counts = deletedInEdgeCounts.get(edgeType);
     if (counts == null)
       return 0;
-    return counts.getOrDefault(nodeId, 0);
+    return counts.get(nodeId, 0);
   }
 
   /**
@@ -355,24 +356,25 @@ class DeltaOverlay {
       final List<long[]> edges = entry.getValue();
 
       // Pass 1: count neighbors per node
-      final HashMap<Integer, Integer> counts = new HashMap<>();
+      final IntIntHashMap counts = new IntIntHashMap();
       for (final long[] pair : edges) {
         final int key = (int) (outgoing ? pair[0] : pair[1]);
-        counts.merge(key, 1, Integer::sum);
+        counts.increment(key);
       }
 
       // Allocate exact-size arrays
       final Map<Integer, int[]> perNode = new HashMap<>(counts.size());
-      for (final var e : counts.entrySet())
-        perNode.put(e.getKey(), new int[e.getValue()]);
+      counts.forEach((key, count) -> perNode.put(key, new int[count]));
 
-      // Pass 2: fill arrays (reuse counts map as fill-position tracker)
-      counts.replaceAll((k, v) -> 0);
+      // Pass 2: fill arrays (use a fresh map as fill-position tracker)
+      final IntIntHashMap positions = new IntIntHashMap(counts.size());
       for (final long[] pair : edges) {
         final int key = (int) (outgoing ? pair[0] : pair[1]);
         final int neighbor = (int) (outgoing ? pair[1] : pair[0]);
         final int[] arr = perNode.get(key);
-        arr[counts.merge(key, 1, Integer::sum) - 1] = neighbor;
+        final int pos = positions.get(key, 0);
+        arr[pos] = neighbor;
+        positions.put(key, pos + 1);
       }
 
       result.put(entry.getKey(), perNode);
@@ -385,16 +387,16 @@ class DeltaOverlay {
    *
    * @param outgoing true for outgoing counts (keyed by source), false for incoming (keyed by target)
    */
-  private static Map<String, Map<Integer, Integer>> buildDeletedEdgeCounts(
+  private static Map<String, IntIntHashMap> buildDeletedEdgeCounts(
       final Map<String, Set<Long>> deletedEdges, final boolean outgoing) {
     if (deletedEdges.isEmpty())
       return Collections.emptyMap();
-    final Map<String, Map<Integer, Integer>> result = new HashMap<>();
+    final Map<String, IntIntHashMap> result = new HashMap<>();
     for (final var entry : deletedEdges.entrySet()) {
-      final Map<Integer, Integer> counts = new HashMap<>();
+      final IntIntHashMap counts = new IntIntHashMap();
       for (final long packed : entry.getValue()) {
         final int nodeId = outgoing ? (int) (packed >>> 32) : (int) packed;
-        counts.merge(nodeId, 1, Integer::sum);
+        counts.increment(nodeId);
       }
       result.put(entry.getKey(), counts);
     }

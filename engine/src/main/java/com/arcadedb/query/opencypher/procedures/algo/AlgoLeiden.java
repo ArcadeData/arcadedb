@@ -25,9 +25,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.HashMap;
+import com.arcadedb.utility.IntIntHashMap;
+
 import java.util.List;
-import java.util.Map;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -125,30 +125,29 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
         final long ki = degree[i];
 
         // Count weights to each neighboring community
-        final Map<Integer, Integer> commWeights = new HashMap<>();
-        for (final int j : adj[i]) {
-          final int jComm = community[j];
-          commWeights.merge(jComm, 1, Integer::sum);
-        }
+        final IntIntHashMap commWeights = new IntIntHashMap();
+        for (final int j : adj[i])
+          commWeights.increment(community[j]);
 
         int bestComm = currentComm;
-        double bestGain = 0.0;
+        final double[] bestGain = { 0.0 };
+        final int[] bestCommHolder = { currentComm };
 
-        for (final Map.Entry<Integer, Integer> entry : commWeights.entrySet()) {
-          final int candidateComm = entry.getKey();
+        commWeights.forEach((candidateComm, weight) -> {
           if (candidateComm == currentComm)
-            continue;
+            return;
 
-          final double eIc = entry.getValue();
+          final double eIc = weight;
           final double dc = communityDegree[candidateComm];
           // Modularity gain = [e_ic / m] - γ * [k_i * d_c / (2m²)]
           final double gain = eIc / m - resolution * ki * dc / (2.0 * m * m);
 
-          if (gain > bestGain) {
-            bestGain = gain;
-            bestComm = candidateComm;
+          if (gain > bestGain[0]) {
+            bestGain[0] = gain;
+            bestCommHolder[0] = candidateComm;
           }
-        }
+        });
+        bestComm = bestCommHolder[0];
 
         if (bestComm != currentComm) {
           communityDegree[currentComm] -= ki;
@@ -166,14 +165,14 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
           final int currentComm = community[i];
           final long ki = degree[i];
 
-          final Map<Integer, Integer> sameCommWeights = new HashMap<>();
+          final IntIntHashMap sameCommWeights = new IntIntHashMap();
           for (final int j : adj[i]) {
             if (community[j] == currentComm)
-              sameCommWeights.merge(community[j], 1, Integer::sum);
+              sameCommWeights.increment(community[j]);
           }
 
           // Try removing from current community
-          final int internalEdges = sameCommWeights.getOrDefault(currentComm, 0);
+          final int internalEdges = sameCommWeights.get(currentComm, 0);
           final double removeGain = -(internalEdges / m - resolution * ki * communityDegree[currentComm] / (2.0 * m * m));
 
           if (removeGain > 0.0) {
@@ -196,7 +195,7 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     }
 
     // Remap communities to sequential IDs
-    final Map<Integer, Integer> remap = new HashMap<>();
+    final IntIntHashMap remap = new IntIntHashMap();
     int nextId = 0;
     for (int i = 0; i < n; i++) {
       if (!remap.containsKey(community[i]))
@@ -206,7 +205,7 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", graph.getRID(i));
-      r.setProperty("community", remap.get(community[i]));
+      r.setProperty("community", remap.get(community[i], -1));
       return (Result) r;
     });
   }

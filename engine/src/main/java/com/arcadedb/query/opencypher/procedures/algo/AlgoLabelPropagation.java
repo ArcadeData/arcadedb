@@ -28,8 +28,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import com.arcadedb.utility.IntIntHashMap;
+
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -165,19 +166,19 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
         }
 
         // Count labels of neighbors
-        final Map<Integer, Integer> labelCount = new HashMap<>();
+        final IntIntHashMap labelCount = new IntIntHashMap();
         for (final int neighborIdx : neighbors)
-          labelCount.merge(label[neighborIdx], 1, Integer::sum);
+          labelCount.increment(label[neighborIdx]);
 
         // Find most frequent label (ties broken by smallest label)
-        int bestLabel = label[i];
-        int bestCount = 0;
-        for (final Map.Entry<Integer, Integer> entry : labelCount.entrySet()) {
-          if (entry.getValue() > bestCount || (entry.getValue() == bestCount && entry.getKey() < bestLabel)) {
-            bestCount = entry.getValue();
-            bestLabel = entry.getKey();
+        final int[] best = { label[i], 0 }; // [bestLabel, bestCount]
+        labelCount.forEach((lbl, cnt) -> {
+          if (cnt > best[1] || (cnt == best[1] && lbl < best[0])) {
+            best[1] = cnt;
+            best[0] = lbl;
           }
-        }
+        });
+        int bestLabel = best[0];
 
         newLabel[i] = bestLabel;
         if (bestLabel != label[i])
