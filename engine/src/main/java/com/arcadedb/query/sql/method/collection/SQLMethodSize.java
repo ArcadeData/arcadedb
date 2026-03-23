@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.graph.CSRVertexIterable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
@@ -43,18 +44,18 @@ public class SQLMethodSize extends AbstractSQLMethod {
 
     final int size;
     if (value != null) {
-      if (value instanceof Result result) {
-        size = result.getRecord().isPresent() ? result.getRecord().get().size() : -1;
-      } else if (value instanceof Identifiable rid) {
+      switch (value) {
+      case CSRVertexIterable csr -> size = csr.size(); // O(1) via CSR array length
+      case Result result -> size = result.getRecord().isPresent() ? result.getRecord().get().size() : -1;
+      case Identifiable rid -> {
         final Record record = rid.getRecord(true);
         if (record != null)
           size = record.size();
         else
           size = 0;
-      } else if (value instanceof String s) {
-        size = s.length();
-      } else {
-        size = MultiValue.getSize(value);
+      }
+      case String s -> size = s.length();
+      default -> size = MultiValue.getSize(value);
       }
 
     } else {
