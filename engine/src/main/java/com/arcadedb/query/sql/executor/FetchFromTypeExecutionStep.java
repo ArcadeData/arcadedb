@@ -279,8 +279,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         scanFutures.add(future);
       }
 
-      // Background thread to signal completion
-      scanExecutor.submit(() -> {
+      // Lightweight daemon thread to signal completion — must NOT run on the shared
+      // query pool to avoid thread starvation (this thread blocks on f.get() waiting
+      // for scan tasks that themselves run on the pool).
+      final Thread completionThread = new Thread(() -> {
         for (final Future<?> f : scanFutures) {
           try {
             f.get();
@@ -289,7 +291,9 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
           }
         }
         parallelScanComplete = true;
-      });
+      }, "ArcadeDB-ScanCompletion");
+      completionThread.setDaemon(true);
+      completionThread.start();
     }
 
     return new ResultSet() {
