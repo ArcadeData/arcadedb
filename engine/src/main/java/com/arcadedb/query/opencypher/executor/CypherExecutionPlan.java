@@ -1551,10 +1551,14 @@ public class CypherExecutionPlan {
             directionOverride = null;
           }
 
-          // Track relationship and target variables for cross-MATCH uniqueness scoping
-          if (relVar != null)
+          // Track relationship and target variables for cross-MATCH uniqueness scoping.
+          // Only add variables that are NEW to this MATCH clause — already-bound variables
+          // (from previous MATCHes or WITH) should not be treated as new match variables,
+          // otherwise OPTIONAL MATCH will incorrectly classify them when setting NULLs.
+          if (relVar != null && !boundVariables.contains(relVar))
             matchVariables.add(relVar);
-          matchVariables.add(effectiveTargetVar);
+          if (!boundVariables.contains(effectiveTargetVar))
+            matchVariables.add(effectiveTargetVar);
 
           AbstractExecutionStep nextStep;
           if (relPattern.isVariableLength()) {
@@ -2790,16 +2794,18 @@ public class CypherExecutionPlan {
     if (returnClause.isDistinct())
       return null;
 
-    // Find the single non-optional MATCH clause
+    // Find the single non-optional MATCH clause.
+    // Bail out if any OPTIONAL MATCH exists — the RETURN may reference variables
+    // from the OPTIONAL MATCH, which this optimization does not evaluate.
     MatchClause matchClause = null;
     int matchCount = 0;
     for (final ClauseEntry entry : clausesInOrder) {
       if (entry.getType() == ClauseEntry.ClauseType.MATCH) {
         final MatchClause mc = entry.getTypedClause();
-        if (!mc.isOptional()) {
-          matchClause = mc;
-          matchCount++;
-        }
+        if (mc.isOptional())
+          return null;
+        matchClause = mc;
+        matchCount++;
       }
     }
     if (matchCount != 1 || matchClause == null)
