@@ -55,6 +55,7 @@ import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
+import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
@@ -597,13 +598,17 @@ public class CypherExecutionPlan {
         // Handle aggregations in WITH clause
         if (withClause.hasAggregations()) {
           if (withClause.hasNonAggregations()) {
-            // GROUP BY aggregation (implicit grouping)
-            final GroupByAggregationStep groupByStep =
-                new GroupByAggregationStep(
-                    new ReturnClause(withClause.getItems(), false),
-                    context, functionFactory);
-            groupByStep.setPrevious(currentStep);
-            currentStep = groupByStep;
+            // Try to fuse aggregation into the GAVFusedChainOperator for parallel count(*)
+            if (!tryFuseAggregationIntoChain(withClause, currentStep)) {
+              // Fallback: GROUP BY aggregation (implicit grouping)
+              final GroupByAggregationStep groupByStep =
+                  new GroupByAggregationStep(
+                      new ReturnClause(withClause.getItems(), false),
+                      context, functionFactory);
+              groupByStep.setPrevious(currentStep);
+              currentStep = groupByStep;
+            }
+            // If fused, currentStep stays as the physical operator wrapper (chain produces grouped results)
           } else {
             // Pure aggregation (no grouping)
             final AggregationStep aggStep =
@@ -2731,6 +2736,49 @@ public class CypherExecutionPlan {
    *
    * @return optimized CountEdgesReturnStep if pattern matches, null otherwise
    */
+  /**
+   * Tries to fuse a GROUP BY count(*) aggregation into the GAVFusedChainOperator.
+   * When successful, the chain aggregates internally in parallel — bypassing the
+   * single-threaded GroupByAggregationStep entirely.
+   *
+   * @return true if fused successfully, false to fall back to GroupByAggregationStep
+   */
+  private boolean tryFuseAggregationIntoChain(final WithClause withClause,
+      final AbstractExecutionStep currentStep) {
+    if (physicalPlan == null || !(physicalPlan.getRootOperator() instanceof GAVFusedChainOperator))
+      return false;
+
+    // Check WITH items: need non-aggregated grouping keys + exactly one count(*) or count(var)
+    final List<String> groupVarNames = new ArrayList<>();
+    final List<String> groupOutputNames = new ArrayList<>();
+    String countOutput = null;
+    int aggCount = 0;
+
+    for (final var item : withClause.getItems()) {
+      final Expression expr = item.getExpression();
+      if (expr.isAggregation() && expr instanceof FunctionCallExpression funcExpr) {
+        if (!"count".equals(funcExpr.getFunctionName()) || funcExpr.isDistinct())
+          return false;
+        aggCount++;
+        countOutput = item.getOutputName();
+      } else if (expr instanceof VariableExpression varExpr) {
+        groupVarNames.add(varExpr.getVariableName());
+        groupOutputNames.add(item.getOutputName() != null ? item.getOutputName() : varExpr.getVariableName());
+      } else
+        return false; // complex grouping expression — can't fuse
+    }
+
+    if (aggCount != 1 || countOutput == null || groupVarNames.size() > 2)
+      return false; // only support 1-2 grouping keys packed into a long
+
+    final GAVFusedChainOperator chain = (GAVFusedChainOperator) physicalPlan.getRootOperator();
+    chain.setFusedAggregation(
+        groupVarNames.toArray(new String[0]),
+        groupOutputNames.toArray(new String[0]),
+        countOutput);
+    return true;
+  }
+
   private AbstractExecutionStep tryOptimizeMatchCountReturn(
       final List<ClauseEntry> clausesInOrder,
       final ReturnClause returnClause,
