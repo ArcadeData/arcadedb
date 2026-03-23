@@ -20,6 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.WhereClause;
@@ -110,6 +113,41 @@ public class MatchEdgeTraverser {
       if (startingElem instanceof Result result) {
         startingElem = result.getElement().orElse(null);
       }
+
+      // Expand-into optimization: when both endpoints are already bound, use isConnectedTo()
+      // for O(log degree) binary search instead of traversing all neighbors
+      final String endPointAlias = getEndpointAlias();
+      final Object prevValue = sourceRecord.getProperty(endPointAlias);
+      if (prevValue != null && startingElem instanceof Vertex sourceVertex) {
+        Identifiable targetElem = null;
+        if (prevValue instanceof Identifiable identifiable)
+          targetElem = identifiable;
+        else if (prevValue instanceof Result r)
+          targetElem = r.getElement().orElse(null);
+
+        if (targetElem != null) {
+          final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context.getDatabase());
+          if (provider != null) {
+            final int srcId = provider.getNodeId(sourceVertex.getIdentity());
+            final int tgtId = provider.getNodeId(targetElem.getIdentity());
+            if (srcId >= 0 && tgtId >= 0) {
+              // Determine direction from the edge traversal
+              final Vertex.DIRECTION direction = (edge != null && !edge.out) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+              if (provider.isConnectedTo(srcId, tgtId, direction)) {
+                // Connected: return the target as the single result
+                final Document doc = (Document) targetElem.getRecord();
+                downstream = List.of(new ResultInternal(doc)).iterator();
+                return;
+              } else {
+                // Not connected: empty result
+                downstream = Collections.emptyIterator();
+                return;
+              }
+            }
+          }
+        }
+      }
+
       downstream = executeTraversal(context, this.item, startingElem, 0, null).iterator();
     }
   }

@@ -18,8 +18,13 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
@@ -197,19 +202,46 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
   @Override
   public Iterator<Vertex> vertices(final Direction direction, final String... edgeLabels) {
-    final List<Vertex> result = new ArrayList<>();
-
-    if (edgeLabels.length == 0) {
-      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction))) {
-        if (graph.getDatabase().existsRecord(vertex.getIdentity())) // FILTER OUT DELETED VERTICES
-          result.add(new ArcadeVertex(this.graph, vertex));
+    // CSR fast path: use GAV provider when available for O(1) neighbor lookup
+    final GraphTraversalProvider provider = graph.getDatabase() instanceof Database db
+        ? (edgeLabels.length == 0
+            ? GraphTraversalProviderRegistry.findProvider(db)
+            : GraphTraversalProviderRegistry.findProvider(db, edgeLabels))
+        : null;
+    if (provider != null) {
+      final int nodeId = provider.getNodeId(baseElement.getIdentity());
+      if (nodeId >= 0) {
+        final com.arcadedb.graph.Vertex.DIRECTION dir = ArcadeGraph.mapDirection(direction);
+        final int[] neighborIds = edgeLabels.length == 0
+            ? provider.getNeighborIds(nodeId, dir)
+            : provider.getNeighborIds(nodeId, dir, edgeLabels);
+        final List<Vertex> result = new ArrayList<>(neighborIds.length);
+        for (final int neighborId : neighborIds) {
+          final RID rid = provider.getRID(neighborId);
+          if (rid != null) {
+            try {
+              final com.arcadedb.graph.Vertex v = rid.asVertex();
+              result.add(new ArcadeVertex(this.graph, v));
+            } catch (final RecordNotFoundException e) {
+              // vertex deleted since CSR was built — skip
+            }
+          }
+        }
+        return result.iterator();
       }
-    } else {
-      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels))
-        if (graph.getDatabase().existsRecord(vertex.getIdentity())) // FILTER OUT DELETED VERTICES
-          result.add(new ArcadeVertex(this.graph, vertex));
     }
 
+    // OLTP fallback
+    final List<Vertex> result = new ArrayList<>();
+    if (edgeLabels.length == 0) {
+      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction)))
+        if (graph.getDatabase().existsRecord(vertex.getIdentity()))
+          result.add(new ArcadeVertex(this.graph, vertex));
+    } else {
+      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels))
+        if (graph.getDatabase().existsRecord(vertex.getIdentity()))
+          result.add(new ArcadeVertex(this.graph, vertex));
+    }
     return result.iterator();
   }
 
