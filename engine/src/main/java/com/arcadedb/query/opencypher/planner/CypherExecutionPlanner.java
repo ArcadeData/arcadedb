@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,14 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CypherExecutionPlanner {
+  private static final Set<ClauseEntry.ClauseType> MUTATING_CLAUSES = EnumSet.of(
+      ClauseEntry.ClauseType.DELETE,
+      ClauseEntry.ClauseType.SET,
+      ClauseEntry.ClauseType.REMOVE,
+      ClauseEntry.ClauseType.CREATE,
+      ClauseEntry.ClauseType.MERGE
+  );
+
   private final DatabaseInternal    database;
   private final CypherStatement     statement;
   private final Map<String, Object> parameters;
@@ -226,28 +235,35 @@ public class CypherExecutionPlanner {
       boolean seenUnwind = false;
       for (final ClauseEntry clause : statement.getClausesInOrder()) {
         final ClauseEntry.ClauseType type = clause.getType();
-        if (type == ClauseEntry.ClauseType.FOREACH || type == ClauseEntry.ClauseType.CALL)
-          return false;
-        if (type == ClauseEntry.ClauseType.WITH)
-          seenWith = true;
-        else if (type == ClauseEntry.ClauseType.UNWIND)
-          seenUnwind = true;
-        else if (type == ClauseEntry.ClauseType.CREATE)
-          createCount++;
-        else if (type == ClauseEntry.ClauseType.MERGE)
-          mergeCount++;
-        else if (type == ClauseEntry.ClauseType.DELETE)
-          deleteCount++;
 
-        // Write/mutating clause after WITH or UNWIND requires ordered execution
-        if ((seenWith || seenUnwind) && (type == ClauseEntry.ClauseType.DELETE
-            || type == ClauseEntry.ClauseType.SET || type == ClauseEntry.ClauseType.REMOVE
-            || type == ClauseEntry.ClauseType.CREATE || type == ClauseEntry.ClauseType.MERGE))
+        // Validate ordering before updating state
+        if ((seenWith || seenUnwind) && MUTATING_CLAUSES.contains(type))
           return false;
-
-        // MATCH after WITH requires ordered execution (MATCH-WITH-MATCH pattern)
         if (seenWith && type == ClauseEntry.ClauseType.MATCH)
           return false;
+
+        switch (type) {
+        case FOREACH:
+        case CALL:
+          return false;
+        case WITH:
+          seenWith = true;
+          break;
+        case UNWIND:
+          seenUnwind = true;
+          break;
+        case CREATE:
+          createCount++;
+          break;
+        case MERGE:
+          mergeCount++;
+          break;
+        case DELETE:
+          deleteCount++;
+          break;
+        default:
+          break;
+        }
       }
       // Multiple CREATE/MERGE/DELETE clauses not handled by optimizer path
       if (createCount > 1 || mergeCount > 1 || (deleteCount > 0 && mergeCount > 0))
