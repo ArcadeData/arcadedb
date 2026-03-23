@@ -18,6 +18,9 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.serializer.BinaryComparator;
@@ -28,9 +31,11 @@ import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.HasStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.CountGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.InlineFilterStrategy;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 
 import java.util.*;
 import java.util.stream.*;
@@ -144,6 +149,68 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
           }
         }
       }
+    }
+
+    // GAV optimization: replace VertexStep with CSR-accelerated steps, then fuse consecutive ones
+    applyGAVOptimization(traversal);
+  }
+
+  /**
+   * Replaces TinkerPop VertexStep instances with GAV-accelerated steps when a CSR provider
+   * is available. Then fuses 2+ consecutive GAV steps into a single fused chain step.
+   */
+  private void applyGAVOptimization(final Traversal.Admin<?, ?> traversal) {
+    if (traversal.getGraph().isEmpty())
+      return;
+    final ArcadeGraph graph = (ArcadeGraph) traversal.getGraph().get();
+    if (!(graph.getDatabase() instanceof Database db))
+      return;
+
+    // Phase 1: Replace VertexStep → ArcadeGAVVertexStep when provider covers the edge labels
+    final List<Step> steps = traversal.getSteps();
+    for (int i = 0; i < steps.size(); i++) {
+      final Step step = steps.get(i);
+      if (step instanceof VertexStep<?> vertexStep && vertexStep.returnsVertex()) {
+        final String[] edgeLabels = vertexStep.getEdgeLabels();
+        final GraphTraversalProvider provider = edgeLabels.length == 0
+            ? GraphTraversalProviderRegistry.findProvider(db)
+            : GraphTraversalProviderRegistry.findProvider(db, edgeLabels);
+        if (provider != null) {
+          final ArcadeGAVVertexStep gavStep = new ArcadeGAVVertexStep(
+              graph, vertexStep, provider, vertexStep.getDirection(), edgeLabels);
+          traversal.removeStep(i);
+          traversal.addStep(i, gavStep);
+        }
+      }
+    }
+
+    // Phase 2: Fuse consecutive ArcadeGAVVertexStep instances into a single ArcadeGAVFusedStep
+    final List<Step> updatedSteps = traversal.getSteps();
+    int i = 0;
+    while (i < updatedSteps.size()) {
+      if (updatedSteps.get(i) instanceof ArcadeGAVVertexStep firstGavStep) {
+        // Collect consecutive GAV steps with the same provider
+        final List<ArcadeGAVVertexStep> chain = new ArrayList<>();
+        chain.add(firstGavStep);
+        int j = i + 1;
+        while (j < updatedSteps.size() && updatedSteps.get(j) instanceof ArcadeGAVVertexStep nextGavStep
+            && nextGavStep.getProvider() == firstGavStep.getProvider()) {
+          chain.add(nextGavStep);
+          j++;
+        }
+
+        if (chain.size() >= 2) {
+          // Fuse the chain into a single step
+          final ArcadeGAVFusedStep fusedStep = new ArcadeGAVFusedStep(
+              traversal, graph, firstGavStep.getProvider(), chain);
+          // Remove all steps in the chain (backwards to preserve indices)
+          for (int k = j - 1; k >= i; k--)
+            traversal.removeStep(k);
+          traversal.addStep(i, fusedStep);
+          // Don't increment i — check if next step is also fusible (it won't be, but safe)
+        }
+      }
+      i++;
     }
   }
 

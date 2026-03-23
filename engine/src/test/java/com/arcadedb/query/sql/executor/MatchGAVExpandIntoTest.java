@@ -31,6 +31,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests that SQL MATCH statements use GAV expand-into optimization (isConnectedTo)
  * when both endpoints are already bound.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class MatchGAVExpandIntoTest extends TestHelper {
 

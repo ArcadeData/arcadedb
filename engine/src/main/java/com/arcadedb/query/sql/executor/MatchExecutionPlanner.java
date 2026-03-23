@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Expression;
@@ -261,6 +263,7 @@ public class MatchExecutionPlanner {
 
     boolean first = true;
     if (!sortedEdges.isEmpty()) {
+      // Populate left context for all edges
       for (final EdgeTraversal edge : sortedEdges) {
         if (edge.edge.out.alias != null) {
           edge.setLeftClass(aliasTypes.get(edge.edge.out.alias));
@@ -269,8 +272,29 @@ public class MatchExecutionPlanner {
           edge.setLeftClass(aliasTypes.get(edge.edge.out.alias));
           edge.setLeftFilter(aliasFilters.get(edge.edge.out.alias));
         }
-        addStepsFor(plan, edge, context, first);
-        first = false;
+      }
+
+      // Try to fuse consecutive simple hops into GAV fused steps
+      int i = 0;
+      while (i < sortedEdges.size()) {
+        final EdgeTraversal edge = sortedEdges.get(i);
+
+        if (first) {
+          addStepsFor(plan, edge, context, true);
+          first = false;
+          i++;
+          continue;
+        }
+
+        // Detect a chain of consecutive fusible edges
+        final List<EdgeTraversal> chain = collectFusibleChain(sortedEdges, i, context);
+        if (chain.size() >= 2) {
+          plan.chain(new MatchGAVFusedStep(context, chain, chain.get(0).gavProvider));
+          i += chain.size();
+        } else {
+          addStepsFor(plan, edge, context, false);
+          i++;
+        }
       }
     } else {
       final PatternNode node = pattern.getAliasToNode().values().iterator().next();
@@ -288,6 +312,83 @@ public class MatchExecutionPlanner {
       }
     }
     return plan;
+  }
+
+  /**
+   * Collects a chain of consecutive edges starting at {@code startIdx} that can be fused
+   * into a single GAV CSR traversal. An edge is fusible if:
+   * <ul>
+   *   <li>It uses a simple out/in method (not outE/inE/bothE/field access)</li>
+   *   <li>It has no while condition or max depth</li>
+   *   <li>It is not optional</li>
+   *   <li>A GAV provider covers all required edge types</li>
+   * </ul>
+   */
+  private List<EdgeTraversal> collectFusibleChain(final List<EdgeTraversal> edges, final int startIdx,
+      final CommandContext context) {
+    final List<EdgeTraversal> chain = new ArrayList<>();
+    GraphTraversalProvider sharedProvider = null;
+
+    for (int i = startIdx; i < edges.size(); i++) {
+      final EdgeTraversal et = edges.get(i);
+      if (!isFusibleEdge(et))
+        break;
+
+      // Find provider for this edge's labels
+      final String[] edgeLabels = extractEdgeLabels(et);
+      final GraphTraversalProvider provider = edgeLabels.length == 0
+          ? GraphTraversalProviderRegistry.findProvider(context.getDatabase())
+          : GraphTraversalProviderRegistry.findProvider(context.getDatabase(), edgeLabels);
+      if (provider == null)
+        break;
+
+      if (sharedProvider == null)
+        sharedProvider = provider;
+      else if (sharedProvider != provider)
+        break; // Different providers, can't fuse
+
+      et.gavProvider = provider;
+      chain.add(et);
+    }
+
+    return chain;
+  }
+
+  /**
+   * Returns true if this edge traversal is a simple out/in hop that can be CSR-fused.
+   */
+  private static boolean isFusibleEdge(final EdgeTraversal et) {
+    if (et.edge.item instanceof MultiMatchPathItem)
+      return false;
+    if (et.edge.item instanceof com.arcadedb.query.sql.parser.FieldMatchPathItem)
+      return false;
+    if (et.edge.in.isOptionalNode())
+      return false;
+
+    final var filter = et.edge.item.getFilter();
+    if (filter != null) {
+      if (filter.getWhileCondition() != null)
+        return false;
+      if (filter.getMaxDepth() != null)
+        return false;
+    }
+
+    // Check that the method is a simple out/in (not outE/inE/bothE/outV/inV)
+    final String methodName = et.edge.item.getMethod().methodName.getStringValue().toLowerCase(Locale.ENGLISH);
+    return methodName.equals("out") || methodName.equals("in") || methodName.equals("both");
+  }
+
+  /**
+   * Extracts edge type labels from a MATCH edge traversal's method parameters.
+   */
+  private static String[] extractEdgeLabels(final EdgeTraversal et) {
+    final var params = et.edge.item.getMethod().params;
+    if (params == null || params.isEmpty())
+      return new String[0];
+    final String[] labels = new String[params.size()];
+    for (int i = 0; i < params.size(); i++)
+      labels[i] = params.get(i).toString().replace("'", "").replace("\"", "").trim();
+    return labels;
   }
 
   /**
