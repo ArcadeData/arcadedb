@@ -25,11 +25,11 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 
+import com.arcadedb.utility.RidLongHashMap;
+
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -408,7 +408,7 @@ public final class PropagateChainOp implements CountOp {
     // with its count capturing path multiplicity. This reduces O(paths) traversals
     // to O(unique edges), which is dramatically faster for high-fanout chains.
     // E.g., Q5 with 13.8M paths but only ~3.5M unique edges: ~4x fewer OLTP scans.
-    HashMap<RID, Long> current = new HashMap<>();
+    RidLongHashMap current = new RidLongHashMap();
     for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); )
       current.put(it.next().getIdentity(), 1L);
 
@@ -420,24 +420,24 @@ public final class PropagateChainOp implements CountOp {
       else
         targetBuckets = null;
 
-      final HashMap<RID, Long> next = new HashMap<>();
-      for (final Map.Entry<RID, Long> entry : current.entrySet()) {
-        final long pathCount = entry.getValue();
-        expandNeighbors(db, provider, entry.getKey(), directions[hop], edgeTypes[hop], targetBuckets,
-            (neighborRid) -> next.merge(neighborRid, pathCount, Long::sum));
-      }
+      final RidLongHashMap next = new RidLongHashMap();
+      final int h = hop;
+      current.forEach((bucketId, offset, pathCount) -> {
+        final RID rid = new RID(db, bucketId, offset);
+        expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets,
+            (neighborRid) -> next.add(neighborRid, pathCount));
+      });
       current = next;
     }
 
-    long total = 0;
-    for (final long c : current.values())
-      total += c;
+    final long[] total = {0};
+    current.forEach((bucketId, offset, value) -> total[0] += value);
 
     // Subtract self-loop paths for inequality
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
-      total -= countSelfLoopPathsOLTP(db, provider);
+      total[0] -= countSelfLoopPathsOLTP(db, provider);
 
-    return total;
+    return total[0];
   }
 
   /**
@@ -487,7 +487,7 @@ public final class PropagateChainOp implements CountOp {
 
       // Sparse BFS from anchor through sub-chain [idxA, idxB)
       // using per-source map to deduplicate within this source's expansion
-      HashMap<RID, Long> cur = new HashMap<>();
+      RidLongHashMap cur = new RidLongHashMap();
       cur.put(anchorRid, 1L);
 
       for (int h = 0; h < subLength; h++) {
@@ -499,16 +499,16 @@ public final class PropagateChainOp implements CountOp {
         else
           targetBuckets = null;
 
-        final HashMap<RID, Long> next = new HashMap<>();
-        for (final Map.Entry<RID, Long> entry : cur.entrySet()) {
-          final long pathCount = entry.getValue();
-          expandNeighbors(db, provider, entry.getKey(), directions[hopIdx], edgeTypes[hopIdx], targetBuckets,
-              (neighborRid) -> next.merge(neighborRid, pathCount, Long::sum));
-        }
+        final RidLongHashMap next = new RidLongHashMap();
+        cur.forEach((bucketId, offset, pathCount) -> {
+          final RID rid = new RID(db, bucketId, offset);
+          expandNeighbors(db, provider, rid, directions[hopIdx], edgeTypes[hopIdx], targetBuckets,
+              (neighborRid) -> next.add(neighborRid, pathCount));
+        });
         cur = next;
       }
 
-      long loopCount = cur.getOrDefault(anchorRid, 0L);
+      long loopCount = cur.get(anchorRid, 0);
 
       // Multiply by tail after idxB
       if (loopCount > 0 && idxB < edgeTypes.length) {
