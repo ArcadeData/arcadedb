@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,14 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CypherExecutionPlanner {
+  private static final Set<ClauseEntry.ClauseType> MUTATING_CLAUSES = EnumSet.of(
+      ClauseEntry.ClauseType.DELETE,
+      ClauseEntry.ClauseType.SET,
+      ClauseEntry.ClauseType.REMOVE,
+      ClauseEntry.ClauseType.CREATE,
+      ClauseEntry.ClauseType.MERGE
+  );
+
   private final DatabaseInternal    database;
   private final CypherStatement     statement;
   private final Map<String, Object> parameters;
@@ -213,23 +222,48 @@ public class CypherExecutionPlanner {
       }
     }
 
-    // The optimizer path (buildExecutionStepsWithOptimizer) only supports a fixed clause
-    // ordering: MATCH(es) → WITH → RETURN. Write clauses (CREATE/SET/DELETE/MERGE) are also handled.
-    // Disable for queries with clauses that break this assumption.
+    // The optimizer path (buildExecutionStepsWithOptimizer) applies clauses in a fixed order
+    // (MATCH → CREATE → SET → DELETE → REMOVE → MERGE → UNWIND → WITH → RETURN).
+    // This breaks queries where clause ordering matters, e.g. WITH before DELETE or UNWIND before SET.
+    // Fall back to ordered execution when write/mutating clauses are interleaved with WITH/UNWIND,
+    // or when MATCH appears after WITH (MATCH-WITH-MATCH pattern).
     if (statement.getClausesInOrder() != null) {
       int createCount = 0;
       int mergeCount = 0;
       int deleteCount = 0;
+      boolean seenWith = false;
+      boolean seenUnwind = false;
       for (final ClauseEntry clause : statement.getClausesInOrder()) {
         final ClauseEntry.ClauseType type = clause.getType();
-        if (type == ClauseEntry.ClauseType.FOREACH || type == ClauseEntry.ClauseType.CALL)
+
+        // Validate ordering before updating state
+        if ((seenWith || seenUnwind) && MUTATING_CLAUSES.contains(type))
           return false;
-        if (type == ClauseEntry.ClauseType.CREATE)
+        if (seenWith && type == ClauseEntry.ClauseType.MATCH)
+          return false;
+
+        switch (type) {
+        case FOREACH:
+        case CALL:
+          return false;
+        case WITH:
+          seenWith = true;
+          break;
+        case UNWIND:
+          seenUnwind = true;
+          break;
+        case CREATE:
           createCount++;
-        else if (type == ClauseEntry.ClauseType.MERGE)
+          break;
+        case MERGE:
           mergeCount++;
-        else if (type == ClauseEntry.ClauseType.DELETE)
+          break;
+        case DELETE:
           deleteCount++;
+          break;
+        default:
+          break;
+        }
       }
       // Multiple CREATE/MERGE/DELETE clauses not handled by optimizer path
       if (createCount > 1 || mergeCount > 1 || (deleteCount > 0 && mergeCount > 0))
