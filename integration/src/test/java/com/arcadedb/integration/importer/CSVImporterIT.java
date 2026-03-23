@@ -345,4 +345,65 @@ class CSVImporterIT {
     TestHelper.checkActiveDatabases();
   }
 
+  /**
+   * Regression test for GitHub issue #3713: IMPORT DATABASE rejects edgeBidirectional = false
+   * When edgeBidirectional=false is specified, the edge type should be created as non-bidirectional
+   * so that unidirectional edges can be imported without error.
+   */
+  @Test
+  void regressionIssue3713EdgeBidirectionalFalse() {
+    final String databasePath = "target/databases/test-import-edge-unidirectional";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    // Import vertices first
+    Importer importer = new Importer(new String[] {
+        "-vertices", "src/test/resources/importer-vertices.csv",
+        "-database", databasePath,
+        "-typeIdProperty", "Id",
+        "-typeIdType", "Long",
+        "-typeIdPropertyIsUnique", "true",
+        "-forceDatabaseCreate", "true"
+    });
+    importer.load();
+
+    // Import edges with edgeBidirectional=false — this was throwing IllegalArgumentException before the fix
+    importer = new Importer(new String[] {
+        "-edges", "src/test/resources/importer-edges.csv",
+        "-database", databasePath,
+        "-typeIdProperty", "Id",
+        "-typeIdType", "Long",
+        "-edgeFromField", "From",
+        "-edgeToField", "To",
+        "-edgeBidirectional", "false"
+    });
+    importer.load();
+
+    try (final Database db = databaseFactory.open()) {
+      assertThat(db.countType("Node", true)).isEqualTo(6);
+      assertThat(db.countType("Relationship", true)).as("All 3 edges should be imported").isEqualTo(3);
+
+      // Verify edge type is non-bidirectional
+      assertThat(((com.arcadedb.schema.EdgeType) db.getSchema().getType("Relationship")).isBidirectional()).isFalse();
+
+      // Verify outgoing edges exist
+      var vertex0 = db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex();
+      assertThat(vertex0.countEdges(Vertex.DIRECTION.OUT, "Relationship"))
+          .as("Vertex 0 should have 2 outgoing edges").isEqualTo(2);
+
+      // For unidirectional edges, incoming edges should NOT be tracked
+      var vertex1 = db.lookupByKey("Node", "Id", 1).next().getRecord().asVertex();
+      assertThat(vertex1.countEdges(Vertex.DIRECTION.OUT, "Relationship"))
+          .as("Vertex 1 should have 1 outgoing edge (1->4)").isEqualTo(1);
+      assertThat(vertex1.countEdges(Vertex.DIRECTION.IN, "Relationship"))
+          .as("Vertex 1 should have 0 incoming edges (unidirectional)").isEqualTo(0);
+    }
+
+    databaseFactory.open().drop();
+
+    TestHelper.checkActiveDatabases();
+  }
+
 }
