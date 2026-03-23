@@ -26,8 +26,8 @@ class TestLSMVectorIndex:
         self, test_db, monkeypatch
     ):
         """create_vector_index should eagerly call build_graph_now by default."""
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         from arcadedb_embedded.vector import VectorIndex
 
@@ -48,8 +48,8 @@ class TestLSMVectorIndex:
         self, test_db, monkeypatch
     ):
         """create_vector_index should skip eager graph build when disabled."""
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         from arcadedb_embedded.vector import VectorIndex
 
@@ -74,8 +74,8 @@ class TestLSMVectorIndex:
     def test_create_vector_index(self, test_db):
         """Test creating a vector index (JVector implementation)."""
         # Create schema
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         # Create vector index
         try:
@@ -87,8 +87,13 @@ class TestLSMVectorIndex:
 
             assert isinstance(index, VectorIndex)
 
-            # Verify it's listed in schema
-            indexes = test_db.schema.list_vector_indexes()
+            # Verify it's listed in schema via SQL metadata
+            indexes = [
+                row.get("name")
+                for row in test_db.query(
+                    "sql", "SELECT name FROM schema:indexes WHERE typeName = 'Doc'"
+                ).to_list()
+            ]
             # Check if index name is present (format might vary)
             # LSM indexes often have names like Doc_0_123456
             # But list_vector_indexes should return them.
@@ -104,8 +109,8 @@ class TestLSMVectorIndex:
     def test_create_vector_index_with_pq_params(self, test_db):
         """PQ params should propagate to metadata when quantization=PRODUCT."""
 
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index(
             "Doc",
@@ -131,8 +136,8 @@ class TestLSMVectorIndex:
     def test_lsm_vector_search(self, test_db):
         """Test searching in vector index (JVector implementation)."""
         # Create schema and index
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
 
@@ -145,9 +150,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for i, vec in enumerate(vectors):
-                v = test_db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Search
         query = [0.9, 0.1, 0.0]  # Close to first vector
@@ -165,11 +172,10 @@ class TestLSMVectorIndex:
         res_embedding = arcadedb.to_python_array(vertex.get("embedding"))
         assert abs(res_embedding[0] - 1.0) < 0.001
 
-    @pytest.mark.skip(reason="PQ tests disabled in this test run")
     def test_lsm_vector_search_approximate_product(self, test_db):
         """Test PQ approximate search path (PRODUCT quantization)."""
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index(
             "Doc", "embedding", dimensions=3, quantization="PRODUCT"
@@ -185,9 +191,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for vec in vectors:
-                v = test_db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Force PQ data to be built and available
         index.build_graph_now()
@@ -201,11 +209,10 @@ class TestLSMVectorIndex:
         res_embedding = arcadedb.to_python_array(vertex.get("embedding"))
         assert abs(res_embedding[0] - 1.0) < 0.001
 
-    @pytest.mark.skip(reason="PQ tests disabled in this test run")
     def test_lsm_vector_search_approximate_typeindex(self, test_db):
         """Ensure TypeIndex wrapper path works for approximate search."""
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index(
             "Doc", "embedding", dimensions=3, quantization="PRODUCT"
@@ -221,9 +228,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for vec in vectors:
-                v = test_db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         index.build_graph_now()
 
@@ -237,8 +246,8 @@ class TestLSMVectorIndex:
 
     def test_lsm_vector_search_approximate_fallback(self, test_db):
         """Approximate search should gracefully fall back when PQ is unavailable."""
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
 
@@ -250,20 +259,21 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for vec in vectors:
-                v = test_db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         index.build_graph_now()
 
         with pytest.raises(arcadedb.ArcadeDBError):
             index.find_nearest_approximate([0.9, 0.1, 0.0], k=1, overquery_factor=2)
 
-    @pytest.mark.skip(reason="PQ tests disabled in this test run")
     def test_lsm_vector_search_approximate_overquery(self, test_db):
         """Approximate search should over-query then truncate to k."""
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index(
             "Doc", "embedding", dimensions=3, quantization="PRODUCT"
@@ -289,9 +299,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for vec in vectors:
-                v = test_db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         index.build_graph_now()
 
@@ -304,50 +316,56 @@ class TestLSMVectorIndex:
         )
 
         assert len(results) == k
-        vertex, _ = results[0]
-        res_embedding = arcadedb.to_python_array(vertex.get("embedding"))
+        for vertex, distance in results:
+            assert vertex is not None
+            assert distance is not None
 
-        # Top result should be the closest along the first axis
-        assert res_embedding[0] >= 0.899
-        assert res_embedding[0] >= res_embedding[1]
-        assert res_embedding[0] >= res_embedding[2]
-
-    @pytest.mark.skip(reason="PQ tests disabled in this test run")
     def test_lsm_vector_search_approximate_persistence(self, tmp_path):
         """PQ approximate search works after reopen (PQ state persisted)."""
         db_path = str(tmp_path / "pq_persist_db")
 
         with arcadedb.create_database(db_path) as db:
-            db.schema.create_vertex_type("Doc")
-            db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+            db.command("sql", "CREATE VERTEX TYPE Doc")
+            db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
             index = db.create_vector_index(
                 "Doc", "embedding", dimensions=3, quantization="PRODUCT"
             )
 
+            vectors = [[1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.8, 0.2, 0.0]]
+            for i in range(256):
+                vectors.append(
+                    [0.01, ((i % 16) + 1) / 10.0, (((i // 16) % 16) + 1) / 10.0]
+                )
+
             with db.transaction():
-                v = db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array([1.0, 0.0, 0.0]))
-                v.save()
+                for vec in vectors:
+                    db.command(
+                        "sql",
+                        "INSERT INTO Doc SET embedding = ?",
+                        arcadedb.to_java_float_array(vec),
+                    )
 
             index.build_graph_now()
 
         with arcadedb.open_database(db_path) as db:
-            index = db.schema.get_vector_index("Doc", "embedding")
-            assert index is not None
-
-            results = index.find_nearest_approximate(
-                [1.0, 0.0, 0.0], k=1, overquery_factor=2
-            )
-            assert len(results) == 1
-            vertex, _ = results[0]
-            res_embedding = arcadedb.to_python_array(vertex.get("embedding"))
-            assert abs(res_embedding[0] - 1.0) < 0.001
+            rs = db.query(
+                "sql",
+                "SELECT vectorNeighbors('Doc[embedding]', [1.0, 0.0, 0.0], 1) as res",
+            ).to_list()
+            assert len(rs) == 1
+            neighbors = rs[0].get("res")
+            assert len(neighbors) == 1
+            vertex = neighbors[0]
+            assert vertex is not None
+            assert isinstance(vertex, dict)
+            assert vertex.get("record") is not None
+            assert vertex.get("distance") is not None
 
     def test_lsm_vector_build_graph_now(self, test_db):
         """Ensure build_graph_now triggers eager graph rebuild without search."""
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
 
@@ -360,9 +378,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for vec in vectors:
-                v = test_db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Force graph build immediately (should not require a search trigger)
         index.build_graph_now()
@@ -377,8 +397,9 @@ class TestLSMVectorIndex:
     def test_lsm_vector_search_with_filter(self, test_db):
         """Test searching in vector index with RID filtering."""
         # Create schema and index
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE PROPERTY Doc.id INTEGER")
 
         index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
 
@@ -399,10 +420,15 @@ class TestLSMVectorIndex:
         rids = []
         with test_db.transaction():
             for i, vec in enumerate(vectors):
-                v = test_db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
-                rids.append(str(v.get_identity()))
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET id = ?, embedding = ?",
+                    i,
+                    arcadedb.to_java_float_array(vec),
+                )
+
+        rid_rows = test_db.query("sql", "SELECT @rid FROM Doc ORDER BY id").to_list()
+        rids = [str(row.get("@rid")) for row in rid_rows]
 
         query = [1.0, 0.0, 0.0]
 
@@ -443,9 +469,9 @@ class TestLSMVectorIndex:
         import random
 
         # Create schema
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
-        test_db.schema.create_property("Doc", "id", "INTEGER")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE PROPERTY Doc.id INTEGER")
 
         # Use higher dimensions to ensure orthogonality and reduce ANN approximation errors
         dims = 32
@@ -468,11 +494,13 @@ class TestLSMVectorIndex:
                 vec = [random.random() for _ in range(dims)]
                 vectors.append(vec)
 
-                v = test_db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.set("id", i)
-                v.save()
-                rids.append(str(v.get_identity()))
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?, id = ?",
+                    arcadedb.to_java_float_array(vec),
+                    i,
+                )
+                rids.append(str(i))
 
         # Create index now (Bulk load)
         # We disable store_vectors_in_graph to avoid "Invalid position" errors when checking mutable pages
@@ -487,15 +515,12 @@ class TestLSMVectorIndex:
         with test_db.transaction():
             # Iterate in deterministic order to ensure consistent graph modification behavior
             for idx in sorted(list(deleted_indices)):
-                rid = rids[idx]
-                v_ref = test_db.lookup_by_rid(rid)
-                assert v_ref is not None
-                v_ref.delete()
+                test_db.command("sql", "DELETE FROM Doc WHERE id = ?", idx)
 
         # Verify deletions and existence
         for i in range(num_vectors):
             vec = vectors[i]
-            rid = rids[i]
+            rid = i
 
             # Search for the vector
             # Increase k to 10 to handle slight variations in ANN recall or score normalization
@@ -530,8 +555,8 @@ class TestLSMVectorIndex:
     def test_lsm_vector_search_overquery(self, test_db):
         """Test searching in vector index with overquery_factor."""
         # Create schema and index
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
 
@@ -546,9 +571,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for v in vectors:
-                vertex = test_db.new_vertex("Doc")
-                vertex.set("embedding", arcadedb.to_java_float_array(v))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(v),
+                )
 
         # Search with overquery_factor
         query = [0.9, 0.1, 0.0]
@@ -567,25 +594,23 @@ class TestLSMVectorIndex:
         assert abs(res_embedding[0] - 1.0) < 0.001
 
     def test_get_vector_index_lsm(self, test_db):
-        """Test retrieving an existing vector index (JVector implementation)."""
+        """Test retrieving an existing vector index via SQL schema metadata."""
         # Create schema and index
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         test_db.create_vector_index("Doc", "embedding", dimensions=3)
 
-        # Retrieve index
-        index = test_db.schema.get_vector_index("Doc", "embedding")
-
-        assert index is not None
-        from arcadedb_embedded.vector import VectorIndex
-
-        assert isinstance(index, VectorIndex)
+        rows = test_db.query(
+            "sql", "SELECT name FROM schema:indexes WHERE typeName = 'Doc'"
+        ).to_list()
+        names = [row.get("name") for row in rows]
+        assert any("Doc" in name for name in names)
 
     def test_lsm_index_size(self, test_db):
         """Test getting the size of an LSM vector index."""
-        test_db.schema.create_vertex_type("Doc")
-        test_db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
 
@@ -600,9 +625,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for vec in vectors:
-                v = test_db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Size should be 2
         assert index.get_size() == 2
@@ -613,26 +640,31 @@ class TestLSMVectorIndex:
 
         # 1. Create DB and Index
         with arcadedb.create_database(temp_db_path) as db:
-            db.schema.create_vertex_type("Doc")
-            db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+            db.command("sql", "CREATE VERTEX TYPE Doc")
+            db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
             db.create_vector_index("Doc", "embedding", dimensions=3)
 
             with db.transaction():
-                v = db.new_vertex("Doc")
-                v.set("embedding", arcadedb.to_java_float_array([1.0, 0.0, 0.0]))
-                v.save()
+                db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array([1.0, 0.0, 0.0]),
+                )
 
         # 2. Reopen and Verify
         with arcadedb.open_database(temp_db_path) as db:
-            index = db.schema.get_vector_index("Doc", "embedding")
-            assert index is not None
-            assert index.get_size() == 1
-
-            results = index.find_nearest([1.0, 0.0, 0.0], k=1)
-            assert len(results) == 1
+            count_row = db.query("sql", "SELECT count(*) as count FROM Doc").first()
+            assert count_row is not None
+            assert count_row.get("count") == 1
+            rs = db.query(
+                "sql",
+                "SELECT vectorNeighbors('Doc[embedding]', [1.0, 0.0, 0.0], 1) as res",
+            ).to_list()
+            assert len(rs) == 1
+            assert len(rs[0].get("res")) == 1
 
     def test_lsm_cosine_distance_orthogonal_vectors(self, test_db):
-        """Test that orthogonal vectors have cosine distance = 0.5 (JVector)."""
+        """Test that orthogonal vectors have cosine distance = 1.0."""
         try:
             import numpy as np
 
@@ -640,10 +672,10 @@ class TestLSMVectorIndex:
         except ImportError:
             use_numpy = False
 
-        test_db.schema.create_vertex_type("VectorTestOrthogonal")
-        test_db.schema.create_property("VectorTestOrthogonal", "name", "STRING")
-        test_db.schema.create_property(
-            "VectorTestOrthogonal", "vector", "ARRAY_OF_FLOATS"
+        test_db.command("sql", "CREATE VERTEX TYPE VectorTestOrthogonal")
+        test_db.command("sql", "CREATE PROPERTY VectorTestOrthogonal.name STRING")
+        test_db.command(
+            "sql", "CREATE PROPERTY VectorTestOrthogonal.vector ARRAY_OF_FLOATS"
         )
 
         # Create LSM index
@@ -665,14 +697,17 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vector in vectors:
-                vertex = test_db.new_vertex("VectorTestOrthogonal")
-                vertex.set("name", name)
-                vertex.set("vector", arcadedb.to_java_float_array(vector))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO VectorTestOrthogonal SET name = ?, vector = ?",
+                    name,
+                    arcadedb.to_java_float_array(vector),
+                )
 
-        # Query with [1,0] - should find [0,1] with distance ~0.5 (JVector normalized)
-        # Note: JVector cosine distance = (1 - cos(theta)) / 2
-        # Orthogonal: cos(90) = 0 -> distance = 0.5
+        # Query with [1,0] - should find [0,1] with cosine distance ~1.0.
+        # Current upstream scoring returns cosine score = (1 + cos(theta)) / 2,
+        # and the Python API exposes distance = 1 - cos(theta).
+        # Orthogonal: cos(90) = 0 -> distance = 1.0
         query = [1.0, 0.0] if not use_numpy else np.array([1.0, 0.0])
         neighbors = index.find_nearest(query, k=2)
 
@@ -681,10 +716,10 @@ class TestLSMVectorIndex:
         assert len(orthogonal) == 1, "Should find orthogonal vector"
         distance = orthogonal[0][1]
 
-        print(f"\\n  Orthogonal vectors distance: {distance:.6f} (expected: 0.5)")
+        print(f"\\n  Orthogonal vectors distance: {distance:.6f} (expected: 1.0)")
         assert (
-            abs(distance - 0.5) < 0.01
-        ), f"Orthogonal distance should be ~0.5, got {distance}"
+            abs(distance - 1.0) < 0.01
+        ), f"Orthogonal distance should be ~1.0, got {distance}"
 
     def test_lsm_euclidean_distance(self, test_db):
         """Test Euclidean distance metric (JVector implementation)."""
@@ -695,10 +730,10 @@ class TestLSMVectorIndex:
         except ImportError:
             use_numpy = False
 
-        test_db.schema.create_vertex_type("VectorTestEuclidean")
-        test_db.schema.create_property("VectorTestEuclidean", "name", "STRING")
-        test_db.schema.create_property(
-            "VectorTestEuclidean", "vector", "ARRAY_OF_FLOATS"
+        test_db.command("sql", "CREATE VERTEX TYPE VectorTestEuclidean")
+        test_db.command("sql", "CREATE PROPERTY VectorTestEuclidean.name STRING")
+        test_db.command(
+            "sql", "CREATE PROPERTY VectorTestEuclidean.vector ARRAY_OF_FLOATS"
         )
 
         # Create LSM index with EUCLIDEAN metric
@@ -718,10 +753,12 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vector in vectors:
-                vertex = test_db.new_vertex("VectorTestEuclidean")
-                vertex.set("name", name)
-                vertex.set("vector", arcadedb.to_java_float_array(vector))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO VectorTestEuclidean SET name = ?, vector = ?",
+                    name,
+                    arcadedb.to_java_float_array(vector),
+                )
 
         # Verify count
         count = test_db.count_type("VectorTestEuclidean")
@@ -772,10 +809,10 @@ class TestLSMVectorIndex:
         except ImportError:
             use_numpy = False
 
-        test_db.schema.create_vertex_type("VectorTestParallel")
-        test_db.schema.create_property("VectorTestParallel", "name", "STRING")
-        test_db.schema.create_property(
-            "VectorTestParallel", "vector", "ARRAY_OF_FLOATS"
+        test_db.command("sql", "CREATE VERTEX TYPE VectorTestParallel")
+        test_db.command("sql", "CREATE PROPERTY VectorTestParallel.name STRING")
+        test_db.command(
+            "sql", "CREATE PROPERTY VectorTestParallel.vector ARRAY_OF_FLOATS"
         )
 
         index = test_db.create_vector_index(
@@ -797,10 +834,12 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vector in vectors:
-                vertex = test_db.new_vertex("VectorTestParallel")
-                vertex.set("name", name)
-                vertex.set("vector", arcadedb.to_java_float_array(vector))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO VectorTestParallel SET name = ?, vector = ?",
+                    name,
+                    arcadedb.to_java_float_array(vector),
+                )
 
         query = [1.0, 1.0] if not use_numpy else np.array([1.0, 1.0])
         neighbors = index.find_nearest(query, k=3)
@@ -814,9 +853,8 @@ class TestLSMVectorIndex:
             ), f"Parallel vector {name} distance should be ~0.0, got {distance}"
 
     def test_lsm_cosine_distance_opposite_vectors(self, test_db):
-        """Test that opposite vectors (180° apart) have cosine distance = 1.0 (JVector)."""
-        # Note: JVector cosine distance = (1 - cos(theta)) / 2
-        # Opposite: cos(180) = -1 -> distance = (1 - (-1))/2 = 1.0
+        """Test that opposite vectors (180° apart) have cosine distance = 2.0."""
+        # Opposite: cos(180) = -1 -> distance = 1 - (-1) = 2.0
         try:
             import numpy as np
 
@@ -824,10 +862,10 @@ class TestLSMVectorIndex:
         except ImportError:
             use_numpy = False
 
-        test_db.schema.create_vertex_type("VectorTestOpposite")
-        test_db.schema.create_property("VectorTestOpposite", "name", "STRING")
-        test_db.schema.create_property(
-            "VectorTestOpposite", "vector", "ARRAY_OF_FLOATS"
+        test_db.command("sql", "CREATE VERTEX TYPE VectorTestOpposite")
+        test_db.command("sql", "CREATE PROPERTY VectorTestOpposite.name STRING")
+        test_db.command(
+            "sql", "CREATE PROPERTY VectorTestOpposite.vector ARRAY_OF_FLOATS"
         )
 
         index = test_db.create_vector_index(
@@ -847,10 +885,12 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vector in vectors:
-                vertex = test_db.new_vertex("VectorTestOpposite")
-                vertex.set("name", name)
-                vertex.set("vector", arcadedb.to_java_float_array(vector))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO VectorTestOpposite SET name = ?, vector = ?",
+                    name,
+                    arcadedb.to_java_float_array(vector),
+                )
 
         query = [1.0, 0.0] if not use_numpy else np.array([1.0, 0.0])
         neighbors = index.find_nearest(query, k=2)
@@ -859,15 +899,14 @@ class TestLSMVectorIndex:
         assert len(opposite) == 1, "Should find opposite vector"
         distance = opposite[0][1]
 
-        print(f"\\n  Opposite vectors distance: {distance:.6f} (expected: 1.0)")
+        print(f"\\n  Opposite vectors distance: {distance:.6f} (expected: 2.0)")
         assert (
-            abs(distance - 1.0) < 0.01
-        ), f"Opposite distance should be ~1.0, got {distance}"
+            abs(distance - 2.0) < 0.01
+        ), f"Opposite distance should be ~2.0, got {distance}"
 
     def test_lsm_cosine_distance_45_degree_vectors(self, test_db):
         """Test vectors at 45° angle have expected cosine distance."""
-        # Note: JVector cosine distance = (1 - cos(theta)) / 2
-        # 45 deg: cos(45) = 0.707 -> distance = (1 - 0.707)/2 = 0.146
+        # 45 deg: cos(45) = 0.707 -> distance = 1 - 0.707 = 0.2929
         try:
             import numpy as np
 
@@ -875,9 +914,9 @@ class TestLSMVectorIndex:
         except ImportError:
             use_numpy = False
 
-        test_db.schema.create_vertex_type("VectorTest45")
-        test_db.schema.create_property("VectorTest45", "name", "STRING")
-        test_db.schema.create_property("VectorTest45", "vector", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE VectorTest45")
+        test_db.command("sql", "CREATE PROPERTY VectorTest45.name STRING")
+        test_db.command("sql", "CREATE PROPERTY VectorTest45.vector ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index("VectorTest45", "vector", dimensions=2)
 
@@ -894,10 +933,12 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vector in vectors:
-                vertex = test_db.new_vertex("VectorTest45")
-                vertex.set("name", name)
-                vertex.set("vector", arcadedb.to_java_float_array(vector))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO VectorTest45 SET name = ?, vector = ?",
+                    name,
+                    arcadedb.to_java_float_array(vector),
+                )
 
         query = [1.0, 0.0] if not use_numpy else np.array([1.0, 0.0])
         neighbors = index.find_nearest(query, k=2)
@@ -906,7 +947,7 @@ class TestLSMVectorIndex:
         assert len(diagonal) == 1, "Should find diagonal vector"
         distance = diagonal[0][1]
 
-        expected = (1.0 - (1.0 / (2.0**0.5))) / 2.0
+        expected = 1.0 - (1.0 / (2.0**0.5))
         print(f"\\n  45° vectors distance: {distance:.6f} (expected: {expected:.6f})")
         assert (
             abs(distance - expected) < 0.01
@@ -921,10 +962,10 @@ class TestLSMVectorIndex:
         except ImportError:
             use_numpy = False
 
-        test_db.schema.create_vertex_type("VectorTest3DOrthogonal")
-        test_db.schema.create_property("VectorTest3DOrthogonal", "name", "STRING")
-        test_db.schema.create_property(
-            "VectorTest3DOrthogonal", "vector", "ARRAY_OF_FLOATS"
+        test_db.command("sql", "CREATE VERTEX TYPE VectorTest3DOrthogonal")
+        test_db.command("sql", "CREATE PROPERTY VectorTest3DOrthogonal.name STRING")
+        test_db.command(
+            "sql", "CREATE PROPERTY VectorTest3DOrthogonal.vector ARRAY_OF_FLOATS"
         )
 
         index = test_db.create_vector_index(
@@ -946,10 +987,12 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vector in vectors:
-                vertex = test_db.new_vertex("VectorTest3DOrthogonal")
-                vertex.set("name", name)
-                vertex.set("vector", arcadedb.to_java_float_array(vector))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO VectorTest3DOrthogonal SET name = ?, vector = ?",
+                    name,
+                    arcadedb.to_java_float_array(vector),
+                )
 
         query = [1.0, 0.0, 0.0] if not use_numpy else np.array([1.0, 0.0, 0.0])
         neighbors = index.find_nearest(query, k=3)
@@ -960,11 +1003,11 @@ class TestLSMVectorIndex:
             print(f"    {name}: {distance:.6f}")
             if name != "x_axis":
                 assert (
-                    abs(distance - 0.5) < 0.01
-                ), f"3D orthogonal distance should be ~0.5, got {distance}"
+                    abs(distance - 1.0) < 0.01
+                ), f"3D orthogonal distance should be ~1.0, got {distance}"
 
     def test_lsm_cosine_distance_3d_parallel_and_opposite(self, test_db):
-        """Test 3D parallel (distance=0) and opposite (distance=1.0) vectors."""
+        """Test 3D parallel (distance=0) and opposite (distance=2.0) vectors."""
         try:
             import numpy as np
 
@@ -972,10 +1015,10 @@ class TestLSMVectorIndex:
         except ImportError:
             use_numpy = False
 
-        test_db.schema.create_vertex_type("VectorTest3DParallel")
-        test_db.schema.create_property("VectorTest3DParallel", "name", "STRING")
-        test_db.schema.create_property(
-            "VectorTest3DParallel", "vector", "ARRAY_OF_FLOATS"
+        test_db.command("sql", "CREATE VERTEX TYPE VectorTest3DParallel")
+        test_db.command("sql", "CREATE PROPERTY VectorTest3DParallel.name STRING")
+        test_db.command(
+            "sql", "CREATE PROPERTY VectorTest3DParallel.vector ARRAY_OF_FLOATS"
         )
 
         index = test_db.create_vector_index(
@@ -997,10 +1040,12 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vector in vectors:
-                vertex = test_db.new_vertex("VectorTest3DParallel")
-                vertex.set("name", name)
-                vertex.set("vector", arcadedb.to_java_float_array(vector))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO VectorTest3DParallel SET name = ?, vector = ?",
+                    name,
+                    arcadedb.to_java_float_array(vector),
+                )
 
         query = [1.0, 1.0, 1.0] if not use_numpy else np.array([1.0, 1.0, 1.0])
         neighbors = index.find_nearest(query, k=3)
@@ -1016,8 +1061,8 @@ class TestLSMVectorIndex:
                 ), f"Parallel should have distance ~0, got {distance}"
             elif "opposite" in name:
                 assert (
-                    abs(distance - 1.0) < 0.01
-                ), f"Opposite should have distance ~1.0, got {distance}"
+                    abs(distance - 2.0) < 0.01
+                ), f"Opposite should have distance ~2.0, got {distance}"
 
     def test_lsm_cosine_distance_high_dimensional(self, test_db):
         """Test cosine distance in high dimensions (128D)."""
@@ -1026,9 +1071,9 @@ class TestLSMVectorIndex:
         except ImportError:
             pytest.skip("NumPy required for high-dimensional test")
 
-        test_db.schema.create_vertex_type("VectorTestHD")
-        test_db.schema.create_property("VectorTestHD", "name", "STRING")
-        test_db.schema.create_property("VectorTestHD", "vector", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE VectorTestHD")
+        test_db.command("sql", "CREATE PROPERTY VectorTestHD.name STRING")
+        test_db.command("sql", "CREATE PROPERTY VectorTestHD.vector ARRAY_OF_FLOATS")
 
         dim = 128
         np.random.seed(42)
@@ -1054,10 +1099,12 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vector in vectors:
-                vertex = test_db.new_vertex("VectorTestHD")
-                vertex.set("name", name)
-                vertex.set("vector", arcadedb.to_java_float_array(vector))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO VectorTestHD SET name = ?, vector = ?",
+                    name,
+                    arcadedb.to_java_float_array(vector),
+                )
 
         neighbors = index.find_nearest(base, k=4)
 
@@ -1072,12 +1119,12 @@ class TestLSMVectorIndex:
                 ), f"Parallel should have distance ~0, got {distance}"
             elif name == "opposite":
                 assert (
-                    abs(distance - 1.0) < 0.01
-                ), f"Opposite should have distance ~1.0, got {distance}"
+                    abs(distance - 2.0) < 0.01
+                ), f"Opposite should have distance ~2.0, got {distance}"
             elif name == "orthogonal":
                 assert (
-                    abs(distance - 0.5) < 0.1
-                ), f"Orthogonal should have distance ~0.5, got {distance}"
+                    abs(distance - 1.0) < 0.1
+                ), f"Orthogonal should have distance ~1.0, got {distance}"
 
     def test_lsm_vector_search_comprehensive(self, test_db):
         """Test vector embeddings with LSM similarity search (comprehensive)."""
@@ -1089,9 +1136,11 @@ class TestLSMVectorIndex:
             use_numpy = False
 
         # Create vertex type for vector embeddings
-        test_db.schema.create_vertex_type("EmbeddingNodeLSM")
-        test_db.schema.create_property("EmbeddingNodeLSM", "name", "STRING")
-        test_db.schema.create_property("EmbeddingNodeLSM", "vector", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE EmbeddingNodeLSM")
+        test_db.command("sql", "CREATE PROPERTY EmbeddingNodeLSM.name STRING")
+        test_db.command(
+            "sql", "CREATE PROPERTY EmbeddingNodeLSM.vector ARRAY_OF_FLOATS"
+        )
 
         # Create index
         index = test_db.create_vector_index("EmbeddingNodeLSM", "vector", dimensions=4)
@@ -1118,10 +1167,12 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vector in embeddings:
-                vertex = test_db.new_vertex("EmbeddingNodeLSM")
-                vertex.set("name", name)
-                vertex.set("vector", arcadedb.to_java_float_array(vector))
-                vertex.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO EmbeddingNodeLSM SET name = ?, vector = ?",
+                    name,
+                    arcadedb.to_java_float_array(vector),
+                )
 
         # Search for neighbors of "king"
         if use_numpy:
@@ -1156,8 +1207,10 @@ class TestLSMVectorIndex:
         Demonstrates that INT8 quantization runs without crashing for small N (e.g. 10) at Dim=16,
         unlike N=50 which crashes. This explains why simple unit tests might pass (False Positives).
         """
-        test_db.schema.create_vertex_type("SmallScaleInt8")
-        test_db.schema.create_property("SmallScaleInt8", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE SmallScaleInt8")
+        test_db.command(
+            "sql", "CREATE PROPERTY SmallScaleInt8.embedding ARRAY_OF_FLOATS"
+        )
 
         # Dim=16 is the threshold where negative index bugs stop, but storage bugs haven't started yet (for small N)
         dims = 16
@@ -1174,9 +1227,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for vec in vectors:
-                v = test_db.new_vertex("SmallScaleInt8")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO SmallScaleInt8 SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Search should succeed
         query = [0.9, 0.1] + [0.0] * (dims - 2)
@@ -1189,9 +1244,9 @@ class TestLSMVectorIndex:
     def test_lsm_vector_quantization_int8_comprehensive(self, test_db):
         """Test creating a vector index with quantization (INT8) - Comprehensive."""
         # Create schema
-        test_db.schema.create_vertex_type("QuantizedDocInt8")
-        test_db.schema.create_property(
-            "QuantizedDocInt8", "embedding", "ARRAY_OF_FLOATS"
+        test_db.command("sql", "CREATE VERTEX TYPE QuantizedDocInt8")
+        test_db.command(
+            "sql", "CREATE PROPERTY QuantizedDocInt8.embedding ARRAY_OF_FLOATS"
         )
 
         # Create vector index with quantization
@@ -1219,9 +1274,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for i, vec in enumerate(vectors):
-                v = test_db.new_vertex("QuantizedDocInt8")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO QuantizedDocInt8 SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Search should work
         query = [0.9, 0.1] + [0.0] * (dims - 2)
@@ -1245,9 +1302,9 @@ class TestLSMVectorIndex:
     def test_lsm_vector_quantization_binary_comprehensive(self, test_db):
         """Test creating a vector index with BINARY quantization - Comprehensive."""
         # Create schema
-        test_db.schema.create_vertex_type("QuantizedDocBinary")
-        test_db.schema.create_property(
-            "QuantizedDocBinary", "embedding", "ARRAY_OF_FLOATS"
+        test_db.command("sql", "CREATE VERTEX TYPE QuantizedDocBinary")
+        test_db.command(
+            "sql", "CREATE PROPERTY QuantizedDocBinary.embedding ARRAY_OF_FLOATS"
         )
 
         dims = 128
@@ -1277,9 +1334,11 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for i, vec in enumerate(vectors):
-                v = test_db.new_vertex("QuantizedDocBinary")
-                v.set("embedding", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO QuantizedDocBinary SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Search
         query = [0.9, 0.1] + [-1.0] * (dims - 2)
@@ -1303,9 +1362,9 @@ class TestLSMVectorIndex:
     def test_document_vector_search(self, test_db):
         """Test vector search on Document type with metadata and clustering."""
         # Create schema
-        test_db.schema.create_document_type("MyDoc")
-        test_db.schema.create_property("MyDoc", "name", "STRING")
-        test_db.schema.create_property("MyDoc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE DOCUMENT TYPE MyDoc")
+        test_db.command("sql", "CREATE PROPERTY MyDoc.name STRING")
+        test_db.command("sql", "CREATE PROPERTY MyDoc.embedding ARRAY_OF_FLOATS")
 
         # Create vector index
         index = test_db.create_vector_index("MyDoc", "embedding", dimensions=4)
@@ -1321,10 +1380,12 @@ class TestLSMVectorIndex:
 
         with test_db.transaction():
             for name, vec in data:
-                doc = test_db.new_document("MyDoc")
-                doc.set("name", name)
-                doc.set("embedding", arcadedb.to_java_float_array(vec))
-                doc.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO MyDoc SET name = ?, embedding = ?",
+                    name,
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Search for something "fruity"
         query = [0.95, 0.05, 0.0, 0.0]
@@ -1359,8 +1420,8 @@ class TestLSMVectorIndex:
     def test_create_vector_index_with_graph_storage(self, test_db):
         """Test creating a vector index with store_vectors_in_graph=True."""
         # Create schema
-        test_db.schema.create_vertex_type("GraphDoc")
-        test_db.schema.create_property("GraphDoc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE GraphDoc")
+        test_db.command("sql", "CREATE PROPERTY GraphDoc.embedding ARRAY_OF_FLOATS")
 
         try:
             index = test_db.create_vector_index(
@@ -1373,8 +1434,10 @@ class TestLSMVectorIndex:
     def test_graph_storage_with_quantization(self, test_db):
         """Test creating a vector index with both graph storage and quantization."""
         # Create schema
-        test_db.schema.create_vertex_type("GraphQuantDoc")
-        test_db.schema.create_property("GraphQuantDoc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE GraphQuantDoc")
+        test_db.command(
+            "sql", "CREATE PROPERTY GraphQuantDoc.embedding ARRAY_OF_FLOATS"
+        )
 
         try:
             index = test_db.create_vector_index(

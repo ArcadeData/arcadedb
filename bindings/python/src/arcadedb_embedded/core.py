@@ -4,10 +4,14 @@ ArcadeDB Python Bindings - Core Database Classes
 Database and DatabaseFactory classes for embedded database access.
 """
 
-from typing import Any, List, Optional
+from os import PathLike
+from typing import Any, List, Mapping, Optional
 
 from .exceptions import ArcadeDBError
 from .graph import Document, Edge, Vertex
+from .graph_batch import GraphBatch
+from .importer import ImportResult
+from .importer import import_documents as run_document_import
 from .jvm import start_jvm
 from .results import ResultSet
 from .transactions import TransactionContext
@@ -520,6 +524,14 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to set read-your-writes: {e}") from e
 
+    def is_read_your_writes(self) -> bool:
+        """Return whether read-your-writes consistency is currently enabled."""
+        self._check_not_closed()
+        try:
+            return bool(self._java_db.isReadYourWrites())
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to get read-your-writes: {e}") from e
+
     def set_auto_transaction(self, enabled: bool):
         """
         Enable or disable automatic transaction management.
@@ -584,6 +596,128 @@ class Database:
         # JPype converts 'async' to 'async_' to avoid Python keyword collision
         return AsyncExecutor(self._java_db.async_())
 
+    def graph_batch(
+        self,
+        *,
+        batch_size: Optional[int] = None,
+        expected_edge_count: Optional[int] = None,
+        edge_list_initial_size: Optional[int] = None,
+        light_edges: Optional[bool] = None,
+        bidirectional: Optional[bool] = None,
+        commit_every: Optional[int] = None,
+        use_wal: Optional[bool] = None,
+        wal_flush: Optional[str] = None,
+        pre_allocate_edge_chunks: Optional[bool] = None,
+        parallel_flush: Optional[bool] = None,
+    ) -> GraphBatch:
+        """
+        Create a GraphBatch helper for high-throughput graph ingestion.
+
+        This wraps ArcadeDB's builder-backed batch graph API and is intended for
+        workloads that need to create many vertices and buffered edges more efficiently
+        than per-edge transactional writes.
+
+        Args:
+            batch_size: Maximum buffered edges before auto-flush.
+            expected_edge_count: Hint for auto-tuning batch size when not set.
+            edge_list_initial_size: Initial edge-segment size in bytes.
+            light_edges: Create property-less edges as light edges when True.
+            bidirectional: Connect incoming edges as well as outgoing edges.
+            commit_every: Commit cadence within a flush. `0` means one commit per flush.
+            use_wal: Enable WAL during import for higher durability.
+            wal_flush: WAL flush mode: `"no"`, `"yes_nometadata"`, `"yes_full"`.
+            pre_allocate_edge_chunks: Pre-allocate edge chunks during `create_vertex()`.
+            parallel_flush: Parallelize flush/close connectivity work across buckets.
+
+        Returns:
+            GraphBatch instance. Use it as a context manager when possible.
+
+        Example:
+            >>> with db.graph_batch(expected_edge_count=50000) as batch:
+            ...     alice = batch.create_vertex("Person", name="Alice")
+            ...     bob = batch.create_vertex("Person", name="Bob")
+            ...     batch.new_edge(alice, "Knows", bob, since=2024)
+        """
+        self._check_not_closed()
+        return GraphBatch.create(
+            self._java_db,
+            batch_size=batch_size,
+            expected_edge_count=expected_edge_count,
+            edge_list_initial_size=edge_list_initial_size,
+            light_edges=light_edges,
+            bidirectional=bidirectional,
+            commit_every=commit_every,
+            use_wal=use_wal,
+            wal_flush=wal_flush,
+            pre_allocate_edge_chunks=pre_allocate_edge_chunks,
+            parallel_flush=parallel_flush,
+        )
+
+    def import_documents(
+        self,
+        source: str | PathLike[str],
+        document_type: str = "Document",
+        *,
+        file_type: Optional[str] = None,
+        delimiter: Optional[str] = None,
+        header: Optional[str] = None,
+        skip_entries: Optional[int] = None,
+        properties_include: Optional[str] = None,
+        commit_every: Optional[int] = None,
+        parallel: Optional[int] = None,
+        wal: Optional[bool] = None,
+        verbose_level: Optional[int] = None,
+        probe_only: Optional[bool] = None,
+        force_database_create: Optional[bool] = None,
+        trim_text: Optional[bool] = None,
+        extra_settings: Optional[Mapping[str, Any]] = None,
+    ) -> ImportResult:
+        """
+        Import document-shaped data through ArcadeDB's Java importer framework.
+
+        This is a narrow Python wrapper for bulk document import. It is intended for
+        file-based loads such as CSV into a document type, not graph ingest.
+
+        Args:
+            source: Local filesystem path or importer URL.
+            document_type: Target document type to import into.
+            file_type: Optional importer file type override such as `"csv"`.
+            delimiter: Optional delimiter override for delimited formats.
+            header: Optional importer header configuration.
+            skip_entries: Optional number of entries to skip before import.
+            properties_include: Optional property include filter.
+            commit_every: Optional importer transaction split interval.
+            parallel: Optional importer parallel worker count.
+            wal: Optional WAL override during import.
+            verbose_level: Optional importer verbose logging level.
+            probe_only: Analyze only without writing records when True.
+            force_database_create: Recreate database when importer opens its own DB.
+            trim_text: Trim textual values during import when True.
+            extra_settings: Additional raw importer settings.
+
+        Returns:
+            ImportResult with normalized metadata and importer statistics.
+        """
+        self._check_not_closed()
+        return run_document_import(
+            self._java_db,
+            source,
+            document_type=document_type,
+            file_type=file_type,
+            delimiter=delimiter,
+            header=header,
+            skip_entries=skip_entries,
+            properties_include=properties_include,
+            commit_every=commit_every,
+            parallel=parallel,
+            wal=wal,
+            verbose_level=verbose_level,
+            probe_only=probe_only,
+            force_database_create=force_database_create,
+            trim_text=trim_text,
+            extra_settings=extra_settings,
+        )
+
     @property
     def schema(self):
         """
@@ -618,77 +752,6 @@ class Database:
         from .schema import Schema
 
         return Schema(self._java_db.getSchema(), self)
-
-    def batch_context(
-        self,
-        batch_size: int = 5000,
-        parallel: int = 4,
-        use_wal: bool = True,
-        back_pressure: int = 50,
-        progress: bool = False,
-        progress_desc: str = "Processing",
-    ):
-        """
-        Create a batch processing context manager.
-
-        Experimental: not advised for production use yet.
-
-        Provides a high-level interface for bulk operations with automatic
-        async executor configuration, progress tracking, and error handling.
-
-        Args:
-            batch_size: Auto-commit every N operations (default: 5000)
-            parallel: Number of parallel worker threads 1-16 (default: 4)
-            use_wal: Enable Write-Ahead Log (default: True)
-            back_pressure: Queue back-pressure threshold 0-100 (default: 50)
-            progress: Enable progress tracking (default: False)
-            progress_desc: Description for progress bar (default: "Processing")
-
-        Returns:
-            BatchContext: Context manager for batch operations
-
-        Example:
-            >>> # Simple batch processing
-            >>> with db.batch_context(batch_size=10000, parallel=8) as batch:
-            ...     for record in large_dataset:
-            ...         batch.create_vertex("User", name=record['name'], age=record['age'])
-            >>> # Auto-commits and waits for completion on exit
-
-        Example with progress:
-            >>> # With progress tracking
-            >>> with db.batch_context(batch_size=5000, progress=True) as batch:
-            ...     batch.set_total(len(dataset))
-            ...     for record in dataset:
-            ...         batch.create_vertex("User", **record)
-            >>> # Prints progress bar (requires tqdm package)
-
-        Example with error handling:
-            >>> # Collect and check errors
-            >>> with db.batch_context(batch_size=5000) as batch:
-            ...     for record in dataset:
-            ...         batch.create_document("LogEntry", **record)
-            >>> if batch.get_errors():
-            ...     print(f"Encountered {len(batch.get_errors())} errors")
-
-        Note:
-            This is a convenience wrapper around async_executor() that:
-            - Automatically configures the async executor
-            - Waits for completion on context exit
-            - Provides simple create_vertex/document/edge methods
-            - Optionally tracks progress with tqdm
-        """
-        self._check_not_closed()
-        from .batch import BatchContext
-
-        return BatchContext(
-            self,
-            batch_size=batch_size,
-            parallel=parallel,
-            use_wal=use_wal,
-            back_pressure=back_pressure,
-            progress=progress,
-            progress_desc=progress_desc,
-        )
 
     def export_database(
         self,

@@ -1,7 +1,7 @@
 """
 ArcadeDB Python Bindings - Graph API Wrappers
 
-Wrappers for Document, Vertex, and Edge objects to provide a Pythonic API.
+Wrappers for Document, Vertex, and Edge objects.
 """
 
 from typing import Any, Dict, List, Optional, Union

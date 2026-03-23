@@ -21,7 +21,7 @@ def test_database_operations(temp_db_path):
     """Test basic database operations."""
     with arcadedb.create_database(temp_db_path) as db:
         # Create a document type (schema ops auto-transactional)
-        db.schema.create_document_type("TestDoc")
+        db.command("sql", "CREATE DOCUMENT TYPE TestDoc")
 
         # Insert data
         with db.transaction():
@@ -37,6 +37,17 @@ def test_database_operations(temp_db_path):
         assert record.get("value") == 42
 
 
+def test_sql_count_on_empty_type_returns_zero(temp_db_path):
+    """Test SQL count(*) returns a zero row for an empty type."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE EmptyDoc")
+
+        result = db.query("sql", "SELECT count(*) as total FROM EmptyDoc")
+        row = result.one()
+
+        assert row.get("total") == 0
+
+
 def test_rich_data_types(temp_db_path):
     """Test ArcadeDB's rich data type support with comprehensive CRUD operations.
 
@@ -49,18 +60,18 @@ def test_rich_data_types(temp_db_path):
     """
     with arcadedb.create_database(temp_db_path) as db:
         # Create document type with rich data types (schema ops auto-transactional)
-        db.schema.create_document_type("Task")
+        db.command("sql", "CREATE DOCUMENT TYPE Task")
 
         # Define properties with various ArcadeDB data types
-        db.schema.create_property("Task", "title", "STRING")
-        db.schema.create_property("Task", "priority", "STRING")
-        db.schema.create_property("Task", "completed", "BOOLEAN")
-        db.schema.create_property("Task", "created_date", "DATE")
-        db.schema.create_property("Task", "due_datetime", "DATETIME")
-        db.schema.create_property("Task", "estimated_hours", "FLOAT")
-        db.schema.create_property("Task", "priority_score", "INTEGER")
-        db.schema.create_property("Task", "cost", "DECIMAL")
-        db.schema.create_property("Task", "task_id", "STRING")  # UUID as string
+        db.command("sql", "CREATE PROPERTY Task.title STRING")
+        db.command("sql", "CREATE PROPERTY Task.priority STRING")
+        db.command("sql", "CREATE PROPERTY Task.completed BOOLEAN")
+        db.command("sql", "CREATE PROPERTY Task.created_date DATE")
+        db.command("sql", "CREATE PROPERTY Task.due_datetime DATETIME")
+        db.command("sql", "CREATE PROPERTY Task.estimated_hours FLOAT")
+        db.command("sql", "CREATE PROPERTY Task.priority_score INTEGER")
+        db.command("sql", "CREATE PROPERTY Task.cost DECIMAL")
+        db.command("sql", "CREATE PROPERTY Task.task_id STRING")  # UUID as string
 
         # Insert sample data showcasing various data types
         with db.transaction():
@@ -161,7 +172,7 @@ def test_arcadedb_sql_features(temp_db_path):
     - Data type handling in queries
     """
     with arcadedb.create_database(temp_db_path) as db:
-        db.schema.create_document_type("TestEntity")
+        db.command("sql", "CREATE DOCUMENT TYPE TestEntity")
 
         # Test built-in SQL functions
         with db.transaction():
@@ -218,9 +229,9 @@ def test_arcadedb_sql_features(temp_db_path):
 def test_fulltext_search_with_score(temp_db_path):
     """Full-text search returns results with $score."""
     with arcadedb.create_database(temp_db_path) as db:
-        db.schema.create_document_type("Article")
-        db.schema.create_property("Article", "content", "STRING")
-        db.schema.create_index("Article", ["content"], index_type="FULL_TEXT")
+        db.command("sql", "CREATE DOCUMENT TYPE Article")
+        db.command("sql", "CREATE PROPERTY Article.content STRING")
+        db.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT")
 
         with db.transaction():
             db.command(
@@ -265,7 +276,7 @@ def test_sqlscript_returns_last_command_result(temp_db_path):
 def test_update_with_json_array_content(temp_db_path):
     """UPDATE ... CONTENT supports JSON arrays for multi-document updates."""
     with arcadedb.create_database(temp_db_path) as db:
-        db.schema.create_document_type("JsonArrayDoc")
+        db.command("sql", "CREATE DOCUMENT TYPE JsonArrayDoc")
 
         with db.transaction():
             db.command(
@@ -308,8 +319,14 @@ def test_update_with_json_array_content(temp_db_path):
 def test_truncate_bucket(temp_db_path):
     """TRUNCATE BUCKET removes all records in a bucket."""
     with arcadedb.create_database(temp_db_path) as db:
-        doc_type = db.schema.create_document_type("BucketDoc", buckets=1)
-        bucket_name = doc_type.getBuckets(False)[0].getName()
+        db.command("sql", "CREATE DOCUMENT TYPE BucketDoc BUCKETS 1")
+        type_row = db.query(
+            "sql", "SELECT buckets FROM schema:types WHERE name = 'BucketDoc'"
+        ).first()
+        assert type_row is not None
+        buckets = type_row.get("buckets")
+        assert buckets is not None and len(buckets) > 0
+        bucket_name = buckets[0]
 
         with db.transaction():
             db.command("sql", "INSERT INTO BucketDoc SET name = 'one'")
@@ -326,7 +343,7 @@ def test_truncate_bucket(temp_db_path):
 def test_transactions(temp_db_path):
     """Test transaction support."""
     with arcadedb.create_database(temp_db_path) as db:
-        db.schema.create_document_type("TransactionTest")
+        db.command("sql", "CREATE DOCUMENT TYPE TransactionTest")
 
         # Test successful transaction
         with db.transaction():
@@ -356,35 +373,22 @@ def test_graph_operations(temp_db_path):
     """Test graph operations."""
     with arcadedb.create_database(temp_db_path) as db:
         # Create graph schema
-        db.schema.create_vertex_type("Person")
-        db.schema.create_edge_type("Knows")
+        db.command("sql", "CREATE VERTEX TYPE Person")
+        db.command("sql", "CREATE EDGE TYPE Knows UNIDIRECTIONAL")
 
-        # Create vertices using Java API
+        # Create vertices using SQL
         with db.transaction():
-            alice = db.new_vertex("Person")
-            alice.set("name", "Alice")
-            alice.save()
+            db.command("sql", "INSERT INTO Person SET name = 'Alice'")
+            db.command("sql", "INSERT INTO Person SET name = 'Bob'")
 
-            bob = db.new_vertex("Person")
-            bob.set("name", "Bob")
-            bob.save()
-
-        # Create edge using Python API
+        # Create edge using SQL
         with db.transaction():
-            # Query vertices to get Python Vertex objects
-            alice_result = db.query("sql", "SELECT FROM Person WHERE name = 'Alice'")
-            bob_result = db.query("sql", "SELECT FROM Person WHERE name = 'Bob'")
-
-            alice_wrapper = list(alice_result)[0]
-            bob_wrapper = list(bob_result)[0]
-
-            # Extract Python vertices
-            alice_vertex = alice_wrapper.get_vertex()
-            bob_vertex = bob_wrapper.get_vertex()
-
-            # Create edge using vertex.new_edge()
-            edge = alice_vertex.new_edge("Knows", bob_vertex)
-            edge.save()
+            db.command(
+                "sql",
+                "CREATE EDGE Knows "
+                "FROM (SELECT FROM Person WHERE name = 'Alice') "
+                "TO (SELECT FROM Person WHERE name = 'Bob')",
+            )
 
         # Test graph traversal
         result = db.query(
@@ -410,7 +414,7 @@ def test_error_handling():
 def test_result_methods(temp_db_path):
     """Test Result object methods."""
     with arcadedb.create_database(temp_db_path) as db:
-        db.schema.create_document_type("ResultTest")
+        db.command("sql", "CREATE DOCUMENT TYPE ResultTest")
         with db.transaction():
             db.command(
                 "sql",
@@ -452,8 +456,8 @@ def test_opencypher_queries(temp_db_path):
     """Test OpenCypher query language support."""
     with arcadedb.create_database(temp_db_path) as db:
         # Create graph schema
-        db.schema.create_vertex_type("Person")
-        db.schema.create_edge_type("FRIEND_OF")
+        db.command("sql", "CREATE VERTEX TYPE Person")
+        db.command("sql", "CREATE EDGE TYPE FRIEND_OF UNIDIRECTIONAL")
 
         # Insert data using OpenCypher (if available)
         try:
@@ -480,7 +484,7 @@ def test_opencypher_queries(temp_db_path):
 def test_unicode_support(temp_db_path):
     """Test Unicode and international character support."""
     with arcadedb.create_database(temp_db_path) as db:
-        db.schema.create_document_type("User")
+        db.command("sql", "CREATE DOCUMENT TYPE User")
         with db.transaction():
             # Test various Unicode: Spanish, Chinese, Japanese, Arabic, Emoji
             db.command(
@@ -539,16 +543,16 @@ def test_schema_queries(temp_db_path):
     """Test querying database schema information."""
     with arcadedb.create_database(temp_db_path) as db:
         # Create schema with various property types
-        db.schema.create_document_type("Person")
-        db.schema.create_property("Person", "name", "STRING")
-        db.schema.create_property("Person", "age", "INTEGER")
-        db.schema.create_property("Person", "email", "STRING")
-        db.schema.create_index("Person", ["email"], unique=True)
+        db.command("sql", "CREATE DOCUMENT TYPE Person")
+        db.command("sql", "CREATE PROPERTY Person.name STRING")
+        db.command("sql", "CREATE PROPERTY Person.age INTEGER")
+        db.command("sql", "CREATE PROPERTY Person.email STRING")
+        db.command("sql", "CREATE INDEX ON Person (email) UNIQUE_HASH")
 
-        db.schema.create_vertex_type("Company")
-        db.schema.create_property("Company", "name", "STRING")
+        db.command("sql", "CREATE VERTEX TYPE Company")
+        db.command("sql", "CREATE PROPERTY Company.name STRING")
 
-        db.schema.create_edge_type("WorksFor")
+        db.command("sql", "CREATE EDGE TYPE WorksFor UNIDIRECTIONAL")
 
         # Query schema:types to get type information
         result = db.query("sql", "SELECT FROM schema:types WHERE name = 'Person'")
@@ -583,7 +587,7 @@ def test_schema_queries(temp_db_path):
 def test_large_result_set_handling(temp_db_path):
     """Test handling large result sets efficiently."""
     with arcadedb.create_database(temp_db_path) as db:
-        db.schema.create_document_type("LargeData")
+        db.command("sql", "CREATE DOCUMENT TYPE LargeData")
         with db.transaction():
             # Insert 1000 records
             for i in range(1000):
@@ -626,7 +630,7 @@ def test_property_type_conversions(temp_db_path):
     """Test that property types are correctly converted between Python/Java."""
     with arcadedb.create_database(temp_db_path) as db:
         # Schema operations are auto-transactional
-        db.schema.create_document_type("TypeTest")
+        db.command("sql", "CREATE DOCUMENT TYPE TypeTest")
 
         with db.transaction():
             db.command(
@@ -683,56 +687,43 @@ def test_complex_graph_traversal(temp_db_path):
     """Test complex graph traversal patterns."""
     with arcadedb.create_database(temp_db_path) as db:
         # Create social network graph
-        db.schema.create_vertex_type("Person")
-        db.schema.create_edge_type("Follows")
-        db.schema.create_edge_type("Likes")
+        db.command("sql", "CREATE VERTEX TYPE Person")
+        db.command("sql", "CREATE EDGE TYPE Follows UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE Likes UNIDIRECTIONAL")
 
-        # Create vertices using Java API
+        # Create vertices using SQL
         with db.transaction():
-            alice = db.new_vertex("Person")
-            alice.set("name", "Alice")
-            alice.set("age", 30)
-            alice.save()
+            db.command("sql", "INSERT INTO Person SET name = 'Alice', age = 30")
+            db.command("sql", "INSERT INTO Person SET name = 'Bob', age = 25")
+            db.command("sql", "INSERT INTO Person SET name = 'Charlie', age = 35")
+            db.command("sql", "INSERT INTO Person SET name = 'Diana', age = 28")
 
-            bob = db.new_vertex("Person")
-            bob.set("name", "Bob")
-            bob.set("age", 25)
-            bob.save()
-
-            charlie = db.new_vertex("Person")
-            charlie.set("name", "Charlie")
-            charlie.set("age", 35)
-            charlie.save()
-
-            diana = db.new_vertex("Person")
-            diana.set("name", "Diana")
-            diana.set("age", 28)
-            diana.save()
-
-        # Create edges using Python API
+        # Create edges using SQL
         with db.transaction():
-            # Query to get all vertices
-            query_result = db.query("sql", "SELECT FROM Person")
-            person_cache = {}
-            for wrapper in query_result:
-                vertex = wrapper.get_vertex()
-                name = wrapper.get("name")
-                person_cache[name] = vertex
-
-            # Alice follows Bob and Charlie
-            edge1 = person_cache["Alice"].new_edge("Follows", person_cache["Bob"])
-            edge1.save()
-
-            edge2 = person_cache["Alice"].new_edge("Follows", person_cache["Charlie"])
-            edge2.save()
-
-            # Bob follows Diana
-            edge3 = person_cache["Bob"].new_edge("Follows", person_cache["Diana"])
-            edge3.save()
-
-            # Charlie likes Bob
-            edge4 = person_cache["Charlie"].new_edge("Likes", person_cache["Bob"])
-            edge4.save()
+            db.command(
+                "sql",
+                "CREATE EDGE Follows "
+                "FROM (SELECT FROM Person WHERE name = 'Alice') "
+                "TO (SELECT FROM Person WHERE name = 'Bob')",
+            )
+            db.command(
+                "sql",
+                "CREATE EDGE Follows "
+                "FROM (SELECT FROM Person WHERE name = 'Alice') "
+                "TO (SELECT FROM Person WHERE name = 'Charlie')",
+            )
+            db.command(
+                "sql",
+                "CREATE EDGE Follows "
+                "FROM (SELECT FROM Person WHERE name = 'Bob') "
+                "TO (SELECT FROM Person WHERE name = 'Diana')",
+            )
+            db.command(
+                "sql",
+                "CREATE EDGE Likes "
+                "FROM (SELECT FROM Person WHERE name = 'Charlie') "
+                "TO (SELECT FROM Person WHERE name = 'Bob')",
+            )
 
         # Test: Find who Alice follows
         result = db.query(
@@ -752,26 +743,28 @@ def test_complex_graph_traversal(temp_db_path):
         names = [r.get("value") for r in result]
         assert "Diana" in names
 
-        # Test: Find who follows Bob
+        # Test: Find who Bob follows
         result = db.query(
-            "sql", "SELECT expand(in('Follows').name) FROM Person " "WHERE name = 'Bob'"
+            "sql",
+            "SELECT expand(out('Follows').name) FROM Person " "WHERE name = 'Bob'",
         )
         names = [r.get("value") for r in result]
-        assert "Alice" in names
+        assert "Diana" in names
 
-        # Test: Mixed edge types
+        # Test: Mixed edge types with direction-aware traversal
         result = db.query(
-            "sql", "SELECT expand(in('Likes').name) FROM Person " "WHERE name = 'Bob'"
+            "sql",
+            "SELECT expand(out('Likes').name) FROM Person " "WHERE name = 'Charlie'",
         )
         names = [r.get("value") for r in result]
-        assert "Charlie" in names
+        assert "Bob" in names
 
 
 def test_lookup_by_rid(temp_db_path):
     """Test looking up records by RID."""
     with arcadedb.create_database(temp_db_path) as db:
         # Create schema
-        db.schema.create_vertex_type("User")
+        db.command("sql", "CREATE VERTEX TYPE User")
 
         # Create a vertex
         with db.transaction():

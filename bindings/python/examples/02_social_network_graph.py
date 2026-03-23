@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ArcadeDB Python Bindings - Social Network Graph Example
+Example 02: Social Network Graph
 
 This example demonstrates how to use ArcadeDB as a graph database to model
 a social network with people and friendships. It showcases:
@@ -116,31 +116,30 @@ def create_schema(db):
 
     try:
         # Schema operations are auto-transactional; no explicit transaction needed
-        db.schema.create_vertex_type("Person")
+        db.command("sql", "CREATE VERTEX TYPE Person")
         print("  ✓ Created Person vertex type")
 
         # Create properties for Person (various data types, some optional/NULL)
-        db.schema.create_property("Person", "name", "STRING")
-        db.schema.create_property("Person", "age", "INTEGER")
-        db.schema.create_property("Person", "city", "STRING")
-        db.schema.create_property("Person", "joined_date", "DATE")
-        db.schema.create_property("Person", "email", "STRING")  # Optional
-        db.schema.create_property("Person", "phone", "STRING")  # Optional
-        db.schema.create_property("Person", "verified", "BOOLEAN")
-        db.schema.create_property("Person", "reputation", "FLOAT")  # Optional
+        db.command("sql", "CREATE PROPERTY Person.name STRING")
+        db.command("sql", "CREATE PROPERTY Person.age INTEGER")
+        db.command("sql", "CREATE PROPERTY Person.city STRING")
+        db.command("sql", "CREATE PROPERTY Person.joined_date DATE")
+        db.command("sql", "CREATE PROPERTY Person.email STRING")  # Optional
+        db.command("sql", "CREATE PROPERTY Person.phone STRING")  # Optional
+        db.command("sql", "CREATE PROPERTY Person.verified BOOLEAN")
+        db.command("sql", "CREATE PROPERTY Person.reputation FLOAT")  # Optional
         print("  ✓ Created Person properties (including optional fields)")
 
         # Create FRIEND_OF edge type
-        db.schema.create_edge_type("FRIEND_OF")
+        db.command("sql", "CREATE EDGE TYPE FRIEND_OF UNIDIRECTIONAL")
         print("  ✓ Created FRIEND_OF edge type")
 
         # Create properties for FRIEND_OF edge
-        db.schema.create_property("FRIEND_OF", "since", "DATE")
-        db.schema.create_property("FRIEND_OF", "closeness", "STRING")
+        db.command("sql", "CREATE PROPERTY FRIEND_OF.since DATE")
+        db.command("sql", "CREATE PROPERTY FRIEND_OF.closeness STRING")
         print("  ✓ Created FRIEND_OF properties")
 
-        # Create indexes for better performance using Schema API
-        db.schema.create_index("Person", ["name"], unique=False)
+        db.command("sql", "CREATE INDEX ON Person (name) NOTUNIQUE_HASH")
         print("  ✓ Created index on Person.name")
 
         print(f"  ⏱️  Time: {time.time() - step_start:.3f}s")
@@ -292,10 +291,14 @@ def create_sample_data(db):
                     if reputation is not None:
                         properties["reputation"] = reputation
 
-                    v = db.new_vertex("Person")
-                    for k, vval in properties.items():
-                        v.set(k, vval)
-                    v.save()
+                    columns = list(properties.keys())
+                    assignments = ", ".join(f"{col} = ?" for col in columns)
+                    from arcadedb_embedded.type_conversion import convert_python_to_java
+
+                    values = [
+                        convert_python_to_java(properties[col]) for col in columns
+                    ]
+                    db.command("sql", f"INSERT INTO Person SET {assignments}", *values)
 
                     null_fields = []
                     if not email:
@@ -329,40 +332,41 @@ def create_sample_data(db):
             ("Bob Smith", "Henry Clark", "2020-06-03", "casual"),
         ]
 
-        # Create friendships using Python API with vertex caching
+        # Create friendships using SQL
         with db.transaction():
-            # Build vertex cache by name for fast lookups
-            person_cache = {}
-            for person_result in db.query("sql", "SELECT FROM Person"):
-                # Convert Result to Vertex using get_vertex()
-                vertex = person_result.get_vertex()
-                if vertex:
-                    name = person_result.get("name")
-                    person_cache[name] = vertex
-
             # Create edges using cached vertices
             from jpype import JClass
 
             LocalDate = JClass("java.time.LocalDate")
 
             for person1, person2, since_date, closeness in friendships:
-                # Get cached vertices
-                v1 = person_cache[person1]
-                v2 = person_cache[person2]
-
                 # Parse date
                 date_obj = LocalDate.parse(since_date)
 
                 # Create bidirectional friendship edges
-                edge1 = v1.new_edge(
-                    "FRIEND_OF", v2, since=date_obj, closeness=closeness
+                db.command(
+                    "sql",
+                    "CREATE EDGE FRIEND_OF "
+                    "FROM (SELECT FROM Person WHERE name = ?) "
+                    "TO (SELECT FROM Person WHERE name = ?) "
+                    "SET since = ?, closeness = ?",
+                    person1,
+                    person2,
+                    date_obj,
+                    closeness,
                 )
-                edge1.save()
 
-                edge2 = v2.new_edge(
-                    "FRIEND_OF", v1, since=date_obj, closeness=closeness
+                db.command(
+                    "sql",
+                    "CREATE EDGE FRIEND_OF "
+                    "FROM (SELECT FROM Person WHERE name = ?) "
+                    "TO (SELECT FROM Person WHERE name = ?) "
+                    "SET since = ?, closeness = ?",
+                    person2,
+                    person1,
+                    date_obj,
+                    closeness,
                 )
-                edge2.save()
 
                 print(f"    ✓ Connected {person1} ↔ {person2} ({closeness})")
 
@@ -572,7 +576,7 @@ def demonstrate_opencypher_queries(db):
             "opencypher",
             """
             MATCH (alice:Person {name: 'Alice Johnson'})-[:FRIEND_OF]->(friend:Person)
-                  -[:FRIEND_OF]->(fof:Person)
+            MATCH (friend)-[:FRIEND_OF]->(fof:Person)
             WHERE fof.name <> 'Alice Johnson'
             RETURN DISTINCT fof.name as name, friend.name as through_friend
             ORDER BY name
@@ -996,6 +1000,6 @@ def print_section_header(title, emoji="🔹"):
 
 
 if __name__ == "__main__":
-    print("🌐 ArcadeDB Python - Social Network Graph Example")
+    print("🌐 ArcadeDB Python - Example 02: Social Network Graph")
     print("=" * 55)
     main()

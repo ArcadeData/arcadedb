@@ -48,7 +48,9 @@ import arcadedb_embedded as arcadedb
 import numpy as np
 
 # Parse command line arguments
-parser = argparse.ArgumentParser(description="Vector Search Example")
+parser = argparse.ArgumentParser(
+    description="Example 03: Vector Search - Semantic Similarity"
+)
 args = parser.parse_args()
 
 print("=" * 70)
@@ -86,18 +88,18 @@ with arcadedb.create_database(db_path) as db:
     step_start = time.time()
 
     # Create vertex type for documents
-    db.schema.create_vertex_type("Article")
+    db.command("sql", "CREATE VERTEX TYPE Article")
 
     # Create properties
     # Note: Vector property MUST be ARRAY_OF_FLOATS
-    db.schema.create_property("Article", "title", "STRING")
-    db.schema.create_property("Article", "content", "STRING")
-    db.schema.create_property("Article", "category", "STRING")
-    db.schema.create_property("Article", "embedding", "ARRAY_OF_FLOATS")
-    db.schema.create_property("Article", "id", "STRING")
+    db.command("sql", "CREATE PROPERTY Article.title STRING")
+    db.command("sql", "CREATE PROPERTY Article.content STRING")
+    db.command("sql", "CREATE PROPERTY Article.category STRING")
+    db.command("sql", "CREATE PROPERTY Article.embedding ARRAY_OF_FLOATS")
+    db.command("sql", "CREATE PROPERTY Article.id STRING")
 
     # Create standard index on ID for fast lookups
-    db.schema.create_index("Article", ["id"], unique=True)
+    db.command("sql", "CREATE INDEX ON Article (id) UNIQUE_HASH")
 
     print("   ✅ Schema created: Article vertex type")
     print("   💡 Vector property type: ARRAY_OF_FLOATS")
@@ -173,17 +175,24 @@ with arcadedb.create_database(db_path) as db:
 
     with db.transaction():
         for i, doc in enumerate(documents):
-            # Create vertex
-            vertex = db.new_vertex("Article")
-            vertex.set("id", doc["id"])
-            vertex.set("title", doc["title"])
-            vertex.set("content", doc["content"])
-            vertex.set("category", doc["category"])
-
-            # Set vector property (automatically handles list -> Java float[])
-            vertex.set("embedding", arcadedb.to_java_float_array(doc["embedding"]))
-
-            vertex.save()
+            db.command(
+                "sql",
+                """
+                INSERT INTO Article SET
+                    id = :id,
+                    title = :title,
+                    content = :content,
+                    category = :category,
+                    embedding = :embedding
+                """,
+                {
+                    "id": doc["id"],
+                    "title": doc["title"],
+                    "content": doc["content"],
+                    "category": doc["category"],
+                    "embedding": arcadedb.to_java_float_array(doc["embedding"]),
+                },
+            )
 
             total_inserted += 1
 

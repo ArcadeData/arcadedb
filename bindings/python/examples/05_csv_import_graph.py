@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Graph Creation Benchmark - Clean Architecture
+Example 05: Graph Creation Benchmark - Clean Architecture
 
 This benchmark compares graph creation strategies with multiple options:
 - Method: Java API vs SQL
@@ -14,18 +14,16 @@ Architecture:
 - Shared edge creation logic
 - Method-specific executors (Java API vs SQL)
 - Async executor support:
-  * Java API: Fully supported via BatchContext (RECOMMENDED FOR PERFORMANCE)
-  * SQL: Limited support - concurrent modifications occur during bulk vertex
-         creation. Works better for edge creation and updates.
+    * Java mode: Uses async SQL command submission for parallel inserts.
+    * SQL mode: Synchronous transactions for bulk vertex creation.
 - Index-aware implementations
 
 Async Executor:
 ===============
 The async executor enables parallel processing with configurable worker threads:
 
-**Java API + Async (RECOMMENDED FOR BEST PERFORMANCE):**
-- Uses BatchContext which wraps the async executor
-- Handles concurrent page modifications internally
+**Java mode + Async:**
+- Uses AsyncExecutor with SQL command submission
 - Parallel vertex and edge creation
 - Command: `--method java` (async enabled by default)
 
@@ -311,28 +309,36 @@ class VertexCreator:
         batch_count = 0
 
         if self.use_async and self.use_java_api:
-            # Java API with BatchContext (async) - WORKS WELL
-            with arcadedb.BatchContext(
-                self.db, batch_size=self.batch_size, parallel=self.parallel_level
-            ) as batch:
-                with arcadedb.open_database(
-                    str(self.data_loader.source_db_path)
-                ) as source_db:
-                    query = "SELECT DISTINCT userId FROM Rating ORDER BY userId"
-                    for record in source_db.query("sql", query):
-                        user_id = record.get("userId")
-                        batch.create_vertex("User", userId=user_id)
-                        user_count += 1
+            # Async SQL insert path
+            async_exec = self.db.async_executor()
+            async_exec.set_parallel_level(self.parallel_level)
+            async_exec.set_commit_every(self.batch_size)
 
-                        if user_count % self.batch_size == 0:
-                            batch_count += 1
-                            self._report_progress(
-                                "User",
-                                batch_count,
-                                user_count,
-                                total_users,
-                                start_time,
-                            )
+            with arcadedb.open_database(
+                str(self.data_loader.source_db_path)
+            ) as source_db:
+                query = "SELECT DISTINCT userId FROM Rating ORDER BY userId"
+                for record in source_db.query("sql", query):
+                    user_id = record.get("userId")
+                    async_exec.command(
+                        "sql",
+                        "INSERT INTO User SET userId = :userId",
+                        userId=user_id,
+                    )
+                    user_count += 1
+
+                    if user_count % self.batch_size == 0:
+                        batch_count += 1
+                        self._report_progress(
+                            "User",
+                            batch_count,
+                            user_count,
+                            total_users,
+                            start_time,
+                        )
+
+            async_exec.wait_completion()
+            async_exec.close()
         elif self.use_java_api:
             # Java API without async (synchronous transactions)
             with arcadedb.open_database(
@@ -348,9 +354,9 @@ class VertexCreator:
                     if len(batch_user_ids) >= self.batch_size:
                         with self.db.transaction():
                             for uid in batch_user_ids:
-                                vertex = self.db.new_vertex("User")
-                                vertex.set("userId", uid)
-                                vertex.save()
+                                self.db.command(
+                                    "sql", "INSERT INTO User SET userId = ?", uid
+                                )
                         user_count += len(batch_user_ids)
                         batch_count += 1
                         batch_user_ids = []
@@ -362,9 +368,9 @@ class VertexCreator:
                 if batch_user_ids:
                     with self.db.transaction():
                         for uid in batch_user_ids:
-                            vertex = self.db.new_vertex("User")
-                            vertex.set("userId", uid)
-                            vertex.save()
+                            self.db.command(
+                                "sql", "INSERT INTO User SET userId = ?", uid
+                            )
                     user_count += len(batch_user_ids)
                     batch_count += 1
         else:
@@ -420,66 +426,78 @@ class VertexCreator:
         batch_count = 0
 
         if self.use_async and self.use_java_api:
-            # Java API with BatchContext (async)
-            with arcadedb.BatchContext(
-                self.db, batch_size=self.batch_size, parallel=self.parallel_level
-            ) as batch:
-                with arcadedb.open_database(
-                    str(self.data_loader.source_db_path)
-                ) as source_db:
-                    last_rid = "#-1:-1"
-                    while True:
-                        query_start = time.time()
-                        query = f"""
-                            SELECT *, @rid as rid FROM Movie
-                            WHERE @rid > {last_rid}
-                            LIMIT {self.batch_size}
-                        """
-                        chunk = list(source_db.query("sql", query))
-                        query_time = time.time() - query_start
-                        stats.add_query_time(query_time)
-                        if not chunk:
-                            break
+            # Async SQL insert path
+            async_exec = self.db.async_executor()
+            async_exec.set_parallel_level(self.parallel_level)
+            async_exec.set_commit_every(self.batch_size)
 
-                        for record in chunk:
-                            movie_id = record.get("movieId")
-                            title = (
-                                record.get("title")
-                                if record.has_property("title")
-                                else ""
-                            )
-                            genres = (
-                                record.get("genres")
-                                if record.has_property("genres")
-                                else ""
-                            )
+            with arcadedb.open_database(
+                str(self.data_loader.source_db_path)
+            ) as source_db:
+                last_rid = "#-1:-1"
+                while True:
+                    query_start = time.time()
+                    query = f"""
+                        SELECT *, @rid as rid FROM Movie
+                        WHERE @rid > {last_rid}
+                        LIMIT {self.batch_size}
+                    """
+                    chunk = list(source_db.query("sql", query))
+                    query_time = time.time() - query_start
+                    stats.add_query_time(query_time)
+                    if not chunk:
+                        break
 
-                            # Merge Link data
-                            props = {
-                                "movieId": movie_id,
-                                "title": title or "",
-                                "genres": genres or "",
-                            }
-                            link_data = links_data.get(movie_id)
-                            if link_data:
-                                if link_data["imdbId"] is not None:
-                                    props["imdbId"] = link_data["imdbId"]
-                                if link_data["tmdbId"] is not None:
-                                    props["tmdbId"] = link_data["tmdbId"]
-
-                            batch.create_vertex("Movie", **props)
-                            movie_count += 1
-
-                        batch_count += 1
-                        last_rid = chunk[-1].get("rid")
-                        self._report_progress(
-                            "Movie",
-                            batch_count,
-                            movie_count,
-                            total_movies,
-                            start_time,
-                            query_time,
+                    for record in chunk:
+                        movie_id = record.get("movieId")
+                        title = (
+                            record.get("title") if record.has_property("title") else ""
                         )
+                        genres = (
+                            record.get("genres")
+                            if record.has_property("genres")
+                            else ""
+                        )
+
+                        params = {
+                            "movieId": movie_id,
+                            "title": title or "",
+                            "genres": genres or "",
+                        }
+                        link_data = links_data.get(movie_id)
+                        if link_data:
+                            if link_data["imdbId"] is not None:
+                                params["imdbId"] = link_data["imdbId"]
+                            if link_data["tmdbId"] is not None:
+                                params["tmdbId"] = link_data["tmdbId"]
+
+                        async_exec.command(
+                            "sql",
+                            (
+                                "INSERT INTO Movie SET movieId = :movieId, title = :title, "
+                                "genres = :genres, imdbId = :imdbId, tmdbId = :tmdbId"
+                            ),
+                            movieId=params.get("movieId"),
+                            title=params.get("title", ""),
+                            genres=params.get("genres", ""),
+                            imdbId=params.get("imdbId"),
+                            tmdbId=params.get("tmdbId"),
+                        )
+                        movie_count += 1
+
+                    batch_count += 1
+                    last_rid = chunk[-1].get("rid")
+                    self._report_progress(
+                        "Movie",
+                        batch_count,
+                        movie_count,
+                        total_movies,
+                        start_time,
+                        query_time,
+                    )
+
+            async_exec.wait_completion()
+            async_exec.close()
         elif self.use_java_api:
             # Java API without async (synchronous transactions)
             with arcadedb.open_database(
@@ -526,11 +544,13 @@ class VertexCreator:
                                 if link_data["tmdbId"] is not None:
                                     props["tmdbId"] = link_data["tmdbId"]
 
-                            # Create vertex using Java API
-                            vertex = self.db.new_vertex("Movie")
-                            for key, value in props.items():
-                                vertex.set(key, value)
-                            vertex.save()
+                            assignments = ", ".join(f"{key} = ?" for key in props)
+                            values = [props[key] for key in props]
+                            self.db.command(
+                                "sql",
+                                f"INSERT INTO Movie SET {assignments}",
+                                *values,
+                            )
 
                     movie_count += len(chunk)
                     batch_count += 1
@@ -724,13 +744,14 @@ class EdgeCreator:
                             user_vertex = user_cache.get(user_id)
                             movie_vertex = movie_cache.get(movie_id)
                             if user_vertex and movie_vertex:
-                                edge = user_vertex.new_edge(
-                                    "RATED",
-                                    movie_vertex,
-                                    rating=rating,
-                                    timestamp=timestamp,
+                                user_rid = str(user_vertex.get_identity())
+                                movie_rid = str(movie_vertex.get_identity())
+                                sql = (
+                                    f"CREATE EDGE RATED "
+                                    f"FROM {user_rid} TO {movie_rid} "
+                                    f"SET rating = {rating}, timestamp = {timestamp}"
                                 )
-                                edge.save()
+                                self.db.command("sql", sql)
                                 edge_count += 1
                         else:
                             # SQL CREATE EDGE
@@ -815,13 +836,16 @@ class EdgeCreator:
                             user_vertex = user_cache.get(user_id)
                             movie_vertex = movie_cache.get(movie_id)
                             if user_vertex and movie_vertex:
-                                edge = user_vertex.new_edge(
-                                    "TAGGED",
-                                    movie_vertex,
-                                    tag=tag,
-                                    timestamp=timestamp,
+                                user_rid = str(user_vertex.get_identity())
+                                movie_rid = str(movie_vertex.get_identity())
+                                tag_escaped = escape_sql_string(tag)
+                                sql = (
+                                    f"CREATE EDGE TAGGED "
+                                    f"FROM {user_rid} TO {movie_rid} "
+                                    f"SET tag = '{tag_escaped}', "
+                                    f"timestamp = {timestamp}"
                                 )
-                                edge.save()
+                                self.db.command("sql", sql)
                                 edge_count += 1
                         else:
                             # SQL CREATE EDGE
@@ -1378,31 +1402,40 @@ def create_schema(db: Any, create_indexes: bool = True):
     print("Creating graph schema...")
     start_time = time.time()
 
-    # Create vertex types
-    db.schema.get_or_create_vertex_type("User")
-    db.schema.get_or_create_vertex_type("Movie")
-
-    # Create edge types
-    db.schema.get_or_create_edge_type("RATED")
-    db.schema.get_or_create_edge_type("TAGGED")
-
-    # Create properties
-    db.schema.get_or_create_property("User", "userId", "INTEGER")
-    db.schema.get_or_create_property("Movie", "movieId", "INTEGER")
-    db.schema.get_or_create_property("Movie", "title", "STRING")
-    db.schema.get_or_create_property("Movie", "genres", "STRING")
-    db.schema.get_or_create_property("Movie", "imdbId", "STRING")
-    db.schema.get_or_create_property("Movie", "tmdbId", "INTEGER")
-    db.schema.get_or_create_property("RATED", "rating", "FLOAT")
-    db.schema.get_or_create_property("RATED", "timestamp", "LONG")
-    db.schema.get_or_create_property("TAGGED", "tag", "STRING")
-    db.schema.get_or_create_property("TAGGED", "timestamp", "LONG")
+    # Create vertex/edge types and properties (idempotent)
+    schema_commands = [
+        "CREATE VERTEX TYPE User",
+        "CREATE VERTEX TYPE Movie",
+        "CREATE EDGE TYPE RATED UNIDIRECTIONAL",
+        "CREATE EDGE TYPE TAGGED UNIDIRECTIONAL",
+        "CREATE PROPERTY User.userId INTEGER",
+        "CREATE PROPERTY Movie.movieId INTEGER",
+        "CREATE PROPERTY Movie.title STRING",
+        "CREATE PROPERTY Movie.genres STRING",
+        "CREATE PROPERTY Movie.imdbId STRING",
+        "CREATE PROPERTY Movie.tmdbId INTEGER",
+        "CREATE PROPERTY RATED.rating FLOAT",
+        "CREATE PROPERTY RATED.timestamp LONG",
+        "CREATE PROPERTY TAGGED.tag STRING",
+        "CREATE PROPERTY TAGGED.timestamp LONG",
+    ]
+    for command in schema_commands:
+        try:
+            db.command("sql", command)
+        except Exception:
+            pass
 
     if create_indexes:
         print("Creating indexes...")
-        # Use get_or_create_index for idempotent index creation
-        db.schema.get_or_create_index("User", ["userId"], unique=True)
-        db.schema.get_or_create_index("Movie", ["movieId"], unique=True)
+        # Idempotent index creation
+        for command in (
+            "CREATE INDEX ON User (userId) UNIQUE_HASH",
+            "CREATE INDEX ON Movie (movieId) UNIQUE_HASH",
+        ):
+            try:
+                db.command("sql", command)
+            except Exception:
+                pass
         print("✓ Indexes created")
     else:
         print("⚠️  Indexes disabled (--no-index)")
@@ -2119,7 +2152,7 @@ def run_and_validate_queries(db: Any, size: str, check_baseline: bool = True):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Graph Creation Benchmark")
+    parser = argparse.ArgumentParser(description="Example 05: Graph Creation Benchmark")
     parser.add_argument(
         "--dataset",
         choices=["movielens-small", "movielens-large"],
@@ -2141,8 +2174,8 @@ def main():
     parser.add_argument(
         "--method",
         choices=["java", "sql"],
-        default="java",
-        help="Creation method: 'java' (Java API - RECOMMENDED) or 'sql' (SQL commands)",
+        default="sql",
+        help="Creation method: 'java' or 'sql' (default: sql)",
     )
     parser.add_argument(
         "--no-async",
@@ -2198,7 +2231,7 @@ def main():
         db_name = args.db_name
 
     print("=" * 70)
-    print("🚀 Graph Creation Benchmark")
+    print("🚀 Example 05: Graph Creation Benchmark")
     print("=" * 70)
     print(f"Dataset: {args.dataset}")
     print(f"Batch size: {args.batch_size:,}")

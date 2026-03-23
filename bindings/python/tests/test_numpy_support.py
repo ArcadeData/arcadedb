@@ -18,9 +18,8 @@ def test_numpy_array_conversion_in_command(temp_db):
     """Test automatic conversion of NumPy arrays in db.command()."""
     db = temp_db
 
-    # Schema operations are auto-transactional
-    db.schema.create_vertex_type("VectorData")
-    db.schema.create_property("VectorData", "vector", "ARRAY_OF_FLOATS")
+    db.command("sql", "CREATE VERTEX TYPE VectorData")
+    db.command("sql", "CREATE PROPERTY VectorData.vector ARRAY_OF_FLOATS")
 
     # Create a NumPy array
     vec = np.array([0.1, 0.2, 0.3], dtype=np.float32)
@@ -45,9 +44,8 @@ def test_numpy_array_conversion_in_query(temp_db):
     """Test automatic conversion of NumPy arrays in db.query()."""
     db = temp_db
 
-    # Schema operations are auto-transactional
-    db.schema.create_vertex_type("VectorData")
-    db.schema.create_property("VectorData", "vector", "ARRAY_OF_FLOATS")
+    db.command("sql", "CREATE VERTEX TYPE VectorData")
+    db.command("sql", "CREATE PROPERTY VectorData.vector ARRAY_OF_FLOATS")
 
     # Insert data manually first
     with db.transaction():
@@ -67,11 +65,10 @@ def test_numpy_array_conversion_in_transaction(temp_db):
     """Test NumPy array conversion in regular transactions (no batch context)."""
     db = temp_db
 
-    # Schema operations are auto-transactional
-    db.schema.create_vertex_type("VectorData")
-    db.schema.create_property("VectorData", "vector", "ARRAY_OF_FLOATS")
-    db.schema.create_document_type("DocData")
-    db.schema.create_property("DocData", "embedding", "ARRAY_OF_FLOATS")
+    db.command("sql", "CREATE VERTEX TYPE VectorData")
+    db.command("sql", "CREATE PROPERTY VectorData.vector ARRAY_OF_FLOATS")
+    db.command("sql", "CREATE DOCUMENT TYPE DocData")
+    db.command("sql", "CREATE PROPERTY DocData.embedding ARRAY_OF_FLOATS")
 
     vec1 = np.array([0.1, 0.2, 0.3], dtype=np.float32)
     vec2 = np.array([0.4, 0.5, 0.6], dtype=np.float32)
@@ -79,13 +76,8 @@ def test_numpy_array_conversion_in_transaction(temp_db):
     vec2_java = arcadedb.to_java_float_array(vec2)
 
     with db.transaction():
-        vertex = db.new_vertex("VectorData")
-        vertex.set("vector", vec1_java)
-        vertex.save()
-
-        doc = db.new_document("DocData")
-        doc.set("embedding", vec2_java)
-        doc.save()
+        db.command("sql", "INSERT INTO VectorData SET vector = ?", vec1_java)
+        db.command("sql", "INSERT INTO DocData SET embedding = ?", vec2_java)
 
     # Verify Vertex
     result = db.query("sql", "SELECT FROM VectorData").first()

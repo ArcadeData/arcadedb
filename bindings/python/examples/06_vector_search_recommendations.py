@@ -165,8 +165,14 @@ def generate_embeddings(
     print(f"Generating embeddings using {model_name}...")
 
     # Create properties if they don't exist
-    db.schema.get_or_create_property("Movie", embedding_prop, "ARRAY_OF_FLOATS")
-    db.schema.get_or_create_property("Movie", vector_id_prop, "STRING")
+    for command in (
+        f"CREATE PROPERTY Movie.{embedding_prop} ARRAY_OF_FLOATS",
+        f"CREATE PROPERTY Movie.{vector_id_prop} STRING",
+    ):
+        try:
+            db.command("sql", command)
+        except Exception:
+            pass
 
     # Fetch movies
     query = "SELECT FROM Movie"
@@ -210,21 +216,15 @@ def generate_embeddings(
     with db.transaction():
         # Use the same movies list we generated embeddings for
         for movie_result, embedding in zip(movies, embeddings):
-            # Convert Result to Vertex
-            movie = movie_result.get_vertex()
-            if not movie:
-                continue
-
-            # Get mutable version of vertex
-            mutable_vertex = movie.modify()
-
-            # Set embedding property with custom name
-            java_embedding = arcadedb.to_java_float_array(embedding)
-            mutable_vertex.set(embedding_prop, java_embedding)
-            # Create vector_id property
             movie_id = str(movie_result.get("movieId"))
-            mutable_vertex.set(vector_id_prop, movie_id)
-            mutable_vertex.save()
+            java_embedding = arcadedb.to_java_float_array(embedding)
+            db.command(
+                "sql",
+                f"UPDATE Movie SET {embedding_prop} = ?, {vector_id_prop} = ? WHERE movieId = ?",
+                java_embedding,
+                movie_id,
+                movie_id,
+            )
 
     elapsed_store = time.time() - start_store
     print(f"✓ Stored {total:,} embeddings in {elapsed_store:.1f}s")
@@ -425,7 +425,9 @@ def vector_based_recommendations(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Vector Search Movie Recommendations")
+    parser = argparse.ArgumentParser(
+        description="Example 06: Vector Search Movie Recommendations"
+    )
 
     parser.add_argument(
         "--db-path",
