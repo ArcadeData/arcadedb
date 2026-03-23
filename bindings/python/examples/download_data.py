@@ -101,6 +101,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -116,6 +117,156 @@ def ensure_clean_dir(path: Path, label: str) -> None:
     if path.exists():
         print(f"[CLEAN] Removing existing {label} directory: {path}")
         shutil.rmtree(path)
+
+
+def _format_bytes(num_bytes: int) -> str:
+    value = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024.0 or unit == "TB":
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{num_bytes} B"
+
+
+def _download_with_wget(url: str, destination: Path) -> bool:
+    wget_path = shutil.which("wget")
+    if not wget_path:
+        return False
+
+    command = [
+        wget_path,
+        "--continue",
+        "--tries=10",
+        "--waitretry=5",
+        "--retry-connrefused",
+        "--timeout=30",
+        "--read-timeout=30",
+        "--output-document",
+        str(destination),
+        url,
+    ]
+
+    print(f"[DOWNLOAD] Using wget with resume support for {destination.name}")
+    subprocess.run(command, check=True)
+    return True
+
+
+def _download_with_curl(url: str, destination: Path) -> bool:
+    curl_path = shutil.which("curl")
+    if not curl_path:
+        return False
+
+    command = [
+        curl_path,
+        "-L",
+        "--fail",
+        "--retry",
+        "10",
+        "--retry-delay",
+        "5",
+        "--retry-connrefused",
+        "-C",
+        "-",
+        "-o",
+        str(destination),
+        url,
+    ]
+
+    print(f"[DOWNLOAD] Using curl with resume support for {destination.name}")
+    subprocess.run(command, check=True)
+    return True
+
+
+def _download_with_python(
+    url: str, destination: Path, chunk_size: int = 8 * 1024 * 1024
+) -> None:
+    resume_from = destination.stat().st_size if destination.exists() else 0
+    headers = {}
+    if resume_from > 0:
+        headers["Range"] = f"bytes={resume_from}-"
+        print(
+            f"[DOWNLOAD] Resuming {destination.name} from {_format_bytes(resume_from)}"
+        )
+
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=60) as response:
+        status = getattr(response, "status", response.getcode())
+
+        if resume_from > 0 and status != 206:
+            print(
+                "[DOWNLOAD] Server did not honor Range request; "
+                "restarting full download"
+            )
+            destination.unlink(missing_ok=True)
+            resume_from = 0
+
+        mode = "ab" if resume_from > 0 else "wb"
+        content_length = response.headers.get("Content-Length")
+        expected_total = resume_from + int(content_length) if content_length else None
+        downloaded = resume_from
+        last_report_time = 0.0
+
+        with destination.open(mode) as fout:
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+
+                fout.write(chunk)
+                downloaded += len(chunk)
+
+                now = time.time()
+                if now - last_report_time >= 0.5:
+                    if expected_total and expected_total > 0:
+                        percent = (downloaded / expected_total) * 100
+                        print(
+                            f"\r   Progress: {percent:.1f}% "
+                            "("
+                            f"{_format_bytes(downloaded)}/"
+                            f"{_format_bytes(expected_total)}"
+                            ")",
+                            end="",
+                        )
+                    else:
+                        print(
+                            f"\r   Downloaded: {_format_bytes(downloaded)}",
+                            end="",
+                        )
+                    last_report_time = now
+
+        if expected_total and downloaded < expected_total:
+            raise urllib.error.ContentTooShortError(
+                "retrieval incomplete: got only "
+                f"{downloaded} out of {expected_total} bytes",
+                None,
+            )
+
+    print()
+
+
+def download_file(url: str, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if destination.exists() and destination.stat().st_size > 0:
+        print(
+            f"[DOWNLOAD] Found partial file for {destination.name}: "
+            f"{_format_bytes(destination.stat().st_size)}"
+        )
+
+    try:
+        if _download_with_wget(url, destination):
+            return
+    except Exception as exc:
+        print(f"[WARNING] wget download failed, falling back: {exc}")
+
+    try:
+        if _download_with_curl(url, destination):
+            return
+    except Exception as exc:
+        print(f"[WARNING] curl download failed, falling back: {exc}")
+
+    print(f"[DOWNLOAD] Using Python downloader for {destination.name}")
+    _download_with_python(url, destination)
 
 
 def parse_tpch_ddl(ddl_path: Path) -> dict[str, dict[str, object]]:
@@ -672,18 +823,6 @@ def download_stackoverflow(size="small"):
     download_start = time.time()
 
     try:
-        # Download with progress
-        def report_progress(block_num, block_size, total_size):
-            downloaded = block_num * block_size
-            percent = min(100, (downloaded / total_size) * 100) if total_size > 0 else 0
-            downloaded_mb = downloaded / (1024 * 1024)
-            total_mb = total_size / (1024 * 1024)
-            print(
-                f"\r   Progress: {percent:.1f}% "
-                f"({downloaded_mb:.1f}/{total_mb:.1f} MB)",
-                end="",
-            )
-
         extract_dir.mkdir(exist_ok=True)
 
         # Download one or multiple files depending on dataset
@@ -692,8 +831,7 @@ def download_stackoverflow(size="small"):
             archive_path = data_dir / filename
             print(f"\n[DOWNLOAD] Downloading {filename}")
             file_start = time.time()
-            urllib.request.urlretrieve(url, archive_path, reporthook=report_progress)
-            print()  # New line after progress
+            download_file(url, archive_path)
             file_elapsed = time.time() - file_start
             print(f"[OK] Downloaded to: {archive_path} ({file_elapsed:.2f}s)")
 

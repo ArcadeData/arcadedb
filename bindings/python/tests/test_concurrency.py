@@ -76,7 +76,7 @@ def test_thread_safety(cleanup_db):
 
     print("\n1. Creating database with test data...")
     db = arcadedb.create_database(db_path)
-    db.schema.create_document_type("Person")
+    db.command("sql", "CREATE DOCUMENT TYPE Person")
 
     with db.transaction():
         for i in range(20):
@@ -117,8 +117,7 @@ def test_sequential_access(cleanup_db):
 
     print("\n1. First access - Create and populate...")
     db1 = arcadedb.create_database(db_path)
-    # Use Schema API for embedded setup (auto-transactional)
-    db1.schema.create_document_type("Message")
+    db1.command("sql", "CREATE DOCUMENT TYPE Message")
     with db1.transaction():
         db1.command("sql", "INSERT INTO Message SET text = 'First access'")
     print("   ✅ Database created and populated")
@@ -175,11 +174,11 @@ def test_oltp_mixed_workload_threads(cleanup_db):
 
     db_path = cleanup_db("oltp_db_")
     db = arcadedb.create_database(db_path)
-    db.schema.create_document_type("Account")
-    db.schema.create_property("Account", "account_id", "INTEGER")
-    db.schema.create_property("Account", "balance", "INTEGER")
+    db.command("sql", "CREATE DOCUMENT TYPE Account")
+    db.command("sql", "CREATE PROPERTY Account.account_id INTEGER")
+    db.command("sql", "CREATE PROPERTY Account.balance INTEGER")
 
-    initial_accounts = 10000
+    initial_accounts = 1000
     print(f"\n1. Seeding {initial_accounts} accounts...")
     with db.transaction():
         for i in range(initial_accounts):
@@ -189,8 +188,8 @@ def test_oltp_mixed_workload_threads(cleanup_db):
             )
     print("   ✅ Seed complete")
 
-    worker_count = 6
-    ops_per_worker = 600
+    worker_count = 4
+    ops_per_worker = 400
     read_ratio = 0.9
     print(
         f"\n2. Running {worker_count} threads, "

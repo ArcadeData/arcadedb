@@ -58,8 +58,7 @@ def test_set_auto_transaction(temp_db):
 
 def test_transaction_config_with_operations(temp_db):
     """Test transaction config methods work alongside normal operations."""
-    # Schema operations are auto-transactional
-    temp_db.schema.create_vertex_type("ConfigTest")
+    temp_db.command("sql", "CREATE VERTEX TYPE ConfigTest")
 
     # Configure for maximum durability
     temp_db.set_wal_flush("yes_full")
@@ -91,8 +90,7 @@ def test_transaction_config_with_operations(temp_db):
 
 def test_manual_transaction_mode(temp_db):
     """Test manual transaction control with auto-transaction disabled."""
-    # Schema operations are auto-transactional
-    temp_db.schema.create_vertex_type("ManualTest")
+    temp_db.command("sql", "CREATE VERTEX TYPE ManualTest")
 
     # Disable auto-transaction
     temp_db.set_auto_transaction(False)
@@ -117,8 +115,7 @@ def test_manual_transaction_mode(temp_db):
 
 def test_wal_flush_with_bulk_operations(temp_db):
     """Test WAL flush modes with bulk inserts using chunked transactions."""
-    # Schema operations are auto-transactional
-    temp_db.schema.create_vertex_type("BatchTest")
+    temp_db.command("sql", "CREATE VERTEX TYPE BatchTest")
 
     # Test with maximum durability
     temp_db.set_wal_flush("yes_full")
@@ -128,9 +125,9 @@ def test_wal_flush_with_bulk_operations(temp_db):
     for start in range(0, total, chunk_size):
         with temp_db.transaction():
             for i in range(start, min(start + chunk_size, total)):
-                vertex = temp_db.new_vertex("BatchTest")
-                vertex.set("value", i)
-                vertex.save()
+                temp_db.command(
+                    "sql", "CREATE VERTEX BatchTest SET value = :value", {"value": i}
+                )
 
     # Verify all records were written
     result = temp_db.query("sql", "SELECT count(*) as cnt FROM BatchTest")
@@ -143,9 +140,9 @@ def test_wal_flush_with_bulk_operations(temp_db):
     for start in range(total, 1000, chunk_size):
         with temp_db.transaction():
             for i in range(start, min(start + chunk_size, 1000)):
-                vertex = temp_db.new_vertex("BatchTest")
-                vertex.set("value", i)
-                vertex.save()
+                temp_db.command(
+                    "sql", "CREATE VERTEX BatchTest SET value = :value", {"value": i}
+                )
 
     # Verify all records were written
     result = temp_db.query("sql", "SELECT count(*) as cnt FROM BatchTest")
@@ -175,8 +172,7 @@ def test_combined_config_changes(temp_db):
     temp_db.set_read_your_writes(True)
     temp_db.set_auto_transaction(True)
 
-    # Schema operations are auto-transactional
-    temp_db.schema.create_vertex_type("Combined")
+    temp_db.command("sql", "CREATE VERTEX TYPE Combined")
 
     # Create some data (requires transaction)
     with temp_db.transaction():

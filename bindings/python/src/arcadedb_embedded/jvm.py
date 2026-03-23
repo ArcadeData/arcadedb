@@ -137,7 +137,7 @@ def start_jvm(
             if candidate_args != _JVM_CONFIG:
                 raise ArcadeDBError(
                     "JVM is already started. Configure JVM args/heap before the "
-                    "first database/importer creation."
+                    "first database or server creation."
                 )
             return
 
@@ -149,7 +149,7 @@ def start_jvm(
         if has_overrides:
             raise ArcadeDBError(
                 "JVM is already started. Configure JVM args/heap before the "
-                "first database/importer creation."
+                "first database or server creation."
             )
 
         _JVM_CONFIG = candidate_args
@@ -271,6 +271,32 @@ def _build_jvm_args(
 
     if not any(arg.startswith("--enable-native-access") for arg in merged_args):
         merged_args.append("--enable-native-access=ALL-UNNAMED")
+
+    # Force UTF-8 regardless of OS locale to avoid silent encoding mismatches
+    if not any(arg.startswith("-Dfile.encoding=") for arg in merged_args):
+        merged_args.append("-Dfile.encoding=UTF8")
+
+    # Reflection access required by ArcadeDB engine internals (same as server.sh)
+    if not any("java.base/java.util.concurrent.atomic" in arg for arg in merged_args):
+        merged_args.append(
+            "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED"
+        )
+
+    if not any("java.base/java.nio.channels.spi" in arg for arg in merged_args):
+        merged_args.append("--add-opens=java.base/java.nio.channels.spi=ALL-UNNAMED")
+
+    if not any("java.base/java.lang=" in arg for arg in merged_args):
+        merged_args.append("--add-opens=java.base/java.lang=ALL-UNNAMED")
+
+    # Silence Truffle/GraalVM interpreter warning on standard HotSpot JDKs
+    if not any(
+        arg.startswith("-Dpolyglot.engine.WarnInterpreterOnly=") for arg in merged_args
+    ):
+        merged_args.append("-Dpolyglot.engine.WarnInterpreterOnly=false")
+
+    # Enable compact object headers (JDK 25+) to reduce heap footprint
+    if not any("UseCompactObjectHeaders" in arg for arg in merged_args):
+        merged_args.append("-XX:+UseCompactObjectHeaders")
 
     # Heap handling (single place):
     # - If heap_size is explicitly set to non-default, override.

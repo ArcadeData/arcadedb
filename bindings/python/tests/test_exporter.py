@@ -32,47 +32,47 @@ def sample_db(temp_db_path):
     db = arcadedb.create_database(temp_db_path)
 
     # Create schema with properties
-    db.schema.create_vertex_type("User")
-    db.schema.create_property("User", "userId", "INTEGER")
-    db.schema.create_property("User", "name", "STRING")
-    db.schema.create_property("User", "email", "STRING")
-    db.schema.create_property("User", "age", "INTEGER")
-    db.schema.create_property("User", "premium", "BOOLEAN")
-    db.schema.create_index("User", ["userId"], unique=True)
+    db.command("sql", "CREATE VERTEX TYPE User")
+    db.command("sql", "CREATE PROPERTY User.userId INTEGER")
+    db.command("sql", "CREATE PROPERTY User.name STRING")
+    db.command("sql", "CREATE PROPERTY User.email STRING")
+    db.command("sql", "CREATE PROPERTY User.age INTEGER")
+    db.command("sql", "CREATE PROPERTY User.premium BOOLEAN")
+    db.command("sql", "CREATE INDEX ON User (userId) UNIQUE_HASH")
 
-    db.schema.create_vertex_type("Movie")
-    db.schema.create_property("Movie", "movieId", "INTEGER")
-    db.schema.create_property("Movie", "title", "STRING")
-    db.schema.create_property("Movie", "year", "INTEGER")
-    db.schema.create_property("Movie", "genres", "LIST")
-    db.schema.create_property("Movie", "rating", "DOUBLE")
-    db.schema.create_index("Movie", ["movieId"], unique=True)
+    db.command("sql", "CREATE VERTEX TYPE Movie")
+    db.command("sql", "CREATE PROPERTY Movie.movieId INTEGER")
+    db.command("sql", "CREATE PROPERTY Movie.title STRING")
+    db.command("sql", "CREATE PROPERTY Movie.year INTEGER")
+    db.command("sql", "CREATE PROPERTY Movie.genres LIST")
+    db.command("sql", "CREATE PROPERTY Movie.rating DOUBLE")
+    db.command("sql", "CREATE INDEX ON Movie (movieId) UNIQUE_HASH")
 
-    db.schema.create_vertex_type("Actor")
-    db.schema.create_property("Actor", "actorId", "INTEGER")
-    db.schema.create_property("Actor", "name", "STRING")
-    db.schema.create_property("Actor", "birthYear", "INTEGER")
+    db.command("sql", "CREATE VERTEX TYPE Actor")
+    db.command("sql", "CREATE PROPERTY Actor.actorId INTEGER")
+    db.command("sql", "CREATE PROPERTY Actor.name STRING")
+    db.command("sql", "CREATE PROPERTY Actor.birthYear INTEGER")
 
-    db.schema.create_edge_type("Rated")
-    db.schema.create_property("Rated", "rating", "DOUBLE")
-    db.schema.create_property("Rated", "timestamp", "LONG")
-    db.schema.create_property("Rated", "review", "STRING")
+    db.command("sql", "CREATE EDGE TYPE Rated UNIDIRECTIONAL")
+    db.command("sql", "CREATE PROPERTY Rated.rating DOUBLE")
+    db.command("sql", "CREATE PROPERTY Rated.timestamp LONG")
+    db.command("sql", "CREATE PROPERTY Rated.review STRING")
 
-    db.schema.create_edge_type("ActedIn")
-    db.schema.create_property("ActedIn", "role", "STRING")
-    db.schema.create_property("ActedIn", "year", "INTEGER")
+    db.command("sql", "CREATE EDGE TYPE ActedIn UNIDIRECTIONAL")
+    db.command("sql", "CREATE PROPERTY ActedIn.role STRING")
+    db.command("sql", "CREATE PROPERTY ActedIn.year INTEGER")
 
-    db.schema.create_edge_type("Follows")
+    db.command("sql", "CREATE EDGE TYPE Follows UNIDIRECTIONAL")
 
-    db.schema.create_document_type("LogEntry")
-    db.schema.create_property("LogEntry", "level", "STRING")
-    db.schema.create_property("LogEntry", "message", "STRING")
-    db.schema.create_property("LogEntry", "timestamp", "LONG")
+    db.command("sql", "CREATE DOCUMENT TYPE LogEntry")
+    db.command("sql", "CREATE PROPERTY LogEntry.level STRING")
+    db.command("sql", "CREATE PROPERTY LogEntry.message STRING")
+    db.command("sql", "CREATE PROPERTY LogEntry.timestamp LONG")
 
-    db.schema.create_document_type("Config")
-    db.schema.create_property("Config", "key", "STRING")
-    db.schema.create_property("Config", "value", "STRING")
-    db.schema.create_property("Config", "enabled", "BOOLEAN")
+    db.command("sql", "CREATE DOCUMENT TYPE Config")
+    db.command("sql", "CREATE PROPERTY Config.key STRING")
+    db.command("sql", "CREATE PROPERTY Config.value STRING")
+    db.command("sql", "CREATE PROPERTY Config.enabled BOOLEAN")
 
     # Add test data with more complexity
     with db.transaction():
@@ -580,7 +580,7 @@ class TestExportWithBulkInsert:
         db = arcadedb.create_database(temp_db_path)
 
         # Create schema
-        db.schema.create_vertex_type("Product")
+        db.command("sql", "CREATE VERTEX TYPE Product")
 
         # Bulk insert using chunked transactions (avoids batch_context dependency here)
         chunk_size = 100
@@ -588,10 +588,11 @@ class TestExportWithBulkInsert:
         for start in range(0, total, chunk_size):
             with db.transaction():
                 for i in range(start, min(start + chunk_size, total)):
-                    vertex = db.new_vertex("Product")
-                    vertex.set("productId", i)
-                    vertex.set("name", f"Product{i}")
-                    vertex.save()
+                    db.command(
+                        "sql",
+                        "INSERT INTO Product SET productId = :productId, name = :name",
+                        {"productId": i, "name": f"Product{i}"},
+                    )
 
         # Export database
         export_path = "test_bulk_export.jsonl.tgz"
@@ -631,34 +632,34 @@ class TestAllDataTypes:
 
         try:
             # Create comprehensive type with all data types (auto-transactional)
-            db.schema.create_document_type("DataTypeTest")
+            db.command("sql", "CREATE DOCUMENT TYPE DataTypeTest")
 
             # Basic types
-            db.schema.create_property("DataTypeTest", "text_field", "STRING")
-            db.schema.create_property("DataTypeTest", "bool_field", "BOOLEAN")
-            db.schema.create_property("DataTypeTest", "int_field", "INTEGER")
-            db.schema.create_property("DataTypeTest", "long_field", "LONG")
-            db.schema.create_property("DataTypeTest", "float_field", "FLOAT")
-            db.schema.create_property("DataTypeTest", "double_field", "DOUBLE")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.text_field STRING")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.bool_field BOOLEAN")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.int_field INTEGER")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.long_field LONG")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.float_field FLOAT")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.double_field DOUBLE")
 
             # Date/time types
-            db.schema.create_property("DataTypeTest", "date_field", "DATE")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.date_field DATE")
             db.command("sql", "CREATE PROPERTY DataTypeTest.datetime_field DATETIME")
 
             # Precision types
-            db.schema.create_property("DataTypeTest", "decimal_field", "DECIMAL")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.decimal_field DECIMAL")
 
             # Collection types
             db.command("sql", "CREATE PROPERTY DataTypeTest.string_list LIST OF STRING")
             db.command("sql", "CREATE PROPERTY DataTypeTest.int_list LIST")
-            db.schema.create_property("DataTypeTest", "mixed_list", "LIST")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.mixed_list LIST")
 
             # Note: EMBEDDED type works best without explicit property definition
             # ArcadeDB will automatically handle nested objects
 
             # Create a reference type for LINK testing
-            db.schema.create_vertex_type("RefVertex")
-            db.schema.create_property("RefVertex", "ref_id", "INTEGER")
+            db.command("sql", "CREATE VERTEX TYPE RefVertex")
+            db.command("sql", "CREATE PROPERTY RefVertex.ref_id INTEGER")
 
             # LINK type (reference to another record)
             db.command(

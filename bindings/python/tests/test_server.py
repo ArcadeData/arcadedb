@@ -68,7 +68,7 @@ def test_server_database_operations(temp_server_root):
 
         # Use database
         # Schema operations are auto-transactional
-        db.schema.create_document_type("Person")
+        db.command("sql", "CREATE DOCUMENT TYPE Person")
 
         with db.transaction():
             db.command("sql", "INSERT INTO Person SET name = 'Alice', age = 30")

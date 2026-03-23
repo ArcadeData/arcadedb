@@ -11,9 +11,6 @@ from ._version import __version__
 # Import async execution
 from .async_executor import AsyncExecutor
 
-# Import batch processing
-from .batch import BatchContext
-
 # Import citation helper
 from .citation import cite
 
@@ -35,8 +32,11 @@ from .exporter import export_database, export_to_csv
 # Import graph classes
 from .graph import Document, Edge, Vertex
 
-# Import importer classes
-from .importer import Importer, import_csv, import_xml
+# Import graph batch helper
+from .graph_batch import GraphBatch
+
+# Import importer helpers
+from .importer import ImportResult
 
 # Import result classes
 from .results import Result, ResultSet
@@ -80,8 +80,8 @@ __all__ = [
     "TransactionContext",
     # Async execution
     "AsyncExecutor",
-    # Batch processing
-    "BatchContext",
+    "GraphBatch",
+    "ImportResult",
     # Type conversion
     "convert_java_to_python",
     "convert_python_to_java",
@@ -92,8 +92,4 @@ __all__ = [
     # Data export
     "export_database",
     "export_to_csv",
-    # Data import
-    "Importer",
-    "import_csv",
-    "import_xml",
 ]

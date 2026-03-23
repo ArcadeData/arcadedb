@@ -15,24 +15,26 @@ Example:
     >>> async_exec = db.async_executor()
     >>> async_exec.set_parallel_level(8).set_commit_every(5000)
     >>> for i in range(100000):
-    ...     vertex = db.new_vertex("User")
-    ...     vertex.set("id", i)
-    ...     async_exec.create_record(vertex)
+    ...     async_exec.command(
+    ...         "sql",
+    ...         "INSERT INTO User SET id = :id",
+    ...         id=i,
+    ...     )
     >>> async_exec.wait_completion()
 """
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence, Union
 
 import jpype
 
-from .graph import Document
+from .type_conversion import convert_python_to_java
 
 
 class AsyncExecutor:
     """
     Wrapper for Java DatabaseAsyncExecutor with Pythonic interface.
 
-    Provides async record operations with automatic batching, parallel
+    Provides async command/query execution with automatic batching, parallel
     execution, and WAL optimization. All configuration methods return
     self for method chaining.
 
@@ -46,11 +48,13 @@ class AsyncExecutor:
         >>> async_exec.set_parallel_level(4)  # 4 worker threads
         >>> async_exec.set_commit_every(1000)  # Auto-commit every 1K ops
         >>>
-        >>> # Create records asynchronously
+        >>> # Execute SQL asynchronously
         >>> for i in range(10000):
-        ...     vertex = db.new_vertex("User")
-        ...     vertex.set("id", i)
-        ...     async_exec.create_record(vertex)
+        ...     async_exec.command(
+        ...         "sql",
+        ...         "INSERT INTO User SET id = :id",
+        ...         id=i,
+        ...     )
         >>>
         >>> # Wait for completion
         >>> async_exec.wait_completion()
@@ -151,16 +155,54 @@ class AsyncExecutor:
         if sync_mode not in valid_modes:
             raise ValueError(f"sync_mode must be one of {valid_modes}, got {sync_mode}")
 
-        # Map Python strings to Java WALFile.FlushType enum
-        WALFile = jpype.JClass("com.arcadedb.log.WALFile")
+        FlushType = jpype.JClass("com.arcadedb.engine.WALFile$FlushType")
         mode_map = {
-            "no": WALFile.FLUSH_TYPE.NO,
-            "yes_nometadata": WALFile.FLUSH_TYPE.YES_NOMETADATA,
-            "yes_full": WALFile.FLUSH_TYPE.YES_FULL,
+            "no": FlushType.NO,
+            "yes_nometadata": FlushType.YES_NOMETADATA,
+            "yes_full": FlushType.YES_FULL,
         }
 
         self._java_async.setTransactionSync(mode_map[sync_mode])
         return self
+
+    def get_parallel_level(self) -> int:
+        return int(self._java_async.getParallelLevel())
+
+    def get_back_pressure(self) -> int:
+        return int(self._java_async.getBackPressure())
+
+    def get_commit_every(self) -> int:
+        return int(self._java_async.getCommitEvery())
+
+    def is_transaction_use_wal(self) -> bool:
+        return bool(self._java_async.isTransactionUseWAL())
+
+    def get_transaction_sync(self) -> str:
+        name = str(self._java_async.getTransactionSync().name())
+        mapping = {
+            "NO": "no",
+            "YES_NOMETADATA": "yes_nometadata",
+            "YES_FULL": "yes_full",
+        }
+        return mapping.get(name, name.lower())
+
+    def get_thread_count(self) -> int:
+        return int(self._java_async.getThreadCount())
+
+    def is_processing(self) -> bool:
+        try:
+            if bool(self._java_async.isProcessing()):
+                return True
+        except Exception:
+            pass
+
+        try:
+            return not bool(self._java_async.waitCompletion(0))
+        except Exception:
+            return False
+
+    def kill(self):
+        self._java_async.kill()
 
     def set_back_pressure(self, percentage: int) -> "AsyncExecutor":
         """
@@ -188,107 +230,121 @@ class AsyncExecutor:
         self._java_async.setBackPressure(percentage)
         return self
 
-    # Record operations
+    # Graph and time-series operations
 
-    def create_record(
+    def new_edge(
         self,
-        record,
-        callback: Optional[Callable[[Any], None]] = None,
-        error_callback: Optional[Callable[[Exception], None]] = None,
+        source_vertex,
+        edge_type: str,
+        destination_vertex_or_rid,
+        light: bool = False,
+        callback: Optional[Callable[[Any, bool, bool], None]] = None,
+        **properties,
     ):
-        """
-        Schedule async record creation.
+        source_vertex = self._unwrap_record(source_vertex)
+        destination_rid = self._to_java_rid(destination_vertex_or_rid)
+        java_callback = self._create_new_edge_callback(callback) if callback else None
+        props = self._to_java_varargs(properties)
+        self._java_async.newEdge(
+            source_vertex,
+            edge_type,
+            destination_rid,
+            light,
+            java_callback,
+            *props,
+        )
 
-        Args:
-            record: MutableDocument or MutableVertex to create
-                   (as returned by db.new_vertex() or db.new_document())
-                   Can also be a Python wrapper (Document, Vertex, Edge)
-            callback: Optional success callback, receives created record
-            error_callback: Optional error callback, receives exception
-
-        Example:
-            >>> def on_success(record):
-            ...     print(f"Created: {record}")
-            >>>
-            >>> vertex = db.new_vertex("User")
-            >>> vertex.set("id", 123)
-            >>> async_exec.create_record(vertex, on_success)
-        """
-        # Unwrap Python wrapper if provided
-        if isinstance(record, Document):
-            record = record._java_document
-
-        # Java API requires callbacks, so create them even if not provided
-        java_callback = self._create_new_record_callback(callback, error_callback)
-        self._java_async.createRecord(record, java_callback)
-
-    def update_record(
+    def new_edge_by_keys(
         self,
-        record,
-        callback: Optional[Callable[[Any], None]] = None,
+        source_vertex_type: str,
+        source_key_names: Union[str, Sequence[str]],
+        source_key_values: Union[Any, Sequence[Any]],
+        destination_vertex_type: str,
+        destination_key_names: Union[str, Sequence[str]],
+        destination_key_values: Union[Any, Sequence[Any]],
+        create_vertex_if_not_exist: bool,
+        edge_type: str,
+        bidirectional: bool,
+        light: bool,
+        callback: Optional[Callable[[Any, bool, bool], None]] = None,
+        **properties,
     ):
-        """
-        Schedule async record update.
+        java_callback = self._create_new_edge_callback(callback) if callback else None
+        props = self._to_java_varargs(properties)
 
-        Args:
-            record: MutableDocument or MutableVertex to update
-                   Can also be a Python wrapper (Document, Vertex, Edge)
-            callback: Optional success callback, receives updated record
+        if isinstance(source_key_names, str) and isinstance(destination_key_names, str):
+            source_value = (
+                source_key_values[0]
+                if isinstance(source_key_values, (list, tuple))
+                else source_key_values
+            )
+            destination_value = (
+                destination_key_values[0]
+                if isinstance(destination_key_values, (list, tuple))
+                else destination_key_values
+            )
+            self._java_async.newEdgeByKeys(
+                source_vertex_type,
+                source_key_names,
+                convert_python_to_java(source_value),
+                destination_vertex_type,
+                destination_key_names,
+                convert_python_to_java(destination_value),
+                create_vertex_if_not_exist,
+                edge_type,
+                bidirectional,
+                light,
+                java_callback,
+                *props,
+            )
+            return
 
-        Example:
-            >>> vertex.set("updated", True)
-            >>> async_exec.update_record(vertex)
+        source_names = list(source_key_names)
+        source_values = list(source_key_values)
+        destination_names = list(destination_key_names)
+        destination_values = list(destination_key_values)
 
-        Note:
-            Callbacks use UpdatedRecordCallback which receives the updated record.
-            Per-operation callbacks work reliably.
-        """
-        # Unwrap Python wrapper if provided
-        from .graph import Document
+        if len(source_names) != len(source_values):
+            raise ValueError(
+                "source_key_names and source_key_values must have same size"
+            )
+        if len(destination_names) != len(destination_values):
+            raise ValueError(
+                "destination_key_names and destination_key_values must have same size"
+            )
 
-        if isinstance(record, Document):
-            record = record._java_document
+        JStringArray = jpype.JArray(jpype.JString)
+        JObjectArray = jpype.JArray(jpype.JObject)
 
-        if callback is None:
-            # Use null callback
-            self._java_async.updateRecord(record, None)
-        else:
-            # Create UpdatedRecordCallback for per-operation callback
-            java_callback = self._create_updated_callback(callback)
-            self._java_async.updateRecord(record, java_callback)
+        self._java_async.newEdgeByKeys(
+            source_vertex_type,
+            JStringArray(source_names),
+            JObjectArray([convert_python_to_java(v) for v in source_values]),
+            destination_vertex_type,
+            JStringArray(destination_names),
+            JObjectArray([convert_python_to_java(v) for v in destination_values]),
+            create_vertex_if_not_exist,
+            edge_type,
+            bidirectional,
+            light,
+            java_callback,
+            *props,
+        )
 
-    def delete_record(
+    def append_samples(
         self,
-        record,
-        callback: Optional[Callable[[], None]] = None,
+        type_name: str,
+        timestamps: Sequence[int],
+        *column_values: Sequence[Any],
     ):
-        """
-        Schedule async record deletion.
-
-        Args:
-            record: Document, Vertex, or Edge to delete
-            callback: Optional success callback (no args)
-
-        Example:
-            >>> async_exec.delete_record(vertex)
-
-        Note:
-            Callbacks use DeletedRecordCallback which takes no arguments.
-            Per-operation callbacks work reliably.
-        """
-        # Unwrap Python wrapper if provided
-        from .graph import Document
-
-        if isinstance(record, Document):
-            record = record._java_document
-
-        if callback is None:
-            # Use null callback
-            self._java_async.deleteRecord(record, None)
-        else:
-            # Create DeletedRecordCallback for per-operation callback
-            java_callback = self._create_deleted_callback(callback)
-            self._java_async.deleteRecord(record, java_callback)
+        JLongArray = jpype.JArray(jpype.JLong)
+        timestamps_java = JLongArray([int(value) for value in timestamps])
+        JObjectArray = jpype.JArray(jpype.JObject)
+        columns_java = [
+            JObjectArray([convert_python_to_java(value) for value in values])
+            for values in column_values
+        ]
+        self._java_async.appendSamples(type_name, timestamps_java, *columns_java)
 
     # Query operations
 
@@ -297,6 +353,8 @@ class AsyncExecutor:
         language: str,
         query_text: str,
         callback: Callable[[Any], None],
+        args: Optional[Sequence[Any]] = None,
+        error_callback: Optional[Callable[[Exception], None]] = None,
         **params,
     ):
         """
@@ -315,15 +373,27 @@ class AsyncExecutor:
             >>> async_exec.query("sql", "SELECT FROM User", process_row)
             >>> async_exec.wait_completion()
         """
-        java_callback = self._create_result_callback(callback)
+        positional_args = tuple(args or ())
+
+        if positional_args and params:
+            raise ValueError("Use either positional args or named params, not both")
+
+        java_callback = self._create_result_callback(callback, error_callback)
 
         if params:
-            # Convert params to Java map
-            HashMap = jpype.JClass("java.util.HashMap")
-            java_params = HashMap()
-            for key, value in params.items():
-                java_params.put(key, value)
-            self._java_async.query(language, query_text, java_callback, java_params)
+            self._java_async.query(
+                language,
+                query_text,
+                java_callback,
+                self._to_java_map(params),
+            )
+        elif positional_args:
+            self._java_async.query(
+                language,
+                query_text,
+                java_callback,
+                *[convert_python_to_java(arg) for arg in positional_args],
+            )
         else:
             self._java_async.query(language, query_text, java_callback)
 
@@ -332,6 +402,8 @@ class AsyncExecutor:
         language: str,
         command_text: str,
         callback: Optional[Callable[[Any], None]] = None,
+        args: Optional[Sequence[Any]] = None,
+        error_callback: Optional[Callable[[Exception], None]] = None,
         **params,
     ):
         """
@@ -348,17 +420,90 @@ class AsyncExecutor:
             ...                    id=123)
             >>> async_exec.wait_completion()
         """
-        java_callback = self._create_result_callback(callback) if callback else None
+        positional_args = tuple(args or ())
 
-        # Prepare parameters (empty map if none provided)
-        HashMap = jpype.JClass("java.util.HashMap")
-        java_params = HashMap()
+        if positional_args and params:
+            raise ValueError("Use either positional args or named params, not both")
+
+        java_callback = (
+            self._create_result_callback(callback, error_callback)
+            if (callback or error_callback)
+            else None
+        )
+
         if params:
-            for key, value in params.items():
-                java_params.put(key, value)
+            self._java_async.command(
+                language,
+                command_text,
+                java_callback,
+                self._to_java_map(params),
+            )
+        elif positional_args:
+            self._java_async.command(
+                language,
+                command_text,
+                java_callback,
+                *[convert_python_to_java(arg) for arg in positional_args],
+            )
+        else:
+            self._java_async.command(language, command_text, java_callback)
 
-        # Java method always requires callback and params (even if null/empty)
-        self._java_async.command(language, command_text, java_callback, java_params)
+    def scan_type(
+        self,
+        type_name: str,
+        callback: Callable[[Any], bool],
+        polymorphic: bool = True,
+        error_callback: Optional[Callable[[Any, Exception], bool]] = None,
+    ):
+        java_doc_callback = self._create_document_callback(callback)
+        if error_callback is None:
+            self._java_async.scanType(type_name, polymorphic, java_doc_callback)
+        else:
+            java_error_callback = self._create_error_record_callback(error_callback)
+            self._java_async.scanType(
+                type_name,
+                polymorphic,
+                java_doc_callback,
+                java_error_callback,
+            )
+
+    def transaction(
+        self,
+        tx_block: Callable[[], None],
+        retries: Optional[int] = None,
+        ok_callback: Optional[Callable[[], None]] = None,
+        error_callback: Optional[Callable[[Exception], None]] = None,
+        slot: Optional[int] = None,
+    ):
+        java_tx = self._create_transaction_scope(tx_block)
+
+        if (
+            retries is None
+            and ok_callback is None
+            and error_callback is None
+            and slot is None
+        ):
+            self._java_async.transaction(java_tx)
+            return
+
+        retries_value = retries if retries is not None else 1
+        java_ok = self._create_ok_callback(ok_callback) if ok_callback else None
+        java_error = (
+            self._create_error_callback(error_callback) if error_callback else None
+        )
+
+        if slot is None and java_ok is None and java_error is None:
+            self._java_async.transaction(java_tx, retries_value)
+        elif slot is None:
+            self._java_async.transaction(java_tx, retries_value, java_ok, java_error)
+        else:
+            self._java_async.transaction(
+                java_tx,
+                retries_value,
+                java_ok,
+                java_error,
+                slot,
+            )
 
     # Control flow
 
@@ -400,14 +545,10 @@ class AsyncExecutor:
             >>> if async_exec.is_pending():
             ...     print("Still processing...")
         """
-        # Check if there are pending operations by trying to get the queue size
-        # or by checking if wait would complete immediately
         try:
-            # Try waiting with 0 timeout - if it returns True, nothing is pending
-            return not self._java_async.waitCompletion(0)
+            return not bool(self._java_async.waitCompletion(0))
         except Exception:
-            # If method doesn't exist or fails, assume not pending
-            return False
+            return self.is_processing()
 
     def close(self):
         """
@@ -422,25 +563,23 @@ class AsyncExecutor:
             >>> async_exec.wait_completion()
             >>> async_exec.close()  # Shutdown threads
         """
-        try:
-            self._java_async.close()
-        except Exception:
-            # Ignore errors during close
-            pass
+        self._java_async.close()
 
     # Global callbacks
 
-    def on_ok(self, callback: Callable[[Any], None]) -> "AsyncExecutor":
+    def on_ok(self, callback: Callable[[], None]) -> "AsyncExecutor":
         """
         Set global success callback for all operations.
 
         **Note:** Global callbacks have JPype proxy compatibility issues.
-        Use per-operation callbacks instead:
+        Prefer per-operation callbacks on async SQL/Cypher commands:
 
-            async_exec.create_record(vertex, callback=on_success)
+            async_exec.command(
+                "sql", "INSERT INTO Log SET id = :id", callback=on_success, id=1
+            )
 
         Args:
-            callback: Success callback, receives result
+            callback: Success callback, no args
 
         Returns:
             self for method chaining
@@ -471,36 +610,6 @@ class AsyncExecutor:
 
     # Internal callback bridge helpers
 
-    def _create_new_record_callback(self, ok_callback, error_callback):
-        """Create Java NewRecordCallback from Python functions."""
-        NewRecordCallback = jpype.JClass(
-            "com.arcadedb.database.async.NewRecordCallback"
-        )
-
-        # Capture callbacks in the closure
-        python_ok_callback = ok_callback
-        python_error_callback = error_callback
-
-        # Define the callback implementation
-        @jpype.JImplements(NewRecordCallback)
-        class PythonNewRecordCallback:
-            @jpype.JOverride
-            def call(self, record):
-                if python_ok_callback:
-                    try:
-                        # Pass the Java record directly - no wrapping needed
-                        # The user can call .get(), .set(), etc. on it
-                        python_ok_callback(record)
-                    except Exception as e:
-                        if python_error_callback:
-                            try:
-                                python_error_callback(e)
-                            except:
-                                pass  # Ignore errors in error callback
-                        # Don't re-raise - would crash the async thread
-
-        return PythonNewRecordCallback()
-
     def _create_ok_callback(self, python_callback):
         """Create Java OkCallback from Python function."""
         OkCallback = jpype.JClass("com.arcadedb.database.async.OkCallback")
@@ -511,37 +620,11 @@ class AsyncExecutor:
         @jpype.JImplements(OkCallback)
         class PythonOkCallback:
             @jpype.JOverride
-            def call(self, result):
-                if callback:
-                    try:
-                        callback(result)
-                    except Exception:
-                        # Silently ignore to avoid crashing Java thread
-                        pass
-
-        return PythonOkCallback()
-
-    def _create_deleted_callback(self, python_callback):
-        """Create Java DeletedRecordCallback from Python function."""
-        DeletedRecordCallback = jpype.JClass(
-            "com.arcadedb.database.async.DeletedRecordCallback"
-        )
-
-        # Capture callback in closure
-        callback = python_callback
-
-        @jpype.JImplements(DeletedRecordCallback)
-        class PythonDeletedRecordCallback:
-            @jpype.JOverride
             def call(self):
                 if callback:
-                    try:
-                        callback()
-                    except Exception:
-                        # Silently ignore to avoid crashing Java thread
-                        pass
+                    callback()
 
-        return PythonDeletedRecordCallback()
+        return PythonOkCallback()
 
     def _create_new_edge_callback(self, python_callback):
         """Create Java NewEdgeCallback from Python function.
@@ -566,35 +649,9 @@ class AsyncExecutor:
                 created_dest_vertex,
             ):
                 if callback:
-                    try:
-                        callback(edge, created_source_vertex, created_dest_vertex)
-                    except Exception:
-                        # Silently ignore to avoid crashing Java thread
-                        pass
+                    callback(edge, created_source_vertex, created_dest_vertex)
 
         return PythonNewEdgeCallback()
-
-    def _create_updated_callback(self, python_callback):
-        """Create Java UpdatedRecordCallback from Python function."""
-        UpdatedRecordCallback = jpype.JClass(
-            "com.arcadedb.database.async.UpdatedRecordCallback"
-        )
-
-        # Capture callback in closure
-        callback = python_callback
-
-        @jpype.JImplements(UpdatedRecordCallback)
-        class PythonUpdatedRecordCallback:
-            @jpype.JOverride
-            def call(self, record):
-                if callback:
-                    try:
-                        callback(record)
-                    except Exception:
-                        # Silently ignore to avoid crashing Java thread
-                        pass
-
-        return PythonUpdatedRecordCallback()
 
     def _create_error_callback(self, python_callback):
         """Create Java ErrorCallback from Python function."""
@@ -609,18 +666,94 @@ class AsyncExecutor:
 
         return PythonErrorCallback()
 
-    def _create_result_callback(self, python_callback):
-        """Create Java ResultCallback from Python function."""
-        ResultCallback = jpype.JClass("com.arcadedb.database.async.ResultCallback")
+    def _create_result_callback(self, python_callback, error_callback=None):
+        """Create Java AsyncResultsetCallback from Python functions."""
+        AsyncResultsetCallback = jpype.JClass(
+            "com.arcadedb.database.async.AsyncResultsetCallback"
+        )
 
-        @jpype.JImplements(ResultCallback)
+        @jpype.JImplements(AsyncResultsetCallback)
         class PythonResultCallback:
             @jpype.JOverride
-            def call(self, result):
-                if python_callback:
-                    from .results import Result
+            def onComplete(self, resultset):
+                if not python_callback:
+                    return
+                from .results import Result
 
-                    python_result = Result(result)
-                    python_callback(python_result)
+                while resultset.hasNext():
+                    python_callback(Result(resultset.next()))
+
+            @jpype.JOverride
+            def onError(self, exception):
+                if error_callback:
+                    error_callback(exception)
 
         return PythonResultCallback()
+
+    def _create_document_callback(self, python_callback):
+        DocumentCallback = jpype.JClass("com.arcadedb.database.DocumentCallback")
+
+        @jpype.JImplements(DocumentCallback)
+        class PythonDocumentCallback:
+            @jpype.JOverride
+            def onRecord(self, record):
+                if python_callback is None:
+                    return True
+                result = python_callback(record)
+                return True if result is None else bool(result)
+
+        return PythonDocumentCallback()
+
+    def _create_error_record_callback(self, python_callback):
+        ErrorRecordCallback = jpype.JClass("com.arcadedb.engine.ErrorRecordCallback")
+
+        @jpype.JImplements(ErrorRecordCallback)
+        class PythonErrorRecordCallback:
+            @jpype.JOverride
+            def onErrorLoading(self, rid, exception):
+                if python_callback is None:
+                    return True
+                result = python_callback(rid, exception)
+                return True if result is None else bool(result)
+
+        return PythonErrorRecordCallback()
+
+    def _create_transaction_scope(self, python_callback):
+        TransactionScope = jpype.JClass(
+            "com.arcadedb.database.BasicDatabase$TransactionScope"
+        )
+
+        @jpype.JImplements(TransactionScope)
+        class PythonTransactionScope:
+            @jpype.JOverride
+            def execute(self):
+                python_callback()
+
+        return PythonTransactionScope()
+
+    def _unwrap_record(self, record):
+        java_document = getattr(record, "_java_document", None)
+        return java_document if java_document is not None else record
+
+    def _to_java_map(self, params):
+        HashMap = jpype.JClass("java.util.HashMap")
+        java_params = HashMap()
+        for key, value in params.items():
+            java_params.put(key, convert_python_to_java(value))
+        return java_params
+
+    def _to_java_varargs(self, properties):
+        varargs = []
+        for key, value in properties.items():
+            varargs.append(key)
+            varargs.append(convert_python_to_java(value))
+        return varargs
+
+    def _to_java_rid(self, value):
+        value = self._unwrap_record(value)
+        if hasattr(value, "getIdentity"):
+            return value.getIdentity()
+        if isinstance(value, str):
+            RID = jpype.JClass("com.arcadedb.database.RID")
+            return RID(value)
+        return value

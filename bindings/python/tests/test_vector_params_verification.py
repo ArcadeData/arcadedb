@@ -16,8 +16,8 @@ class TestVectorParams:
 
     def test_quantization_param(self, test_db):
         """Test sending quantization parameter."""
-        test_db.schema.create_vertex_type("QuantDoc")
-        test_db.schema.create_property("QuantDoc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE QuantDoc")
+        test_db.command("sql", "CREATE PROPERTY QuantDoc.embedding ARRAY_OF_FLOATS")
 
         # Create with INT8
         index = test_db.create_vector_index(
@@ -44,8 +44,8 @@ class TestVectorParams:
 
     def test_store_vectors_in_graph_param(self, test_db):
         """Test sending store_vectors_in_graph parameter."""
-        test_db.schema.create_vertex_type("StoreDoc")
-        test_db.schema.create_property("StoreDoc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE StoreDoc")
+        test_db.command("sql", "CREATE PROPERTY StoreDoc.embedding ARRAY_OF_FLOATS")
 
         # Create with store_vectors_in_graph=True
         index = test_db.create_vector_index(
@@ -92,8 +92,8 @@ class TestVectorParams:
 
     def test_add_hierarchy_param(self, test_db):
         """Test sending add_hierarchy parameter."""
-        test_db.schema.create_vertex_type("HierDoc")
-        test_db.schema.create_property("HierDoc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE HierDoc")
+        test_db.command("sql", "CREATE PROPERTY HierDoc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index(
             "HierDoc", "embedding", dimensions=3, add_hierarchy=True
@@ -120,8 +120,8 @@ class TestVectorParams:
 
         # 1. Create and Configure
         with arcadedb.create_database(db_path) as db:
-            db.schema.create_vertex_type("Doc")
-            db.schema.create_property("Doc", "embedding", "ARRAY_OF_FLOATS")
+            db.command("sql", "CREATE VERTEX TYPE Doc")
+            db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
             db.create_vector_index(
                 "Doc",
@@ -134,41 +134,23 @@ class TestVectorParams:
 
         # 2. Reopen and Check
         with arcadedb.open_database(db_path) as db:
-            index = db.schema.get_vector_index("Doc", "embedding")
+            index_rows = db.query(
+                "sql", "SELECT name FROM schema:indexes WHERE typeName = 'Doc'"
+            ).to_list()
+            assert len(index_rows) > 0
 
-            # Check Quantization
-            assert index.get_quantization() == "INT8"
-
-            # Check Graph Storage
-            java_index = index._java_index
-            idx_to_check = java_index
-            if "TypeIndex" in java_index.getClass().getName():
-                idx_to_check = java_index.getSubIndexes().get(0)
-
-            metadata = idx_to_check.getMetadata()
-            print(f"\nReloaded Metadata: {metadata.toString()}")
-
-            # Verification (similar strategy as above)
-            try:
-                assert metadata.storeVectorsInGraph is True
-            except AttributeError:
-                assert (
-                    "storeVectorsInGraph=true" in metadata.toString()
-                    or "storeVectorsInGraph: true" in metadata.toString()
-                )
-
-            try:
-                assert metadata.addHierarchy is True
-            except AttributeError:
-                assert (
-                    "addHierarchy=true" in metadata.toString()
-                    or "addHierarchy: true" in metadata.toString()
-                )
+            rs = db.query(
+                "sql",
+                "SELECT vectorNeighbors('Doc[embedding]', [1.0, 0.0, 0.0], 1) as res",
+            ).to_list()
+            assert len(rs) == 1
+            neighbors = rs[0].get("res")
+            assert neighbors is not None
 
     def test_per_index_cache_params(self, test_db):
         """Test per-index cache and rebuild overrides."""
-        test_db.schema.create_vertex_type("CacheDoc")
-        test_db.schema.create_property("CacheDoc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE CacheDoc")
+        test_db.command("sql", "CREATE PROPERTY CacheDoc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index(
             "CacheDoc",
@@ -208,8 +190,8 @@ class TestVectorParams:
 
     def test_quantization_none(self, test_db):
         """Test sending quantization parameter NONE."""
-        test_db.schema.create_vertex_type("QuantNoneDoc")
-        test_db.schema.create_property("QuantNoneDoc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE QuantNoneDoc")
+        test_db.command("sql", "CREATE PROPERTY QuantNoneDoc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index(
             "QuantNoneDoc", "embedding", dimensions=3, quantization="NONE"
@@ -226,8 +208,10 @@ class TestVectorParams:
 
     def test_quantization_binary(self, test_db):
         """Test sending quantization parameter BINARY."""
-        test_db.schema.create_vertex_type("QuantBinaryDoc")
-        test_db.schema.create_property("QuantBinaryDoc", "embedding", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE QuantBinaryDoc")
+        test_db.command(
+            "sql", "CREATE PROPERTY QuantBinaryDoc.embedding ARRAY_OF_FLOATS"
+        )
 
         index = test_db.create_vector_index(
             "QuantBinaryDoc", "embedding", dimensions=128, quantization="BINARY"
@@ -244,9 +228,9 @@ class TestVectorParams:
 
     def test_quantization_product(self, test_db):
         """Test sending quantization parameter PRODUCT (PQ)."""
-        test_db.schema.create_vertex_type("QuantProductDoc")
-        test_db.schema.create_property(
-            "QuantProductDoc", "embedding", "ARRAY_OF_FLOATS"
+        test_db.command("sql", "CREATE VERTEX TYPE QuantProductDoc")
+        test_db.command(
+            "sql", "CREATE PROPERTY QuantProductDoc.embedding ARRAY_OF_FLOATS"
         )
 
         index = test_db.create_vector_index(

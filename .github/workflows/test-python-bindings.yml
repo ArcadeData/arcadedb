@@ -126,7 +126,7 @@ jobs:
           - '3.11'
           - '3.12'
           - '3.13'
-          # - '3.14'  # Temporarily disabled to reduce wheel storage usage
+          - '3.14'
         # Temporarily limit to four platforms (skip macOS x86_64, Windows ARM64)
         # platform: ['linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64']
         platform: ['linux/amd64', 'linux/arm64', 'darwin/arm64', 'windows/amd64']
@@ -433,7 +433,6 @@ jobs:
             echo "**Package**: arcadedb-embedded" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "ℹ️ **Note**: Some platform/Python combinations are excluded from testing:" >> $GITHUB_STEP_SUMMARY
-            echo "- Python 3.14 is temporarily disabled to reduce wheel storage usage" >> $GITHUB_STEP_SUMMARY
             echo "- Windows ARM64 (no GitHub-hosted runners available)" >> $GITHUB_STEP_SUMMARY
             echo "- macOS x86_64 (temporarily disabled)" >> $GITHUB_STEP_SUMMARY
           else

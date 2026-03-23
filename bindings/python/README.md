@@ -2,7 +2,7 @@
 
 Native Python bindings for ArcadeDB - the multi-model database that supports Graph, Document, Key/Value, Search Engine, Time Series, and Vector models.
 
-**Status**: ✅ Production Ready | **Tests**: 260 Passing | **Platforms**: 4 Supported
+**Status**: ✅ Production Ready | **Tests**: 277 Passed Across 27 Test Files | **Platforms**: 4 Supported
 
 ---
 
@@ -35,10 +35,10 @@ import arcadedb_embedded as arcadedb
 
 # Create database (context manager for automatic open and close)
 with arcadedb.create_database("./mydb") as db:
-  # Create schema (schema ops are auto-transactional)
-  db.schema.create_document_type("Person")
-  db.schema.create_property("Person", "name", "STRING")
-  db.schema.create_property("Person", "age", "INTEGER")
+    # Create schema (DDL)
+    db.command("sql", "CREATE DOCUMENT TYPE Person")
+    db.command("sql", "CREATE PROPERTY Person.name STRING")
+    db.command("sql", "CREATE PROPERTY Person.age INTEGER")
 
     # Insert data (requires transaction)
     with db.transaction():
@@ -48,9 +48,6 @@ with arcadedb.create_database("./mydb") as db:
     result = db.query("sql", "SELECT FROM Person WHERE age > 25")
     for record in result:
         print(f"Name: {record.get('name')}")
-
-  # SQL also works (useful when talking to a remote server),
-  # but the embedded API above is preferred for local use.
 ```
 
 **[👉 See full tutorial](https://docs.humem.ai/arcadedb/latest/getting-started/quickstart/)**
@@ -63,7 +60,7 @@ with arcadedb.create_database("./mydb") as db:
 - 🌍 **4 Platforms Supported**: Linux (x86_64, ARM64), macOS (ARM64), Windows (x86_64)
 - 🚀 **Embedded Mode**: Direct database access in Python process (no network)
 - 🌐 **Server Mode**: Optional HTTP server with Studio web interface
-- 📦 **Self-contained**: All dependencies bundled (~68MB wheel)
+- 📦 **Self-contained**: All dependencies bundled (~73MB current Linux wheel)
 - 🔄 **Multi-model**: Graph, Document, Key/Value, Vector, Time Series
 - 🔍 **Multiple query languages**: SQL, OpenCypher, MongoDB
 - ⚡ **High performance**: Direct JVM integration via JPype
@@ -77,12 +74,15 @@ with arcadedb.create_database("./mydb") as db:
 
 The `arcadedb-embedded` package is platform-specific and self-contained:
 
-**Package Contents (all platforms):**
+**Package Contents (current Linux x86_64 dev build; varies by platform and version):**
 
-- **Wheel size (compressed)**: ~68MB
+- **Wheel size (compressed)**: ~73MB
 - **ArcadeDB JARs (uncompressed)**: ~32MB
 - **Bundled JRE (uncompressed)**: ~60MB (platform-specific Java 25 runtime via jlink)
-- **Total uncompressed size**: ~95MB
+- **Installed package size**: ~102MB
+
+The compressed wheel size is measured from `dist/*.whl`, and the installed package size
+is measured from the extracted `site-packages/arcadedb_embedded/` directory.
 
 **Note**: Some JARs are excluded to optimize package size (e.g., gRPC wire protocol). See [`jar_exclusions.txt`](https://github.com/humemai/arcadedb-embedded-python/blob/main/bindings/python/jar_exclusions.txt) for details.
 
@@ -92,7 +92,7 @@ Import: `import arcadedb_embedded as arcadedb`
 
 ## 🧪 Testing
 
-**Status**: 260 tests + example scripts passing on all 4 platforms
+**Status**: 277 passed across 27 test files
 
 ```bash
 # Run all tests
@@ -144,22 +144,20 @@ Versions are automatically extracted from the main ArcadeDB `pom.xml`. See [vers
 
 ```bash
 arcadedb_embedded/
-├── __init__.py          # Public API exports
+├── async_executor.py    # Asynchronous command/query + record execution
+├── citation.py          # Citation helper
 ├── core.py              # Database and DatabaseFactory
-├── server.py            # ArcadeDBServer for HTTP mode
-├── results.py           # ResultSet and Result wrappers
-├── transactions.py      # TransactionContext manager
-├── schema.py            # Schema management API
-├── vector.py            # Vector search and HNSW (JVector) indexing
-├── importer.py          # Data import (CSV, JSONL)
-├── exporter.py          # Data export (JSONL, GraphML, GraphSON, CSV)
-├── graph.py             # Graph API helpers
-├── batch.py             # Batch operations context
-├── async_executor.py    # Asynchronous query execution
-├── type_conversion.py   # Python-Java type conversion utilities
 ├── exceptions.py        # ArcadeDBError exception
+├── exporter.py          # Data export (JSONL, GraphML, GraphSON, CSV)
+├── graph.py             # Graph wrappers
+├── __init__.py          # Public API exports
 ├── jvm.py               # JVM lifecycle management
-└── _version.py          # Package version info
+├── results.py           # ResultSet and Result wrappers
+├── schema.py            # Schema management API
+├── server.py            # ArcadeDBServer for HTTP mode
+├── transactions.py      # TransactionContext manager
+├── type_conversion.py   # Python-Java type conversion utilities
+└── vector.py            # Vector search and HNSW (JVector) indexing
 ```
 
 **[Architecture details](https://docs.humem.ai/arcadedb/latest/development/architecture/)**

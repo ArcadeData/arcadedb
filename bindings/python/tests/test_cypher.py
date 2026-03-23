@@ -14,10 +14,10 @@ def _ensure_opencypher(db) -> None:
 
 
 def _seed_graph(db) -> None:
-    db.schema.create_vertex_type("Person")
-    db.schema.create_vertex_type("Company")
-    db.schema.create_edge_type("KNOWS")
-    db.schema.create_edge_type("WORKS_FOR")
+    db.command("sql", "CREATE VERTEX TYPE Person")
+    db.command("sql", "CREATE VERTEX TYPE Company")
+    db.command("sql", "CREATE EDGE TYPE KNOWS UNIDIRECTIONAL")
+    db.command("sql", "CREATE EDGE TYPE WORKS_FOR UNIDIRECTIONAL")
 
     with db.transaction():
         db.command(
@@ -63,7 +63,8 @@ def test_opencypher_relationship_properties(temp_db_path):
         result = db.query(
             "opencypher",
             "MATCH (:Person {name: 'Alice'})-[r:KNOWS]->(b:Person) "
-            "WHERE r.since >= 2020 RETURN b.name as name, r.since as since ORDER BY since",
+            "WHERE r.since >= 2020 "
+            "RETURN b.name as name, r.since as since ORDER BY since",
         )
         rows = [(record.get("name"), record.get("since")) for record in result]
 
@@ -95,7 +96,8 @@ def test_opencypher_aggregation(temp_db_path):
         result = db.query(
             "opencypher",
             "MATCH (p:Person)-[:WORKS_FOR]->(c:Company) "
-            "RETURN c.name as company, count(p) as employees ORDER BY employees DESC",
+            "WITH c, count(p) as employees "
+            "RETURN c.name as company, employees ORDER BY employees DESC",
         )
         row = next(result)
 
@@ -157,7 +159,8 @@ def test_opencypher_case_and_coalesce(temp_db_path):
             "MATCH (p:Person) "
             "OPTIONAL MATCH (p)-[:WORKS_FOR]->(c:Company) "
             "RETURN p.name as name, "
-            "CASE WHEN c IS NULL THEN 'unemployed' ELSE coalesce(c.name,'n/a') END AS status "
+            "CASE WHEN c IS NULL THEN 'unemployed' "
+            "ELSE coalesce(c.name,'n/a') END AS status "
             "ORDER BY name",
         )
         try:
@@ -212,6 +215,24 @@ def test_opencypher_collect_and_unwind(temp_db_path):
         assert rows == [("Acme", "Alice"), ("Acme", "Bob")]
 
 
+def test_opencypher_unwind_where_uses_unwind_variable(temp_db_path):
+    """Test WHERE predicates can reference variables introduced by UNWIND."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        _seed_graph(db)
+
+        result = db.query(
+            "opencypher",
+            "UNWIND ['Alice', 'Bob', 'Nobody'] AS expected_name "
+            "MATCH (p:Person) "
+            "WHERE p.name = expected_name "
+            "RETURN p.name AS name ORDER BY name",
+        )
+        names = [record.get("name") for record in result]
+
+        assert names == ["Alice", "Bob"]
+
+
 def test_opencypher_pattern_comprehension(temp_db_path):
     """Test pattern comprehension to derive relationship values."""
     with arcadedb.create_database(temp_db_path) as db:
@@ -247,3 +268,70 @@ def test_opencypher_subquery_with_exists(temp_db_path):
         names = [record.get("name") for record in result]
 
         assert names == ["Alice", "Bob"]
+
+
+def test_opencypher_count_non_existing_label_returns_zero(temp_db_path):
+    """Test COUNT against a non-existing label returns 0 instead of no rows/errors."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        _seed_graph(db)
+
+        result = db.query(
+            "opencypher",
+            "MATCH (n:DoesNotExist) RETURN count(n) AS c",
+        )
+        row = result.one()
+
+        assert row.get("c") == 0
+
+
+def test_opencypher_projection_property_order_is_preserved(temp_db_path):
+    """Test projected property order is stable and matches RETURN clause order."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        _seed_graph(db)
+
+        result = db.query(
+            "opencypher",
+            "MATCH (p:Person {name: 'Alice'}) "
+            "RETURN p.age AS age, p.name AS name, 42 AS marker",
+        ).one()
+
+        assert result.property_names == ["age", "name", "marker"]
+        assert list(result.to_dict().keys()) == ["age", "name", "marker"]
+
+
+def test_opencypher_named_params_on_variable_length_traversal(temp_db_path):
+    """Test named parameters on variable-length graph traversal queries."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        _seed_graph(db)
+
+        result = db.query(
+            "opencypher",
+            "MATCH (a:Person {name: $start_name})-[:KNOWS*1..3]->(b:Person) "
+            "WHERE b.age >= $min_age "
+            "RETURN DISTINCT b.name AS name ORDER BY name",
+            {"start_name": "Alice", "min_age": 28},
+        )
+        names = [record.get("name") for record in result]
+
+        assert names == ["Bob", "David"]
+
+
+def test_opencypher_named_params_on_traversal_count(temp_db_path):
+    """Test named parameters work on traversal queries that aggregate graph matches."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        _seed_graph(db)
+
+        result = db.query(
+            "opencypher",
+            "MATCH (a:Person {name: $start_name})-[:KNOWS*1..3]->(b:Person) "
+            "WHERE b.age >= $min_age "
+            "RETURN count(DISTINCT b) AS c",
+            {"start_name": "Alice", "min_age": 28},
+        )
+        row = result.one()
+
+        assert row.get("c") == 2

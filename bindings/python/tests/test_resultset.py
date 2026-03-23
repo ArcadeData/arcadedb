@@ -8,8 +8,7 @@ import arcadedb_embedded as arcadedb
 def test_resultset_to_list(temp_db_path):
     """Test ResultSet.to_list() method."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("User")
+        db.command("sql", "CREATE DOCUMENT TYPE User")
 
         with db.transaction():
             db.command("sql", "INSERT INTO User SET name = 'Alice', age = 30")
@@ -44,8 +43,7 @@ def test_resultset_to_dataframe(temp_db_path):
         return
 
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("Product")
+        db.command("sql", "CREATE DOCUMENT TYPE Product")
 
         with db.transaction():
             db.command(
@@ -85,8 +83,7 @@ def test_resultset_to_dataframe(temp_db_path):
 def test_resultset_iter_chunks(temp_db_path):
     """Test ResultSet.iter_chunks() for memory-efficient iteration."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("Item")
+        db.command("sql", "CREATE DOCUMENT TYPE Item")
 
         with db.transaction():
             # Insert 250 items
@@ -121,8 +118,7 @@ def test_resultset_iter_chunks(temp_db_path):
 def test_resultset_count(temp_db_path):
     """Test ResultSet.count() method."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("Counter")
+        db.command("sql", "CREATE DOCUMENT TYPE Counter")
 
         with db.transaction():
             for i in range(50):
@@ -138,8 +134,7 @@ def test_resultset_count(temp_db_path):
 def test_resultset_first(temp_db_path):
     """Test ResultSet.first() method."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("FirstTest")
+        db.command("sql", "CREATE DOCUMENT TYPE FirstTest")
 
         with db.transaction():
             db.command("sql", "INSERT INTO FirstTest SET value = 'first'")
@@ -164,8 +159,7 @@ def test_resultset_first(temp_db_path):
 def test_resultset_one(temp_db_path):
     """Test ResultSet.one() method."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("OneTest")
+        db.command("sql", "CREATE DOCUMENT TYPE OneTest")
 
         with db.transaction():
             db.command("sql", "INSERT INTO OneTest SET id = 1, value = 'unique'")
@@ -202,8 +196,7 @@ def test_resultset_one(temp_db_path):
 def test_resultset_iteration_patterns(temp_db_path):
     """Test various iteration patterns with ResultSet."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("IterTest")
+        db.command("sql", "CREATE DOCUMENT TYPE IterTest")
 
         with db.transaction():
             for i in range(10):
@@ -230,8 +223,7 @@ def test_resultset_iteration_patterns(temp_db_path):
 def test_result_representation(temp_db_path):
     """Test Result.__repr__() for better debugging."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("ReprTest")
+        db.command("sql", "CREATE DOCUMENT TYPE ReprTest")
 
         with db.transaction():
             db.command(
@@ -253,10 +245,9 @@ def test_result_representation(temp_db_path):
 def test_resultset_with_complex_queries(temp_db_path):
     """Test ResultSet methods with complex queries."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("Sales")
-        db.schema.create_property("Sales", "amount", "DECIMAL")
-        db.schema.create_property("Sales", "region", "STRING")
+        db.command("sql", "CREATE DOCUMENT TYPE Sales")
+        db.command("sql", "CREATE PROPERTY Sales.amount DECIMAL")
+        db.command("sql", "CREATE PROPERTY Sales.region STRING")
 
         with db.transaction():
             # Insert sample data
@@ -300,8 +291,7 @@ def test_resultset_with_complex_queries(temp_db_path):
 def test_resultset_empty_handling(temp_db_path):
     """Test ResultSet methods with empty results."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("EmptyTest")
+        db.command("sql", "CREATE DOCUMENT TYPE EmptyTest")
 
         # Query empty table
         result = db.query("sql", "SELECT FROM EmptyTest")
@@ -329,8 +319,7 @@ def test_resultset_empty_handling(temp_db_path):
 def test_resultset_reusability(temp_db_path):
     """Test that ResultSet can only be iterated once (Java ResultSet behavior)."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_document_type("ReuseTest")
+        db.command("sql", "CREATE DOCUMENT TYPE ReuseTest")
 
         with db.transaction():
             db.command("sql", "INSERT INTO ReuseTest SET value = 1")
@@ -355,8 +344,7 @@ def test_resultset_reusability(temp_db_path):
 def test_result_get_rid_and_vertex(temp_db_path):
     """Test get_rid() and get_vertex() methods on Result."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
-        db.schema.create_vertex_type("Person")
+        db.command("sql", "CREATE VERTEX TYPE Person")
 
         with db.transaction():
             db.command("sql", "INSERT INTO Person SET name = 'Alice'")
@@ -382,7 +370,7 @@ def test_result_get_rid_and_vertex(temp_db_path):
 def test_result_to_json_with_arrays(temp_db_path):
     """Result.to_json() should serialize list properties as JSON arrays."""
     with arcadedb.create_database(temp_db_path) as db:
-        db.schema.create_document_type("JsonArrayTest")
+        db.command("sql", "CREATE DOCUMENT TYPE JsonArrayTest")
 
         with db.transaction():
             db.command(

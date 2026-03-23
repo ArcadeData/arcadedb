@@ -51,7 +51,9 @@ def copy_jars_to_package():
     package_dir = Path(__file__).parent
     jar_dir = package_dir / "src" / "arcadedb_embedded" / "jars"
 
-    # Create jars directory if it doesn't exist
+    # Remove any previous jars so the wheel reflects the current build inputs exactly.
+    if jar_dir.exists():
+        shutil.rmtree(jar_dir)
     jar_dir.mkdir(parents=True, exist_ok=True)
 
     # Find all JAR files

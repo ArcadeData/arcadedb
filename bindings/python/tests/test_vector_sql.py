@@ -40,8 +40,8 @@ class TestVectorSQL:
 
     def test_vector_aggregations(self, test_db):
         """Test vector aggregation functions."""
-        test_db.schema.create_vertex_type("VecData")
-        test_db.schema.create_property("VecData", "v", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE VecData")
+        test_db.command("sql", "CREATE PROPERTY VecData.v ARRAY_OF_FLOATS")
 
         with test_db.transaction():
             test_db.command("sql", "INSERT INTO VecData SET v = [1.0, 2.0]")
@@ -110,8 +110,8 @@ class TestVectorSQL:
         Demonstrates that INT8 quantization runs without crashing for small N (e.g. 10) at Dim=16 via SQL,
         unlike N=50 which crashes.
         """
-        test_db.schema.create_vertex_type("SmallScaleInt8Sql")
-        test_db.schema.create_property("SmallScaleInt8Sql", "vec", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE SmallScaleInt8Sql")
+        test_db.command("sql", "CREATE PROPERTY SmallScaleInt8Sql.vec ARRAY_OF_FLOATS")
 
         dims = 16
         sql = f"""
@@ -133,12 +133,20 @@ class TestVectorSQL:
 
         with test_db.transaction():
             for vec in vectors:
-                v = test_db.new_vertex("SmallScaleInt8Sql")
-                v.set("vec", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO SmallScaleInt8Sql SET vec = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
-        # Get index name
-        indexes = test_db.schema.list_vector_indexes()
+        # Get index name via SQL metadata
+        indexes = [
+            row.get("name")
+            for row in test_db.query(
+                "sql",
+                "SELECT name FROM schema:indexes WHERE typeName = 'SmallScaleInt8Sql'",
+            ).to_list()
+        ]
         # We might have multiple indexes (e.g. internal vs public name), pick the one that matches Type[prop]
         # In some versions, it might return both the internal name and the standard name
         index_name = "SmallScaleInt8Sql[vec]"
@@ -159,8 +167,8 @@ class TestVectorSQL:
     def test_create_index_with_quantization_int8_sql(self, test_db):
         """Test creating INT8 quantized vector indexes via SQL."""
         # Create schema
-        test_db.schema.create_vertex_type("SqlQuantDoc")
-        test_db.schema.create_property("SqlQuantDoc", "vec", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE SqlQuantDoc")
+        test_db.command("sql", "CREATE PROPERTY SqlQuantDoc.vec ARRAY_OF_FLOATS")
 
         dims = 16
 
@@ -175,8 +183,13 @@ class TestVectorSQL:
         """
         test_db.command("sql", sql)
 
-        # Verify index exists
-        indexes = test_db.schema.list_vector_indexes()
+        # Verify index exists via SQL metadata
+        indexes = [
+            row.get("name")
+            for row in test_db.query(
+                "sql", "SELECT name FROM schema:indexes WHERE typeName = 'SqlQuantDoc'"
+            ).to_list()
+        ]
         assert any("SqlQuantDoc" in idx for idx in indexes)
 
         # Add enough data to trigger the storage overflow bug (N=50)
@@ -189,9 +202,11 @@ class TestVectorSQL:
 
         with test_db.transaction():
             for i, vec in enumerate(vectors):
-                v = test_db.new_vertex("SqlQuantDoc")
-                v.set("vec", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO SqlQuantDoc SET vec = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Search should work if the bug wasn't present
         query = [0.9, 0.1] + [0.0] * (dims - 2)
@@ -218,8 +233,8 @@ class TestVectorSQL:
     def test_create_index_with_quantization_binary_sql(self, test_db):
         """Test creating BINARY quantized vector indexes via SQL."""
         # Test BINARY
-        test_db.schema.create_vertex_type("SqlBinaryDoc")
-        test_db.schema.create_property("SqlBinaryDoc", "vec", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE SqlBinaryDoc")
+        test_db.command("sql", "CREATE PROPERTY SqlBinaryDoc.vec ARRAY_OF_FLOATS")
 
         dims = 128
         sql = f"""
@@ -244,9 +259,11 @@ class TestVectorSQL:
 
         with test_db.transaction():
             for i, vec in enumerate(vectors):
-                v = test_db.new_vertex("SqlBinaryDoc")
-                v.set("vec", arcadedb.to_java_float_array(vec))
-                v.save()
+                test_db.command(
+                    "sql",
+                    "INSERT INTO SqlBinaryDoc SET vec = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
 
         # Search
         query = [0.9, 0.1] + [-1.0] * (dims - 2)
@@ -269,8 +286,8 @@ class TestVectorSQL:
     def test_vector_neighbors(self, test_db):
         """Test vectorNeighbors function."""
         # Create schema and index
-        test_db.schema.create_vertex_type("Item")
-        test_db.schema.create_property("Item", "vec", "ARRAY_OF_FLOATS")
+        test_db.command("sql", "CREATE VERTEX TYPE Item")
+        test_db.command("sql", "CREATE PROPERTY Item.vec ARRAY_OF_FLOATS")
 
         # Create index via SQL
         test_db.command(
@@ -287,7 +304,12 @@ class TestVectorSQL:
         # vectorNeighbors(indexName, vector, k)
 
         # Actually, let's check if we can find the index name
-        indexes = test_db.schema.list_vector_indexes()
+        indexes = [
+            row.get("name")
+            for row in test_db.query(
+                "sql", "SELECT name FROM schema:indexes WHERE typeName = 'Item'"
+            ).to_list()
+        ]
         index_name = indexes[0]
 
         query_vec = [0.9, 0.1]
@@ -320,8 +342,13 @@ class TestVectorSQL:
             f'CREATE INDEX ON DocSql (embedding) LSM_VECTOR METADATA {{"dimensions": {dims}}}',
         )
 
-        # Get index name
-        indexes = test_db.schema.list_vector_indexes()
+        # Get index name via SQL metadata
+        indexes = [
+            row.get("name")
+            for row in test_db.query(
+                "sql", "SELECT name FROM schema:indexes WHERE typeName = 'DocSql'"
+            ).to_list()
+        ]
         # Filter for our index if multiple exist
         index_name = next(idx for idx in indexes if "DocSql" in idx)
 

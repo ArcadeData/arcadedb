@@ -122,6 +122,12 @@ class TestTypeCreation:
         assert schema.exists_type("ExistingEdge")
 
 
+def test_index_type_enum_includes_new_java_index_types():
+    """Python IndexType should include current Java index enum values."""
+    assert IndexType.GEOSPATIAL.value == "GEOSPATIAL"
+    assert IndexType.HASH.value == "HASH"
+
+
 class TestTypeQueries:
     """Test type query methods."""
 
@@ -166,6 +172,20 @@ class TestTypeQueries:
         assert "Doc1" in type_names
         assert "Vertex1" in type_names
         assert "Edge1" in type_names
+
+    def test_get_types_has_no_duplicates_across_repeated_calls(self, test_db):
+        """Test get_types remains stable and duplicate-free across repeated calls."""
+        schema = test_db.schema
+        schema.create_document_type("Doc1")
+        schema.create_vertex_type("Vertex1")
+        schema.create_edge_type("Edge1")
+
+        first_names = [type_obj.getName() for type_obj in schema.get_types()]
+        second_names = [type_obj.getName() for type_obj in schema.get_types()]
+
+        assert len(first_names) == len(set(first_names))
+        assert len(second_names) == len(set(second_names))
+        assert set(first_names) == set(second_names)
 
 
 class TestTypeDeletion:
@@ -664,9 +684,11 @@ class TestLSMVectorIndexSchemaOps:
 
         # Add data
         with test_db.transaction():
-            v = test_db.new_vertex("Doc")
-            v.set("embedding", arcadedb.to_java_float_array([1.0, 0.0, 0.0]))
-            v.save()
+            test_db.command(
+                "sql",
+                "INSERT INTO Doc SET embedding = ?",
+                arcadedb.to_java_float_array([1.0, 0.0, 0.0]),
+            )
 
         # Retrieve
         index = schema.get_vector_index("Doc", "embedding")

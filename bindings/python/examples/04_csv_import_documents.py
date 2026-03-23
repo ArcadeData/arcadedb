@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Example 04: CSV Import - Documents with Automatic Type Inference
+Example 04: CSV Import - Documents with Bulk Insert Ingest
 
 This example demonstrates importing CSV data into ArcadeDB DOCUMENTS
-with AUTOMATIC TYPE INFERENCE - Java analyzes the CSV and infers types.
+using bulk INSERT statements with explicit schema mapping.
 
 We use the MovieLens dataset with four CSV files:
 - movies.csv: Movie information (9,743 movies)
@@ -12,25 +12,20 @@ We use the MovieLens dataset with four CSV files:
 - tags.csv: User-generated tags (3,683 tags)
 
 Key Concepts:
-- **Automatic type inference** by Java CSV importer
-- Schema created on-the-fly during import
+- Bulk INSERT ingest using Python CSV parsing
+- Explicit schema mapping for document types
 - Batch processing with commitEvery parameter
+- WAL disabled during ingest, then re-enabled
 - Creating indexes AFTER import for performance
 - **Full-text search** with Lucene for text fields
 - Query performance comparison with/without indexes
 - NULL value handling
 
-Java's Automatic Type Inference:
-The Java CSV importer analyzes sample rows to infer types automatically:
-- Default: analyzes first 10,000 rows (analysisLimitEntries parameter)
-- Integer values → LONG (safe for all integer sizes)
-- Decimal values → DOUBLE (standard precision for floats)
+Schema Strategy:
+- Integer-like values → LONG
+- Decimal values → DOUBLE
 - Text values → STRING
 - Empty cells → NULL (proper SQL NULL handling)
-
-Note: Java defaults to conservative types (LONG, DOUBLE) for safety.
-This avoids overflow issues but uses more storage than smaller types.
-You can customize the analysis limit via the analysisLimitEntries option.
 
 Supported ArcadeDB Types:
 Numeric:
@@ -78,6 +73,7 @@ Note: This example creates a database at ./my_test_databases/movielens_db/
 """
 
 import argparse
+import csv
 import json
 import os
 import shutil
@@ -619,13 +615,19 @@ def create_indexes(db, indexes, verbose=True):
 
         for attempt in range(1, max_retries + 1):
             try:
-                # Convert uniqueness string to Schema API parameters
+                # Convert uniqueness string to SQL index creation
                 if uniqueness == "UNIQUE":
-                    db.schema.create_index(table, [column], unique=True)
+                    db.command("sql", f"CREATE INDEX ON {table} ({column}) UNIQUE")
+                elif uniqueness == "UNIQUE_HASH":
+                    db.command("sql", f"CREATE INDEX ON {table} ({column}) UNIQUE_HASH")
                 elif uniqueness == "FULL_TEXT":
-                    db.schema.create_index(table, [column], index_type="FULL_TEXT")
+                    db.command("sql", f"CREATE INDEX ON {table} ({column}) FULL_TEXT")
+                elif uniqueness == "NOTUNIQUE_HASH":
+                    db.command(
+                        "sql", f"CREATE INDEX ON {table} ({column}) NOTUNIQUE_HASH"
+                    )
                 else:  # NOTUNIQUE
-                    db.schema.create_index(table, [column], unique=False)
+                    db.command("sql", f"CREATE INDEX ON {table} ({column}) NOTUNIQUE")
 
                 if verbose:
                     print(
@@ -900,7 +902,7 @@ def check_dataset_exists(data_dir):
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(
-    description="Import MovieLens dataset into ArcadeDB",
+    description="Example 04: Import MovieLens dataset into ArcadeDB",
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog="""
 Examples:
@@ -1072,28 +1074,133 @@ db = arcadedb.create_database(
     jvm_kwargs={"heap_size": args.heap_size} if args.heap_size else None,
 )
 
+
+def import_csv_documents_via_sql(database, csv_path: str, doc_type: str):
+    start_time = time.time()
+
+    schema_by_type = {
+        "Movie": {
+            "movieId": "LONG",
+            "title": "STRING",
+            "genres": "STRING",
+        },
+        "Rating": {
+            "userId": "LONG",
+            "movieId": "LONG",
+            "rating": "DOUBLE",
+            "timestamp": "LONG",
+        },
+        "Link": {
+            "movieId": "LONG",
+            "imdbId": "LONG",
+            "tmdbId": "LONG",
+        },
+        "Tag": {
+            "userId": "LONG",
+            "movieId": "LONG",
+            "tag": "STRING",
+            "timestamp": "LONG",
+        },
+    }
+
+    if doc_type not in schema_by_type:
+        raise ValueError(f"Unsupported document type: {doc_type}")
+
+    schema = schema_by_type[doc_type]
+
+    database.command("sql", f"CREATE DOCUMENT TYPE `{doc_type}`")
+    for field_name, field_type in schema.items():
+        database.command(
+            "sql",
+            f"CREATE PROPERTY `{doc_type}`.`{field_name}` {field_type}",
+        )
+
+    def _convert(field_name: str, raw_value: str):
+        if raw_value is None or raw_value == "":
+            return None
+
+        field_type = schema[field_name]
+        if field_type == "LONG":
+            return int(raw_value)
+        if field_type == "DOUBLE":
+            return float(raw_value)
+        return raw_value
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        headers = reader.fieldnames or []
+
+        if not headers:
+            raise RuntimeError(f"CSV has no header: {csv_path}")
+
+        missing = [h for h in headers if h not in schema]
+        if missing:
+            raise RuntimeError(f"Unexpected columns in {doc_type}: {missing}")
+
+        insert_sql = "INSERT INTO `{}` SET {}".format(
+            doc_type, ", ".join([f"`{h}` = ?" for h in headers])
+        )
+
+        parsed_rows = 0
+        error_count = 0
+        pending_rows = []
+
+        def _flush_batch(batch_rows):
+            with database.transaction():
+                for values in batch_rows:
+                    database.command("sql", insert_sql, values)
+
+        for row in reader:
+            try:
+                converted = [_convert(header, row.get(header)) for header in headers]
+                pending_rows.append(converted)
+                parsed_rows += 1
+            except (TypeError, ValueError):
+                error_count += 1
+                continue
+
+            if len(pending_rows) >= args.batch_size:
+                _flush_batch(pending_rows)
+                pending_rows = []
+
+        if pending_rows:
+            _flush_batch(pending_rows)
+
+    documents = (
+        database.query("sql", f"SELECT count(*) as c FROM `{doc_type}`").one().get("c")
+    )
+    duration_ms = int((time.time() - start_time) * 1000)
+
+    return {
+        "documents": documents,
+        "errors": error_count,
+        "duration_ms": duration_ms,
+    }
+
+
 print(f"   ✅ Database created at: {db_path}")
 print("   💡 Using embedded mode - no server needed!")
 print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
 print()
 
 # -----------------------------------------------------------------------------
-# Step 2: Import Movies CSV → Movie Documents (with automatic type inference)
+# Step 2: Import Movies CSV → Movie Documents (bulk insert ingest)
 # -----------------------------------------------------------------------------
 print("Step 2: Importing movies.csv → Movie documents...")
-print("   💡 Java will automatically:")
-print("      • Analyze CSV structure and infer column types")
-print("      • Create 'Movie' document type with inferred schema")
-print("      • Import all rows with batch commits")
+print("   💡 Using bulk insert mode:")
+print("      • Schema is created explicitly before ingest")
+print("      • Batch inserts run with WAL disabled for faster load")
+print("      • WAL is re-enabled after ingest")
 print()
 step_start = time.time()
 
+db.set_read_your_writes(False)
+async_exec = db.async_executor()
+async_exec.set_commit_every(args.batch_size)
+async_exec.set_transaction_use_wal(False)
+
 movies_csv = str(data_dir / "movies.csv")
-import_options = {
-    "commitEvery": args.batch_size,
-    **({"parallel": args.parallel} if args.parallel else {}),
-}
-stats = arcadedb.import_csv(db, movies_csv, "Movie", **import_options)
+stats = import_csv_documents_via_sql(db, movies_csv, "Movie")
 
 print(f"   ✅ Imported {stats['documents']:,} movies")
 print(f"   💡 Errors: {stats['errors']}")
@@ -1120,17 +1227,17 @@ if null_genres > 0:
 print()
 
 # -----------------------------------------------------------------------------
-# Step 3: Display Java's Auto-Inferred Schema
+# Step 3: Display Schema Mapping
 # -----------------------------------------------------------------------------
-print("Step 3: Inspecting Java's auto-inferred schema...")
+print("Step 3: Inspecting schema mapping...")
 print()
 
-# Query the schema that Java created during import
+# Query the schema created during ingest setup
 result = db.query("sql", "SELECT properties FROM schema:types WHERE name = 'Movie'")
 for record in result:
     properties = record.get("properties")
 
-    print("   📋 Movie schema (auto-inferred by Java):")
+    print("   📋 Movie schema (explicit mapping for bulk ingest):")
     if properties:
         for prop in properties:
             # prop is a Java Map object
@@ -1142,11 +1249,10 @@ for record in result:
         print("      (No properties found)")
 
 print()
-print("   💡 Java's type inference strategy:")
-print("      • Analyzes first 10,000 rows by default (analysisLimitEntries)")
-print("      • LONG for all integer values (safe, no overflow)")
-print("      • DOUBLE for all decimal values (standard precision)")
-print("      • STRING for text")
+print("   💡 Bulk ingest type strategy:")
+print("      • Numeric ID columns use LONG")
+print("      • Decimal columns use DOUBLE")
+print("      • Text columns use STRING")
 print("      • Empty cells → NULL (proper SQL NULL handling)")
 print()
 
@@ -1157,11 +1263,7 @@ print("Step 4: Importing ratings.csv → Rating documents...")
 step_start = time.time()
 
 ratings_csv = str(data_dir / "ratings.csv")
-import_options = {
-    "commitEvery": args.batch_size,
-    **({"parallel": args.parallel} if args.parallel else {}),
-}
-stats = arcadedb.import_csv(db, ratings_csv, "Rating", **import_options)
+stats = import_csv_documents_via_sql(db, ratings_csv, "Rating")
 
 print(f"   ✅ Imported {stats['documents']:,} ratings")
 print(f"   💡 Errors: {stats['errors']}")
@@ -1186,6 +1288,11 @@ if null_timestamps > 0:
 
 print()
 
+db.set_read_your_writes(True)
+async_exec.set_transaction_use_wal(True)
+print("   ✅ Ingest mode reset: WAL re-enabled")
+print()
+
 # -----------------------------------------------------------------------------
 # Step 5: Import Links CSV → Link Documents
 # -----------------------------------------------------------------------------
@@ -1193,11 +1300,7 @@ print("Step 5: Importing links.csv → Link documents...")
 step_start = time.time()
 
 links_csv = str(data_dir / "links.csv")
-import_options = {
-    "commitEvery": args.batch_size,
-    **({"parallel": args.parallel} if args.parallel else {}),
-}
-stats = arcadedb.import_csv(db, links_csv, "Link", **import_options)
+stats = import_csv_documents_via_sql(db, links_csv, "Link")
 
 print(f"   ✅ Imported {stats['documents']:,} links")
 print(f"   💡 Errors: {stats['errors']}")
@@ -1240,11 +1343,7 @@ print("Step 6: Importing tags.csv → Tag documents...")
 step_start = time.time()
 
 tags_csv = str(data_dir / "tags.csv")
-import_options = {
-    "commitEvery": args.batch_size,
-    **({"parallel": args.parallel} if args.parallel else {}),
-}
-stats = arcadedb.import_csv(db, tags_csv, "Tag", **import_options)
+stats = import_csv_documents_via_sql(db, tags_csv, "Tag")
 
 print(f"   ✅ Imported {stats['documents']:,} tags")
 print(f"   💡 Errors: {stats['errors']}")
@@ -1268,12 +1367,12 @@ if null_tags > 0:
 print()
 
 # -----------------------------------------------------------------------------
-# Step 7: Verify All Auto-Inferred Schemas
+# Step 7: Verify All Schemas
 # -----------------------------------------------------------------------------
-print("Step 7: Verifying all auto-inferred schemas...")
+print("Step 7: Verifying all schemas...")
 print()
 
-# Query the formal schema to see Java's automatically inferred properties
+# Query the formal schema for all imported document types
 for doc_type in ["Movie", "Rating", "Link", "Tag"]:
     result = db.query(
         "sql", f"SELECT properties FROM schema:types WHERE name = '{doc_type}'"
@@ -1282,7 +1381,7 @@ for doc_type in ["Movie", "Rating", "Link", "Tag"]:
     for record in result:
         properties = record.get("properties")
 
-        print(f"   📋 {doc_type} schema (auto-inferred by Java):")
+        print(f"   📋 {doc_type} schema (bulk ingest mapping):")
         if properties:
             for prop in properties:
                 # prop is a Java Map object
@@ -1294,12 +1393,11 @@ for doc_type in ["Movie", "Rating", "Link", "Tag"]:
             print("      (No properties found)")
         print()
 
-print("   💡 Type inference observations:")
-print("      • All integer columns → LONG (Java's safe default)")
-print("      • All decimal columns → DOUBLE (Java's standard precision)")
+print("   💡 Schema observations:")
+print("      • All integer-like columns → LONG")
+print("      • All decimal columns → DOUBLE")
 print("      • Text columns → STRING")
 print("      • Empty cells → NULL (proper SQL NULL handling)")
-print("      • Configurable via analysisLimitEntries parameter (default: 10000)")
 print()
 
 # -----------------------------------------------------------------------------
@@ -1377,15 +1475,16 @@ for table, column, uniqueness in indexes:
 
 # Check all existing indexes
 #
-# Note: ArcadeDB has 3 index engine types: LSM_TREE, FULL_TEXT, VECTOR
+# Note: ArcadeDB exposes multiple index engines, including LSM_TREE, HASH,
+# FULL_TEXT, and VECTOR.
 # The schema metadata query only exposes a boolean 'unique' field, not the engine type.
 # Therefore:
-#   - UNIQUE indexes → unique=true, engine=LSM_TREE
-#   - NOTUNIQUE indexes → unique=false, engine=LSM_TREE
+#   - UNIQUE / UNIQUE_HASH indexes → unique=true
+#   - NOTUNIQUE / NOTUNIQUE_HASH indexes → unique=false
 #   - FULL_TEXT indexes → unique=false, engine=FULL_TEXT (appears as NOTUNIQUE!)
 #
-# This means FULL_TEXT indexes show as NOTUNIQUE in the metadata, so we need to
-# check for both when validating expected FULL_TEXT indexes.
+# This means HASH and FULL_TEXT indexes must be validated by semantics rather than
+# engine type alone.
 for idx in existing_indexes:
     idx_dict = json.loads(idx.to_json())
     index_type = "UNIQUE" if idx_dict.get("unique") else "NOTUNIQUE"
@@ -1413,7 +1512,7 @@ for idx in existing_indexes:
                 candidate_columns.append(prop)
 
     if isinstance(name, str) and "[" in name and name.endswith("]"):
-        raw_props = name[name.find("[") + 1 : -1]
+        raw_props = name[name.find("[") + 1 : -1].strip()
         for col in raw_props.split(","):
             col = col.strip()
             if col:
@@ -1422,15 +1521,23 @@ for idx in existing_indexes:
     candidate_columns = [c for c in candidate_columns if c]
 
     for column_name in candidate_columns:
-        # Try matching as the reported type (UNIQUE/NOTUNIQUE)
+        # Try matching as the reported uniqueness semantics.
         key = (type_name, column_name, index_type)
         if key in expected_indexes:
             expected_indexes[key] = True
+
+        if index_type == "UNIQUE":
+            unique_hash_key = (type_name, column_name, "UNIQUE_HASH")
+            if unique_hash_key in expected_indexes:
+                expected_indexes[unique_hash_key] = True
 
         # FULL_TEXT indexes appear as NOTUNIQUE in metadata, so also check for FULL_TEXT
         # This is expected behavior since FULL_TEXT is a different index engine type,
         # not a variant of LSM_TREE, but metadata only exposes the 'unique' boolean.
         if index_type == "NOTUNIQUE":
+            notunique_hash_key = (type_name, column_name, "NOTUNIQUE_HASH")
+            if notunique_hash_key in expected_indexes:
+                expected_indexes[notunique_hash_key] = True
             fulltext_key = (type_name, column_name, "FULL_TEXT")
             if fulltext_key in expected_indexes:
                 expected_indexes[fulltext_key] = True
@@ -1442,6 +1549,9 @@ for idx in existing_indexes:
             unique_key = (type_name, column_name, "UNIQUE")
             if unique_key in expected_indexes:
                 expected_indexes[unique_key] = True
+            unique_hash_key = (type_name, column_name, "UNIQUE_HASH")
+            if unique_hash_key in expected_indexes:
+                expected_indexes[unique_hash_key] = True
 
 # Validate all expected indexes were created
 print("\n   ✅ Validating expected indexes:")
@@ -2289,8 +2399,8 @@ print("=" * 70)
 print()
 print("📚 What you learned:")
 print("   • Importing real-world CSV data into ArcadeDB")
-print("   • Automatic type inference by Java CSV importer")
-print("   • Schema creation on-the-fly during import")
+print("   • Bulk INSERT ingest from CSV with explicit schema")
+print("   • WAL-off ingest mode for faster loading")
 print("   • Batch processing with commitEvery parameter")
 print("   • Creating indexes AFTER import for performance")
 print("   • Full-text search indexes with Lucene")
@@ -2310,8 +2420,8 @@ if args.export:
     print("   • Import performance tuning with commitEvery and parallel parameters")
 print()
 print("💡 Key insights:")
-print("   • Java infers LONG for integers, DOUBLE for decimals (safe defaults)")
-print("   • Type inference analyzes first 10,000 rows (analysisLimitEntries)")
+print("   • Explicit schema maps integer-like fields to LONG")
+print("   • Explicit schema maps decimal fields to DOUBLE")
 print("   • Empty CSV cells → SQL NULL (proper NULL handling)")
 print("   • Indexes should be created AFTER bulk import")
 print("   • commitEvery controls batch size (larger = faster)")

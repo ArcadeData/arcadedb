@@ -130,14 +130,39 @@ echo -e "${CYAN}🔍 Analyzing JARs to determine required modules (jdeps)...${NC
 # --multi-release 25: treat multi-release JARs as Java 25
 # Note: Filter out jboss/wildfly jars which often have broken module descriptors
 # Note: Do NOT use --class-path or --recursive to avoid resolving bad modules
-DETECTED_MODULES=$(find "$JARS_DIR" -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 | grep -v "Warning" | tr ',' '\n' | grep -v "Warning" | grep -v ":" | grep -v "/" | sort -u | paste -sd "," -)
+RAW_JDEPS_OUTPUT=$(find "$JARS_DIR" -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 2>&1 || true)
+DETECTED_MODULES=$(echo "$RAW_JDEPS_OUTPUT" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -E '^[a-zA-Z0-9_.]+$' | sort -u | paste -sd "," - || true)
+
+JMODS_DIR="${JAVA_HOME}/jmods"
+if [ ! -d "$JMODS_DIR" ]; then
+    JMODS_DIR="${JAVA_HOME}/lib/jmods"
+fi
+
+if [ -d "$JMODS_DIR" ]; then
+    AVAILABLE_MODULES=$(cd "$JMODS_DIR" && ls *.jmod 2> /dev/null | sed 's/\.jmod$//' | sort -u | paste -sd "|" -)
+    if [ -n "$AVAILABLE_MODULES" ]; then
+        FILTERED_MODULES=$(echo "$DETECTED_MODULES" | tr ',' '\n' | sed '/^$/d' | grep -E "^(${AVAILABLE_MODULES})$" | sort -u | paste -sd "," - || true)
+    else
+        FILTERED_MODULES="$DETECTED_MODULES"
+    fi
+else
+    FILTERED_MODULES="$DETECTED_MODULES"
+fi
 
 # Manual overrides:
+# java.se: Stable baseline of standard Java SE modules needed by server/import/runtime paths
+# jdk.management: Required by server metrics integrations
 # jdk.zipfs: Required for JPype to load classes from JARs
 # jdk.unsupported: Often required for Unsafe access in libraries
-REQUIRED_MODULES="${DETECTED_MODULES},jdk.zipfs,jdk.unsupported"
+# jdk.incubator.vector: Required for vectorized execution paths
+if [ -n "$FILTERED_MODULES" ]; then
+    REQUIRED_MODULES="${FILTERED_MODULES},java.se,jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector"
+else
+    REQUIRED_MODULES="java.se,jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector"
+fi
 
-echo -e "${CYAN}📦 Detected modules: ${YELLOW}${DETECTED_MODULES}${NC}"
+echo -e "${CYAN}📦 Detected modules (raw): ${YELLOW}${DETECTED_MODULES}${NC}"
+echo -e "${CYAN}📦 Detected modules (filtered): ${YELLOW}${FILTERED_MODULES}${NC}"
 echo -e "${CYAN}📦 Final modules list: ${YELLOW}${REQUIRED_MODULES}${NC}"
 
 rm -rf "$SCRIPT_DIR/temp_jre"
