@@ -23,14 +23,13 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Set;
 
 /**
  * Depth-first graph traverser.
@@ -74,11 +73,11 @@ public class DepthFirstTraverser extends GraphTraverser {
     private int currentIndex = 0;
 
     DFSVertexIterator(final Vertex startVertex) {
-      final Set<RID> visited = detectCycles ? createVisitedSet() : new HashSet<>();
+      final RidHashSet visited = createVisitedSet();
       performDFS(startVertex, 0, visited);
     }
 
-    private void performDFS(final Vertex vertex, final int depth, final Set<RID> visited) {
+    private void performDFS(final Vertex vertex, final int depth, final RidHashSet visited) {
       // Skip if already visited
       if (detectCycles && isVisited(vertex, visited)) {
         return;

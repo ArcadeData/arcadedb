@@ -26,15 +26,14 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.RidHashSet;
 
 import com.arcadedb.query.QueryEngineManager;
 
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -255,7 +254,7 @@ public final class PartitionedTriangleOp implements CountOp {
         if (vCountry == null || !vCountry.equals(uCountry))
           continue;
 
-        final Set<RID> uNeighborSet = new HashSet<>();
+        final RidHashSet uNeighborSet = new RidHashSet();
         for (final RID nRid : uNeighbors) {
           final RID nCountry = personToPartition.get(nRid);
           if (nCountry != null && nCountry.equals(uCountry))
