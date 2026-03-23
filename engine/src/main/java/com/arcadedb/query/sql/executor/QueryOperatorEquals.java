@@ -106,7 +106,7 @@ public class QueryOperatorEquals {
     }
 
     if (value instanceof String string && RID.is(value))
-      value = new RID(other.getDatabase(), string);
+      value = new RID(string);
 
     return other.equals(value);
   }
