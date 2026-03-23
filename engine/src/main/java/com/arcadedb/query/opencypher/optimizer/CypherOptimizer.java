@@ -568,11 +568,10 @@ public class CypherOptimizer {
         rootOperator.getEstimatedCost() * 0.5, // fusion is cheaper
         rootOperator.getEstimatedCardinality());
 
-    // Re-attach filter on top if present
+    // Push filter INTO the fused chain (evaluated via column store, before creating output objects)
     if (topFilter instanceof FilterOperator) {
-      return new FilterOperator(fused,
-          ((FilterOperator) topFilter).getPredicate(),
-          topFilter.getEstimatedCost(), topFilter.getEstimatedCardinality());
+      fused.setPushedFilter(((FilterOperator) topFilter).getPredicate());
+      // No need for a separate FilterOperator on top — the fused chain handles it
     }
     return fused;
   }

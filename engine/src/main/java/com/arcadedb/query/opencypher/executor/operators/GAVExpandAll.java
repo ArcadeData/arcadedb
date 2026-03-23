@@ -195,16 +195,8 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
               }
               addResultWithReference(new GAVVertex(targetRID, targetNodeId, provider, context.getDatabase()));
             } else {
-              // Full mode: load vertex from OLTP
-              final Vertex targetVertex;
-              try {
-                final var record = context.getDatabase().lookupByRID(targetRID, true);
-                if (!(record instanceof Vertex))
-                  continue;
-                targetVertex = (Vertex) record;
-              } catch (final RecordNotFoundException e) {
-                continue;
-              }
+              // Full mode: use GAVVertex (lazy-loading proxy) instead of eager OLTP load
+              final GAVVertex targetVertex = new GAVVertex(targetRID, targetNodeId, provider, context.getDatabase());
 
               if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
                 continue;
