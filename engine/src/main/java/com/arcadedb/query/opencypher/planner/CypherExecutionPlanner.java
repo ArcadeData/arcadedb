@@ -213,23 +213,41 @@ public class CypherExecutionPlanner {
       }
     }
 
-    // The optimizer path (buildExecutionStepsWithOptimizer) only supports a fixed clause
-    // ordering: MATCH(es) → WITH → RETURN. Write clauses (CREATE/SET/DELETE/MERGE) are also handled.
-    // Disable for queries with clauses that break this assumption.
+    // The optimizer path (buildExecutionStepsWithOptimizer) applies clauses in a fixed order
+    // (MATCH → CREATE → SET → DELETE → REMOVE → MERGE → UNWIND → WITH → RETURN).
+    // This breaks queries where clause ordering matters, e.g. WITH before DELETE or UNWIND before SET.
+    // Fall back to ordered execution when write/mutating clauses are interleaved with WITH/UNWIND,
+    // or when MATCH appears after WITH (MATCH-WITH-MATCH pattern).
     if (statement.getClausesInOrder() != null) {
       int createCount = 0;
       int mergeCount = 0;
       int deleteCount = 0;
+      boolean seenWith = false;
+      boolean seenUnwind = false;
       for (final ClauseEntry clause : statement.getClausesInOrder()) {
         final ClauseEntry.ClauseType type = clause.getType();
         if (type == ClauseEntry.ClauseType.FOREACH || type == ClauseEntry.ClauseType.CALL)
           return false;
-        if (type == ClauseEntry.ClauseType.CREATE)
+        if (type == ClauseEntry.ClauseType.WITH)
+          seenWith = true;
+        else if (type == ClauseEntry.ClauseType.UNWIND)
+          seenUnwind = true;
+        else if (type == ClauseEntry.ClauseType.CREATE)
           createCount++;
         else if (type == ClauseEntry.ClauseType.MERGE)
           mergeCount++;
         else if (type == ClauseEntry.ClauseType.DELETE)
           deleteCount++;
+
+        // Write/mutating clause after WITH or UNWIND requires ordered execution
+        if ((seenWith || seenUnwind) && (type == ClauseEntry.ClauseType.DELETE
+            || type == ClauseEntry.ClauseType.SET || type == ClauseEntry.ClauseType.REMOVE
+            || type == ClauseEntry.ClauseType.CREATE || type == ClauseEntry.ClauseType.MERGE))
+          return false;
+
+        // MATCH after WITH requires ordered execution (MATCH-WITH-MATCH pattern)
+        if (seenWith && type == ClauseEntry.ClauseType.MATCH)
+          return false;
       }
       // Multiple CREATE/MERGE/DELETE clauses not handled by optimizer path
       if (createCount > 1 || mergeCount > 1 || (deleteCount > 0 && mergeCount > 0))
