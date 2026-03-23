@@ -26,6 +26,7 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.LongLongHashMap;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -96,7 +97,7 @@ public final class PairHashJoinOp implements CountOp {
     // BUILD: for single-hop arms, use NeighborView for direct edge iteration
     // instead of per-node walkArm (avoids ~6M getNeighborIds method calls).
     // For multi-hop arms, fall back to per-node walkArm.
-    final HashMap<Long, Long> pairCounts = new HashMap<>();
+    final LongLongHashMap pairCounts = new LongLongHashMap();
 
     final boolean arm1SingleHop = arm1EdgeTypes.length == 1;
     final boolean arm2SingleHop = arm2EdgeTypes.length == 1;
@@ -145,7 +146,7 @@ public final class PairHashJoinOp implements CountOp {
           continue;
         for (final int ep1 : ep1Ids)
           for (final int ep2 : ep2Ids)
-            pairCounts.merge(CSRCountUtils.packPair(ep1, ep2), 1L, Long::sum);
+            pairCounts.increment(CSRCountUtils.packPair(ep1, ep2));
       }
     }
 
@@ -153,21 +154,14 @@ public final class PairHashJoinOp implements CountOp {
     long total = 0;
     if (probeViewFallback != null) {
       final int[] probeNbrs = probeViewFallback.neighbors();
-      for (int p1 = 0; p1 < nodeCount; p1++) {
-        for (int j = probeViewFallback.offset(p1), end = probeViewFallback.offsetEnd(p1); j < end; j++) {
-          final Long cnt = pairCounts.get(CSRCountUtils.packPair(p1, probeNbrs[j]));
-          if (cnt != null)
-            total += cnt;
-        }
-      }
+      for (int p1 = 0; p1 < nodeCount; p1++)
+        for (int j = probeViewFallback.offset(p1), end = probeViewFallback.offsetEnd(p1); j < end; j++)
+          total += pairCounts.get(CSRCountUtils.packPair(p1, probeNbrs[j]), 0);
     } else {
       for (int p1 = 0; p1 < nodeCount; p1++) {
         final int[] neighbors = provider.getNeighborIds(p1, probeDirection, probeEdgeType);
-        for (final int p2 : neighbors) {
-          final Long cnt = pairCounts.get(CSRCountUtils.packPair(p1, p2));
-          if (cnt != null)
-            total += cnt;
-        }
+        for (final int p2 : neighbors)
+          total += pairCounts.get(CSRCountUtils.packPair(p1, p2), 0);
       }
     }
     return total;
@@ -273,7 +267,7 @@ public final class PairHashJoinOp implements CountOp {
    * But for simpler pair-joins where both arms are 1 hop, this avoids all per-node method calls.
    */
   private void buildWithViews(final NeighborView arm1View, final NeighborView arm2View,
-      final Set<Integer>[] arm2Buckets, final HashMap<Long, Long> pairCounts,
+      final Set<Integer>[] arm2Buckets, final LongLongHashMap pairCounts,
       final int nodeCount, final GraphTraversalProvider provider) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] arm2Nbrs = arm2View.neighbors();
@@ -287,7 +281,7 @@ public final class PairHashJoinOp implements CountOp {
 
       for (int i = a1Start; i < a1End; i++)
         for (int j = a2Start; j < a2End; j++)
-          pairCounts.merge(CSRCountUtils.packPair(arm1Nbrs[i], arm2Nbrs[j]), 1L, Long::sum);
+          pairCounts.increment(CSRCountUtils.packPair(arm1Nbrs[i], arm2Nbrs[j]));
     }
   }
 
@@ -297,7 +291,7 @@ public final class PairHashJoinOp implements CountOp {
    * For Q2: arm1=HAS_CREATOR OUT (Comment→Person), arm2=REPLY_OF+HAS_CREATOR (Comment→Post→Person).
    */
   private void buildWithArm1View(final NeighborView arm1View, final GraphTraversalProvider provider,
-      final Set<Integer>[] arm2Buckets, final HashMap<Long, Long> pairCounts,
+      final Set<Integer>[] arm2Buckets, final LongLongHashMap pairCounts,
       final int nodeCount) {
     final int[] arm1Nbrs = arm1View.neighbors();
 
@@ -332,7 +326,7 @@ public final class PairHashJoinOp implements CountOp {
 
       for (int i = a1Start; i < a1End; i++)
         for (final int ep2 : ep2Ids)
-          pairCounts.merge(CSRCountUtils.packPair(arm1Nbrs[i], ep2), 1L, Long::sum);
+          pairCounts.increment(CSRCountUtils.packPair(arm1Nbrs[i], ep2));
     }
   }
 

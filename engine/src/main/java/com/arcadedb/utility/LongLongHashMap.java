@@ -100,6 +100,21 @@ public final class LongLongHashMap {
     }
   }
 
+  /**
+   * Returns the value for the given key, or the default value if the key is not present.
+   */
+  public long get(final long key, final long defaultValue) {
+    int idx = hash(key) & mask;
+    while (true) {
+      final long k = keys[idx];
+      if (k == key)
+        return values[idx];
+      if (k == EMPTY)
+        return defaultValue;
+      idx = (idx + 1) & mask;
+    }
+  }
+
   public int size() {
     return size;
   }

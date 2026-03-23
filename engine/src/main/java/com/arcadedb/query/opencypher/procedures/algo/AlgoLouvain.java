@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import com.arcadedb.utility.IntIntHashMap;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -201,7 +203,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     final double finalModularity = computeModularity(vertices, community, vertexIndex, nodeDegree, totalWeight, weightProperty);
 
     // Remap community IDs to be sequential starting from 0
-    final Map<Integer, Integer> communityRemap = new HashMap<>();
+    final IntIntHashMap communityRemap = new IntIntHashMap();
     int nextId = 0;
     for (int i = 0; i < n; i++) {
       if (!communityRemap.containsKey(community[i]))
@@ -211,7 +213,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
       result.setProperty("node", vertices.get(i).getIdentity());
-      result.setProperty("communityId", communityRemap.get(community[i]));
+      result.setProperty("communityId", communityRemap.get(community[i], -1));
       result.setProperty("modularity", finalModularity);
       return (Result) result;
     });
