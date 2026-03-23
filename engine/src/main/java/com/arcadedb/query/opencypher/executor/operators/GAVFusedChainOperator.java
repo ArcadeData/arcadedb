@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -33,6 +34,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
@@ -110,154 +112,206 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // Pre-compute the output variable names array (shared across all rows — zero per-row allocation)
     final String[] outputNames = buildOutputNames();
 
+    // Pre-acquire NeighborViews for zero-allocation traversal (one per hop, shared across all vertices)
+    final NeighborView[] hopViews = new NeighborView[chainLength];
+    for (int i = 0; i < chainLength; i++)
+      hopViews[i] = provider.getNeighborView(hopDirections[i], hopEdgeTypes[i]);
+
+    // Collect all source nodeIds into a primitive int[] for parallel partitioning (zero boxing)
+    int[] sourceNodeIdsBuf = new int[1024];
+    int sourceCount = 0;
+    while (inputResults.hasNext()) {
+      final Result inputResult = inputResults.next();
+      final Object sourceObj = inputResult.getProperty(sourceVariable);
+      final int nodeId;
+      if (sourceObj instanceof GAVVertex)
+        nodeId = ((GAVVertex) sourceObj).getNodeId();
+      else if (sourceObj instanceof Vertex)
+        nodeId = provider.getNodeId(((Vertex) sourceObj).getIdentity());
+      else
+        continue;
+      if (nodeId >= 0) {
+        if (sourceCount == sourceNodeIdsBuf.length)
+          sourceNodeIdsBuf = java.util.Arrays.copyOf(sourceNodeIdsBuf, sourceNodeIdsBuf.length * 2);
+        sourceNodeIdsBuf[sourceCount++] = nodeId;
+      }
+    }
+    inputResults.close();
+
+    final int[] sourceNodeIds = sourceNodeIdsBuf;
+    final int totalSources = sourceCount; // effectively final for lambda capture
+    final int parallelism = Runtime.getRuntime().availableProcessors();
+    final int chunkSize = (totalSources + parallelism - 1) / parallelism;
+
+    // Parallel DFS: each thread processes a chunk of source vertices with its own stack
+    @SuppressWarnings("unchecked")
+    final List<Result>[] threadResults = new List[Math.min(parallelism, Math.max(1, (totalSources + chunkSize - 1) / chunkSize))];
+    final AtomicReference<Throwable> firstError = new AtomicReference<>();
+
+    final int threadCount;
+    if (totalSources < 8192) {
+      // Below threshold: single-threaded
+      threadResults[0] = new ArrayList<>();
+      traverseChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, outputNames, db, context, threadResults[0]);
+      threadCount = 1;
+    } else {
+      // Parallel execution
+      final Thread[] threads = new Thread[threadResults.length];
+      int launched = 0;
+      for (int t = 0; t < threadResults.length; t++) {
+        final int start = t * chunkSize;
+        final int end = Math.min(start + chunkSize, totalSources);
+        if (start >= totalSources)
+          break;
+        threadResults[t] = new ArrayList<>();
+        final int threadIdx = t;
+        threads[t] = new Thread(() -> {
+          try {
+            traverseChunk(sourceNodeIds, start, end, hopViews, chainLength, outputNames, db, context, threadResults[threadIdx]);
+          } catch (final Throwable e) {
+            firstError.compareAndSet(null, e);
+          }
+        });
+        threads[t].setDaemon(true);
+        threads[t].setName("gav-chain-" + t);
+        threads[t].start();
+        launched++;
+      }
+      // Wait for all threads
+      for (int t = 0; t < launched; t++) {
+        try {
+          threads[t].join();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+      if (firstError.get() != null)
+        throw new RuntimeException("Parallel GAV traversal failed", (Exception) firstError.get());
+      threadCount = launched;
+    }
+
+    // Merge thread-local results into a single iterator
+    final List<Result> merged = new ArrayList<>();
+    for (int t = 0; t < threadCount; t++)
+      if (threadResults[t] != null)
+        merged.addAll(threadResults[t]);
+
+    final Iterator<Result> mergedIter = merged.iterator();
     return new ResultSet() {
-      // Per-source traversal state (stack-based DFS through the chain)
-      private Result currentInputResult = null;
-      private int sourceNodeId = -1;
-
-      // DFS stack: nodeId at each level, index into neighbor array at each level
-      private final int[] stackNodeId = new int[chainLength + 1]; // [0]=source, [1..n]=hop targets
-      private final int[][] stackNeighbors = new int[chainLength][];
-      private final int[] stackIdx = new int[chainLength];
-      private int stackDepth = -1; // -1 = need new source
-
-      private final List<Result> buffer = new ArrayList<>();
-      private int bufferIndex = 0;
-      private boolean finished = false;
-
       @Override
       public boolean hasNext() {
-        if (bufferIndex < buffer.size())
-          return true;
-        if (finished)
-          return false;
-        fetchMore(nRecords > 0 ? nRecords : 100);
-        return bufferIndex < buffer.size();
+        return mergedIter.hasNext();
       }
 
       @Override
       public Result next() {
-        if (!hasNext())
-          throw new NoSuchElementException();
-        return buffer.get(bufferIndex++);
-      }
-
-      private void fetchMore(final int batchSize) {
-        buffer.clear();
-        bufferIndex = 0;
-
-        while (buffer.size() < batchSize) {
-          // Need a new source vertex?
-          if (stackDepth < 0) {
-            if (!inputResults.hasNext()) {
-              finished = true;
-              break;
-            }
-            currentInputResult = inputResults.next();
-            final Object sourceObj = currentInputResult.getProperty(sourceVariable);
-
-            if (sourceObj instanceof GAVVertex)
-              sourceNodeId = ((GAVVertex) sourceObj).getNodeId();
-            else if (sourceObj instanceof Vertex)
-              sourceNodeId = provider.getNodeId(((Vertex) sourceObj).getIdentity());
-            else {
-              sourceNodeId = -1;
-              continue;
-            }
-
-            if (sourceNodeId < 0)
-              continue; // not in GAV
-
-            stackNodeId[0] = sourceNodeId;
-            // Initialize first hop
-            stackNeighbors[0] = provider.getNeighborIds(sourceNodeId, hopDirections[0], hopEdgeTypes[0]);
-            stackIdx[0] = 0;
-            stackDepth = 0;
-          }
-
-          // DFS traversal through the chain
-          while (stackDepth >= 0) {
-            if (stackIdx[stackDepth] >= stackNeighbors[stackDepth].length) {
-              // Exhausted this level — backtrack
-              stackDepth--;
-              if (stackDepth >= 0)
-                stackIdx[stackDepth]++;
-              continue;
-            }
-
-            final int neighborId = stackNeighbors[stackDepth][stackIdx[stackDepth]];
-
-            // Target label filter: check bucket ID without loading vertex
-            if (hopTargetBucketIds[stackDepth] != null) {
-              final RID rid = provider.getRID(neighborId);
-              if (rid == null || !matchesBuckets(rid.getBucketId(), hopTargetBucketIds[stackDepth])) {
-                stackIdx[stackDepth]++;
-                continue;
-              }
-            }
-
-            stackNodeId[stackDepth + 1] = neighborId;
-
-            if (stackDepth == chainLength - 1) {
-              // Reached the end of the chain — emit result
-              emitResult(db);
-              stackIdx[stackDepth]++;
-              if (buffer.size() >= batchSize)
-                break;
-            } else {
-              // Go deeper
-              stackDepth++;
-              stackNeighbors[stackDepth] = provider.getNeighborIds(neighborId, hopDirections[stackDepth], hopEdgeTypes[stackDepth]);
-              stackIdx[stackDepth] = 0;
-            }
-          }
-
-          if (stackDepth < 0)
-            stackDepth = -1; // signal: need new source
-        }
-      }
-
-      private void emitResult(final Database database) {
-        // Build values array (one allocation per row — no HashMap, no Entry objects)
-        final Object[] values = new Object[outputNames.length];
-        int slot = 0;
-
-        // Source variable
-        if (materializeVariable[0])
-          values[slot++] = makeReference(stackNodeId[0], database);
-        else {
-          // Pass through input properties into the first slots
-          for (final String prop : currentInputResult.getPropertyNames())
-            values[slot++] = currentInputResult.getProperty(prop);
-        }
-
-        // Hop target variables
-        for (int i = 0; i < hopTargetVariables.length; i++)
-          if (hopTargetVariables[i] != null && materializeVariable[i + 1])
-            values[slot++] = makeReference(stackNodeId[i + 1], database);
-
-        final GAVResult result = new GAVResult(outputNames, values);
-
-        // Evaluate pushed filter (column store access, no OLTP) before buffering
-        if (pushedFilter != null) {
-          final Object filterResult = pushedFilter.evaluate(result, context);
-          if (!Boolean.TRUE.equals(filterResult))
-            return;
-        }
-
-        buffer.add(result);
-      }
-
-      private GAVVertex makeReference(final int nodeId, final Database database) {
-        final RID rid = provider.getRID(nodeId);
-        return rid != null ? new GAVVertex(rid, nodeId, provider, database) : null;
+        return mergedIter.next();
       }
 
       @Override
       public void close() {
-        inputResults.close();
       }
     };
+  }
+
+  /**
+   * Traverses a chunk of source vertices through the multi-hop chain.
+   * Each call has its own DFS stack — safe for parallel execution with no shared mutable state.
+   */
+  private void traverseChunk(final int[] sourceNodeIds, final int start, final int end,
+      final NeighborView[] hopViews, final int chainLength, final String[] outputNames,
+      final Database db, final CommandContext context, final List<Result> output) {
+
+    // Per-thread DFS stack (allocated once, reused across all sources in this chunk)
+    final int[] stackNodeId = new int[chainLength + 1];
+    final int[] stackCursor = new int[chainLength];
+    final int[] stackEnd = new int[chainLength];
+    final int[][] fallbackNeighbors = new int[chainLength][];
+
+    for (int s = start; s < end; s++) {
+      final int sourceNodeId = sourceNodeIds[s];
+      stackNodeId[0] = sourceNodeId;
+      initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, 0, sourceNodeId);
+      int depth = 0;
+
+      while (depth >= 0) {
+        if (stackCursor[depth] >= stackEnd[depth]) {
+          depth--;
+          if (depth >= 0)
+            stackCursor[depth]++;
+          continue;
+        }
+
+        final int neighborId;
+        final NeighborView view = hopViews[depth];
+        if (view != null)
+          neighborId = view.neighbors()[stackCursor[depth]];
+        else
+          neighborId = fallbackNeighbors[depth][stackCursor[depth]];
+
+        // Target label filter
+        if (hopTargetBucketIds[depth] != null) {
+          final RID rid = provider.getRID(neighborId);
+          if (rid == null || !matchesBuckets(rid.getBucketId(), hopTargetBucketIds[depth])) {
+            stackCursor[depth]++;
+            continue;
+          }
+        }
+
+        stackNodeId[depth + 1] = neighborId;
+
+        if (depth == chainLength - 1) {
+          // Emit result
+          emitResult(stackNodeId, outputNames, db, context, output);
+          stackCursor[depth]++;
+        } else {
+          depth++;
+          initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, depth, neighborId);
+        }
+      }
+    }
+  }
+
+  private void initHop(final NeighborView[] hopViews, final int[][] fallbackNeighbors,
+      final int[] stackCursor, final int[] stackEnd, final int depth, final int nodeId) {
+    final NeighborView view = hopViews[depth];
+    if (view != null) {
+      stackCursor[depth] = view.offset(nodeId);
+      stackEnd[depth] = view.offsetEnd(nodeId);
+    } else {
+      final int[] nbrs = provider.getNeighborIds(nodeId, hopDirections[depth], hopEdgeTypes[depth]);
+      fallbackNeighbors[depth] = nbrs;
+      stackCursor[depth] = 0;
+      stackEnd[depth] = nbrs.length;
+    }
+  }
+
+  private void emitResult(final int[] stackNodeId, final String[] outputNames,
+      final Database database, final CommandContext context, final List<Result> output) {
+    final Object[] values = new Object[outputNames.length];
+    int slot = 0;
+
+    if (materializeVariable[0])
+      values[slot++] = makeReference(stackNodeId[0], database);
+
+    for (int i = 0; i < hopTargetVariables.length; i++)
+      if (hopTargetVariables[i] != null && materializeVariable[i + 1])
+        values[slot++] = makeReference(stackNodeId[i + 1], database);
+
+    final GAVResult result = new GAVResult(outputNames, values);
+
+    // Evaluate pushed filter (column store access) before adding to output
+    if (pushedFilter != null)
+      if (!Boolean.TRUE.equals(pushedFilter.evaluate(result, context)))
+        return;
+
+    output.add(result);
+  }
+
+  private GAVVertex makeReference(final int nodeId, final Database database) {
+    final RID rid = provider.getRID(nodeId);
+    return rid != null ? new GAVVertex(rid, nodeId, provider, database) : null;
   }
 
   /**
