@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.LongLongHashMap;
 
 import java.util.ArrayList;
 import java.util.Iterator;
