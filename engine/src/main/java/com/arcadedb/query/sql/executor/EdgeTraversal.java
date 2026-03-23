@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.WhereClause;
 
@@ -31,6 +32,9 @@ public class EdgeTraversal {
   private      String      leftCluster;
   private      Rid         leftRid;
   private      WhereClause leftFilter;
+
+  /** Set by the planner when this edge is part of a GAV-fused chain. */
+  GraphTraversalProvider gavProvider;
 
   public EdgeTraversal(final PatternEdge edge, final boolean out) {
     this.edge = edge;

@@ -35,6 +35,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests that Gremlin traversals use CSR acceleration when a GAV (GraphAnalyticalView) is available.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class GremlinGAVTest {
   private ArcadeGraph graph;
