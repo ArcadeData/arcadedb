@@ -727,9 +727,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
           public Vertex next() {
             if (!hasNext())
               throw new NoSuchElementException();
-            final RID rid = provider.getRID(neighbors[idx++]);
+            final int neighborId = neighbors[idx++];
+            final RID rid = provider.getRID(neighborId);
             gavPathCount++;
-            return (Vertex) context.getDatabase().lookupByRID(rid, true);
+            return new GAVVertex(rid, neighborId, provider, context.getDatabase());
           }
         };
       }

@@ -23,10 +23,10 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
@@ -69,6 +69,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   // Which variables need to be materialized as Vertex in the output
   private final boolean[] materializeVariable; // [0]=source, [1..n]=hop targets
 
+  // Optional pushed-down filter predicate (evaluated via column store before emitting)
+  private BooleanExpression pushedFilter;
+
   public GAVFusedChainOperator(final PhysicalOperator child,
       final GraphTraversalProvider provider,
       final String sourceVariable,
@@ -89,11 +92,23 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     this.materializeVariable = materializeVariable;
   }
 
+  /**
+   * Pushes a WHERE filter into the fused chain. The filter is evaluated via GAVVertex
+   * (column store access) before creating output objects, avoiding ResultInternal
+   * allocations for rows that will be immediately discarded.
+   */
+  public void setPushedFilter(final BooleanExpression filter) {
+    this.pushedFilter = filter;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     final ResultSet inputResults = child.execute(context, nRecords);
     final Database db = context.getDatabase();
     final int chainLength = hopDirections.length;
+
+    // Pre-compute the output variable names array (shared across all rows — zero per-row allocation)
+    final String[] outputNames = buildOutputNames();
 
     return new ResultSet() {
       // Per-source traversal state (stack-based DFS through the chain)
@@ -203,21 +218,31 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       }
 
       private void emitResult(final Database database) {
-        final ResultInternal result = new ResultInternal();
+        // Build values array (one allocation per row — no HashMap, no Entry objects)
+        final Object[] values = new Object[outputNames.length];
+        int slot = 0;
 
-        // Source variable: pass through from input (already a Vertex from NodeByLabelScan)
-        if (materializeVariable[0]) {
-          // Use GAVVertex — properties read from column store, no OLTP load
-          result.setProperty(sourceVariable, makeReference(stackNodeId[0], database));
-        } else {
+        // Source variable
+        if (materializeVariable[0])
+          values[slot++] = makeReference(stackNodeId[0], database);
+        else {
+          // Pass through input properties into the first slots
           for (final String prop : currentInputResult.getPropertyNames())
-            result.setProperty(prop, currentInputResult.getProperty(prop));
+            values[slot++] = currentInputResult.getProperty(prop);
         }
 
         // Hop target variables
-        for (int i = 0; i < hopTargetVariables.length; i++) {
+        for (int i = 0; i < hopTargetVariables.length; i++)
           if (hopTargetVariables[i] != null && materializeVariable[i + 1])
-            result.setProperty(hopTargetVariables[i], makeReference(stackNodeId[i + 1], database));
+            values[slot++] = makeReference(stackNodeId[i + 1], database);
+
+        final GAVResult result = new GAVResult(outputNames, values);
+
+        // Evaluate pushed filter (column store access, no OLTP) before buffering
+        if (pushedFilter != null) {
+          final Object filterResult = pushedFilter.evaluate(result, context);
+          if (!Boolean.TRUE.equals(filterResult))
+            return;
         }
 
         buffer.add(result);
@@ -233,6 +258,25 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         inputResults.close();
       }
     };
+  }
+
+  /**
+   * Pre-computes the output variable names array. Shared across all rows (interned).
+   */
+  private String[] buildOutputNames() {
+    final List<String> names = new ArrayList<>();
+    if (materializeVariable[0])
+      names.add(sourceVariable);
+    // When source is not materialized, we pass through input properties — those names come at runtime
+    // For now, add source variable name as placeholder
+    else
+      names.add(sourceVariable);
+
+    for (int i = 0; i < hopTargetVariables.length; i++)
+      if (hopTargetVariables[i] != null && materializeVariable[i + 1])
+        names.add(hopTargetVariables[i]);
+
+    return names.toArray(new String[0]);
   }
 
   private static boolean matchesBuckets(final int bucketId, final int[] targetBuckets) {

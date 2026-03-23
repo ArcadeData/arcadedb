@@ -27,6 +27,7 @@ import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -126,18 +127,35 @@ public class CypherExecutionPlanner {
     if (statement.getMatchClauses() == null || statement.getMatchClauses().isEmpty())
       return false;
 
-    // Multiple MATCH clauses are supported when each MATCH has a simple single-node pattern
-    // (common for edge creation: MATCH (a:T) WHERE... MATCH (b:T) WHERE... CREATE (a)-[]->(b))
-    // These are handled via CartesianProduct operator. Complex multi-MATCH patterns are not yet supported.
+    // Multiple MATCH clauses: supported when the patterns form a connected graph via shared variables,
+    // or when each MATCH has a single-node pattern (handled via CartesianProduct).
     if (statement.getMatchClauses().size() > 1) {
+      final Set<String> allVariables = new HashSet<>();
+      boolean allConnected = true;
       for (final MatchClause match : statement.getMatchClauses()) {
-        if (!match.hasPathPatterns() || match.getPathPatterns().size() != 1)
-          return false;
+        if (!match.hasPathPatterns() || match.getPathPatterns().size() != 1) {
+          allConnected = false;
+          break;
+        }
         final PathPattern path = match.getPathPatterns().get(0);
-        // Only support single-node patterns (no relationships) for multi-MATCH
-        if (!path.isSingleNode())
-          return false;
+        // Collect all node variables from this path
+        final Set<String> pathVars = new HashSet<>();
+        for (final NodePattern node : path.getNodes())
+          if (node.getVariable() != null)
+            pathVars.add(node.getVariable());
+
+        // First clause always connects; subsequent clauses must share at least one variable
+        if (!allVariables.isEmpty() && Collections.disjoint(allVariables, pathVars)) {
+          // Disconnected pattern — only support if single-node (CartesianProduct)
+          if (!path.isSingleNode()) {
+            allConnected = false;
+            break;
+          }
+        }
+        allVariables.addAll(pathVars);
       }
+      if (!allConnected)
+        return false;
     }
 
     // For Phase 4: Start with simple queries only
@@ -146,6 +164,16 @@ public class CypherExecutionPlanner {
     // - Complex write operations after MATCH
     // - Variable-length paths (already work but have known issues)
     // - Unlabeled nodes (optimizer requires labels for physical operators)
+
+    // Collect all labeled variables across all MATCH clauses first.
+    // A node like (a) in a second MATCH is valid if (a:Answer) appeared in a previous MATCH.
+    final Set<String> labeledVariables = new HashSet<>();
+    for (final MatchClause match : statement.getMatchClauses())
+      if (match.hasPathPatterns())
+        for (final PathPattern path : match.getPathPatterns())
+          for (final NodePattern node : path.getNodes())
+            if (node.getVariable() != null && node.hasLabels())
+              labeledVariables.add(node.getVariable());
 
     // Check for OPTIONAL MATCH, unlabeled nodes, and disconnected patterns
     for (final MatchClause match : statement.getMatchClauses()) {
@@ -165,8 +193,9 @@ public class CypherExecutionPlanner {
             return false;
 
           for (final NodePattern node : path.getNodes()) {
-            if (!node.hasLabels())
-              return false; // Unlabeled nodes not supported yet
+            // Unlabeled nodes must have been labeled in another MATCH clause
+            if (!node.hasLabels() && (node.getVariable() == null || !labeledVariables.contains(node.getVariable())))
+              return false;
 
             // Multi-label nodes not yet supported in optimizer
             // NodeByLabelScan uses composite type name which doesn't match
@@ -208,10 +237,9 @@ public class CypherExecutionPlanner {
     }
 
     // Aggregation queries: the optimizer doesn't enforce Cypher's relationship uniqueness
-    // constraint (each edge matched at most once per MATCH clause). When all edge types in
-    // the pattern are disjoint, uniqueness is automatically satisfied (an edge has exactly
-    // one type), so the optimizer is safe. When types overlap, fall back to the traditional
-    // path which supports edge tracking AND GAV via MatchRelationshipStep.
+    // constraint (each edge matched at most once per MATCH clause). Edge uniqueness is scoped
+    // to each individual MATCH clause, NOT across clauses. So we check disjointness within
+    // each clause independently — overlapping types across different MATCHes are fine.
     if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()) {
       for (final MatchClause match : statement.getMatchClauses()) {
         if (match.hasPathPatterns()) {
