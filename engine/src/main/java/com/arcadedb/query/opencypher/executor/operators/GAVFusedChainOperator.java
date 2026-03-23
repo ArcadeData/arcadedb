@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
@@ -74,6 +75,15 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   // Optional pushed-down filter predicate (evaluated via column store before emitting)
   private BooleanExpression pushedFilter;
 
+  // Fused aggregation: when set, the parallel DFS counts per group internally
+  // instead of producing individual rows. Bypasses GroupByAggregationStep entirely.
+  // groupKeyVariables = variables to group by (e.g., ["asker", "answerer"])
+  // groupKeyProperties = property to read from each variable for grouping (e.g., ["Id", "Id"]), null = use variable identity
+  // countOutputName = output alias for count(*) (e.g., "interactions")
+  private String[] groupKeyVariables;
+  private String countOutputName;
+  private String[] groupKeyOutputNames;
+
   public GAVFusedChainOperator(final PhysicalOperator child,
       final GraphTraversalProvider provider,
       final String sourceVariable,
@@ -101,6 +111,21 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    */
   public void setPushedFilter(final BooleanExpression filter) {
     this.pushedFilter = filter;
+  }
+
+  /**
+   * Enables fused aggregation: the parallel DFS counts per group internally
+   * instead of producing individual rows. The downstream GroupByAggregationStep is bypassed.
+   *
+   * @param groupKeyVariables  variables to group by (must be materialized)
+   * @param groupKeyOutputNames output aliases for each grouping key
+   * @param countOutputName    output alias for count(*)
+   */
+  public void setFusedAggregation(final String[] groupKeyVariables, final String[] groupKeyOutputNames,
+      final String countOutputName) {
+    this.groupKeyVariables = groupKeyVariables;
+    this.groupKeyOutputNames = groupKeyOutputNames;
+    this.countOutputName = countOutputName;
   }
 
   @Override
@@ -142,6 +167,11 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     final int totalSources = sourceCount; // effectively final for lambda capture
     final int parallelism = Runtime.getRuntime().availableProcessors();
     final int chunkSize = (totalSources + parallelism - 1) / parallelism;
+
+    // If fused aggregation is enabled, use the parallel aggregating path
+    if (groupKeyVariables != null)
+      return executeWithFusedAggregation(sourceNodeIds, totalSources, parallelism, chunkSize,
+          hopViews, chainLength, db, context);
 
     // Parallel DFS: each thread processes a chunk of source vertices with its own stack
     @SuppressWarnings("unchecked")
@@ -213,6 +243,199 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       public void close() {
       }
     };
+  }
+
+  /**
+   * Parallel fused aggregation: each thread traverses its chunk of sources via DFS
+   * and accumulates counts per group using a thread-local HashMap&lt;long, long&gt;.
+   * Zero GAVVertex/GAVResult allocation during traversal — pure int operations.
+   * Thread-local maps are merged after all threads complete.
+   */
+  private ResultSet executeWithFusedAggregation(final int[] sourceNodeIds, final int totalSources,
+      final int parallelism, final int chunkSize, final NeighborView[] hopViews,
+      final int chainLength, final Database db, final CommandContext context) {
+
+    // Resolve which nodeId slot each group key variable maps to:
+    // sourceVariable = slot 0, hopTargetVariables[i] = slot i+1
+    final int[] groupKeySlots = new int[groupKeyVariables.length];
+    for (int g = 0; g < groupKeyVariables.length; g++) {
+      if (groupKeyVariables[g].equals(sourceVariable))
+        groupKeySlots[g] = 0;
+      else {
+        groupKeySlots[g] = -1;
+        for (int h = 0; h < hopTargetVariables.length; h++)
+          if (groupKeyVariables[g].equals(hopTargetVariables[h])) {
+            groupKeySlots[g] = h + 1;
+            break;
+          }
+      }
+    }
+
+    final int numThreads = Math.min(parallelism, Math.max(1, (totalSources + chunkSize - 1) / chunkSize));
+    @SuppressWarnings("unchecked")
+    final LongLongHashMap[] threadMaps = new LongLongHashMap[numThreads];
+    final AtomicReference<Throwable> firstError = new AtomicReference<>();
+
+    if (totalSources < 8192) {
+      // Single-threaded
+      threadMaps[0] = new LongLongHashMap();
+      aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, groupKeySlots, db, context, threadMaps[0]);
+    } else {
+      // Parallel
+      final Thread[] threads = new Thread[numThreads];
+      int launched = 0;
+      for (int t = 0; t < numThreads; t++) {
+        final int start = t * chunkSize;
+        final int end = Math.min(start + chunkSize, totalSources);
+        if (start >= totalSources)
+          break;
+        threadMaps[t] = new LongLongHashMap();
+        final int threadIdx = t;
+        threads[t] = new Thread(() -> {
+          try {
+            aggregateChunk(sourceNodeIds, start, end, hopViews, chainLength, groupKeySlots, db, context, threadMaps[threadIdx]);
+          } catch (final Throwable e) {
+            firstError.compareAndSet(null, e);
+          }
+        });
+        threads[t].setDaemon(true);
+        threads[t].setName("gav-agg-" + t);
+        threads[t].start();
+        launched++;
+      }
+      for (int t = 0; t < launched; t++) {
+        try {
+          threads[t].join();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+      if (firstError.get() != null)
+        throw new RuntimeException("Parallel GAV aggregation failed", (Exception) firstError.get());
+    }
+
+    // Merge thread-local maps (zero boxing — primitive long operations)
+    final LongLongHashMap merged = threadMaps[0] != null ? threadMaps[0] : new LongLongHashMap();
+    for (int t = 1; t < numThreads; t++)
+      if (threadMaps[t] != null)
+        merged.mergeFrom(threadMaps[t]);
+
+    // Build output results — one per group (only ~50K allocations, not 740K)
+    final List<Result> results = new ArrayList<>(merged.size());
+    merged.forEach((packedKey, count) -> {
+      final ResultInternal result = new ResultInternal();
+      if (groupKeySlots.length == 2) {
+        final int nodeId0 = (int) (packedKey >>> 32);
+        final int nodeId1 = (int) packedKey;
+        result.setProperty(groupKeyOutputNames[0], new GAVVertex(provider.getRID(nodeId0), nodeId0, provider, db));
+        result.setProperty(groupKeyOutputNames[1], new GAVVertex(provider.getRID(nodeId1), nodeId1, provider, db));
+      } else if (groupKeySlots.length == 1) {
+        final int nodeId0 = (int) packedKey;
+        result.setProperty(groupKeyOutputNames[0], new GAVVertex(provider.getRID(nodeId0), nodeId0, provider, db));
+      }
+      result.setProperty(countOutputName, count);
+      results.add(result);
+    });
+
+    final Iterator<Result> iter = results.iterator();
+    return new ResultSet() {
+      @Override public boolean hasNext() { return iter.hasNext(); }
+      @Override public Result next() { return iter.next(); }
+      @Override public void close() { }
+    };
+  }
+
+  /**
+   * Aggregating DFS for a chunk of sources. Pure int operations — zero object allocation
+   * during traversal. Counts are accumulated in the thread-local map.
+   */
+  private void aggregateChunk(final int[] sourceNodeIds, final int start, final int end,
+      final NeighborView[] hopViews, final int chainLength, final int[] groupKeySlots,
+      final Database db, final CommandContext context, final LongLongHashMap counts) {
+
+    final int[] stackNodeId = new int[chainLength + 1];
+    final int[] stackCursor = new int[chainLength];
+    final int[] stackEnd = new int[chainLength];
+    final int[][] fallbackNeighbors = new int[chainLength][];
+
+    // Pre-allocate reusable filter objects ONCE per thread (zero per-path allocation)
+    final String[] filterNames;
+    final Object[] filterValues;
+    final GAVResult filterResult;
+    if (pushedFilter != null) {
+      filterNames = buildOutputNames();
+      filterValues = new Object[filterNames.length];
+      filterResult = new GAVResult(filterNames, filterValues);
+    } else {
+      filterNames = null;
+      filterValues = null;
+      filterResult = null;
+    }
+
+    for (int s = start; s < end; s++) {
+      final int sourceNodeId = sourceNodeIds[s];
+      stackNodeId[0] = sourceNodeId;
+      initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, 0, sourceNodeId);
+      int depth = 0;
+
+      while (depth >= 0) {
+        if (stackCursor[depth] >= stackEnd[depth]) {
+          depth--;
+          if (depth >= 0)
+            stackCursor[depth]++;
+          continue;
+        }
+
+        final int neighborId;
+        final NeighborView view = hopViews[depth];
+        if (view != null)
+          neighborId = view.neighbors()[stackCursor[depth]];
+        else
+          neighborId = fallbackNeighbors[depth][stackCursor[depth]];
+
+        if (hopTargetBucketIds[depth] != null) {
+          final RID rid = provider.getRID(neighborId);
+          if (rid == null || !matchesBuckets(rid.getBucketId(), hopTargetBucketIds[depth])) {
+            stackCursor[depth]++;
+            continue;
+          }
+        }
+
+        stackNodeId[depth + 1] = neighborId;
+
+        if (depth == chainLength - 1) {
+          // Evaluate pushed filter using reusable GAVResult — only nodeId updated per path
+          if (filterResult != null) {
+            int slot = 0;
+            if (materializeVariable[0])
+              filterValues[slot++] = makeReference(stackNodeId[0], db);
+            for (int i = 0; i < hopTargetVariables.length; i++)
+              if (hopTargetVariables[i] != null && materializeVariable[i + 1])
+                filterValues[slot++] = makeReference(stackNodeId[i + 1], db);
+            if (!Boolean.TRUE.equals(pushedFilter.evaluate(filterResult, context))) {
+              stackCursor[depth]++;
+              continue;
+            }
+          }
+
+          // Pack grouping key nodeIds into a single long (supports up to 2 int keys)
+          long packedKey = 0;
+          if (groupKeySlots.length == 2)
+            packedKey = ((long) stackNodeId[groupKeySlots[0]] << 32) | (stackNodeId[groupKeySlots[1]] & 0xFFFFFFFFL);
+          else if (groupKeySlots.length == 1)
+            packedKey = stackNodeId[groupKeySlots[0]];
+
+          // Increment count — zero boxing, zero allocation (primitive long → long)
+          counts.increment(packedKey);
+
+          stackCursor[depth]++;
+        } else {
+          depth++;
+          initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, depth, neighborId);
+        }
+      }
+    }
   }
 
   /**
