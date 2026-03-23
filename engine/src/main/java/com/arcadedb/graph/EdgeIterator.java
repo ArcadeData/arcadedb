@@ -114,7 +114,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
     }
 
     currentContainer.removeEntry(lastElementPosition, currentPosition.get());
-    ((DatabaseInternal) vertex.getDatabase()).updateRecord(currentContainer);
+    ((DatabaseInternal) currentContainer.getDatabase()).updateRecord(currentContainer);
 
     currentPosition.set(lastElementPosition);
   }

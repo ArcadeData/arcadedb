@@ -50,7 +50,10 @@ class CypherLabelFilteringTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/cypher-label-filtering").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/cypher-label-filtering");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
     database.getSchema().createVertexType("CHUNK");
     database.getSchema().createVertexType("DOCUMENT");
     database.getSchema().createVertexType("NER");
@@ -275,6 +278,9 @@ class CypherLabelFilteringTest {
 
     @BeforeEach
     void setUp() {
+      // CLOSE THE OUTER CLASS DATABASE TO AVOID MULTIPLE DATABASE CONTEXTS ON THE SAME THREAD
+      CypherLabelFilteringTest.this.database.close();
+      CypherLabelFilteringTest.this.database = null;
       database = new DatabaseFactory("./target/databases/issue3412-test").create();
 
       // Create type hierarchy: CHUNK_EMBEDDING extends EMBEDDING

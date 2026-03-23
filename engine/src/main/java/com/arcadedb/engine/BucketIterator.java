@@ -151,7 +151,7 @@ public class BucketIterator implements Iterator<Record> {
               if (!bucket.existsRecord(rid))
                 continue;
 
-              nextBatch[writeIndex++] = rid.getRecord(false);
+              nextBatch[writeIndex++] = database.lookupByRID(rid, false);
 
             } else if (recordSize[0] == LocalBucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER

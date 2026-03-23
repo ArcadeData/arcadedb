@@ -273,7 +273,9 @@ class CountEdgesOptimizationTest {
     // Simplified test: Multiple answers per question, count comments per question
     // The bound vertex 'a' (answer) is NOT in the grouping keys
 
-    // Use a fresh database for this test
+    // Use a fresh database for this test; close the default one to avoid ambiguous database context
+    database.drop();
+    database = null;
     final Database testDb = new DatabaseFactory("./target/databases/testcountopt-issue3399").create();
     try {
       testDb.transaction(() -> {

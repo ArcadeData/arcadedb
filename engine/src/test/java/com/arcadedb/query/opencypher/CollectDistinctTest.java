@@ -49,7 +49,10 @@ class CollectDistinctTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/collect-distinct-test").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/collect-distinct-test");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("City");
     database.getSchema().createEdgeType("LIVES_IN");
@@ -598,6 +601,9 @@ class CollectDistinctTest {
 
     @BeforeEach
     void setUp() {
+      // CLOSE THE OUTER CLASS DATABASE TO AVOID MULTIPLE DATABASE CONTEXTS ON THE SAME THREAD
+      CollectDistinctTest.this.database.close();
+      CollectDistinctTest.this.database = null;
       database = new DatabaseFactory("./target/databases/issue3271-test").create();
 
       // Create types matching the issue's data model:

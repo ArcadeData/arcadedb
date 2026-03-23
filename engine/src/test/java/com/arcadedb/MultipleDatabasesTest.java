@@ -83,21 +83,27 @@ class MultipleDatabasesTest extends TestHelper {
       v3.save();
     });
 
-    // CHECK PRESENCE OF RECORDS IN EACH DATABASE
-    assertThat(database.iterateType("V1", true).next().asVertex().get("db")).isEqualTo(1);
-    assertThat(database.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db")).isEqualTo(1);
-    assertThat(database2.iterateType("V1", true).next().asVertex().get("db")).isEqualTo(2);
-    assertThat(database2.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db")).isEqualTo(2);
-    assertThat(database3.iterateType("V1", true).next().asVertex().get("db")).isEqualTo(3);
-    assertThat(database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db")).isEqualTo(3);
+    // CHECK PRESENCE OF RECORDS IN EACH DATABASE (wrap in transactions so the correct database context is active)
+    database.transaction(() -> {
+      assertThat(database.iterateType("V1", true).next().asVertex().get("db")).isEqualTo(1);
+      assertThat(database.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db")).isEqualTo(1);
+    });
+    database2.transaction(() -> {
+      assertThat(database2.iterateType("V1", true).next().asVertex().get("db")).isEqualTo(2);
+      assertThat(database2.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db")).isEqualTo(2);
+    });
+    database3.transaction(() -> {
+      assertThat(database3.iterateType("V1", true).next().asVertex().get("db")).isEqualTo(3);
+      assertThat(database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded").get("db")).isEqualTo(3);
 
-    // CHECK COPIED RECORDS TOO
-    assertThat(database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded1").get("db")).isEqualTo(1);
-    assertThat(
-        ((List<EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("list2")).getFirst().get("db")).isEqualTo(
-        2);
-    assertThat(((Map<String, EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("map2")).get("copied2")
-        .get("db")).isEqualTo(2);
+      // CHECK COPIED RECORDS TOO
+      assertThat(database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded1").get("db")).isEqualTo(1);
+      assertThat(
+          ((List<EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("list2")).getFirst().get("db")).isEqualTo(
+          2);
+      assertThat(((Map<String, EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("map2")).get("copied2")
+          .get("db")).isEqualTo(2);
+    });
 
     database.close();
     database2.close();

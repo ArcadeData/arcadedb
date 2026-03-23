@@ -53,7 +53,6 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     if (map == null) {
       map = new HashMap<>();
       set(map);
-      CONTEXTS.put(Thread.currentThread().threadId(), map);
       current = new DatabaseContextTL();
       map.put(key, current);
     } else {
@@ -75,6 +74,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
         }
       }
     }
+
+    // ALWAYS ENSURE THE MAP IS REGISTERED IN CONTEXTS (may have been removed by removeAllContexts)
+    CONTEXTS.put(Thread.currentThread().threadId(), map);
 
     if (current.transactions.isEmpty())
       current.transactions.add(
@@ -132,8 +134,37 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    */
   public Database getActiveDatabase() {
     final Map<String, DatabaseContextTL> map = get();
-    if (map != null && map.size() == 1) {
+    if (map == null || map.isEmpty())
+      return null;
+
+    if (map.size() == 1) {
       final DatabaseContextTL tl = map.values().iterator().next();
+      if (tl != null) {
+        final TransactionContext tx = tl.getLastTransaction();
+        if (tx != null)
+          return tx.getDatabase();
+      }
+      return null;
+    }
+
+    // MULTIPLE DATABASES: RETURN THE ONE WITH AN ACTIVE TRANSACTION
+    Database candidate = null;
+    for (final DatabaseContextTL tl : map.values()) {
+      if (tl != null) {
+        final TransactionContext tx = tl.getLastTransaction();
+        if (tx != null && tx.isActive()) {
+          if (candidate != null)
+            return null; // AMBIGUOUS: MULTIPLE ACTIVE TRANSACTIONS
+          candidate = tx.getDatabase();
+        }
+      }
+    }
+
+    if (candidate != null)
+      return candidate;
+
+    // FALLBACK: IF NO ACTIVE TRANSACTION, RETURN ANY DATABASE THAT HAS A TRANSACTION CONTEXT
+    for (final DatabaseContextTL tl : map.values()) {
       if (tl != null) {
         final TransactionContext tx = tl.getLastTransaction();
         if (tx != null)

@@ -18,9 +18,9 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -34,48 +34,34 @@ import java.util.*;
  * It represents the logical address of a record in the database. The record id is composed by the bucket id (the bucket containing the record) and the offset
  * as the absolute position of the record in the bucket.
  * <br>
- * Immutable class.
+ * Immutable class. The database is resolved from the thread-local context on demand, keeping this object lightweight (only bucketId + offset).
  */
 public class RID implements Identifiable, Comparable<Object>, Serializable {
-  private transient final BasicDatabase database;
-  protected final         int           bucketId;
-  protected final         long          offset;
-  private                 int           cachedHashCode = 0; // BOOST PERFORMANCE BECAUSE RID.HASHCODE() IS ONE OF THE HOTSPOTS FOR ANY USE CASES
+  protected final int  bucketId;
+  protected final long offset;
 
   public RID(final int bucketId, final long offset) {
-    this(null, bucketId, offset);
+    this.bucketId = bucketId;
+    this.offset = offset;
   }
 
   public RID(final BasicDatabase database, final int bucketId, final long offset) {
-    if (database == null)
-      // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
-      this.database = DatabaseContext.INSTANCE.getActiveDatabase();
-    else
-      this.database = database;
-
     this.bucketId = bucketId;
     this.offset = offset;
   }
 
   public RID(final String value) {
-    this(null, value);
-  }
-
-  public RID(final BasicDatabase database, String value) {
-    if (database == null)
-      // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
-      this.database = DatabaseContext.INSTANCE.getActiveDatabase();
-    else
-      this.database = database;
-
     if (!value.startsWith("#"))
       throw new IllegalArgumentException("The RID '" + value + "' is not valid");
 
-    value = value.substring(1);
-
-    final List<String> parts = CodeUtils.split(value, ':', 2);
+    final String stripped = value.substring(1);
+    final List<String> parts = CodeUtils.split(stripped, ':', 2);
     this.bucketId = Integer.parseInt(parts.getFirst());
     this.offset = Long.parseLong(parts.get(1));
+  }
+
+  public RID(final BasicDatabase database, final String value) {
+    this(value);
   }
 
   public static boolean is(final Object value) {
@@ -124,7 +110,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
 
   @Override
   public Record getRecord(final boolean loadContent) {
-    return database.lookupByRID(this, loadContent);
+    return requireDatabase().lookupByRID(this, loadContent);
   }
 
   public Document asDocument() {
@@ -132,7 +118,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public Document asDocument(final boolean loadContent) {
-    return (Document) database.lookupByRID(this, loadContent);
+    return (Document) requireDatabase().lookupByRID(this, loadContent);
   }
 
   public Vertex asVertex() {
@@ -141,7 +127,9 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
 
   public Vertex asVertex(final boolean loadContent) {
     try {
-      return (Vertex) database.lookupByRID(this, loadContent);
+      return (Vertex) requireDatabase().lookupByRID(this, loadContent);
+    } catch (final RecordNotFoundException e) {
+      throw e;
     } catch (final Exception e) {
       throw new RecordNotFoundException("Record " + this + " not found", this, e);
     }
@@ -152,7 +140,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public Edge asEdge(final boolean loadContent) {
-    return (Edge) database.lookupByRID(this, loadContent);
+    return (Edge) requireDatabase().lookupByRID(this, loadContent);
   }
 
   @Override
@@ -164,14 +152,12 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
       return false;
 
     final RID o = ((Identifiable) obj).getIdentity();
-    return bucketId == o.bucketId && offset == o.offset && Objects.equals(database, o.getDatabase());
+    return bucketId == o.bucketId && offset == o.offset;
   }
 
   @Override
   public int hashCode() {
-    if (cachedHashCode == 0)
-      cachedHashCode = Objects.hash(database, bucketId, offset);
-    return cachedHashCode;
+    return bucketId * 31 + Long.hashCode(offset);
   }
 
   @Override
@@ -180,20 +166,9 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     if (o instanceof RID iD)
       otherRID = iD;
     else if (o instanceof String string)
-      otherRID = new RID(database, string);
+      otherRID = new RID(string);
     else
       return -1;
-
-    final BasicDatabase otherDb = otherRID.getDatabase();
-    if (database != null) {
-      if (otherDb != null) {
-        final int res = database.getName().compareTo(otherDb.getName());
-        if (res != 0)
-          return res;
-      } else
-        return -1;
-    } else if (otherDb != null)
-      return 1;
 
     if (bucketId > otherRID.bucketId)
       return 1;
@@ -208,16 +183,21 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     return 0;
   }
 
-  public BasicDatabase getDatabase() {
-    return database;
-  }
-
   public boolean isValid() {
     return bucketId > -1 && offset > -1;
   }
 
   public PageId getPageId() {
-    return new PageId(database, bucketId,
-        (int) (getPosition() / ((LocalBucket) database.getSchema().getBucketById(bucketId)).getMaxRecordsInPage()));
+    final BasicDatabase db = requireDatabase();
+    return new PageId(db, bucketId,
+        (int) (getPosition() / ((LocalBucket) db.getSchema().getBucketById(bucketId)).getMaxRecordsInPage()));
+  }
+
+  private BasicDatabase requireDatabase() {
+    final BasicDatabase db = DatabaseContext.INSTANCE.getActiveDatabase();
+    if (db == null)
+      throw new DatabaseOperationException(
+          "No active database context for RID " + this + ". Use database.lookupByRID() instead or ensure a database context is active on the current thread");
+    return db;
   }
 }
