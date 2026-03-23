@@ -56,6 +56,10 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private final int[]                                            ordinalToVectorId;
   private final LSMVectorIndex                                   lsmIndex;         // Used for reading quantized vectors
 
+  // Sentinel vector returned for deleted/missing ordinals to prevent NPE in JVector's GraphSearcher (issue #3715).
+  // Uses Float.MIN_NORMAL to avoid division-by-zero with cosine similarity while giving very low similarity scores.
+  private final VectorFloat<?> deletedSentinelVector;
+
   // Cache for graph building - dramatically speeds up repeated vector access
   // Bounded LFU cache to prevent unbounded memory growth during graph construction
   private final MostUsedCache<Integer, VectorFloat<?>> vectorCache;
@@ -77,6 +81,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.ordinalToVectorId = ordinalToVectorId;
     this.lsmIndex = lsmIndex;
     this.vectorCache = null; // No cache for live reads (search only reads each vector once)
+    this.deletedSentinelVector = createDeletedSentinelVector(dimensions);
   }
 
   // Constructor for graph building (uses immutable snapshot + cache for performance)
@@ -104,6 +109,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.ordinalToVectorId = ordinalToVectorId;
     this.lsmIndex = lsmIndex;
     this.vectorCache = new MostUsedCache<>(cacheSize); // Bounded LFU cache for graph building
+    this.deletedSentinelVector = createDeletedSentinelVector(dimensions);
   }
 
   @Override
@@ -119,7 +125,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   @Override
   public VectorFloat<?> getVector(final int ordinal) {
     if (ordinal < 0 || ordinalToVectorId == null || ordinal >= ordinalToVectorId.length)
-      return null;
+      return deletedSentinelVector;
 
     final int vectorId = ordinalToVectorId[ordinal];
 
@@ -142,7 +148,10 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       loc = null;
 
     if (loc == null || loc.deleted)
-      return null;
+      // Return sentinel instead of null for deleted/missing entries (issue #3715).
+      // JVector's GraphSearcher traverses deleted ordinals in the stale HNSW graph and
+      // calls .length() on the vector, causing NPE if null. Results are filtered in post-processing.
+      return deletedSentinelVector;
 
     // Phase 2: Try reading from graph file first if vectors are stored inline
     // Only during search (vectorSnapshot == null), NOT during graph building (vectorSnapshot != null)
@@ -215,7 +224,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
               "Vector property '%s' not found in document %s (ordinal=%d). Available properties: %s",
               vectorPropertyName, loc.rid, ordinal, doc.getPropertyNames());
         }
-        return null; // Property not found
+        return deletedSentinelVector;
       }
 
       final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
@@ -223,14 +232,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         LogManager.instance().log(this, Level.WARNING,
             "Vector property '%s' is not float[] or List (type=%s, RID=%s)",
             vectorPropertyName, vectorObj.getClass().getName(), loc.rid);
-        return null;
+        return deletedSentinelVector;
       }
 
       if (vector.length != dimensions) {
         LogManager.instance().log(this, Level.WARNING,
             "Vector dimension mismatch: expected %d, got %d (RID=%s)",
             dimensions, vector.length, loc.rid);
-        return null;
+        return deletedSentinelVector;
       }
 
       // Safety check: Validate vector is not all zeros (would cause NaN in cosine similarity)
@@ -243,7 +252,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       }
 
       if (!hasNonZero)
-        return null; // Zero vectors cause NaN in cosine similarity
+        return deletedSentinelVector;
 
       final VectorFloat<?> result = vts.createFloatVector(vector);
 
@@ -261,12 +270,12 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       return result;
 
     } catch (final RecordNotFoundException e) {
-      // DELETED RECORD
-      return null;
+      // DELETED RECORD — return sentinel to avoid NPE in JVector (issue #3715)
+      return deletedSentinelVector;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Error reading vector from document (ordinal=%d, RID=%s): %s", ordinal, loc.rid, e.getMessage());
-      return null;
+      return deletedSentinelVector;
     }
   }
 
@@ -294,5 +303,16 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   public RandomAccessVectorValues copy() {
     // This implementation is thread-safe for reads (PageManager handles concurrency)
     return this;
+  }
+
+  /**
+   * Creates a sentinel vector for deleted/missing ordinals with small non-zero values.
+   * Uses Float.MIN_NORMAL to avoid division-by-zero in cosine similarity while producing
+   * very low similarity scores that effectively push deleted nodes to the bottom of results.
+   */
+  private static VectorFloat<?> createDeletedSentinelVector(final int dimensions) {
+    final float[] sentinel = new float[dimensions];
+    Arrays.fill(sentinel, Float.MIN_NORMAL);
+    return vts.createFloatVector(sentinel);
   }
 }
