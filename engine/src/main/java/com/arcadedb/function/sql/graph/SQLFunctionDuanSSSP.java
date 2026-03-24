@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 
+import com.arcadedb.utility.RidHashSet;
+
 import java.util.*;
 
 /**
@@ -105,7 +107,7 @@ public class SQLFunctionDuanSSSP extends SQLFunctionMathAbstract {
     final Map<RID, Double> distances = new HashMap<>();
     final Map<RID, RID> predecessors = new HashMap<>();
     final PriorityQueue<VertexDistance> pq = new PriorityQueue<>();
-    final Set<RID> visited = new HashSet<>();
+    final RidHashSet visited = new RidHashSet();
 
     distances.put(source.getIdentity(), 0.0);
     pq.offer(new VertexDistance(source.getIdentity(), 0.0));

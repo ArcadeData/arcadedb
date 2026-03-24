@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import com.arcadedb.utility.RidHashSet;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -126,7 +128,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
       final List<List<Object>> allPaths, final CommandContext context) {
 
     final List<List<Object>> frontier = new ArrayList<>();
-    final Set<RID> visited = new HashSet<>();
+    final RidHashSet visited = new RidHashSet();
 
     final List<Object> initialPath = new ArrayList<>();
     initialPath.add(startNode);
@@ -156,7 +158,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
   }
 
   private void expandFromNode(final Vertex node, final String[] relTypes, final String[] labelFilter,
-      final List<Object> currentPath, final Set<RID> visited, final List<List<Object>> nextFrontier) {
+      final List<Object> currentPath, final RidHashSet visited, final List<List<Object>> nextFrontier) {
 
     // Expand in both directions
     for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {

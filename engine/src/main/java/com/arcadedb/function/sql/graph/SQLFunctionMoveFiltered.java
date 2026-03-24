@@ -27,6 +27,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
 import com.arcadedb.utility.FileUtils;
 
+import com.arcadedb.utility.RidHashSet;
+
 import java.util.*;
 
 /**
@@ -47,7 +49,7 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
     else
       labels = null;
 
-    final Set<RID> possibleRIDs = buildRIDSet(iPossibleResults);
+    final RidHashSet possibleRIDs = buildRIDSet(iPossibleResults);
 
     return SQLQueryEngine.foreachRecord(iArgument -> {
       if (possibleRIDs != null && possibleRIDs.isEmpty())
@@ -61,10 +63,10 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
     }, self, context);
   }
 
-  private static Set<RID> buildRIDSet(final Iterable<?> iPossibleResults) {
+  private static RidHashSet buildRIDSet(final Iterable<?> iPossibleResults) {
     if (iPossibleResults == null)
       return null;
-    final Set<RID> rids = new HashSet<>();
+    final RidHashSet rids = new RidHashSet();
     for (final Object item : iPossibleResults) {
       if (item instanceof Identifiable id)
         rids.add(id.getIdentity());
@@ -76,7 +78,7 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
     return rids;
   }
 
-  private static Object filterByRIDs(final Object result, final Set<RID> possibleRIDs) {
+  private static Object filterByRIDs(final Object result, final RidHashSet possibleRIDs) {
     if (result instanceof Iterable<?> iterable) {
       final List<Object> filtered = new ArrayList<>();
       for (final Object item : iterable) {

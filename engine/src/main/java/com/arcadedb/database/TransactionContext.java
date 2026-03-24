@@ -38,6 +38,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.utility.RidHashSet;
 
 import java.io.*;
 import java.util.*;
@@ -64,7 +65,7 @@ public class TransactionContext implements Transaction {
   private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
   private final TransactionIndexContext              indexChanges;
   private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
-  private final Set<RID>                             deletedRecordsInTx    = new HashSet<>();
+  private final RidHashSet                            deletedRecordsInTx    = new RidHashSet();
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   private       boolean                              useWAL;

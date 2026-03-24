@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import com.arcadedb.utility.RidHashSet;
+
 import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.List;
@@ -93,7 +95,7 @@ public class PathSubgraphNodes extends AbstractPathProcedure {
 
     // BFS to find all reachable nodes
     final Set<Vertex> reachableNodes = new HashSet<>();
-    final Set<RID> visited = new HashSet<>();
+    final RidHashSet visited = new RidHashSet();
     final Queue<VertexLevel> queue = new ArrayDeque<>();
 
     queue.add(new VertexLevel(startNode, 0));

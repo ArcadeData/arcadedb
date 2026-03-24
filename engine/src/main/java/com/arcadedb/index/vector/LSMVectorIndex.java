@@ -58,6 +58,7 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.RidHashSet;
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
@@ -90,7 +91,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -2397,7 +2397,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return;
 
     // Collect already-seen RIDs from graph results to avoid duplicates
-    final Set<RID> seenRIDs = new HashSet<>(results.size());
+    final RidHashSet seenRIDs = new RidHashSet(results.size());
     for (final Pair<RID, Float> r : results)
       seenRIDs.add(r.getFirst());
 
