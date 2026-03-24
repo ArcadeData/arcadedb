@@ -154,17 +154,32 @@ public final class GraphAlgorithms {
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
-    // Precompute outDegree array across all edge types (once, outside iteration loop)
-    final int[] outDeg = new int[n];
-    for (final String edgeType : types) {
-      final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
+    // Pre-hoist CSR arrays outside the iteration loop to avoid repeated HashMap lookups
+    final int typeCount = types.length;
+    final int[][] allFwdOffsets = new int[typeCount][];
+    final int[][] allFwdNeighbors = new int[typeCount][];
+    final int[][] allBwdOffsets = new int[typeCount][];
+    final int[][] allBwdNeighbors = new int[typeCount][];
+    for (int t = 0; t < typeCount; t++) {
+      final CSRAdjacencyIndex csr = view.getCSRIndex(types[t]);
       if (csr == null)
         continue;
-      final int[] fwdOffsets = csr.getForwardOffsets();
-      for (int u = 0; u < n; u++)
-        outDeg[u] += fwdOffsets[u + 1] - fwdOffsets[u];
-      if (undirected) {
-        final int[] bwdOffsets = csr.getBackwardOffsets();
+      allFwdOffsets[t] = csr.getForwardOffsets();
+      allFwdNeighbors[t] = csr.getForwardNeighbors();
+      allBwdOffsets[t] = csr.getBackwardOffsets();
+      allBwdNeighbors[t] = csr.getBackwardNeighbors();
+    }
+
+    // Precompute outDegree array across all edge types (once, outside iteration loop)
+    final int[] outDeg = new int[n];
+    for (int t = 0; t < typeCount; t++) {
+      if (allFwdOffsets[t] != null) {
+        final int[] fwdOffsets = allFwdOffsets[t];
+        for (int u = 0; u < n; u++)
+          outDeg[u] += fwdOffsets[u + 1] - fwdOffsets[u];
+      }
+      if (undirected && allBwdOffsets[t] != null) {
+        final int[] bwdOffsets = allBwdOffsets[t];
         for (int u = 0; u < n; u++)
           outDeg[u] += bwdOffsets[u + 1] - bwdOffsets[u];
       }
@@ -203,17 +218,16 @@ public final class GraphAlgorithms {
       parallelForRange(n, (start, end) -> {
         for (int u = start; u < end; u++) {
           double sum = 0;
-          for (final String edgeType : types) {
-            final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
-            if (csr == null)
-              continue;
-            final int[] bwdOffsets = csr.getBackwardOffsets();
-            final int[] bwdNeighbors = csr.getBackwardNeighbors();
-            for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
-              sum += contrib[bwdNeighbors[j]];
-            if (undirected) {
-              final int[] fwdOffsets = csr.getForwardOffsets();
-              final int[] fwdNeighbors = csr.getForwardNeighbors();
+          for (int t = 0; t < typeCount; t++) {
+            if (allBwdOffsets[t] != null) {
+              final int[] bwdOffsets = allBwdOffsets[t];
+              final int[] bwdNeighbors = allBwdNeighbors[t];
+              for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
+                sum += contrib[bwdNeighbors[j]];
+            }
+            if (undirected && allFwdOffsets[t] != null) {
+              final int[] fwdOffsets = allFwdOffsets[t];
+              final int[] fwdNeighbors = allFwdNeighbors[t];
               for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++)
                 sum += contrib[fwdNeighbors[j]];
             }
@@ -282,6 +296,22 @@ public final class GraphAlgorithms {
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
+    // Pre-hoist CSR arrays outside the convergence loop to avoid repeated HashMap lookups
+    final int typeCount = types.length;
+    final int[][] allFwdOffsets = new int[typeCount][];
+    final int[][] allFwdNeighbors = new int[typeCount][];
+    final int[][] allBwdOffsets = new int[typeCount][];
+    final int[][] allBwdNeighbors = new int[typeCount][];
+    for (int t = 0; t < typeCount; t++) {
+      final CSRAdjacencyIndex csr = view.getCSRIndex(types[t]);
+      if (csr == null)
+        continue;
+      allFwdOffsets[t] = csr.getForwardOffsets();
+      allFwdNeighbors[t] = csr.getForwardNeighbors();
+      allBwdOffsets[t] = csr.getBackwardOffsets();
+      allBwdNeighbors[t] = csr.getBackwardNeighbors();
+    }
+
     boolean changed = true;
     while (changed) {
       System.arraycopy(label, 0, newLabel, 0, n);
@@ -291,23 +321,24 @@ public final class GraphAlgorithms {
         boolean localChanged = false;
         for (int u = start; u < end; u++) {
           int minLabel = label[u];
-          for (final String edgeType : types) {
-            final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
-            if (csr == null)
-              continue;
-            final int[] fwdOffsets = csr.getForwardOffsets();
-            final int[] fwdNeighbors = csr.getForwardNeighbors();
-            for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
-              final int nl = label[fwdNeighbors[j]];
-              if (nl < minLabel)
-                minLabel = nl;
+          for (int t = 0; t < typeCount; t++) {
+            if (allFwdOffsets[t] != null) {
+              final int[] fwdOffsets = allFwdOffsets[t];
+              final int[] fwdNeighbors = allFwdNeighbors[t];
+              for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
+                final int nl = label[fwdNeighbors[j]];
+                if (nl < minLabel)
+                  minLabel = nl;
+              }
             }
-            final int[] bwdOffsets = csr.getBackwardOffsets();
-            final int[] bwdNeighbors = csr.getBackwardNeighbors();
-            for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
-              final int nl = label[bwdNeighbors[j]];
-              if (nl < minLabel)
-                minLabel = nl;
+            if (allBwdOffsets[t] != null) {
+              final int[] bwdOffsets = allBwdOffsets[t];
+              final int[] bwdNeighbors = allBwdNeighbors[t];
+              for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
+                final int nl = label[bwdNeighbors[j]];
+                if (nl < minLabel)
+                  minLabel = nl;
+              }
             }
           }
           newLabel[u] = minLabel;
@@ -1075,14 +1106,31 @@ public final class GraphAlgorithms {
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
-    // Pre-compute max degree to size thread-local buffers
+    // Pre-hoist CSR arrays outside the iteration loop to avoid repeated HashMap lookups
+    final int typeCount = types.length;
+    final int[][] allFwdOffsets = new int[typeCount][];
+    final int[][] allFwdNeighbors = new int[typeCount][];
+    final int[][] allBwdOffsets = new int[typeCount][];
+    final int[][] allBwdNeighbors = new int[typeCount][];
+    for (int t = 0; t < typeCount; t++) {
+      final CSRAdjacencyIndex csr = view.getCSRIndex(types[t]);
+      if (csr == null)
+        continue;
+      allFwdOffsets[t] = csr.getForwardOffsets();
+      allFwdNeighbors[t] = csr.getForwardNeighbors();
+      allBwdOffsets[t] = csr.getBackwardOffsets();
+      allBwdNeighbors[t] = csr.getBackwardNeighbors();
+    }
+
+    // Pre-compute max degree using pre-hoisted arrays (avoid method calls in loop)
     int maxDegree = 0;
     for (int u = 0; u < n; u++) {
       int deg = 0;
-      for (final String edgeType : types) {
-        final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
-        if (csr != null)
-          deg += csr.outDegree(u) + csr.inDegree(u);
+      for (int t = 0; t < typeCount; t++) {
+        if (allFwdOffsets[t] != null)
+          deg += allFwdOffsets[t][u + 1] - allFwdOffsets[t][u];
+        if (allBwdOffsets[t] != null)
+          deg += allBwdOffsets[t][u + 1] - allBwdOffsets[t][u];
       }
       if (deg > maxDegree)
         maxDegree = deg;
@@ -1102,18 +1150,19 @@ public final class GraphAlgorithms {
         for (int u = start; u < end; u++) {
           // Collect neighbor labels into thread-local buffer
           int pos = 0;
-          for (final String edgeType : types) {
-            final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
-            if (csr == null)
-              continue;
-            final int[] fwdOffsets = csr.getForwardOffsets();
-            final int[] fwdNeighbors = csr.getForwardNeighbors();
-            for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++)
-              neighborBuf[pos++] = labels[fwdNeighbors[j]];
-            final int[] bwdOffsets = csr.getBackwardOffsets();
-            final int[] bwdNeighbors = csr.getBackwardNeighbors();
-            for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
-              neighborBuf[pos++] = labels[bwdNeighbors[j]];
+          for (int t = 0; t < typeCount; t++) {
+            if (allFwdOffsets[t] != null) {
+              final int[] fwdOffsets = allFwdOffsets[t];
+              final int[] fwdNeighbors = allFwdNeighbors[t];
+              for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++)
+                neighborBuf[pos++] = labels[fwdNeighbors[j]];
+            }
+            if (allBwdOffsets[t] != null) {
+              final int[] bwdOffsets = allBwdOffsets[t];
+              final int[] bwdNeighbors = allBwdNeighbors[t];
+              for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
+                neighborBuf[pos++] = labels[bwdNeighbors[j]];
+            }
           }
 
           if (pos == 0)
