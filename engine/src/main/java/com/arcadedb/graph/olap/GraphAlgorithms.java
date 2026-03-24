@@ -72,8 +72,9 @@ public final class GraphAlgorithms {
 
   /**
    * Partitions range [0, n) into chunks and submits each to the shared query-engine pool.
+   * The calling thread always runs chunk 0 itself to avoid pool-starvation deadlock
+   * when invoked from within a pool thread (e.g., during query execution).
    * Falls back to single-threaded execution when n is below threshold.
-   * Propagates any exception thrown by a worker to the calling thread.
    */
   static void parallelForRange(final int n, final BiConsumer<Integer, Integer> work) {
     if (n < PARALLEL_THRESHOLD) {
@@ -82,15 +83,17 @@ public final class GraphAlgorithms {
     }
     final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
     final int chunkSize = (n + PARALLELISM - 1) / PARALLELISM;
-    final Future<?>[] futures = new Future<?>[PARALLELISM];
+    final Future<?>[] futures = new Future<?>[PARALLELISM - 1];
     int launched = 0;
-    for (int t = 0; t < PARALLELISM; t++) {
+    for (int t = 1; t < PARALLELISM; t++) {
       final int start = t * chunkSize;
       final int end = Math.min(start + chunkSize, n);
       if (start >= n)
         break;
       futures[launched++] = executor.submit(() -> work.accept(start, end));
     }
+    // Calling thread runs chunk 0 — prevents deadlock when caller is a pool thread
+    work.accept(0, Math.min(chunkSize, n));
     awaitFutures(futures, launched);
   }
 
@@ -624,15 +627,16 @@ public final class GraphAlgorithms {
           final long[] localEdges = new long[numThreads];
 
           final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
-          final Future<?>[] futures = new Future<?>[numThreads];
+          final Future<?>[] futures = new Future<?>[numThreads - 1];
           int launched = 0;
+          Runnable callerTask = null;
           for (int thr = 0; thr < numThreads; thr++) {
             final int tIdx = thr;
             final int tStart = thr * chunkSize;
             final int tEnd = Math.min(tStart + chunkSize, n);
             if (tStart >= n)
               break;
-            futures[launched] = executor.submit(() -> {
+            final Runnable task = () -> {
               int[] localNext = new int[Math.min(n, (tEnd - tStart) / 4 + 64)];
               int localSize = 0;
               long localEdgeSum = 0;
@@ -675,19 +679,27 @@ public final class GraphAlgorithms {
               localNexts[tIdx] = localNext;
               localSizes[tIdx] = localSize;
               localEdges[tIdx] = localEdgeSum;
-            });
-            launched++;
+            };
+            if (callerTask == null)
+              callerTask = task;
+            else
+              futures[launched++] = executor.submit(task);
           }
+          // Calling thread runs chunk 0 — prevents pool-starvation deadlock
+          if (callerTask != null)
+            callerTask.run();
           awaitFutures(futures, launched);
 
           // Merge thread-local results
           int totalNext = 0;
-          for (int t = 0; t < launched; t++) {
+          for (int t = 0; t < numThreads; t++) {
+            if (localNexts[t] == null)
+              continue;
             totalNext += localSizes[t];
             nextEdgesInFrontier += localEdges[t];
           }
           int pos = 0;
-          for (int t = 0; t < launched; t++)
+          for (int t = 0; t < numThreads; t++)
             if (localNexts[t] != null && localSizes[t] > 0) {
               System.arraycopy(localNexts[t], 0, nextFrontier, pos, localSizes[t]);
               pos += localSizes[t];
@@ -722,15 +734,16 @@ public final class GraphAlgorithms {
         final long[] localEdges = new long[numThreads];
 
         final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
-        final Future<?>[] futures = new Future<?>[numThreads];
+        final Future<?>[] futures = new Future<?>[numThreads - 1];
         int launched = 0;
+        Runnable callerTask = null;
         for (int t = 0; t < numThreads; t++) {
           final int tIdx = t;
           final int tStart = t * chunkSize;
           final int tEnd = Math.min(tStart + chunkSize, fSize);
           if (tStart >= fSize)
             break;
-          futures[launched] = executor.submit(() -> {
+          final Runnable task = () -> {
             int[] localNext = new int[Math.min(n, (tEnd - tStart) * 8)];
             int localSize = 0;
             long localEdgeSum = 0;
@@ -786,20 +799,26 @@ public final class GraphAlgorithms {
             localNexts[tIdx] = localNext;
             localSizes[tIdx] = localSize;
             localEdges[tIdx] = localEdgeSum;
-          });
-          launched++;
+          };
+          if (callerTask == null)
+            callerTask = task;
+          else
+            futures[launched++] = executor.submit(task);
         }
+        // Calling thread runs chunk 0 — prevents pool-starvation deadlock
+        if (callerTask != null)
+          callerTask.run();
         awaitFutures(futures, launched);
 
         // Merge thread-local frontiers
         int totalNext = 0;
-        for (int t = 0; t < launched; t++)
+        for (int t = 0; t < numThreads; t++)
           if (localNexts[t] != null) {
             totalNext += localSizes[t];
             nextEdgesInFrontier += localEdges[t];
           }
         int pos = 0;
-        for (int t = 0; t < launched; t++)
+        for (int t = 0; t < numThreads; t++)
           if (localNexts[t] != null && localSizes[t] > 0) {
             System.arraycopy(localNexts[t], 0, nextFrontier, pos, localSizes[t]);
             pos += localSizes[t];
