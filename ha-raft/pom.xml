@@ -84,7 +84,15 @@
             <version>${ratis.version}</version>
             <scope>test</scope>
         </dependency>
-        <!-- MiniRaftCluster and RaftTestUtil are in test-jars of ratis-server and ratis-grpc -->
+        <!-- MiniRaftCluster and RaftTestUtil are in test-jars of ratis-server and ratis-grpc.
+             BaseTest (used by MiniRaftCluster) lives in the ratis-common test-jar. -->
+        <dependency>
+            <groupId>org.apache.ratis</groupId>
+            <artifactId>ratis-common</artifactId>
+            <version>${ratis.version}</version>
+            <scope>test</scope>
+            <type>test-jar</type>
+        </dependency>
         <dependency>
             <groupId>org.apache.ratis</groupId>
             <artifactId>ratis-server</artifactId>
