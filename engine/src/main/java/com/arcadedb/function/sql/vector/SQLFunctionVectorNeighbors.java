@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -157,7 +158,17 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     for (int i = 0; i < resultCount; i++) {
       final Pair<RID, Float> neighbor = allNeighbors.get(i);
       final RID rid = neighbor.getFirst();
-      final Document record = rid.asDocument();
+
+      final Document record;
+      try {
+        record = rid.asDocument();
+      } catch (final RecordNotFoundException e) {
+        // Skip records that no longer exist in the bucket (issue #3717).
+        // This can happen when the vector index has stale entries pointing to deleted records,
+        // e.g., after crash recovery, backup restore, or index/storage inconsistencies.
+        continue;
+      }
+
       final float distance = neighbor.getSecond();
 
       // Flatten document properties into the result map so they are accessible
