@@ -28,8 +28,12 @@ import java.util.Map;
 import java.util.zip.CRC32;
 
 /**
- * Handles snapshot operations for Raft-based HA.
- * Supports full file copy for fresh replicas and checksum-based incremental sync.
+ * Utility methods for snapshot-based resync in Raft HA.
+ * <p>
+ * Currently provides checksum computation and file-diffing helpers. Full
+ * {@code installSnapshot()} integration with Ratis is not yet wired — replicas
+ * that fall behind past log compaction require a manual data copy from the leader.
+ * These utilities are the building blocks for the future automatic resync.
  */
 public final class SnapshotManager {
 

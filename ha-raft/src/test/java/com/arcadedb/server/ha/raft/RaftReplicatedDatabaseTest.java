@@ -19,7 +19,12 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -28,5 +33,52 @@ class RaftReplicatedDatabaseTest {
   @Test
   void implementsDatabaseInternal() {
     assertThat(DatabaseInternal.class.isAssignableFrom(RaftReplicatedDatabase.class)).isTrue();
+  }
+
+  @Test
+  void parseResultSetFromJsonWithRecords() {
+    final String json = "{\"result\":[{\"name\":\"Alice\",\"age\":30},{\"name\":\"Bob\",\"age\":25}]}";
+
+    final ResultSet rs = RaftReplicatedDatabase.parseResultSetFromJson(json);
+    final List<Result> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next());
+
+    assertThat(results).hasSize(2);
+    assertThat((String) results.get(0).getProperty("name")).isEqualTo("Alice");
+    assertThat((int) results.get(0).getProperty("age")).isEqualTo(30);
+    assertThat((String) results.get(1).getProperty("name")).isEqualTo("Bob");
+  }
+
+  @Test
+  void parseResultSetFromJsonEmptyResult() {
+    final String json = "{\"result\":[]}";
+
+    final ResultSet rs = RaftReplicatedDatabase.parseResultSetFromJson(json);
+
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void parseResultSetFromJsonNoResultKey() {
+    final String json = "{\"user\":\"root\"}";
+
+    final ResultSet rs = RaftReplicatedDatabase.parseResultSetFromJson(json);
+
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void parseResultSetFromJsonWithScalarValues() {
+    final String json = "{\"result\":[42,\"hello\"]}";
+
+    final ResultSet rs = RaftReplicatedDatabase.parseResultSetFromJson(json);
+    final List<Result> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next());
+
+    assertThat(results).hasSize(2);
+    assertThat((int) results.get(0).getProperty("value")).isEqualTo(42);
+    assertThat((String) results.get(1).getProperty("value")).isEqualTo("hello");
   }
 }

@@ -136,9 +136,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Returning the last-applied index here tells Ratis it may purge log entries up to that index,
    * reducing log disk usage over time.
    * <p>
-   * Note: snapshot-based resync (install_snapshot) for replicas that fall behind the compacted
-   * log is not yet implemented. Until {@code installSnapshot()} is provided, lagging replicas
-   * that miss purged entries cannot catch up via snapshot transfer.
+   * <b>Limitation:</b> snapshot-based resync ({@code installSnapshot()}) for replicas that fall
+   * behind the compacted log is not yet implemented. Replicas that miss purged log entries
+   * cannot catch up automatically and require a manual data copy from the leader's database
+   * directory. To minimise this risk, set {@code HA_RAFT_SNAPSHOT_THRESHOLD} high enough that
+   * replicas can recover via normal log replay before entries are purged (default: 10 000).
    */
   @Override
   public long takeSnapshot() {

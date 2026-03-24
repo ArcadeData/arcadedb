@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
@@ -28,6 +29,7 @@ import com.arcadedb.engine.*;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -37,6 +39,8 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
@@ -53,6 +57,10 @@ import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.logging.Level;
@@ -68,6 +76,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   // SCHEMA_ENTRY so replicas receive them atomically with the file-creation step.
   private static final ThreadLocal<List<byte[]>>               schemaWalBuffer        = ThreadLocal.withInitial(ArrayList::new);
   private static final ThreadLocal<List<Map<Integer, Integer>>> schemaBucketDeltaBuffer = ThreadLocal.withInitial(ArrayList::new);
+
+  private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
 
   private final ArcadeDBServer server;
   private final LocalDatabase  proxied;
@@ -386,6 +396,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public TransactionContext getTransaction() {
+    return DatabaseInternal.super.getTransaction();
+  }
+
+  @Override
   public long getSize() {
     return proxied.getSize();
   }
@@ -398,6 +413,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public Select select() {
     return proxied.select();
+  }
+
+  @Override
+  public GraphBatch.Builder batch() {
+    return proxied.batch();
   }
 
   @Override
@@ -686,6 +706,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public void setDataEncryption(DataEncryption encryption) {
+    DatabaseInternal.super.setDataEncryption(encryption);
+  }
+
+  @Override
   public boolean isReadYourWrites() {
     return proxied.isReadYourWrites();
   }
@@ -871,14 +896,71 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Forwards a DDL or leader-only command to the Raft leader via the Raft client.
-   * This is a placeholder that will be fully implemented when the command forwarding
-   * protocol is finalized.
+   * Forwards a DDL or leader-only command to the Raft leader via HTTP POST to
+   * {@code /api/v1/command/{dbName}}. The response JSON is parsed back into a
+   * {@link ResultSet} so the caller sees results transparently.
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs) {
-    // TODO: Implement command forwarding via Raft log entry (schema entry type)
-    throw new UnsupportedOperationException(
-        "Command forwarding to leader via Raft is not yet implemented for language='" + language + "', query='" + query + "'");
+    final String leaderHttpAddress = raftHAServer.getLeaderHttpAddress();
+    if (leaderHttpAddress == null)
+      throw new TransactionException("Cannot forward command to leader: leader HTTP address is not available");
+
+    final JSONObject body = new JSONObject();
+    body.put("language", language);
+    body.put("command", query);
+    if (mapArgs != null && !mapArgs.isEmpty())
+      body.put("params", new JSONObject(mapArgs));
+    else if (positionalArgs != null && positionalArgs.length > 0)
+      body.put("params", new com.arcadedb.serializer.json.JSONArray(Arrays.asList(positionalArgs)));
+
+    final HttpRequest.Builder builder = HttpRequest.newBuilder()
+        .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/command/" + getName()))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(body.toString()));
+
+    final String clusterToken = server.getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+    if (clusterToken != null && !clusterToken.isBlank())
+      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+
+    try {
+      final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200)
+        throw new TransactionException(
+            "Leader returned HTTP " + response.statusCode() + " for forwarded command: " + response.body());
+
+      return parseResultSetFromJson(response.body());
+    } catch (final TransactionException e) {
+      throw e;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new TransactionException("Interrupted while forwarding command to leader at " + leaderHttpAddress, e);
+    } catch (final Exception e) {
+      throw new TransactionException("Error forwarding command to leader at " + leaderHttpAddress, e);
+    }
+  }
+
+  /**
+   * Parses the JSON response from the leader's /api/v1/command endpoint into a {@link ResultSet}.
+   * Expected format: {@code {"result": [{...}, {...}, ...]}}
+   */
+  static ResultSet parseResultSetFromJson(final String json) {
+    final JSONObject responseJson = new JSONObject(json);
+    final InternalResultSet resultSet = new InternalResultSet();
+
+    if (responseJson.has("result")) {
+      final Object resultObj = responseJson.get("result");
+      if (resultObj instanceof com.arcadedb.serializer.json.JSONArray resultArray) {
+        for (int i = 0; i < resultArray.length(); i++) {
+          final Object item = resultArray.get(i);
+          if (item instanceof JSONObject jsonObj)
+            resultSet.add(new ResultInternal(jsonObj.toMap()));
+          else
+            resultSet.add(new ResultInternal(Map.of("value", item)));
+        }
+      }
+    }
+
+    return resultSet;
   }
 }
