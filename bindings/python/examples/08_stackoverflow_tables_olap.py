@@ -629,9 +629,9 @@ def configure_arcadedb_async_loader(db, batch_size: int, parallelism: int = 1):
 
 def reset_arcadedb_async_loader(db, async_exec):
     async_exec.wait_completion()
+    async_exec.close()
     db.set_read_your_writes(True)
     async_exec.set_transaction_use_wal(True)
-    async_exec.close()
 
 
 def sqlite_type(field_type: str) -> str:
