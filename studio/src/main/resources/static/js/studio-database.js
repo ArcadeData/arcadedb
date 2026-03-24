@@ -401,6 +401,11 @@ function updateDatabases(callback, preferSelected) {
       $("#studioPanel").show();
       console.log("UI updated - login page hidden, studio panel shown");
 
+      if (databases.length === 0)
+        showQuickStart();
+      else
+        hideQuickStart();
+
       // These operations should not block login completion
       try {
         displaySchema();
@@ -501,6 +506,79 @@ function createDatabase() {
       .fail(function (jqXHR, textStatus, errorThrown) {
         globalNotifyError(jqXHR.responseText);
       });
+  });
+}
+
+// ===== Quick Start Panel (shown when no databases exist) =====
+
+var sampleDatasets = [
+  { name: "OpenBeer", desc: "Beers, breweries, categories and styles", icon: "fa-beer-mug-empty" },
+  { name: "GratefulDeadConcerts", desc: "Grateful Dead concerts and songs", icon: "fa-music" },
+  { name: "MovieRatings", desc: "Movies with viewer ratings", icon: "fa-film" },
+  { name: "Tolkien-Arda", desc: "Tolkien's Middle-earth universe", icon: "fa-hat-wizard" },
+  { name: "Whisky", desc: "Whisky distilleries and brands", icon: "fa-whiskey-glass" },
+  { name: "demodb", desc: "General-purpose demo database", icon: "fa-database" }
+];
+
+function showQuickStart() {
+  var html = "";
+  for (var i = 0; i < sampleDatasets.length; i++) {
+    var ds = sampleDatasets[i];
+    html += '<div class="col-md-4">' +
+      '<div class="card quick-start-card" onclick="importSampleDatabase(\'' + ds.name + '\')">' +
+        '<div class="card-body text-center" style="padding: 20px 16px;">' +
+          '<i class="fa ' + ds.icon + '" style="font-size: 2rem; color: #00aeee; margin-bottom: 10px; display: block;"></i>' +
+          '<div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 4px;">' + ds.name + '</div>' +
+          '<div class="text-muted" style="font-size: 0.8rem;">' + ds.desc + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+  $("#quickStartDatasets").html(html);
+  $("#quickStartOverlay").hide();
+  $("#quickStartPanel").show();
+  $("#mainTabContent").hide();
+}
+
+function hideQuickStart() {
+  $("#quickStartOverlay").hide();
+  $("#quickStartPanel").hide();
+  $("#mainTabContent").show();
+}
+
+function importSampleDatabase(name) {
+  var url = "https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/" + name + ".gz";
+
+  $("#quickStartOverlay").html(
+    '<div class="spinner-border text-primary" style="width: 3rem; height: 3rem;"></div>' +
+    '<h5 style="margin-top: 16px; font-weight: 600;">Importing ' + escapeHtml(name) + '...</h5>' +
+    '<p style="color: var(--text-secondary, #888);">Creating database and downloading dataset. This may take a moment.</p>'
+  ).css("display", "flex");
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/server",
+    data: JSON.stringify({ command: "create database " + name }),
+    contentType: "application/json",
+    beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+  }).done(function() {
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + encodeURIComponent(name),
+      data: JSON.stringify({ language: "sql", command: "IMPORT DATABASE " + url }),
+      contentType: "application/json",
+      timeout: 300000,
+      beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+    }).done(function() {
+      globalNotify("Success", name + " imported successfully!", "success");
+      updateDatabases(null, name);
+    }).fail(function(jqXHR) {
+      globalNotifyError(jqXHR.responseText);
+      $("#quickStartOverlay").hide();
+    });
+  }).fail(function(jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+    $("#quickStartOverlay").hide();
   });
 }
 

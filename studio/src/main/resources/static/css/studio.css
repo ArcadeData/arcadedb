@@ -3846,6 +3846,53 @@ div.dt-search {
   }
 }
 
+/* Quick Start Panel */
+.quick-start-card {
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  border: 1px solid var(--border-ddd, #dee2e6);
+}
+
+.quick-start-card:hover {
+  border-color: #00aeee;
+  box-shadow: 0 2px 8px rgba(0, 174, 238, 0.15);
+}
+
+.quick-start-divider {
+  text-align: center;
+  margin-bottom: 24px;
+  position: relative;
+}
+
+.quick-start-divider::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--border-ddd, #dee2e6);
+}
+
+.quick-start-divider span {
+  background: var(--bg-page, #fff);
+  padding: 0 16px;
+  position: relative;
+  color: var(--text-secondary, #aaa);
+  font-size: 0.85rem;
+}
+
+#quickStartOverlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: var(--bg-page, rgba(255, 255, 255, 0.97));
+  z-index: 10;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  text-align: center;
+}
+
 /* Ultra-compact: even smaller at very short heights */
 @media (max-height: 580px) {
   #tabs .nav-item a.vertical-tab {
