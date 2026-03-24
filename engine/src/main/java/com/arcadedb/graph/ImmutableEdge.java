@@ -106,7 +106,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   @Override
   public synchronized Vertex getOutVertex() {
     checkForLazyLoading();
-    return out.asVertex();
+    return (Vertex) database.lookupByRID(out, false);
   }
 
   @Override
@@ -118,16 +118,16 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   @Override
   public synchronized Vertex getInVertex() {
     checkForLazyLoading();
-    return in.asVertex();
+    return (Vertex) database.lookupByRID(in, false);
   }
 
   @Override
   public synchronized Vertex getVertex(final Vertex.DIRECTION iDirection) {
     checkForLazyLoading();
     if (iDirection == Vertex.DIRECTION.OUT)
-      return out.asVertex();
+      return (Vertex) database.lookupByRID(out, false);
     else
-      return in.asVertex();
+      return (Vertex) database.lookupByRID(in, false);
   }
 
   @Override
