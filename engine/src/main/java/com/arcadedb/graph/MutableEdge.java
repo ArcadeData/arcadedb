@@ -95,7 +95,7 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   public Vertex getOutVertex() {
-    return out.asVertex();
+    return (Vertex) database.lookupByRID(out, false);
   }
 
   @Override
@@ -105,15 +105,15 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   public Vertex getInVertex() {
-    return in.asVertex();
+    return (Vertex) database.lookupByRID(in, false);
   }
 
   @Override
   public Vertex getVertex(final Vertex.DIRECTION iDirection) {
     if (iDirection == Vertex.DIRECTION.OUT)
-      return out.asVertex();
+      return (Vertex) database.lookupByRID(out, false);
     else
-      return in.asVertex();
+      return (Vertex) database.lookupByRID(in, false);
   }
 
   @Override

@@ -55,7 +55,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   @Override
   public Vertex getOutVertex() {
     checkForLazyLoading();
-    return out.asVertex();
+    return (Vertex) database.lookupByRID(out, false);
   }
 
   @Override
@@ -67,16 +67,16 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   @Override
   public Vertex getInVertex() {
     checkForLazyLoading();
-    return in.asVertex();
+    return (Vertex) database.lookupByRID(in, false);
   }
 
   @Override
   public Vertex getVertex(final Vertex.DIRECTION iDirection) {
     checkForLazyLoading();
     if (iDirection == Vertex.DIRECTION.OUT)
-      return (Vertex) out.getRecord();
+      return (Vertex) database.lookupByRID(out, false);
     else
-      return (Vertex) in.getRecord();
+      return (Vertex) database.lookupByRID(in, false);
   }
 
   @Override

@@ -84,7 +84,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
 
       try {
         // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
-        return nextEdgeRID.asEdge(false);
+        return (Edge) currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
       } catch (final RecordNotFoundException e) {
         // SKIP
       }
@@ -106,7 +106,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
         else
           new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex).delete();
       } else
-        nextEdgeRID.asEdge().delete();
+        ((Edge) currentContainer.getDatabase().lookupByRID(nextEdgeRID, false)).delete();
     } catch (final RecordNotFoundException e) {
       // IGNORE IT
     } catch (final Exception e) {
