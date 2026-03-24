@@ -28,8 +28,9 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import com.arcadedb.utility.RidHashSet;
+
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -99,7 +100,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
       private boolean finished = false;
 
       // Count-only mode: track unique RIDs instead of full Result objects
-      private final Set<RID> uniqueRIDs = countOnlyMode ? new HashSet<>() : null;
+      private final RidHashSet uniqueRIDs = countOnlyMode ? new RidHashSet() : null;
       private long currentInputMatchCount = 0;
 
       @Override

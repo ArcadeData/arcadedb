@@ -116,6 +116,14 @@ public final class RidHashSet {
   }
 
   /**
+   * Removes all entries from the set.
+   */
+  public void clear() {
+    Arrays.fill(bucketIds, EMPTY_BUCKET);
+    size = 0;
+  }
+
+  /**
    * Iterates over all entries. No object allocation during iteration.
    */
   public void forEach(final EntryConsumer consumer) {

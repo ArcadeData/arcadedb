@@ -36,15 +36,15 @@ import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
+import com.arcadedb.utility.RidHashSet;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Shortest path algorithm to find the shortest path from one node to another node in a directed graph.
@@ -71,8 +71,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     ArrayDeque<Vertex> queueLeft  = new ArrayDeque<>();
     ArrayDeque<Vertex> queueRight = new ArrayDeque<>();
 
-    final Set<RID>      leftVisited  = new HashSet<>();
-    final Set<RID>      rightVisited = new HashSet<>();
+    final RidHashSet    leftVisited  = new RidHashSet();
+    final RidHashSet    rightVisited = new RidHashSet();
     final Map<RID, RID> previouses   = new HashMap<>();
     final Map<RID, RID> nexts        = new HashMap<>();
 

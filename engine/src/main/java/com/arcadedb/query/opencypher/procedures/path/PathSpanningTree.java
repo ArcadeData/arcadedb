@@ -25,14 +25,14 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import com.arcadedb.utility.RidHashSet;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
-import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -96,7 +96,7 @@ public class PathSpanningTree extends AbstractPathProcedure {
 
     // BFS to build spanning tree
     final List<List<Object>> allPaths = new ArrayList<>();
-    final Set<RID> visited = new HashSet<>();
+    final RidHashSet visited = new RidHashSet();
     final Queue<PathLevel> queue = new ArrayDeque<>();
 
     final List<Object> initialPath = new ArrayList<>();

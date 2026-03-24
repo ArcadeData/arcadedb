@@ -36,6 +36,7 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.RidHashSet;
 
 import java.io.*;
 import java.util.*;
@@ -555,8 +556,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       // REAL ALL THE ENTRIES
       final List<RID> allValues = readAllValuesFromResult(currentPageBuffer, result);
 
-      final Set<RID> validRIDs = new HashSet<>();
-      final Set<RID> deletedRIDs = new HashSet<>();
+      final RidHashSet validRIDs = new RidHashSet();
+      final RidHashSet deletedRIDs = new RidHashSet();
 
       final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(convertedKeys);
 
