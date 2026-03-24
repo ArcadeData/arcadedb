@@ -155,7 +155,6 @@ public final class GraphAlgorithms {
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
     // Precompute outDegree array across all edge types (once, outside iteration loop)
-    // For BOTH direction: degree = forward + backward (undirected total degree)
     final int[] outDeg = new int[n];
     for (final String edgeType : types) {
       final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
@@ -171,10 +170,34 @@ public final class GraphAlgorithms {
       }
     }
 
+    // Pre-compute 1/outDeg to replace division with multiplication in the hot loop
+    final double[] invDeg = new double[n];
+    for (int u = 0; u < n; u++)
+      invDeg[u] = outDeg[u] > 0 ? 1.0 / outDeg[u] : 0.0;
+
+    // Pre-collect dangling node IDs (zero out-degree) for fast iteration
+    int danglingCount = 0;
+    for (int u = 0; u < n; u++)
+      if (outDeg[u] == 0)
+        danglingCount++;
+    final int[] danglingNodes = new int[danglingCount];
+    int dIdx = 0;
+    for (int u = 0; u < n; u++)
+      if (outDeg[u] == 0)
+        danglingNodes[dIdx++] = u;
+
     for (int iter = 0; iter < iterations; iter++) {
       final double base = (1.0 - damping) / n;
       final double[] currentRank = rank;
       final double[] nextRank = next;
+
+      // Pre-compute contribution per node: rank[v] / outDeg[v].
+      // This turns the inner loop into a single gather+accumulate with no arithmetic.
+      final double[] contrib = new double[n];
+      parallelForRange(n, (s, e) -> {
+        for (int u = s; u < e; u++)
+          contrib[u] = currentRank[u] * invDeg[u];
+      });
 
       // PULL: each node sums contributions from neighbors — parallel, zero sync
       parallelForRange(n, (start, end) -> {
@@ -184,38 +207,31 @@ public final class GraphAlgorithms {
             final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
             if (csr == null)
               continue;
-            // Always pull from backward neighbors (nodes that point to u)
             final int[] bwdOffsets = csr.getBackwardOffsets();
             final int[] bwdNeighbors = csr.getBackwardNeighbors();
-            for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
-              final int v = bwdNeighbors[j];
-              if (outDeg[v] > 0)
-                sum += currentRank[v] / outDeg[v];
-            }
-            // For BOTH direction: also pull from forward neighbors (undirected edges)
+            for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
+              sum += contrib[bwdNeighbors[j]];
             if (undirected) {
               final int[] fwdOffsets = csr.getForwardOffsets();
               final int[] fwdNeighbors = csr.getForwardNeighbors();
-              for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
-                final int v = fwdNeighbors[j];
-                if (outDeg[v] > 0)
-                  sum += currentRank[v] / outDeg[v];
-              }
+              for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++)
+                sum += contrib[fwdNeighbors[j]];
             }
           }
           nextRank[u] = base + damping * sum;
         }
       });
 
-      // Handle dangling nodes: distribute their rank evenly (sequential, O(n))
+      // Handle dangling nodes: distribute their rank evenly
       double danglingSum = 0.0;
-      for (int u = 0; u < n; u++)
-        if (outDeg[u] == 0)
-          danglingSum += currentRank[u];
+      for (int i = 0; i < danglingNodes.length; i++)
+        danglingSum += currentRank[danglingNodes[i]];
       if (danglingSum > 0.0) {
         final double danglingContrib = damping * danglingSum / n;
-        for (int u = 0; u < n; u++)
-          nextRank[u] += danglingContrib;
+        parallelForRange(n, (s, e) -> {
+          for (int u = s; u < e; u++)
+            nextRank[u] += danglingContrib;
+        });
       }
 
       // Swap
