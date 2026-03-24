@@ -272,7 +272,22 @@
           </div>
 
           <div class="col-11">
-            <div class="tab-content">
+            <div id="quickStartPanel" style="display:none; height: 100%; overflow-y: auto; position: relative;">
+              <div style="max-width: 880px; margin: 0 auto; padding: 48px 24px;">
+                <div style="text-align: center; margin-bottom: 36px;">
+                  <i class="fa fa-rocket" style="font-size: 2.5rem; color: #00aeee; margin-bottom: 12px; display: block;"></i>
+                  <h3 style="font-weight: 600; margin-bottom: 8px;">Get Started with ArcadeDB</h3>
+                  <p style="color: var(--text-secondary, #888); margin-bottom: 20px;">No databases found. Create an empty one or import a sample dataset with one click.</p>
+                  <button class="btn db-action-btn" onclick="createDatabase()" style="padding: 8px 24px; font-size: 0.95rem;">
+                    <i class="fa fa-plus"></i> Create Empty Database
+                  </button>
+                </div>
+                <div class="quick-start-divider"><span>or import a sample dataset</span></div>
+                <div id="quickStartDatasets" class="row g-3"></div>
+              </div>
+              <div id="quickStartOverlay"></div>
+            </div>
+            <div class="tab-content" id="mainTabContent">
               ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:server.html} ${include:profiler.html} ${include:security.html} ${include:cluster.html} ${include:ai.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
             </div>
           </div>
