@@ -21,11 +21,16 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.Vertex.DIRECTION;
 
+import com.arcadedb.query.QueryEngineManager;
+
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.Arrays;
 import java.util.PriorityQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLongArray;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
 /**
@@ -53,7 +58,12 @@ public final class GraphAlgorithms {
   private static final int PARALLELISM           = Runtime.getRuntime().availableProcessors();
   private static final int PARALLEL_THRESHOLD     = 8192;
   private static final int PARALLEL_BFS_THRESHOLD = 4096;
-  private static final int PULL_DIRECTION_DIVISOR = 20; // switch to pull when frontier > n/20
+  private static final double ALPHA              = 8.0;  // edge ratio for push->pull switch
+  private static final int PULL_ENTER_DIVISOR    = 8;    // push->pull when frontier > n/8
+  private static final int PULL_EXIT_DIVISOR     = 512;  // pull->push when frontier < n/512
+
+  // VarHandle for lock-free CAS on long[] bitmap in parallel push mode
+  private static final VarHandle LONG_ARRAY_VH = MethodHandles.arrayElementVarHandle(long[].class);
 
   private GraphAlgorithms() {
   }
@@ -61,7 +71,7 @@ public final class GraphAlgorithms {
   // --- Parallel Infrastructure ---
 
   /**
-   * Partitions range [0, n) into chunks and runs each on a dedicated thread.
+   * Partitions range [0, n) into chunks and submits each to the shared query-engine pool.
    * Falls back to single-threaded execution when n is below threshold.
    * Propagates any exception thrown by a worker to the calling thread.
    */
@@ -70,66 +80,41 @@ public final class GraphAlgorithms {
       work.accept(0, n);
       return;
     }
+    final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
     final int chunkSize = (n + PARALLELISM - 1) / PARALLELISM;
-    final Thread[] threads = new Thread[PARALLELISM];
-    final AtomicReference<Throwable> firstError = new AtomicReference<>();
+    final Future<?>[] futures = new Future<?>[PARALLELISM];
     int launched = 0;
     for (int t = 0; t < PARALLELISM; t++) {
       final int start = t * chunkSize;
       final int end = Math.min(start + chunkSize, n);
       if (start >= n)
         break;
-      final Thread thread = new Thread(() -> {
-        try {
-          work.accept(start, end);
-        } catch (final Throwable e) {
-          firstError.compareAndSet(null, e);
-        }
-      });
-      thread.setDaemon(true);
-      thread.setName("gav-algo-" + t);
-      threads[t] = thread;
-      thread.start();
-      launched++;
+      futures[launched++] = executor.submit(() -> work.accept(start, end));
     }
-    joinThreads(threads, launched);
-    rethrowIfFailed(firstError);
+    awaitFutures(futures, launched);
   }
 
   /**
-   * Creates a named daemon thread for algorithm parallelism.
+   * Waits for all submitted futures to complete and rethrows the first exception if any.
    */
-  static Thread newAlgoThread(final int index, final AtomicReference<Throwable> firstError, final Runnable task) {
-    final Thread thread = new Thread(() -> {
+  static void awaitFutures(final Future<?>[] futures, final int count) {
+    Throwable firstError = null;
+    for (int i = 0; i < count; i++) {
       try {
-        task.run();
-      } catch (final Throwable e) {
-        firstError.compareAndSet(null, e);
+        futures[i].get();
+      } catch (final ExecutionException e) {
+        if (firstError == null)
+          firstError = e.getCause();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
       }
-    });
-    thread.setDaemon(true);
-    thread.setName("gav-algo-" + index);
-    return thread;
-  }
-
-  private static void joinThreads(final Thread[] threads, final int count) {
-    for (int i = 0; i < count; i++)
-      if (threads[i] != null)
-        try {
-          threads[i].join();
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
-  }
-
-  private static void rethrowIfFailed(final AtomicReference<Throwable> firstError) {
-    final Throwable t = firstError.get();
-    if (t != null) {
-      if (t instanceof RuntimeException)
-        throw (RuntimeException) t;
-      if (t instanceof Error)
-        throw (Error) t;
-      throw new RuntimeException(t);
+    }
+    if (firstError != null) {
+      if (firstError instanceof RuntimeException re)
+        throw re;
+      if (firstError instanceof Error er)
+        throw er;
+      throw new RuntimeException(firstError);
     }
   }
 
@@ -449,8 +434,9 @@ public final class GraphAlgorithms {
    * Returns the full distance array from a source node to all reachable nodes.
    * Unreachable nodes have distance -1.
    * <p>
-   * Parallelizes frontier expansion when frontier exceeds threshold using
-   * AtomicLongArray bitmap CAS for thread-safe discovery and thread-local next-frontier buffers.
+   * Uses Beamer's direction-optimizing push/pull BFS with edge-count heuristic,
+   * hysteresis thresholds (separate enter/exit), and parallel pull mode.
+   * Push mode uses VarHandle CAS on the visited bitmap for lock-free thread safety.
    */
   public static int[] shortestPathAll(final GraphAnalyticalView view, final int source,
       final Vertex.DIRECTION direction, final String... edgeTypes) {
@@ -483,6 +469,24 @@ public final class GraphAlgorithms {
       allBwdOffsets[t] = csr.getBackwardOffsets();
       allBwdNeighbors[t] = csr.getBackwardNeighbors();
     }
+
+    // Precompute push-direction degree per node for edge-count heuristic
+    final int[] degree = new int[n];
+    long totalEdges = 0;
+    for (int t = 0; t < typeCount; t++) {
+      if (useFwd && allFwdOffsets[t] != null) {
+        final int[] off = allFwdOffsets[t];
+        for (int i = 0; i < n; i++)
+          degree[i] += off[i + 1] - off[i];
+      }
+      if (useBwd && allBwdOffsets[t] != null) {
+        final int[] off = allBwdOffsets[t];
+        for (int i = 0; i < n; i++)
+          degree[i] += off[i + 1] - off[i];
+      }
+    }
+    for (int i = 0; i < n; i++)
+      totalEdges += degree[i];
 
     // dist[] for output, bitmap for fast visited check in hot loop
     final int[] dist = new int[n];
@@ -528,75 +532,186 @@ public final class GraphAlgorithms {
       }
     }
 
-    // Pull mode only beneficial for large enough graphs and frontiers
-    final int pullThreshold = n >= PULL_DIRECTION_DIVISOR * 2 ? n / PULL_DIRECTION_DIVISOR : Integer.MAX_VALUE;
+    // Edge-count heuristic state (Beamer's direction-optimizing BFS)
+    final int pullEnterThreshold = n / PULL_ENTER_DIVISOR;
+    final int pullExitThreshold = n / PULL_EXIT_DIVISOR;
+    boolean inPullMode = false;
+    long visitedEdges = degree[source];
+    long edgesInFrontier = degree[source];
+    int prevFrontierSize = 1;
 
     while (frontierSize > 0) {
       depth++;
 
-      if (frontierSize > pullThreshold) {
+      // Direction-optimizing switch using edge-count heuristic with hysteresis
+      final long edgesUnexplored = totalEdges - visitedEdges;
+      final boolean frontierGrowing = frontierSize >= prevFrontierSize;
+      if (inPullMode) {
+        // Stay in pull unless frontier is small and shrinking
+        if (!frontierGrowing && frontierSize <= pullExitThreshold)
+          inPullMode = false;
+      } else {
+        // Switch to pull when frontier is large and edge-dense
+        if (frontierSize > pullEnterThreshold && edgesInFrontier > edgesUnexplored / ALPHA)
+          inPullMode = true;
+      }
+
+      prevFrontierSize = frontierSize;
+      long nextEdgesInFrontier = 0;
+
+      if (inPullMode) {
         // PULL mode: scan ALL unvisited nodes, check if any reverse-neighbor is in frontier.
-        // Breaks early after finding one parent — skips rest of adjacency list.
-        // Advantage: for large frontiers, most neighbors are in the frontier, so early break
-        // avoids scanning thousands of already-visited neighbors per high-degree node.
-        int nextSize = 0;
-        for (int v = 0; v < n; v++) {
-          final int vWord = v >>> 6;
-          final long vBit = 1L << (v & 63);
-          if ((visited[vWord] & vBit) != 0)
-            continue; // already visited
+        // Parallelized: each thread handles a disjoint node range — no synchronization needed.
+        // Breaks early after finding one parent per node.
+        final int currentDepth = depth;
+        final int numThreads = Math.min(PARALLELISM, Math.max(1, (n + PARALLEL_THRESHOLD - 1) / PARALLEL_THRESHOLD));
 
-          boolean found = false;
-          for (int t = 0; t < typeCount && !found; t++) {
-            if (pullOffsets1[t] != null) {
-              final int[] offsets = pullOffsets1[t];
-              final int[] neighbors = pullNeighbors1[t];
-              for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
-                final int u = neighbors[j];
-                if ((frontierBitmap[u >>> 6] & (1L << (u & 63))) != 0) {
-                  found = true;
-                  break;
+        if (numThreads <= 1) {
+          // Sequential pull (small graph)
+          int nextSize = 0;
+          for (int v = 0; v < n; v++) {
+            final int vWord = v >>> 6;
+            final long vBit = 1L << (v & 63);
+            if ((visited[vWord] & vBit) != 0)
+              continue;
+
+            boolean found = false;
+            for (int t = 0; t < typeCount && !found; t++) {
+              if (pullOffsets1[t] != null) {
+                final int[] offsets = pullOffsets1[t];
+                final int[] neighbors = pullNeighbors1[t];
+                for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
+                  if ((frontierBitmap[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
+                    found = true;
+                    break;
+                  }
+                }
+              }
+              if (!found && pullOffsets2[t] != null) {
+                final int[] offsets = pullOffsets2[t];
+                final int[] neighbors = pullNeighbors2[t];
+                for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
+                  if ((frontierBitmap[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
+                    found = true;
+                    break;
+                  }
                 }
               }
             }
-            if (!found && pullOffsets2[t] != null) {
-              final int[] offsets = pullOffsets2[t];
-              final int[] neighbors = pullNeighbors2[t];
-              for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
-                final int u = neighbors[j];
-                if ((frontierBitmap[u >>> 6] & (1L << (u & 63))) != 0) {
-                  found = true;
-                  break;
-                }
-              }
+            if (found) {
+              visited[vWord] |= vBit;
+              dist[v] = currentDepth;
+              nextFrontier[nextSize++] = v;
+              nextEdgesInFrontier += degree[v];
             }
           }
-          if (found) {
-            visited[vWord] |= vBit;
-            dist[v] = depth;
-            nextFrontier[nextSize++] = v;
+
+          Arrays.fill(frontierBitmap, 0L);
+          for (int i = 0; i < nextSize; i++) {
+            final int v = nextFrontier[i];
+            frontierBitmap[v >>> 6] |= 1L << (v & 63);
           }
-        }
+          final int[] tmp = frontier;
+          frontier = nextFrontier;
+          nextFrontier = tmp;
+          frontierSize = nextSize;
 
-        // Update frontier bitmap: clear old frontier, set new frontier
-        Arrays.fill(frontierBitmap, 0L);
-        for (int i = 0; i < nextSize; i++) {
-          final int v = nextFrontier[i];
-          frontierBitmap[v >>> 6] |= 1L << (v & 63);
-        }
+        } else {
+          // Parallel pull: each thread scans a disjoint range of unvisited nodes
+          final int chunkSize = (n + numThreads - 1) / numThreads;
+          final int[][] localNexts = new int[numThreads][];
+          final int[] localSizes = new int[numThreads];
+          final long[] localEdges = new long[numThreads];
 
-        // Swap frontier references
-        final int[] tmp = frontier;
-        frontier = nextFrontier;
-        nextFrontier = tmp;
-        frontierSize = nextSize;
+          final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
+          final Future<?>[] futures = new Future<?>[numThreads];
+          int launched = 0;
+          for (int thr = 0; thr < numThreads; thr++) {
+            final int tIdx = thr;
+            final int tStart = thr * chunkSize;
+            final int tEnd = Math.min(tStart + chunkSize, n);
+            if (tStart >= n)
+              break;
+            futures[launched] = executor.submit(() -> {
+              int[] localNext = new int[Math.min(n, (tEnd - tStart) / 4 + 64)];
+              int localSize = 0;
+              long localEdgeSum = 0;
+              for (int v = tStart; v < tEnd; v++) {
+                final int vWord = v >>> 6;
+                final long vBit = 1L << (v & 63);
+                if ((visited[vWord] & vBit) != 0)
+                  continue;
+                boolean found = false;
+                for (int t = 0; t < typeCount && !found; t++) {
+                  if (pullOffsets1[t] != null) {
+                    final int[] offsets = pullOffsets1[t];
+                    final int[] neighbors = pullNeighbors1[t];
+                    for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
+                      if ((frontierBitmap[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
+                        found = true;
+                        break;
+                      }
+                    }
+                  }
+                  if (!found && pullOffsets2[t] != null) {
+                    final int[] offsets = pullOffsets2[t];
+                    final int[] neighbors = pullNeighbors2[t];
+                    for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
+                      if ((frontierBitmap[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
+                        found = true;
+                        break;
+                      }
+                    }
+                  }
+                }
+                if (found) {
+                  dist[v] = currentDepth;
+                  if (localSize >= localNext.length)
+                    localNext = Arrays.copyOf(localNext, Math.min(n, localNext.length * 2));
+                  localNext[localSize++] = v;
+                  localEdgeSum += degree[v];
+                }
+              }
+              localNexts[tIdx] = localNext;
+              localSizes[tIdx] = localSize;
+              localEdges[tIdx] = localEdgeSum;
+            });
+            launched++;
+          }
+          awaitFutures(futures, launched);
+
+          // Merge thread-local results
+          int totalNext = 0;
+          for (int t = 0; t < launched; t++) {
+            totalNext += localSizes[t];
+            nextEdgesInFrontier += localEdges[t];
+          }
+          int pos = 0;
+          for (int t = 0; t < launched; t++)
+            if (localNexts[t] != null && localSizes[t] > 0) {
+              System.arraycopy(localNexts[t], 0, nextFrontier, pos, localSizes[t]);
+              pos += localSizes[t];
+            }
+
+          // Update visited and frontier bitmaps after merge (sequential, no atomics)
+          for (int i = 0; i < totalNext; i++) {
+            final int v = nextFrontier[i];
+            visited[v >>> 6] |= 1L << (v & 63);
+          }
+          Arrays.fill(frontierBitmap, 0L);
+          for (int i = 0; i < totalNext; i++) {
+            final int v = nextFrontier[i];
+            frontierBitmap[v >>> 6] |= 1L << (v & 63);
+          }
+
+          final int[] tmp = frontier;
+          frontier = nextFrontier;
+          nextFrontier = tmp;
+          frontierSize = totalNext;
+        }
 
       } else if (frontierSize > PARALLEL_BFS_THRESHOLD) {
-        // PUSH mode (parallel): expand frontier outward using threads
-        final AtomicLongArray visitedAtomic = new AtomicLongArray(visited.length);
-        for (int i = 0; i < visited.length; i++)
-          visitedAtomic.set(i, visited[i]);
-
+        // PUSH mode (parallel): expand frontier using VarHandle CAS on visited bitmap
         final int fSize = frontierSize;
         final int[] currentFrontier = frontier;
         final int currentDepth = depth;
@@ -604,9 +719,10 @@ public final class GraphAlgorithms {
         final int chunkSize = (fSize + numThreads - 1) / numThreads;
         final int[][] localNexts = new int[numThreads][];
         final int[] localSizes = new int[numThreads];
+        final long[] localEdges = new long[numThreads];
 
-        final Thread[] threads = new Thread[numThreads];
-        final AtomicReference<Throwable> bfsError = new AtomicReference<>();
+        final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
+        final Future<?>[] futures = new Future<?>[numThreads];
         int launched = 0;
         for (int t = 0; t < numThreads; t++) {
           final int tIdx = t;
@@ -614,9 +730,10 @@ public final class GraphAlgorithms {
           final int tEnd = Math.min(tStart + chunkSize, fSize);
           if (tStart >= fSize)
             break;
-          threads[t] = newAlgoThread(t, bfsError, () -> {
+          futures[launched] = executor.submit(() -> {
             int[] localNext = new int[Math.min(n, (tEnd - tStart) * 8)];
             int localSize = 0;
+            long localEdgeSum = 0;
             for (int f = tStart; f < tEnd; f++) {
               final int u = currentFrontier[f];
               for (int ti = 0; ti < typeCount; ti++) {
@@ -629,15 +746,16 @@ public final class GraphAlgorithms {
                     final long bit = 1L << (v & 63);
                     long oldVal;
                     do {
-                      oldVal = visitedAtomic.get(word);
+                      oldVal = (long) LONG_ARRAY_VH.getVolatile(visited, word);
                       if ((oldVal & bit) != 0)
                         break;
-                    } while (!visitedAtomic.compareAndSet(word, oldVal, oldVal | bit));
+                    } while (!LONG_ARRAY_VH.compareAndSet(visited, word, oldVal, oldVal | bit));
                     if ((oldVal & bit) == 0) {
                       dist[v] = currentDepth;
                       if (localSize >= localNext.length)
                         localNext = Arrays.copyOf(localNext, Math.min(n, localNext.length * 2));
                       localNext[localSize++] = v;
+                      localEdgeSum += degree[v];
                     }
                   }
                 }
@@ -650,15 +768,16 @@ public final class GraphAlgorithms {
                     final long bit = 1L << (v & 63);
                     long oldVal;
                     do {
-                      oldVal = visitedAtomic.get(word);
+                      oldVal = (long) LONG_ARRAY_VH.getVolatile(visited, word);
                       if ((oldVal & bit) != 0)
                         break;
-                    } while (!visitedAtomic.compareAndSet(word, oldVal, oldVal | bit));
+                    } while (!LONG_ARRAY_VH.compareAndSet(visited, word, oldVal, oldVal | bit));
                     if ((oldVal & bit) == 0) {
                       dist[v] = currentDepth;
                       if (localSize >= localNext.length)
                         localNext = Arrays.copyOf(localNext, Math.min(n, localNext.length * 2));
                       localNext[localSize++] = v;
+                      localEdgeSum += degree[v];
                     }
                   }
                 }
@@ -666,22 +785,19 @@ public final class GraphAlgorithms {
             }
             localNexts[tIdx] = localNext;
             localSizes[tIdx] = localSize;
+            localEdges[tIdx] = localEdgeSum;
           });
-          threads[t].start();
           launched++;
         }
-        joinThreads(threads, launched);
-        rethrowIfFailed(bfsError);
+        awaitFutures(futures, launched);
 
-        // Copy atomic bitmap back to plain bitmap for next iteration
-        for (int i = 0; i < visited.length; i++)
-          visited[i] = visitedAtomic.get(i);
-
-        // Merge thread-local frontiers into pre-allocated nextFrontier
+        // Merge thread-local frontiers
         int totalNext = 0;
         for (int t = 0; t < launched; t++)
-          if (localNexts[t] != null)
+          if (localNexts[t] != null) {
             totalNext += localSizes[t];
+            nextEdgesInFrontier += localEdges[t];
+          }
         int pos = 0;
         for (int t = 0; t < launched; t++)
           if (localNexts[t] != null && localSizes[t] > 0) {
@@ -696,7 +812,6 @@ public final class GraphAlgorithms {
           frontierBitmap[v >>> 6] |= 1L << (v & 63);
         }
 
-        // Swap frontier references
         final int[] tmp = frontier;
         frontier = nextFrontier;
         nextFrontier = tmp;
@@ -719,6 +834,7 @@ public final class GraphAlgorithms {
                   visited[word] |= bit;
                   dist[v] = depth;
                   nextFrontier[nextSize++] = v;
+                  nextEdgesInFrontier += degree[v];
                 }
               }
             }
@@ -733,6 +849,7 @@ public final class GraphAlgorithms {
                   visited[word] |= bit;
                   dist[v] = depth;
                   nextFrontier[nextSize++] = v;
+                  nextEdgesInFrontier += degree[v];
                 }
               }
             }
@@ -746,12 +863,15 @@ public final class GraphAlgorithms {
           frontierBitmap[v >>> 6] |= 1L << (v & 63);
         }
 
-        // Swap frontier references
         final int[] tmp = frontier;
         frontier = nextFrontier;
         nextFrontier = tmp;
         frontierSize = nextSize;
       }
+
+      // Update edge-count tracking for next iteration
+      visitedEdges += nextEdgesInFrontier;
+      edgesInFrontier = nextEdgesInFrontier;
     }
 
     return dist;
