@@ -56,7 +56,7 @@ function renderTable() {
     if (columns["@out"]) orderedColumns.push("@out");
 
     for (let i in orderedColumns) {
-      if (orderedColumns[i] == "@rid")
+      if (orderedColumns[i] == "@rid" || orderedColumns[i] == "@in" || orderedColumns[i] == "@out")
         tableColumns.push({
           title: escapeHtml(orderedColumns[i]),
           render: function (data, type, full) {
@@ -89,8 +89,11 @@ function renderTable() {
         let colName = orderedColumns[i];
         let value = row[colName];
 
-        if (colName == "@rid") {
+        if (colName == "@rid" && value != null) {
           //RID
+          value = "<a class='link' onclick=\"openRecordEditorFromTable('" + value + "')\">" + value + "</a>";
+        } else if ((colName == "@in" || colName == "@out") && typeof value === "string" && value.charAt(0) === "#") {
+          //RID reference (edges only; on vertices these are numeric counts)
           value = "<a class='link' onclick=\"openRecordEditorFromTable('" + value + "')\">" + value + "</a>";
         } else if (value != null && (typeof value === "string" || value instanceof String) && value.toString().length > 30) {
           if (tableTruncateColumns) value = value.toString().substr(0, 30) + "...";
