@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BackupDatabaseTest extends TestHelper {
 
@@ -43,6 +44,22 @@ class BackupDatabaseTest extends TestHelper {
     Result result = resultSet.next();
     assertThat(result.<String>getProperty("result")).isEqualTo("OK");
     assertThat(result.<String>getProperty("backupFile")).isEqualTo("file://test-backup.zip");
+  }
+
+  @Test
+  void backupWithHttpUrlShouldFail() {
+    assertThatThrownBy(() -> database.command("sql", "backup database http://example.com/backup.zip"))
+        .rootCause()
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("not supported");
+  }
+
+  @Test
+  void backupWithHttpsUrlShouldFail() {
+    assertThatThrownBy(() -> database.command("sql", "backup database https://example.com/backup.zip"))
+        .rootCause()
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("not supported");
   }
 
   @Test
