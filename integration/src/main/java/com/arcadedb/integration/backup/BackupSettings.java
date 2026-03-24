@@ -46,6 +46,10 @@ public class BackupSettings {
     if (format == null)
       throw new IllegalArgumentException("Missing backup format");
 
+    if (file != null && (file.startsWith("http://") || file.startsWith("https://") || file.startsWith("classpath://")))
+      throw new IllegalArgumentException(
+          "Backup to remote URLs is not supported. Only local file paths and 'file://' URLs are allowed");
+
     if (directory != null && file != null) {
       final String f = file.startsWith("file://") ? file.substring("file://".length()) : file;
       if (f.contains("..") || f.contains(File.separator))
