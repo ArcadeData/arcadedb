@@ -1312,40 +1312,54 @@ public final class GraphAlgorithms {
       });
     }
 
-    // Count triangles — parallel per vertex (each triangles[u] is independent)
-    final long[] triangles = new long[n];
+    // Count triangles using the "forward" technique: for each edge (u, v) where v > u,
+    // count common neighbors w > v via sorted-merge intersection.
+    // Each triangle {u, v, w} is found exactly once (u < v < w), then credited to all 3 nodes.
+    // This halves the intersection work compared to counting from both directions.
+    // Uses AtomicLongArray for thread-safe increments on shared triangle counts.
+    final java.util.concurrent.atomic.AtomicLongArray triangles = new java.util.concurrent.atomic.AtomicLongArray(n);
     parallelForRange(n, (start, end) -> {
       for (int u = start; u < end; u++) {
         final int uStart = offsets[u];
         final int uEnd = offsets[u + 1];
-        long count = 0;
         for (int k = uStart; k < uEnd; k++) {
           final int v = neighbors[k];
+          if (v <= u)
+            continue;  // only process edges where v > u
+          // Intersect N(u) ∩ N(v) for neighbors w > v
           final int vStart = offsets[v];
           final int vEnd = offsets[v + 1];
-          int iu = uStart, iv = vStart;
+          int iu = k + 1;  // start after v in u's sorted list (all entries > v)
+          int iv = vStart;
+          // Advance iv past entries <= v
+          while (iv < vEnd && neighbors[iv] <= v)
+            iv++;
           while (iu < uEnd && iv < vEnd) {
-            if (neighbors[iu] < neighbors[iv])
+            final int nu = neighbors[iu];
+            final int nv = neighbors[iv];
+            if (nu < nv)
               iu++;
-            else if (neighbors[iu] > neighbors[iv])
+            else if (nu > nv)
               iv++;
             else {
-              count++;
+              // Triangle {u, v, nu} found — credit all three nodes atomically
+              triangles.incrementAndGet(u);
+              triangles.incrementAndGet(v);
+              triangles.incrementAndGet(nu);
               iu++;
               iv++;
             }
           }
         }
-        triangles[u] = count;
       }
     });
 
-    // Each triangle counted twice per node
+    // With forward counting, each triangle is found once and credited to all 3 nodes
     final double[] lcc = new double[n];
     for (int u = 0; u < n; u++) {
       final long deg = offsets[u + 1] - offsets[u];
       if (deg >= 2)
-        lcc[u] = (double) triangles[u] / (double) (deg * (deg - 1));
+        lcc[u] = (2.0 * triangles.get(u)) / (double) (deg * (deg - 1));
     }
     return lcc;
   }
