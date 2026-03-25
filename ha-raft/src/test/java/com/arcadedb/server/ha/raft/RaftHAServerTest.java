@@ -21,12 +21,15 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import org.apache.ratis.protocol.RaftPeer;
+import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -189,5 +192,44 @@ class RaftHAServerTest {
 
     assertThat(config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN)).isEqualTo("explicit-token");
     assertThat(new File(tempDir, "cluster-token.txt")).doesNotExist();
+  }
+
+  @Test
+  void peerDisplayNamesWithHttpAddresses() {
+    final RaftHAServer.ParsedPeerList parsed = RaftHAServer.parsePeerList(
+        "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482", 2434);
+    final List<RaftPeer> peers = parsed.peers();
+
+    // Simulate the display name construction logic from the constructor
+    final String prefix = "ArcadeDB";
+    final Map<RaftPeerId, String> displayNames = new HashMap<>(peers.size());
+    for (int i = 0; i < peers.size(); i++) {
+      final RaftPeerId peerId = peers.get(i).getId();
+      final String nodeName = prefix + "_" + i;
+      final String httpAddr = parsed.httpAddresses().get(peerId);
+      displayNames.put(peerId, httpAddr != null ? nodeName + " (" + httpAddr + ")" : nodeName);
+    }
+
+    assertThat(displayNames.get(peers.get(0).getId())).isEqualTo("ArcadeDB_0 (localhost:2480)");
+    assertThat(displayNames.get(peers.get(1).getId())).isEqualTo("ArcadeDB_1 (localhost:2481)");
+    assertThat(displayNames.get(peers.get(2).getId())).isEqualTo("ArcadeDB_2 (localhost:2482)");
+  }
+
+  @Test
+  void peerDisplayNamesWithoutHttpAddresses() {
+    final RaftHAServer.ParsedPeerList parsed = RaftHAServer.parsePeerList("localhost:2434,localhost:2435", 2434);
+    final List<RaftPeer> peers = parsed.peers();
+
+    final String prefix = "MyDB";
+    final Map<RaftPeerId, String> displayNames = new HashMap<>(peers.size());
+    for (int i = 0; i < peers.size(); i++) {
+      final RaftPeerId peerId = peers.get(i).getId();
+      final String nodeName = prefix + "_" + i;
+      final String httpAddr = parsed.httpAddresses().get(peerId);
+      displayNames.put(peerId, httpAddr != null ? nodeName + " (" + httpAddr + ")" : nodeName);
+    }
+
+    assertThat(displayNames.get(peers.get(0).getId())).isEqualTo("MyDB_0");
+    assertThat(displayNames.get(peers.get(1).getId())).isEqualTo("MyDB_1");
   }
 }
