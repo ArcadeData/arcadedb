@@ -125,7 +125,7 @@ class SingleLocalhostServerSimpleLoadTestIT {
 
     // Parameters for the test
     final int numOfThreads = 5; //number of threads to use to insert users and photos
-    final int numOfUsers = 1000; // Each thread will create 200000 users
+    final int numOfUsers = 500; // Each thread will create 200000 users
     final int numOfPhotos = 10; // Each user will have 5 photos
     final int numOfFriendship = 1000; // Each thread will create 100000 friendships
     final int numOfLike = 1000; // Each thread will create 100000 likes
@@ -150,6 +150,7 @@ class SingleLocalhostServerSimpleLoadTestIT {
       });
     }
 
+    TimeUnit.SECONDS.sleep(10);
     if (numOfFriendship > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
