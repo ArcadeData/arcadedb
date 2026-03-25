@@ -495,10 +495,11 @@ def configure_arcadedb_async_loader(db, batch_size: int, parallelism: int = 1):
     return async_exec
 
 
-def reset_arcadedb_async_loader(db):
-    db.async_executor().wait_completion()
+def reset_arcadedb_async_loader(db, async_exec):
+    async_exec.wait_completion()
+    async_exec.close()
     db.set_read_your_writes(True)
-    db.async_executor().set_transaction_use_wal(True)
+    async_exec.set_transaction_use_wal(True)
 
 
 def load_table_arcadedb_async(
@@ -1721,7 +1722,7 @@ def phase1_tables(
                 )
             load_time = time.time() - load_start
         finally:
-            reset_arcadedb_async_loader(db)
+            reset_arcadedb_async_loader(db, async_exec)
 
         index_time = create_indexes_with_retry(
             db,
