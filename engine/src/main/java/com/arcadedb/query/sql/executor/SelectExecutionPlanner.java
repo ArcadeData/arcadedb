@@ -76,6 +76,7 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.query.sql.parser.LevelZeroIdentifier;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -1764,6 +1765,11 @@ public class SelectExecutionPlanner {
       return;
     }
 
+    // Edge vertex optimization: for queries like SELECT FROM EdgeType WHERE @out = #X:Y,
+    // use vertex-centric edge traversal instead of scanning the entire edge type.
+    if (handleEdgeTypeWithVertexRidFilter(plan, docType, info, context))
+      return;
+
     Boolean orderByRidAsc = null; // null: no order. true: asc, false:desc
     if (isOrderByRidAsc(info))
       orderByRidAsc = true;
@@ -1794,6 +1800,114 @@ public class SelectExecutionPlanner {
       info.orderApplied = true;
 
     plan.chain(fetcher);
+  }
+
+  /**
+   * Optimizes queries on edge types with @out or @in RID equality filters by using vertex-centric edge
+   * traversal instead of scanning the entire edge type. Transforms:
+   * <pre>SELECT FROM EdgeType WHERE @out = #X:Y AND ...</pre>
+   * into a plan that fetches edges directly from the vertex's edge list.
+   *
+   * @return true if the optimization was applied
+   */
+  private boolean handleEdgeTypeWithVertexRidFilter(final SelectExecutionPlan plan, final DocumentType docType,
+      final QueryPlanningInfo info, final CommandContext context) {
+    if (!(docType instanceof com.arcadedb.schema.EdgeType))
+      return false;
+
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() != 1)
+      return false; // only handle simple AND conditions (single flattened block, no OR)
+
+    final AndBlock andBlock = info.flattenedWhereClause.getFirst();
+    final String edgeTypeName = docType.getName();
+
+    // Look for @out = <RID> or @in = <RID> in the WHERE conditions
+    for (int i = 0; i < andBlock.getSubBlocks().size(); i++) {
+      final BooleanExpression expr = andBlock.getSubBlocks().get(i);
+      if (!(expr instanceof BinaryCondition bc))
+        continue;
+      if (!(bc.getOperator() instanceof EqualsCompareOperator))
+        continue;
+
+      // Check if left side is @out or @in
+      final String attrName = extractRecordAttribute(bc.getLeft());
+      if (attrName == null)
+        continue;
+
+      final boolean isOut = attrName.equalsIgnoreCase(Property.OUT_PROPERTY);
+      final boolean isIn = attrName.equalsIgnoreCase(Property.IN_PROPERTY);
+      if (!isOut && !isIn)
+        continue;
+
+      // Check if right side is a RID literal
+      final RID vertexRid = extractRidValue(bc.getRight(), context);
+      if (vertexRid == null)
+        continue;
+
+      // Found the pattern! Create vertex-centric edge fetch step
+      final Vertex.DIRECTION direction = isOut ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
+      plan.chain(new FetchEdgesFromVertexStep(vertexRid, direction, edgeTypeName, context));
+
+      // Remove the @out/@in condition from WHERE (it's now handled by the fetch step)
+      // and keep remaining conditions as a filter
+      final List<BooleanExpression> remaining = new ArrayList<>(andBlock.getSubBlocks());
+      remaining.remove(i);
+      if (!remaining.isEmpty()) {
+        final AndBlock remainingBlock = new AndBlock(-1);
+        remainingBlock.getSubBlocks().addAll(remaining);
+        final WhereClause remainingWhere = new WhereClause(-1);
+        remainingWhere.setBaseExpression(remainingBlock);
+        plan.chain(new FilterStep(remainingWhere, context));
+      }
+
+      // Mark WHERE as consumed
+      info.whereClause = null;
+      info.flattenedWhereClause = null;
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Extracts the record attribute name (@out, @in, @rid, etc.) from an expression, or null if it's not a record attribute.
+   */
+  private static String extractRecordAttribute(final Expression expr) {
+    if (expr == null || expr.getMathExpression() == null)
+      return null;
+    if (!(expr.getMathExpression() instanceof BaseExpression base))
+      return null;
+    if (base.identifier == null || base.identifier.suffix == null)
+      return null;
+    // Check if the expression string starts with @ (record attribute like @out, @in, @rid)
+    final String exprStr = expr.toString().trim();
+    if (exprStr.startsWith("@"))
+      return exprStr;
+    return null;
+  }
+
+  /**
+   * Extracts a RID value from an expression (literal RID or string that can be parsed as RID).
+   */
+  private static RID extractRidValue(final Expression expr, final CommandContext context) {
+    if (expr == null)
+      return null;
+    // Direct RID literal: #X:Y
+    if (expr.getRid() != null) {
+      final Rid rid = expr.getRid();
+      return new RID(context.getDatabase(), rid.getBucket().getValue().intValue(), rid.getPosition().getValue().longValue());
+    }
+    // Evaluate the expression (handles string parameters like "#215:45086720")
+    try {
+      final Object value = expr.execute((Result) null, context);
+      if (value instanceof RID rid)
+        return rid;
+      if (value instanceof String s && s.startsWith("#"))
+        return new RID(context.getDatabase(), s);
+    } catch (final Exception e) {
+      // Cannot evaluate at plan time
+    }
+    return null;
   }
 
   /**
