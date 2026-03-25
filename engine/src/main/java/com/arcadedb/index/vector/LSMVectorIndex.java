@@ -854,8 +854,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       if (graphFile != null && graphFile.hasPersistedGraph() && !needsGraphRebuildForPQ && !hasDeletedVectors) {
         try {
-          this.graphIndex = graphFile.loadGraph();
-          this.graphState = GraphState.IMMUTABLE;
+          final var loadedGraph = graphFile.loadGraph();
 
           // Rebuild ordinalToVectorId from vectorIndex
           // IMPORTANT: Must match the validation logic used during graph building
@@ -863,7 +862,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
                   metadata.propertyNames.getFirst() : "vector";
 
-          this.ordinalToVectorId = vectorIndex.getAllVectorIds().filter(id -> {
+          final int[] rebuiltOrdinalToVectorId = vectorIndex.getAllVectorIds().filter(id -> {
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
             if (loc == null || loc.deleted) {
               return false;
@@ -897,36 +896,53 @@ public class LSMVectorIndex implements Index, IndexInternal {
             }
           }).sorted().toArray();
 
+          final int graphSize = loadedGraph != null ? loadedGraph.size() : 0;
           LogManager.instance().log(this, Level.INFO,
               "Loaded graph from disk for index: %s, graphSize=%d, ordinalToVectorIdLength=%d, vectorIndexSize=%d",
-              indexName,
-              graphIndex != null ? graphIndex.size() : 0, ordinalToVectorId.length, vectorIndex.size());
+              indexName, graphSize, rebuiltOrdinalToVectorId.length, vectorIndex.size());
 
-          // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
-          // This handles the case where graph was built before PRODUCT quantization was added
-          if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null && !pqFile.isPQReady()) {
+          // CRITICAL FIX FOR #3722: Check if persisted graph is stale (has fewer vectors than currently active).
+          // This happens when vectors were added after the graph was last built and persisted.
+          // On database restart, deltaVectors (volatile) are lost and graphState is set to IMMUTABLE,
+          // so rebuildGraphBeforeSearch() never triggers. Search can only find nodes in the stale graph.
+          if (graphSize < rebuiltOrdinalToVectorId.length) {
             LogManager.instance().log(this, Level.INFO,
-                "PQ not available after graph load, building PQ for index: %s", indexName);
-            try {
-              // Create vector values from the loaded vectorIndex for PQ building
-              final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
-              for (int vectorId : ordinalToVectorId) {
-                final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
-                if (loc != null && !loc.deleted) {
-                  vectorLocationSnapshot.put(vectorId, loc);
-                }
-              }
-              final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
-                  vectorProp,
-                  vectorLocationSnapshot, ordinalToVectorId, this, getGraphBuildCacheSize());
-              buildAndPersistPQ(vectors);
-            } catch (final Exception e) {
-              LogManager.instance().log(this, Level.WARNING,
-                  "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
-            }
-          }
+                "Persisted graph is stale for index %s: graph has %d nodes but %d active vectors exist - "
+                    + "rebuilding from scratch (fixes issue #3722: missing vectors after database restart)",
+                indexName, graphSize, rebuiltOrdinalToVectorId.length);
+            // Don't use the stale graph — fall through to buildGraphFromScratch() below
+          } else {
+            // Graph is up to date — use it
+            this.graphIndex = loadedGraph;
+            this.graphState = GraphState.IMMUTABLE;
+            this.ordinalToVectorId = rebuiltOrdinalToVectorId;
 
-          return;
+            // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
+            // This handles the case where graph was built before PRODUCT quantization was added
+            if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null && !pqFile.isPQReady()) {
+              LogManager.instance().log(this, Level.INFO,
+                  "PQ not available after graph load, building PQ for index: %s", indexName);
+              try {
+                // Create vector values from the loaded vectorIndex for PQ building
+                final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
+                for (int vectorId : ordinalToVectorId) {
+                  final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+                  if (loc != null && !loc.deleted) {
+                    vectorLocationSnapshot.put(vectorId, loc);
+                  }
+                }
+                final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
+                    vectorProp,
+                    vectorLocationSnapshot, ordinalToVectorId, this, getGraphBuildCacheSize());
+                buildAndPersistPQ(vectors);
+              } catch (final Exception e) {
+                LogManager.instance().log(this, Level.WARNING,
+                    "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
+              }
+            }
+
+            return;
+          }
         } catch (final Exception e) {
           LogManager.instance()
               .log(this, Level.WARNING, "Failed to load graph for %s, will rebuild: %s", indexName, e.getMessage());
