@@ -86,11 +86,13 @@ class DeltaScanVectorSearchTest extends TestHelper {
       database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector);
     });
 
-    // Verify delta buffer has the new vector
+    // Verify the new vector is tracked (either in delta buffer or live graph)
     final Map<String, Long> stats = lsmIndex.getStats();
-    assertThat(stats.get("deltaVectorsCount")).isGreaterThanOrEqualTo(1L);
+    // With live builder: vector goes directly to graph (deltaVectorsCount may be 0)
+    // Without live builder: vector goes to delta buffer (deltaVectorsCount >= 1)
+    // Either way, the vector should be findable in the next search
 
-    // Search again — the new vector should appear via delta scan
+    // Search again — the new vector should appear (via delta scan or live graph)
     results = lsmIndex.findNeighborsFromVector(queryVector, 10);
     assertThat(results).isNotEmpty();
 
@@ -197,18 +199,20 @@ class DeltaScanVectorSearchTest extends TestHelper {
         database.command("sql", "INSERT INTO Item SET vector = ?", (Object) generateRandomVector(random));
     });
 
-    assertThat(lsmIndex.getStats().get("deltaVectorsCount")).isGreaterThanOrEqualTo(3L);
+    // With live builder: vectors go directly to graph (delta may be 0)
+    // Without live builder: delta >= 3, then cleared after rebuild
 
-    // Search triggers rebuild (small graph < 1000 → synchronous)
+    // Search triggers rebuild (small graph < 1000 → synchronous) if using old path
     lsmIndex.findNeighborsFromVector(queryVector, 5);
 
-    // After synchronous rebuild, delta should be empty
+    // After rebuild or with live builder, delta should be empty (vectors are in the graph)
     assertThat(lsmIndex.getStats().get("deltaVectorsCount")).isEqualTo(0L);
   }
 
   @Test
   void ridFilterAppliesToDelta() {
-    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 1000);
+    // High threshold to prevent automatic rebuild which changes ordinal mapping
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 100_000);
 
     database.transaction(() -> {
       database.getSchema().createVertexType("Item");
@@ -246,12 +250,19 @@ class DeltaScanVectorSearchTest extends TestHelper {
       database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector);
     });
 
-    // Search with allowedRIDs that does NOT include the new vector's RID
-    // First, find the new vector's RID
-    List<Pair<RID, Float>> allResults = lsmIndex.findNeighborsFromVector(queryVector, 10);
-    final RID nearRID = allResults.get(0).getFirst();
+    // Find the nearVector's RID by looking for vector[0] == 998.0
+    List<Pair<RID, Float>> allResults = lsmIndex.findNeighborsFromVector(queryVector, 11);
+    RID nearRID = null;
+    for (final Pair<RID, Float> r : allResults) {
+      final Object v = database.lookupByRID(r.getFirst(), true).asDocument().get("vector");
+      if (v instanceof float[] fv && fv[0] == 998.0f) {
+        nearRID = r.getFirst();
+        break;
+      }
+    }
+    assertThat(nearRID).as("Should find the nearVector in results").isNotNull();
 
-    // Build allowed set without the near vector
+    // Build allowed set of ALL RIDs from the initial 10 vectors (excluding nearVector)
     final Set<RID> allowedRIDs = new HashSet<>();
     for (final Pair<RID, Float> r : allResults)
       if (!r.getFirst().equals(nearRID))
@@ -260,7 +271,7 @@ class DeltaScanVectorSearchTest extends TestHelper {
     // Search with filter — nearVector should be excluded
     final List<Pair<RID, Float>> filteredResults = lsmIndex.findNeighborsFromVector(queryVector, 10, allowedRIDs);
     for (final Pair<RID, Float> r : filteredResults)
-      assertThat(r.getFirst()).isNotEqualTo(nearRID);
+      assertThat(r.getFirst()).as("Filtered results should not contain nearVector").isNotEqualTo(nearRID);
   }
 
   @Test
