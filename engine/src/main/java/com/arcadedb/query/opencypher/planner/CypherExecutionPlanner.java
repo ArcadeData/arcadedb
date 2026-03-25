@@ -192,6 +192,23 @@ public class CypherExecutionPlanner {
       // Multiple path patterns in a single MATCH (e.g., MATCH (a:X)-[:E1]->(b:Y), (a)<-[:E2]-(c:Z))
       // are supported when the patterns share variables (the optimizer handles them via join planning).
       // Disconnected patterns with no shared variables fall through to step-by-step interpretation.
+      if (match.hasPathPatterns() && match.getPathPatterns().size() > 1) {
+        final Set<String> seenVars = new HashSet<>();
+        boolean disconnected = false;
+        for (final PathPattern path : match.getPathPatterns()) {
+          final Set<String> pathVars = new HashSet<>();
+          for (final NodePattern node : path.getNodes())
+            if (node.getVariable() != null)
+              pathVars.add(node.getVariable());
+          if (!seenVars.isEmpty() && Collections.disjoint(seenVars, pathVars)) {
+            disconnected = true;
+            break;
+          }
+          seenVars.addAll(pathVars);
+        }
+        if (disconnected)
+          return false; // Disconnected patterns in single MATCH not supported by optimizer
+      }
 
       // Check if all nodes have labels, no named path variables, and no unsupported property constraints
       if (match.hasPathPatterns()) {
