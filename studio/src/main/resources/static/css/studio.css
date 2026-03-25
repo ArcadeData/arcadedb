@@ -794,7 +794,7 @@ div.dt-search {
 #tab-table .table tbody td {
   font-size: 0.84rem;
   padding: 6px 10px;
-  vertical-align: middle;
+  vertical-align: top;
 }
 
 #tab-table .table tbody tr:hover {
