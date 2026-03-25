@@ -128,11 +128,64 @@ class VectorIndex:
         self._java_index = java_index
         self._database = database
 
+    def _iter_lsm_indexes(self):
+        if "LSMVectorIndex" in self._java_index.getClass().getName():
+            yield self._java_index
+            return
+
+        if "TypeIndex" in self._java_index.getClass().getName():
+            sub_indexes = self._java_index.getSubIndexes()
+            if sub_indexes and not sub_indexes.isEmpty():
+                for sub in sub_indexes:
+                    if "LSMVectorIndex" in sub.getClass().getName():
+                        yield sub
+
+    def _get_primary_lsm_index(self):
+        for index in self._iter_lsm_indexes():
+            return index
+        return None
+
+    def _ensure_product_quantization_ready(self):
+        for index in self._iter_lsm_indexes():
+            meta = index.getMetadata()
+            if str(meta.quantizationType) != "PRODUCT":
+                continue
+
+            vector_count = int(index.countEntries())
+            pq_clusters = int(meta.pqClusters)
+
+            if 0 < vector_count < pq_clusters:
+                raise ArcadeDBError(
+                    "PRODUCT quantization in this ArcadeDB version requires at least "
+                    "pq_clusters indexed vectors per bucket before graph build. "
+                    f"Current bucket has {vector_count} vector(s) but "
+                    f"pq_clusters={pq_clusters}. "
+                    "Use a smaller pq_clusters value, insert more vectors, "
+                    "or use INT8/BINARY/NONE."
+                )
+
+    def _normalize_ef_search(self, ef_search):
+        if ef_search is None:
+            return None
+
+        if isinstance(ef_search, bool):
+            raise ArcadeDBError("ef_search must be a positive integer")
+
+        try:
+            normalized = int(ef_search)
+        except (TypeError, ValueError) as exc:
+            raise ArcadeDBError("ef_search must be a positive integer") from exc
+
+        if normalized < 1 or normalized != ef_search:
+            raise ArcadeDBError("ef_search must be a positive integer")
+
+        return normalized
+
     def find_nearest(
         self,
         query_vector,
         k=10,
-        overquery_factor=4,
+        ef_search=None,
         allowed_rids=None,
     ):
         """
@@ -141,16 +194,21 @@ class VectorIndex:
         Args:
             query_vector: Query vector as Python list, NumPy array, or array-like
             k: Number of nearest neighbors to return (final k). Default is 10.
-            overquery_factor: Multiplier for search-time over-querying (implicit efSearch).
-                              Default is 4, chosen based on benchmarks to balance recall and speed.
-            allowed_rids: Optional list of RID strings (e.g. ["#1:0", "#2:5"]) to restrict search
+            ef_search: Optional search beam width override for exact graph search. None
+                uses the Java index default/adaptive behavior.
+            allowed_rids: Optional list of RID strings (e.g. ["#1:0", "#2:5"]) to
+                restrict search
 
         Returns:
             List of tuples: [(record, score), ...]
             - record: The matching ArcadeDB record (Vertex, Document, or Edge)
             - score: The similarity score/distance
         """
+        effective_ef_search = self._normalize_ef_search(ef_search)
+
         try:
+            self._ensure_product_quantization_ready()
+
             # Convert query vector to Java float array
             java_vector = to_java_float_array(query_vector)
 
@@ -167,19 +225,24 @@ class VectorIndex:
                 for rid_str in allowed_rids:
                     allowed_rids_set.add(RID(self._database._java_db, rid_str))
 
-            # Search-time over-querying
-            search_k = k * max(1, int(overquery_factor))
-
             all_results = []
 
             def process_index(idx):
                 if "LSMVectorIndex" in idx.getClass().getName():
-                    if allowed_rids_set:
+                    if allowed_rids_set and effective_ef_search is not None:
                         pairs = idx.findNeighborsFromVector(
-                            java_vector, search_k, allowed_rids_set
+                            java_vector, k, effective_ef_search, allowed_rids_set
+                        )
+                    elif allowed_rids_set:
+                        pairs = idx.findNeighborsFromVector(
+                            java_vector, k, allowed_rids_set
+                        )
+                    elif effective_ef_search is not None:
+                        pairs = idx.findNeighborsFromVector(
+                            java_vector, k, effective_ef_search
                         )
                     else:
-                        pairs = idx.findNeighborsFromVector(java_vector, search_k)
+                        pairs = idx.findNeighborsFromVector(java_vector, k)
 
                     for pair in pairs:
                         rid = pair.getFirst()
@@ -241,7 +304,6 @@ class VectorIndex:
         self,
         query_vector,
         k=10,
-        overquery_factor=4,
         allowed_rids=None,
     ):
         """
@@ -250,7 +312,6 @@ class VectorIndex:
         Args:
             query_vector: Query vector as Python list, NumPy array, or array-like
             k: Number of nearest neighbors to return (final k)
-            overquery_factor: Multiplier for over-querying before truncation (approx efSearch analogue).
             allowed_rids: Optional list of RID strings (e.g. ["#1:0", "#2:5"]) to restrict search
 
         Returns:
@@ -263,8 +324,9 @@ class VectorIndex:
                     "Approximate search requires quantization=PRODUCT (PQ)"
                 )
 
+            self._ensure_product_quantization_ready()
+
             java_vector = to_java_float_array(query_vector)
-            search_k = k * max(1, int(overquery_factor))
 
             from com.arcadedb.database import RID
             from java.util import HashSet
@@ -283,12 +345,10 @@ class VectorIndex:
                 if "LSMVectorIndex" in idx.getClass().getName():
                     if allowed_rids_set:
                         pairs = idx.findNeighborsFromVectorApproximate(
-                            java_vector, search_k, allowed_rids_set
+                            java_vector, k, allowed_rids_set
                         )
                     else:
-                        pairs = idx.findNeighborsFromVectorApproximate(
-                            java_vector, search_k
-                        )
+                        pairs = idx.findNeighborsFromVectorApproximate(java_vector, k)
 
                     for pair in pairs:
                         rid = pair.getFirst()
@@ -330,16 +390,10 @@ class VectorIndex:
         Get the quantization type of the index.
 
         Returns:
-            str: "NONE", "INT8", or "BINARY"
+            str: "NONE", "INT8", "BINARY", or "PRODUCT"
         """
         try:
-            idx_to_check = None
-            if "LSMVectorIndex" in self._java_index.getClass().getName():
-                idx_to_check = self._java_index
-            elif "TypeIndex" in self._java_index.getClass().getName():
-                sub_indexes = self._java_index.getSubIndexes()
-                if not sub_indexes.isEmpty():
-                    idx_to_check = sub_indexes.get(0)
+            idx_to_check = self._get_primary_lsm_index()
 
             if idx_to_check:
                 return str(idx_to_check.getMetadata().quantizationType)
@@ -355,16 +409,14 @@ class VectorIndex:
         build. For TypeIndex wrappers, rebuilds all underlying LSMVectorIndex instances.
         """
         try:
-            if "LSMVectorIndex" in self._java_index.getClass().getName():
-                self._java_index.buildVectorGraphNow()
-                return
+            self._ensure_product_quantization_ready()
 
-            if "TypeIndex" in self._java_index.getClass().getName():
-                sub_indexes = self._java_index.getSubIndexes()
-                if sub_indexes and not sub_indexes.isEmpty():
-                    for sub in sub_indexes:
-                        if "LSMVectorIndex" in sub.getClass().getName():
-                            sub.buildVectorGraphNow()
+            built_any = False
+            for index in self._iter_lsm_indexes():
+                index.buildVectorGraphNow()
+                built_any = True
+
+            if built_any:
                 return
 
             raise ArcadeDBError(

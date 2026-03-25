@@ -15,11 +15,11 @@ For client-server backends (pgvector, qdrant, milvus), peak RSS is measured as:
   client process RSS + server process tree RSS.
 
 Parameter normalization note:
-- ArcadeDB/jvector uses `overquery_factor` directly.
+- ArcadeDB exact search now exposes `ef_search`; this benchmark sweeps explicit
+    `ef_search` values for exact search and leaves the current PQ approximate path on
+    its native `k`-only API.
 - HNSW backends expose `ef_search`.
-- These knobs are not semantically identical, so this benchmark uses a fixed
-    normalization: `ef_search = 0.5 * k * overquery_factor` for
-    faiss/pgvector/qdrant/milvus and LanceDB HNSW-like search tuning.
+- This benchmark now uses explicit `ef_search` values instead of a normalized sweep.
 """
 
 from __future__ import annotations
@@ -55,7 +55,6 @@ GT_FILENAME_RE = re.compile(r"msmarco-passages-(.+?)\.gt")
 SIZE_TOKEN_RE = re.compile(
     r"^\s*([0-9]*\.?[0-9]+)\s*([kmgt]?)(?:i?b)?\s*$", re.IGNORECASE
 )
-HNSW_EF_NORMALIZATION = 0.5
 MILVUS_MEMORY_WEIGHTS = {
     "standalone": 0.70,
     "minio": 0.15,
@@ -334,21 +333,21 @@ def configure_reproducibility(seed: int) -> None:
         pass
 
 
-def parse_overqueries(raw: str) -> List[float]:
-    values: List[float] = []
+def parse_ef_search_values(raw: str) -> List[int]:
+    values: List[int] = []
     for part in raw.split(","):
         token = part.strip()
         if not token:
             continue
         try:
-            val = float(token)
+            val = int(token)
         except ValueError as exc:
-            raise SystemExit(f"Invalid overquery value: {token}") from exc
+            raise SystemExit(f"Invalid ef_search value: {token}") from exc
         if val <= 0:
-            raise SystemExit("overquery values must be positive")
+            raise SystemExit("ef_search values must be positive integers")
         values.append(val)
     if not values:
-        raise SystemExit("No overquery values provided")
+        raise SystemExit("No ef_search values provided")
     return values
 
 
@@ -560,7 +559,7 @@ def search_arcadedb(
     qids: List[int],
     gt_full: dict[int, List[int]],
     k: int,
-    overquery_factor: float,
+    ef_search: int,
     quantization: str,
 ) -> dict:
     latencies_ms: List[float] = []
@@ -586,8 +585,6 @@ def search_arcadedb(
 
         return None
 
-    effective_overquery = max(1, int(round(overquery_factor)))
-
     for q_idx, qid in enumerate(qids):
         qvec = queries[q_idx]
         start = time.perf_counter()
@@ -598,19 +595,17 @@ def search_arcadedb(
             qvec_literal = "[" + ", ".join(str(float(x)) for x in qvec.tolist()) + "]"
             rs = db.query(
                 "sql",
-                f"SELECT vectorNeighbors('{index_name}', {qvec_literal}, {int(k)}) as res",
+                f"SELECT vectorNeighbors('{index_name}', {qvec_literal}, {int(k)}, {int(ef_search)}) as res",
             ).to_list()
             neighbors = rs[0].get("res") if rs else []
             results = [(rec, 0.0) for rec in neighbors]
         elif quantization.upper() == "PRODUCT":
-            results = index.find_nearest_approximate(
-                qvec, k=k, overquery_factor=effective_overquery
-            )
+            results = index.find_nearest_approximate(qvec, k=k)
         else:
             results = index.find_nearest(
                 qvec,
                 k=k,
-                overquery_factor=effective_overquery,
+                ef_search=ef_search,
             )
 
         latencies_ms.append((time.perf_counter() - start) * 1000)
@@ -648,14 +643,12 @@ def search_faiss(
     qids: List[int],
     gt_full: dict[int, List[int]],
     k: int,
-    overquery_factor: float,
+    ef_search: int,
 ) -> dict:
     import faiss
 
     latencies_ms: List[float] = []
     recalls: List[float] = []
-
-    ef_search = overquery_to_ef_search(k, overquery_factor)
 
     hnsw = None
     if hasattr(index, "hnsw"):
@@ -701,7 +694,7 @@ def search_lancedb(
     qids: List[int],
     gt_full: dict[int, List[int]],
     k: int,
-    overquery_factor: float,
+    ef_search: int,
     build_config: dict,
 ) -> dict:
     latencies_ms: List[float] = []
@@ -712,14 +705,9 @@ def search_lancedb(
         lancedb_cfg = {}
 
     index_type = str(lancedb_cfg.get("index_type") or "IVF_HNSW_SQ").upper()
-    ef_search = overquery_to_ef_search(k, overquery_factor)
     nprobes = None
     if index_type.startswith("IVF_"):
-        nprobes = (
-            1
-            if int(lancedb_cfg.get("num_partitions") or 1) <= 1
-            else max(1, int(round(overquery_factor * 4)))
-        )
+        nprobes = 1 if int(lancedb_cfg.get("num_partitions") or 1) <= 1 else None
 
     applied_ef_search = None
     applied_nprobes = None
@@ -836,25 +824,17 @@ def vector_to_pg_literal(vec: np.ndarray) -> str:
     return "[" + ",".join(f"{float(x):.7g}" for x in vec.tolist()) + "]"
 
 
-def overquery_to_ef_search(k: int, overquery_factor: float) -> int:
-    return max(
-        int(k),
-        int(round(HNSW_EF_NORMALIZATION * k * overquery_factor)),
-    )
-
-
 def search_pgvector(
     conn,
     queries: np.ndarray,
     qids: List[int],
     gt_full: dict[int, List[int]],
     k: int,
-    overquery_factor: float,
+    ef_search: int,
 ) -> dict:
     latencies_ms: List[float] = []
     recalls: List[float] = []
 
-    ef_search = overquery_to_ef_search(k, overquery_factor)
     with conn.cursor() as cur:
         for q_idx, qid in enumerate(qids):
             start = time.perf_counter()
@@ -892,14 +872,13 @@ def search_qdrant(
     qids: List[int],
     gt_full: dict[int, List[int]],
     k: int,
-    overquery_factor: float,
+    ef_search: int,
 ) -> dict:
     from qdrant_client import models
 
     latencies_ms: List[float] = []
     recalls: List[float] = []
 
-    ef_search = overquery_to_ef_search(k, overquery_factor)
     for q_idx, qid in enumerate(qids):
         start = time.perf_counter()
         response = client.query_points(
@@ -1056,7 +1035,7 @@ def search_milvus(
     qids: List[int],
     gt_full: dict[int, List[int]],
     k: int,
-    overquery_factor: float,
+    ef_search: int,
 ) -> dict:
     def is_transient_milvus_search_error(exc: Exception) -> bool:
         msg = str(exc).lower()
@@ -1072,7 +1051,6 @@ def search_milvus(
     latencies_ms: List[float] = []
     recalls: List[float] = []
 
-    ef_search = overquery_to_ef_search(k, overquery_factor)
     search_params = {
         "metric_type": "COSINE",
         "params": {"ef": int(ef_search)},
@@ -2136,7 +2114,6 @@ def collect_runtime_metadata(
         "runtime_versions": runtime_versions,
         "is_running_in_docker": is_running_in_docker(),
         "quantization": quantization,
-        "hnsw_ef_normalization": HNSW_EF_NORMALIZATION,
     }
 
 
@@ -2164,13 +2141,11 @@ def main() -> None:
         help="Path to existing benchmark output directory from Example 11",
     )
     parser.add_argument(
-        "--overquery-factors",
-        default="1,2,3,4,6,8",
+        "--ef-search-values",
+        default="50,75,100,150,200",
         help=(
-            "Sweep values. For arcadedb: overquery factors. "
-            "For faiss/pgvector/qdrant/milvus and LanceDB HNSW-like tuning: "
-            "ef_search = 0.5 * k * factor. "
-            "Default: 1,2,3,4,6,8"
+            "Comma-separated ef_search sweep values for exact-search backends. "
+            "Default: 50,75,100,150,200"
         ),
     )
     parser.add_argument("--k", type=int, default=50)
@@ -2241,10 +2216,12 @@ def main() -> None:
         args.run_label = args.run_label.strip().replace("/", "-").replace(" ", "_")
     if args.jvm_heap_fraction <= 0 or args.jvm_heap_fraction > 1:
         parser.error("--jvm-heap-fraction must be > 0 and <= 1")
-    args.qdrant_image = resolve_qdrant_image(args.qdrant_image)
-    args.milvus_compose_version = resolve_milvus_compose_version(
-        args.milvus_compose_version
-    )
+    if args.backend == "qdrant":
+        args.qdrant_image = resolve_qdrant_image(args.qdrant_image)
+    if args.backend == "milvus":
+        args.milvus_compose_version = resolve_milvus_compose_version(
+            args.milvus_compose_version
+        )
     if args.backend == "pgvector" and not args.docker_image:
         args.docker_image = resolve_latest_pgvector_image()
     configure_reproducibility(args.seed)
@@ -2264,7 +2241,9 @@ def main() -> None:
     run_start_perf = time.perf_counter()
     run_start_utc = datetime.now(timezone.utc).isoformat()
 
-    overqueries = parse_overqueries(args.overquery_factors)
+    ef_search_values = [
+        max(args.k, value) for value in parse_ef_search_values(args.ef_search_values)
+    ]
     db_path = Path(args.db_path).resolve()
     if not db_path.exists():
         raise SystemExit(f"DB path not found: {db_path}")
@@ -2316,9 +2295,9 @@ def main() -> None:
             jvm_kwargs["jvm_args"] = args.jvm_args
 
         try:
-            for overquery in overqueries:
+            for ef_search in ef_search_values:
                 print("\n" + "-" * 80)
-                print(f"Overquery factor: {overquery}")
+                print(f"ef_search: {ef_search}")
                 print("-" * 80)
 
                 phases: List[dict] = []
@@ -2338,7 +2317,7 @@ def main() -> None:
                             run_qids,
                             gt_full,
                             k=args.k,
-                            overquery_factor=overquery,
+                            ef_search=ef_search,
                             quantization=quantization,
                         ),
                         queries=queries,
@@ -2355,11 +2334,7 @@ def main() -> None:
 
                 sweeps.append(
                     {
-                        "overquery_factor": overquery,
-                        "effective_overquery_factor": max(
-                            1,
-                            int(round(overquery)),
-                        ),
+                        "ef_search": ef_search,
                         "phases": phases,
                         "recall_mean": stats.get("recall_mean"),
                         "recall_count": stats.get("recall_count"),
@@ -2387,12 +2362,9 @@ def main() -> None:
 
         stop_cpu = start_cpu_logger(2)
         try:
-            for overquery in overqueries:
+            for ef_search in ef_search_values:
                 print("\n" + "-" * 80)
-                print(f"Overquery factor: {overquery}")
-                print(
-                    f"Effective ef_search: {overquery_to_ef_search(args.k, overquery)}"
-                )
+                print(f"ef_search: {ef_search}")
                 print("-" * 80)
 
                 phases: List[dict] = []
@@ -2412,7 +2384,7 @@ def main() -> None:
                             run_qids,
                             gt_full,
                             k=args.k,
-                            overquery_factor=overquery,
+                            ef_search=ef_search,
                         ),
                         queries=queries,
                         qids=qids,
@@ -2428,11 +2400,7 @@ def main() -> None:
 
                 sweeps.append(
                     {
-                        "overquery_factor": overquery,
-                        "effective_ef_search": overquery_to_ef_search(
-                            args.k,
-                            overquery,
-                        ),
+                        "ef_search": ef_search,
                         "phases": phases,
                         "recall_mean": stats.get("recall_mean"),
                         "recall_count": stats.get("recall_count"),
@@ -2462,9 +2430,9 @@ def main() -> None:
         table_name = "vectordata"
         stop_cpu = start_cpu_logger(2)
         try:
-            for overquery in overqueries:
+            for ef_search in ef_search_values:
                 print("\n" + "-" * 80)
-                print(f"Overquery factor: {overquery}")
+                print(f"ef_search: {ef_search}")
                 print("-" * 80)
 
                 phases: List[dict] = []
@@ -2484,7 +2452,7 @@ def main() -> None:
                             run_qids,
                             gt_full,
                             k=args.k,
-                            overquery_factor=overquery,
+                            ef_search=ef_search,
                             build_config=build_config,
                         ),
                         queries=queries,
@@ -2505,7 +2473,7 @@ def main() -> None:
 
                 sweeps.append(
                     {
-                        "overquery_factor": overquery,
+                        "ef_search": ef_search,
                         "effective_ef_search": stats.get("effective_ef_search"),
                         "effective_nprobes": stats.get("effective_nprobes"),
                         "phases": phases,
@@ -2530,9 +2498,9 @@ def main() -> None:
     elif args.backend == "bruteforce":
         stop_cpu = start_cpu_logger(2)
         try:
-            for overquery in overqueries:
+            for ef_search in ef_search_values:
                 print("\n" + "-" * 80)
-                print(f"Overquery factor: {overquery}")
+                print(f"ef_search: {ef_search}")
                 print("-" * 80)
 
                 phases: List[dict] = []
@@ -2567,8 +2535,7 @@ def main() -> None:
 
                 sweeps.append(
                     {
-                        "overquery_factor": overquery,
-                        "effective_overquery_factor": 1,
+                        "ef_search": ef_search,
                         "phases": phases,
                         "recall_mean": stats.get("recall_mean"),
                         "recall_count": stats.get("recall_count"),
@@ -2614,12 +2581,9 @@ def main() -> None:
         stop_cpu = start_cpu_logger(2, rss_provider=rss_provider)
 
         try:
-            for overquery in overqueries:
+            for ef_search in ef_search_values:
                 print("\n" + "-" * 80)
-                print(f"Overquery factor: {overquery}")
-                print(
-                    f"Effective ef_search: {overquery_to_ef_search(args.k, overquery)}"
-                )
+                print(f"ef_search: {ef_search}")
                 print("-" * 80)
 
                 phases: List[dict] = []
@@ -2647,7 +2611,7 @@ def main() -> None:
                                 qids=run_qids,
                                 gt_full=gt_full,
                                 k=args.k,
-                                overquery_factor=overquery,
+                                ef_search=ef_search,
                             ),
                             queries=queries,
                             qids=qids,
@@ -2668,11 +2632,7 @@ def main() -> None:
 
                 sweeps.append(
                     {
-                        "overquery_factor": overquery,
-                        "effective_ef_search": overquery_to_ef_search(
-                            args.k,
-                            overquery,
-                        ),
+                        "ef_search": ef_search,
                         "phases": phases,
                         "recall_mean": stats.get("recall_mean"),
                         "recall_count": stats.get("recall_count"),
@@ -2725,12 +2685,9 @@ def main() -> None:
         alias = "milvus-bench-search"
 
         try:
-            for overquery in overqueries:
+            for ef_search in ef_search_values:
                 print("\n" + "-" * 80)
-                print(f"Overquery factor: {overquery}")
-                print(
-                    f"Effective ef_search: {overquery_to_ef_search(args.k, overquery)}"
-                )
+                print(f"ef_search: {ef_search}")
                 print("-" * 80)
 
                 phases: List[dict] = []
@@ -2759,7 +2716,7 @@ def main() -> None:
                                 run_qids,
                                 gt_full,
                                 k=args.k,
-                                overquery_factor=overquery,
+                                ef_search=ef_search,
                             ),
                             queries=queries,
                             qids=qids,
@@ -2780,11 +2737,7 @@ def main() -> None:
 
                 sweeps.append(
                     {
-                        "overquery_factor": overquery,
-                        "effective_ef_search": overquery_to_ef_search(
-                            args.k,
-                            overquery,
-                        ),
+                        "ef_search": ef_search,
                         "phases": phases,
                         "recall_mean": stats.get("recall_mean"),
                         "recall_count": stats.get("recall_count"),
@@ -2824,12 +2777,9 @@ def main() -> None:
         stop_cpu = start_cpu_logger(2, rss_provider=rss_provider)
 
         try:
-            for overquery in overqueries:
+            for ef_search in ef_search_values:
                 print("\n" + "-" * 80)
-                print(f"Overquery factor: {overquery}")
-                print(
-                    f"Effective ef_search: {overquery_to_ef_search(args.k, overquery)}"
-                )
+                print(f"ef_search: {ef_search}")
                 print("-" * 80)
 
                 phases: List[dict] = []
@@ -2858,7 +2808,7 @@ def main() -> None:
                                 run_qids,
                                 gt_full,
                                 k=args.k,
-                                overquery_factor=overquery,
+                                ef_search=ef_search,
                             ),
                             queries=queries,
                             qids=qids,
@@ -2879,11 +2829,7 @@ def main() -> None:
 
                 sweeps.append(
                     {
-                        "overquery_factor": overquery,
-                        "effective_ef_search": overquery_to_ef_search(
-                            args.k,
-                            overquery,
-                        ),
+                        "ef_search": ef_search,
                         "phases": phases,
                         "recall_mean": stats.get("recall_mean"),
                         "recall_count": stats.get("recall_count"),
@@ -2977,35 +2923,7 @@ def main() -> None:
             "query_order": args.query_order,
             "seed": args.seed,
             "run_label": args.run_label,
-            "overquery_factors": overqueries,
-            "hnsw_ef_search_mapping": [
-                {
-                    "factor": factor,
-                    "effective_ef_search": overquery_to_ef_search(args.k, factor),
-                }
-                for factor in overqueries
-            ],
-            "lancedb_search_mapping": (
-                [
-                    {
-                        "factor": factor,
-                        "effective_ef_search": overquery_to_ef_search(args.k, factor),
-                        "effective_nprobes": (
-                            1
-                            if str(
-                                ((build_config.get("lancedb") or {}).get("index_type"))
-                                or ""
-                            )
-                            .upper()
-                            .startswith("IVF_")
-                            else None
-                        ),
-                    }
-                    for factor in overqueries
-                ]
-                if args.backend == "lancedb"
-                else None
-            ),
+            "ef_search_values": ef_search_values,
             "sweeps": sweeps,
         },
         "peak_rss_mb": peak_rss_mb,
@@ -3111,7 +3029,7 @@ def main() -> None:
     print("\nResults")
     print("-" * 80)
     for sweep in sweeps:
-        oq = sweep["overquery_factor"]
+        ef_search = sweep["ef_search"]
         recall = sweep.get("recall_mean")
         lat = sweep.get("latency_ms_mean")
         p95 = sweep.get("latency_ms_p95")
@@ -3119,18 +3037,18 @@ def main() -> None:
         lat_text = f"{lat:.2f}" if lat is not None else "n/a"
         p95_text = f"{p95:.2f}" if p95 is not None else "n/a"
         if args.backend in {"pgvector", "qdrant", "milvus", "faiss", "lancedb"}:
-            ef_text = str(sweep.get("effective_ef_search"))
+            ef_text = str(sweep.get("effective_ef_search", ef_search))
             extra = ""
             if args.backend == "lancedb" and sweep.get("effective_nprobes") is not None:
                 extra = f" | nprobes={sweep.get('effective_nprobes')}"
             print(
-                f"factor={oq:>4} | ef_search={ef_text}{extra} | "
+                f"ef_search={ef_text}{extra} | "
                 f"recall@{args.k}={recall_text} | latency_mean_ms={lat_text} | "
                 f"latency_p95_ms={p95_text}"
             )
         else:
             print(
-                f"oq={oq:>4} | recall@{args.k}={recall_text} | "
+                f"ef_search={ef_search:>4} | recall@{args.k}={recall_text} | "
                 f"latency_mean_ms={lat_text} | latency_p95_ms={p95_text}"
             )
     if peak_rss_mb is not None:

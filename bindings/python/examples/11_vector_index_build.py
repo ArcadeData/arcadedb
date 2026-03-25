@@ -1931,10 +1931,12 @@ def main() -> None:
         args.run_label = args.run_label.strip().replace("/", "-").replace(" ", "_")
     if args.jvm_heap_fraction <= 0 or args.jvm_heap_fraction > 1:
         parser.error("--jvm-heap-fraction must be > 0 and <= 1")
-    args.qdrant_image = resolve_qdrant_image(args.qdrant_image)
-    args.milvus_compose_version = resolve_milvus_compose_version(
-        args.milvus_compose_version
-    )
+    if args.backend == "qdrant":
+        args.qdrant_image = resolve_qdrant_image(args.qdrant_image)
+    if args.backend == "milvus":
+        args.milvus_compose_version = resolve_milvus_compose_version(
+            args.milvus_compose_version
+        )
     if args.backend == "pgvector" and args.docker_image == "python:3.12-slim":
         args.docker_image = resolve_latest_pgvector_image()
     configure_reproducibility(args.seed)

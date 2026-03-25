@@ -178,7 +178,11 @@ class TestLSMVectorIndex:
         test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index(
-            "Doc", "embedding", dimensions=3, quantization="PRODUCT"
+            "Doc",
+            "embedding",
+            dimensions=3,
+            quantization="PRODUCT",
+            pq_clusters=3,
         )
 
         assert "TypeIndex" in index._java_index.getClass().getName()
@@ -200,9 +204,7 @@ class TestLSMVectorIndex:
         # Force PQ data to be built and available
         index.build_graph_now()
 
-        results = index.find_nearest_approximate(
-            [0.9, 0.1, 0.0], k=1, overquery_factor=2
-        )
+        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
 
         assert len(results) == 1
         vertex, _ = results[0]
@@ -215,7 +217,11 @@ class TestLSMVectorIndex:
         test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
         index = test_db.create_vector_index(
-            "Doc", "embedding", dimensions=3, quantization="PRODUCT"
+            "Doc",
+            "embedding",
+            dimensions=3,
+            quantization="PRODUCT",
+            pq_clusters=2,
         )
 
         if "TypeIndex" not in index._java_index.getClass().getName():
@@ -236,9 +242,7 @@ class TestLSMVectorIndex:
 
         index.build_graph_now()
 
-        results = index.find_nearest_approximate(
-            [0.9, 0.1, 0.0], k=1, overquery_factor=3
-        )
+        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
         assert len(results) == 1
         vertex, _ = results[0]
         res_embedding = arcadedb.to_python_array(vertex.get("embedding"))
@@ -268,10 +272,32 @@ class TestLSMVectorIndex:
         index.build_graph_now()
 
         with pytest.raises(arcadedb.ArcadeDBError):
-            index.find_nearest_approximate([0.9, 0.1, 0.0], k=1, overquery_factor=2)
+            index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
 
-    def test_lsm_vector_search_approximate_overquery(self, test_db):
-        """Approximate search should over-query then truncate to k."""
+    def test_lsm_vector_search_approximate_product_requires_enough_vectors(
+        self, test_db
+    ):
+        """PRODUCT quantization should fail early on tiny corpora."""
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+
+        index = test_db.create_vector_index(
+            "Doc", "embedding", dimensions=3, quantization="PRODUCT"
+        )
+
+        with test_db.transaction():
+            for vec in ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]):
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
+
+        with pytest.raises(arcadedb.ArcadeDBError, match="pq_clusters"):
+            index.build_graph_now()
+
+    def test_lsm_vector_search_approximate_returns_k(self, test_db):
+        """Approximate search should return exactly k results."""
         test_db.command("sql", "CREATE VERTEX TYPE Doc")
         test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
@@ -309,11 +335,7 @@ class TestLSMVectorIndex:
 
         query = [0.9, 0.1, 0.0]
         k = 2
-        overquery_factor = 3
-
-        results = index.find_nearest_approximate(
-            query, k=k, overquery_factor=overquery_factor
-        )
+        results = index.find_nearest_approximate(query, k=k)
 
         assert len(results) == k
         for vertex, distance in results:
@@ -552,8 +574,8 @@ class TestLSMVectorIndex:
                     f"Deleted indices: {sorted(list(deleted_indices))}"
                 )
 
-    def test_lsm_vector_search_overquery(self, test_db):
-        """Test searching in vector index with overquery_factor."""
+    def test_lsm_vector_search_ef_search(self, test_db):
+        """Test searching in vector index with explicit ef_search."""
         # Create schema and index
         test_db.command("sql", "CREATE VERTEX TYPE Doc")
         test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
@@ -577,14 +599,12 @@ class TestLSMVectorIndex:
                     arcadedb.to_java_float_array(v),
                 )
 
-        # Search with overquery_factor
+        # Search with explicit ef_search
         query = [0.9, 0.1, 0.0]
         k = 2
-        overquery_factor = 2
+        ef_search = 32
 
-        # This should internally query for k * overquery_factor = 4 items
-        # but return only k = 2 items
-        results = index.find_nearest(query, k=k, overquery_factor=overquery_factor)
+        results = index.find_nearest(query, k=k, ef_search=ef_search)
 
         assert len(results) == k
 
@@ -592,6 +612,16 @@ class TestLSMVectorIndex:
         vertex, distance = results[0]
         res_embedding = arcadedb.to_python_array(vertex.get("embedding"))
         assert abs(res_embedding[0] - 1.0) < 0.001
+
+    def test_lsm_vector_search_rejects_invalid_ef_search(self, test_db):
+        """ef_search must be a positive integer when provided."""
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+
+        index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
+
+        with pytest.raises(arcadedb.ArcadeDBError, match="ef_search"):
+            index.find_nearest([0.9, 0.1, 0.0], k=1, ef_search=0)
 
     def test_get_vector_index_lsm(self, test_db):
         """Test retrieving an existing vector index via SQL schema metadata."""
