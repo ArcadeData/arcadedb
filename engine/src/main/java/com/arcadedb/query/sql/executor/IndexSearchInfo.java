@@ -27,10 +27,17 @@ public class IndexSearchInfo {
   private final boolean        indexByValue;
   private final boolean        indexByItem;
   private final boolean        supportNull;
+  private final boolean        caseInsensitive;
 
   public IndexSearchInfo(final String indexField, final boolean allowsRangeQueries, final boolean map, final boolean indexByKey,
       final boolean indexByValue, final boolean indexByItem,
       final boolean supportNull, final CommandContext context) {
+    this(indexField, allowsRangeQueries, map, indexByKey, indexByValue, indexByItem, supportNull, false, context);
+  }
+
+  public IndexSearchInfo(final String indexField, final boolean allowsRangeQueries, final boolean map, final boolean indexByKey,
+      final boolean indexByValue, final boolean indexByItem,
+      final boolean supportNull, final boolean caseInsensitive, final CommandContext context) {
     this.field = indexField;
     this.allowsRangeQueries = allowsRangeQueries;
     this.map = map;
@@ -39,6 +46,7 @@ public class IndexSearchInfo {
     this.indexByValue = indexByValue;
     this.indexByItem = indexByItem;
     this.supportNull = supportNull;
+    this.caseInsensitive = caseInsensitive;
   }
 
   public String getField() {
@@ -71,5 +79,9 @@ public class IndexSearchInfo {
 
   public boolean isSupportNull() {
     return supportNull;
+  }
+
+  public boolean isCaseInsensitive() {
+    return caseInsensitive;
   }
 }

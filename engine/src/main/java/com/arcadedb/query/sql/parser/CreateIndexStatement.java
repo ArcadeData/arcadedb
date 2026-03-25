@@ -156,6 +156,12 @@ public class CreateIndexStatement extends DDLStatement {
     builder.withUnique(unique);
     builder.withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE);
     builder.withNullStrategy(nullStrategy);
+
+    // Pass collation settings (e.g., CI for case-insensitive)
+    final List<String> collations = new ArrayList<>();
+    for (final Property prop : propertyList)
+      collations.add(prop.collate != null ? prop.collate.getStringValue().toUpperCase() : "DEFAULT");
+    builder.withCollations(collations);
     builder.withCallback((document, totalIndexed) -> {
       total.incrementAndGet();
       if (totalIndexed % 100000 == 0) {

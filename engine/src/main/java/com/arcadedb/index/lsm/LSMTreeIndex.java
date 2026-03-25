@@ -49,6 +49,7 @@ import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
@@ -62,6 +63,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -154,6 +156,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public void setMetadata(final IndexMetadata metadata) {
     checkIsValid();
     this.metadata = metadata;
+    updateCaseInsensitiveKeys();
   }
 
   @Override
@@ -173,6 +176,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       for (int i = 0; i < jsonArray.length(); i++)
         metadata.propertyNames.add(jsonArray.getString(i));
     }
+    final JSONArray collationsJSON = indexJSON.getJSONArray("collations", null);
+    if (collationsJSON != null)
+      metadata.collations = collationsJSON.toListOfStrings();
+
+    updateCaseInsensitiveKeys();
   }
 
   @Override
@@ -295,6 +303,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
+    if (metadata.hasAnyCaseInsensitive())
+      json.put("collations", metadata.collations);
     return json;
   }
 
@@ -733,15 +743,33 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private Object[] convertKeys(final Object[] keys) {
     if (keys != null) {
       final byte[] keyTypes = mutable.binaryKeyTypes;
+      final boolean[] ciKeys = mutable.caseInsensitiveKeys;
       final Object[] convertedKeys = new Object[keys.length];
       for (int i = 0; i < keys.length; ++i) {
         if (keys[i] == null)
           continue;
         convertedKeys[i] = Type.convert(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+        // Apply case-insensitive collation
+        if (convertedKeys[i] instanceof String s && ciKeys != null && i < ciKeys.length && ciKeys[i])
+          convertedKeys[i] = s.toLowerCase(Locale.ROOT);
       }
       return convertedKeys;
     }
     return null;
+  }
+
+  /**
+   * Propagates CI collation flags from metadata to the mutable (and compacted) index's boolean array.
+   */
+  private void updateCaseInsensitiveKeys() {
+    if (metadata != null && metadata.hasAnyCaseInsensitive()) {
+      final boolean[] flags = new boolean[metadata.propertyNames.size()];
+      for (int i = 0; i < flags.length; i++)
+        flags[i] = metadata.isCaseInsensitive(i);
+      mutable.caseInsensitiveKeys = flags;
+      if (mutable.getSubIndex() != null)
+        mutable.getSubIndex().caseInsensitiveKeys = flags;
+    }
   }
 
   private void checkIsValid() {

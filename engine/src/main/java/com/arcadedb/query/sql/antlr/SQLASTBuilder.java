@@ -5385,7 +5385,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Index properties
     for (final SQLParser.IndexPropertyContext propCtx : bodyCtx.indexProperty()) {
       final CreateIndexStatement.Property prop = new CreateIndexStatement.Property();
-      prop.name = (Identifier) visit(propCtx.identifier());
+      prop.name = (Identifier) visit(propCtx.identifier(0));
 
       // Handle BY KEY/VALUE/ITEM syntax
       if (propCtx.BY() != null) {
@@ -5396,6 +5396,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         } else if (propCtx.ITEM() != null) {
           prop.byItem = true;
         }
+      }
+
+      // Handle COLLATE CI syntax
+      if (propCtx.COLLATE() != null) {
+        final List<SQLParser.IdentifierContext> identifiers = propCtx.identifier();
+        // First identifier is the property name, second (if COLLATE is present) is the collation
+        if (identifiers.size() > 1)
+          prop.collate = (Identifier) visit(identifiers.get(1));
       }
 
       stmt.propertyList.add(prop);

@@ -225,6 +225,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         metadata);
   }
 
+  public TypeIndexBuilder withCollations(final List<String> collations) {
+    metadata.collations = collations;
+    return this;
+  }
+
   public String getTypeName() {
     return metadata.typeName;
   }

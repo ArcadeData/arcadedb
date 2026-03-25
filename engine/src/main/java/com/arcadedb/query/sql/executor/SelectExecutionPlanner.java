@@ -25,8 +25,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
 import com.arcadedb.query.sql.parser.AndBlock;
@@ -3148,9 +3150,10 @@ public class SelectExecutionPlanner {
       }
 
       final boolean supportNull = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
+      final boolean ciCollation = isIndexCaseInsensitive(index, indexFields.indexOf(indexField));
       final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
           isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), supportNull,
-          context);
+          ciCollation, context);
       blockIterator = blockCopy.getSubBlocks().iterator();
       boolean indexFieldFound = false;
       boolean rangeOp = false;
@@ -3249,6 +3252,11 @@ public class SelectExecutionPlanner {
         return true;
     }
     return false;
+  }
+
+  private static boolean isIndexCaseInsensitive(final Index index, final int propertyIndex) {
+    final IndexMetadata metadata = ((IndexInternal) index).getMetadata();
+    return metadata != null && metadata.isCaseInsensitive(propertyIndex);
   }
 
   /**
