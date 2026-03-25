@@ -998,6 +998,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param graphCallback Optional callback for graph build progress
    */
   private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback) {
+    // Reset live builder — full rebuild creates a new graph with different ordinal mapping
+    if (liveBuilder != null) {
+      try {
+        liveBuilder.close();
+      } catch (final Exception ignored) {
+      }
+      liveBuilder = null;
+      liveVectorValues = null;
+    }
+
     // Snapshot the next vector ID so we know which delta entries were included in this build
     final int deltaSnapshotId = nextId.get();
     // Snapshot mutation counter so we only subtract mutations present at build start (not concurrent ones)
@@ -1657,6 +1667,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Build ordinal-to-vectorId mapping from current vectorIndex.
    * For incremental builds, ordinals ARE vectorIds (identity mapping for non-deleted entries).
    */
+  /**
+   * Build identity ordinal mapping for live builder: ordinal[i] = i for each active vectorId.
+   * The live builder uses vectorIds as graph ordinals directly (no remapping).
+   */
+  private int[] buildLiveOrdinalMapping() {
+    final int maxId = vectorIndex.getMaxVectorId();
+    final int[] mapping = new int[maxId + 1];
+    for (int i = 0; i <= maxId; i++)
+      mapping[i] = i;
+    return mapping;
+  }
+
   private int[] buildOrdinalMapping() {
     return vectorIndex.getAllVectorIds().filter(id -> {
       final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
@@ -2699,6 +2721,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final int vectorId = ordinalToVectorId[ordinal];
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
             if (loc != null && !loc.deleted) {
+              // Post-filter by allowed RIDs (JVector may include entry node despite Bits filter)
+              if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
+                continue;
+
               // JVector returns similarity scores - convert to distance based on similarity function
               // Note: JVector's COSINE returns (1 + cos(a,b)) / 2 mapped to [0, 1]
               final float score = nodeScore.score;
@@ -3089,18 +3115,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           if (liveBuilder != null) {
             liveVectorValues.addVector(id, vf);
-            // Only add to graph if not already present (handles transaction replays and rollback scenarios)
+            // Add to live builder's graph (O(log n) HNSW insert)
             if (!liveBuilder.getGraph().containsNode(id))
               liveBuilder.addGraphNode(id, vf);
-            this.graphIndex = liveBuilder.getGraph();
-            this.ordinalToVectorId = buildOrdinalMapping();
-          } else {
-            // No live builder yet — fall back to delta buffer (will be merged on first search)
-            deltaVectors.add(new DeltaVectorEntry(id, rid, vector));
-
-            if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING)
-              this.graphState = GraphState.MUTABLE;
           }
+
+          // Add to delta buffer so the vector is visible in search via mergeWithDeltaScan.
+          // The live builder's graph will replace the batch-built graph on next full rebuild.
+          deltaVectors.add(new DeltaVectorEntry(id, rid, vector));
+
+          if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING)
+            this.graphState = GraphState.MUTABLE;
 
           // Increment mutation counter (used for periodic graph persistence)
           mutationsSinceSerialize.incrementAndGet();
