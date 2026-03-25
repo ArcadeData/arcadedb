@@ -11,10 +11,10 @@ loads them into separate ArcadeDB databases using:
 
 Goal: compare graph ingest speed for equivalent synthetic data shape.
 
-Observed benchmark result (2026-03-19):
+Observed benchmark result (2026-03-24):
 For:
-- vertices=2,000,000
-- edges=2,000,000
+- vertices=5,000,000
+- edges=5,000,000
 - vertex-int-props=10
 - vertex-str-props=10
 - edge-int-props=10
@@ -24,13 +24,15 @@ For:
 - heap-size=8g
 
 Measured ingest times:
-- Transactional (`single-threaded`): 253.615s
-- GraphBatch (`single-threaded`, `--parallel 1`): 177.150s
-- GraphBatch (`4 threads`, `--parallel 4`): 187.681s
-- GraphBatch (`8 threads`, `--parallel 8`): 134.836s
-- Async SQL (`single-threaded`, `--async-parallel 1`): 230.192s
-- IMPORT DATABASE (`single-threaded`, `--parallel 1`): 444.357s
-- IMPORT DATABASE (`4 threads`, `--parallel 4`): 336.206s
+- Transactional (`single-threaded`, `1 thread`): 575.078s
+- Async SQL (`single-threaded`, `--async-parallel 1`): 701.080s
+- GraphBatch (`single-threaded`, `--parallel 1`): 507.983s
+- GraphBatch (`4 threads`, `--parallel 4`): 359.672s
+- IMPORT DATABASE (`single-threaded`, `--parallel 1`): 453.481s
+- IMPORT DATABASE (`4 threads`, `--parallel 4`): 275.325s
+
+Logical parity:
+- All four methods produced the same final graph output
 
 Known limitation:
 Current `IMPORT DATABASE` behavior can vary by import path and data shape. In some

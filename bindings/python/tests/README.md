@@ -7,7 +7,7 @@ For detailed test documentation, examples, and best practices, see the **[Testin
 ## Quick Stats
 
 - **27 test files** in the current suite
-- ✅ **Current package**: 277 passed
+- ✅ **Current package**: 279 passed
 - Package includes all ArcadeDB features (SQL, OpenCypher, Studio)
 
 ## Running Tests
@@ -39,7 +39,7 @@ pytest -k "transaction" -v
 | `test_server_patterns.py` | 6 | Embedded, server-managed, HTTP performance |
 | `test_import_database.py` | 13 | SQL `IMPORT DATABASE`, CSV/XML/Neo4j and restore flows |
 | `test_docs_examples.py` | 7 grouped tests | Validates runnable Python snippets from installation, quickstart, query, and graph docs |
-| `test_cypher.py` | 1 | OpenCypher query language |
+| `test_cypher.py` | 18 | OpenCypher query language, path modes, and planner regressions |
 
 ## Documentation Links
 

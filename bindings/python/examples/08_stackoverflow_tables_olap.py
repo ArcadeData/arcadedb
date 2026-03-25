@@ -627,10 +627,11 @@ def configure_arcadedb_async_loader(db, batch_size: int, parallelism: int = 1):
     return async_exec
 
 
-def reset_arcadedb_async_loader(db):
-    db.async_executor().wait_completion()
+def reset_arcadedb_async_loader(db, async_exec):
+    async_exec.wait_completion()
+    async_exec.close()
     db.set_read_your_writes(True)
-    db.async_executor().set_transaction_use_wal(True)
+    async_exec.set_transaction_use_wal(True)
 
 
 def sqlite_type(field_type: str) -> str:
@@ -1587,7 +1588,7 @@ def run_olap_arcadedb(
             print(f"     {count:,} rows in {elapsed:.2f}s")
         load_total = time.time() - load_start
     finally:
-        reset_arcadedb_async_loader(db)
+        reset_arcadedb_async_loader(db, async_exec)
 
     load_counts_start = time.time()
     table_counts_after_load = count_table_rows_arcadedb(db)

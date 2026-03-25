@@ -300,7 +300,9 @@ class VertexCreator:
     def _create_users(self, total_users: int) -> tuple[int, BenchmarkStats]:
         """Create User vertices.
 
-        Note: Uses SELECT DISTINCT (not paginated - efficient pagination difficult)
+        Note: Uses a DISTINCT subquery. The direct DISTINCT/ORDER BY form can
+        resolve against the wrong database context when the target graph DB is
+        open at the same time as the source document DB.
         """
         print(f"Creating {total_users:,} User vertices...")
         stats = BenchmarkStats()
@@ -317,7 +319,10 @@ class VertexCreator:
             with arcadedb.open_database(
                 str(self.data_loader.source_db_path)
             ) as source_db:
-                query = "SELECT DISTINCT userId FROM Rating ORDER BY userId"
+                query = (
+                    "SELECT userId FROM (SELECT DISTINCT userId FROM Rating) "
+                    "ORDER BY userId"
+                )
                 for record in source_db.query("sql", query):
                     user_id = record.get("userId")
                     async_exec.command(
@@ -344,7 +349,10 @@ class VertexCreator:
             with arcadedb.open_database(
                 str(self.data_loader.source_db_path)
             ) as source_db:
-                query = "SELECT DISTINCT userId FROM Rating ORDER BY userId"
+                query = (
+                    "SELECT userId FROM (SELECT DISTINCT userId FROM Rating) "
+                    "ORDER BY userId"
+                )
                 batch_user_ids = []
 
                 for record in source_db.query("sql", query):
@@ -380,7 +388,10 @@ class VertexCreator:
             with arcadedb.open_database(
                 str(self.data_loader.source_db_path)
             ) as source_db:
-                query = "SELECT DISTINCT userId FROM Rating ORDER BY userId"
+                query = (
+                    "SELECT userId FROM (SELECT DISTINCT userId FROM Rating) "
+                    "ORDER BY userId"
+                )
                 batch_user_ids = []
 
                 for record in source_db.query("sql", query):
@@ -1406,8 +1417,8 @@ def create_schema(db: Any, create_indexes: bool = True):
     schema_commands = [
         "CREATE VERTEX TYPE User",
         "CREATE VERTEX TYPE Movie",
-        "CREATE EDGE TYPE RATED UNIDIRECTIONAL",
-        "CREATE EDGE TYPE TAGGED UNIDIRECTIONAL",
+        "CREATE EDGE TYPE RATED",
+        "CREATE EDGE TYPE TAGGED",
         "CREATE PROPERTY User.userId INTEGER",
         "CREATE PROPERTY Movie.movieId INTEGER",
         "CREATE PROPERTY Movie.title STRING",
@@ -2389,6 +2400,8 @@ def main():
         print("❌ Step 5: Some validations or queries failed!")
     print()
 
+    validation_passed = validation_passed_before
+
     # Step 6: Export Database (Optional)
     export_filename = None
     export_time = 0.0
@@ -2555,6 +2568,7 @@ def main():
 
             except Exception as e:
                 print(f"   ❌ Roundtrip validation failed: {e}")
+                validation_passed = False
                 print()
                 # Try to clean up if exists
                 if roundtrip_db_path.exists():

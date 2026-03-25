@@ -39,6 +39,21 @@ def _seed_graph(db) -> None:
         )
 
 
+def _seed_path_mode_graph(db) -> None:
+    db.command("sql", "CREATE VERTEX TYPE Node")
+    db.command("sql", "CREATE EDGE TYPE LINK")
+
+    with db.transaction():
+        db.command(
+            "opencypher",
+            "CREATE (a:Node {name: 'A'})-[:LINK]->(b:Node {name: 'B'})"
+            "-[:LINK]->(c:Node {name: 'C'})"
+            "-[:LINK]->(d:Node {name: 'D'})"
+            "-[:LINK]->(a),"
+            "(a)-[:LINK]->(e:Node {name: 'E'})",
+        )
+
+
 def test_opencypher_basic_match(temp_db_path):
     """Test basic OpenCypher MATCH/WHERE."""
     with arcadedb.create_database(temp_db_path) as db:
@@ -87,19 +102,108 @@ def test_opencypher_variable_length_path(temp_db_path):
         assert names == ["Bob", "Charlie", "David"]
 
 
+def test_opencypher_trail_is_default_path_mode(temp_db_path):
+    """Test that TRAIL remains the default path mode for variable-length traversals."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        _seed_path_mode_graph(db)
+
+        trail_names = [
+            record.get("name")
+            for record in db.query(
+                "opencypher",
+                "MATCH TRAIL (a:Node {name: 'A'})-[:LINK*1..5]->(b) "
+                "RETURN b.name AS name",
+            )
+        ]
+        default_names = [
+            record.get("name")
+            for record in db.query(
+                "opencypher",
+                "MATCH (a:Node {name: 'A'})-[:LINK*1..5]->(b) " "RETURN b.name AS name",
+            )
+        ]
+
+        assert len(default_names) == len(trail_names)
+        assert "A" in trail_names
+
+
+def test_opencypher_acyclic_blocks_vertex_revisit(temp_db_path):
+    """Test that ACYCLIC traversal does not revisit vertices on a cycle."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        _seed_path_mode_graph(db)
+
+        names = [
+            record.get("name")
+            for record in db.query(
+                "opencypher",
+                "MATCH ACYCLIC (a:Node {name: 'A'})-[:LINK*1..5]->(b) "
+                "RETURN b.name AS name",
+            )
+        ]
+
+        assert "A" not in names
+        assert {"B", "C", "D", "E"}.issubset(set(names))
+
+
+def test_opencypher_walk_produces_more_results_than_trail(temp_db_path):
+    """Test that WALK allows more variable-length matches than TRAIL on a cycle."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        _seed_path_mode_graph(db)
+
+        walk_count = len(
+            list(
+                db.query(
+                    "opencypher",
+                    "MATCH WALK (a:Node {name: 'A'})-[:LINK*1..6]->(b) RETURN b",
+                )
+            )
+        )
+        trail_count = len(
+            list(
+                db.query(
+                    "opencypher",
+                    "MATCH TRAIL (a:Node {name: 'A'})-[:LINK*1..6]->(b) RETURN b",
+                )
+            )
+        )
+
+        assert walk_count > trail_count
+
+
+def test_opencypher_walk_requires_max_hops(temp_db_path):
+    """Test that WALK requires an explicit maximum hop bound."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        _seed_path_mode_graph(db)
+
+        with pytest.raises(Exception, match="WALK"):
+            list(
+                db.query(
+                    "opencypher",
+                    "MATCH WALK (a:Node {name: 'A'})-[:LINK*]->(b) RETURN b",
+                )
+            )
+
+
 def test_opencypher_aggregation(temp_db_path):
     """Test aggregation and ordering."""
     with arcadedb.create_database(temp_db_path) as db:
         _ensure_opencypher(db)
         _seed_graph(db)
 
-        result = db.query(
-            "opencypher",
-            "MATCH (p:Person)-[:WORKS_FOR]->(c:Company) "
-            "WITH c, count(p) as employees "
-            "RETURN c.name as company, employees ORDER BY employees DESC",
+        rows = list(
+            db.query(
+                "opencypher",
+                "MATCH (p:Person)-[:WORKS_FOR]->(c:Company) "
+                "WITH c, count(p) as employees "
+                "RETURN c.name as company, employees ORDER BY employees DESC",
+            )
         )
-        row = next(result)
+
+        row = rows[0]
 
         assert row.get("company") == "Acme"
         assert row.get("employees") == 2
