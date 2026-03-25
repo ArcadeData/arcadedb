@@ -239,4 +239,94 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
       }
     }
   }
+
+  @Test
+  void programmaticVectorSearchWithEfSearch() {
+    final SQLFunctionVectorNeighbors function = new SQLFunctionVectorNeighbors();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    // Search with low efSearch (faster, potentially lower recall)
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> resultsLow = (List<Map<String, Object>>) function.execute(null, null, null,
+        new Object[]{"Doc[embedding]", new float[]{1.0f, 0.0f, 0.0f}, 3, 10},
+        context);
+
+    assertThat(resultsLow).isNotNull().isNotEmpty();
+    assertThat(resultsLow.size()).isLessThanOrEqualTo(3);
+
+    // Search with high efSearch (slower, better recall)
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> resultsHigh = (List<Map<String, Object>>) function.execute(null, null, null,
+        new Object[]{"Doc[embedding]", new float[]{1.0f, 0.0f, 0.0f}, 3, 500},
+        context);
+
+    assertThat(resultsHigh).isNotNull().isNotEmpty();
+    assertThat(resultsHigh.size()).isLessThanOrEqualTo(3);
+
+    // Both should return valid results with distances
+    for (final Map<String, Object> result : resultsHigh) {
+      assertThat(result.get("distance")).isNotNull();
+      assertThat(result.get("record")).isNotNull();
+    }
+  }
+
+  @Test
+  void sqlVectorNeighborsWithEfSearch() {
+    // SQL query with efSearch parameter
+    final String query = "SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 3, 200) as neighbors";
+    try (ResultSet results = database.query("sql", query)) {
+      assertThat(results.hasNext()).isTrue();
+
+      var result = results.next();
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> neighbors = result.getProperty("neighbors");
+
+      assertThat(neighbors).isNotNull().isNotEmpty();
+      assertThat(neighbors.size()).isLessThanOrEqualTo(3);
+
+      // Verify results contain expected structure
+      for (final Map<String, Object> neighbor : neighbors) {
+        assertThat(neighbor.containsKey("distance")).isTrue();
+        assertThat(neighbor.containsKey("name")).isTrue();
+      }
+    }
+  }
+
+  @Test
+  void sqlVectorNeighborsWithoutEfSearchStillWorks() {
+    // Verify the 3-parameter form still works (backward compatibility)
+    final String query = "SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 3) as neighbors";
+    try (ResultSet results = database.query("sql", query)) {
+      assertThat(results.hasNext()).isTrue();
+
+      var result = results.next();
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> neighbors = result.getProperty("neighbors");
+
+      assertThat(neighbors).isNotNull().isNotEmpty();
+    }
+  }
+
+  @Test
+  void expandVectorNeighborsWithEfSearch() {
+    final String query = """
+        SELECT name, distance FROM (
+          SELECT expand(`vector.neighbors`('Doc[embedding]', [0.0, 0.0, 1.0], 3, 300))
+        )
+        """;
+
+    try (ResultSet results = database.query("sql", query)) {
+      assertThat(results.hasNext()).isTrue();
+
+      int count = 0;
+      while (results.hasNext()) {
+        final Result row = results.next();
+        assertThat((Object) row.getProperty("distance")).isNotNull();
+        assertThat((Object) row.getProperty("name")).isNotNull();
+        count++;
+      }
+      assertThat(count).isGreaterThan(0).isLessThanOrEqualTo(3);
+    }
+  }
 }

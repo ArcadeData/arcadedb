@@ -166,6 +166,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile Thread  asyncRebuildThread     = null;
   private volatile boolean asyncRebuildInProgress = false;
 
+  // Live incremental graph builder: inserts vectors one at a time via addGraphNode()
+  // instead of rebuilding the entire graph. The builder stays alive across put() calls.
+  // Search uses builder.getGraph() which is immediately searchable after each insert.
+  private volatile GraphIndexBuilder liveBuilder;
+  private volatile GrowableVectorValues liveVectorValues;
+
   // Delta vectors inserted since last graph build, cached in RAM for brute-force scan during search.
   // Writers (put/remove/rebuild) hold write lock; readers (search) take a volatile snapshot.
   private static final class DeltaVectorEntry {
@@ -871,16 +877,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // With INT8/BINARY quantization: verify we can read the quantized vector from pages
               try {
                 final float[] vector = readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
-                if (vector == null || vector.length != metadata.dimensions) {
-                  return false;
-                }
-                // Check not all zeros
-                for (float v : vector) {
-                  if (v != 0.0f) {
-                    return true;
-                  }
-                }
-                return false;  // All zeros
+                return vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
               } catch (final Exception e) {
                 return false;
               }
@@ -888,22 +885,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // Without quantization: validate by reading from document
               try {
                 final Record record = getDatabase().lookupByRID(loc.rid, false);
-                if (record == null) {
+                if (record == null)
                   return false;
-                }
                 final Document doc = (Document) record;
                 final Object vectorObj = doc.get(vectorProp);
                 final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
-                if (vector == null || vector.length != metadata.dimensions) {
-                  return false;
-                }
-                // Check not all zeros
-                for (float v : vector) {
-                  if (v != 0.0f) {
-                    return true;
-                  }
-                }
-                return false;  // All zeros
+                return vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
               } catch (final Exception e) {
                 return false;
               }
@@ -938,6 +925,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
             }
           }
+
           return;
         } catch (final Exception e) {
           LogManager.instance()
@@ -1052,7 +1040,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // CRITICAL FIX: Collect vectors DIRECTLY from pages instead of from vectorIndex.
     // This avoids race conditions where concurrent replication adds entries to vectorIndex
     // that don't yet exist on disk pages. We iterate pages and read what's actually persisted.
-    final Map<RID, VectorEntryForGraphBuild> ridToLatestVector = new HashMap<>();
+    final Map<RID, VectorEntryForGraphBuild> ridToLatestVector = new HashMap<>(Math.max(16, vectorIndex.size() * 4 / 3));
     final int[] totalEntriesRead = { 0 };
     final int[] filteredDeletedVectors = { 0 };
 
@@ -1135,9 +1123,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // CRITICAL FIX: Validate vectors before building graph to filter out deleted documents
       // When a document is deleted, getVector() returns null which breaks JVector index building
-      final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
-      final Map<Integer, VectorFloat<?>> preloadedVectors = new HashMap<>();
-      final List<Integer> validVectorIds = new ArrayList<>();
+      final int expectedSize = vectorIds.length;
+      final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>(expectedSize * 4 / 3 + 1);
+      final Map<Integer, VectorFloat<?>> preloadedVectors = new HashMap<>(expectedSize * 4 / 3 + 1);
+      final List<Integer> validVectorIds = new ArrayList<>(expectedSize);
       int skippedDeletedDocs = 0;
 
       // Progress tracking for validation phase
@@ -1169,15 +1158,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             try {
               final float[] vector = readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
               if (vector != null && vector.length == metadata.dimensions) {
-                // Validate vector is not all zeros
-                boolean hasNonZero = false;
-                for (float v : vector) {
-                  if (v != 0.0f) {
-                    hasNonZero = true;
-                    break;
-                  }
-                }
-                if (hasNonZero) {
+                if (!VectorUtils.isZeroVector(vector)) {
                   vectorLocationSnapshot.put(vectorId, loc);
                   validVectorIds.add(vectorId);
                   preloadedVectors.put(vectorId, vts.createFloatVector(vector));
@@ -1209,20 +1190,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
               final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
 
-              if (vector != null && vector.length == metadata.dimensions) {
-                // Validate vector is not all zeros (would cause NaN in cosine similarity)
-                boolean hasNonZero = false;
-                for (float v : vector) {
-                  if (v != 0.0f) {
-                    hasNonZero = true;
-                    break;
-                  }
-                }
-                if (hasNonZero) {
-                  vectorLocationSnapshot.put(vectorId, loc);
-                  validVectorIds.add(vectorId);
-                  preloadedVectors.put(vectorId, vts.createFloatVector(vector));
-                }
+              if (vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
+                vectorLocationSnapshot.put(vectorId, loc);
+                validVectorIds.add(vectorId);
+                preloadedVectors.put(vectorId, vts.createFloatVector(vector));
               }
 
             } catch (final RecordNotFoundException e) {
@@ -1299,9 +1270,55 @@ public class LSMVectorIndex implements Index, IndexInternal {
           .log(this, Level.INFO,
               "Building JVector graph index with " + vectors.size() + " vectors for index: " + indexName);
 
-      // Create BuildScoreProvider for index construction
-      final BuildScoreProvider scoreProvider = BuildScoreProvider.randomAccessScoreProvider(vectors,
-          metadata.similarityFunction);
+      // Create BuildScoreProvider for index construction.
+      // When PRODUCT quantization is enabled, use PQ-accelerated build: compute PQ first, then build graph
+      // using PQ scores (zero disk I/O during graph construction, ~10-50x faster).
+      final BuildScoreProvider scoreProvider;
+      PQVectors earlyPqVectors = null;
+      ProductQuantization earlyPq = null;
+
+      if (metadata.quantizationType == VectorQuantizationType.PRODUCT) {
+        LogManager.instance().log(this, Level.INFO,
+            "PQ-accelerated graph build: computing PQ codebooks before graph construction for index: %s", indexName);
+        final long pqStart = System.currentTimeMillis();
+
+        // Compute PQ subspaces
+        int pqSubspaces = metadata.pqSubspaces;
+        if (pqSubspaces <= 0) {
+          pqSubspaces = Math.min(metadata.dimensions / 4, 512);
+          pqSubspaces = Math.max(1, pqSubspaces);
+          while (metadata.dimensions % pqSubspaces != 0 && pqSubspaces > 1)
+            pqSubspaces--;
+        }
+        if (metadata.dimensions % pqSubspaces != 0) {
+          for (int m = pqSubspaces; m >= 1; m--) {
+            if (metadata.dimensions % m == 0) {
+              pqSubspaces = m;
+              break;
+            }
+          }
+        }
+
+        // Train PQ codebooks from pre-loaded vectors (all in cache, no disk I/O)
+        earlyPq = ProductQuantization.compute(vectors, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
+
+        // Encode all vectors
+        final MutablePQVectors mutablePqVectors = new MutablePQVectors(earlyPq);
+        for (int i = 0; i < vectors.size(); i++) {
+          final VectorFloat<?> vector = vectors.getVector(i);
+          if (vector != null)
+            mutablePqVectors.encodeAndSet(i, vector);
+        }
+        earlyPqVectors = mutablePqVectors;
+
+        LogManager.instance().log(this, Level.INFO,
+            "PQ computed in %d ms (%d vectors encoded, %d subspaces). Using PQ scores for graph build.",
+            System.currentTimeMillis() - pqStart, mutablePqVectors.count(), pqSubspaces);
+
+        scoreProvider = BuildScoreProvider.pqBuildScoreProvider(metadata.similarityFunction, earlyPqVectors);
+      } else {
+        scoreProvider = BuildScoreProvider.randomAccessScoreProvider(vectors, metadata.similarityFunction);
+      }
 
       // Build the graph index (parallel operation - no lock held)
       final ImmutableGraphIndex builtGraph;
@@ -1429,7 +1446,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         };
 
         try {
-          gf.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
+          gf.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback, earlyPq, earlyPqVectors);
 
           // Report persistence completion
           if (effectiveGraphCallback != null) {
@@ -1473,9 +1490,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
             }
           }
 
-          // Build and persist Product Quantization if PRODUCT quantization is enabled
+          // Persist Product Quantization if PRODUCT quantization is enabled
           if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null) {
-            buildAndPersistPQ(vectors);
+            if (earlyPq != null && earlyPqVectors != null) {
+              // PQ was already computed for accelerated graph build — just persist it
+              LogManager.instance().log(this, Level.INFO,
+                  "Persisting PQ computed during accelerated graph build for index: %s", indexName);
+              pqFile.writePQ(earlyPq, earlyPqVectors);
+              this.productQuantization = earlyPq;
+              this.pqVectors = earlyPqVectors;
+            } else {
+              buildAndPersistPQ(vectors);
+            }
           }
         } catch (final Exception e) {
           // Rollback on error
@@ -1624,6 +1650,79 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error building PQ for index %s: %s", indexName, e.getMessage());
       // Don't throw - PQ is optional, index can still work with exact search
+    }
+  }
+
+  /**
+   * Build ordinal-to-vectorId mapping from current vectorIndex.
+   * For incremental builds, ordinals ARE vectorIds (identity mapping for non-deleted entries).
+   */
+  private int[] buildOrdinalMapping() {
+    return vectorIndex.getAllVectorIds().filter(id -> {
+      final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
+      return loc != null && !loc.deleted;
+    }).sorted().toArray();
+  }
+
+  /**
+   * Initialize the live builder for incremental inserts.
+   * Uses lazy-loading GrowableVectorValues — existing vectors are loaded from disk
+   * on-demand during beam search, not pre-loaded. This makes initialization O(1)
+   * instead of O(n) where n is the number of existing vectors.
+   * <p>
+   * Caller MUST hold the write lock.
+   */
+  private void ensureLiveBuilder() {
+    if (liveBuilder != null)
+      return;
+
+    try {
+      final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
+          metadata.propertyNames.getFirst() : "vector";
+
+      // Create GrowableVectorValues with lazy disk fallback — vectors are loaded from
+      // ArcadeDB pages/documents on first access and cached in the ConcurrentHashMap.
+      // This avoids the O(n) pre-loading that was the bottleneck at 1M+ scale.
+      liveVectorValues = new GrowableVectorValues(
+          metadata.dimensions,
+          Math.max(1024, vectorIndex.size()),
+          vectorIndex,
+          this,
+          getDatabase(),
+          vectorProp
+      );
+
+      // Set the count to match existing vectors so size() reports correctly
+      final int maxId = vectorIndex.getMaxVectorId();
+      if (maxId >= 0) {
+        // Touch the max ID to set the count correctly (GrowableVectorValues tracks max ordinal)
+        liveVectorValues.addVector(maxId, liveVectorValues.getVector(maxId));
+      }
+
+      final BuildScoreProvider scoreProvider = BuildScoreProvider.randomAccessScoreProvider(liveVectorValues,
+          metadata.similarityFunction);
+
+      liveBuilder = new GraphIndexBuilder(
+          scoreProvider,
+          metadata.dimensions,
+          metadata.maxConnections,
+          metadata.beamWidth,
+          metadata.neighborOverflowFactor,
+          metadata.alphaDiversityRelaxation,
+          metadata.addHierarchy,
+          true // concurrent
+      );
+
+      LogManager.instance().log(this, Level.INFO,
+          "Live builder initialized (lazy-loading) for incremental inserts on index: %s (vectorIndex size=%d)",
+          indexName, vectorIndex.size());
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not initialize live builder for index %s: %s. Falling back to batch rebuild.",
+          indexName, e.getMessage());
+      liveBuilder = null;
+      liveVectorValues = null;
     }
   }
 
@@ -1926,10 +2025,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Write vector length
           bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, int8meta.quantized.length);
 
-          // Write quantized bytes
-          for (final byte b : int8meta.quantized) {
-            bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, b);
-          }
+          // Write quantized bytes (bulk array write for performance)
+          currentPage.writeByteArray(offsetFreeContent + bytesWritten, int8meta.quantized);
+          bytesWritten += int8meta.quantized.length;
 
           // Write min and max
           bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(int8meta.min));
@@ -1942,10 +2040,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Write original length
           bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, binmeta.originalLength);
 
-          // Write packed bytes
-          for (final byte b : binmeta.packed) {
-            bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, b);
-          }
+          // Write packed bytes (bulk array write for performance)
+          currentPage.writeByteArray(offsetFreeContent + bytesWritten, binmeta.packed);
+          bytesWritten += binmeta.packed.length;
 
           // Write median
           bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(binmeta.median));
@@ -2309,12 +2406,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final int vectorLength = page.readInt(pos);
           pos += 4;
 
-          // Read quantized bytes
+          // Read quantized bytes (bulk array read for performance)
           final byte[] quantized = new byte[vectorLength];
-          for (int i = 0; i < vectorLength; i++) {
-            quantized[i] = page.readByte(pos);
-            pos += 1;
-          }
+          page.readByteArray(pos, quantized, 0, vectorLength);
+          pos += vectorLength;
 
           // Read min and max
           final float min = Float.intBitsToFloat(page.readInt(pos));
@@ -2332,13 +2427,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final int originalLength = page.readInt(pos);
           pos += 4;
 
-          // Read packed bytes
+          // Read packed bytes (bulk array read for performance)
           final int byteCount = (originalLength + 7) / 8;
           final byte[] packed = new byte[byteCount];
-          for (int i = 0; i < byteCount; i++) {
-            packed[i] = page.readByte(pos);
-            pos += 1;
-          }
+          page.readByteArray(pos, packed, 0, byteCount);
+          pos += byteCount;
 
           // Read median
           final float median = Float.intBitsToFloat(page.readInt(pos));
@@ -2442,7 +2535,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return List of pairs containing RID and similarity score
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
-    return findNeighborsFromVector(queryVector, k, null);
+    return findNeighborsFromVector(queryVector, k, -1, null);
+  }
+
+  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final int efSearch) {
+    return findNeighborsFromVector(queryVector, k, efSearch, null);
   }
 
   /**
@@ -2458,6 +2555,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k,
       final Set<RID> allowedRIDs) {
+    return findNeighborsFromVector(queryVector, k, -1, allowedRIDs);
+  }
+
+  /**
+   * Search for k nearest neighbors with configurable efSearch for recall tuning.
+   *
+   * @param queryVector The query vector to search for
+   * @param k           The number of neighbors to return
+   * @param efSearch    Search beam width (-1 uses index default). Higher values improve recall at cost of latency.
+   * @param allowedRIDs Optional set of RIDs to restrict search to (null means no filtering)
+   *
+   * @return List of pairs containing RID and similarity score
+   */
+  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final int efSearch,
+      final Set<RID> allowedRIDs) {
     // Track search metrics
     final long startTime = System.currentTimeMillis();
     metrics.incrementSearchOperations();
@@ -2471,18 +2583,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
       // Check if query vector is all zeros (would cause NaN with cosine similarity)
-      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE) {
-        boolean isZeroVector = true;
-        for (final float v : queryVector) {
-          if (v != 0.0f) {
-            isZeroVector = false;
-            break;
-          }
-        }
-        if (isZeroVector)
-          throw new IllegalArgumentException(
-              "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
-      }
+      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE && VectorUtils.isZeroVector(queryVector))
+        throw new IllegalArgumentException(
+            "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
 
       // Ensure graph is available (lazy-load from disk if needed, or build if not persisted)
       ensureGraphAvailable();
@@ -2498,7 +2601,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // No graph yet — still return delta-only results if available
           if (!deltaVectors.isEmpty()) {
             final VectorFloat<?> qvf = vts.createFloatVector(queryVector);
-            final List<Pair<RID, Float>> results = new ArrayList<>();
+            final List<Pair<RID, Float>> results = new ArrayList<>(k);
             mergeWithDeltaScan(qvf, k, allowedRIDs, results);
             return results;
           }
@@ -2508,35 +2611,86 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Convert query vector to VectorFloat
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
-        // Create lazy-loading RandomAccessVectorValues
-        // Vector property name is the first property in the index
+        // Use liveVectorValues for scoring when available — it has ingested vectors cached
+        // in memory, avoiding disk I/O. Falls back to ArcadePageVectorValues (disk-based).
+        // Note: liveVectorValues is keyed by vectorId (same as graph ordinal when using
+        // the live builder), so it works directly as RandomAccessVectorValues for scoring.
         final String vectorProp =
             metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() :
                 "vector";
-
-        final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
-            vectorProp,
-            vectorIndex, ordinalToVectorId, this  // Pass LSM index reference for quantization support
-        );
+        final RandomAccessVectorValues vectors;
+        if (liveVectorValues != null && liveBuilder != null && graphIndex == liveBuilder.getGraph()) {
+          // Live builder mode: graph was built by this builder, ordinals ARE vectorIds
+          vectors = liveVectorValues;
+        } else {
+          vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
+              vectorProp,
+              vectorIndex, ordinalToVectorId, this);
+        }
 
         // Perform search with optional RID filtering
         final Bits bitsFilter = (allowedRIDs != null && !allowedRIDs.isEmpty()) ?
             new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex) :
             Bits.ALL;
 
-        // TODO: Use instance GraphSearcher method with metadata.efSearch parameter for better recall control
-        // Current static method uses default efSearch behavior
-        final SearchResult searchResult = GraphSearcher.search(queryVectorFloat, k, vectors,
-            metadata.similarityFunction,
-            graphIndex,
-            bitsFilter);
+        // Use instance GraphSearcher with SearchScoreProvider for efSearch control
+        final SearchResult searchResult;
+        try (final GraphSearcher searcher = new GraphSearcher(graphIndex)) {
+          final ScoreFunction.ExactScoreFunction exactScoreFunction = (node) ->
+              metadata.similarityFunction.compare(queryVectorFloat, vectors.getVector(node));
+
+          // Use FusedPQ for approximate scoring when available on the on-disk graph.
+          // FusedPQ stores PQ codes inline with graph nodes for cache-friendly approximate scoring
+          // during traversal, with exact reranking of top candidates.
+          final DefaultSearchScoreProvider ssp;
+          if (graphIndex instanceof OnDiskGraphIndex diskGraph
+              && diskGraph.getFeatureSet().contains(io.github.jbellis.jvector.graph.disk.feature.FeatureId.FUSED_PQ)) {
+            final var fusedPQ = (io.github.jbellis.jvector.graph.disk.feature.FusedPQ) diskGraph.getFeatures()
+                .get(io.github.jbellis.jvector.graph.disk.feature.FeatureId.FUSED_PQ);
+            final ScoreFunction.ApproximateScoreFunction approxScore =
+                fusedPQ.approximateScoreFunctionFor(queryVectorFloat, metadata.similarityFunction,
+                    diskGraph.getView(), exactScoreFunction);
+            ssp = new DefaultSearchScoreProvider(approxScore, exactScoreFunction);
+          } else {
+            ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
+          }
+
+          if (efSearch > 0) {
+            // Explicit efSearch: use fixed beam width (per-query or index default override)
+            final int effectiveEfSearch = Math.max(k, efSearch);
+            searchResult = searcher.search(ssp, k, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
+          } else if (metadata.efSearch != 100) {
+            // User configured efSearch in index metadata: use their value
+            final int effectiveEfSearch = Math.max(k, metadata.efSearch);
+            searchResult = searcher.search(ssp, k, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
+          } else {
+            // Adaptive efSearch: for large indexes, start with a moderate beam and
+            // resume with wider beam if insufficient. For small indexes (< 10K vectors),
+            // use the full default efSearch since the cost is negligible.
+            final int graphSize = graphIndex.size();
+            if (graphSize < 10_000) {
+              // Small index: full search is cheap, use default efSearch for best quality
+              searchResult = searcher.search(ssp, k, Math.max(k, 100), 0.0f, 0.0f, bitsFilter);
+            } else {
+              // Large index: adaptive two-pass search.
+              // First pass with moderate beam (2*k), resume if insufficient.
+              final int firstPassEfSearch = Math.max(k * 2, 20);
+              final SearchResult firstPass = searcher.search(ssp, k, firstPassEfSearch, 0.0f, 0.0f, bitsFilter);
+              if (firstPass.getNodes().length < k) {
+                searchResult = searcher.resume(k, Math.max(k * 10, 100));
+              } else {
+                searchResult = firstPass;
+              }
+            }
+          }
+        }
 
         LogManager.instance()
             .log(this, Level.INFO, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d",
                 searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length);
 
         // Extract RIDs and scores from search results using ordinal mapping
-        final List<Pair<RID, Float>> results = new ArrayList<>();
+        final List<Pair<RID, Float>> results = new ArrayList<>(k);
         int skippedOutOfBounds = 0;
         int skippedDeletedOrNull = 0;
         for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
@@ -2652,18 +2806,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
       // Check if query vector is all zeros (would cause NaN with cosine similarity)
-      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE) {
-        boolean isZeroVector = true;
-        for (final float v : queryVector) {
-          if (v != 0.0f) {
-            isZeroVector = false;
-            break;
-          }
-        }
-        if (isZeroVector)
-          throw new IllegalArgumentException(
-              "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
-      }
+      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE && VectorUtils.isZeroVector(queryVector))
+        throw new IllegalArgumentException(
+            "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
 
       // Ensure graph is available (lazy-load from disk if needed)
       ensureGraphAvailable();
@@ -2674,7 +2819,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // No graph yet — still return delta-only results if available
           if (!deltaVectors.isEmpty()) {
             final VectorFloat<?> qvf = vts.createFloatVector(queryVector);
-            final List<Pair<RID, Float>> results = new ArrayList<>();
+            final List<Pair<RID, Float>> results = new ArrayList<>(k);
             mergeWithDeltaScan(qvf, k, allowedRIDs, results);
             return results;
           }
@@ -2710,7 +2855,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         // Extract RIDs and scores from search results
-        final List<Pair<RID, Float>> results = new ArrayList<>();
+        final List<Pair<RID, Float>> results = new ArrayList<>(k);
         int skippedOutOfBounds = 0;
         int skippedDeletedOrNull = 0;
         for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
@@ -2934,25 +3079,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
           persistVectorWithLocation(id, rid, vector);
 
-          // Cache in delta buffer so it's visible to search before the next graph rebuild
-          deltaVectors.add(new DeltaVectorEntry(id, rid, vector));
+          // Incremental graph update: add node directly to the live HNSW graph in O(log n)
+          // instead of buffering in deltaVectors and rebuilding from scratch
+          final VectorFloat<?> vf = vts.createFloatVector(vector);
 
-          // Phase 5+: Periodic rebuild strategy (amortizes cost over many operations)
-          if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
-            // Transition to MUTABLE state to track ongoing mutations
-            this.graphState = GraphState.MUTABLE;
+          // Lazy-initialize the live builder on first insert (if graph exists)
+          if (liveBuilder == null && graphIndex != null)
+            ensureLiveBuilder();
+
+          if (liveBuilder != null) {
+            liveVectorValues.addVector(id, vf);
+            // Only add to graph if not already present (handles transaction replays and rollback scenarios)
+            if (!liveBuilder.getGraph().containsNode(id))
+              liveBuilder.addGraphNode(id, vf);
+            this.graphIndex = liveBuilder.getGraph();
+            this.ordinalToVectorId = buildOrdinalMapping();
+          } else {
+            // No live builder yet — fall back to delta buffer (will be merged on first search)
+            deltaVectors.add(new DeltaVectorEntry(id, rid, vector));
+
+            if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING)
+              this.graphState = GraphState.MUTABLE;
           }
 
-          // Increment mutation counter
+          // Increment mutation counter (used for periodic graph persistence)
           mutationsSinceSerialize.incrementAndGet();
-
-          // DON'T trigger rebuild during transaction commit - defer until query time
-          // rebuildGraphIfNeeded() calls buildGraphFromScratch() which clears vectorIndex and
-          // tries to reload from pages, but pages aren't visible yet during commit phase
-          // The graph will be rebuilt on the next query via ensureGraphAvailable() / get()
-          // Phase 2: When storeVectorsInGraph is enabled, the rebuilt graph will fetch updated vectors
-          // from documents/quantized pages and store them inline in the new graph file
-          // rebuildGraphIfNeeded();
         } finally {
           lock.writeLock().unlock();
         }

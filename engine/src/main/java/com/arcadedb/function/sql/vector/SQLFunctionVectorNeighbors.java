@@ -49,7 +49,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 3)
+    if (params == null || params.length < 3 || params.length > 4)
       throw new CommandSQLParsingException(getSyntax());
 
     final String indexSpec = params[0].toString();
@@ -63,6 +63,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
     final int limit = params[2] instanceof Number n ? n.intValue() : Integer.parseInt(params[2].toString());
 
+    // Optional 4th parameter: efSearch (search beam width for recall tuning)
+    final int efSearch = params.length >= 4 && params[3] != null ?
+        (params[3] instanceof Number n ? n.intValue() : Integer.parseInt(params[3].toString())) : -1;
+
     // Parse the index specification: TYPE[property] or just index name
     final String specifiedTypeName;
     final String propertyName;
@@ -74,7 +78,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       // Assume it's just an index name
       final Index directIndex = context.getDatabase().getSchema().getIndexByName(indexSpec);
       if (directIndex instanceof TypeIndex typeIndex) {
-        return executeWithTypeIndex(typeIndex, null, key, limit, context);
+        return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, context);
       }
       throw new CommandSQLParsingException(
           "Index '" + indexSpec + "' is not a vector index (found: " + (directIndex != null ? directIndex.getClass().getSimpleName() : "null") + ")");
@@ -97,11 +101,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       allowedBucketIds.add(bucket.getFileId());
     }
 
-    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, context);
+    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, context);
   }
 
   private Object executeWithTypeIndex(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds, final Object key,
-      final int limit, final CommandContext context) {
+      final int limit, final int efSearch, final CommandContext context) {
     final var bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0) {
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
@@ -127,7 +131,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     }
 
     // Search across all matching vector indexes and merge results
-    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, context);
+    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, context);
   }
 
   /**
@@ -135,7 +139,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * This is used when searching within a specific type that may have multiple buckets.
    */
   private Object executeWithLSMVectorIndexes(final List<LSMVectorIndex> vectorIndexes, final Object key, final int limit,
-      final CommandContext context) {
+      final int efSearch, final CommandContext context) {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
 
@@ -144,7 +148,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       // Request more results from each index to ensure we have enough after merging
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, limit);
+      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, limit, efSearch);
       allNeighbors.addAll(neighbors);
     }
 
@@ -226,6 +230,6 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<index-name>, <key-or-vector>, <k>)";
+    return NAME + "(<index-name>, <key-or-vector>, <k>[, <efSearch>])";
   }
 }

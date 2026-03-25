@@ -23,8 +23,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.utility.MostUsedCache;
-
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
@@ -33,6 +31,7 @@ import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.*;
 
 /**
@@ -61,8 +60,9 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private final VectorFloat<?> deletedSentinelVector;
 
   // Cache for graph building - dramatically speeds up repeated vector access
-  // Bounded LFU cache to prevent unbounded memory growth during graph construction
-  private final MostUsedCache<Integer, VectorFloat<?>> vectorCache;
+  // Lock-free concurrent map to avoid mutex contention during parallel JVector graph build
+  private final ConcurrentHashMap<Integer, VectorFloat<?>> vectorCache;
+  private final int maxCacheSize;
 
   // Constructor for live reads (uses shared vectorIndex, no cache needed)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
@@ -71,6 +71,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   }
 
   // Constructor for live reads with LSM index reference (for quantization support)
+  // Includes a small bounded cache for search — JVector revisits nodes during beam search
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
       final VectorLocationIndex vectorIndex, final int[] ordinalToVectorId, final LSMVectorIndex lsmIndex) {
     this.database = database;
@@ -80,7 +81,9 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.vectorSnapshot = null;
     this.ordinalToVectorId = ordinalToVectorId;
     this.lsmIndex = lsmIndex;
-    this.vectorCache = null; // No cache for live reads (search only reads each vector once)
+    // Small search-time cache: beam search revisits nodes during graph traversal
+    this.vectorCache = new ConcurrentHashMap<>(512);
+    this.maxCacheSize = 1024;
     this.deletedSentinelVector = createDeletedSentinelVector(dimensions);
   }
 
@@ -108,7 +111,9 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.vectorSnapshot = vectorSnapshot;
     this.ordinalToVectorId = ordinalToVectorId;
     this.lsmIndex = lsmIndex;
-    this.vectorCache = new MostUsedCache<>(cacheSize); // Bounded LFU cache for graph building
+    final int effectiveCacheSize = cacheSize <= 0 ? DEFAULT_CACHE_SIZE : cacheSize;
+    this.vectorCache = new ConcurrentHashMap<>(Math.min(effectiveCacheSize, 1_000_000)); // Lock-free cache for parallel graph building
+    this.maxCacheSize = effectiveCacheSize;
     this.deletedSentinelVector = createDeletedSentinelVector(dimensions);
   }
 
@@ -131,11 +136,9 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
     // Check cache first (for graph building - dramatically speeds up repeated access)
     if (vectorCache != null) {
-      synchronized (vectorCache) {
-        final VectorFloat<?> cached = vectorCache.get(vectorId);
-        if (cached != null)
-          return cached;
-      }
+      final VectorFloat<?> cached = vectorCache.get(vectorId);
+      if (cached != null)
+        return cached;
     }
 
     // Use snapshot if available (during graph building), otherwise use live vectorIndex
@@ -167,11 +170,8 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
             // Track fetch source for metrics
             lsmIndex.metrics.incrementVectorFetchFromGraph();
 
-            if (vectorCache != null) {
-              synchronized (vectorCache) {
-                vectorCache.put(vectorId, vector);
-              }
-            }
+            if (vectorCache != null && vectorCache.size() < maxCacheSize)
+              vectorCache.put(vectorId, vector);
 
             return vector;
           }
@@ -242,16 +242,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return deletedSentinelVector;
       }
 
-      // Safety check: Validate vector is not all zeros (would cause NaN in cosine similarity)
-      boolean hasNonZero = false;
-      for (float v : vector) {
-        if (v != 0.0f) {
-          hasNonZero = true;
-          break;
-        }
-      }
-
-      if (!hasNonZero)
+      if (VectorUtils.isZeroVector(vector))
         return deletedSentinelVector;
 
       final VectorFloat<?> result = vts.createFloatVector(vector);
@@ -261,11 +252,8 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         lsmIndex.metrics.incrementVectorFetchFromDocuments();
 
       // Cache the result if caching is enabled (for graph building performance)
-      if (vectorCache != null) {
-        synchronized (vectorCache) {
-          vectorCache.put(vectorId, result);
-        }
-      }
+      if (vectorCache != null && vectorCache.size() < maxCacheSize)
+        vectorCache.put(vectorId, result);
 
       return result;
 
@@ -286,11 +274,8 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * without needing their own database context for lookupByRID.
    */
   public void putInCache(final int vectorId, final VectorFloat<?> vector) {
-    if (vectorCache != null && vector != null) {
-      synchronized (vectorCache) {
-        vectorCache.put(vectorId, vector);
-      }
-    }
+    if (vectorCache != null && vector != null)
+      vectorCache.put(vectorId, vector);
   }
 
   @Override
