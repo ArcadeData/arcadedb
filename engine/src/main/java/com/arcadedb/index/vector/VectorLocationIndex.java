@@ -210,6 +210,10 @@ public class VectorLocationIndex {
     return nextId.get();
   }
 
+  public int getMaxVectorId() {
+    return nextId.get() - 1;
+  }
+
   /**
    * Set the next ID (used during loading to restore ID sequence).
    *

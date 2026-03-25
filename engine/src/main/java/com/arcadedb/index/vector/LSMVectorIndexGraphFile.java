@@ -34,7 +34,10 @@ import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.graph.disk.OnDiskSequentialGraphIndexWriter;
 import io.github.jbellis.jvector.graph.disk.feature.Feature;
 import io.github.jbellis.jvector.graph.disk.feature.FeatureId;
+import io.github.jbellis.jvector.graph.disk.feature.FusedPQ;
 import io.github.jbellis.jvector.graph.disk.feature.InlineVectors;
+import io.github.jbellis.jvector.quantization.PQVectors;
+import io.github.jbellis.jvector.quantization.ProductQuantization;
 import io.github.jbellis.jvector.vector.JVectorUtils;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
@@ -42,6 +45,7 @@ import java.io.*;
 import java.util.*;
 import java.util.function.*;
 import java.util.logging.*;
+import io.github.jbellis.jvector.vector.types.ByteSequence;
 
 /**
  * PaginatedComponent for storing JVector graph topology in ArcadeDB pages.
@@ -116,7 +120,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * - Graph data starts at page 0 (no metadata page needed - JVector format is self-describing)
    */
   public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors) {
-    writeGraph(graph, vectors, 0, null);
+    writeGraph(graph, vectors, 0, null, null, null);
   }
 
   /**
@@ -138,6 +142,17 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    */
   public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
                          final long chunkSizeMB, final ChunkCommitCallback chunkCallback) {
+    writeGraph(graph, vectors, chunkSizeMB, chunkCallback, null, null);
+  }
+
+  /**
+   * Write a graph to pages with optional FusedPQ for cache-friendly search traversal.
+   * When PQ data is provided, PQ codes are stored inline with graph nodes so that during
+   * search traversal, approximate distances are computed without separate I/O.
+   */
+  public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
+                         final long chunkSizeMB, final ChunkCommitCallback chunkCallback,
+                         final ProductQuantization pq, final PQVectors pqVectors) {
 
     if (!database.isTransactionActive())
       throw new IllegalStateException("writeGraph() must be called within an active transaction");
@@ -176,22 +191,45 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
                 "Writing graph WITHOUT inline vectors - topology only (vectors fetched from documents on-demand)");
       }
 
-      // Build graph with InlineVectors - dimension=0 when not storing vectors
-      try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer).with(
-              new InlineVectors(storedDimension)).build()) {
-        // Write graph with vectors (actual vectors when storeVectors=true, empty 0-dimension when false)
-        // Note: write() handles header/footer automatically in jvector 4.0.0+
-        indexWriter.write(Map.of(FeatureId.INLINE_VECTORS,
-                (IntFunction<Feature.State>) ordinal -> {
-                  if (storeVectors) {
-                    // Store actual vectors from documents/quantized pages
-                    final VectorFloat<?> vector = vectors.getVector(ordinal);
-                    return new InlineVectors.State(vector != null ? vector : emptyVector);
-                  } else {
-                    // Store 0-dimension empty vector (no space used)
-                    return new InlineVectors.State(emptyVector);
-                  }
-                }));
+      // Add FusedPQ feature when PQ data is available — stores PQ codes inline with graph nodes
+      // for cache-friendly approximate scoring during search traversal
+      final boolean hasFusedPQ = pq != null && pqVectors != null;
+      if (hasFusedPQ) {
+        LogManager.instance().log(this, Level.INFO,
+            "Writing graph WITH FusedPQ: PQ codes stored inline with graph nodes for cache-friendly search");
+      }
+
+      // Build writer with InlineVectors (always) and FusedPQ (when PQ available)
+      try (final OnDiskSequentialGraphIndexWriter indexWriter = hasFusedPQ ?
+          new OnDiskSequentialGraphIndexWriter.Builder(graph, writer)
+              .with(new InlineVectors(storedDimension))
+              .with(new FusedPQ(graph.maxDegree(), pq))
+              .build() :
+          new OnDiskSequentialGraphIndexWriter.Builder(graph, writer)
+              .with(new InlineVectors(storedDimension))
+              .build()) {
+        // Build feature states map
+        final Map<FeatureId, IntFunction<Feature.State>> featureStates = new HashMap<>();
+
+        // InlineVectors feature
+        featureStates.put(FeatureId.INLINE_VECTORS,
+            (IntFunction<Feature.State>) ordinal -> {
+              if (storeVectors) {
+                final VectorFloat<?> vector = vectors.getVector(ordinal);
+                return new InlineVectors.State(vector != null ? vector : emptyVector);
+              } else {
+                return new InlineVectors.State(emptyVector);
+              }
+            });
+
+        // FusedPQ feature — writes PQ-encoded vectors inline with each graph node
+        if (hasFusedPQ) {
+          final ImmutableGraphIndex.View graphView = graph.getView();
+          featureStates.put(FeatureId.FUSED_PQ,
+              (IntFunction<Feature.State>) ordinal -> new FusedPQ.State(graphView, pqVectors, ordinal));
+        }
+
+        indexWriter.write(featureStates);
       }
 
       writer.close();
