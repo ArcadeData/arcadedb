@@ -40,7 +40,7 @@ class SingleServerLoadTestIT extends ContainersTestTemplate {
   @EnumSource(DatabaseWrapper.Protocol.class)
   void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws Exception {
 
-    createArcadeContainer("arcade", "none", "none", "any", false, network);
+    createArcadeContainer("arcade", network);
     ServerWrapper server = startContainers().getFirst();
     DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, wordSupplier, protocol);
     db.createDatabase();

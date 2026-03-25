@@ -24,6 +24,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 
+import com.arcadedb.server.http.HttpServer;
+import io.undertow.server.handlers.PathHandler;
+
 import java.io.IOException;
 import java.util.logging.Level;
 
@@ -85,6 +88,15 @@ public class RaftHAPlugin implements ServerPlugin {
 
   public RaftHAServer getRaftHAServer() {
     return raftHAServer;
+  }
+
+  @Override
+  public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
+    // Always register the endpoint — it returns 503 when Raft is not yet started.
+    // Note: registerAPI is called before configure()/startService() for AFTER_HTTP_ON plugins,
+    // so isRaftEnabled() cannot be checked here.
+    routes.addExactPath("/api/v1/cluster", new GetClusterHandler(httpServer, this));
+    LogManager.instance().log(this, Level.INFO, "Raft cluster status endpoint registered at /api/v1/cluster");
   }
 
   public boolean isLeader() {
