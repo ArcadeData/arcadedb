@@ -1381,7 +1381,7 @@ def run_hybrid_queries(
                 convert_to_numpy=True,
             )[0],
             k=top_k,
-            overquery_factor=4,
+            ef_search=max(top_k, 100),
             allowed_rids=allowed_rids,
         ),
     )
@@ -1541,7 +1541,7 @@ def run_hybrid_queries(
                 convert_to_numpy=True,
             )[0],
             k=top_k,
-            overquery_factor=4,
+            ef_search=max(top_k, 100),
         ),
     )
     steps.append(step)
@@ -1601,7 +1601,7 @@ def run_hybrid_queries(
                 convert_to_numpy=True,
             )[0],
             k=top_k,
-            overquery_factor=4,
+            ef_search=max(top_k, 100),
         ),
     )
     steps.append(step)

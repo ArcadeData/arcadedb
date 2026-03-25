@@ -367,7 +367,7 @@ jobs:
                   echo ""
                   continue
                 fi
-                example_args="--backend arcadedb_sql --dataset stackoverflow-tiny --db-path $db_path --overquery-factors 1 --k 10 --query-limit 100 --query-runs 1 --query-order fixed --threads 1 --mem-limit 2g --run-label ci12_arcadedb_sql"
+                example_args="--backend arcadedb_sql --dataset stackoverflow-tiny --db-path $db_path --ef-search-values 100 --k 10 --query-limit 100 --query-runs 1 --query-order fixed --threads 1 --mem-limit 2g --run-label ci12_arcadedb_sql"
                 example_name="$example (vector search, arcadedb_sql backend, minimal)"
                 timeout_duration=1200
                 example_jvm_args=""
