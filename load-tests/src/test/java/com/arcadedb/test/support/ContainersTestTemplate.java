@@ -165,6 +165,33 @@ public abstract class ContainersTestTemplate {
   }
 
   /**
+   * Disconnects a container from the Docker network, fully isolating it from other containers.
+   * Unlike Toxiproxy, this creates a true symmetric network partition.
+   */
+  protected void disconnectFromNetwork(final GenericContainer<?> container) {
+    final String containerId = container.getContainerId();
+    final String networkId = network.getId();
+    logger.info("Disconnecting container {} from network {}", container.getContainerName(), networkId);
+    container.getDockerClient().disconnectFromNetworkCmd()
+        .withContainerId(containerId)
+        .withNetworkId(networkId)
+        .exec();
+  }
+
+  /**
+   * Reconnects a container to the Docker network after a partition.
+   */
+  protected void reconnectToNetwork(final GenericContainer<?> container) {
+    final String containerId = container.getContainerId();
+    final String networkId = network.getId();
+    logger.info("Reconnecting container {} to network {}", container.getContainerName(), networkId);
+    container.getDockerClient().connectToNetworkCmd()
+        .withContainerId(containerId)
+        .withNetworkId(networkId)
+        .exec();
+  }
+
+  /**
    * Stops all containers and clears the list of containers.
    */
   protected void stopContainers() {

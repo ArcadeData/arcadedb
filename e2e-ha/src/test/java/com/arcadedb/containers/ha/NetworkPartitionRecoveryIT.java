@@ -22,8 +22,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
-import eu.rekawek.toxiproxy.Proxy;
-import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -31,7 +29,6 @@ import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -42,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * Network partition recovery and data convergence tests for Raft HA cluster resilience.
  * Tests partition healing and Raft log catch-up after network failures.
+ * Uses Docker network disconnect for true symmetric partition isolation.
  * <p>
  * In Raft, the isolated minority cannot accept writes (leader steps down without quorum).
  * After partition heals, the minority catches up via the Raft log from the majority leader.
@@ -50,24 +48,7 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "proxy:8666:9666,proxy:8667:9667,proxy:8668:9668";
-
-  private Proxy raft0Proxy;
-  private Proxy raft1Proxy;
-  private Proxy raft2Proxy;
-  private Proxy http0Proxy;
-  private Proxy http1Proxy;
-  private Proxy http2Proxy;
-
-  private void createProxies() throws IOException {
-    logger.info("Creating Raft and HTTP proxies for 3-node cluster");
-    raft0Proxy = toxiproxyClient.createProxy("raft0Proxy", "0.0.0.0:8666", "ArcadeDB_0:2434");
-    raft1Proxy = toxiproxyClient.createProxy("raft1Proxy", "0.0.0.0:8667", "ArcadeDB_1:2434");
-    raft2Proxy = toxiproxyClient.createProxy("raft2Proxy", "0.0.0.0:8668", "ArcadeDB_2:2434");
-    http0Proxy = toxiproxyClient.createProxy("http0Proxy", "0.0.0.0:9666", "ArcadeDB_0:2480");
-    http1Proxy = toxiproxyClient.createProxy("http1Proxy", "0.0.0.0:9667", "ArcadeDB_1:2480");
-    http2Proxy = toxiproxyClient.createProxy("http2Proxy", "0.0.0.0:9668", "ArcadeDB_2:2480");
-  }
+  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480,ArcadeDB_2:2434:2480";
 
   private int findLeaderIndex(final List<ServerWrapper> servers) {
     for (int i = 0; i < servers.size(); i++) {
@@ -77,6 +58,8 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
         final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestProperty("Authorization",
             "Basic " + Base64.getEncoder().encodeToString("root:playwithdata".getBytes()));
+        conn.setConnectTimeout(3000);
+        conn.setReadTimeout(3000);
         try {
           if (conn.getResponseCode() == 200) {
             final String body = new String(conn.getInputStream().readAllBytes());
@@ -94,26 +77,10 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     return -1;
   }
 
-  private void isolateNode(final Proxy raftProxy, final Proxy httpProxy, final String label) throws IOException {
-    raftProxy.toxics().bandwidth(label + "_RAFT_DOWN", ToxicDirection.DOWNSTREAM, 0);
-    raftProxy.toxics().bandwidth(label + "_RAFT_UP", ToxicDirection.UPSTREAM, 0);
-    httpProxy.toxics().bandwidth(label + "_HTTP_DOWN", ToxicDirection.DOWNSTREAM, 0);
-    httpProxy.toxics().bandwidth(label + "_HTTP_UP", ToxicDirection.UPSTREAM, 0);
-  }
-
-  private void reconnectNode(final Proxy raftProxy, final Proxy httpProxy, final String label) throws IOException {
-    raftProxy.toxics().get(label + "_RAFT_DOWN").remove();
-    raftProxy.toxics().get(label + "_RAFT_UP").remove();
-    httpProxy.toxics().get(label + "_HTTP_DOWN").remove();
-    httpProxy.toxics().get(label + "_HTTP_UP").remove();
-  }
-
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test partition recovery: 2+1 split, heal partition, verify Raft log catch-up")
-  void testPartitionRecovery() throws IOException, InterruptedException {
-    createProxies();
-
+  void testPartitionRecovery() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
@@ -126,8 +93,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
-    final Proxy[] raftProxies = { raft0Proxy, raft1Proxy, raft2Proxy };
-    final Proxy[] httpProxies = { http0Proxy, http1Proxy, http2Proxy };
+    final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
     db0.createDatabase();
@@ -146,8 +112,8 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     final int otherIdx = (leaderIdx + 2) % 3;
     logger.info("Leader is node {}, isolating follower node {}", leaderIdx, isolatedIdx);
 
-    logger.info("Creating network partition: isolating node {}", isolatedIdx);
-    isolateNode(raftProxies[isolatedIdx], httpProxies[isolatedIdx], "ISOLATED");
+    logger.info("Creating network partition: disconnecting node {}", isolatedIdx);
+    disconnectFromNetwork(nodeContainers[isolatedIdx]);
 
     logger.info("Waiting for partition to be detected");
     TimeUnit.SECONDS.sleep(10);
@@ -172,7 +138,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     dbs[isolatedIdx].assertThatUserCountIs(20);
 
     logger.info("Healing partition - reconnecting node {}", isolatedIdx);
-    reconnectNode(raftProxies[isolatedIdx], httpProxies[isolatedIdx], "ISOLATED");
+    reconnectToNetwork(nodeContainers[isolatedIdx]);
 
     logger.info("Waiting for partition recovery and Raft log catch-up");
     Awaitility.await()
@@ -204,9 +170,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test multiple partition cycles: repeated split and heal with Raft log catch-up")
-  void testMultiplePartitionCycles() throws IOException, InterruptedException {
-    createProxies();
-
+  void testMultiplePartitionCycles() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
@@ -219,8 +183,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
-    final Proxy[] raftProxies = { raft0Proxy, raft1Proxy, raft2Proxy };
-    final Proxy[] httpProxies = { http0Proxy, http1Proxy, http2Proxy };
+    final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
     db0.createDatabase();
@@ -237,8 +200,8 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
       final int isolatedIdx = (currentLeader + 1) % 3;
       logger.info("Cycle {}: Leader is node {}, isolating follower node {}", cycle, currentLeader, isolatedIdx);
 
-      logger.info("Cycle {}: Creating partition (isolating node {})", cycle, isolatedIdx);
-      isolateNode(raftProxies[isolatedIdx], httpProxies[isolatedIdx], "CYCLE" + cycle);
+      logger.info("Cycle {}: Creating partition (disconnecting node {})", cycle, isolatedIdx);
+      disconnectFromNetwork(nodeContainers[isolatedIdx]);
 
       TimeUnit.SECONDS.sleep(5);
 
@@ -247,7 +210,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
       expectedUsers += 5;
 
       logger.info("Cycle {}: Healing partition", cycle);
-      reconnectNode(raftProxies[isolatedIdx], httpProxies[isolatedIdx], "CYCLE" + cycle);
+      reconnectToNetwork(nodeContainers[isolatedIdx]);
 
       logger.info("Cycle {}: Waiting for Raft log catch-up convergence", cycle);
       final int currentCycle = cycle;
@@ -285,9 +248,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test asymmetric partition recovery: follower isolated then resyncs")
-  void testAsymmetricPartitionRecovery() throws IOException, InterruptedException {
-    createProxies();
-
+  void testAsymmetricPartitionRecovery() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
@@ -300,8 +261,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
-    final Proxy[] raftProxies = { raft0Proxy, raft1Proxy, raft2Proxy };
-    final Proxy[] httpProxies = { http0Proxy, http1Proxy, http2Proxy };
+    final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
     db0.createDatabase();
@@ -314,8 +274,8 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     final int otherIdx = (leaderIdx + 2) % 3;
     logger.info("Leader is node {}, isolating follower node {}", leaderIdx, isolatedIdx);
 
-    logger.info("Creating asymmetric partition: isolating node {}", isolatedIdx);
-    isolateNode(raftProxies[isolatedIdx], httpProxies[isolatedIdx], "ASYM");
+    logger.info("Creating asymmetric partition: disconnecting node {}", isolatedIdx);
+    disconnectFromNetwork(nodeContainers[isolatedIdx]);
 
     TimeUnit.SECONDS.sleep(10);
 
@@ -339,7 +299,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     dbs[isolatedIdx].assertThatUserCountIs(10);
 
     logger.info("Healing asymmetric partition");
-    reconnectNode(raftProxies[isolatedIdx], httpProxies[isolatedIdx], "ASYM");
+    reconnectToNetwork(nodeContainers[isolatedIdx]);
 
     logger.info("Waiting for full convergence via Raft log catch-up");
     Awaitility.await()
