@@ -33,6 +33,8 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
+
+import java.util.Locale;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.FileUtils;
@@ -78,6 +80,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected final boolean          unique;
   protected       Type[]           keyTypes;
   protected       byte[]           binaryKeyTypes;
+  protected       boolean[]        caseInsensitiveKeys;
   protected       NULL_STRATEGY    nullStrategy       = NULL_STRATEGY.SKIP;
   protected final AtomicLong       statsAdjacentSteps = new AtomicLong();
 
@@ -369,9 +372,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
 
-      if (convertedKeys[i] instanceof String string)
+      if (convertedKeys[i] instanceof String string) {
+        // Apply case-insensitive collation: lowercase before storing/searching
+        if (caseInsensitiveKeys != null && i < caseInsensitiveKeys.length && caseInsensitiveKeys[i])
+          string = string.toLowerCase(Locale.ROOT);
         // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
         convertedKeys[i] = string.getBytes(DatabaseFactory.getDefaultCharset());
+      }
     }
     return convertedKeys;
   }

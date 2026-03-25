@@ -546,7 +546,7 @@ createIndexBody
     ;
 
 indexProperty
-    : identifier (BY (KEY | VALUE | ITEM))?
+    : identifier (BY (KEY | VALUE | ITEM))? (COLLATE identifier)?
     ;
 
 indexType

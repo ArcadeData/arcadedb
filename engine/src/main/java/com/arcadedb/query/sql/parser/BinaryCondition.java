@@ -199,6 +199,14 @@ public class BinaryCondition extends BooleanExpression {
         }
       }
     }
+    // CI index optimization: match field.toLowerCase() = 'value' against a CI index on field
+    if (info.isCaseInsensitive() && isFieldWithLowerCaseMethod(left, info.getField())) {
+      if (right.isEarlyCalculated(info.getContext())) {
+        if (operator instanceof EqualsCompareOperator)
+          return true;
+        else return info.allowsRange() && operator.isRangeOperator();
+      }
+    }
     return false;
   }
 
@@ -298,6 +306,26 @@ public class BinaryCondition extends BooleanExpression {
         return true;
       }
     }
+  }
+  /**
+   * Checks if an expression matches the pattern: field.toLowerCase() — a base identifier
+   * followed by a single toLowerCase() method call with no further chaining.
+   */
+  private static boolean isFieldWithLowerCaseMethod(final Expression expr, final String expectedField) {
+    if (expr == null || expr.getMathExpression() == null)
+      return false;
+    if (!(expr.getMathExpression() instanceof final BaseExpression base))
+      return false;
+    if (base.identifier == null || base.modifier == null || base.modifier.methodCall == null)
+      return false;
+    // Must have no further modifier chain (just field.toLowerCase(), not field.toLowerCase().something())
+    if (base.modifier.next != null)
+      return false;
+    if (!"toLowerCase".equalsIgnoreCase(base.modifier.methodCall.methodName.getStringValue()))
+      return false;
+    // Extract the field name and compare
+    final String fieldName = base.identifier.toString();
+    return expectedField.equalsIgnoreCase(fieldName);
   }
 }
 /* JavaCC - OriginalChecksum=99ed1dd2812eb730de8e1931b1764da5 (do not edit this line) */

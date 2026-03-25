@@ -1964,12 +1964,21 @@ public class LocalSchema implements Schema {
 
     final IndexInternal index = indexFactory.createIndex(builder);
 
+    // Copy collation settings from builder metadata to the index
+    if (metadata != null && metadata.collations != null)
+      index.getMetadata().collations = metadata.collations;
+
     try {
       registerFile(index.getComponent());
 
       indexMap.put(indexName, index);
 
       type.addIndexInternal(index, bucket.getFileId(), propertyNames, propIndex);
+
+      // Re-set metadata after addIndexInternal populated propertyNames, to propagate
+      // caseInsensitiveKeys to the underlying mutable/compacted indexes.
+      index.setMetadata(index.getMetadata());
+
       index.build(batchSize, callback);
 
       return index;
