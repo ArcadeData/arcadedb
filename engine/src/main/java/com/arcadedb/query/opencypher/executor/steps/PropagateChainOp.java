@@ -70,11 +70,16 @@ public final class PropagateChainOp implements CountOp {
       validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
 
     // When inequality is present and the inequality source is at position 0,
-    // use single-pass per-source expansion. This computes countAll and countEqual
-    // simultaneously, avoids dense long[nodeCount] arrays, and eliminates the
-    // separate self-loop subtraction pass entirely.
+    // choose between per-source expansion and dense propagation.
+    // Dense propagation + self-loop subtraction is preferred because it processes
+    // all edges sequentially (cache-friendly). The self-loop subtraction uses
+    // edge-scan with sorted merge for 3-hop sub-chains (O(|E_middle|) ops),
+    // or per-anchor frontier expansion for shorter sub-chains.
+    // Only fall back to per-source for very short chains (≤ 2 hops) where the
+    // dense array allocation overhead isn't justified.
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0
-        && Math.min(inequalityIdxA, inequalityIdxB) == 0)
+        && Math.min(inequalityIdxA, inequalityIdxB) == 0
+        && hops <= 2)
       return executePerSourceInequality(provider, db, nodeCount, validBuckets);
 
     // Standard dense array propagation for chains without inequality
@@ -184,6 +189,15 @@ public final class PropagateChainOp implements CountOp {
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
     final int subChainLength = idxB - idxA;
 
+    // FAST PATH: 3-hop self-loop via edge-scan with sorted merge intersection.
+    // Instead of expanding per-anchor (O(|anchors| × frontier)), scan the middle edge
+    // and compute |E0_reverse_nbrs(m) ∩ E2_nbrs(c)| for each middle edge (m,c).
+    // For Q5: 2.6M REPLY_OF edges × ~2 merge ops = ~5M ops (vs 16K × 300 = ~14M per-anchor).
+    if (subChainLength == 3 && idxA == 0 && idxB == edgeTypes.length) {
+      return countSelfLoop3HopEdgeScan(provider, nodeCount, validBuckets);
+    }
+
+    // GENERAL PATH: per-anchor expansion
     long selfLoopTotal = 0;
 
     final NeighborView[] subViews = new NeighborView[subChainLength];
@@ -228,6 +242,138 @@ public final class PropagateChainOp implements CountOp {
       }
 
       selfLoopTotal += loopCount;
+    }
+    return selfLoopTotal;
+  }
+
+  /**
+   * Fast self-loop counting for 3-hop full-chain sub-chains via edge scanning.
+   * <p>
+   * For chain (pos0) -[E0]- (pos1) -[E1]- (pos2) -[E2]- (pos3) where pos0 == pos3:
+   * Iterates all E1 (middle edge) instances. For each edge connecting pos1 vertex 'b' to
+   * pos2 vertex 'c': computes |reverse_E0_neighbors(b) ∩ E2_neighbors(c)| using sorted
+   * merge on CSR neighbor arrays. No per-anchor iteration needed.
+   * <p>
+   * For Q5 (Tag←HAS_TAG-Message←REPLY_OF-Comment-HAS_TAG→Tag):
+   * Scans 2.6M REPLY_OF edges, merge-counts tags(message) ∩ tags(comment).
+   * Avg ~2 merge comparisons per edge → ~5M ops total at ~3-5ns = ~15-25ms.
+   */
+  private long countSelfLoop3HopEdgeScan(final GraphTraversalProvider provider,
+      final int nodeCount, final Set<Integer>[] validBuckets) {
+    // E0: edge from pos0 to pos1, direction directions[0]
+    // E1: edge from pos1 to pos2, direction directions[1] (middle, iterated)
+    // E2: edge from pos2 to pos3, direction directions[2]
+    //
+    // For self-loop: pos0 == pos3
+    // reverse_E0_neighbors(pos1_node) = neighbors at pos0 reachable by reversing E0
+    // E2_neighbors(pos2_node) = neighbors at pos3 reachable by following E2
+
+    final Vertex.DIRECTION revDir0 = reverseDir(directions[0]);
+    final NeighborView viewA = provider.getNeighborView(revDir0, edgeTypes[0]);
+    final NeighborView viewE1 = provider.getNeighborView(directions[1], edgeTypes[1]);
+    final NeighborView viewC = provider.getNeighborView(directions[2], edgeTypes[2]);
+
+    if (viewA == null || viewE1 == null || viewC == null) {
+      // Fallback: can't get NeighborViews, use per-anchor approach
+      return countSelfLoopPerAnchorFallback(provider, nodeCount, validBuckets);
+    }
+
+    final int[] aNbrs = viewA.neighbors();
+    final int[] e1Nbrs = viewE1.neighbors();
+    final int[] cNbrs = viewC.neighbors();
+
+    // Optional: filter middle edge endpoints by type
+    final int[] bucketIds;
+    final Set<Integer> pos1Buckets = validBuckets[1];
+    final Set<Integer> pos2Buckets = validBuckets[2];
+    if ((pos1Buckets != null && !pos1Buckets.isEmpty()) || (pos2Buckets != null && !pos2Buckets.isEmpty())) {
+      bucketIds = precomputeBucketIds(provider, nodeCount);
+    } else {
+      bucketIds = null;
+    }
+
+    long selfLoop = 0;
+
+    // Scan all E1 edges by iterating pos1 nodes
+    for (int b = 0; b < nodeCount; b++) {
+      // Check pos1 type filter
+      if (pos1Buckets != null && !pos1Buckets.isEmpty()
+          && !pos1Buckets.contains(bucketIds[b]))
+        continue;
+
+      final int e1Start = viewE1.offset(b);
+      final int e1End = viewE1.offsetEnd(b);
+      if (e1Start == e1End) continue;
+
+      // Get setA = reverse-E0 neighbors of b (pos0 candidates)
+      final int aStart = viewA.offset(b);
+      final int aEnd = viewA.offsetEnd(b);
+      if (aStart == aEnd) continue;
+
+      // For each E1 neighbor c (pos2 node):
+      for (int j = e1Start; j < e1End; j++) {
+        final int c = e1Nbrs[j];
+
+        // Check pos2 type filter
+        if (pos2Buckets != null && !pos2Buckets.isEmpty()
+            && !pos2Buckets.contains(bucketIds[c]))
+          continue;
+
+        // Get setC = E2 neighbors of c (pos3 candidates)
+        final int cStart = viewC.offset(c);
+        final int cEnd = viewC.offsetEnd(c);
+        if (cStart == cEnd) continue;
+
+        // Count |setA ∩ setC| via sorted merge (both CSR ranges are sorted)
+        selfLoop += sortedIntersectionCount(aNbrs, aStart, aEnd, cNbrs, cStart, cEnd);
+      }
+    }
+    return selfLoop;
+  }
+
+  /**
+   * Counts the size of the intersection of two sorted int[] sub-arrays using merge scan.
+   * O(|a| + |b|) time, O(1) space.
+   */
+  private static long sortedIntersectionCount(final int[] a, int aStart, final int aEnd,
+      final int[] b, int bStart, final int bEnd) {
+    long count = 0;
+    while (aStart < aEnd && bStart < bEnd) {
+      final int av = a[aStart], bv = b[bStart];
+      if (av < bv) aStart++;
+      else if (av > bv) bStart++;
+      else { count++; aStart++; bStart++; }
+    }
+    return count;
+  }
+
+  private static Vertex.DIRECTION reverseDir(final Vertex.DIRECTION dir) {
+    if (dir == Vertex.DIRECTION.OUT) return Vertex.DIRECTION.IN;
+    if (dir == Vertex.DIRECTION.IN) return Vertex.DIRECTION.OUT;
+    return Vertex.DIRECTION.BOTH;
+  }
+
+  /**
+   * Fallback per-anchor self-loop when NeighborViews are unavailable.
+   */
+  private long countSelfLoopPerAnchorFallback(final GraphTraversalProvider provider,
+      final int nodeCount, final Set<Integer>[] validBuckets) {
+    // Reuse existing per-anchor expansion logic
+    final int subChainLength = Math.max(inequalityIdxA, inequalityIdxB);
+    final NeighborView[] subViews = new NeighborView[subChainLength];
+    for (int h = 0; h < subChainLength; h++)
+      subViews[h] = provider.getNeighborView(directions[h], edgeTypes[h]);
+
+    final int[] bucketIds = precomputeBucketIds(provider, nodeCount);
+    final Set<Integer> anchorBuckets = validBuckets[0];
+    if (anchorBuckets == null || anchorBuckets.isEmpty())
+      return 0;
+
+    long selfLoopTotal = 0;
+    for (int vId = 0; vId < nodeCount; vId++) {
+      if (!anchorBuckets.contains(bucketIds[vId]))
+        continue;
+      selfLoopTotal += countLoopsFromNode(provider, vId, subViews, 0, subChainLength, validBuckets);
     }
     return selfLoopTotal;
   }

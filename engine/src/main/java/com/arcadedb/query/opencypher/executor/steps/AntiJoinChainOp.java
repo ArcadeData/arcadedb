@@ -121,6 +121,29 @@ public final class AntiJoinChainOp implements CountOp {
     if (earlierIdx != 0)
       return executeGenericAntiJoin(provider, db, nodeCount, validBuckets);
 
+    // FAST PATH: Edge-scan with algebraic computation for 3-hop chains where:
+    // - Chain is (A) ←[E0]- (B) ←[E1]- (C) -[E2]→ (D)
+    // - Anti-join is NOT (C)-[E_anti]->(A) with E_anti == E0 (same edge type)
+    // - Inequality A ≠ D
+    // Formula: count = sum over E1 edges (B,C): (|E0_rev(B)| - |E0_rev(B) ∩ E2(C)|) × |E2(C)|
+    // This avoids all per-anchor iteration.
+    // Additional condition: the inequality must span the full chain (positions 0 and hops),
+    // and the anti-join later endpoint must be at the second-to-last position (laterIdx == hops - 1).
+    // This ensures the algebraic formula correctly computes the anti-join + inequality together.
+    // Q8 matches: hops=3, anti-join (c at pos2, t1 at pos0), inequality (t1 at pos0, t2 at pos3)
+    // Q9 does NOT match: hops=3, anti-join (p1 at pos0, p3 at pos2), inequality (p1 at pos0, p3 at pos2)
+    //   — Q9's inequality endpoints don't span the full chain.
+    final int ineqMin = Math.min(inequalityIdxA, inequalityIdxB);
+    final int ineqMax = Math.max(inequalityIdxA, inequalityIdxB);
+    if (hops == 3 && laterIdx == hops - 1 && earlierIdx == 0
+        && antiJoinEdgeType.equals(edgeTypes[0])
+        && inequalityIdxA >= 0 && inequalityIdxB >= 0
+        && ineqMin == 0 && ineqMax == hops) {
+      final long result = executeEdgeScanAlgebraic(provider, nodeCount, validBuckets);
+      if (result >= 0)
+        return result;
+    }
+
     // Per-source iteration from anchor (position 0)
     final String anchorLabel = nodeLabels[0];
     if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
@@ -158,6 +181,103 @@ public final class AntiJoinChainOp implements CountOp {
     }
 
     return totalCount;
+  }
+
+  /**
+   * Edge-scan algebraic computation for 3-hop anti-join chains.
+   * <p>
+   * For Q8: (t1:Tag) ←[HAS_TAG]- (m) ←[REPLY_OF]- (c) -[HAS_TAG]→ (t2:Tag)
+   *         WHERE NOT (c)-[:HAS_TAG]->(t1) AND t1 <> t2
+   * <p>
+   * For each REPLY_OF edge (c → m):
+   *   tags_m = reverse_E0 neighbors of m (tags of m)
+   *   tags_c = E2 neighbors of c (tags of c)
+   *   common = |tags_m ∩ tags_c| (sorted merge)
+   *   contribution = (|tags_m| - common) × |tags_c|
+   *   (tags of m that c doesn't have × tags of c — satisfies both anti-join and inequality)
+   *
+   * @return count, or -1 if NeighborViews unavailable (caller should fall back)
+   */
+  private long executeEdgeScanAlgebraic(final GraphTraversalProvider provider,
+      final int nodeCount, final Set<Integer>[] validBuckets) {
+    final Vertex.DIRECTION revDir0 = directions[0] == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN
+        : directions[0] == Vertex.DIRECTION.IN ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
+    final NeighborView viewA = provider.getNeighborView(revDir0, edgeTypes[0]);
+    final NeighborView viewE1 = provider.getNeighborView(directions[1], edgeTypes[1]);
+    final NeighborView viewC = provider.getNeighborView(directions[2], edgeTypes[2]);
+
+    if (viewA == null || viewE1 == null || viewC == null)
+      return -1; // fall back to per-source
+
+    final int[] aNbrs = viewA.neighbors();
+    final int[] e1Nbrs = viewE1.neighbors();
+    final int[] cNbrs = viewC.neighbors();
+
+    // Optional type filtering
+    final int[] bucketIds;
+    final Set<Integer> pos1Buckets = validBuckets[1];
+    final Set<Integer> pos2Buckets = validBuckets[2];
+    if ((pos1Buckets != null && !pos1Buckets.isEmpty()) || (pos2Buckets != null && !pos2Buckets.isEmpty())) {
+      bucketIds = new int[nodeCount];
+      for (int v = 0; v < nodeCount; v++)
+        bucketIds[v] = provider.getRID(v).getBucketId();
+    } else {
+      bucketIds = null;
+    }
+
+    long total = 0;
+
+    // Scan all E1 (middle) edges by iterating pos1 nodes
+    for (int b = 0; b < nodeCount; b++) {
+      if (pos1Buckets != null && !pos1Buckets.isEmpty()
+          && !pos1Buckets.contains(bucketIds[b]))
+        continue;
+
+      final int e1Start = viewE1.offset(b);
+      final int e1End = viewE1.offsetEnd(b);
+      if (e1Start == e1End) continue;
+
+      // Get setA size = reverse-E0 neighbors of b (tags of message b)
+      final int aStart = viewA.offset(b);
+      final int aEnd = viewA.offsetEnd(b);
+      if (aStart == aEnd) continue;
+      final int tagsOfB = aEnd - aStart;
+
+      // For each E1 neighbor c (pos2 node):
+      for (int j = e1Start; j < e1End; j++) {
+        final int c = e1Nbrs[j];
+
+        if (pos2Buckets != null && !pos2Buckets.isEmpty()
+            && !pos2Buckets.contains(bucketIds[c]))
+          continue;
+
+        // Get setC = E2 neighbors of c (tags of comment c)
+        final int cStart = viewC.offset(c);
+        final int cEnd = viewC.offsetEnd(c);
+        if (cStart == cEnd) continue;
+        final int tagsOfC = cEnd - cStart;
+
+        // Count |setA ∩ setC| via sorted merge
+        final long common = sortedIntersectionCount(aNbrs, aStart, aEnd, cNbrs, cStart, cEnd);
+
+        // Contribution: (tags of m that c DOESN'T have) × (tags of c)
+        // Anti-join ensures t1 ∉ tags(c). Inequality t1≠t2 is auto-satisfied since t1 ∉ tags(c) but t2 ∈ tags(c).
+        total += (tagsOfB - common) * tagsOfC;
+      }
+    }
+    return total;
+  }
+
+  private static long sortedIntersectionCount(final int[] a, int aStart, final int aEnd,
+      final int[] b, int bStart, final int bEnd) {
+    long count = 0;
+    while (aStart < aEnd && bStart < bEnd) {
+      final int av = a[aStart], bv = b[bStart];
+      if (av < bv) aStart++;
+      else if (av > bv) bStart++;
+      else { count++; aStart++; bStart++; }
+    }
+    return count;
   }
 
   /**
@@ -252,21 +372,33 @@ public final class AntiJoinChainOp implements CountOp {
       }
     } else {
       // Case B (Q8): anchor is anti-join target. For each frontier node, check
-      // whether it has an anti-join edge to the anchor. Use binary search on the
-      // frontier node's sorted neighbor list.
-      for (final int frontierNode : frontier) {
-        // Inequality check
-        if (inequalityIdxA >= 0 && inequalityIdxB >= 0
-            && isInequalityViolation(anchorId, frontierNode, 0, checkPosition))
-          continue;
-
-        // Anti-join: check if frontierNode has an edge to anchor via the anti-join type/direction
-        final int[] frontierAntiNbrs = provider.getNeighborIds(frontierNode,
-            antiJoinDirection, antiJoinEdgeType);
-        if (Arrays.binarySearch(frontierAntiNbrs, anchorId) >= 0)
-          continue; // anti-join hit — exclude
-
-        count += computeTailCount(provider, frontierNode, validBuckets);
+      // whether it has an anti-join edge to the anchor. Use pre-fetched NeighborView
+      // + binary search on shared neighbors[] array to avoid per-node int[] allocation.
+      final NeighborView antiView = provider.getNeighborView(antiJoinDirection, antiJoinEdgeType);
+      if (antiView != null) {
+        final int[] antiNbrs = antiView.neighbors();
+        for (final int frontierNode : frontier) {
+          if (inequalityIdxA >= 0 && inequalityIdxB >= 0
+              && isInequalityViolation(anchorId, frontierNode, 0, checkPosition))
+            continue;
+          // Binary search for anchorId in frontierNode's sorted anti-join neighbor range
+          final int aStart = antiView.offset(frontierNode);
+          final int aEnd = antiView.offsetEnd(frontierNode);
+          if (Arrays.binarySearch(antiNbrs, aStart, aEnd, anchorId) >= 0)
+            continue; // anti-join hit — exclude
+          count += computeTailCount(provider, frontierNode, validBuckets);
+        }
+      } else {
+        for (final int frontierNode : frontier) {
+          if (inequalityIdxA >= 0 && inequalityIdxB >= 0
+              && isInequalityViolation(anchorId, frontierNode, 0, checkPosition))
+            continue;
+          final int[] frontierAntiNbrs = provider.getNeighborIds(frontierNode,
+              antiJoinDirection, antiJoinEdgeType);
+          if (Arrays.binarySearch(frontierAntiNbrs, anchorId) >= 0)
+            continue;
+          count += computeTailCount(provider, frontierNode, validBuckets);
+        }
       }
     }
     return count;
