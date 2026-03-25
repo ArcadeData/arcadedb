@@ -307,12 +307,20 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       if (fromKeys != null) {
         final Binary rootPageBuffer = new Binary(rootPage.slice());
 
-        LookupResult resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, fromKeys, 1);
+        // Use purpose=2 (ascending iterator) instead of 1 (retrieve) for root page lookups when
+        // keys are partial (fewer components than the composite index defines). Purpose=1 rejects
+        // partial keys with "key is composed of N items, while the index defined M items".
+        // Purpose=2 allows partial key comparison which correctly matches by prefix.
+        // For full keys, keep purpose=1 to preserve exact boundary behavior for descending ranges.
+        final int fromPurpose = fromKeys.length < binaryKeyTypes.length ? 2 : 1;
+        LookupResult resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, fromKeys,
+            fromPurpose);
         iterator = searchInCurrentPage(ascendingOrder, fromKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
             resultInRootPage);
         if (iterator == null) {
           // LOOK FOR TO KEY IF ANY
-          resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, toKeys, 1);
+          final int toPurpose = toKeys != null && toKeys.length < binaryKeyTypes.length ? 2 : 1;
+          resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, toKeys, toPurpose);
           iterator = searchInCurrentPage(ascendingOrder, toKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
               resultInRootPage);
         }
@@ -344,6 +352,12 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       } else
         // NOT FOUND: GET THE PREVIOUS PAGE
         --pageInSeries;
+
+      // Clamp to valid range: pageInSeries can become -1 when the search key is before all entries
+      // in this series (e.g., when using iterator purpose for partial key lookups on composite indexes).
+      // In this case, start from the first data page.
+      if (pageInSeries < 0)
+        pageInSeries = 0;
 
       final int firstPageNumber = rootPageNumber + 1 + pageInSeries;
 
