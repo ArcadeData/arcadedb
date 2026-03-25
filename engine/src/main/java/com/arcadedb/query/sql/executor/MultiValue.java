@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.CollectionUtils;
@@ -99,6 +100,8 @@ public class MultiValue {
       return Array.getLength(object);
     else if (object instanceof ResettableIterator<?> resettableIterator)
       return (int) resettableIterator.countEntries();
+    else if (object instanceof IterableGraph<?> ig)
+      return ig.size();
     else if (object instanceof Iterable<?> iterable)
       return (int) StreamSupport.stream(iterable.spliterator(), false).count();
     else if (object instanceof Iterator<?> iterator)

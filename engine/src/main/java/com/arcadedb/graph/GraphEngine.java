@@ -489,16 +489,19 @@ public class GraphEngine {
   }
 
   public IterableGraph<Edge> getEdges(final VertexInternal vertex) {
-    final MultiIterator<Edge> result = new MultiIterator<>();
-
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+    final MultiIterator<Edge> result = new MultiIterator<>() {
+      @Override
+      public long countEntries() {
+        // Efficient: count entries directly from edge segments without materializing Edge objects
+        return (outEdges != null ? outEdges.count() : 0L) + (inEdges != null ? inEdges.count() : 0L);
+      }
+    };
     if (outEdges != null)
       result.addIterator(outEdges.edgeIterator());
-
-    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
     if (inEdges != null)
       result.addIterator(inEdges.edgeIterator());
-
     return result;
   }
 
@@ -509,13 +512,18 @@ public class GraphEngine {
 
     switch (direction) {
       case BOTH: {
-        final MultiIterator<Edge> result = new MultiIterator<>();
-
         final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+        final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+        final MultiIterator<Edge> result = new MultiIterator<>() {
+          @Override
+          public long countEntries() {
+            // Efficient: count entries directly from edge segments without materializing Edge objects
+            return (outEdges != null ? outEdges.count(edgeTypes) : 0L) +
+                (inEdges != null ? inEdges.count(edgeTypes) : 0L);
+          }
+        };
         if (outEdges != null)
           result.addIterator(outEdges.edgeIterator(edgeTypes));
-
-        final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
         if (inEdges != null)
           result.addIterator(inEdges.edgeIterator(edgeTypes));
         return result;
@@ -528,6 +536,12 @@ public class GraphEngine {
             @Override
             public Iterator<Edge> iterator() {
               return outEdges.edgeIterator(edgeTypes);
+            }
+
+            @Override
+            public int size() {
+              // Efficient: count entries directly from edge segments without materializing Edge objects
+              return (int) outEdges.count(edgeTypes);
             }
 
             @Override
@@ -545,6 +559,12 @@ public class GraphEngine {
             @Override
             public Iterator<Edge> iterator() {
               return inEdges.edgeIterator(edgeTypes);
+            }
+
+            @Override
+            public int size() {
+              // Efficient: count entries directly from edge segments without materializing Edge objects
+              return (int) inEdges.count(edgeTypes);
             }
 
             @Override
@@ -567,16 +587,18 @@ public class GraphEngine {
    * @return An iterator of PVertex instances
    */
   public IterableGraph<Vertex> getVertices(final VertexInternal vertex) {
-    final MultiIterator<Vertex> result = new MultiIterator<>();
-
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+    final MultiIterator<Vertex> result = new MultiIterator<>() {
+      @Override
+      public long countEntries() {
+        return (outEdges != null ? outEdges.count() : 0L) + (inEdges != null ? inEdges.count() : 0L);
+      }
+    };
     if (outEdges != null)
       result.addIterator(outEdges.vertexIterator());
-
-    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
     if (inEdges != null)
       result.addIterator(inEdges.vertexIterator());
-
     return result;
   }
 
@@ -594,13 +616,17 @@ public class GraphEngine {
 
     switch (direction) {
       case BOTH: {
-        final MultiIterator<Vertex> result = new MultiIterator<>();
-
         final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+        final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+        final MultiIterator<Vertex> result = new MultiIterator<>() {
+          @Override
+          public long countEntries() {
+            return (outEdges != null ? outEdges.count(edgeTypes) : 0L) +
+                (inEdges != null ? inEdges.count(edgeTypes) : 0L);
+          }
+        };
         if (outEdges != null)
           result.addIterator(outEdges.vertexIterator(edgeTypes));
-
-        final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
         if (inEdges != null)
           result.addIterator(inEdges.vertexIterator(edgeTypes));
         return result;
@@ -613,6 +639,11 @@ public class GraphEngine {
             @Override
             public Iterator<Vertex> iterator() {
               return outEdges.vertexIterator(edgeTypes);
+            }
+
+            @Override
+            public int size() {
+              return (int) outEdges.count(edgeTypes);
             }
 
             @Override
@@ -630,6 +661,11 @@ public class GraphEngine {
             @Override
             public Iterator<Vertex> iterator() {
               return inEdges.vertexIterator(edgeTypes);
+            }
+
+            @Override
+            public int size() {
+              return (int) inEdges.count(edgeTypes);
             }
 
             @Override
