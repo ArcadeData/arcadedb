@@ -305,8 +305,11 @@ public class TransactionManager {
       final PageId pageId = new PageId(database, txPage.fileId, txPage.pageNumber);
 
       if (!database.getFileManager().existsFile(txPage.fileId)) {
+        // When ignoreErrors is true (Raft replay), referencing a deleted file is expected —
+        // schema changes may delete files before their prior TX entries are replayed.
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on restoring transaction: received operation on deleted file %d", null, txPage.fileId);
+            .log(this, ignoreErrors ? Level.FINE : Level.WARNING,
+                "Error on restoring transaction: received operation on deleted file %d", null, txPage.fileId);
         if (ignoreErrors)
           continue;
         throw new ConcurrentModificationException(

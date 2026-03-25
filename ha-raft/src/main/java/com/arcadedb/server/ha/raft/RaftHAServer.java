@@ -45,6 +45,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -69,9 +71,11 @@ public class RaftHAServer {
   private final RaftGroup                  raftGroup;
   private final RaftPeerId                 localPeerId;
   private final Map<RaftPeerId, String>    httpAddresses;
+  private final Map<RaftPeerId, String>    peerDisplayNames;
 
-  private RaftServer raftServer;
-  private RaftClient raftClient;
+  private RaftServer                raftServer;
+  private RaftClient                raftClient;
+  private ScheduledExecutorService  lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -91,6 +95,17 @@ public class RaftHAServer {
     this.raftGroup = RaftGroup.valueOf(
         RaftGroupId.valueOf(UUID.nameUUIDFromBytes(clusterName.getBytes())),
         peers);
+
+    // Build human-readable display names: "ServerName_N (host:httpPort)"
+    final String prefix = serverName.substring(0, serverName.lastIndexOf('_'));
+    final Map<RaftPeerId, String> displayNames = new HashMap<>(peers.size());
+    for (int i = 0; i < peers.size(); i++) {
+      final RaftPeerId peerId = peers.get(i).getId();
+      final String nodeName = prefix + "_" + i;
+      final String httpAddr = this.httpAddresses.get(peerId);
+      displayNames.put(peerId, httpAddr != null ? nodeName + " (" + httpAddr + ")" : nodeName);
+    }
+    this.peerDisplayNames = Collections.unmodifiableMap(displayNames);
 
     this.stateMachine = new ArcadeStateMachine();
     this.stateMachine.setServer(arcadeServer);
@@ -181,9 +196,21 @@ public class RaftHAServer {
   }
 
   /**
+   * Returns a human-readable display name for a peer, e.g. "ArcadeDB_0 (localhost:2480)".
+   * Falls back to the raw peer ID string if the peer is unknown.
+   */
+  public String getPeerDisplayName(final RaftPeerId peerId) {
+    final String name = peerDisplayNames.get(peerId);
+    return name != null ? name : peerId.toString();
+  }
+
+  /**
    * Creates and starts the Ratis RaftServer and RaftClient.
    */
   public void start() throws IOException {
+    // Suppress verbose Ratis internal logs — operators see ArcadeDB-level cluster events instead
+    java.util.logging.Logger.getLogger("org.apache.ratis").setLevel(java.util.logging.Level.WARNING);
+
     final RaftProperties properties = new RaftProperties();
 
     // Extract the Raft port from this peer's address in the server list
@@ -238,13 +265,14 @@ public class RaftHAServer {
         .setParameters(new Parameters())
         .build();
 
-    LogManager.instance().log(this, Level.INFO, "RaftHAServer started: peerId='%s'", localPeerId);
+    LogManager.instance().log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
   }
 
   /**
    * Stops the Raft client and server, releasing all resources.
    */
   public void stop() {
+    stopLagMonitor();
     if (raftClient != null) {
       try {
         raftClient.close();
@@ -353,6 +381,44 @@ public class RaftHAServer {
     configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, newToken);
     LogManager.instance().log(RaftHAServer.class, Level.INFO,
         "Generated new cluster token (saved to %s)", tokenFile.getAbsolutePath());
+  }
+
+  /**
+   * Starts a periodic task that updates the {@link ClusterMonitor} with the leader's commit index.
+   * Called when this node becomes the Raft leader.
+   */
+  void startLagMonitor() {
+    if (lagMonitorExecutor != null)
+      return;
+    lagMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+      final Thread t = new Thread(r, "arcadedb-raft-lag-monitor");
+      t.setDaemon(true);
+      return t;
+    });
+    lagMonitorExecutor.scheduleAtFixedRate(this::checkReplicaLag, 5, 5, TimeUnit.SECONDS);
+  }
+
+  /**
+   * Stops the periodic lag monitoring task. Called when this node loses leadership.
+   */
+  void stopLagMonitor() {
+    if (lagMonitorExecutor != null) {
+      lagMonitorExecutor.shutdownNow();
+      lagMonitorExecutor = null;
+    }
+  }
+
+  private void checkReplicaLag() {
+    try {
+      final var division = raftServer.getDivision(raftGroup.getGroupId());
+      final var info = division.getInfo();
+      if (!info.isLeader())
+        return;
+      final long commitIndex = info.getLastAppliedIndex();
+      clusterMonitor.updateLeaderCommitIndex(commitIndex);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Error checking replica lag", e);
+    }
   }
 
   private static void deleteRecursive(final File file) {

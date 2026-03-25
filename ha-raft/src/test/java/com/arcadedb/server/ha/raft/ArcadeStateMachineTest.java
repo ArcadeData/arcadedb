@@ -19,11 +19,16 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.engine.WALFile;
+import org.apache.ratis.protocol.RaftGroupId;
+import org.apache.ratis.protocol.RaftGroupMemberId;
+import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 
 class ArcadeStateMachineTest {
 
@@ -143,6 +148,25 @@ class ArcadeStateMachineTest {
     assertThat(tx.pages[0].changesFrom).isEqualTo(0);
     assertThat(tx.pages[0].changesTo).isEqualTo(4);
     assertThat(tx.pages[0].currentContent.size()).isEqualTo(5);
+  }
+
+  @Test
+  void notifyLeaderChangedDoesNotThrowWithoutRaftHAServer() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final RaftGroupMemberId memberId = RaftGroupMemberId.valueOf(
+        RaftPeerId.valueOf("peer-0"), RaftGroupId.valueOf(UUID.randomUUID()));
+
+    // Should not throw even without RaftHAServer set
+    assertThatNoException().isThrownBy(() -> sm.notifyLeaderChanged(memberId, RaftPeerId.valueOf("peer-1")));
+  }
+
+  @Test
+  void notifyLeaderChangedDoesNotThrowWithNullLeader() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final RaftGroupMemberId memberId = RaftGroupMemberId.valueOf(
+        RaftPeerId.valueOf("peer-0"), RaftGroupId.valueOf(UUID.randomUUID()));
+
+    assertThatNoException().isThrownBy(() -> sm.notifyLeaderChanged(memberId, null));
   }
 
   @Test

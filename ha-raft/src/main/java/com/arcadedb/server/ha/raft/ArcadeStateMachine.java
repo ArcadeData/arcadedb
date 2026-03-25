@@ -28,6 +28,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftGroupId;
+import org.apache.ratis.protocol.RaftGroupMemberId;
+import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
@@ -149,6 +151,30 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return RaftLog.INVALID_LOG_INDEX;
     LogManager.instance().log(this, Level.FINE, "ArcadeStateMachine: snapshot checkpoint at index %d", last.getIndex());
     return last.getIndex();
+  }
+
+  /**
+   * Called by Ratis when the leader changes for this group. Logs the new leader and
+   * this node's role using human-readable display names. Also starts or stops the
+   * replica lag monitor depending on whether this node is the new leader.
+   */
+  @Override
+  public void notifyLeaderChanged(final RaftGroupMemberId groupMemberId, final RaftPeerId newLeaderId) {
+    super.notifyLeaderChanged(groupMemberId, newLeaderId);
+
+    if (raftHAServer == null || newLeaderId == null)
+      return;
+
+    final String leaderName = raftHAServer.getPeerDisplayName(newLeaderId);
+    LogManager.instance().log(this, Level.INFO, "Leader elected: %s", leaderName);
+
+    if (newLeaderId.equals(raftHAServer.getLocalPeerId())) {
+      LogManager.instance().log(this, Level.INFO, "This node is now LEADER");
+      raftHAServer.startLagMonitor();
+    } else {
+      LogManager.instance().log(this, Level.INFO, "This node is now REPLICA (leader: %s)", leaderName);
+      raftHAServer.stopLagMonitor();
+    }
   }
 
   @Override
