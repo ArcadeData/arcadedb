@@ -274,14 +274,16 @@ class Database:
             dimensions: Vector dimensionality (e.g., 768 for BERT)
             distance_function: "cosine", "euclidean", or "inner_product"
             max_connections: Max connections per node (default: 16).
-                             Maps to `maxConnections` in JVector.
+                Maps to `maxConnections` in JVector.
             beam_width: Beam width for search/construction (default: 100).
-                        Maps to `beamWidth` in JVector.
+                Maps to `beamWidth` in JVector.
             quantization: Vector quantization type (default: INT8).
-                          Options: "INT8", "BINARY", "PRODUCT" (PQ).
-                          Reduces memory usage and speeds up search at the cost of
-                          some precision. "PRODUCT" enables PQ data for
-                          approximate search (zero-disk-I/O path).
+                Options: "INT8", "BINARY", "PRODUCT" (PQ).
+                Reduces memory usage and speeds up search at the cost of some precision.
+                "PRODUCT" enables PQ data for approximate search (zero-disk-I/O path).
+                In current ArcadeDB engine builds, PRODUCT also requires enough indexed
+                vectors per bucket for PQ training; for tiny corpora, set `pq_clusters`
+                explicitly to a small value or prefer INT8/BINARY/NONE.
             location_cache_size: Per-index override for vector location cache size
                 (maps to Java metadata key "locationCacheSize"; uses
                 GlobalConfiguration default if None). Typical ranges by corpus size
@@ -305,6 +307,8 @@ class Database:
                 write-heavy workloads and larger graphs.
             pq_subspaces: Number of PQ subspaces (M). Requires quantization="PRODUCT".
             pq_clusters: Clusters per subspace (K). Requires quantization="PRODUCT".
+                In current ArcadeDB engine builds, this should not exceed the
+                number of indexed vectors available for PQ training in a bucket.
             pq_center_globally: Whether to globally center vectors before PQ.
                 Requires quantization="PRODUCT".
             pq_training_limit: Max vectors to use for PQ training. Requires
