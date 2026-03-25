@@ -246,8 +246,7 @@ class OpenCypherOptionalMatchTest {
       // Link only c1 to d
       database.command("opencypher",
           """
-          MATCH (d:DOCUMENT), (c1:CHUNK) \
-          WHERE d.name = 'MyTargetDoc' AND c1.name = 'LinkedChunk_1' \
+          MATCH (d:DOCUMENT {name: 'MyTargetDoc'}), (c1:CHUNK {name: 'LinkedChunk_1'}) \
           CREATE (c1)-[:RELATED_TO]->(d)""");
     });
 
