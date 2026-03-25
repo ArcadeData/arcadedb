@@ -52,6 +52,12 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     config.setValue(GlobalConfiguration.HA_IMPLEMENTATION, "raft");
     if (persistentRaftStorage())
       config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, true);
+
+    // Each in-process server needs a unique Raft port. Extract the server index
+    // from the server name (e.g., "ArcadeDB_1" → index 1) to offset the base port.
+    final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
+    final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+    config.setValue(GlobalConfiguration.HA_RAFT_PORT, BASE_RAFT_PORT + index);
   }
 
   /**

@@ -213,9 +213,11 @@ public class RaftHAServer {
 
     final RaftProperties properties = new RaftProperties();
 
-    // Extract the Raft port from this peer's address in the server list
-    final String localAddress = raftGroup.getPeer(localPeerId).getAddress();
-    final int localRaftPort = Integer.parseInt(localAddress.substring(localAddress.lastIndexOf(':') + 1));
+    // Use the configured Raft port for the local gRPC bind address.
+    // Note: the peer address in the server list may differ from the bind port when traffic
+    // is routed through a proxy (e.g., Toxiproxy in e2e tests). The peer address is what
+    // remote nodes use to connect; the bind port is what this node actually listens on.
+    final int localRaftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
     GrpcConfigKeys.Server.setPort(properties, localRaftPort);
 
     // Configure Raft RPC timeouts for cluster stability
