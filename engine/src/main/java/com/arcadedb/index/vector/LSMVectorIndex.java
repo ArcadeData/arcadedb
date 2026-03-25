@@ -2677,21 +2677,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = (node) ->
               metadata.similarityFunction.compare(queryVectorFloat, vectors.getVector(node));
 
-          // Use FusedPQ for approximate scoring when available on the on-disk graph.
-          // FusedPQ stores PQ codes inline with graph nodes for cache-friendly approximate scoring
-          // during traversal, with exact reranking of top candidates.
-          final DefaultSearchScoreProvider ssp;
-          if (graphIndex instanceof OnDiskGraphIndex diskGraph
-              && diskGraph.getFeatureSet().contains(io.github.jbellis.jvector.graph.disk.feature.FeatureId.FUSED_PQ)) {
-            final var fusedPQ = (io.github.jbellis.jvector.graph.disk.feature.FusedPQ) diskGraph.getFeatures()
-                .get(io.github.jbellis.jvector.graph.disk.feature.FeatureId.FUSED_PQ);
-            final ScoreFunction.ApproximateScoreFunction approxScore =
-                fusedPQ.approximateScoreFunctionFor(queryVectorFloat, metadata.similarityFunction,
-                    diskGraph.getView(), exactScoreFunction);
-            ssp = new DefaultSearchScoreProvider(approxScore, exactScoreFunction);
-          } else {
-            ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
-          }
+          // Use exact scoring for graph traversal.
+          // FusedPQ approximate scoring is currently disabled due to a bug where PQ codes
+          // written through ArcadeDB's page-based storage produce incorrect approximate scores,
+          // causing beam search to return too few results. The exact scoring path reads vectors
+          // from the graph file (if storeVectorsInGraph=true), quantized pages (if INT8/BINARY),
+          // or documents (if NONE), and provides correct results.
+          // TODO: Re-enable FusedPQ once page-based PQ code persistence is verified correct
+          final DefaultSearchScoreProvider ssp =
+              new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
 
           if (efSearch > 0) {
             // Explicit efSearch: use fixed beam width (per-query or index default override)

@@ -88,6 +88,12 @@ class VectorSearchLatencyBenchmark {
     System.out.println("=== Config 2: INT8 quantization ===");
     FileUtils.deleteRecursively(new File(DB_PATH));
     runConfig("INT8", dataVectors, queryVectors, "INT8", false);
+
+    // Config 3: PRODUCT quantization (now with FusedPQ disabled, uses exact scoring)
+    System.out.println();
+    System.out.println("=== Config 3: PRODUCT quantization ===");
+    FileUtils.deleteRecursively(new File(DB_PATH));
+    runConfig("PQ", dataVectors, queryVectors, "PRODUCT", true);
   }
 
   private void runConfig(final String label, final float[][] dataVectors, final float[][] queryVectors,
