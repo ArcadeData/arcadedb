@@ -86,6 +86,44 @@ public class OrientDBImporterIT {
   }
 
   @Test
+  void importCustomFields() throws Exception {
+    final File databaseDirectory = new File(DATABASE_PATH);
+
+    final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-customfields.gz");
+
+    final OrientDBImporter importer = new OrientDBImporter(
+        ("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
+    importer.run().close();
+
+    assertThat(importer.isError()).isFalse();
+    assertThat(databaseDirectory.exists()).isTrue();
+
+    try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
+      try (final Database database = factory.open()) {
+        final DocumentType myType = database.getSchema().getType("MyType");
+        assertThat(myType).isNotNull();
+
+        // Check custom fields on Name property
+        final var nameProperty = myType.getProperty("Name");
+        assertThat(nameProperty.getCustomValue("displayName")).isEqualTo("Display Name");
+        assertThat(nameProperty.getCustomValue("indexable")).isEqualTo("true");
+        assertThat(nameProperty.getCustomValue("searchable")).isEqualTo("false");
+        assertThat(nameProperty.getCustomValue("customType")).isEqualTo("Text");
+
+        // Check custom fields on Tags property
+        final var tagsProperty = myType.getProperty("Tags");
+        assertThat(tagsProperty.getCustomValue("allowEditing")).isEqualTo("true");
+        assertThat(tagsProperty.getCustomValue("filterable")).isEqualTo("true");
+        assertThat(tagsProperty.getCustomValue("displayName")).isEqualTo("Tags Field");
+
+        // Check NoCustom property has no custom fields
+        final var noCustomProperty = myType.getProperty("NoCustom");
+        assertThat(noCustomProperty.getCustomKeys()).isEmpty();
+      }
+    }
+  }
+
+  @Test
   void importNoFile() throws Exception {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
     final OrientDBImporter importer = new OrientDBImporter(

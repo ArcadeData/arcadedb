@@ -263,9 +263,8 @@ public class OrientDBImporter {
 
     logger.logLine(1,
         "***************************************************************************************************");
-    logger.logLine(1, "Import of OrientDB database completed in %,d secs with %,d errors and %,d warnings.", elapsed,
-        errors,
-        warnings);
+    logger.logLine(1, "Import of OrientDB database completed %s in %,d secs with %,d errors and %,d warnings.",
+        errors == 0 ? "SUCCESSFULLY" : "WITH ERRORS", elapsed, errors, warnings);
     logger.logLine(1, "\nSUMMARY\n");
     logger.logLine(1, "- Records..................................: %,d", totalRecords);
     for (final Map.Entry<String, OrientDBClass> entry : classes.entrySet()) {
@@ -1147,7 +1146,10 @@ public class OrientDBImporter {
       }
 
       try {
-        final Property property = t.createProperty(entry.getKey(), Type.valueOf(orientdbType), orientdbProperty.ofType);
+        // Use getOrCreateProperty to handle properties that already exist in a supertype.
+        // In OrientDB exports, subtypes may redefine properties (with their own custom fields)
+        // that are already defined in a supertype.
+        final Property property = t.getOrCreateProperty(entry.getKey(), Type.valueOf(orientdbType), orientdbProperty.ofType);
 
         if (orientdbProperty.customFields != null)
           for (Map.Entry<String, Object> customEntry : orientdbProperty.customFields.entrySet())
