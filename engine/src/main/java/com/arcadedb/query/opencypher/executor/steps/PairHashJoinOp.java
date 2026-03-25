@@ -228,6 +228,9 @@ public final class PairHashJoinOp implements CountOp {
    * For Q2 (2.6M Comments, arm1=1 hop, arm2=2 hops, probe=KNOWS BOTH):
    * Each Comment: 1 arm1 lookup + 2 arm2 lookups + 1 binary search = ~5 ops.
    * Total: 2.6M × 5 = 13M ops at ~3ns = ~39ms (vs ~400ms with HashMap).
+   * <p>
+   * When arm2 has exactly 2 hops (the Q2 case), fuses the arm2 walk with the probe
+   * check inline to avoid allocating an intermediate int[] per build node.
    */
   private long buildAndProbeInline(final NeighborView arm1View, final NeighborView[] arm2Views,
       final Set<Integer>[] arm2Buckets, final NeighborView probeView,
@@ -236,21 +239,63 @@ public final class PairHashJoinOp implements CountOp {
     final int[] probeNbrs = probeView.neighbors();
     long total = 0;
 
+    // FAST PATH: 2-hop arm2 with fused inline walk+probe (avoids per-node array allocation)
+    if (arm2Views.length == 2) {
+      final int[] arm2Nbrs0 = arm2Views[0].neighbors();
+      final int[] arm2Nbrs1 = arm2Views[1].neighbors();
+      final Set<Integer> arm2Filter0 = arm2Buckets != null ? arm2Buckets[0] : null;
+      final Set<Integer> arm2Filter1 = arm2Buckets != null ? arm2Buckets[1] : null;
+
+      for (int startId = 0; startId < nodeCount; startId++) {
+        final int a1Start = arm1View.offset(startId);
+        final int a1End = arm1View.offsetEnd(startId);
+        if (a1Start == a1End) continue;
+
+        // Inline arm2 hop 0: startId → intermediate nodes
+        final int a2h0Start = arm2Views[0].offset(startId);
+        final int a2h0End = arm2Views[0].offsetEnd(startId);
+        if (a2h0Start == a2h0End) continue;
+
+        // For each arm1 endpoint, pre-fetch probe range
+        for (int i = a1Start; i < a1End; i++) {
+          final int ep1 = arm1Nbrs[i];
+          final int pStart = probeView.offset(ep1);
+          final int pEnd = probeView.offsetEnd(ep1);
+          if (pStart == pEnd) continue;
+
+          // Walk arm2 inline: hop0 → hop1 → binary search probe
+          for (int j = a2h0Start; j < a2h0End; j++) {
+            final int mid = arm2Nbrs0[j];
+            if (arm2Filter0 != null && !arm2Filter0.contains(bucketIds[mid])) continue;
+
+            final int a2h1Start = arm2Views[1].offset(mid);
+            final int a2h1End = arm2Views[1].offsetEnd(mid);
+            for (int k = a2h1Start; k < a2h1End; k++) {
+              final int ep2 = arm2Nbrs1[k];
+              if (arm2Filter1 != null && !arm2Filter1.contains(bucketIds[ep2])) continue;
+              if (java.util.Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
+                total++;
+            }
+          }
+        }
+      }
+      return total;
+    }
+
+    // GENERAL PATH: allocate arm2 endpoints array per build node
     for (int startId = 0; startId < nodeCount; startId++) {
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
       if (a1Start == a1End) continue;
 
-      // Walk arm2 to get endpoints
       final int[] ep2Ids = walkArmWithViews(startId, arm2Views, arm2Buckets, bucketIds);
       if (ep2Ids.length == 0) continue;
 
-      // For each (ep1, ep2) pair, check if probe edge exists via binary search
       for (int i = a1Start; i < a1End; i++) {
         final int ep1 = arm1Nbrs[i];
         final int pStart = probeView.offset(ep1);
         final int pEnd = probeView.offsetEnd(ep1);
-        if (pStart == pEnd) continue; // ep1 has no probe edges
+        if (pStart == pEnd) continue;
 
         for (final int ep2 : ep2Ids) {
           if (java.util.Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
