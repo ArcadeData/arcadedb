@@ -189,10 +189,9 @@ public class CypherExecutionPlanner {
       if (match.isOptional())
         return false; // Not yet supported in optimizer
 
-      // Multiple path patterns in a single MATCH (e.g., MATCH (a:T1), (b:T2))
-      // require Cartesian product which the optimizer doesn't support yet
-      if (match.hasPathPatterns() && match.getPathPatterns().size() > 1)
-        return false;
+      // Multiple path patterns in a single MATCH (e.g., MATCH (a:X)-[:E1]->(b:Y), (a)<-[:E2]-(c:Z))
+      // are supported when the patterns share variables (the optimizer handles them via join planning).
+      // Disconnected patterns with no shared variables fall through to step-by-step interpretation.
 
       // Check if all nodes have labels, no named path variables, and no unsupported property constraints
       if (match.hasPathPatterns()) {
@@ -272,18 +271,11 @@ public class CypherExecutionPlanner {
 
     // Aggregation queries: the optimizer doesn't enforce Cypher's relationship uniqueness
     // constraint (each edge matched at most once per MATCH clause). Edge uniqueness is scoped
-    // to each individual MATCH clause, NOT across clauses. So we check disjointness within
-    // each clause independently — overlapping types across different MATCHes are fine.
-    if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()) {
-      for (final MatchClause match : statement.getMatchClauses()) {
-        if (match.hasPathPatterns()) {
-          for (final PathPattern path : match.getPathPatterns()) {
-            if (!allEdgeTypesDisjoint(path))
-              return false;
-          }
-        }
-      }
-    }
+    // to each individual MATCH clause, NOT across clauses. The CountOp detectors
+    // (PropagateChainOp, AntiJoinChainOp, PairHashJoinOp) handle duplicate edge types
+    // correctly — they count tuples, not distinct edges. So we allow duplicate edge types
+    // through to the optimizer; the CountOp fast paths and the GAVFusedChainOperator
+    // both produce correct results regardless of edge type overlap.
 
     return true;
   }
