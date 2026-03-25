@@ -23,7 +23,9 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -171,10 +173,20 @@ public class CreateIndexStatement extends DDLStatement {
       final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
       final JSONObject jsonMetadata = new JSONObject(metadataMap);
 
+      // Extract buildGraphNow directive (default true) before passing metadata to builder
+      final boolean buildGraphNow = jsonMetadata.getBoolean("buildGraphNow", true);
+      jsonMetadata.remove("buildGraphNow");
+
       // Builder is now an LSMVectorIndexBuilder after withType(LSM_VECTOR)
       final TypeLSMVectorIndexBuilder vectorBuilder = builder.withLSMVectorType();
       vectorBuilder.withMetadata(jsonMetadata);
-      vectorBuilder.create();
+      final TypeIndex typeIndex = vectorBuilder.create();
+
+      // Build the HNSW graph immediately unless explicitly disabled
+      if (buildGraphNow)
+        for (final com.arcadedb.index.Index idx : typeIndex.getIndexesOnBuckets())
+          if (idx instanceof LSMVectorIndex)
+            ((LSMVectorIndex) idx).buildVectorGraphNow();
 
     } else if (indexType == Schema.INDEX_TYPE.FULL_TEXT && metadata != null) {
       // Handle full-text index metadata
