@@ -32,6 +32,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
@@ -227,14 +228,21 @@ public class DatabaseWrapper {
       String sqlScript = """
           BEGIN;
           LOCK TYPE User, Photo, HasUploaded;
-          LET user = SELECT FROM User WHERE id = ?;
-          LET photo = CREATE VERTEX Photo SET id = ?, name = ?, description = '?', tags = ['?', '?'], location = ?;
+          LET user = SELECT FROM User WHERE id = :userId;
+          LET photo = CREATE VERTEX Photo SET id = :photoId, name = :photoName, description = ':description', tags = [':tag1', ':tag2'], location = :location;
           CREATE EDGE HasUploaded FROM $user TO $photo;
           COMMIT RETRY 30;
           """;
       try {
         photosTimer.record(() -> {
-              db.command("sqlscript", sqlScript, userId, photoId, photoName, description, tag1, tag2, location);
+              db.command("sqlscript", sqlScript,
+                  Map.of("userId", userId,
+                      "photoId", photoId,
+                      "photoName", photoName,
+                      "description", description,
+                      "tag1", tag1,
+                      "tag2", tag2,
+                      "location", location));
             }
         );
 
