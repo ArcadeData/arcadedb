@@ -22,8 +22,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
-import eu.rekawek.toxiproxy.Proxy;
-import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -31,7 +29,6 @@ import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -42,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * Split-brain detection and prevention tests for Raft HA cluster resilience.
  * Tests quorum enforcement and cluster reformation after network partitions.
+ * Uses Docker network disconnect for true symmetric partition isolation.
  * <p>
  * Raft prevents split-brain by design: a leader in the minority partition automatically
  * steps down when it cannot reach a majority. Only the majority partition can elect a
@@ -50,24 +48,7 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class SplitBrainIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "proxy:8666:9666,proxy:8667:9667,proxy:8668:9668";
-
-  private Proxy raft0Proxy;
-  private Proxy raft1Proxy;
-  private Proxy raft2Proxy;
-  private Proxy http0Proxy;
-  private Proxy http1Proxy;
-  private Proxy http2Proxy;
-
-  private void createProxies() throws IOException {
-    logger.info("Creating Raft and HTTP proxies for 3-node cluster");
-    raft0Proxy = toxiproxyClient.createProxy("raft0Proxy", "0.0.0.0:8666", "ArcadeDB_0:2434");
-    raft1Proxy = toxiproxyClient.createProxy("raft1Proxy", "0.0.0.0:8667", "ArcadeDB_1:2434");
-    raft2Proxy = toxiproxyClient.createProxy("raft2Proxy", "0.0.0.0:8668", "ArcadeDB_2:2434");
-    http0Proxy = toxiproxyClient.createProxy("http0Proxy", "0.0.0.0:9666", "ArcadeDB_0:2480");
-    http1Proxy = toxiproxyClient.createProxy("http1Proxy", "0.0.0.0:9667", "ArcadeDB_1:2480");
-    http2Proxy = toxiproxyClient.createProxy("http2Proxy", "0.0.0.0:9668", "ArcadeDB_2:2480");
-  }
+  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480,ArcadeDB_2:2434:2480";
 
   private int findLeaderIndex(final List<ServerWrapper> servers) {
     for (int i = 0; i < servers.size(); i++) {
@@ -77,6 +58,8 @@ class SplitBrainIT extends ContainersTestTemplate {
         final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestProperty("Authorization",
             "Basic " + Base64.getEncoder().encodeToString("root:playwithdata".getBytes()));
+        conn.setConnectTimeout(3000);
+        conn.setReadTimeout(3000);
         try {
           if (conn.getResponseCode() == 200) {
             final String body = new String(conn.getInputStream().readAllBytes());
@@ -94,26 +77,10 @@ class SplitBrainIT extends ContainersTestTemplate {
     return -1;
   }
 
-  private void isolateNode(final Proxy raftProxy, final Proxy httpProxy, final String label) throws IOException {
-    raftProxy.toxics().bandwidth(label + "_RAFT_DOWN", ToxicDirection.DOWNSTREAM, 0);
-    raftProxy.toxics().bandwidth(label + "_RAFT_UP", ToxicDirection.UPSTREAM, 0);
-    httpProxy.toxics().bandwidth(label + "_HTTP_DOWN", ToxicDirection.DOWNSTREAM, 0);
-    httpProxy.toxics().bandwidth(label + "_HTTP_UP", ToxicDirection.UPSTREAM, 0);
-  }
-
-  private void reconnectNode(final Proxy raftProxy, final Proxy httpProxy, final String label) throws IOException {
-    raftProxy.toxics().get(label + "_RAFT_DOWN").remove();
-    raftProxy.toxics().get(label + "_RAFT_UP").remove();
-    httpProxy.toxics().get(label + "_HTTP_DOWN").remove();
-    httpProxy.toxics().get(label + "_HTTP_UP").remove();
-  }
-
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test split-brain prevention: verify minority partition cannot accept writes (Raft leader steps down)")
-  void testSplitBrainPrevention() throws IOException, InterruptedException {
-    createProxies();
-
+  void testSplitBrainPrevention() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
@@ -126,8 +93,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
-    final Proxy[] raftProxies = { raft0Proxy, raft1Proxy, raft2Proxy };
-    final Proxy[] httpProxies = { http0Proxy, http1Proxy, http2Proxy };
+    final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
     db0.createDatabase();
@@ -145,8 +111,8 @@ class SplitBrainIT extends ContainersTestTemplate {
     final int survivor2 = (leaderIdx + 2) % 3;
     logger.info("Leader is node {}, isolating it to create minority partition", leaderIdx);
 
-    logger.info("Creating 2+1 partition: isolating node {} (current leader, minority)", leaderIdx);
-    isolateNode(raftProxies[leaderIdx], httpProxies[leaderIdx], "SPLIT");
+    logger.info("Creating 2+1 partition: disconnecting node {} (current leader, minority)", leaderIdx);
+    disconnectFromNetwork(nodeContainers[leaderIdx]);
 
     logger.info("Waiting for Raft leader step-down in minority and new election in majority");
     TimeUnit.SECONDS.sleep(15);
@@ -180,7 +146,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     }
 
     logger.info("Healing partition");
-    reconnectNode(raftProxies[leaderIdx], httpProxies[leaderIdx], "SPLIT");
+    reconnectToNetwork(nodeContainers[leaderIdx]);
 
     logger.info("Waiting for cluster reformation and Raft log catch-up");
     // In Raft, the minority node catches up from the majority's log. No conflict resolution needed.
@@ -215,9 +181,7 @@ class SplitBrainIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test 1+1+1 partition: verify no writes possible without majority (all leaders step down)")
-  void testCompletePartitionNoQuorum() throws IOException, InterruptedException {
-    createProxies();
-
+  void testCompletePartitionNoQuorum() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
@@ -229,6 +193,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
+    final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
     db0.createDatabase();
@@ -241,9 +206,9 @@ class SplitBrainIT extends ContainersTestTemplate {
     db2.assertThatUserCountIs(15);
 
     logger.info("Creating complete partition: 1+1+1 (each node isolated from all others)");
-    isolateNode(raft0Proxy, http0Proxy, "ISO_0");
-    isolateNode(raft1Proxy, http1Proxy, "ISO_1");
-    isolateNode(raft2Proxy, http2Proxy, "ISO_2");
+    disconnectFromNetwork(nodeContainers[0]);
+    disconnectFromNetwork(nodeContainers[1]);
+    disconnectFromNetwork(nodeContainers[2]);
 
     logger.info("Waiting for complete partition detection and Raft leader step-down");
     TimeUnit.SECONDS.sleep(15);
@@ -278,9 +243,9 @@ class SplitBrainIT extends ContainersTestTemplate {
     logger.info("Successful writes without quorum: {}/3 (expected 0 for Raft with majority quorum)", successfulWrites);
 
     logger.info("Healing all partitions");
-    reconnectNode(raft0Proxy, http0Proxy, "ISO_0");
-    reconnectNode(raft1Proxy, http1Proxy, "ISO_1");
-    reconnectNode(raft2Proxy, http2Proxy, "ISO_2");
+    reconnectToNetwork(nodeContainers[0]);
+    reconnectToNetwork(nodeContainers[1]);
+    reconnectToNetwork(nodeContainers[2]);
 
     logger.info("Waiting for cluster reformation and leader re-election");
     TimeUnit.SECONDS.sleep(15);
@@ -321,9 +286,7 @@ class SplitBrainIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test cluster reformation: verify proper Raft leader election after partition healing")
-  void testClusterReformation() throws IOException, InterruptedException {
-    createProxies();
-
+  void testClusterReformation() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
@@ -336,8 +299,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
-    final Proxy[] raftProxies = { raft0Proxy, raft1Proxy, raft2Proxy };
-    final Proxy[] httpProxies = { http0Proxy, http1Proxy, http2Proxy };
+    final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
     db0.createDatabase();
@@ -360,7 +322,7 @@ class SplitBrainIT extends ContainersTestTemplate {
       logger.info("Cycle {}: Leader={}, isolating follower node {}", cycle, currentLeader, isolatedIdx);
 
       logger.info("Cycle {}: Creating partition", cycle);
-      isolateNode(raftProxies[isolatedIdx], httpProxies[isolatedIdx], "CYCLE" + cycle);
+      disconnectFromNetwork(nodeContainers[isolatedIdx]);
 
       TimeUnit.SECONDS.sleep(10);
 
@@ -368,7 +330,7 @@ class SplitBrainIT extends ContainersTestTemplate {
       dbs[currentLeader].addUserAndPhotos(5, 10);
 
       logger.info("Cycle {}: Healing partition", cycle);
-      reconnectNode(raftProxies[isolatedIdx], httpProxies[isolatedIdx], "CYCLE" + cycle);
+      reconnectToNetwork(nodeContainers[isolatedIdx]);
 
       logger.info("Cycle {}: Waiting for reformation and Raft log catch-up", cycle);
       TimeUnit.SECONDS.sleep(10);
@@ -410,9 +372,7 @@ class SplitBrainIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test quorum loss recovery: verify cluster recovers after temporary quorum loss")
-  void testQuorumLossRecovery() throws IOException, InterruptedException {
-    createProxies();
-
+  void testQuorumLossRecovery() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum (2/3)");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
@@ -424,6 +384,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
+    final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
     db0.createDatabase();
@@ -436,8 +397,8 @@ class SplitBrainIT extends ContainersTestTemplate {
     db2.assertThatUserCountIs(20);
 
     logger.info("Isolating 2 nodes (ArcadeDB_1 and ArcadeDB_2) - losing majority quorum");
-    isolateNode(raft1Proxy, http1Proxy, "QLOSS_1");
-    isolateNode(raft2Proxy, http2Proxy, "QLOSS_2");
+    disconnectFromNetwork(nodeContainers[1]);
+    disconnectFromNetwork(nodeContainers[2]);
 
     logger.info("Waiting for Raft leader step-down due to quorum loss");
     TimeUnit.SECONDS.sleep(15);
@@ -453,8 +414,8 @@ class SplitBrainIT extends ContainersTestTemplate {
     }
 
     logger.info("Restoring quorum by reconnecting nodes");
-    reconnectNode(raft1Proxy, http1Proxy, "QLOSS_1");
-    reconnectNode(raft2Proxy, http2Proxy, "QLOSS_2");
+    reconnectToNetwork(nodeContainers[1]);
+    reconnectToNetwork(nodeContainers[2]);
 
     logger.info("Waiting for quorum restoration and leader re-election");
     TimeUnit.SECONDS.sleep(15);

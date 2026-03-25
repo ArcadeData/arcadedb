@@ -22,7 +22,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
-import eu.rekawek.toxiproxy.Proxy;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -30,7 +29,6 @@ import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -48,24 +46,7 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class LeaderFailoverIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "proxy:8666:9666,proxy:8667:9667,proxy:8668:9668";
-
-  private Proxy raft0Proxy;
-  private Proxy raft1Proxy;
-  private Proxy raft2Proxy;
-  private Proxy http0Proxy;
-  private Proxy http1Proxy;
-  private Proxy http2Proxy;
-
-  private void createProxies() throws IOException {
-    logger.info("Creating Raft and HTTP proxies for 3-node cluster");
-    raft0Proxy = toxiproxyClient.createProxy("raft0Proxy", "0.0.0.0:8666", "ArcadeDB_0:2434");
-    raft1Proxy = toxiproxyClient.createProxy("raft1Proxy", "0.0.0.0:8667", "ArcadeDB_1:2434");
-    raft2Proxy = toxiproxyClient.createProxy("raft2Proxy", "0.0.0.0:8668", "ArcadeDB_2:2434");
-    http0Proxy = toxiproxyClient.createProxy("http0Proxy", "0.0.0.0:9666", "ArcadeDB_0:2480");
-    http1Proxy = toxiproxyClient.createProxy("http1Proxy", "0.0.0.0:9667", "ArcadeDB_1:2480");
-    http2Proxy = toxiproxyClient.createProxy("http2Proxy", "0.0.0.0:9668", "ArcadeDB_2:2480");
-  }
+  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480,ArcadeDB_2:2434:2480";
 
   private int findLeaderIndex(final List<ServerWrapper> servers) {
     for (int i = 0; i < servers.size(); i++) {
@@ -95,9 +76,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test leader failover: kill leader, verify new election and data consistency")
-  void testLeaderFailover() throws IOException, InterruptedException {
-    createProxies();
-
+  void testLeaderFailover() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
@@ -197,9 +176,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test repeated leader failures: verify cluster stability under continuous failover")
-  void testRepeatedLeaderFailures() throws IOException, InterruptedException {
-    createProxies();
-
+  void testRepeatedLeaderFailures() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
@@ -321,9 +298,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test leader failover with active writes: verify no data loss during failover")
-  void testLeaderFailoverDuringWrites() throws IOException, InterruptedException {
-    createProxies();
-
+  void testLeaderFailoverDuringWrites() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
     final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
