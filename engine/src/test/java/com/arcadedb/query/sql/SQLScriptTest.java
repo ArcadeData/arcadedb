@@ -594,6 +594,29 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
+  void letParenthesisShouldNotAffectContent() {
+    // https://github.com/ArcadeData/arcadedb/issues/3735
+    // LET $x = SELECT ... and LET $y = (SELECT ...) must produce identical variable types
+    final String script = """
+        LET $x = SELECT "hi" AS hi;
+        LET $y = (SELECT "hi" AS hi);
+        SELECT $x, $x.type(), $x.hi, $y, $y.type(), $y.hi
+        """;
+    final ResultSet rs = database.query("sqlscript", script);
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+
+    // Both must be LIST type
+    assertThat((String) row.getProperty("$x.type()")).isEqualTo("LIST");
+    assertThat((String) row.getProperty("$y.type()")).isEqualTo("LIST");
+
+    // Both must allow field access through the list
+    assertThat(row.getProperty("$x.hi").toString()).isEqualTo(row.getProperty("$y.hi").toString());
+
+    rs.close();
+  }
+
+  @Test
   void queryScriptWithWriteStatementIsNotIdempotent() {
     // A SQLScript that inserts at the top level must still be rejected by the query endpoint
     final String script = """

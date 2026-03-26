@@ -49,11 +49,10 @@ public class LetStatement extends SimpleExecStatement {
       result = statement.execute(context.getDatabase(), params, context);
     }
     if (result instanceof ResultSet set) {
-      final InternalResultSet rs = new InternalResultSet();
-      set.stream().forEach(x -> rs.add(x));
-      rs.setPlan(set.getExecutionPlan().orElse(null));
+      final List<Result> list = new ArrayList<>();
+      set.stream().forEach(list::add);
       set.close();
-      result = rs;
+      result = list;
     }
 
     if (context != null) {
