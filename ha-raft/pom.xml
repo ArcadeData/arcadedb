@@ -115,12 +115,6 @@
             <version>${logback-classic.version}</version>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-server</artifactId>
-            <version>26.4.1-SNAPSHOT</version>
-            <scope>compile</scope>
-        </dependency>
     </dependencies>
 
     <build>
