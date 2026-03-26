@@ -102,7 +102,7 @@ public final class RaftLogEntryCodec {
 
       dos.writeByte(RaftLogEntryType.SCHEMA_ENTRY.getId());
       dos.writeUTF(databaseName);
-      dos.writeUTF(schemaJson);
+      dos.writeUTF(schemaJson != null ? schemaJson : "");
 
       writeFileMap(dos, filesToAdd);
       writeFileMap(dos, filesToRemove);
