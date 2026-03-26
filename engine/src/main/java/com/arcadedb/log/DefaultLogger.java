@@ -26,6 +26,7 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.logging.ConsoleHandler;
@@ -86,18 +87,97 @@ public class DefaultLogger implements Logger {
       return;
 
     initialized = true;
-    final File logDir = new File("./log");
+
+    // Pre-create the log directory (if any) before loading the configuration.
+    // JUL's FileHandler opens its output file immediately when the LogManager reads the
+    // configuration, so the parent directory must exist at that point.
+    // We only create the directory when a FileHandler is actually configured, and we derive
+    // the path from the configured pattern — not from a hardcoded "./log" (issue #3732).
+    createLogDirectoryFromConfig();
+
+    installCustomFormatter();
+  }
+
+  /**
+   * Reads the pending log-configuration source (the same one that {@link #installCustomFormatter()}
+   * will later load into the LogManager) and pre-creates the parent directory of the configured
+   * {@code java.util.logging.FileHandler.pattern}, if any.
+   */
+  private void createLogDirectoryFromConfig() {
+    final String pattern = findConfiguredFileHandlerPattern();
+    if (pattern == null)
+      return;
+
+    // Resolve JUL pattern substitutions to obtain a concrete path.
+    // Use a placeholder for "%%" so that single-percent substitutions (%t, %h, %g, %u)
+    // do not incorrectly expand the second character of an escaped "%%x" sequence.
+    final String resolved = pattern
+        .replace("%%", "\u0000")
+        .replace("%t", System.getProperty("java.io.tmpdir", "/tmp"))
+        .replace("%h", System.getProperty("user.home", "/"))
+        .replace("%g", "0")
+        .replace("%u", "0")
+        .replace("\u0000", "%");
+
+    final File logDir = new File(resolved).getParentFile();
+    if (logDir == null)
+      return;
 
     try {
       if (!logDir.exists() || !logDir.isDirectory())
-        // TRY TO CREATE LOG DIRECTORY
         if (!logDir.mkdirs())
           System.err.println("Cannot create log directory: " + logDir.getAbsolutePath());
     } catch (final Exception e) {
-      // IGNORE
+      System.err.println("Error creating log directory: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Peeks at the log-configuration source that will be used (without loading it into the
+   * LogManager) and returns the value of {@code java.util.logging.FileHandler.pattern}, or
+   * {@code null} if no FileHandler pattern is configured.
+   */
+  private String findConfiguredFileHandlerPattern() {
+    final String configFileProp = System.getProperty("java.util.logging.config.file");
+    if (configFileProp != null) {
+      final File file = new File(configFileProp);
+      if (file.exists())
+        return readFileHandlerPatternFrom(file);
+      // Custom file specified but missing — installCustomFormatter() will emit the warning
+      return null;
     }
 
-    installCustomFormatter();
+    // Try the classpath resource (e.g. inside a JAR)
+    try (final InputStream stream = getClass().getClassLoader().getResourceAsStream(FILE_LOG_PROPERTIES)) {
+      if (stream != null)
+        return loadPatternFromStream(stream);
+    } catch (final IOException ignored) {
+    }
+
+    // Try the production "config/" directory layout
+    try (final InputStream configStream = new FileInputStream("config/" + FILE_LOG_PROPERTIES)) {
+      return loadPatternFromStream(configStream);
+    } catch (final IOException e) {
+      return null;
+    }
+  }
+
+  private String readFileHandlerPatternFrom(final File file) {
+    try (final InputStream fis = new FileInputStream(file)) {
+      return loadPatternFromStream(fis);
+    } catch (final IOException e) {
+      return null;
+    }
+  }
+
+  private String loadPatternFromStream(final InputStream stream) {
+    final Properties props = new Properties();
+    try {
+      props.load(stream);
+    } catch (final IOException e) {
+      return null;
+    }
+    return props.getProperty("java.util.logging.FileHandler.pattern");
   }
 
   public void installCustomFormatter() {
