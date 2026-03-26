@@ -41,8 +41,16 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
   });
 
   test('should load ApexCharts v5 library', async ({ page }) => {
+    // Set up response listener before navigating to capture the initial API call
+    const responsePromise = page.waitForResponse(response =>
+      response.url().includes('api/v1/server')
+    );
+
     // Navigate to Server tab using its ID selector
     await page.locator('#tab-server-sel').click();
+
+    // Wait for the API response that populates the charts
+    await responsePromise;
 
     // Check that ApexCharts is loaded and can create charts
     const apexChartsLoaded = await page.evaluate(() => {
@@ -63,8 +71,16 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
   });
 
   test('should render server summary cards and chart on Server tab', async ({ page }) => {
+    // Set up response listener before navigating to capture the initial API call
+    const responsePromise = page.waitForResponse(response =>
+      response.url().includes('api/v1/server')
+    );
+
     // Navigate to Server tab
     await page.locator('#tab-server-sel').click();
+
+    // Wait for the API response that populates the charts
+    await responsePromise;
 
     // Verify server summary cards are present
     // CPU card
@@ -95,8 +111,16 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
   });
 
   test('should verify chart SVG structure and rendering', async ({ page }) => {
+    // Set up response listener before navigating to capture the initial API call
+    const responsePromise = page.waitForResponse(response =>
+      response.url().includes('api/v1/server')
+    );
+
     // Navigate to Server tab
     await page.locator('#tab-server-sel').click();
+
+    // Wait for the API response that populates the charts
+    await responsePromise;
 
     // Verify Transaction Operations chart has proper SVG structure
     const chartSvg = page.locator('#serverChartCommands svg.apexcharts-svg');
@@ -151,8 +175,16 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
       errors.push(error.message);
     });
 
+    // Set up response listener before navigating to capture the initial API call
+    const responsePromise = page.waitForResponse(response =>
+      response.url().includes('api/v1/server')
+    );
+
     // Navigate to Server tab
     await page.locator('#tab-server-sel').click();
+
+    // Wait for the API response that populates the charts
+    await responsePromise;
 
     // Wait for chart to render
     await expect(page.locator('#serverChartCommands svg.apexcharts-svg')).toBeVisible({ timeout: 10000 });
@@ -170,8 +202,16 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
   });
 
   test('should verify chart tooltips work (ApexCharts v5 feature)', async ({ page }) => {
+    // Set up response listener before navigating to capture the initial API call
+    const responsePromise = page.waitForResponse(response =>
+      response.url().includes('api/v1/server')
+    );
+
     // Navigate to Server tab
     await page.locator('#tab-server-sel').click();
+
+    // Wait for the API response that populates the charts
+    await responsePromise;
 
     // Wait for chart to be fully rendered
     const chart = page.locator('#serverChartCommands');
@@ -185,8 +225,16 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
   });
 
   test('should verify chart uses @svgdotjs dependencies (v5 migration)', async ({ page }) => {
+    // Set up response listener before navigating to capture the initial API call
+    const responsePromise = page.waitForResponse(response =>
+      response.url().includes('api/v1/server')
+    );
+
     // Navigate to Server tab to trigger chart rendering
     await page.locator('#tab-server-sel').click();
+
+    // Wait for the API response that populates the charts
+    await responsePromise;
 
     // Wait for the chart to be visible
     await expect(page.locator('svg.apexcharts-svg').first()).toBeVisible({ timeout: 10000 });
