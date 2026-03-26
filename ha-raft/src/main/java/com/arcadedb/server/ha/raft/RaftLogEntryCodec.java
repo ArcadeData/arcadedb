@@ -229,6 +229,10 @@ public final class RaftLogEntryCodec {
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {
+    if (fileMap == null) {
+      dos.writeInt(0);
+      return;
+    }
     dos.writeInt(fileMap.size());
     for (final Map.Entry<Integer, String> entry : fileMap.entrySet()) {
       dos.writeInt(entry.getKey());
