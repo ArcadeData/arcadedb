@@ -23,13 +23,165 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import org.junit.jupiter.api.Test;
 
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Comparator;
+import java.util.logging.FileHandler;
+import java.util.logging.Handler;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class LoggerTest extends TestHelper {
   private boolean logged  = false;
   private boolean flushed = false;
+
+  /**
+   * Regression test for issue #3732: DefaultLogger was always creating ./log even when no
+   * FileHandler was configured. When a console-only config is used, no directory should be created.
+   */
+  @Test
+  void noLogDirectoryCreatedWithConsoleOnlyConfig() throws Exception {
+    final Path tempBase = Files.createTempDirectory("arcade-3732-console");
+    final File consoleOnlyProps = tempBase.resolve("console-only.properties").toFile();
+
+    try (final PrintWriter pw = new PrintWriter(consoleOnlyProps)) {
+      pw.println("handlers=java.util.logging.ConsoleHandler");
+      pw.println(".level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.formatter=com.arcadedb.utility.AnsiLogFormatter");
+    }
+
+    final String prevProp = System.getProperty("java.util.logging.config.file");
+    System.setProperty("java.util.logging.config.file", consoleOnlyProps.getAbsolutePath());
+
+    try {
+      // Record whether ./log already existed before init() so we can make a conditional assertion
+      final File defaultLogDir = new File("./log");
+      final boolean existedBefore = defaultLogDir.exists();
+
+      final DefaultLogger logger = new DefaultLogger();
+      logger.init();
+
+      // No FileHandler configured → no FileHandler.pattern in LogManager
+      // Note: java.util.logging.LogManager stays fully-qualified because com.arcadedb.log.LogManager is already imported
+      assertThat(java.util.logging.LogManager.getLogManager().getProperty("java.util.logging.FileHandler.pattern")).isNull();
+      // The spurious ./log directory should not have been created by init()
+      if (!existedBefore)
+        assertThat(defaultLogDir).doesNotExist();
+    } finally {
+      restoreLogConfig(prevProp);
+      deleteTree(tempBase);
+    }
+  }
+
+  /**
+   * Regression test for issue #3732: DefaultLogger must create the directory from the configured
+   * FileHandler.pattern, not from the hardcoded "./log".
+   */
+  @Test
+  void logDirectoryCreatedFromConfiguredFileHandlerPattern() throws Exception {
+    final Path tempBase = Files.createTempDirectory("arcade-3732-filehandler");
+    final File customLogDir = tempBase.resolve("mylogdir").toFile();
+    assertThat(customLogDir).doesNotExist();
+
+    final File customProps = tempBase.resolve("file-handler.properties").toFile();
+    try (final PrintWriter pw = new PrintWriter(customProps)) {
+      pw.println("handlers=java.util.logging.ConsoleHandler, java.util.logging.FileHandler");
+      pw.println(".level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.formatter=com.arcadedb.utility.AnsiLogFormatter");
+      pw.println("java.util.logging.FileHandler.level=WARNING");
+      pw.println("java.util.logging.FileHandler.pattern=" + customLogDir.getAbsolutePath() + "/arcade.%g.log");
+      pw.println("java.util.logging.FileHandler.count=1");
+      pw.println("java.util.logging.FileHandler.limit=1000");
+      pw.println("java.util.logging.FileHandler.formatter=com.arcadedb.log.LogFormatter");
+    }
+
+    final String prevProp = System.getProperty("java.util.logging.config.file");
+    System.setProperty("java.util.logging.config.file", customProps.getAbsolutePath());
+
+    try {
+      final DefaultLogger logger = new DefaultLogger();
+      logger.init();
+
+      // The custom directory should have been created from the configured pattern
+      assertThat(customLogDir).exists().isDirectory();
+    } finally {
+      closeFileHandlers();
+      restoreLogConfig(prevProp);
+      deleteTree(tempBase);
+    }
+  }
+
+  /**
+   * Regression test for issue #3732: verifies that JUL pattern substitutions (%t, %h, %g) are
+   * correctly resolved when pre-creating the log directory. Uses %t (java.io.tmpdir) so the
+   * test does not depend on a writable working directory.
+   */
+  @Test
+  void logDirectoryCreatedWithTmpDirSubstitution() throws Exception {
+    final Path tempBase = Files.createTempDirectory("arcade-3732-tmpdir");
+    // Use a unique sub-directory inside java.io.tmpdir so we can assert it was created
+    final File customLogDir = new File(System.getProperty("java.io.tmpdir"), "arcade-3732-sub-" + tempBase.getFileName());
+    assertThat(customLogDir).doesNotExist();
+
+    final File customProps = tempBase.resolve("tmpdir-handler.properties").toFile();
+    try (final PrintWriter pw = new PrintWriter(customProps)) {
+      pw.println("handlers=java.util.logging.ConsoleHandler, java.util.logging.FileHandler");
+      pw.println(".level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.formatter=com.arcadedb.utility.AnsiLogFormatter");
+      pw.println("java.util.logging.FileHandler.level=WARNING");
+      pw.println("java.util.logging.FileHandler.pattern=%t/arcade-3732-sub-" + tempBase.getFileName() + "/arcade.%g.log");
+      pw.println("java.util.logging.FileHandler.count=1");
+      pw.println("java.util.logging.FileHandler.limit=1000");
+      pw.println("java.util.logging.FileHandler.formatter=com.arcadedb.log.LogFormatter");
+    }
+
+    final String prevProp = System.getProperty("java.util.logging.config.file");
+    System.setProperty("java.util.logging.config.file", customProps.getAbsolutePath());
+
+    try {
+      final DefaultLogger logger = new DefaultLogger();
+      logger.init();
+
+      // %t must have been resolved to java.io.tmpdir and the sub-directory created
+      assertThat(customLogDir).exists().isDirectory();
+    } finally {
+      closeFileHandlers();
+      restoreLogConfig(prevProp);
+      deleteTree(tempBase);
+      if (customLogDir.exists())
+        deleteTree(customLogDir.toPath());
+    }
+  }
+
+  private void restoreLogConfig(final String prevProp) throws IOException {
+    if (prevProp != null)
+      System.setProperty("java.util.logging.config.file", prevProp);
+    else
+      System.clearProperty("java.util.logging.config.file");
+
+    try (final InputStream stream = DefaultLogger.class.getClassLoader().getResourceAsStream("arcadedb-log.properties")) {
+      if (stream != null)
+        java.util.logging.LogManager.getLogManager().readConfiguration(stream);
+    }
+  }
+
+  private void closeFileHandlers() {
+    for (final Handler h : java.util.logging.Logger.getLogger("").getHandlers())
+      if (h instanceof FileHandler)
+        h.close();
+  }
+
+  private void deleteTree(final Path root) throws IOException {
+    Files.walk(root).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+  }
 
   @Test
   void customLogger() {
