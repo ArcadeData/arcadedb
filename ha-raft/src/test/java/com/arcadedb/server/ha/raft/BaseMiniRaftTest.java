@@ -37,7 +37,6 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -103,6 +102,7 @@ public abstract class BaseMiniRaftTest {
       config.setValue(GlobalConfiguration.HA_ENABLED, false);
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, BASE_HTTP_PORT + i);
+      config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "testPassword");
 
       arcadeServers[i] = new ArcadeDBServer(config);
       arcadeServers[i].start();
