@@ -49,7 +49,7 @@ test.describe('ArcadeDB Studio Database Creation', () => {
     await page.waitForTimeout(1000);
 
     // Click the Create button to open database creation dialog
-    await page.locator('button[onclick="createDatabase()"]').click();
+    await page.locator('#tab-database button[onclick="createDatabase()"]').click();
 
     // Wait for the global modal to appear with the creation prompt
     await expect(page.locator('#globalModal')).toBeVisible();
