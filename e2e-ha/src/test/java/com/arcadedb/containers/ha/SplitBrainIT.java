@@ -48,7 +48,7 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class SplitBrainIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480,ArcadeDB_2:2434:2480";
+  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
   private int findLeaderIndex(final List<ServerWrapper> servers) {
     for (int i = 0; i < servers.size(); i++) {
@@ -82,9 +82,9 @@ class SplitBrainIT extends ContainersTestTemplate {
   @DisplayName("Test split-brain prevention: verify minority partition cannot accept writes (Raft leader steps down)")
   void testSplitBrainPrevention() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -159,7 +159,7 @@ class SplitBrainIT extends ContainersTestTemplate {
             final long users0 = db0.countUsers();
             final long users1 = db1.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("Reformation check: ArcadeDB_0={}, ArcadeDB_1={}, ArcadeDB_2={} (expected={})",
+            logger.info("Reformation check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
                 users0, users1, users2, expectedUsers);
             return users0 == expectedUsers && users1 == expectedUsers && users2 == expectedUsers;
           } catch (final Exception e) {
@@ -183,9 +183,9 @@ class SplitBrainIT extends ContainersTestTemplate {
   @DisplayName("Test 1+1+1 partition: verify no writes possible without majority (all leaders step down)")
   void testCompletePartitionNoQuorum() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -219,25 +219,25 @@ class SplitBrainIT extends ContainersTestTemplate {
     try {
       db0.addUserAndPhotos(5, 10);
       successfulWrites++;
-      logger.warn("Write to ArcadeDB_0 succeeded without quorum");
+      logger.warn("Write to arcadedb-0 succeeded without quorum");
     } catch (final Exception e) {
-      logger.info("Write to ArcadeDB_0 correctly failed: {}", e.getMessage());
+      logger.info("Write to arcadedb-0 correctly failed: {}", e.getMessage());
     }
 
     try {
       db1.addUserAndPhotos(5, 10);
       successfulWrites++;
-      logger.warn("Write to ArcadeDB_1 succeeded without quorum");
+      logger.warn("Write to arcadedb-1 succeeded without quorum");
     } catch (final Exception e) {
-      logger.info("Write to ArcadeDB_1 correctly failed: {}", e.getMessage());
+      logger.info("Write to arcadedb-1 correctly failed: {}", e.getMessage());
     }
 
     try {
       db2.addUserAndPhotos(5, 10);
       successfulWrites++;
-      logger.warn("Write to ArcadeDB_2 succeeded without quorum");
+      logger.warn("Write to arcadedb-2 succeeded without quorum");
     } catch (final Exception e) {
-      logger.info("Write to ArcadeDB_2 correctly failed: {}", e.getMessage());
+      logger.info("Write to arcadedb-2 correctly failed: {}", e.getMessage());
     }
 
     logger.info("Successful writes without quorum: {}/3 (expected 0 for Raft with majority quorum)", successfulWrites);
@@ -264,7 +264,7 @@ class SplitBrainIT extends ContainersTestTemplate {
             final long users0 = db0.countUsers();
             final long users1 = db1.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("Convergence check: ArcadeDB_0={}, ArcadeDB_1={}, ArcadeDB_2={} (expected={})",
+            logger.info("Convergence check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
                 users0, users1, users2, expectedUsers);
             return users0 == expectedUsers && users1 == expectedUsers && users2 == expectedUsers;
           } catch (final Exception e) {
@@ -288,9 +288,9 @@ class SplitBrainIT extends ContainersTestTemplate {
   @DisplayName("Test cluster reformation: verify proper Raft leader election after partition healing")
   void testClusterReformation() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -374,9 +374,9 @@ class SplitBrainIT extends ContainersTestTemplate {
   @DisplayName("Test quorum loss recovery: verify cluster recovers after temporary quorum loss")
   void testQuorumLossRecovery() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum (2/3)");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -396,7 +396,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     db1.assertThatUserCountIs(20);
     db2.assertThatUserCountIs(20);
 
-    logger.info("Isolating 2 nodes (ArcadeDB_1 and ArcadeDB_2) - losing majority quorum");
+    logger.info("Isolating 2 nodes (arcadedb-1 and arcadedb-2) - losing majority quorum");
     disconnectFromNetwork(nodeContainers[1]);
     disconnectFromNetwork(nodeContainers[2]);
 
@@ -434,7 +434,7 @@ class SplitBrainIT extends ContainersTestTemplate {
             final long users0 = db0.countUsers();
             final long users1 = db1.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("Quorum recovery check: ArcadeDB_0={}, ArcadeDB_1={}, ArcadeDB_2={} (expected={})",
+            logger.info("Quorum recovery check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
                 users0, users1, users2, expectedUsers);
             return users0 == expectedUsers && users1 == expectedUsers && users2 == expectedUsers;
           } catch (final Exception e) {

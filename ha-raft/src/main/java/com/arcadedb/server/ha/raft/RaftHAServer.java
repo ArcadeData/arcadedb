@@ -96,12 +96,14 @@ public class RaftHAServer {
         RaftGroupId.valueOf(UUID.nameUUIDFromBytes(clusterName.getBytes())),
         peers);
 
-    // Build human-readable display names: "ServerName_N (host:httpPort)"
-    final String prefix = serverName.substring(0, serverName.lastIndexOf('_'));
+    // Build human-readable display names: "ServerName-N (host:httpPort)"
+    final int separatorIdx = findLastSeparatorIndex(serverName);
+    final String prefix = serverName.substring(0, separatorIdx);
+    final char separator = serverName.charAt(separatorIdx);
     final Map<RaftPeerId, String> displayNames = new HashMap<>(peers.size());
     for (int i = 0; i < peers.size(); i++) {
       final RaftPeerId peerId = peers.get(i).getId();
-      final String nodeName = prefix + "_" + i;
+      final String nodeName = prefix + separator + i;
       final String httpAddr = this.httpAddresses.get(peerId);
       displayNames.put(peerId, httpAddr != null ? nodeName + " (" + httpAddr + ")" : nodeName);
     }
@@ -179,15 +181,12 @@ public class RaftHAServer {
 
   /**
    * Determines the local peer ID by parsing the numeric suffix from the server name.
-   * For example, "ArcadeDB_0" maps to index 0, which corresponds to "peer-0".
+   * For example, "arcadedb-0" or "ArcadeDB_0" maps to index 0, which corresponds to "peer-0".
    */
   static RaftPeerId findLocalPeerId(final List<RaftPeer> peers, final String serverName,
       final ArcadeDBServer server) {
-    final int underscoreIdx = serverName.lastIndexOf('_');
-    if (underscoreIdx < 0 || underscoreIdx == serverName.length() - 1)
-      throw new IllegalArgumentException("Cannot parse server index from server name: " + serverName);
-
-    final int index = Integer.parseInt(serverName.substring(underscoreIdx + 1));
+    final int separatorIdx = findLastSeparatorIndex(serverName);
+    final int index = Integer.parseInt(serverName.substring(separatorIdx + 1));
     if (index < 0 || index >= peers.size())
       throw new IllegalArgumentException(
           "Server index " + index + " from name '" + serverName + "' is out of range [0, " + peers.size() + ")");
@@ -196,7 +195,20 @@ public class RaftHAServer {
   }
 
   /**
-   * Returns a human-readable display name for a peer, e.g. "ArcadeDB_0 (localhost:2480)".
+   * Finds the index of the last separator character ({@code '-'} or {@code '_'}) in the server name.
+   * Server names follow the pattern {@code prefix-N} or {@code prefix_N} where N is the node index.
+   */
+  static int findLastSeparatorIndex(final String serverName) {
+    final int hyphenIdx = serverName.lastIndexOf('-');
+    final int underscoreIdx = serverName.lastIndexOf('_');
+    final int idx = Math.max(hyphenIdx, underscoreIdx);
+    if (idx < 0 || idx == serverName.length() - 1)
+      throw new IllegalArgumentException("Cannot parse server index from server name: " + serverName);
+    return idx;
+  }
+
+  /**
+   * Returns a human-readable display name for a peer, e.g. "arcadedb-0 (localhost:2480)".
    * Falls back to the raw peer ID string if the peer is unknown.
    */
   public String getPeerDisplayName(final RaftPeerId peerId) {

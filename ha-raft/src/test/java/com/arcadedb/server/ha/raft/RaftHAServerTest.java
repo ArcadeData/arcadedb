@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RaftHAServerTest {
 
@@ -231,5 +232,36 @@ class RaftHAServerTest {
 
     assertThat(displayNames.get(peers.get(0).getId())).isEqualTo("MyDB_0");
     assertThat(displayNames.get(peers.get(1).getId())).isEqualTo("MyDB_1");
+  }
+
+  @Test
+  void findLastSeparatorIndexWithUnderscore() {
+    assertThat(RaftHAServer.findLastSeparatorIndex("ArcadeDB_0")).isEqualTo(8);
+    assertThat(RaftHAServer.findLastSeparatorIndex("ArcadeDB_12")).isEqualTo(8);
+  }
+
+  @Test
+  void findLastSeparatorIndexWithHyphen() {
+    assertThat(RaftHAServer.findLastSeparatorIndex("arcadedb-0")).isEqualTo(8);
+    assertThat(RaftHAServer.findLastSeparatorIndex("arcadedb-12")).isEqualTo(8);
+  }
+
+  @Test
+  void findLastSeparatorIndexPrefersLastSeparator() {
+    // When both separators are present, the last one wins
+    assertThat(RaftHAServer.findLastSeparatorIndex("my-db_0")).isEqualTo(5);
+    assertThat(RaftHAServer.findLastSeparatorIndex("my_db-0")).isEqualTo(5);
+  }
+
+  @Test
+  void findLastSeparatorIndexThrowsWithoutSeparator() {
+    assertThatThrownBy(() -> RaftHAServer.findLastSeparatorIndex("arcadedb0"))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void findLastSeparatorIndexThrowsWhenSeparatorIsLast() {
+    assertThatThrownBy(() -> RaftHAServer.findLastSeparatorIndex("arcadedb-"))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }

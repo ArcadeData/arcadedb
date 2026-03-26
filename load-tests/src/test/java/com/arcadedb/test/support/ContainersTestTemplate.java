@@ -38,6 +38,7 @@ import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.lifecycle.Startables;
+import org.testcontainers.containers.BindMode;
 import org.testcontainers.utility.MountableFile;
 
 import java.io.File;
@@ -327,6 +328,50 @@ public abstract class ContainersTestTemplate {
         .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
         .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
 
+        .withEnv("JAVA_OPTS", String.format("""
+            -Darcadedb.server.rootPassword=playwithdata
+            -Darcadedb.server.plugins=GrpcServerPlugin,PrometheusMetricsPlugin
+            -Darcadedb.server.name=%s
+            -Darcadedb.backup.enabled=false
+            -Darcadedb.typeDefaultBuckets=10
+            -Darcadedb.ha.enabled=true
+            -Darcadedb.ha.implementation=raft
+            -Darcadedb.ha.quorum=%s
+            -Darcadedb.ha.raft.port=2434
+            -Darcadedb.ha.serverList=%s
+            """, name, quorum, serverList))
+        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")
+        .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024))
+        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
+    containers.add(container);
+    return container;
+  }
+
+  /**
+   * Creates a new ArcadeDB container with Raft HA enabled and persistent storage via bind mounts.
+   * Use this instead of {@link #createArcadeContainer(String, String, String, Network)} when
+   * data must survive container stop/start cycles (e.g. rolling restart tests).
+   */
+  protected GenericContainer<?> createPersistentArcadeContainer(
+      final String name,
+      final String serverList,
+      final String quorum,
+      final Network network) {
+
+    makeContainersDirectories(name);
+
+    final String dbPath = Path.of("./target/databases/" + name).toAbsolutePath().toString();
+    final String replPath = Path.of("./target/replication/" + name).toAbsolutePath().toString();
+    final String logPath = Path.of("./target/logs/" + name).toAbsolutePath().toString();
+
+    final GenericContainer<?> container = new GenericContainer<>(IMAGE)
+        .withExposedPorts(2480, 2434, 5432, 50051)
+        .withNetwork(network)
+        .withNetworkAliases(name)
+        .withStartupTimeout(Duration.ofSeconds(90))
+        .withFileSystemBind(dbPath, "/home/arcadedb/databases", BindMode.READ_WRITE)
+        .withFileSystemBind(replPath, "/home/arcadedb/replication", BindMode.READ_WRITE)
+        .withFileSystemBind(logPath, "/home/arcadedb/logs", BindMode.READ_WRITE)
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata
             -Darcadedb.server.plugins=GrpcServerPlugin,PrometheusMetricsPlugin

@@ -65,17 +65,17 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   @DisplayName("Test symmetric network delay: all nodes experience same latency")
   void testSymmetricDelay() throws IOException {
     logger.info("Creating Raft and HTTP proxies for 3-node cluster");
-    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "ArcadeDB_0:2434");
-    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "ArcadeDB_1:2434");
-    final Proxy raftProxy2 = toxiproxyClient.createProxy("raftProxy2", "0.0.0.0:" + RAFT_PROXY_PORT_2, "ArcadeDB_2:2434");
-    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "ArcadeDB_0:2480");
-    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "ArcadeDB_1:2480");
-    toxiproxyClient.createProxy("httpProxy2", "0.0.0.0:" + HTTP_PROXY_PORT_2, "ArcadeDB_2:2480");
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    final Proxy raftProxy2 = toxiproxyClient.createProxy("raftProxy2", "0.0.0.0:" + RAFT_PROXY_PORT_2, "arcadedb-2:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
+    toxiproxyClient.createProxy("httpProxy2", "0.0.0.0:" + HTTP_PROXY_PORT_2, "arcadedb-2:2480");
 
     logger.info("Creating 3-node Raft HA cluster");
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST_3, "majority", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST_3, "majority", network);
-    createArcadeContainer("ArcadeDB_2", SERVER_LIST_3, "majority", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_3, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_3, "majority", network);
+    createArcadeContainer("arcadedb-2", SERVER_LIST_3, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -144,19 +144,19 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   @DisplayName("Test asymmetric delay: leader has higher latency than followers")
   void testAsymmetricLeaderDelay() throws IOException, InterruptedException {
     logger.info("Creating Raft and HTTP proxies for 3-node cluster");
-    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "ArcadeDB_0:2434");
-    toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "ArcadeDB_1:2434");
-    toxiproxyClient.createProxy("raftProxy2", "0.0.0.0:" + RAFT_PROXY_PORT_2, "ArcadeDB_2:2434");
-    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "ArcadeDB_0:2480");
-    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "ArcadeDB_1:2480");
-    toxiproxyClient.createProxy("httpProxy2", "0.0.0.0:" + HTTP_PROXY_PORT_2, "ArcadeDB_2:2480");
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    toxiproxyClient.createProxy("raftProxy2", "0.0.0.0:" + RAFT_PROXY_PORT_2, "arcadedb-2:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
+    toxiproxyClient.createProxy("httpProxy2", "0.0.0.0:" + HTTP_PROXY_PORT_2, "arcadedb-2:2480");
 
     logger.info("Creating 3-node Raft HA cluster");
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST_3, "majority", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST_3, "majority", network);
-    createArcadeContainer("ArcadeDB_2", SERVER_LIST_3, "majority", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_3, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_3, "majority", network);
+    createArcadeContainer("arcadedb-2", SERVER_LIST_3, "majority", network);
 
-    logger.info("Starting cluster - ArcadeDB_0 is the preferred leader");
+    logger.info("Starting cluster - arcadedb-0 is the preferred leader");
     final List<ServerWrapper> servers = startCluster();
 
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
@@ -173,7 +173,7 @@ public class NetworkDelayIT extends ContainersTestTemplate {
     db2.assertThatUserCountIs(10);
     db3.assertThatUserCountIs(10);
 
-    logger.info("Introducing high latency (500ms) on ArcadeDB_0 Raft proxy (likely leader)");
+    logger.info("Introducing high latency (500ms) on arcadedb-0 Raft proxy (likely leader)");
     raftProxy0.toxics().latency("leader_latency", ToxicDirection.DOWNSTREAM, 500);
     raftProxy0.toxics().latency("leader_latency_up", ToxicDirection.UPSTREAM, 500);
 
@@ -219,14 +219,14 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   @DisplayName("Test high latency with jitter: variable delays simulate unstable network")
   void testHighLatencyWithJitter() throws IOException {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
-    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "ArcadeDB_0:2434");
-    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "ArcadeDB_1:2434");
-    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "ArcadeDB_0:2480");
-    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "ArcadeDB_1:2480");
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster");
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -283,14 +283,14 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   @DisplayName("Test extreme latency: verify timeout handling")
   void testExtremeLatency() throws IOException {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
-    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "ArcadeDB_0:2434");
-    toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "ArcadeDB_1:2434");
-    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "ArcadeDB_0:2480");
-    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "ArcadeDB_1:2480");
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster with quorum=none for testing");
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();

@@ -126,7 +126,33 @@ public class DatabaseWrapper {
    * It also creates properties for User and Photo vertex types.
    */
   public void createSchema() {
-    //this is a test-double of HTTPGraphIT.testOneEdgePerTx test
+    // Retry to handle the case where the database is still being replicated/opened after Raft creation.
+    // In a Raft cluster, the leader commits database creation to the log, but the local state machine
+    // may not have opened the database yet when the next command arrives.
+    final int maxAttempts = 30;
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        createSchemaInternal();
+        return;
+      } catch (final Exception e) {
+        if (attempt == maxAttempts)
+          throw e;
+        if (!e.getMessage().contains("not available")) {
+          logger.warn("Schema creation failed with unexpected error on attempt {}: {}", attempt, e.getMessage());
+          throw e;
+        }
+        logger.info("Database not yet available for schema creation (attempt {}/{}): {}", attempt, maxAttempts, e.getMessage());
+        try {
+          Thread.sleep(2000);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw e;
+        }
+      }
+    }
+  }
+
+  private void createSchemaInternal() {
     db.command("sqlscript",
         """
             CREATE VERTEX TYPE User;
