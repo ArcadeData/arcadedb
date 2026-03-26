@@ -18,6 +18,7 @@
  */
 package com.arcadedb.containers.ha;
 
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
@@ -28,6 +29,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URL;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -38,7 +43,33 @@ import java.util.concurrent.TimeUnit;
  */
 class RollingRestartIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480,ArcadeDB_2:2434:2480";
+  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
+
+  private boolean hasLeader(final List<ServerWrapper> servers) {
+    for (final ServerWrapper server : servers) {
+      try {
+        final URL url = URI.create(
+            "http://" + server.host() + ":" + server.httpPort() + "/api/v1/cluster").toURL();
+        final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestProperty("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString("root:playwithdata".getBytes()));
+        conn.setConnectTimeout(3000);
+        conn.setReadTimeout(3000);
+        try {
+          if (conn.getResponseCode() == 200) {
+            final String body = new String(conn.getInputStream().readAllBytes());
+            if (new JSONObject(body).getBoolean("isLeader"))
+              return true;
+          }
+        } finally {
+          conn.disconnect();
+        }
+      } catch (final Exception e) {
+        // node not ready
+      }
+    }
+    return false;
+  }
 
   @AfterEach
   @Override
@@ -54,9 +85,9 @@ class RollingRestartIT extends ContainersTestTemplate {
   @DisplayName("Rolling restart: restart each node sequentially, verify zero downtime")
   void testRollingRestart() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createPersistentArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -87,15 +118,15 @@ class RollingRestartIT extends ContainersTestTemplate {
           }
         });
 
-    // --- Restart ArcadeDB_0 ---
-    logger.info("=== Restarting ArcadeDB_0 ===");
+    // --- Restart arcadedb-0 ---
+    logger.info("=== Restarting arcadedb-0 ===");
     db0.close();
     arcade0.stop();
-    logger.info("ArcadeDB_0 stopped");
+    logger.info("arcadedb-0 stopped");
 
     TimeUnit.SECONDS.sleep(5);
 
-    logger.info("Writing during ArcadeDB_0 restart (cluster should remain available)");
+    logger.info("Writing during arcadedb-0 restart (cluster should remain available)");
     db1.addUserAndPhotos(10, 10);
 
     logger.info("Verifying writes succeeded on remaining nodes");
@@ -106,44 +137,44 @@ class RollingRestartIT extends ContainersTestTemplate {
           try {
             final long users1 = db1.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("During ArcadeDB_0 restart: db1={}, db2={}", users1, users2);
+            logger.info("During arcadedb-0 restart: db1={}, db2={}", users1, users2);
             return users1 == 40 && users2 == 40;
           } catch (final Exception e) {
             return false;
           }
         });
 
-    logger.info("Restarting ArcadeDB_0");
+    logger.info("Restarting arcadedb-0");
     arcade0.start();
     TimeUnit.SECONDS.sleep(15);
 
     final ServerWrapper server0Restart = new ServerWrapper(arcade0);
     final DatabaseWrapper db0Restart = new DatabaseWrapper(server0Restart, idSupplier, wordSupplier);
 
-    logger.info("Waiting for ArcadeDB_0 to resync via Raft log catch-up");
+    logger.info("Waiting for arcadedb-0 to resync via Raft log catch-up");
     Awaitility.await()
         .atMost(90, TimeUnit.SECONDS)
         .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> {
           try {
             final long users0 = db0Restart.countUsers();
-            logger.info("ArcadeDB_0 resync check: {}", users0);
+            logger.info("arcadedb-0 resync check: {}", users0);
             return users0 == 40;
           } catch (final Exception e) {
-            logger.warn("ArcadeDB_0 resync failed: {}", e.getMessage());
+            logger.warn("arcadedb-0 resync failed: {}", e.getMessage());
             return false;
           }
         });
 
-    // --- Restart ArcadeDB_1 ---
-    logger.info("=== Restarting ArcadeDB_1 ===");
+    // --- Restart arcadedb-1 ---
+    logger.info("=== Restarting arcadedb-1 ===");
     db1.close();
     arcade1.stop();
-    logger.info("ArcadeDB_1 stopped");
+    logger.info("arcadedb-1 stopped");
 
     TimeUnit.SECONDS.sleep(5);
 
-    logger.info("Writing during ArcadeDB_1 restart");
+    logger.info("Writing during arcadedb-1 restart");
     db0Restart.addUserAndPhotos(10, 10);
 
     logger.info("Verifying writes on remaining nodes");
@@ -154,44 +185,44 @@ class RollingRestartIT extends ContainersTestTemplate {
           try {
             final long users0 = db0Restart.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("During ArcadeDB_1 restart: db0={}, db2={}", users0, users2);
+            logger.info("During arcadedb-1 restart: db0={}, db2={}", users0, users2);
             return users0 == 50 && users2 == 50;
           } catch (final Exception e) {
             return false;
           }
         });
 
-    logger.info("Restarting ArcadeDB_1");
+    logger.info("Restarting arcadedb-1");
     arcade1.start();
     TimeUnit.SECONDS.sleep(15);
 
     final ServerWrapper server1Restart = new ServerWrapper(arcade1);
     final DatabaseWrapper db1Restart = new DatabaseWrapper(server1Restart, idSupplier, wordSupplier);
 
-    logger.info("Waiting for ArcadeDB_1 to resync via Raft log catch-up");
+    logger.info("Waiting for arcadedb-1 to resync via Raft log catch-up");
     Awaitility.await()
         .atMost(90, TimeUnit.SECONDS)
         .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> {
           try {
             final long users1 = db1Restart.countUsers();
-            logger.info("ArcadeDB_1 resync check: {}", users1);
+            logger.info("arcadedb-1 resync check: {}", users1);
             return users1 == 50;
           } catch (final Exception e) {
-            logger.warn("ArcadeDB_1 resync failed: {}", e.getMessage());
+            logger.warn("arcadedb-1 resync failed: {}", e.getMessage());
             return false;
           }
         });
 
-    // --- Restart ArcadeDB_2 ---
-    logger.info("=== Restarting ArcadeDB_2 ===");
+    // --- Restart arcadedb-2 ---
+    logger.info("=== Restarting arcadedb-2 ===");
     db2.close();
     arcade2.stop();
-    logger.info("ArcadeDB_2 stopped");
+    logger.info("arcadedb-2 stopped");
 
     TimeUnit.SECONDS.sleep(5);
 
-    logger.info("Writing during ArcadeDB_2 restart");
+    logger.info("Writing during arcadedb-2 restart");
     db0Restart.addUserAndPhotos(10, 10);
 
     logger.info("Verifying writes on remaining nodes");
@@ -202,31 +233,31 @@ class RollingRestartIT extends ContainersTestTemplate {
           try {
             final long users0 = db0Restart.countUsers();
             final long users1 = db1Restart.countUsers();
-            logger.info("During ArcadeDB_2 restart: db0={}, db1={}", users0, users1);
+            logger.info("During arcadedb-2 restart: db0={}, db1={}", users0, users1);
             return users0 == 60 && users1 == 60;
           } catch (final Exception e) {
             return false;
           }
         });
 
-    logger.info("Restarting ArcadeDB_2");
+    logger.info("Restarting arcadedb-2");
     arcade2.start();
     TimeUnit.SECONDS.sleep(15);
 
     final ServerWrapper server2Restart = new ServerWrapper(arcade2);
     final DatabaseWrapper db2Restart = new DatabaseWrapper(server2Restart, idSupplier, wordSupplier);
 
-    logger.info("Waiting for ArcadeDB_2 to resync via Raft log catch-up");
+    logger.info("Waiting for arcadedb-2 to resync via Raft log catch-up");
     Awaitility.await()
         .atMost(90, TimeUnit.SECONDS)
         .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> {
           try {
             final long users2 = db2Restart.countUsers();
-            logger.info("ArcadeDB_2 resync check: {}", users2);
+            logger.info("arcadedb-2 resync check: {}", users2);
             return users2 == 60;
           } catch (final Exception e) {
-            logger.warn("ArcadeDB_2 resync failed: {}", e.getMessage());
+            logger.warn("arcadedb-2 resync failed: {}", e.getMessage());
             return false;
           }
         });
@@ -246,9 +277,9 @@ class RollingRestartIT extends ContainersTestTemplate {
   @DisplayName("Rapid rolling restart: minimal wait between restarts")
   void testRapidRollingRestart() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createPersistentArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -280,34 +311,39 @@ class RollingRestartIT extends ContainersTestTemplate {
 
     logger.info("Performing rapid sequential restarts with minimal wait time");
 
-    // Restart ArcadeDB_0
-    logger.info("Rapidly restarting ArcadeDB_0");
+    // Restart arcadedb-0
+    logger.info("Rapidly restarting arcadedb-0");
     db0.close();
     arcade0.stop();
     arcade0.start();
-    TimeUnit.SECONDS.sleep(10);
+    waitForContainerHealthy(arcade0, 60);
 
-    // Restart ArcadeDB_1
-    logger.info("Rapidly restarting ArcadeDB_1");
+    // Restart arcadedb-1
+    logger.info("Rapidly restarting arcadedb-1");
     db1.close();
     arcade1.stop();
     arcade1.start();
-    TimeUnit.SECONDS.sleep(10);
+    waitForContainerHealthy(arcade1, 60);
 
-    // Restart ArcadeDB_2
-    logger.info("Rapidly restarting ArcadeDB_2");
+    // Restart arcadedb-2
+    logger.info("Rapidly restarting arcadedb-2");
     db2.close();
     arcade2.stop();
     arcade2.start();
-    TimeUnit.SECONDS.sleep(10);
-
-    logger.info("Waiting for cluster stabilization after rapid restarts");
-    TimeUnit.SECONDS.sleep(15);
+    waitForContainerHealthy(arcade2, 60);
 
     // Reconnect to all nodes
     final ServerWrapper server0 = new ServerWrapper(arcade0);
     final ServerWrapper server1 = new ServerWrapper(arcade1);
     final ServerWrapper server2 = new ServerWrapper(arcade2);
+    final List<ServerWrapper> restartedServers = List.of(server0, server1, server2);
+
+    logger.info("Waiting for Raft leader election after rapid restarts");
+    Awaitility.await()
+        .atMost(90, TimeUnit.SECONDS)
+        .pollInterval(3, TimeUnit.SECONDS)
+        .until(() -> hasLeader(restartedServers));
+
     final DatabaseWrapper db0Restart = new DatabaseWrapper(server0, idSupplier, wordSupplier);
     final DatabaseWrapper db1Restart = new DatabaseWrapper(server1, idSupplier, wordSupplier);
     final DatabaseWrapper db2Restart = new DatabaseWrapper(server2, idSupplier, wordSupplier);
@@ -344,9 +380,9 @@ class RollingRestartIT extends ContainersTestTemplate {
   @DisplayName("Rolling restart with continuous writes: verify no data loss")
   void testRollingRestartWithContinuousWrites() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createPersistentArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -365,8 +401,8 @@ class RollingRestartIT extends ContainersTestTemplate {
     db0.addUserAndPhotos(10, 10);
     expectedUsers += 10;
 
-    // Restart ArcadeDB_0 while writing
-    logger.info("Restarting ArcadeDB_0 while writing");
+    // Restart arcadedb-0 while writing
+    logger.info("Restarting arcadedb-0 while writing");
     db1.addUserAndPhotos(5, 10);
     expectedUsers += 5;
     db0.close();
@@ -379,8 +415,8 @@ class RollingRestartIT extends ContainersTestTemplate {
     arcade0.start();
     TimeUnit.SECONDS.sleep(15);
 
-    // Restart ArcadeDB_1 while writing
-    logger.info("Restarting ArcadeDB_1 while writing");
+    // Restart arcadedb-1 while writing
+    logger.info("Restarting arcadedb-1 while writing");
     db2.addUserAndPhotos(5, 10);
     expectedUsers += 5;
     db1.close();
@@ -393,8 +429,8 @@ class RollingRestartIT extends ContainersTestTemplate {
     arcade1.start();
     TimeUnit.SECONDS.sleep(15);
 
-    // Restart ArcadeDB_2 while writing
-    logger.info("Restarting ArcadeDB_2 while writing");
+    // Restart arcadedb-2 while writing
+    logger.info("Restarting arcadedb-2 while writing");
     final ServerWrapper server0 = new ServerWrapper(arcade0);
     final ServerWrapper server1 = new ServerWrapper(arcade1);
     final DatabaseWrapper db0Restart = new DatabaseWrapper(server0, idSupplier, wordSupplier);

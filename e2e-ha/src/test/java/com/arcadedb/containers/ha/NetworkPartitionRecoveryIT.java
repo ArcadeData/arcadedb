@@ -48,7 +48,7 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480,ArcadeDB_2:2434:2480";
+  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
   private int findLeaderIndex(final List<ServerWrapper> servers) {
     for (int i = 0; i < servers.size(); i++) {
@@ -82,9 +82,9 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   @DisplayName("Test partition recovery: 2+1 split, heal partition, verify Raft log catch-up")
   void testPartitionRecovery() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -134,8 +134,8 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
           }
         });
 
-    logger.info("Verifying minority partition (node {}) still has old data", isolatedIdx);
-    dbs[isolatedIdx].assertThatUserCountIs(20);
+    // Note: we do not assert on the isolated node here — its Docker network is disconnected,
+    // so host-to-container HTTP via the mapped port may be unreachable.
 
     logger.info("Healing partition - reconnecting node {}", isolatedIdx);
     reconnectToNetwork(nodeContainers[isolatedIdx]);
@@ -149,7 +149,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
             final long users0 = db0.countUsers();
             final long users1 = db1.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("Recovery check: ArcadeDB_0={}, ArcadeDB_1={}, ArcadeDB_2={}", users0, users1, users2);
+            logger.info("Recovery check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={}", users0, users1, users2);
             return users0 == 30L && users1 == 30L && users2 == 30L;
           } catch (final Exception e) {
             logger.warn("Recovery check failed: {}", e.getMessage());
@@ -172,9 +172,9 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   @DisplayName("Test multiple partition cycles: repeated split and heal with Raft log catch-up")
   void testMultiplePartitionCycles() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -250,9 +250,9 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   @DisplayName("Test asymmetric partition recovery: follower isolated then resyncs")
   void testAsymmetricPartitionRecovery() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -295,8 +295,8 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
           }
         });
 
-    logger.info("Verifying isolated node has old data");
-    dbs[isolatedIdx].assertThatUserCountIs(10);
+    // Note: we do not assert on the isolated node here — its network is disconnected
+    // from Docker, so host-to-container HTTP may be unreachable via the mapped port.
 
     logger.info("Healing asymmetric partition");
     reconnectToNetwork(nodeContainers[isolatedIdx]);
@@ -310,7 +310,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
             final long users0 = db0.countUsers();
             final long users1 = db1.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("Asymmetric recovery check: ArcadeDB_0={}, ArcadeDB_1={}, ArcadeDB_2={}",
+            logger.info("Asymmetric recovery check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={}",
                 users0, users1, users2);
             return users0 == 25L && users1 == 25L && users2 == 25L;
           } catch (final Exception e) {

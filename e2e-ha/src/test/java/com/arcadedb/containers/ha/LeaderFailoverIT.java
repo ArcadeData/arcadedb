@@ -46,7 +46,7 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class LeaderFailoverIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480,ArcadeDB_2:2434:2480";
+  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
   private int findLeaderIndex(final List<ServerWrapper> servers) {
     for (int i = 0; i < servers.size(); i++) {
@@ -78,9 +78,9 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @DisplayName("Test leader failover: kill leader, verify new election and data consistency")
   void testLeaderFailover() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -178,9 +178,9 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @DisplayName("Test repeated leader failures: verify cluster stability under continuous failover")
   void testRepeatedLeaderFailures() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -199,13 +199,13 @@ class LeaderFailoverIT extends ContainersTestTemplate {
     db1.assertThatUserCountIs(10);
     db2.assertThatUserCountIs(10);
 
-    // Cycle 1: Kill ArcadeDB_0
-    logger.info("Cycle 1: Killing ArcadeDB_0");
+    // Cycle 1: Kill arcadedb-0
+    logger.info("Cycle 1: Killing arcadedb-0");
     db0.close();
     arcade0.stop();
     TimeUnit.SECONDS.sleep(15);
 
-    logger.info("Cycle 1: Adding data through ArcadeDB_1");
+    logger.info("Cycle 1: Adding data through arcadedb-1");
     db1.addUserAndPhotos(5, 10);
 
     logger.info("Cycle 1: Verifying replication on surviving nodes");
@@ -220,15 +220,15 @@ class LeaderFailoverIT extends ContainersTestTemplate {
           }
         });
 
-    // Cycle 2: Kill ArcadeDB_1 (now likely the leader), restart ArcadeDB_0 first to maintain majority
-    logger.info("Cycle 2: Restarting ArcadeDB_0 before killing ArcadeDB_1 (to maintain majority)");
+    // Cycle 2: Kill arcadedb-1 (now likely the leader), restart arcadedb-0 first to maintain majority
+    logger.info("Cycle 2: Restarting arcadedb-0 before killing arcadedb-1 (to maintain majority)");
     arcade0.start();
     TimeUnit.SECONDS.sleep(15);
 
     final ServerWrapper server0Restart = new ServerWrapper(arcade0);
     final DatabaseWrapper db0Restart = new DatabaseWrapper(server0Restart, idSupplier, wordSupplier);
 
-    logger.info("Waiting for ArcadeDB_0 to resync");
+    logger.info("Waiting for arcadedb-0 to resync");
     Awaitility.await()
         .atMost(60, TimeUnit.SECONDS)
         .pollInterval(3, TimeUnit.SECONDS)
@@ -240,12 +240,12 @@ class LeaderFailoverIT extends ContainersTestTemplate {
           }
         });
 
-    logger.info("Cycle 2: Killing ArcadeDB_1");
+    logger.info("Cycle 2: Killing arcadedb-1");
     db1.close();
     arcade1.stop();
     TimeUnit.SECONDS.sleep(15);
 
-    logger.info("Cycle 2: Adding data through ArcadeDB_2");
+    logger.info("Cycle 2: Adding data through arcadedb-2");
     db2.addUserAndPhotos(5, 10);
 
     logger.info("Cycle 2: Verifying replication");
@@ -260,8 +260,8 @@ class LeaderFailoverIT extends ContainersTestTemplate {
           }
         });
 
-    // Restart ArcadeDB_1
-    logger.info("Restarting ArcadeDB_1");
+    // Restart arcadedb-1
+    logger.info("Restarting arcadedb-1");
     arcade1.start();
     TimeUnit.SECONDS.sleep(15);
 
@@ -277,7 +277,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
             final long users0 = db0Restart.countUsers();
             final long users1 = db1Restart.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("Convergence check: ArcadeDB_0={}, ArcadeDB_1={}, ArcadeDB_2={}", users0, users1, users2);
+            logger.info("Convergence check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={}", users0, users1, users2);
             return users0 == 20L && users1 == 20L && users2 == 20L;
           } catch (final Exception e) {
             logger.warn("Convergence check failed: {}", e.getMessage());
@@ -300,9 +300,9 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @DisplayName("Test leader failover with active writes: verify no data loss during failover")
   void testLeaderFailoverDuringWrites() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();

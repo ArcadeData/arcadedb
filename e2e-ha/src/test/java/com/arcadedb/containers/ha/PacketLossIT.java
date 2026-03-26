@@ -65,14 +65,14 @@ public class PacketLossIT extends ContainersTestTemplate {
   @DisplayName("Test low packet loss (5%): cluster should remain stable")
   void testLowPacketLoss() throws IOException {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
-    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "ArcadeDB_0:2434");
-    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "ArcadeDB_1:2434");
-    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "ArcadeDB_0:2480");
-    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "ArcadeDB_1:2480");
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster");
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -131,14 +131,14 @@ public class PacketLossIT extends ContainersTestTemplate {
   @DisplayName("Test moderate packet loss (20%): replication should succeed with retries")
   void testModeratePacketLoss() throws IOException {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
-    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "ArcadeDB_0:2434");
-    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "ArcadeDB_1:2434");
-    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "ArcadeDB_0:2480");
-    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "ArcadeDB_1:2480");
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster");
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -195,14 +195,14 @@ public class PacketLossIT extends ContainersTestTemplate {
   @DisplayName("Test high packet loss (50%): verify connection resilience")
   void testHighPacketLoss() throws IOException {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
-    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "ArcadeDB_0:2434");
-    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "ArcadeDB_1:2434");
-    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "ArcadeDB_0:2480");
-    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "ArcadeDB_1:2480");
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster");
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -259,17 +259,17 @@ public class PacketLossIT extends ContainersTestTemplate {
   @DisplayName("Test directional packet loss: loss only in one direction")
   void testDirectionalPacketLoss() throws IOException {
     logger.info("Creating Raft and HTTP proxies for 3-node cluster");
-    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "ArcadeDB_0:2434");
-    toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "ArcadeDB_1:2434");
-    toxiproxyClient.createProxy("raftProxy2", "0.0.0.0:" + RAFT_PROXY_PORT_2, "ArcadeDB_2:2434");
-    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "ArcadeDB_0:2480");
-    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "ArcadeDB_1:2480");
-    toxiproxyClient.createProxy("httpProxy2", "0.0.0.0:" + HTTP_PROXY_PORT_2, "ArcadeDB_2:2480");
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    toxiproxyClient.createProxy("raftProxy2", "0.0.0.0:" + RAFT_PROXY_PORT_2, "arcadedb-2:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
+    toxiproxyClient.createProxy("httpProxy2", "0.0.0.0:" + HTTP_PROXY_PORT_2, "arcadedb-2:2480");
 
     logger.info("Creating 3-node Raft HA cluster");
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST_3, "majority", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST_3, "majority", network);
-    createArcadeContainer("ArcadeDB_2", SERVER_LIST_3, "majority", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_3, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_3, "majority", network);
+    createArcadeContainer("arcadedb-2", SERVER_LIST_3, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -288,10 +288,10 @@ public class PacketLossIT extends ContainersTestTemplate {
     db2.assertThatUserCountIs(10);
     db3.assertThatUserCountIs(10);
 
-    logger.info("Introducing 30% packet loss DOWNSTREAM only on ArcadeDB_0 Raft proxy");
+    logger.info("Introducing 30% packet loss DOWNSTREAM only on arcadedb-0 Raft proxy");
     raftProxy0.toxics().limitData("directional_loss", ToxicDirection.DOWNSTREAM, 0).setToxicity(0.30f);
 
-    logger.info("Adding data from ArcadeDB_1 (should replicate despite one-way loss)");
+    logger.info("Adding data from arcadedb-1 (should replicate despite one-way loss)");
     db2.addUserAndPhotos(15, 10);
 
     logger.info("Waiting for replication with directional packet loss");
@@ -329,14 +329,14 @@ public class PacketLossIT extends ContainersTestTemplate {
   @DisplayName("Test intermittent packet loss: verify recovery from transient issues")
   void testIntermittentPacketLoss() throws IOException, InterruptedException {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
-    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "ArcadeDB_0:2434");
-    toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "ArcadeDB_1:2434");
-    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "ArcadeDB_0:2480");
-    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "ArcadeDB_1:2480");
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster");
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();

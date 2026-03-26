@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit;
 
 class ThreeInstancesScenarioIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480,ArcadeDB_2:2434:2480";
+  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
   @AfterEach
   @Override
@@ -47,9 +47,9 @@ class ThreeInstancesScenarioIT extends ContainersTestTemplate {
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Three-node Raft HA: replication across all nodes with consistency check")
   void threeNodeReplication() {
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting all containers");
     final List<ServerWrapper> servers = startCluster();

@@ -46,7 +46,7 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class NetworkPartitionIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480,ArcadeDB_2:2434:2480";
+  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
   private int findLeaderIndex(final List<ServerWrapper> servers) {
     for (int i = 0; i < servers.size(); i++) {
@@ -80,9 +80,9 @@ class NetworkPartitionIT extends ContainersTestTemplate {
   @DisplayName("Test leader partition: isolate leader from cluster, verify new election in majority")
   void testLeaderPartitionWithQuorum() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -160,7 +160,7 @@ class NetworkPartitionIT extends ContainersTestTemplate {
             final long users0 = db0.countUsers();
             final long users1 = db1.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("Convergence check: ArcadeDB_0={}, ArcadeDB_1={}, ArcadeDB_2={}", users0, users1, users2);
+            logger.info("Convergence check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={}", users0, users1, users2);
             return users0 == 30L && users1 == 30L && users2 == 30L;
           } catch (final Exception e) {
             logger.warn("Convergence check failed: {}", e.getMessage());
@@ -183,9 +183,9 @@ class NetworkPartitionIT extends ContainersTestTemplate {
   @DisplayName("Test single follower partition: one follower isolated, cluster continues")
   void testSingleFollowerPartition() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -272,9 +272,9 @@ class NetworkPartitionIT extends ContainersTestTemplate {
   @DisplayName("Test no-quorum partition: cluster cannot accept writes when quorum is lost")
   void testNoQuorumScenario() throws InterruptedException {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("ArcadeDB_0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("ArcadeDB_1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("ArcadeDB_2", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -322,23 +322,33 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     reconnectToNetwork(nodeContainers[1]);
     reconnectToNetwork(nodeContainers[2]);
 
-    logger.info("Waiting for quorum restoration and leader re-election");
-    TimeUnit.SECONDS.sleep(15);
+    logger.info("Waiting for Raft leader re-election after quorum restoration");
+    Awaitility.await()
+        .atMost(90, TimeUnit.SECONDS)
+        .pollInterval(3, TimeUnit.SECONDS)
+        .until(() -> findLeaderIndex(servers) >= 0);
+
+    // Allow extra time for all peers to fully re-establish Raft gRPC connections
+    // after the severe partition (all nodes were effectively isolated)
+    TimeUnit.SECONDS.sleep(10);
 
     logger.info("Writing data with quorum restored");
-    db0.addUserAndPhotos(5, 10);
+    final DatabaseWrapper[] dbs = { db0, db1, db2 };
+    final int leaderIdx = findLeaderIndex(servers);
+    logger.info("New leader is node {}", leaderIdx);
+    dbs[leaderIdx].addUserAndPhotos(5, 10);
 
     logger.info("Verifying data replication with quorum restored");
     final int expected = writeSucceeded ? 16 : 15;
     Awaitility.await()
-        .atMost(30, TimeUnit.SECONDS)
-        .pollInterval(2, TimeUnit.SECONDS)
+        .atMost(90, TimeUnit.SECONDS)
+        .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> {
           try {
             final long users0 = db0.countUsers();
             final long users1 = db1.countUsers();
             final long users2 = db2.countUsers();
-            logger.info("Quorum check: ArcadeDB_0={}, ArcadeDB_1={}, ArcadeDB_2={} (expected={})",
+            logger.info("Quorum check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
                 users0, users1, users2, expected);
             return users0 == expected && users1 == expected && users2 == expected;
           } catch (final Exception e) {

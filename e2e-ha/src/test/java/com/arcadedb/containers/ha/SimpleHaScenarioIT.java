@@ -32,13 +32,13 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class SimpleHaScenarioIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "ArcadeDB_0:2434:2480,ArcadeDB_1:2434:2480";
+  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480";
 
   @Test
   @DisplayName("Two-node Raft HA: schema and data replication")
   void twoNodeRaftReplication() throws InterruptedException {
-    createArcadeContainer("ArcadeDB_0", SERVER_LIST, "none", network);
-    createArcadeContainer("ArcadeDB_1", SERVER_LIST, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST, "none", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST, "none", network);
 
     logger.info("Starting the containers");
     final List<ServerWrapper> servers = startCluster();
