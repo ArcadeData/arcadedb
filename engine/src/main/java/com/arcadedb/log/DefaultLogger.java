@@ -26,6 +26,7 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.logging.ConsoleHandler;
@@ -107,13 +108,16 @@ public class DefaultLogger implements Logger {
     if (pattern == null)
       return;
 
-    // Resolve JUL pattern substitutions to obtain a concrete path
+    // Resolve JUL pattern substitutions to obtain a concrete path.
+    // Use a placeholder for "%%" so that single-percent substitutions (%t, %h, %g, %u)
+    // do not incorrectly expand the second character of an escaped "%%x" sequence.
     final String resolved = pattern
+        .replace("%%", "\u0000")
         .replace("%t", System.getProperty("java.io.tmpdir", "/tmp"))
         .replace("%h", System.getProperty("user.home", "/"))
         .replace("%g", "0")
         .replace("%u", "0")
-        .replace("%%", "%");
+        .replace("\u0000", "%");
 
     final File logDir = new File(resolved).getParentFile();
     if (logDir == null)
@@ -124,7 +128,7 @@ public class DefaultLogger implements Logger {
         if (!logDir.mkdirs())
           System.err.println("Cannot create log directory: " + logDir.getAbsolutePath());
     } catch (final Exception e) {
-      // IGNORE
+      System.err.println("Error creating log directory: " + e.getMessage());
     }
   }
 
@@ -144,16 +148,10 @@ public class DefaultLogger implements Logger {
     }
 
     // Try the classpath resource (e.g. inside a JAR)
-    final InputStream stream = getClass().getClassLoader().getResourceAsStream(FILE_LOG_PROPERTIES);
-    if (stream != null) {
-      try {
+    try (final InputStream stream = getClass().getClassLoader().getResourceAsStream(FILE_LOG_PROPERTIES)) {
+      if (stream != null)
         return loadPatternFromStream(stream);
-      } finally {
-        try {
-          stream.close();
-        } catch (final IOException ignored) {
-        }
-      }
+    } catch (final IOException ignored) {
     }
 
     // Try the production "config/" directory layout
@@ -173,7 +171,7 @@ public class DefaultLogger implements Logger {
   }
 
   private String loadPatternFromStream(final InputStream stream) {
-    final java.util.Properties props = new java.util.Properties();
+    final Properties props = new Properties();
     try {
       props.load(stream);
     } catch (final IOException e) {

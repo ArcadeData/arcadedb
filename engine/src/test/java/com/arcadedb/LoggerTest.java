@@ -30,7 +30,9 @@ import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
-import java.util.logging.*;
+import java.util.logging.FileHandler;
+import java.util.logging.Handler;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,11 +60,18 @@ class LoggerTest extends TestHelper {
     System.setProperty("java.util.logging.config.file", consoleOnlyProps.getAbsolutePath());
 
     try {
+      // Record whether ./log already existed before init() so we can make a conditional assertion
+      final File defaultLogDir = new File("./log");
+      final boolean existedBefore = defaultLogDir.exists();
+
       final DefaultLogger logger = new DefaultLogger();
       logger.init();
 
       // No FileHandler configured → no FileHandler.pattern in LogManager
       assertThat(java.util.logging.LogManager.getLogManager().getProperty("java.util.logging.FileHandler.pattern")).isNull();
+      // The spurious ./log directory should not have been created by init()
+      if (!existedBefore)
+        assertThat(defaultLogDir).doesNotExist();
     } finally {
       restoreLogConfig(prevProp);
       deleteTree(tempBase);
