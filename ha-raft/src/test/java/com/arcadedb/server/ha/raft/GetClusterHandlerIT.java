@@ -82,7 +82,7 @@ class GetClusterHandlerIT extends BaseRaftHATest {
     final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
     conn.setRequestMethod("GET");
     conn.setRequestProperty("Authorization",
-        "Basic " + Base64.getEncoder().encodeToString("root:playwithdata".getBytes(StandardCharsets.UTF_8)));
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
 
     try {
       assertThat(conn.getResponseCode()).isEqualTo(200);
