@@ -68,6 +68,7 @@ class LoggerTest extends TestHelper {
       logger.init();
 
       // No FileHandler configured → no FileHandler.pattern in LogManager
+      // Note: java.util.logging.LogManager stays fully-qualified because com.arcadedb.log.LogManager is already imported
       assertThat(java.util.logging.LogManager.getLogManager().getProperty("java.util.logging.FileHandler.pattern")).isNull();
       // The spurious ./log directory should not have been created by init()
       if (!existedBefore)
@@ -114,6 +115,49 @@ class LoggerTest extends TestHelper {
       closeFileHandlers();
       restoreLogConfig(prevProp);
       deleteTree(tempBase);
+    }
+  }
+
+  /**
+   * Regression test for issue #3732: verifies that JUL pattern substitutions (%t, %h, %g) are
+   * correctly resolved when pre-creating the log directory. Uses %t (java.io.tmpdir) so the
+   * test does not depend on a writable working directory.
+   */
+  @Test
+  void logDirectoryCreatedWithTmpDirSubstitution() throws Exception {
+    final Path tempBase = Files.createTempDirectory("arcade-3732-tmpdir");
+    // Use a unique sub-directory inside java.io.tmpdir so we can assert it was created
+    final File customLogDir = new File(System.getProperty("java.io.tmpdir"), "arcade-3732-sub-" + tempBase.getFileName());
+    assertThat(customLogDir).doesNotExist();
+
+    final File customProps = tempBase.resolve("tmpdir-handler.properties").toFile();
+    try (final PrintWriter pw = new PrintWriter(customProps)) {
+      pw.println("handlers=java.util.logging.ConsoleHandler, java.util.logging.FileHandler");
+      pw.println(".level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.formatter=com.arcadedb.utility.AnsiLogFormatter");
+      pw.println("java.util.logging.FileHandler.level=WARNING");
+      pw.println("java.util.logging.FileHandler.pattern=%t/arcade-3732-sub-" + tempBase.getFileName() + "/arcade.%g.log");
+      pw.println("java.util.logging.FileHandler.count=1");
+      pw.println("java.util.logging.FileHandler.limit=1000");
+      pw.println("java.util.logging.FileHandler.formatter=com.arcadedb.log.LogFormatter");
+    }
+
+    final String prevProp = System.getProperty("java.util.logging.config.file");
+    System.setProperty("java.util.logging.config.file", customProps.getAbsolutePath());
+
+    try {
+      final DefaultLogger logger = new DefaultLogger();
+      logger.init();
+
+      // %t must have been resolved to java.io.tmpdir and the sub-directory created
+      assertThat(customLogDir).exists().isDirectory();
+    } finally {
+      closeFileHandlers();
+      restoreLogConfig(prevProp);
+      deleteTree(tempBase);
+      if (customLogDir.exists())
+        deleteTree(customLogDir.toPath());
     }
   }
 
