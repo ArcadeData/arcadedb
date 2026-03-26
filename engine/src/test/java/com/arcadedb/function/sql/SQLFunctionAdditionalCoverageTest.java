@@ -177,6 +177,31 @@ class SQLFunctionAdditionalCoverageTest extends TestHelper {
     rs.close();
   }
 
+  // --- projection alias case preservation (issue #3733) ---
+  @Test
+  void projectionAliasCasePreserved() {
+    try (final ResultSet rs = database.query("sql", "SELECT version() AS version")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.getPropertyNames()).contains("version");
+      assertThat(result.<String>getProperty("version")).isNotNull();
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT version() AS VERSION")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.getPropertyNames()).contains("VERSION");
+      assertThat(result.<String>getProperty("VERSION")).isNotNull();
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT version() AS myVersion")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.getPropertyNames()).contains("myVersion");
+      assertThat(result.<String>getProperty("myVersion")).isNotNull();
+    }
+  }
+
   // --- median() ---
   @Test
   void medianFunction() {
