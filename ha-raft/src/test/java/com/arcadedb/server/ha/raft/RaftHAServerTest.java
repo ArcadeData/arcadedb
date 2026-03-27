@@ -26,7 +26,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
-import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -158,7 +157,7 @@ class RaftHAServerTest {
   }
 
   @Test
-  void initClusterTokenGeneratesAndPersistsTokenWhenBlank(@TempDir final File tempDir) throws Exception {
+  void initClusterTokenDerivesTokenFromClusterNameAndPassword(@TempDir final File tempDir) {
     final ContextConfiguration config = new ContextConfiguration();
     // HA_CLUSTER_TOKEN starts blank by default
 
@@ -166,33 +165,29 @@ class RaftHAServerTest {
 
     final String token = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
     assertThat(token).isNotBlank();
-
-    // token must also be in the file
-    final File tokenFile = new File(tempDir, "cluster-token.txt");
-    assertThat(tokenFile).exists();
-    assertThat(Files.readString(tokenFile.toPath()).trim()).isEqualTo(token);
   }
 
   @Test
-  void initClusterTokenReadsExistingFileWhenConfigBlank(@TempDir final File tempDir) throws Exception {
-    final String existingToken = "my-existing-token";
-    Files.writeString(new File(tempDir, "cluster-token.txt").toPath(), existingToken);
+  void initClusterTokenIsDeterministicForSameClusterNameAndPassword(@TempDir final File tempDir) {
+    final ContextConfiguration config1 = new ContextConfiguration();
+    final ContextConfiguration config2 = new ContextConfiguration();
 
-    final ContextConfiguration config = new ContextConfiguration();
-    RaftHAServer.initClusterToken(config, tempDir);
+    RaftHAServer.initClusterToken(config1, tempDir);
+    RaftHAServer.initClusterToken(config2, tempDir);
 
-    assertThat(config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN)).isEqualTo(existingToken);
+    // Both nodes with the same cluster name and root password must derive the same token
+    assertThat(config1.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN))
+        .isEqualTo(config2.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN));
   }
 
   @Test
-  void initClusterTokenKeepsExplicitConfigValueWithoutTouchingFile(@TempDir final File tempDir) throws Exception {
+  void initClusterTokenKeepsExplicitConfigValue(@TempDir final File tempDir) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, "explicit-token");
 
     RaftHAServer.initClusterToken(config, tempDir);
 
     assertThat(config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN)).isEqualTo("explicit-token");
-    assertThat(new File(tempDir, "cluster-token.txt")).doesNotExist();
   }
 
   @Test

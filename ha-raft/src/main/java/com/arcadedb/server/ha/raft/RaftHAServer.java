@@ -38,7 +38,7 @@ import org.apache.ratis.util.TimeDuration;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -377,24 +377,21 @@ public class RaftHAServer {
    *   <li>Otherwise a new UUID is generated, written to the file, and set in config.</li>
    * </ul>
    */
-  static void initClusterToken(final ContextConfiguration configuration, final File storageDir) throws IOException {
+  static void initClusterToken(final ContextConfiguration configuration, final File storageDir) {
     final String configured = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
     if (configured != null && !configured.isBlank())
       return;
 
-    final File tokenFile = new File(storageDir, "cluster-token.txt");
-    if (tokenFile.exists()) {
-      final String persisted = Files.readString(tokenFile.toPath()).trim();
-      configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, persisted);
-      return;
-    }
-
-    storageDir.mkdirs();
-    final String newToken = UUID.randomUUID().toString();
-    Files.writeString(tokenFile.toPath(), newToken);
-    configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, newToken);
-    LogManager.instance().log(RaftHAServer.class, Level.INFO,
-        "Generated new cluster token (saved to %s)", tokenFile.getAbsolutePath());
+    // Derive a deterministic cluster token from the cluster name and root password.
+    // All nodes in the same cluster share the same cluster name and root password, so
+    // they will all compute the same token — a requirement for inter-node HTTP forwarding.
+    // A random per-node token (the previous approach) caused authentication failures
+    // because each node stored its token in its own private Raft storage directory.
+    final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
+    final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    final String seed = clusterName + ":" + (rootPassword != null ? rootPassword : "");
+    final String token = UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8)).toString();
+    configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, token);
   }
 
   /**
