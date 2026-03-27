@@ -75,6 +75,16 @@ public class MathExpression extends SimpleNode {
           }
         }
       }
+    } else if (value instanceof List<?> list) {
+      if (list.size() == 1) {
+        final Object first = list.get(0);
+        if (first instanceof Result result) {
+          final Set<String> propertyNames = result.getPropertyNames();
+          if (propertyNames.size() == 1) {
+            return result.getProperty(propertyNames.iterator().next());
+          }
+        }
+      }
     }
     return value;
   }
