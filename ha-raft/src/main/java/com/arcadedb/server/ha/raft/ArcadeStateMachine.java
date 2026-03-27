@@ -280,20 +280,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   private void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
-    // On the leader the database was already created locally; skip.
-    if (raftHAServer != null && raftHAServer.isLeader()) {
-      LogManager.instance().log(this, Level.FINE, "Skipping install-database on leader for '%s'", decoded.databaseName());
-      return;
-    }
-
     final String databaseName = decoded.databaseName();
+
+    // Skip if the database is already present locally — either because this node created it
+    // (leader path) or because a previous Raft replay already applied this entry.
+    // Do NOT unconditionally skip on the leader: the createDatabase() HTTP call may have been
+    // received by a follower, which created the database locally and committed the Raft entry.
+    // In that case the leader has never opened the database and must create it here.
     if (server.existsDatabase(databaseName)) {
-      LogManager.instance().log(this, Level.FINE, "Database '%s' already present on this replica, skipping install", databaseName);
+      LogManager.instance().log(this, Level.FINE, "Database '%s' already present, skipping install-database entry", databaseName);
       return;
     }
 
     server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-    LogManager.instance().log(this, Level.INFO, "Database '%s' created on replica via Raft install-database entry", databaseName);
+    LogManager.instance().log(this, Level.INFO, "Database '%s' created via Raft install-database entry", databaseName);
   }
 
   /**

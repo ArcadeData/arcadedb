@@ -923,6 +923,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (clusterToken != null && !clusterToken.isBlank())
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
 
+    final String currentUser = proxied.getCurrentUserName();
+    if (currentUser != null && !currentUser.isBlank())
+      builder.header("X-ArcadeDB-Forwarded-User", currentUser);
+
     try {
       final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200)
