@@ -30,6 +30,11 @@ class ExportDatabaseStatementTestParserTest extends AbstractParserTest {
     checkRightSyntax("EXPORT DATABASE file:///foo/bar/");
     checkRightSyntax("export database ");
 
+    // WITH clause settings
+    checkRightSyntax("EXPORT DATABASE WITH overwrite = true");
+    checkRightSyntax("EXPORT DATABASE WITH format = 'graphson'");
+    checkRightSyntax("EXPORT DATABASE file://Movies.graphson.tgz WITH format = 'graphson', overwrite = true");
+
     checkWrongSyntax("export database file:///foo/bar/ foo bar");
     checkWrongSyntax("export database http://www.foo.bar asdf ");
     checkWrongSyntax("EXPORT DATABASE https://www.foo.bar asd ");

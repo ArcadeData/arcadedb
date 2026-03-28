@@ -288,7 +288,8 @@ matchFilterItem
     ;
 
 matchFilterItemKey
-    : TYPE        // type: Person
+    : identifier
+    | TYPE        // type: Person
     | TYPES       // types: [Person, Company]
     | BUCKET      // bucket: bucketName
     | AS          // as: alias
@@ -537,17 +538,12 @@ propertyType
  * Unnamed: CREATE INDEX ON identifier (properties) [UNIQUE|NOTUNIQUE|FULL_TEXT] [NULL_STRATEGY ...] [ENGINE ...] [METADATA {...}]
  */
 createIndexBody
-    : (IF NOT EXISTS)? ON TYPE? identifier LPAREN indexProperty (COMMA indexProperty)* RPAREN
+    : identifier? (IF NOT EXISTS)? ON TYPE? identifier LPAREN indexProperty (COMMA indexProperty)* RPAREN
       indexType?
+      (ENGINE identifier)?
+      (METADATA json)?
       (NULL_STRATEGY identifier)?
-      (METADATA json)?
-      (ENGINE identifier)?
-    | identifier (IF NOT EXISTS)? indexType
-      (METADATA json)?
-      (ENGINE identifier)?
-    | identifier (IF NOT EXISTS)? indexType
-      (ENGINE identifier)?
-      (METADATA json)?
+    | QUOTED_IDENTIFIER (IF NOT EXISTS)? indexType (ENGINE identifier)? (METADATA json)? (NULL_STRATEGY identifier)?
     ;
 
 indexProperty
@@ -571,7 +567,7 @@ createBucketBody
  * Supports VALUES, SET, and CONTENT clauses similar to INSERT
  */
 createVertexBody
-    : (identifier (BUCKET identifier)? | bucketIdentifier)?
+    : identifier?
       ( LPAREN identifier (COMMA identifier)* RPAREN
         VALUES LPAREN expression (COMMA expression)* RPAREN
         (COMMA LPAREN expression (COMMA expression)* RPAREN)*
@@ -934,7 +930,7 @@ beginStatement
  * COMMIT [RETRY n [ELSE {statements} [AND] (FAIL|CONTINUE)]]
  */
 commitStatement
-    : COMMIT (RETRY INTEGER_LITERAL (ELSE (LBRACE scriptStatement (SEMICOLON? scriptStatement)* SEMICOLON? RBRACE (AND (FAIL | CONTINUE))? | (FAIL | CONTINUE)) )?)?
+    : COMMIT (RETRY INTEGER_LITERAL (ELSE (LBRACE (scriptStatement SEMICOLON?)+ RBRACE AND (FAIL | CONTINUE) | (FAIL | CONTINUE)))?)?
     ;
 
 /**
@@ -1039,8 +1035,8 @@ fromItem
     | bucketList                                                    # fromBucketList
     | indexIdentifier                                               # fromIndex
     | schemaIdentifier                                              # fromSchema
-    | LPAREN statement RPAREN (modifier)* (AS identifier)?          # fromSubquery
-    | identifier (modifier)* (AS identifier)?                       # fromIdentifier
+    | LPAREN statement RPAREN (modifier)* (AS? identifier)?         # fromSubquery
+    | identifier (modifier)* (AS? identifier)?                      # fromIdentifier
     ;
 
 bucketList
@@ -1144,11 +1140,7 @@ orderDirection
  * UNWIND clause
  */
 unwind
-    : UNWIND unwindItem (COMMA unwindItem)*
-    ;
-
-unwindItem
-    : expression (AS? identifier)?
+    : UNWIND expression (AS? identifier)?
     ;
 
 /**
@@ -1169,7 +1161,7 @@ limit
  * TIMEOUT clause
  */
 timeout
-    : TIMEOUT expression (EXCEPTION | RETURN)?
+    : TIMEOUT expression
     ;
 
 /**
@@ -1234,7 +1226,6 @@ baseExpression
     : INTEGER_LITERAL                                                   # integerLiteral
     | FLOATING_POINT_LITERAL                                            # floatLiteral
     | STRING_LITERAL modifier*                                          # stringLiteral
-    | RID_STRING modifier*                                              # ridStringLiteral
     | CHARACTER_LITERAL modifier*                                       # charLiteral
     | INTEGER_RANGE                                                     # integerRange
     | ELLIPSIS_INTEGER_RANGE                                            # ellipsisIntegerRange
@@ -1305,13 +1296,13 @@ methodCall
  */
 arraySelector
     : LBRACKET (expression | rid | inputParameter) (COMMA (expression | rid | inputParameter))+ RBRACKET  # arrayMultiSelector
-    | LBRACKET (pInteger | inputParameter)? RANGE (pInteger | inputParameter)? RBRACKET        # arrayRangeSelector
-    | LBRACKET (pInteger | inputParameter)? ELLIPSIS (pInteger | inputParameter)? RBRACKET    # arrayEllipsisSelector
-    | LBRACKET NOT? IN expression RBRACKET                                    # arrayInSelector
+    | LBRACKET expression? RANGE expression? RBRACKET                         # arrayRangeSelector
+    | LBRACKET expression? ELLIPSIS expression? RBRACKET                      # arrayEllipsisSelector
     | LBRACKET whereClause RBRACKET                                           # arrayConditionSelector
     | LBRACKET comparisonOperator expression RBRACKET                         # arrayFilterSelector
     | LBRACKET LIKE expression RBRACKET                                       # arrayLikeSelector
     | LBRACKET ILIKE expression RBRACKET                                      # arrayIlikeSelector
+    | LBRACKET IN expression RBRACKET                                         # arrayInSelector
     | LBRACKET expression comparisonOperator expression RBRACKET              # arrayBinaryCondSelector
     | LBRACKET (expression | rid | inputParameter) RBRACKET                  # arraySingleSelector
     ;
@@ -1322,7 +1313,6 @@ arraySelector
  */
 modifier
     : DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)?
-    | DOT STAR
     | arraySelector
     ;
 
@@ -1332,7 +1322,6 @@ modifier
 inputParameter
     : HOOK
     | COLON identifier
-    | COLON FROM   // named parameter :from (FROM is a reserved keyword not in identifier)
     | DOLLAR INTEGER_LITERAL
     ;
 
@@ -1419,12 +1408,9 @@ identifier
     | QUOTED_IDENTIFIER
     | THIS
     | RID_ATTR
-    | RID_ID_ATTR
-    | RID_POS_ATTR
     | OUT_ATTR
     | IN_ATTR
     | TYPE_ATTR
-    | PROPS_ATTR
     // Allow common keywords as identifiers
     | NAME
     | VALUE
@@ -1563,4 +1549,5 @@ identifier
     | PROPERTIES
     | COMPACTION
     | THRESHOLD
+    | OVERWRITE
     ;

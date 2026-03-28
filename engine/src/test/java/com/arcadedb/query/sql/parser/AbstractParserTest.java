@@ -24,33 +24,32 @@ import static org.assertj.core.api.Assertions.fail;
 
 public abstract class AbstractParserTest {
 
-  protected Statement checkRightSyntax(final String query) {
-    final Statement result = checkSyntax(query, true);
+  protected SimpleNode checkRightSyntax(final String query) {
+    final SimpleNode result = checkSyntax(query, true);
     final StringBuilder builder = new StringBuilder();
     result.toString(null, builder);
     return checkSyntax(builder.toString(), true);
-    //    return checkSyntax(query, true);
   }
 
-  protected Statement checkRightSyntaxServer(final String query) {
-    final Statement result = checkSyntaxServer(query, true);
+  protected SimpleNode checkRightSyntaxServer(final String query) {
+    final SimpleNode result = checkSyntaxServer(query, true);
     final StringBuilder builder = new StringBuilder();
     result.toString(null, builder);
     return checkSyntaxServer(builder.toString(), true);
-    //    return checkSyntax(query, true);
   }
 
-  protected Statement checkWrongSyntax(final String query) {
+  protected SimpleNode checkWrongSyntax(final String query) {
     return checkSyntax(query, false);
   }
 
-  protected Statement checkWrongSyntaxServer(final String query) {
+  protected SimpleNode checkWrongSyntaxServer(final String query) {
     return checkSyntaxServer(query, false);
   }
 
-  protected Statement checkSyntax(final String query, final boolean isCorrect) {
+  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
     try {
-      final Statement result = new SQLAntlrParser(null).parse(query);
+      final SQLAntlrParser parser = new SQLAntlrParser(null);
+      final Statement result = parser.parse(query);
 
       result.validate();
 
@@ -68,9 +67,11 @@ public abstract class AbstractParserTest {
     return null;
   }
 
-  protected Statement checkSyntaxServer(final String query, final boolean isCorrect) {
+  protected SimpleNode checkSyntaxServer(final String query, final boolean isCorrect) {
     try {
-      final Statement result = new SQLAntlrParser(null).parse(query);
+      final SQLAntlrParser parser = new SQLAntlrParser(null);
+      final Statement result = parser.parse(query);
+
       if (!isCorrect)
         fail("");
 
@@ -84,14 +85,4 @@ public abstract class AbstractParserTest {
     }
     return null;
   }
-
-//  private void printTree(final String s) {
-//    final SqlParser osql = getParserFor(s);
-//    try {
-//      final SimpleNode n = osql.parse();
-//
-//    } catch (final ParseException e) {
-//      e.printStackTrace();
-//    }
-//  }
 }
