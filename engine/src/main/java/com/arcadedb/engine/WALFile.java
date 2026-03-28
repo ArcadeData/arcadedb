@@ -252,6 +252,10 @@ public class WALFile extends LockContext {
       assert deltaRange[0] > -1 && deltaRange[1] < newPage.getPhysicalSize();
 
       final int deltaSize = deltaRange[1] - deltaRange[0] + 1;
+      if (deltaSize < 1)
+        throw new TransactionException(
+            "Invalid modified range for page " + newPage.getPageId() + " v" + newPage.version + ": deltaRange=[" + deltaRange[0]
+                + "," + deltaRange[1] + "] deltaSize=" + deltaSize + " pageSize=" + newPage.getPhysicalSize());
 
       LogManager.instance()
           .log(WALFile.class, Level.FINE, "Writing page %s v%d range %d-%d into buffer (txId=%d threadId=%d)", null, newPage.getPageId(), newPage.version + 1,
