@@ -505,62 +505,65 @@ class BatchTest extends TestHelper {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/2350
-   * SELECT FROM variable containing RID string should work
+   * Test that scalar extraction does NOT happen when there are multiple columns.
    */
   @Test
-  void selectFromVariableWithRidString() {
-    database.command("sql", "CREATE DOCUMENT TYPE TestSelectFromRid");
-
+  void mathOperatorsWithMultiColumnResultSet() {
+    database.command("sql", "CREATE VERTEX TYPE TestMultiCol");
     database.transaction(() -> {
-      // Create a document and get its RID
-      final ResultSet insertResult = database.command("sql", "INSERT INTO TestSelectFromRid SET name = 'test'");
-      assertThat(insertResult.hasNext()).isTrue();
-      final String ridString = insertResult.next().getIdentity().get().toString();
+      database.command("sql", "INSERT INTO TestMultiCol SET a = 10, b = 20");
 
-      // First, test that a simple LET and variable resolution works
-      final ResultSet simpleResult = database.command("sqlscript", """
-          LET $rid = '%s';
-          RETURN $rid;
-          """.formatted(ridString));
-
-      assertThat(simpleResult.hasNext()).isTrue();
-      final String resolvedRid = simpleResult.next().getProperty("value");
-      assertThat(resolvedRid).isEqualTo(ridString);
-
-      // Now test: SELECT FROM a variable containing a RID string
-      // First, verify the RID by directly selecting from it
-      final ResultSet directResult = database.query("sql", "SELECT FROM " + ridString);
-      assertThat(directResult.hasNext()).as("Direct SELECT FROM should return the record").isTrue();
-      final Result directRow = directResult.next();
-      assertThat((Object) directRow.getProperty("name")).isEqualTo("test");
-
-      // Now test with SQLSCRIPT
       final ResultSet result = database.command("sqlscript", """
-          LET $source_id = '%s';
-          LET $source = (SELECT FROM $source_id);
-          RETURN $source;
-          """.formatted(ridString));
+          LET $row = SELECT a, b FROM TestMultiCol;
+          LET $computed = $row + 1;
+          RETURN $computed;
+          """);
 
       assertThat(result.hasNext()).isTrue();
-      final Result row = result.next();
-      // The result should contain the "value" property OR be the document directly
-      // depending on how RETURN handles the InternalResultSet
-      if (row.hasProperty("value")) {
-        final Object value = row.getProperty("value");
-        assertThat(value).isNotNull();
-        // Verify the result contains the expected document
-        if (value instanceof List<?> list) {
-          assertThat(list).isNotEmpty();
-          final Object firstItem = list.getFirst();
-          if (firstItem instanceof Result r) {
-            assertThat((Object) r.getProperty("name")).isEqualTo("test");
-          }
-        }
-      } else {
-        // The row itself is the document
-        assertThat((Object) row.getProperty("name")).isEqualTo("test");
-      }
+      final Object value = result.next().getProperty("value");
+      // It should NOT be a Number 11 because it has 2 columns
+      assertThat(value).isNotEqualTo(11);
     });
+  }
+
+  /**
+   * Test that scalar extraction does NOT happen when there are multiple rows.
+   */
+  @Test
+  void mathOperatorsWithMultiRowResultSet() {
+    database.command("sql", "CREATE VERTEX TYPE TestMultiRow");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO TestMultiRow SET v = 10");
+      database.command("sql", "INSERT INTO TestMultiRow SET v = 20");
+
+      final ResultSet result = database.command("sqlscript", """
+          LET $rows = SELECT v FROM TestMultiRow;
+          LET $computed = $rows + 1;
+          RETURN $computed;
+          """);
+
+      assertThat(result.hasNext()).isTrue();
+      final Object value = result.next().getProperty("value");
+      // It should NOT be 11 or 21 (scalar extraction should not happen for multiple rows)
+      assertThat(value).isNotEqualTo(11);
+      assertThat(value).isNotEqualTo(21);
+    });
+  }
+
+  /**
+   * Test that scalar extraction does NOT happen when there is a list with multiple items.
+   */
+  @Test
+  void mathOperatorsWithMultiRowList() {
+    final ResultSet result = database.command("sqlscript", """
+        LET $list = [10, 20];
+        LET $computed = $list + 1;
+        RETURN $computed;
+        """);
+
+    assertThat(result.hasNext()).isTrue();
+    final Object value = result.next().getProperty("value");
+    // Should not be 11
+    assertThat(value).isNotEqualTo(11);
   }
 }

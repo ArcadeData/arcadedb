@@ -57,26 +57,30 @@ public class MathExpression extends SimpleNode {
    * @return the extracted scalar value, or the original value if extraction is not applicable
    */
   private static Object extractScalarFromResultSet(Object value) {
-    if (value instanceof ResultSet resultSet) {
+    if (value instanceof ResultSet resultSet && resultSet instanceof InternalResultSet internalResultSet) {
       // Check if we can extract a single scalar value
-      if (resultSet instanceof InternalResultSet internalResultSet) {
-        // InternalResultSet has countEntries() to check size without consuming
-        if (internalResultSet.countEntries() == 1) {
-          internalResultSet.reset(); // Reset to beginning
-          final Result result = internalResultSet.next();
-          internalResultSet.reset(); // Reset again for future use
+      if (internalResultSet.countEntries() == 1) {
+        internalResultSet.reset(); // Reset to beginning
+        final Result result = internalResultSet.next();
+        internalResultSet.reset(); // Reset again for future use
 
-          // Get the property names (excluding metadata)
-          final Set<String> propertyNames = result.getPropertyNames();
-          if (propertyNames.size() == 1) {
-            // Single property - extract its value
-            final String propertyName = propertyNames.iterator().next();
-            return result.getProperty(propertyName);
-          }
-        }
+        return extractScalarFromResult(result, value);
       }
+    } else if (value instanceof List<?> list && list.size() == 1 && list.get(0) instanceof Result result) {
+      return extractScalarFromResult(result, value);
     }
     return value;
+  }
+
+  private static Object extractScalarFromResult(final Result result, final Object defaultValue) {
+    // Get the property names (excluding metadata)
+    final Set<String> propertyNames = result.getPropertyNames();
+    if (propertyNames.size() == 1) {
+      // Single property - extract its value
+      final String propertyName = propertyNames.iterator().next();
+      return result.getProperty(propertyName);
+    }
+    return defaultValue;
   }
 
   public Expression getExpandContent() {
