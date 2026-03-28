@@ -20,8 +20,8 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.fail;
@@ -96,16 +96,10 @@ class BatchScriptTest {
   }
 
   protected List<Statement> checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
     try {
-      final List<Statement> result = osql.ParseScript();
-      //      for(Statement stm:result){
-      //        System.out.println(stm.toString()+";");
-      //      }
-      if (!isCorrect) {
+      final List<Statement> result = new SQLAntlrParser(null).parseScript(query);
+      if (!isCorrect)
         fail("");
-      }
-
       return result;
     } catch (final Exception e) {
       if (isCorrect) {
@@ -114,11 +108,5 @@ class BatchScriptTest {
       }
     }
     return null;
-  }
-
-  protected SqlParser getParserFor(final String string) {
-    final InputStream is = new ByteArrayInputStream(string.getBytes());
-    final SqlParser osql = new SqlParser(null, is);
-    return osql;
   }
 }
