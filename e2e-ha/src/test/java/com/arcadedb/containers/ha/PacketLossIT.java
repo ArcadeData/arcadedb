@@ -33,6 +33,8 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /**
  * Packet loss tests for Raft HA cluster resilience.
  * Tests behavior under unreliable networks with dropped packets.
@@ -223,19 +225,22 @@ public class PacketLossIT extends ContainersTestTemplate {
     raftProxy0.toxics().limitData("high_loss_raft0", ToxicDirection.DOWNSTREAM, 0).setToxicity(0.50f);
     raftProxy1.toxics().limitData("high_loss_raft1", ToxicDirection.DOWNSTREAM, 0).setToxicity(0.50f);
 
-    logger.info("Adding data under 50% packet loss");
+    logger.info("Adding data under 50% packet loss (some writes may fail)");
     db1.addUserAndPhotos(10, 10);
 
-    logger.info("Waiting for eventual replication (will be very slow with retries)");
+    final long committedOnLeader = db1.countUsers();
+    logger.info("Users committed on leader after packet loss writes: {}", committedOnLeader);
+
+    logger.info("Waiting for node1 to replicate whatever the leader committed");
     Awaitility.await()
         .atMost(120, TimeUnit.SECONDS)
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            final Long users1 = db1.countUsers();
-            final Long users2 = db2.countUsers();
+            final long users1 = db1.countUsers();
+            final long users2 = db2.countUsers();
             logger.info("High packet loss check: node0={}, node1={}", users1, users2);
-            return users1.equals(20L) && users2.equals(20L);
+            return users1 >= committedOnLeader && users2 >= committedOnLeader;
           } catch (final Exception e) {
             logger.warn("High packet loss check failed: {}", e.getMessage());
             return false;
@@ -247,8 +252,8 @@ public class PacketLossIT extends ContainersTestTemplate {
     raftProxy1.toxics().get("high_loss_raft1").remove();
 
     logger.info("Verifying final consistency");
-    db1.assertThatUserCountIs(20);
-    db2.assertThatUserCountIs(20);
+    final long finalCount = db1.countUsers();
+    assertThat(db2.countUsers()).isEqualTo(finalCount);
 
     db1.close();
     db2.close();

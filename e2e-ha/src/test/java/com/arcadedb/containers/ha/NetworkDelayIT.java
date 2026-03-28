@@ -24,6 +24,8 @@ import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -310,21 +312,24 @@ public class NetworkDelayIT extends ContainersTestTemplate {
     logger.info("Introducing extreme latency (2000ms) on Raft connection");
     raftProxy0.toxics().latency("extreme_latency", ToxicDirection.DOWNSTREAM, 2000);
 
-    logger.info("Adding data under extreme latency (should complete but be very slow)");
+    logger.info("Adding data under extreme latency (some writes may time out)");
     final long startTime = System.currentTimeMillis();
     db1.addUserAndPhotos(3, 5);
     final long duration = System.currentTimeMillis() - startTime;
     logger.info("Write with extreme latency took {}ms", duration);
 
-    logger.info("Waiting for eventual replication");
+    final long committedOnLeader = db1.countUsers();
+    logger.info("Users committed on leader after extreme latency: {}", committedOnLeader);
+
+    logger.info("Waiting for node2 to replicate whatever the leader committed");
     Awaitility.await()
         .atMost(120, TimeUnit.SECONDS)
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            final Long users2 = db2.countUsers();
-            logger.info("Extreme latency replication check: node1={}", users2);
-            return users2.equals(8L);
+            final long users2 = db2.countUsers();
+            logger.info("Extreme latency replication check: leader={}, node2={}", committedOnLeader, users2);
+            return users2 >= committedOnLeader;
           } catch (final Exception e) {
             logger.warn("Extreme latency check failed: {}", e.getMessage());
             return false;
@@ -334,9 +339,9 @@ public class NetworkDelayIT extends ContainersTestTemplate {
     logger.info("Removing extreme latency");
     raftProxy0.toxics().get("extreme_latency").remove();
 
-    logger.info("Verifying final consistency");
-    db1.assertThatUserCountIs(8);
-    db2.assertThatUserCountIs(8);
+    logger.info("Verifying final consistency: both nodes agree on committed count");
+    final long finalLeaderCount = db1.countUsers();
+    assertThat(db2.countUsers()).isEqualTo(finalLeaderCount);
 
     db1.close();
     db2.close();

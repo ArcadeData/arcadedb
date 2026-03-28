@@ -168,6 +168,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final String leaderName = raftHAServer.getPeerDisplayName(newLeaderId);
     LogManager.instance().log(this, Level.INFO, "Leader elected: %s", leaderName);
 
+    // Recreate the RaftClient so its gRPC channels perform fresh DNS resolution.
+    // After a network partition, channels to isolated peers enter TRANSIENT_FAILURE
+    // with exponential back-off (up to ~120 s). Refreshing on every leader change
+    // ensures the client can reach all peers as soon as the partition heals.
+    raftHAServer.refreshRaftClient();
+
     if (newLeaderId.equals(raftHAServer.getLocalPeerId())) {
       LogManager.instance().log(this, Level.INFO, "This node is now LEADER");
       raftHAServer.startLagMonitor();
