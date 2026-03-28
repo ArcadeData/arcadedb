@@ -124,7 +124,11 @@ class RollingRestartIT extends ContainersTestTemplate {
     arcade0.stop();
     logger.info("arcadedb-0 stopped");
 
-    TimeUnit.SECONDS.sleep(5);
+    logger.info("Waiting for new Raft leader election after arcadedb-0 stop");
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> hasLeader(servers));
 
     logger.info("Writing during arcadedb-0 restart (cluster should remain available)");
     db1.addUserAndPhotos(10, 10);
@@ -172,7 +176,11 @@ class RollingRestartIT extends ContainersTestTemplate {
     arcade1.stop();
     logger.info("arcadedb-1 stopped");
 
-    TimeUnit.SECONDS.sleep(5);
+    logger.info("Waiting for new Raft leader election after arcadedb-1 stop");
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> hasLeader(List.of(server0Restart, servers.get(2))));
 
     logger.info("Writing during arcadedb-1 restart");
     db0Restart.addUserAndPhotos(10, 10);
@@ -220,7 +228,11 @@ class RollingRestartIT extends ContainersTestTemplate {
     arcade2.stop();
     logger.info("arcadedb-2 stopped");
 
-    TimeUnit.SECONDS.sleep(5);
+    logger.info("Waiting for new Raft leader election after arcadedb-2 stop");
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> hasLeader(List.of(server0Restart, server1Restart)));
 
     logger.info("Writing during arcadedb-2 restart");
     db0Restart.addUserAndPhotos(10, 10);
