@@ -188,6 +188,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   private volatile List<DeltaVectorEntry> deltaVectors = new ArrayList<>();
 
+  // Inactivity rebuild timer (issue #3737): when mutations exist but haven't reached the threshold,
+  // a timer triggers an async rebuild after a period of inactivity.
+  private volatile java.util.TimerTask inactivityRebuildTask;
+  private volatile java.util.Timer     inactivityTimer;
+
   // Compaction support
   private final    AtomicInteger           currentMutablePages;
   private final    int                     minPagesToScheduleACompaction;
@@ -1429,6 +1434,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Subtract only mutations present at build start, preserving concurrent ones
         mutationsSinceSerialize.addAndGet(-mutationsAtBuildStart);
+
+        // Cancel inactivity timer if all mutations were flushed (issue #3737)
+        if (mutationsSinceSerialize.get() <= 0)
+          cancelInactivityRebuildTimer();
 
         // Only transition to IMMUTABLE if no new mutations arrived during rebuild
         this.graphState = remaining.isEmpty() ? GraphState.IMMUTABLE : GraphState.MUTABLE;
@@ -3139,6 +3148,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Increment mutation counter (used for periodic graph persistence)
           mutationsSinceSerialize.incrementAndGet();
+
+          // Schedule inactivity rebuild timer (issue #3737)
+          scheduleInactivityRebuild();
         } finally {
           lock.writeLock().unlock();
         }
@@ -3203,6 +3215,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Increment mutation counter (count number of deletions)
           mutationsSinceSerialize.addAndGet(deletedIds.size());
+
+          // Schedule inactivity rebuild timer (issue #3737)
+          scheduleInactivityRebuild();
         }
       } finally {
         lock.writeLock().unlock();
@@ -3563,6 +3578,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public void close() {
+    // Cancel inactivity rebuild timer (issue #3737)
+    cancelInactivityRebuildTimer();
+
     // Cancel any in-progress async graph rebuild
     final Thread rebuildThread = asyncRebuildThread;
     if (rebuildThread != null && rebuildThread.isAlive()) {
@@ -4253,6 +4271,93 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
     return mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD);
+  }
+
+  /**
+   * Get the inactivity rebuild timeout from configuration (per-index metadata or global default).
+   *
+   * @return Inactivity timeout in milliseconds, or 0 if disabled
+   */
+  private int getInactivityRebuildTimeoutMs() {
+    if (metadata != null && metadata.inactivityRebuildTimeoutMs >= 0)
+      return metadata.inactivityRebuildTimeoutMs;
+    return mutable.getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS);
+  }
+
+  /**
+   * Schedule or reset the inactivity rebuild timer (issue #3737).
+   * Called after each mutation when mutations are below the rebuild threshold.
+   * If a timer is already scheduled, it is cancelled and a new one is started,
+   * effectively resetting the inactivity window.
+   * When the timer fires, it triggers an async graph rebuild regardless of the mutation count.
+   */
+  private void scheduleInactivityRebuild() {
+    final int timeoutMs = getInactivityRebuildTimeoutMs();
+    if (timeoutMs <= 0)
+      return; // Disabled
+
+    if (mutationsSinceSerialize.get() <= 0)
+      return; // Nothing to rebuild
+
+    // Cancel any previously scheduled task (reset on new mutation)
+    final java.util.TimerTask existing = inactivityRebuildTask;
+    if (existing != null)
+      existing.cancel();
+
+    final java.util.TimerTask task = new java.util.TimerTask() {
+      @Override
+      public void run() {
+        // Double-check: only rebuild if there are still pending mutations
+        if (mutationsSinceSerialize.get() <= 0)
+          return;
+
+        LogManager.instance().log(this, Level.INFO,
+            "Inactivity timeout expired (%d ms), triggering graph rebuild for %d pending mutations (index: %s)",
+            timeoutMs, mutationsSinceSerialize.get(), indexName);
+
+        try {
+          if (graphIndex != null && graphIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE) {
+            // Large graph: async rebuild
+            startAsyncGraphRebuild();
+          } else {
+            // Small graph: synchronous rebuild
+            lock.writeLock().lock();
+            try {
+              if (mutationsSinceSerialize.get() > 0)
+                buildGraphFromScratch();
+            } finally {
+              lock.writeLock().unlock();
+            }
+          }
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Error during inactivity rebuild for index %s: %s", indexName, e.getMessage());
+        }
+      }
+    };
+
+    inactivityRebuildTask = task;
+
+    if (inactivityTimer == null)
+      inactivityTimer = new java.util.Timer("VectorIndex-InactivityTimer-" + indexName, true);
+    inactivityTimer.schedule(task, timeoutMs);
+  }
+
+  /**
+   * Cancel the inactivity rebuild timer if one is scheduled.
+   */
+  private void cancelInactivityRebuildTimer() {
+    final java.util.TimerTask task = inactivityRebuildTask;
+    if (task != null) {
+      task.cancel();
+      inactivityRebuildTask = null;
+    }
+    final java.util.Timer timer = inactivityTimer;
+    if (timer != null) {
+      timer.cancel();
+      inactivityTimer = null;
+    }
   }
 
   /**
