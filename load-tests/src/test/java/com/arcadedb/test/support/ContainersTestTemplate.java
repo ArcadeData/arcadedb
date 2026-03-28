@@ -41,10 +41,13 @@ import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.containers.BindMode;
 import org.testcontainers.utility.MountableFile;
 
+import com.arcadedb.serializer.json.JSONObject;
+
 import java.io.File;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URL;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -495,6 +498,43 @@ public abstract class ContainersTestTemplate {
       } else {
         logger.info("Container {} is running", name);
       }
+    }
+  }
+
+  /**
+   * Counts users via direct HTTP, bypassing RemoteDatabase to avoid cluster topology
+   * resolution issues (UnresolvedAddressException) after network partitions.
+   * Uses HttpURLConnection (HTTP/1.1) which does not cache internal Docker hostnames.
+   */
+  protected long countUsersViaHttp(final ServerWrapper server) throws Exception {
+    final URL url = URI.create(
+        "http://" + server.host() + ":" + server.httpPort() + "/api/v1/query/" + DATABASE).toURL();
+    final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+    conn.setRequestMethod("POST");
+    conn.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes()));
+    conn.setRequestProperty("Content-Type", "application/json");
+    conn.setConnectTimeout(5000);
+    conn.setReadTimeout(5000);
+    conn.setDoOutput(true);
+    try {
+      conn.getOutputStream().write(
+          "{\"language\":\"sql\",\"command\":\"select count(*) as count from User where @type = 'User'\"}".getBytes());
+      final int status = conn.getResponseCode();
+      if (status != 200) {
+        String body = "";
+        try {
+          final var errStream = conn.getErrorStream();
+          if (errStream != null)
+            body = new String(errStream.readAllBytes());
+        } catch (final Exception ignored) {
+        }
+        throw new IOException("HTTP " + status + " body=" + body);
+      }
+      final JSONObject json = new JSONObject(new String(conn.getInputStream().readAllBytes()));
+      return json.getJSONArray("result").getJSONObject(0).getLong("count");
+    } finally {
+      conn.disconnect();
     }
   }
 

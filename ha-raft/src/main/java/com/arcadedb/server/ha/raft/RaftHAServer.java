@@ -75,6 +75,7 @@ public class RaftHAServer {
 
   private RaftServer                raftServer;
   private RaftClient                raftClient;
+  private RaftProperties            raftProperties;
   private ScheduledExecutorService  lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
@@ -273,6 +274,8 @@ public class RaftHAServer {
 
     raftServer.start();
 
+    this.raftProperties = properties;
+
     raftClient = RaftClient.newBuilder()
         .setRaftGroup(raftGroup)
         .setProperties(properties)
@@ -351,6 +354,33 @@ public class RaftHAServer {
 
   public RaftClient getClient() {
     return raftClient;
+  }
+
+  /**
+   * Closes the current RaftClient and creates a new one with fresh gRPC channels.
+   * <p>
+   * After a network partition, gRPC channels to partitioned peers enter TRANSIENT_FAILURE
+   * with exponential backoff (up to ~120 s). Any Raft send on those channels fails with
+   * {@code UnresolvedAddressException}, even after the partition heals and DNS is restored.
+   * Re-creating the client forces new channel creation and immediate DNS re-resolution,
+   * allowing the cluster to accept writes again as soon as the new leader is elected.
+   */
+  public synchronized void refreshRaftClient() {
+    if (raftProperties == null)
+      return;
+    if (raftClient != null) {
+      try {
+        raftClient.close();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing stale RaftClient during refresh", e);
+      }
+    }
+    raftClient = RaftClient.newBuilder()
+        .setRaftGroup(raftGroup)
+        .setProperties(raftProperties)
+        .setParameters(new Parameters())
+        .build();
+    LogManager.instance().log(this, Level.INFO, "RaftClient refreshed with fresh gRPC channels after leader change");
   }
 
   public ArcadeStateMachine getStateMachine() {
