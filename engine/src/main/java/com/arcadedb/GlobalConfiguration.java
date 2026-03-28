@@ -373,6 +373,15 @@ public enum GlobalConfiguration {
       Recommended: 50-200 for read-heavy, 200-500 for write-heavy workloads.""",
       Integer.class, 100),
 
+  VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS("arcadedb.vectorIndex.inactivityRebuildTimeoutMs", SCOPE.DATABASE,
+      """
+      Inactivity timeout in milliseconds before flushing buffered vectors and rebuilding the HNSW graph. \
+      When mutations exist but have not reached the rebuild threshold, a timer starts after the last mutation. \
+      If no new mutations arrive within this window, the graph is rebuilt asynchronously. \
+      Set to 0 to disable (vectors are only flushed when the mutation threshold is reached). \
+      Recommended: 10000-30000 for low-volume ingestion workloads.""",
+      Integer.class, 15_000),
+
     VECTOR_INDEX_GRAPH_BUILD_DIAGNOSTICS("arcadedb.vectorIndex.graphBuildDiagnostics", SCOPE.DATABASE,
       """
       Enable diagnostic logging during vector graph build progress (heap/off-heap memory and index file sizes). \
