@@ -2142,7 +2142,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int vectorIdSize = Binary.getNumberSpace(vectorId);
         final int bucketIdSize = Binary.getNumberSpace(loc.rid.getBucketId());
         final int positionSize = Binary.getNumberSpace(loc.rid.getPosition());
-        final int entrySize = vectorIdSize + positionSize + bucketIdSize + 1; // +1 for deleted byte
+        // FIX #3722: Include +1 for quantization type byte to match the format expected by
+        // LSMVectorIndexPageParser.parsePages() which always calls skipQuantizationData()
+        final int entrySize = vectorIdSize + positionSize + bucketIdSize + 1 + 1; // +1 deleted byte +1 quantType byte
 
         // Get current page
         MutablePage currentPage = getDatabase().getTransaction()
@@ -2186,6 +2188,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, loc.rid.getBucketId());
         bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, loc.rid.getPosition());
         bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) 1); // Mark as deleted
+        // FIX #3722: Write quantization type byte (NONE for tombstones) to match the entry format
+        // expected by LSMVectorIndexPageParser.skipQuantizationData(). Without this byte, the parser
+        // reads into the next entry's data, corrupting all subsequent entries on the same page.
+        bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) VectorQuantizationType.NONE.ordinal());
 
         // Update page header
         numberOfEntries++;
