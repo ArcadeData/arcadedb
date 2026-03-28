@@ -20,37 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-
-import static org.assertj.core.api.Assertions.fail;
-
-class CreateVertexStatementTest {
-
-  protected SimpleNode checkRightSyntax(final String query) {
-    return checkSyntax(query, true);
-  }
-
-  protected SimpleNode checkWrongSyntax(final String query) {
-    return checkSyntax(query, false);
-  }
-
-  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
-    try {
-      final SimpleNode result = osql.Parse();
-      if (!isCorrect) {
-        fail("");
-      }
-      return result;
-    } catch (final Exception e) {
-      if (isCorrect) {
-        e.printStackTrace();
-        fail("");
-      }
-    }
-    return null;
-  }
+class CreateVertexStatementTest extends AbstractParserTest {
 
   @Test
   void simpleCreate() {
@@ -65,8 +35,6 @@ class CreateVertexStatementTest {
     checkRightSyntax("create vertex Foo (a,b) values (1, 2)");
     checkRightSyntax("create vertex Foo (a,b) values ('1', '2')");
     checkRightSyntax("create vertex (a,b) values (\"1\", \"2\")");
-
-    printTree("create vertex (a,b) values (\"1\", \"2\")");
   }
 
   @Test
@@ -95,21 +63,5 @@ class CreateVertexStatementTest {
   void insertIntoBucket() {
     checkRightSyntax(
         "create vertex bucket:default (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
-  }
-
-  private void printTree(final String s) {
-    final SqlParser osql = getParserFor(s);
-    try {
-      final SimpleNode n = osql.Parse();
-
-    } catch (final ParseException e) {
-      e.printStackTrace();
-    }
-  }
-
-  protected SqlParser getParserFor(final String string) {
-    final InputStream is = new ByteArrayInputStream(string.getBytes());
-    final SqlParser osql = new SqlParser(null, is);
-    return osql;
   }
 }
