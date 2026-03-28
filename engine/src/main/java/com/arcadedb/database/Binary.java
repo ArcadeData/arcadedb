@@ -614,6 +614,10 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   public void move(final int startPosition, final int destPosition, final int length) {
     if (length == 0)
       return;
+    if (length < 0)
+      throw new IllegalArgumentException(
+          "Cannot move a negative number of bytes (startPosition=" + startPosition + " destPosition=" + destPosition + " length="
+              + length + " bufferSize=" + size + ")");
     checkForAllocation(0, destPosition + length);
     System.arraycopy(content, buffer.arrayOffset() + startPosition, content, buffer.arrayOffset() + destPosition, length);
   }

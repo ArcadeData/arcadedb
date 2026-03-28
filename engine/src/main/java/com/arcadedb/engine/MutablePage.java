@@ -214,6 +214,10 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   public void move(int startPosition, int destPosition, final int length) {
+    if (length < 0)
+      throw new IllegalArgumentException(
+          "Cannot move a negative number of bytes in page " + pageId + " (startPosition=" + startPosition + " destPosition="
+              + destPosition + " length=" + length + " pageSize=" + size + ")");
     startPosition += PAGE_HEADER_SIZE;
     destPosition += PAGE_HEADER_SIZE;
     updateModifiedRange(startPosition, destPosition + length);
