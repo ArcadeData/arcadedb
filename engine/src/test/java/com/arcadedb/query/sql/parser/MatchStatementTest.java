@@ -20,40 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-
-import static org.assertj.core.api.Assertions.fail;
-
-class MatchStatementTest {
-
-  protected SimpleNode checkRightSyntax(final String query) {
-    final SimpleNode result = checkSyntax(query, true);
-    final StringBuilder builder = new StringBuilder();
-    result.toString(null, builder);
-    return checkSyntax(builder.toString(), true);
-  }
-
-  protected SimpleNode checkWrongSyntax(final String query) {
-    return checkSyntax(query, false);
-  }
-
-  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
-    try {
-      final SimpleNode result = osql.Parse();
-      if (!isCorrect) {
-        fail("");
-      }
-      return result;
-    } catch (final Exception e) {
-      if (isCorrect) {
-        e.printStackTrace();
-        fail("");
-      }
-    }
-    return null;
-  }
+class MatchStatementTest extends AbstractParserTest {
 
   @Test
   void wrongFilterKey() {
@@ -249,11 +216,5 @@ class MatchStatementTest {
         "MATCH {type: 'V', as: foo}.toBar.baz{as:bar} RETURN foo.name, bar.name skip 10 limit 10");
     checkRightSyntax(
         "MATCH {type: 'V', as: foo}.toBar.out(){as:bar} RETURN foo.name, bar.name skip 10 limit 10");
-  }
-
-  protected SqlParser getParserFor(final String string) {
-    final InputStream is = new ByteArrayInputStream(string.getBytes());
-    final SqlParser osql = new SqlParser(null, is);
-    return osql;
   }
 }
