@@ -18,13 +18,13 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
 
 /** Created by luigidellaquila on 11/10/16. */
 class PatternTestParserTest extends AbstractParserTest {
@@ -32,78 +32,61 @@ class PatternTestParserTest extends AbstractParserTest {
   @Test
   void simplePattern() {
     final String query = "MATCH {as:a, type:Person} return a";
-    final SqlParser parser = getParserFor(query);
-    try {
-      final MatchStatement stm = (MatchStatement) parser.Parse();
-      stm.buildPatterns();
-      final Pattern pattern = stm.pattern;
-      assertThat(pattern.getNumOfEdges()).isEqualTo(0);
-      assertThat(pattern.getAliasToNode().size()).isEqualTo(1);
-      assertThat(pattern.getAliasToNode().get("a")).isNotNull();
-      assertThat(pattern.getDisjointPatterns().size()).isEqualTo(1);
-    } catch (final ParseException e) {
-      fail("");
-    }
+    final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
+    stm.buildPatterns();
+    final Pattern pattern = stm.pattern;
+    assertThat(pattern.getNumOfEdges()).isEqualTo(0);
+    assertThat(pattern.getAliasToNode().size()).isEqualTo(1);
+    assertThat(pattern.getAliasToNode().get("a")).isNotNull();
+    assertThat(pattern.getDisjointPatterns().size()).isEqualTo(1);
   }
 
   @Test
   void cartesianProduct() {
     final String query = "MATCH {as:a, type:Person}, {as:b, type:Person} return a, b";
-    final SqlParser parser = getParserFor(query);
-    try {
-      final MatchStatement stm = (MatchStatement) parser.Parse();
-      stm.buildPatterns();
-      final Pattern pattern = stm.pattern;
-      assertThat(pattern.getNumOfEdges()).isEqualTo(0);
-      assertThat(pattern.getAliasToNode().size()).isEqualTo(2);
-      assertThat(pattern.getAliasToNode().get("a")).isNotNull();
-      final List<Pattern> subPatterns = pattern.getDisjointPatterns();
-      assertThat(subPatterns.size()).isEqualTo(2);
-      assertThat(subPatterns.getFirst().getNumOfEdges()).isEqualTo(0);
-      assertThat(subPatterns.getFirst().getAliasToNode().size()).isEqualTo(1);
-      assertThat(subPatterns.get(1).getNumOfEdges()).isEqualTo(0);
-      assertThat(subPatterns.get(1).getAliasToNode().size()).isEqualTo(1);
+    final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
+    stm.buildPatterns();
+    final Pattern pattern = stm.pattern;
+    assertThat(pattern.getNumOfEdges()).isEqualTo(0);
+    assertThat(pattern.getAliasToNode().size()).isEqualTo(2);
+    assertThat(pattern.getAliasToNode().get("a")).isNotNull();
+    final List<Pattern> subPatterns = pattern.getDisjointPatterns();
+    assertThat(subPatterns.size()).isEqualTo(2);
+    assertThat(subPatterns.getFirst().getNumOfEdges()).isEqualTo(0);
+    assertThat(subPatterns.getFirst().getAliasToNode().size()).isEqualTo(1);
+    assertThat(subPatterns.get(1).getNumOfEdges()).isEqualTo(0);
+    assertThat(subPatterns.get(1).getAliasToNode().size()).isEqualTo(1);
 
-      final Set<String> aliases = new HashSet<>();
-      aliases.add("a");
-      aliases.add("b");
-      aliases.remove(subPatterns.getFirst().getAliasToNode().keySet().iterator().next());
-      aliases.remove(subPatterns.get(1).getAliasToNode().keySet().iterator().next());
-      assertThat(aliases.size()).isEqualTo(0);
-
-    } catch (final ParseException e) {
-      fail("");
-    }
+    final Set<String> aliases = new HashSet<>();
+    aliases.add("a");
+    aliases.add("b");
+    aliases.remove(subPatterns.getFirst().getAliasToNode().keySet().iterator().next());
+    aliases.remove(subPatterns.get(1).getAliasToNode().keySet().iterator().next());
+    assertThat(aliases.size()).isEqualTo(0);
   }
 
   @Test
   void complexCartesianProduct() {
     final String query =
         "MATCH {as:a, type:Person}-->{as:b}, {as:c, type:Person}-->{as:d}-->{as:e}, {as:d, type:Foo}-->{as:f} return a, b";
-    final SqlParser parser = getParserFor(query);
-    try {
-      final MatchStatement stm = (MatchStatement) parser.Parse();
-      stm.buildPatterns();
-      final Pattern pattern = stm.pattern;
-      assertThat(pattern.getNumOfEdges()).isEqualTo(4);
-      assertThat(pattern.getAliasToNode().size()).isEqualTo(6);
-      assertThat(pattern.getAliasToNode().get("a")).isNotNull();
-      final List<Pattern> subPatterns = pattern.getDisjointPatterns();
-      assertThat(subPatterns.size()).isEqualTo(2);
+    final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
+    stm.buildPatterns();
+    final Pattern pattern = stm.pattern;
+    assertThat(pattern.getNumOfEdges()).isEqualTo(4);
+    assertThat(pattern.getAliasToNode().size()).isEqualTo(6);
+    assertThat(pattern.getAliasToNode().get("a")).isNotNull();
+    final List<Pattern> subPatterns = pattern.getDisjointPatterns();
+    assertThat(subPatterns.size()).isEqualTo(2);
 
-      final Set<String> aliases = new HashSet<>();
-      aliases.add("a");
-      aliases.add("b");
-      aliases.add("c");
-      aliases.add("d");
-      aliases.add("e");
-      aliases.add("f");
-      aliases.removeAll(subPatterns.getFirst().getAliasToNode().keySet());
-      aliases.removeAll(subPatterns.get(1).getAliasToNode().keySet());
-      assertThat(aliases.size()).isEqualTo(0);
-
-    } catch (final ParseException e) {
-      fail("");
-    }
+    final Set<String> aliases = new HashSet<>();
+    aliases.add("a");
+    aliases.add("b");
+    aliases.add("c");
+    aliases.add("d");
+    aliases.add("e");
+    aliases.add("f");
+    aliases.removeAll(subPatterns.getFirst().getAliasToNode().keySet());
+    aliases.removeAll(subPatterns.get(1).getAliasToNode().keySet());
+    assertThat(aliases.size()).isEqualTo(0);
   }
 }

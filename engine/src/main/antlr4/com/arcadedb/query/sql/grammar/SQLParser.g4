@@ -540,9 +540,10 @@ propertyType
 createIndexBody
     : identifier? (IF NOT EXISTS)? ON TYPE? identifier LPAREN indexProperty (COMMA indexProperty)* RPAREN
       indexType?
-      (NULL_STRATEGY identifier)?
-      (METADATA json)?
       (ENGINE identifier)?
+      (METADATA json)?
+      (NULL_STRATEGY identifier)?
+    | QUOTED_IDENTIFIER (IF NOT EXISTS)? indexType (ENGINE identifier)? (METADATA json)? (NULL_STRATEGY identifier)?
     ;
 
 indexProperty
@@ -618,7 +619,7 @@ alterPropertyItem
     ;
 
 alterBucketBody
-    : identifier alterBucketItem (COMMA alterBucketItem)*
+    : identifier STAR? alterBucketItem (COMMA alterBucketItem)*
     ;
 
 alterBucketItem
@@ -643,7 +644,7 @@ dropTypeBody
     ;
 
 dropPropertyBody
-    : identifier DOT identifier (IF EXISTS)?
+    : identifier DOT identifier (IF EXISTS)? FORCE?
     ;
 
 dropIndexBody
@@ -651,7 +652,7 @@ dropIndexBody
     ;
 
 dropBucketBody
-    : identifier (IF EXISTS)?
+    : (identifier | INTEGER_LITERAL) (IF EXISTS)?
     ;
 
 // ============================================================================
@@ -832,11 +833,12 @@ truncateTypeBody
     ;
 
 truncateBucketBody
-    : identifier UNSAFE?
+    : (identifier | INTEGER_LITERAL) UNSAFE?
     ;
 
 truncateRecordBody
-    : rid (COMMA rid)*
+    : rid
+    | LBRACKET rid (COMMA rid)* RBRACKET
     ;
 
 // ============================================================================
@@ -928,7 +930,7 @@ beginStatement
  * COMMIT [RETRY n [ELSE {statements} [AND] (FAIL|CONTINUE)]]
  */
 commitStatement
-    : COMMIT (RETRY INTEGER_LITERAL (ELSE (LBRACE (scriptStatement SEMICOLON?)* RBRACE)? (AND? (FAIL | CONTINUE))?)?)?
+    : COMMIT (RETRY INTEGER_LITERAL (ELSE (LBRACE (scriptStatement SEMICOLON?)+ RBRACE AND (FAIL | CONTINUE) | (FAIL | CONTINUE)))?)?
     ;
 
 /**
@@ -976,7 +978,7 @@ importDatabaseStatement
     ;
 
 exportDatabaseStatement
-    : EXPORT DATABASE url (WITH settingList)?
+    : EXPORT DATABASE (url)? (WITH settingList)?
     ;
 
 backupDatabaseStatement
@@ -1547,4 +1549,5 @@ identifier
     | PROPERTIES
     | COMPACTION
     | THRESHOLD
+    | OVERWRITE
     ;

@@ -5340,14 +5340,44 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // IF NOT EXISTS flag
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
-    // Index name and type name
-    // Grammar: identifier? (IF NOT EXISTS)? ON TYPE? identifier (properties) ...
-    // The identifier BEFORE ON is the optional index name
-    // The identifier AFTER ON is the type/table name
-    // We need to check if the first identifier comes before the ON keyword
+    if (bodyCtx.QUOTED_IDENTIFIER() != null) {
+      // Legacy syntax: CREATE INDEX `name` [IF NOT EXISTS] indexType [ENGINE engine] [METADATA json]
+      final String quoted = bodyCtx.QUOTED_IDENTIFIER().getText();
+      final String unquoted = quoted.substring(1, quoted.length() - 1);
+      final Identifier nameId = new Identifier(unquoted);
+      nameId.setQuotedStringValue(quoted);
+      stmt.name = nameId;
+      // No typeName — legacy indexes are not bound to a type via ON clause
 
-    int idxNamePos = -1;
-    int typeNamePos = -1;
+      if (bodyCtx.indexType() != null) {
+        if (bodyCtx.indexType().UNIQUE() != null)
+          stmt.type = new Identifier("UNIQUE");
+        else if (bodyCtx.indexType().NOTUNIQUE() != null)
+          stmt.type = new Identifier("NOTUNIQUE");
+        else if (bodyCtx.indexType().FULL_TEXT() != null)
+          stmt.type = new Identifier("FULL_TEXT");
+        else if (bodyCtx.indexType().identifier() != null)
+          stmt.type = (Identifier) visit(bodyCtx.indexType().identifier());
+      }
+
+      int legacyIdIdx = 0;
+      if (bodyCtx.ENGINE() != null && bodyCtx.identifier().size() > legacyIdIdx) {
+        stmt.engine = (Identifier) visit(bodyCtx.identifier(legacyIdIdx));
+        legacyIdIdx++;
+      }
+
+      if (bodyCtx.METADATA() != null && bodyCtx.json() != null)
+        stmt.metadata = (Json) visit(bodyCtx.json());
+
+      if (bodyCtx.NULL_STRATEGY() != null && bodyCtx.identifier().size() > legacyIdIdx) {
+        final Identifier nsId = (Identifier) visit(bodyCtx.identifier(legacyIdIdx));
+        stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase());
+      }
+
+      return stmt;
+    }
+
+    // New syntax: CREATE INDEX [name] [IF NOT EXISTS] ON TYPE? typeName (fields) ...
     int onTokenIndex = -1;
 
     // Find the ON token position in the token stream
@@ -5379,7 +5409,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     } else {
       // Fallback: assume first identifier is type name if ON not found
-      stmt.typeName = (Identifier) visit(bodyCtx.identifier(0));
+      if (!bodyCtx.identifier().isEmpty())
+        stmt.typeName = (Identifier) visit(bodyCtx.identifier(0));
     }
 
     // Index properties
@@ -5431,10 +5462,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     int extraIdIndex = stmt.name != null ? 2 : 1; // Start position for NULL_STRATEGY/ENGINE identifiers
 
-    if (bodyCtx.NULL_STRATEGY() != null && bodyCtx.identifier().size() > extraIdIndex) {
-      final Identifier nsId = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
-      stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase());
-      extraIdIndex++; // Move to next identifier position for ENGINE
+    // Grammar (new syntax): ... indexType? (ENGINE identifier)? (METADATA json)? (NULL_STRATEGY identifier)?
+    // ENGINE
+    if (bodyCtx.ENGINE() != null && bodyCtx.identifier().size() > extraIdIndex) {
+      stmt.engine = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
+      extraIdIndex++;
     }
 
     // METADATA
@@ -5442,9 +5474,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.metadata = (Json) visit(bodyCtx.json());
     }
 
-    // ENGINE
-    if (bodyCtx.ENGINE() != null && bodyCtx.identifier().size() > extraIdIndex) {
-      stmt.engine = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
+    // NULL_STRATEGY
+    if (bodyCtx.NULL_STRATEGY() != null && bodyCtx.identifier().size() > extraIdIndex) {
+      final Identifier nsId = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
+      stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase());
     }
 
     return stmt;
@@ -5663,7 +5696,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     for (final SQLParser.AlterPropertyItemContext itemCtx : bodyCtx.alterPropertyItem()) {
       if (itemCtx.NAME() != null) {
         stmt.settingName = new Identifier("name");
-        stmt.settingValue = (Expression) visit(itemCtx.identifier());
+        final Identifier nameId = (Identifier) visit(itemCtx.identifier());
+        final BaseExpression nameBaseExpr = new BaseExpression(-1);
+        nameBaseExpr.identifier = new BaseIdentifier(nameId);
+        final Expression nameExpr = new Expression(-1);
+        nameExpr.mathExpression = nameBaseExpr;
+        stmt.settingValue = nameExpr;
       } else if (itemCtx.TYPE() != null) {
         stmt.settingName = new Identifier("type");
         // Property type as expression
@@ -5696,14 +5734,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final AlterBucketStatement stmt = new AlterBucketStatement(-1);
     final SQLParser.AlterBucketBodyContext bodyCtx = ctx.alterBucketBody();
 
-    // Bucket name
+    // Bucket name (possibly with wildcard *)
     stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.starred = bodyCtx.STAR() != null;
 
     // Process all alter bucket items
     for (final SQLParser.AlterBucketItemContext itemCtx : bodyCtx.alterBucketItem()) {
       if (itemCtx.NAME() != null) {
         stmt.attributeName = new Identifier("name");
-        stmt.attributeValue = (Expression) visit(itemCtx.identifier());
+        final Identifier attrNameId = (Identifier) visit(itemCtx.identifier());
+        final BaseExpression attrNameBaseExpr = new BaseExpression(-1);
+        attrNameBaseExpr.identifier = new BaseIdentifier(attrNameId);
+        final Expression attrNameExpr = new Expression(-1);
+        attrNameExpr.mathExpression = attrNameBaseExpr;
+        stmt.attributeValue = attrNameExpr;
       } else if (itemCtx.CUSTOM() != null) {
         stmt.attributeName = (Identifier) visit(itemCtx.identifier());
         stmt.attributeValue = (Expression) visit(itemCtx.expression());
@@ -5806,8 +5850,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final DropBucketStatement stmt = new DropBucketStatement(-1);
     final SQLParser.DropBucketBodyContext bodyCtx = ctx.dropBucketBody();
 
-    // Bucket name
-    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    // Bucket name or numeric ID
+    if (bodyCtx.INTEGER_LITERAL() != null) {
+      stmt.id = new PInteger(-1);
+      stmt.id.setValue(Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText()));
+    } else {
+      stmt.name = (Identifier) visit(bodyCtx.identifier());
+    }
 
     // IF EXISTS
     stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
@@ -6299,8 +6348,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final TruncateBucketStatement stmt = new TruncateBucketStatement(-1);
     final SQLParser.TruncateBucketBodyContext bodyCtx = ctx.truncateBucketBody();
 
-    // Bucket name
-    stmt.bucketName = (Identifier) visit(bodyCtx.identifier());
+    // Bucket name or numeric ID
+    if (bodyCtx.INTEGER_LITERAL() != null) {
+      stmt.bucketNumber = new PInteger(-1);
+      stmt.bucketNumber.setValue(Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText()));
+    } else {
+      stmt.bucketName = (Identifier) visit(bodyCtx.identifier());
+    }
 
     // UNSAFE
     stmt.unsafe = bodyCtx.UNSAFE() != null;
