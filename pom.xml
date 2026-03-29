@@ -90,7 +90,7 @@
         <undertow-core.version>2.3.24.Final</undertow-core.version>
         <jboss-threads.version>3.9.2</jboss-threads.version>
         <mockito-core.version>5.23.0</mockito-core.version>
-        <neo4j-driver.version>6.0.3</neo4j-driver.version>
+        <neo4j-driver.version>6.0.4</neo4j-driver.version>
         <byte-buddy.version>1.17.7</byte-buddy.version>
 
 
