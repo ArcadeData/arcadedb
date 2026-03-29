@@ -18,38 +18,39 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+
 import static org.assertj.core.api.Assertions.fail;
 
 public abstract class AbstractParserTest {
 
-  protected SimpleNode checkRightSyntax(final String query) {
-    final SimpleNode result = checkSyntax(query, true);
+  protected Statement checkRightSyntax(final String query) {
+    final Statement result = checkSyntax(query, true);
     final StringBuilder builder = new StringBuilder();
     result.toString(null, builder);
     return checkSyntax(builder.toString(), true);
     //    return checkSyntax(query, true);
   }
 
-  protected SimpleNode checkRightSyntaxServer(final String query) {
-    final SimpleNode result = checkSyntaxServer(query, true);
+  protected Statement checkRightSyntaxServer(final String query) {
+    final Statement result = checkSyntaxServer(query, true);
     final StringBuilder builder = new StringBuilder();
     result.toString(null, builder);
     return checkSyntaxServer(builder.toString(), true);
     //    return checkSyntax(query, true);
   }
 
-  protected SimpleNode checkWrongSyntax(final String query) {
+  protected Statement checkWrongSyntax(final String query) {
     return checkSyntax(query, false);
   }
 
-  protected SimpleNode checkWrongSyntaxServer(final String query) {
+  protected Statement checkWrongSyntaxServer(final String query) {
     return checkSyntaxServer(query, false);
   }
 
-  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
+  protected Statement checkSyntax(final String query, final boolean isCorrect) {
     try {
-      final Statement result = osql.Parse();
+      final Statement result = new SQLAntlrParser(null).parse(query);
 
       result.validate();
 
@@ -67,10 +68,9 @@ public abstract class AbstractParserTest {
     return null;
   }
 
-  protected SimpleNode checkSyntaxServer(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
+  protected Statement checkSyntaxServer(final String query, final boolean isCorrect) {
     try {
-      final SimpleNode result = osql.Parse();
+      final Statement result = new SQLAntlrParser(null).parse(query);
       if (!isCorrect)
         fail("");
 
@@ -83,11 +83,6 @@ public abstract class AbstractParserTest {
       }
     }
     return null;
-  }
-
-  protected SqlParser getParserFor(final String string) {
-    final SqlParser osql = new SqlParser(null, string);
-    return osql;
   }
 
 //  private void printTree(final String s) {

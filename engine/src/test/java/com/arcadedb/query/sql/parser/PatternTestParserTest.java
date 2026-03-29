@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -32,16 +33,15 @@ class PatternTestParserTest extends AbstractParserTest {
   @Test
   void simplePattern() {
     final String query = "MATCH {as:a, type:Person} return a";
-    final SqlParser parser = getParserFor(query);
     try {
-      final MatchStatement stm = (MatchStatement) parser.Parse();
+      final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
       stm.buildPatterns();
       final Pattern pattern = stm.pattern;
       assertThat(pattern.getNumOfEdges()).isEqualTo(0);
       assertThat(pattern.getAliasToNode().size()).isEqualTo(1);
       assertThat(pattern.getAliasToNode().get("a")).isNotNull();
       assertThat(pattern.getDisjointPatterns().size()).isEqualTo(1);
-    } catch (final ParseException e) {
+    } catch (final Exception e) {
       fail("");
     }
   }
@@ -49,9 +49,8 @@ class PatternTestParserTest extends AbstractParserTest {
   @Test
   void cartesianProduct() {
     final String query = "MATCH {as:a, type:Person}, {as:b, type:Person} return a, b";
-    final SqlParser parser = getParserFor(query);
     try {
-      final MatchStatement stm = (MatchStatement) parser.Parse();
+      final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
       stm.buildPatterns();
       final Pattern pattern = stm.pattern;
       assertThat(pattern.getNumOfEdges()).isEqualTo(0);
@@ -71,7 +70,7 @@ class PatternTestParserTest extends AbstractParserTest {
       aliases.remove(subPatterns.get(1).getAliasToNode().keySet().iterator().next());
       assertThat(aliases.size()).isEqualTo(0);
 
-    } catch (final ParseException e) {
+    } catch (final Exception e) {
       fail("");
     }
   }
@@ -80,9 +79,8 @@ class PatternTestParserTest extends AbstractParserTest {
   void complexCartesianProduct() {
     final String query =
         "MATCH {as:a, type:Person}-->{as:b}, {as:c, type:Person}-->{as:d}-->{as:e}, {as:d, type:Foo}-->{as:f} return a, b";
-    final SqlParser parser = getParserFor(query);
     try {
-      final MatchStatement stm = (MatchStatement) parser.Parse();
+      final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
       stm.buildPatterns();
       final Pattern pattern = stm.pattern;
       assertThat(pattern.getNumOfEdges()).isEqualTo(4);
@@ -102,7 +100,7 @@ class PatternTestParserTest extends AbstractParserTest {
       aliases.removeAll(subPatterns.get(1).getAliasToNode().keySet());
       assertThat(aliases.size()).isEqualTo(0);
 
-    } catch (final ParseException e) {
+    } catch (final Exception e) {
       fail("");
     }
   }

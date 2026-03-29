@@ -24,9 +24,9 @@ import java.util.*;
 
 public class UpdatePutItem extends SimpleNode {
 
-  protected Identifier left;
-  protected Expression key;
-  protected Expression value;
+  public Identifier left;
+  public Expression key;
+  public Expression value;
 
   public UpdatePutItem(final int id) {
     super(id);

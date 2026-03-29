@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.parser.SelectStatement;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Expression wrapper that executes a SELECT subquery when evaluated.
@@ -82,6 +83,15 @@ public class SubqueryExpression extends BaseExpression {
     // Note: This is used in INSERT SET field = (SELECT ...) contexts where
     // the list is expected even for single results
     return values;
+  }
+
+  @Override
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("(");
+    statement.toString(params, builder);
+    builder.append(")");
+    if (modifier != null)
+      modifier.toString(params, builder);
   }
 
   @Override

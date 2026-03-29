@@ -236,10 +236,8 @@ class SelectStatementTest extends AbstractParserTest {
   @Test
   void emptyCollection() {
     final String query = "select from bar where name not in :param1";
-    final SqlParser osql = getParserFor(query);
     try {
-      final SimpleNode result = osql.Parse();
-      final SelectStatement stm = (SelectStatement) result;
+      final SelectStatement stm = (SelectStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null).parse(query);
       final Map<String, Object> params = new HashMap<>();
       params.put("param1", new HashSet<>());
 

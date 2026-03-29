@@ -175,7 +175,7 @@ public class InCondition extends BooleanExpression {
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
-    builder.append(" IN ");
+    builder.append(not ? " NOT IN " : " IN ");
     if (rightStatement != null) {
       builder.append("(");
       rightStatement.toString(params, builder);
