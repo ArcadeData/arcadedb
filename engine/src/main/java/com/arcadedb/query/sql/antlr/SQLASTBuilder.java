@@ -2821,9 +2821,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public BaseExpression visitStringLiteral(final SQLParser.StringLiteralContext ctx) {
     final BaseExpression baseExpr = new BaseExpression(-1);
 
-    final String text = ctx.STRING_LITERAL().getText();
-    // Store the string literal as-is (including quotes)
+    // STRING_LITERAL or RID_STRING ("@rid") — store as-is including quotes
     // BaseExpression.execute() will handle unquoting and escape sequence decoding
+    final String text = ctx.STRING_LITERAL() != null ? ctx.STRING_LITERAL().getText() : ctx.RID_STRING().getText();
     baseExpr.string = text;
 
     // Process modifiers (method calls like .prefix(), .toUpperCase(), etc.)

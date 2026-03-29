@@ -930,7 +930,7 @@ beginStatement
  * COMMIT [RETRY n [ELSE {statements} [AND] (FAIL|CONTINUE)]]
  */
 commitStatement
-    : COMMIT (RETRY INTEGER_LITERAL (ELSE (LBRACE (scriptStatement SEMICOLON?)+ RBRACE AND (FAIL | CONTINUE) | (FAIL | CONTINUE)))?)?
+    : COMMIT (RETRY INTEGER_LITERAL (ELSE (LBRACE (scriptStatement SEMICOLON?)+ RBRACE (AND (FAIL | CONTINUE))? | (FAIL | CONTINUE)))?)?
     ;
 
 /**
@@ -1225,7 +1225,7 @@ mathExpression
 baseExpression
     : INTEGER_LITERAL                                                   # integerLiteral
     | FLOATING_POINT_LITERAL                                            # floatLiteral
-    | STRING_LITERAL modifier*                                          # stringLiteral
+    | (STRING_LITERAL | RID_STRING) modifier*                          # stringLiteral
     | CHARACTER_LITERAL modifier*                                       # charLiteral
     | INTEGER_RANGE                                                     # integerRange
     | ELLIPSIS_INTEGER_RANGE                                            # ellipsisIntegerRange
