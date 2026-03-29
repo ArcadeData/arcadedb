@@ -14,7 +14,7 @@
     "@playwright/test": "^1.58.2",
     "testcontainers": "^11.13.0",
     "@types/node": "^25.5.0",
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.2"
   },
   "engines": {
     "node": ">=18.0.0",
