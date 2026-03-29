@@ -906,10 +906,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public Identifier visitMatchFilterItemKey(final SQLParser.MatchFilterItemKeyContext ctx) {
-    if (ctx.identifier() != null) {
-      return (Identifier) visit(ctx.identifier());
-    }
-
     // Handle keyword tokens as identifiers
     final String keywordText;
     if (ctx.TYPE() != null) {
@@ -968,7 +964,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Extract the bucket number from the token (after the colon)
       final String tokenText = ctx.BUCKET_NUMBER_IDENTIFIER().getText();
       final String bucketNumStr = tokenText.substring(7); // Remove "bucket:" prefix
-      item.bucketId = new PInteger(Integer.parseInt(bucketNumStr));
+      item.bucketId = new PInteger(-1).setValue(Integer.parseInt(bucketNumStr));
       return item;
     }
 
@@ -996,17 +992,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         item.typeNames = (Expression) valueObj;
         break;
       case "bucket":
-        // Could be bucket name (string) or bucket id (integer)
+        // Could be bucket name (identifier) or bucket id (integer)
         if (valueObj instanceof PInteger) {
           item.bucketId = (PInteger) valueObj;
-        } else if (valueObj instanceof final BaseExpression baseExpr) {
-          if (baseExpr.number instanceof PInteger) {
-            item.bucketId = (PInteger) baseExpr.number;
-          } else {
-            item.bucketName = new Identifier(valueObj.toString());
+        } else if (valueObj instanceof final Expression expr) {
+          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
+            if (baseExpr.number instanceof PInteger) {
+              item.bucketId = (PInteger) baseExpr.number;
+            } else if (baseExpr.identifier != null) {
+              // Extract the Identifier directly to avoid backtick escaping via toString()
+              final Object suffix = baseExpr.identifier.suffix;
+              if (suffix instanceof final SuffixIdentifier si && si.identifier != null) {
+                item.bucketName = si.identifier;
+              }
+            }
           }
-        } else {
-          item.bucketName = new Identifier(valueObj.toString());
+        }
+        if (item.bucketId == null && item.bucketName == null) {
+          throw new CommandSQLParsingException("MATCH bucket filter must be an integer ID or an identifier, got: " + valueObj);
         }
         break;
       case "rid":
@@ -1533,9 +1536,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public FromItem visitFromIdentifier(final SQLParser.FromIdentifierContext ctx) {
     final FromItem fromItem = new FromItem(-1);
 
-    // First identifier is the main FROM target
-    if (CollectionUtils.isNotEmpty(ctx.identifier())) {
-      fromItem.identifier = (Identifier) visit(ctx.identifier(0));
+    // Identifier is the main FROM target
+    if (ctx.identifier() != null) {
+      fromItem.identifier = (Identifier) visit(ctx.identifier());
     }
 
     // Handle modifiers if present - chain them using modifier.next
@@ -1556,11 +1559,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       fromItem.modifier = firstModifier;
-    }
-
-    // Handle alias (second identifier after AS)
-    if (ctx.identifier().size() > 1) {
-      fromItem.alias = (Identifier) visit(ctx.identifier(1));
     }
 
     return fromItem;
@@ -3385,10 +3383,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * (e.g. {@code .`@rid`}).
    */
   private SuffixIdentifier buildSuffixForIdentifier(final SQLParser.IdentifierContext idCtx) {
-    // Unquoted record attribute tokens (@rid, @type, @in, @out, @this)
+    // Unquoted record attribute tokens (@rid, @type, @in, @out, @this, @rid_id, @rid_pos, @props)
     if (idCtx.RID_ATTR() != null || idCtx.TYPE_ATTR() != null ||
         idCtx.IN_ATTR() != null || idCtx.OUT_ATTR() != null ||
-        idCtx.THIS() != null) {
+        idCtx.THIS() != null || idCtx.RID_ID_ATTR() != null ||
+        idCtx.RID_POS_ATTR() != null || idCtx.PROPS_ATTR() != null) {
       final RecordAttribute attr = new RecordAttribute(-1);
       attr.setName(idCtx.getText());
       return new SuffixIdentifier(attr);
@@ -3430,7 +3429,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final Modifier modifier = new Modifier(-1);
 
     try {
-      if (ctx.identifier() != null) {
+      if (ctx.STAR() != null) {
+        // Wildcard suffix: .*
+        final SuffixIdentifier suffix = new SuffixIdentifier(-1);
+        suffix.star = true;
+        modifier.suffix = suffix;
+      } else if (ctx.identifier() != null) {
         // Check if this is a method call (has parentheses) or property access (no parentheses)
         if (ctx.LPAREN() != null) {
           // Method call: .identifier(args)
@@ -3732,6 +3736,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       return new GeOperator(-1);
     } else if (ctx.NSEQ() != null) {
       return new NullSafeEqualsCompareOperator(-1);
+    } else if (ctx.NEAR() != null) {
+      return new NearOperator(-1);
+    } else if (ctx.WITHIN() != null) {
+      return new WithinOperator(-1);
     }
 
     throw new CommandSQLParsingException("Unknown comparison operator: " + ctx.getText());
@@ -3795,11 +3803,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       param.paramNumber = positionalParamCounter;
       positionalParamCounter++;
       return param;
-    } else if (ctx.identifier() != null) {
-      // Named parameter: :name
-      final Identifier id = (Identifier) visit(ctx.identifier());
+    } else if (ctx.COLON() != null && (ctx.identifier() != null || ctx.FROM() != null)) {
+      // Named parameter: :name or :from (keyword used as param name)
+      final String paramName;
+      if (ctx.identifier() != null) {
+        final Identifier id = (Identifier) visit(ctx.identifier());
+        paramName = id.getValue();
+      } else {
+        paramName = ctx.FROM().getText().toLowerCase();
+      }
       final NamedParameter param = new NamedParameter(-1);
-      param.paramName = id.getValue();
+      param.paramName = paramName;
       param.paramNumber = positionalParamCounter;
       positionalParamCounter++;
       return param;
@@ -4165,31 +4179,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final Unwind unwind = new Unwind(-1);
 
     try {
-      // The expression is what we're unwinding - it should be an identifier
-      final Expression expr = (Expression) visit(ctx.expression());
+      // Iterate over all comma-separated expressions: UNWIND expr1, expr2, ...
+      for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
+        final Expression expr = (Expression) visit(exprCtx);
 
-      // Extract the identifier from the expression
-      // The expression is typically a simple identifier like "iSeq"
-      Identifier unwindField = null;
-
-      if (expr != null && expr.mathExpression instanceof final BaseExpression baseExpr) {
-        if (baseExpr.identifier != null) {
-          // Access suffix field directly
-          final Object suffix = baseExpr.identifier.suffix;
-
-          if (suffix != null && suffix instanceof SuffixIdentifier) {
-            // Access identifier field from SuffixIdentifier directly
-            unwindField = ((SuffixIdentifier) suffix).identifier;
+        // Extract the identifier from the expression (typically a simple identifier like "foo")
+        Identifier unwindField = null;
+        if (expr != null && expr.mathExpression instanceof final BaseExpression baseExpr) {
+          if (baseExpr.identifier != null) {
+            final Object suffix = baseExpr.identifier.suffix;
+            if (suffix instanceof final SuffixIdentifier si) {
+              unwindField = si.identifier;
+            }
           }
         }
-      }
 
-      // If there's an AS clause, use that identifier, otherwise use the field itself
-      if (ctx.identifier() != null) {
-        final Identifier alias = (Identifier) visit(ctx.identifier());
-        unwind.items.add(alias);
-      } else if (unwindField != null) {
-        unwind.items.add(unwindField);
+        if (unwindField != null) {
+          unwind.items.add(unwindField);
+        }
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build UNWIND clause: " + e.getMessage(), e);
@@ -4569,6 +4576,26 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       item.right = (Expression) visit(ctx.expression(1));
     }
 
+    return item;
+  }
+
+  @Override
+  public UpdatePutItem visitUpdatePutItem(final SQLParser.UpdatePutItemContext ctx) {
+    final UpdatePutItem item = new UpdatePutItem(-1);
+    item.left = (Identifier) visit(ctx.identifier());
+    item.key = (Expression) visit(ctx.expression(0));
+    item.value = (Expression) visit(ctx.expression(1));
+    return item;
+  }
+
+  @Override
+  public UpdateIncrementItem visitUpdateIncrementItem(final SQLParser.UpdateIncrementItemContext ctx) {
+    final UpdateIncrementItem item = new UpdateIncrementItem(-1);
+    item.setLeft((Identifier) visit(ctx.identifier()));
+    if (ctx.modifier() != null) {
+      item.setLeftModifier((Modifier) visit(ctx.modifier()));
+    }
+    item.setRight((Expression) visit(ctx.expression()));
     return item;
   }
 
@@ -4972,9 +4999,27 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       // Set targetType (vertex type identifier) - first identifier in the body
-      if (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty()) {
+      if (bodyCtx.BUCKET_IDENTIFIER() != null) {
+        // bucket:name format — no type, just bucket
+        final String text = bodyCtx.BUCKET_IDENTIFIER().getText(); // "bucket:name"
+        final String bucketName = text.substring(text.indexOf(':') + 1);
+        final Bucket bucket = new Bucket(-1);
+        bucket.bucketName = bucketName;
+        stmt.targetBucket = bucket;
+      } else if (bodyCtx.BUCKET_NUMBER_IDENTIFIER() != null) {
+        // bucket:123 format — no type, just bucket number
+        final String text = bodyCtx.BUCKET_NUMBER_IDENTIFIER().getText();
+        final String bucketNum = text.substring(text.indexOf(':') + 1);
+        final Bucket bucket = new Bucket(-1);
+        bucket.bucketNumber = Integer.parseInt(bucketNum);
+        stmt.targetBucket = bucket;
+      } else if (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty()) {
         // First identifier is the target type
         stmt.targetType = (Identifier) visit(bodyCtx.identifier(0));
+        // Second identifier is the bucket name if BUCKET keyword is present
+        if (bodyCtx.BUCKET() != null && bodyCtx.identifier().size() > 1) {
+          stmt.targetBucketName = (Identifier) visit(bodyCtx.identifier(1));
+        }
       }
 
       // Create InsertBody if we have VALUES, SET, or CONTENT clauses
@@ -4983,9 +5028,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
         // Handle VALUES clause - (field1, field2) VALUES (val1, val2), (val3, val4)
         if (bodyCtx.VALUES() != null) {
-          // Build identifier list from identifiers (skipping first if it's target type)
+          // Build identifier list from identifiers (skipping type name and bucket name)
           final int startIdx =
-              (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty() && stmt.targetType != null) ? 1 : 0;
+              (stmt.targetType != null ? 1 : 0) + (stmt.targetBucketName != null ? 1 : 0);
           if (bodyCtx.identifier() != null && bodyCtx.identifier().size() > startIdx) {
             body.identifierList = new ArrayList<>();
             for (int i = startIdx; i < bodyCtx.identifier().size(); i++) {
@@ -5361,15 +5406,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       int legacyIdIdx = 0;
-      if (bodyCtx.ENGINE() != null && bodyCtx.identifier().size() > legacyIdIdx) {
+      if (!bodyCtx.ENGINE().isEmpty() && bodyCtx.identifier().size() > legacyIdIdx) {
         stmt.engine = (Identifier) visit(bodyCtx.identifier(legacyIdIdx));
         legacyIdIdx++;
       }
 
-      if (bodyCtx.METADATA() != null && bodyCtx.json() != null)
-        stmt.metadata = (Json) visit(bodyCtx.json());
+      if (!bodyCtx.METADATA().isEmpty() && !bodyCtx.json().isEmpty())
+        stmt.metadata = (Json) visit(bodyCtx.json(0));
 
-      if (bodyCtx.NULL_STRATEGY() != null && bodyCtx.identifier().size() > legacyIdIdx) {
+      if (!bodyCtx.NULL_STRATEGY().isEmpty() && bodyCtx.identifier().size() > legacyIdIdx) {
         final Identifier nsId = (Identifier) visit(bodyCtx.identifier(legacyIdIdx));
         stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase());
       }
@@ -5454,30 +5499,28 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
-    // NULL_STRATEGY and ENGINE
-    // Determine which identifiers are which based on presence of optional elements
-    // Grammar: identifier? (IF NOT EXISTS)? ON TYPE? identifier ... (NULL_STRATEGY identifier)? (ENGINE identifier)?
+    // NULL_STRATEGY, METADATA, ENGINE (in that order matching toString output)
+    // Grammar: ... indexType? (NULL_STRATEGY identifier)? (METADATA json)? (ENGINE identifier)?
     // If index name is present: identifier(0)=name, identifier(1)=table, identifier(2+)=NULL_STRATEGY/ENGINE
     // If index name is NOT present: identifier(0)=table, identifier(1+)=NULL_STRATEGY/ENGINE
 
     int extraIdIndex = stmt.name != null ? 2 : 1; // Start position for NULL_STRATEGY/ENGINE identifiers
 
-    // Grammar (new syntax): ... indexType? (ENGINE identifier)? (METADATA json)? (NULL_STRATEGY identifier)?
-    // ENGINE
-    if (bodyCtx.ENGINE() != null && bodyCtx.identifier().size() > extraIdIndex) {
-      stmt.engine = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
+    // NULL_STRATEGY (comes first in grammar and toString)
+    if (!bodyCtx.NULL_STRATEGY().isEmpty() && bodyCtx.identifier().size() > extraIdIndex) {
+      final Identifier nsId = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
+      stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase());
       extraIdIndex++;
     }
 
     // METADATA
-    if (bodyCtx.METADATA() != null && bodyCtx.json() != null) {
-      stmt.metadata = (Json) visit(bodyCtx.json());
+    if (!bodyCtx.METADATA().isEmpty() && !bodyCtx.json().isEmpty()) {
+      stmt.metadata = (Json) visit(bodyCtx.json(0));
     }
 
-    // NULL_STRATEGY
-    if (bodyCtx.NULL_STRATEGY() != null && bodyCtx.identifier().size() > extraIdIndex) {
-      final Identifier nsId = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
-      stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase());
+    // ENGINE (comes last in grammar and toString)
+    if (!bodyCtx.ENGINE().isEmpty() && bodyCtx.identifier().size() > extraIdIndex) {
+      stmt.engine = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
     }
 
     return stmt;
@@ -7189,6 +7232,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
   }
 
+  @Override
+  public Modifier visitArrayNotInSelector(final SQLParser.ArrayNotInSelectorContext ctx) {
+    try {
+      final RightBinaryCondition rightBinaryCondition = new RightBinaryCondition(-1);
+      rightBinaryCondition.inOperator = new InOperator(-1);
+      rightBinaryCondition.not = true;
+      rightBinaryCondition.right = (Expression) visit(ctx.expression());
+
+      final Modifier modifier = new Modifier(-1);
+      modifier.squareBrackets = true;
+      modifier.rightBinaryCondition = rightBinaryCondition;
+
+      return modifier;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array NOT IN selector: " + e.getMessage(), e);
+    }
+  }
+
   /**
    * Create ArrayRangeSelector from INTEGER_RANGE or ELLIPSIS_INTEGER_RANGE token.
    * Splits the token text on ".." or "..." to extract from and to integers.
@@ -7311,6 +7372,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
       }
 
+    } catch (final CommandSQLParsingException e) {
+      throw e;
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build array ellipsis selector: " + e.getMessage(), e);
     }
@@ -7321,14 +7384,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * Try to extract an integer literal from an expression.
    * Returns the integer value if it's a simple integer literal, null otherwise.
+   * Throws CommandSQLParsingException if the expression is a float literal (not valid for range selectors).
    */
   private Integer tryExtractIntegerLiteral(final Expression expr) {
     try {
       if (expr != null && expr.mathExpression instanceof final BaseExpression baseExpr) {
-        if (baseExpr.number != null && baseExpr.number.getValue() != null) {
+        if (baseExpr.number != null && !(baseExpr.number instanceof PInteger)) {
+          throw new CommandSQLParsingException("Range selector endpoints must be integers, not floating point values");
+        }
+        if (baseExpr.number instanceof PInteger && baseExpr.number.getValue() != null) {
           return baseExpr.number.getValue().intValue();
         }
       }
+    } catch (final CommandSQLParsingException e) {
+      throw e;
     } catch (final Exception e) {
       // Not a simple integer literal
     }

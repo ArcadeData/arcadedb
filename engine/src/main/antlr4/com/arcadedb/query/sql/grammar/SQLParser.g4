@@ -199,6 +199,7 @@ selectStatement
         | limit skip?
       )?
       timeout?
+      PARALLEL?
     ;
 
 /**
@@ -247,8 +248,8 @@ matchMethod
     : DOT matchMethodCall matchProperties?                                     // .out('Friend'){as:x}
     | DOT LPAREN nestedMatchPath RPAREN matchProperties?                       // .(out().in(){...}){as:x}
     | (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchProperties?  // -Friend->{as:x}
-    | DECR GT matchProperties?                                                 // -->{as:x} anonymous outgoing
-    | ARROW_LEFT MINUS matchProperties?                                        // <--{as:x} anonymous incoming
+    | DECR GT matchProperties                                                  // -->{as:x} anonymous outgoing (properties required)
+    | ARROW_LEFT MINUS matchProperties                                         // <--{as:x} anonymous incoming (properties required)
     | DECR matchProperties?                                                    // --{as:x} anonymous bidirectional
     ;
 
@@ -261,8 +262,8 @@ nestedMatchMethod
     | DOT identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN matchProperties?  // .out('X'){...}
     | identifier matchProperties?                                              // methodName{...}
     | (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchProperties?  // -Friend->{as:x}
-    | DECR GT matchProperties?                                                 // -->{as:x}
-    | ARROW_LEFT MINUS matchProperties?                                        // <--{as:x}
+    | DECR GT matchProperties                                                  // -->{as:x} (properties required)
+    | ARROW_LEFT MINUS matchProperties                                         // <--{as:x} (properties required)
     | DECR matchProperties?                                                    // --{as:x}
     ;
 
@@ -288,8 +289,7 @@ matchFilterItem
     ;
 
 matchFilterItemKey
-    : identifier
-    | TYPE        // type: Person
+    : TYPE        // type: Person
     | TYPES       // types: [Person, Company]
     | BUCKET      // bucket: bucketName
     | AS          // as: alias
@@ -540,10 +540,10 @@ propertyType
 createIndexBody
     : identifier? (IF NOT EXISTS)? ON TYPE? identifier LPAREN indexProperty (COMMA indexProperty)* RPAREN
       indexType?
-      (ENGINE identifier)?
-      (METADATA json)?
       (NULL_STRATEGY identifier)?
-    | QUOTED_IDENTIFIER (IF NOT EXISTS)? indexType (ENGINE identifier)? (METADATA json)? (NULL_STRATEGY identifier)?
+      (METADATA json)?
+      (ENGINE identifier)?
+    | QUOTED_IDENTIFIER (IF NOT EXISTS)? indexType (ENGINE identifier | METADATA json | NULL_STRATEGY identifier)*
     ;
 
 indexProperty
@@ -567,7 +567,7 @@ createBucketBody
  * Supports VALUES, SET, and CONTENT clauses similar to INSERT
  */
 createVertexBody
-    : identifier?
+    : (identifier (BUCKET identifier)? | BUCKET_IDENTIFIER | BUCKET_NUMBER_IDENTIFIER)?
       ( LPAREN identifier (COMMA identifier)* RPAREN
         VALUES LPAREN expression (COMMA expression)* RPAREN
         (COMMA LPAREN expression (COMMA expression)* RPAREN)*
@@ -1036,7 +1036,7 @@ fromItem
     | indexIdentifier                                               # fromIndex
     | schemaIdentifier                                              # fromSchema
     | LPAREN statement RPAREN (modifier)* (AS? identifier)?         # fromSubquery
-    | identifier (modifier)* (AS? identifier)?                      # fromIdentifier
+    | identifier (modifier)*                                         # fromIdentifier
     ;
 
 bucketList
@@ -1140,7 +1140,7 @@ orderDirection
  * UNWIND clause
  */
 unwind
-    : UNWIND expression (AS? identifier)?
+    : UNWIND expression (AS? identifier)? (COMMA expression (AS? identifier)?)*
     ;
 
 /**
@@ -1161,7 +1161,7 @@ limit
  * TIMEOUT clause
  */
 timeout
-    : TIMEOUT expression
+    : TIMEOUT expression (EXCEPTION | RETURN)?
     ;
 
 /**
@@ -1303,6 +1303,7 @@ arraySelector
     | LBRACKET LIKE expression RBRACKET                                       # arrayLikeSelector
     | LBRACKET ILIKE expression RBRACKET                                      # arrayIlikeSelector
     | LBRACKET IN expression RBRACKET                                         # arrayInSelector
+    | LBRACKET NOT IN expression RBRACKET                                     # arrayNotInSelector
     | LBRACKET expression comparisonOperator expression RBRACKET              # arrayBinaryCondSelector
     | LBRACKET (expression | rid | inputParameter) RBRACKET                  # arraySingleSelector
     ;
@@ -1312,7 +1313,8 @@ arraySelector
  * Supports both property access (.identifier) and method calls (.identifier(args))
  */
 modifier
-    : DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)?
+    : DOT STAR
+    | DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)?
     | arraySelector
     ;
 
@@ -1321,7 +1323,7 @@ modifier
  */
 inputParameter
     : HOOK
-    | COLON identifier
+    | COLON (identifier | FROM)
     | DOLLAR INTEGER_LITERAL
     ;
 
@@ -1408,6 +1410,9 @@ identifier
     | QUOTED_IDENTIFIER
     | THIS
     | RID_ATTR
+    | RID_ID_ATTR
+    | RID_POS_ATTR
+    | PROPS_ATTR
     | OUT_ATTR
     | IN_ATTR
     | TYPE_ATTR
