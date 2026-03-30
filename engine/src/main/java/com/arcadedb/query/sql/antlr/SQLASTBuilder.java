@@ -1536,9 +1536,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public FromItem visitFromIdentifier(final SQLParser.FromIdentifierContext ctx) {
     final FromItem fromItem = new FromItem(-1);
 
-    // Identifier is the main FROM target
-    if (ctx.identifier() != null) {
-      fromItem.identifier = (Identifier) visit(ctx.identifier());
+    // Identifier is the main FROM target (alias, if present, is the second identifier and ignored in execution)
+    if (ctx.identifier() != null && !ctx.identifier().isEmpty()) {
+      fromItem.identifier = (Identifier) visit(ctx.identifier(0));
     }
 
     // Handle modifiers if present - chain them using modifier.next

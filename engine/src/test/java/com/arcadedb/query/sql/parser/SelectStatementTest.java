@@ -76,8 +76,8 @@ class SelectStatementTest extends AbstractParserTest {
     checkRightSyntax("select from Foo");
     checkRightSyntax("select * from Foo");
 
-    checkWrongSyntax("select from Foo bar");
-    checkWrongSyntax("select * from Foo bar");
+    checkRightSyntax("select from Foo bar");
+    checkRightSyntax("select * from Foo bar");
 
     checkWrongSyntax("select * Foo");
   }
@@ -107,8 +107,8 @@ class SelectStatementTest extends AbstractParserTest {
     checkRightSyntax("select * from Foo where name = 'foo' and surname = \"bar\"");
 
     checkWrongSyntax("select * from Foo name = 'foo'");
-    checkWrongSyntax("select from Foo bar where name = 'foo'");
-    checkWrongSyntax("select * from Foo bar where name = 'foo'");
+    checkRightSyntax("select from Foo bar where name = 'foo'");
+    checkRightSyntax("select * from Foo bar where name = 'foo'");
     checkWrongSyntax("select Foo where name = 'foo'");
     checkWrongSyntax("select * Foo where name = 'foo'");
 

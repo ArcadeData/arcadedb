@@ -1036,7 +1036,7 @@ fromItem
     | indexIdentifier                                               # fromIndex
     | schemaIdentifier                                              # fromSchema
     | LPAREN statement RPAREN (modifier)* (AS? identifier)?         # fromSubquery
-    | identifier (modifier)*                                         # fromIdentifier
+    | identifier (modifier)* (AS? identifier)?                      # fromIdentifier
     ;
 
 bucketList
