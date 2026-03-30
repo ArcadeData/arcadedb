@@ -120,8 +120,12 @@ class LSMVectorIndexPageParser {
           final boolean deleted = page.readByte(currentOffset) == 1;
           currentOffset += 1;
 
-          // Skip quantization data
-          currentOffset = skipQuantizationData(page, currentOffset);
+          // Skip quantization data.
+          // For tombstone entries (deleted=true), handle old-format tombstones that were written
+          // WITHOUT the quantization type byte (before the fix for issue #3722). If we detect
+          // the byte after the deleted flag doesn't look like a valid tombstone quantType (NONE=0),
+          // we assume old format and don't consume the byte.
+          currentOffset = skipQuantizationData(page, currentOffset, deleted);
 
           consumer.accept(new VectorEntry(vectorId, rid, deleted, entryFileOffset, isCompacted));
           entriesRead++;
@@ -169,13 +173,24 @@ class LSMVectorIndexPageParser {
   /**
    * Skip over quantization data in a page, returning the new offset.
    *
-   * @param page   The page to read from
-   * @param offset Current offset in page
+   * @param page      The page to read from
+   * @param offset    Current offset in page
+   * @param isDeleted Whether this entry is a deletion tombstone
+   *
    * @return New offset after skipping quantization data
    */
-  static int skipQuantizationData(final BasePage page, int offset) {
+  static int skipQuantizationData(final BasePage page, int offset, final boolean isDeleted) {
     final byte quantTypeOrdinal = page.readByte(offset);
     offset += 1;
+
+    if (isDeleted && quantTypeOrdinal != VectorQuantizationType.NONE.ordinal()) {
+      // OLD-FORMAT TOMBSTONE DETECTED (issue #3722):
+      // Tombstones written before the fix did not include the quantization type byte.
+      // The byte we just read is actually the start of the NEXT entry's vectorId.
+      // Rewind 1 byte so the next entry is parsed correctly.
+      offset -= 1;
+      return offset;
+    }
 
     if (quantTypeOrdinal == VectorQuantizationType.INT8.ordinal()) {
       // INT8: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
@@ -194,6 +209,13 @@ class LSMVectorIndexPageParser {
     // NONE or PRODUCT: no additional data
 
     return offset;
+  }
+
+  /**
+   * Overload for backward compatibility - non-deleted entries always have the quantType byte.
+   */
+  static int skipQuantizationData(final BasePage page, final int offset) {
+    return skipQuantizationData(page, offset, false);
   }
 
   /**

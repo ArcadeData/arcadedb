@@ -1117,6 +1117,54 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "Graph build from pages: %d total entries, %d deleted, %d active for graph",
           totalEntriesRead[0], filteredDeletedVectors[0], activeVectorIds.length);
 
+    // SECONDARY DEFENSE (issue #3722): Cross-check page-parsed vectors against actual document count.
+    // If pages have corrupted entries (e.g., old-format tombstones), the parser may miss many vectors.
+    // In that case, fall back to scanning documents directly to rebuild the vector list.
+    final String typeName = getTypeName();
+    if (typeName != null && !ridToLatestVector.isEmpty()) {
+      try {
+        final long docCount = database.countType(typeName, false);
+        if (ridToLatestVector.size() < docCount * 8 / 10) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Page-parsed vectors (%d) significantly less than document count (%d) for index %s. "
+                  + "Falling back to document scan to recover missing vectors.",
+              ridToLatestVector.size(), docCount, indexName);
+
+          // Scan all documents to find vectors missing from the page-parsed set
+          final String vectorProp =
+              metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() :
+                  "vector";
+          database.scanType(typeName, false, record -> {
+            final Document doc = (Document) record;
+            final RID rid = doc.getIdentity();
+            if (!ridToLatestVector.containsKey(rid)) {
+              // Document exists but was not found in pages — add it with a synthetic vector ID
+              final Object vectorObj = doc.get(vectorProp);
+              if (vectorObj != null) {
+                final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
+                if (vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
+                  final int syntheticId = nextId.getAndIncrement();
+                  ridToLatestVector.put(rid, new VectorEntryForGraphBuild(syntheticId, rid, false, -1));
+                }
+              }
+            }
+            return true;
+          });
+
+          LogManager.instance().log(this, Level.INFO,
+              "After document scan fallback: %d active vectors for graph build (was %d from pages only)",
+              ridToLatestVector.size(), activeVectorIds.length);
+        }
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Document count cross-check failed for index %s: %s", indexName, e.getMessage());
+      }
+    }
+
+    // Rebuild ordinal mapping (may have changed after document scan fallback)
+    final int[] finalActiveVectorIdsFromPages = ridToLatestVector.values().stream()
+        .mapToInt(v -> v.vectorId).sorted().toArray();
+
     // Acquire write lock for updating vectorIndex and preparing build
     lock.writeLock().lock();
     final RandomAccessVectorValues vectors;
@@ -1132,7 +1180,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         for (final VectorEntryForGraphBuild entry : ridToLatestVector.values()) {
           vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
         }
-        vectorIds = activeVectorIds; // Use vector IDs from pages
+        vectorIds = finalActiveVectorIdsFromPages; // Use vector IDs from pages (may include doc-scan fallback)
       } else {
         LogManager.instance().log(this, Level.SEVERE,
             "FALLBACK: Could not read vectors from pages (database closing), using existing vectorIndex with %d entries",
