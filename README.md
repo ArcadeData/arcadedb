@@ -241,3 +241,8 @@ The ArcadeDB Team
 
 ## Stargazers over time
 [![Stargazers over time](https://starchart.cc/ArcadeData/arcadedb.svg?variant=adaptive)](https://starchart.cc/ArcadeData/arcadedb)
+
+## Hosted deployment
+
+A hosted deployment is available on [Fronteir AI](https://fronteir.ai/mcp/arcadedata-arcadedb).
+
