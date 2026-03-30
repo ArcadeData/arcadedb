@@ -24,12 +24,27 @@ import java.util.*;
 
 public class UpdatePutItem extends SimpleNode {
 
-  public Identifier left;
-  public Expression key;
-  public Expression value;
+  protected Identifier left;
+  protected Expression key;
+  protected Expression value;
 
   public UpdatePutItem(final int id) {
     super(id);
+  }
+
+  public UpdatePutItem setLeft(final Identifier left) {
+    this.left = left;
+    return this;
+  }
+
+  public UpdatePutItem setKey(final Expression key) {
+    this.key = key;
+    return this;
+  }
+
+  public UpdatePutItem setValue(final Expression value) {
+    this.value = value;
+    return this;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

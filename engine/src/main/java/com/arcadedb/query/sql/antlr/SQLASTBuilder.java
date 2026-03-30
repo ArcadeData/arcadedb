@@ -4582,9 +4582,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public UpdatePutItem visitUpdatePutItem(final SQLParser.UpdatePutItemContext ctx) {
     final UpdatePutItem item = new UpdatePutItem(-1);
-    item.left = (Identifier) visit(ctx.identifier());
-    item.key = (Expression) visit(ctx.expression(0));
-    item.value = (Expression) visit(ctx.expression(1));
+    item.setLeft((Identifier) visit(ctx.identifier()));
+    item.setKey((Expression) visit(ctx.expression(0)));
+    item.setValue((Expression) visit(ctx.expression(1)));
     return item;
   }
 
