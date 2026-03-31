@@ -556,6 +556,21 @@ public class CypherOptimizer {
     // Reverse to get traversal order: innermost first
     final int chainLen = chain.size();
 
+    // Verify the chain is LINEAR: each hop's source must be the previous hop's target.
+    // The fused chain operator uses a stack where stackNodeId[depth] is the source for hop[depth],
+    // which is the target of hop[depth-1]. If the JoinOrderRule reorders hops such that multiple
+    // hops expand from the same node (branching), the fused chain would incorrectly use the
+    // previous hop's target as the source instead of the actual source variable.
+    {
+      String expectedSource = chain.get(chainLen - 1).getSourceVariable(); // innermost source
+      for (int i = chainLen - 1; i >= 0; i--) {
+        final GAVExpandAll gav = chain.get(i);
+        if (!expectedSource.equals(gav.getSourceVariable()))
+          return rootOperator; // Non-linear chain — bail out
+        expectedSource = gav.getTargetVariable();
+      }
+    }
+
     // Build hop arrays (in traversal order: innermost → outermost)
     final Vertex.DIRECTION[] hopDirs = new Vertex.DIRECTION[chainLen];
     final String[][] hopEdgeTypes = new String[chainLen][];
