@@ -5861,6 +5861,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // IF EXISTS
     stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
 
+    // FORCE
+    stmt.force = bodyCtx.FORCE() != null;
+
     return stmt;
   }
 
