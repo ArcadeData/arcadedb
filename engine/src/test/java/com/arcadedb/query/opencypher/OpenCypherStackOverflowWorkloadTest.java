@@ -33,9 +33,11 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for GitHub issue #3759: Cypher query result mismatch on
- * Stack Overflow graph workload. Tests all 10 OLAP queries from the issue
- * against a synthetic StackOverflow-like graph.
+ * Regression tests for GitHub issues #3758 and #3759: Cypher query result mismatches
+ * on Stack Overflow graph workload. Tests all 10 OLAP queries from the issues
+ * against a synthetic StackOverflow-like graph, both with and without GAV (CSR).
+ * Also tests streaming aggregation with OPTIONAL MATCH + count chains to verify
+ * correct handling of large cartesian products.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
