@@ -538,143 +538,110 @@ public class CypherExecutionPlan {
       }
     };
 
-    // Apply post-MATCH operations using existing execution steps
-    // These are not yet optimized and use the original implementation
-
-    // Step 2: CREATE clause (if any)
-    if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty()) {
-      final CreateStep createStep = new CreateStep(statement.getCreateClause(), context, functionFactory);
-      createStep.setPrevious(currentStep);
-      currentStep = createStep;
-    }
-
-    // Step 3: SET clause (if any)
-    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) {
-      final SetStep setStep =
-          new SetStep(statement.getSetClause(), context, functionFactory);
-      setStep.setPrevious(currentStep);
-      currentStep = setStep;
-    }
-
-    // Step 4: DELETE clause (if any)
-    if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) {
-      final DeleteStep deleteStep =
-          new DeleteStep(statement.getDeleteClause(), context);
-      deleteStep.setPrevious(currentStep);
-      currentStep = deleteStep;
-    }
-
-    // Step 4a: REMOVE clauses (if any)
-    for (final RemoveClause removeClause : statement.getRemoveClauses()) {
-      if (!removeClause.isEmpty()) {
-        final RemoveStep removeStep =
-            new RemoveStep(removeClause, context);
-        removeStep.setPrevious(currentStep);
-        currentStep = removeStep;
-      }
-    }
-
-    // Step 5: MERGE clause (if any)
-    if (statement.getMergeClause() != null) {
-      final MergeStep mergeStep =
-          new MergeStep(statement.getMergeClause(), context, functionFactory);
-      mergeStep.setPrevious(currentStep);
-      currentStep = mergeStep;
-    }
-
-    // Step 6: UNWIND clause (if any)
-    if (!statement.getUnwindClauses().isEmpty()) {
-      for (final UnwindClause unwind : statement.getUnwindClauses()) {
-        final UnwindStep unwindStep =
-            new UnwindStep(unwind, context, functionFactory);
-        unwindStep.setPrevious(currentStep);
-        currentStep = unwindStep;
-      }
-    }
-
-    // Step 6.5: WITH clauses (if any)
-    if (!statement.getWithClauses().isEmpty()) {
-      for (final WithClause withClause : statement.getWithClauses()) {
-        // Handle aggregations in WITH clause
-        if (withClause.hasAggregations()) {
-          if (withClause.hasNonAggregations()) {
-            // Try to fuse aggregation into the GAVFusedChainOperator for parallel count(*)
-            if (!tryFuseAggregationIntoChain(withClause, currentStep)) {
-              // Fallback: GROUP BY aggregation (implicit grouping)
-              final GroupByAggregationStep groupByStep =
-                  new GroupByAggregationStep(
-                      new ReturnClause(withClause.getItems(), false),
-                      context, functionFactory);
-              groupByStep.setPrevious(currentStep);
-              currentStep = groupByStep;
-            }
-            // If fused, currentStep stays as the physical operator wrapper (chain produces grouped results)
-          } else {
-            // Pure aggregation (no grouping)
-            final AggregationStep aggStep =
-                new AggregationStep(
-                    new ReturnClause(withClause.getItems(), false),
-                    context, functionFactory);
-            aggStep.setPrevious(currentStep);
-            currentStep = aggStep;
-          }
-
-          // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
-          if (withClause.getWhereClause() != null) {
+    // Apply post-MATCH operations using clausesInOrder to respect the order they appear
+    // in the query (e.g. WITH before UNWIND, not the other way around).
+    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    if (clausesInOrder != null) {
+      for (final ClauseEntry entry : clausesInOrder) {
+        switch (entry.getType()) {
+        case MATCH: {
+          // MATCH pattern is handled by the optimizer above, but WHERE clauses
+          // attached to MATCH clauses still need to be applied as filters.
+          final MatchClause matchClause = entry.getTypedClause();
+          if (matchClause.hasWhereClause()) {
             final FilterPropertiesStep filterStep =
-                new FilterPropertiesStep(withClause.getWhereClause(), context);
+                new FilterPropertiesStep(matchClause.getWhereClause(), context);
             filterStep.setPrevious(currentStep);
             currentStep = filterStep;
           }
-        } else {
-          // Regular WITH step (no aggregation)
-          final WithStep withStep =
-              new WithStep(withClause, context, functionFactory);
-          withStep.setPrevious(currentStep);
-          currentStep = withStep;
+          break;
         }
 
-        // Apply ORDER BY if present in WITH
-        if (withClause.getOrderByClause() != null) {
-          // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-          // When SKIP is also present, TopK must keep SKIP + LIMIT results
-          Integer limitVal = withClause.getLimit() != null ?
-              new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-                  new ResultInternal(), context) : null;
-          final Integer originalLimitVal = limitVal;
-          if (limitVal != null && withClause.getSkip() != null) {
-            final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-                new ResultInternal(), context);
-            limitVal = limitVal + skipVal;
+        case CREATE: {
+          final CreateClause createClause = entry.getTypedClause();
+          if (!createClause.isEmpty()) {
+            final CreateStep createStep = new CreateStep(createClause, context, functionFactory);
+            createStep.setPrevious(currentStep);
+            currentStep = createStep;
           }
+          break;
+        }
 
-          // Top-K must account for SKIP so enough rows survive after skipping
-          final Integer skipVal = withClause.getSkip() != null ?
-              new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-                  new ResultInternal(), context) : null;
-          final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
-
-          final OrderByStep orderByStep =
-              new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
-          orderByStep.setPrevious(currentStep);
-          currentStep = orderByStep;
-
-          // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
-          if (skipVal != null) {
-            final SkipStep skipStep = new SkipStep(skipVal, context);
-            skipStep.setPrevious(currentStep);
-            currentStep = skipStep;
+        case SET: {
+          final SetClause setClause = entry.getTypedClause();
+          if (!setClause.isEmpty()) {
+            final SetStep setStep = new SetStep(setClause, context, functionFactory);
+            setStep.setPrevious(currentStep);
+            currentStep = setStep;
           }
-          if (withClause.getLimit() != null) {
-            final LimitStep limitStep = new LimitStep(originalLimitVal, context);
-            limitStep.setPrevious(currentStep);
-            currentStep = limitStep;
-          }
+          break;
+        }
 
-          // Strip non-projected variables that were kept for ORDER BY evaluation
-          currentStep = addWithProjection(withClause, currentStep, context);
+        case DELETE: {
+          final DeleteClause deleteClause = entry.getTypedClause();
+          if (!deleteClause.isEmpty()) {
+            final DeleteStep deleteStep = new DeleteStep(deleteClause, context);
+            deleteStep.setPrevious(currentStep);
+            currentStep = deleteStep;
+          }
+          break;
+        }
+
+        case REMOVE: {
+          final RemoveClause removeClause = entry.getTypedClause();
+          if (!removeClause.isEmpty()) {
+            final RemoveStep removeStep = new RemoveStep(removeClause, context);
+            removeStep.setPrevious(currentStep);
+            currentStep = removeStep;
+          }
+          break;
+        }
+
+        case MERGE: {
+          final MergeClause mergeClause = entry.getTypedClause();
+          final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory);
+          mergeStep.setPrevious(currentStep);
+          currentStep = mergeStep;
+          break;
+        }
+
+        case UNWIND: {
+          final UnwindClause unwindClause = entry.getTypedClause();
+          final UnwindStep unwindStep = new UnwindStep(unwindClause, context, functionFactory);
+          unwindStep.setPrevious(currentStep);
+          currentStep = unwindStep;
+          break;
+        }
+
+        case WITH: {
+          final WithClause withClause = entry.getTypedClause();
+          currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
+          break;
+        }
+
+        case LOAD_CSV: {
+          final LoadCSVClause loadCSVClause = entry.getTypedClause();
+          final LoadCSVStep loadCSVStep = new LoadCSVStep(loadCSVClause, context, functionFactory);
+          loadCSVStep.setPrevious(currentStep);
+          currentStep = loadCSVStep;
+          break;
+        }
+
+        case FOREACH:
+        case SUBQUERY:
+        case CALL:
+        case RETURN:
+          // Handled elsewhere or not applicable here
+          break;
         }
       }
+    }
+
+    // Statement-level WHERE clause (not scoped to any MATCH clause)
+    if (statement.getWhereClause() != null && currentStep != null) {
+      final FilterPropertiesStep filterStep = new FilterPropertiesStep(statement.getWhereClause(), context);
+      filterStep.setPrevious(currentStep);
+      currentStep = filterStep;
     }
 
     // Step 7: RETURN clause (if any)
@@ -1271,6 +1238,88 @@ public class CypherExecutionPlan {
       }
 
       // Strip non-projected variables that were kept for ORDER BY evaluation
+      currentStep = addWithProjection(withClause, currentStep, context);
+    }
+
+    return currentStep;
+  }
+
+  /**
+   * Builds a WITH step for the optimizer path, including GAV fusion attempt for aggregations.
+   */
+  private AbstractExecutionStep buildWithStepForOptimizer(final WithClause withClause,
+      AbstractExecutionStep currentStep, final CommandContext context,
+      final CypherFunctionFactory functionFactory) {
+    if (withClause.hasAggregations()) {
+      if (withClause.hasNonAggregations()) {
+        // Try to fuse aggregation into the GAVFusedChainOperator for parallel count(*)
+        if (!tryFuseAggregationIntoChain(withClause, currentStep)) {
+          // Fallback: GROUP BY aggregation (implicit grouping)
+          final GroupByAggregationStep groupByStep =
+              new GroupByAggregationStep(
+                  new ReturnClause(withClause.getItems(), false),
+                  context, functionFactory);
+          groupByStep.setPrevious(currentStep);
+          currentStep = groupByStep;
+        }
+      } else {
+        // Pure aggregation (no grouping)
+        final AggregationStep aggStep =
+            new AggregationStep(
+                new ReturnClause(withClause.getItems(), false),
+                context, functionFactory);
+        aggStep.setPrevious(currentStep);
+        currentStep = aggStep;
+      }
+
+      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
+      if (withClause.getWhereClause() != null) {
+        final FilterPropertiesStep filterStep =
+            new FilterPropertiesStep(withClause.getWhereClause(), context);
+        filterStep.setPrevious(currentStep);
+        currentStep = filterStep;
+      }
+    } else {
+      // Regular WITH step (no aggregation)
+      final WithStep withStep =
+          new WithStep(withClause, context, functionFactory);
+      withStep.setPrevious(currentStep);
+      currentStep = withStep;
+    }
+
+    // Apply ORDER BY if present in WITH
+    if (withClause.getOrderByClause() != null) {
+      Integer limitVal = withClause.getLimit() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+              new ResultInternal(), context) : null;
+      final Integer originalLimitVal = limitVal;
+      if (limitVal != null && withClause.getSkip() != null) {
+        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+            new ResultInternal(), context);
+        limitVal = limitVal + skipVal;
+      }
+
+      final Integer skipVal = withClause.getSkip() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+              new ResultInternal(), context) : null;
+      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+
+      final OrderByStep orderByStep =
+          new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
+      orderByStep.setPrevious(currentStep);
+      currentStep = orderByStep;
+
+      if (skipVal != null) {
+        final SkipStep skipStep = new SkipStep(skipVal, context);
+        skipStep.setPrevious(currentStep);
+        currentStep = skipStep;
+      }
+      if (withClause.getLimit() != null) {
+        final LimitStep limitStep = new LimitStep(originalLimitVal, context);
+        limitStep.setPrevious(currentStep);
+        currentStep = limitStep;
+      }
+
       currentStep = addWithProjection(withClause, currentStep, context);
     }
 
@@ -2795,8 +2844,8 @@ public class CypherExecutionPlan {
       return null;
 
     // Find the single non-optional MATCH clause.
-    // Bail out if any OPTIONAL MATCH exists — the RETURN may reference variables
-    // from the OPTIONAL MATCH, which this optimization does not evaluate.
+    // Bail out if any OPTIONAL MATCH, WITH, or UNWIND exists — the optimization only
+    // works for simple MATCH...RETURN patterns without intermediate transformations.
     MatchClause matchClause = null;
     int matchCount = 0;
     for (final ClauseEntry entry : clausesInOrder) {
@@ -2806,7 +2855,9 @@ public class CypherExecutionPlan {
           return null;
         matchClause = mc;
         matchCount++;
-      }
+      } else if (entry.getType() == ClauseEntry.ClauseType.WITH
+          || entry.getType() == ClauseEntry.ClauseType.UNWIND)
+        return null; // Intermediate WITH/UNWIND changes the result set shape
     }
     if (matchCount != 1 || matchClause == null)
       return null;
