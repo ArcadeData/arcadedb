@@ -259,10 +259,8 @@ public enum GlobalConfiguration {
       Integer.class, 300),
 
   SQL_PARSER_IMPLEMENTATION("arcadedb.sql.parserImplementation", SCOPE.DATABASE,
-      """
-      SQL parser implementation to use. 'antlr' (default) uses the new ANTLR4-based parser with improved error messages. \
-      'javacc' uses the legacy JavaCC-based parser for backward compatibility.""",
-      String.class, "antlr", Set.of("antlr", "javacc")),
+      "Deprecated, has no effect. The ANTLR4-based SQL parser is always used.",
+      String.class, "antlr"),
 
   // OPENCYPHER
   OPENCYPHER_STATEMENT_CACHE("arcadedb.opencypher.statementCache", SCOPE.DATABASE,

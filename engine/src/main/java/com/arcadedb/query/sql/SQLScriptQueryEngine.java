@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
@@ -29,9 +28,6 @@ import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.query.sql.parser.*;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -132,21 +128,9 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
     try {
-      final String parserType = database.getConfiguration().getValueAsString(GlobalConfiguration.SQL_PARSER_IMPLEMENTATION);
-      if ("javacc".equalsIgnoreCase(parserType)) {
-        // Use legacy JavaCC-based SQL parser for scripts
-        final InputStream is = new ByteArrayInputStream(script.getBytes(StandardCharsets.UTF_8));
-        final SqlParser parser = new SqlParser(database, is);
-        return parser.ParseScript();
-      } else {
-        // Use ANTLR4-based SQL parser for scripts (default)
-        final SQLAntlrParser parser = new SQLAntlrParser(database);
-        return parser.parseScript(script);
-      }
+      return new SQLAntlrParser(database).parseScript(script);
     } catch (final CommandSQLParsingException e) {
       throw e.setCommand(script);
-    } catch (final ParseException e) {
-      throw new CommandSQLParsingException(e.getMessage(), e, script);
     }
   }
 

@@ -78,6 +78,15 @@ public class StatementExpression extends BaseExpression {
   }
 
   @Override
+  public void toString(final java.util.Map<String, Object> params, final StringBuilder builder) {
+    builder.append("(");
+    statement.toString(params, builder);
+    builder.append(")");
+    if (modifier != null)
+      modifier.toString(params, builder);
+  }
+
+  @Override
   public String toString() {
     final StringBuilder sb = new StringBuilder();
     sb.append("(").append(statement.toString()).append(")");

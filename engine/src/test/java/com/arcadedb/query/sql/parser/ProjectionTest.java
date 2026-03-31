@@ -19,10 +19,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import org.junit.jupiter.api.Test;
-
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -34,39 +32,27 @@ class ProjectionTest {
 
   @Test
   void isExpand() throws Exception {
-    final SqlParser parser = getParserFor("select expand(foo)  from V");
-    final SelectStatement stm = (SelectStatement) parser.Parse();
+    final SelectStatement stm = (SelectStatement) new SQLAntlrParser(null).parse("select expand(foo)  from V");
     assertThat(stm.getProjection().isExpand()).isTrue();
 
-    final SqlParser parser2 = getParserFor("select foo  from V");
-    final SelectStatement stm2 = (SelectStatement) parser2.Parse();
+    final SelectStatement stm2 = (SelectStatement) new SQLAntlrParser(null).parse("select foo  from V");
     assertThat(stm2.getProjection().isExpand()).isFalse();
 
-    final SqlParser parser3 = getParserFor("select expand  from V");
-    final SelectStatement stm3 = (SelectStatement) parser3.Parse();
+    final SelectStatement stm3 = (SelectStatement) new SQLAntlrParser(null).parse("select expand  from V");
     assertThat(stm3.getProjection().isExpand()).isFalse();
   }
 
   @Test
   void validate() throws Exception {
-    final SqlParser parser = getParserFor("select expand(foo)  from V");
-    final SelectStatement stm = (SelectStatement) parser.Parse();
+    final SelectStatement stm = (SelectStatement) new SQLAntlrParser(null).parse("select expand(foo)  from V");
     stm.getProjection().validate();
 
     try {
-      getParserFor("select expand(foo), bar  from V").Parse();
-
-      fail("");
+      final SelectStatement stmInvalid = (SelectStatement) new SQLAntlrParser(null).parse("select expand(foo), bar  from V");
+      stmInvalid.getProjection().validate(); // this should throw
+      fail("Expected validate() to throw");
     } catch (final CommandSQLParsingException ex) {
-
-    } catch (final Exception x) {
-      fail("");
+      // expected
     }
-  }
-
-  protected SqlParser getParserFor(final String string) {
-    final InputStream is = new ByteArrayInputStream(string.getBytes());
-    final SqlParser osql = new SqlParser(null, is);
-    return osql;
   }
 }

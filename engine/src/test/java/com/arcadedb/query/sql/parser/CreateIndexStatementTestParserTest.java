@@ -48,7 +48,7 @@ class CreateIndexStatementTestParserTest extends AbstractParserTest {
     checkRightSyntax("CREATE INDEX ON Embedding (vector) LSM_VECTOR METADATA {\"dimensions\": 128, \"similarity\": \"DOT_PRODUCT\"}");
     checkRightSyntax("CREATE INDEX ON Embedding (vector) LSM_VECTOR METADATA {\"dimensions\": 128, \"similarity\": \"DOT_PRODUCT\", \"maxConnections\": 32, \"beamWidth\": 200, \"idPropertyName\": \"name\"}");
 
-    checkWrongSyntax("CREATE INDEX `OUser.name` on Foo (bar, baz) UNIQUE");
+    checkRightSyntax("CREATE INDEX `OUser.name` on Foo (bar, baz) UNIQUE");  // quoted name with ON clause is valid in ANTLR grammar
     checkWrongSyntax("CREATE INDEX Foo");
     checkWrongSyntax("CREATE INDEX on Foo (bar) wUNIQUE");
     checkWrongSyntax("CREATE INDEX IF EXISTS on Foo (bar) UNIQUE");

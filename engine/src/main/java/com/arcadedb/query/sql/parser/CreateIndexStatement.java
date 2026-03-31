@@ -271,18 +271,18 @@ public class CreateIndexStatement extends DDLStatement {
     builder.append(" ");
     type.toString(params, builder);
 
-    if (engine != null) {
-      builder.append(" ENGINE ");
-      engine.toString(params, builder);
+    // NULL_STRATEGY is only valid in the ON-clause form (typeName != null)
+    if (typeName != null && nullStrategy != null) {
+      builder.append(" NULL_STRATEGY ");
+      builder.append(nullStrategy);
     }
     if (metadata != null) {
       builder.append(" METADATA ");
       metadata.toString(params, builder);
     }
-
-    if (nullStrategy != null) {
-      builder.append(" NULL_STRATEGY ");
-      builder.append(nullStrategy);
+    if (engine != null) {
+      builder.append(" ENGINE ");
+      engine.toString(params, builder);
     }
     if (keyTypes != null && keyTypes.size() > 0) {
       boolean first = true;

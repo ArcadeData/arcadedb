@@ -32,6 +32,21 @@ public class UpdatePutItem extends SimpleNode {
     super(id);
   }
 
+  public UpdatePutItem setLeft(final Identifier left) {
+    this.left = left;
+    return this;
+  }
+
+  public UpdatePutItem setKey(final Expression key) {
+    this.key = key;
+    return this;
+  }
+
+  public UpdatePutItem setValue(final Expression value) {
+    this.value = value;
+    return this;
+  }
+
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" = ");
