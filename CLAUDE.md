@@ -6,6 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme performance. It's a Java-based project that supports multiple data models (Graph, Document, Key/Value, Search Engine, Time Series, Vector Embedding) and query languages (SQL, Cypher, Gremlin, GraphQL, MongoDB Query Language).
 
+## Response Formatting
+- Never use the em dash character (`—`) in responses. Use a normal dash (`-`), a comma, or rephrase instead.
+
 ## Project Instructions
 
 Before writing any code:
