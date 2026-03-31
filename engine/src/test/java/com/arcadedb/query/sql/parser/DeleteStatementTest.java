@@ -25,15 +25,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
 
 public class DeleteStatementTest extends TestHelper {
 
@@ -270,37 +266,6 @@ public class DeleteStatementTest extends TestHelper {
     assertThat(result.stream().count()).isZero();
 
     database.commit();
-  }
-
-  protected SqlParser getParserFor(final String string) {
-    final InputStream is = new ByteArrayInputStream(string.getBytes());
-    final SqlParser osql = new SqlParser(null, is);
-    return osql;
-  }
-
-  protected SimpleNode checkRightSyntax(final String query) {
-    return checkSyntax(query, true);
-  }
-
-  protected SimpleNode checkWrongSyntax(final String query) {
-    return checkSyntax(query, false);
-  }
-
-  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
-    try {
-      final SimpleNode result = osql.Parse();
-      if (!isCorrect) {
-        fail("");
-      }
-      return result;
-    } catch (final Exception e) {
-      if (isCorrect) {
-        e.printStackTrace();
-        fail("");
-      }
-    }
-    return null;
   }
 
 }

@@ -18,54 +18,14 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.*;
 
-class SelectStatementTest {
-
-  protected SimpleNode checkRightSyntax(final String query) {
-    final SimpleNode result = checkSyntax(query, true);
-    final StringBuilder builder = new StringBuilder();
-    result.toString(null, builder);
-    return checkSyntax(builder.toString(), true);
-  }
-
-  protected SimpleNode checkWrongSyntax(final String query) {
-    return checkSyntax(query, false);
-  }
-
-  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
-    try {
-      final SimpleNode result = osql.Parse();
-      if (!isCorrect) {
-        //        System.out.println(query);
-        //        if(result!= null ) {
-        //          System.out.println("->");
-        //          StringBuilder builder = new StringBuilder();
-        //          result.toString(null, builder);
-        //          System.out.println(builder.toString());
-        //          System.out.println("............");
-        //        }
-        fail("");
-      }
-
-      return result;
-    } catch (final Exception e) {
-      if (isCorrect) {
-        //System.out.println(query);
-        e.printStackTrace();
-        fail("");
-      }
-    }
-    return null;
-  }
+class SelectStatementTest extends AbstractParserTest {
 
   @Test
   void parserSimpleSelect1() {
@@ -116,8 +76,8 @@ class SelectStatementTest {
     checkRightSyntax("select from Foo");
     checkRightSyntax("select * from Foo");
 
-    checkWrongSyntax("select from Foo bar");
-    checkWrongSyntax("select * from Foo bar");
+    checkRightSyntax("select from Foo bar");
+    checkRightSyntax("select * from Foo bar");
 
     checkWrongSyntax("select * Foo");
   }
@@ -147,8 +107,8 @@ class SelectStatementTest {
     checkRightSyntax("select * from Foo where name = 'foo' and surname = \"bar\"");
 
     checkWrongSyntax("select * from Foo name = 'foo'");
-    checkWrongSyntax("select from Foo bar where name = 'foo'");
-    checkWrongSyntax("select * from Foo bar where name = 'foo'");
+    checkRightSyntax("select from Foo bar where name = 'foo'");
+    checkRightSyntax("select * from Foo bar where name = 'foo'");
     checkWrongSyntax("select Foo where name = 'foo'");
     checkWrongSyntax("select * Foo where name = 'foo'");
 
@@ -276,10 +236,8 @@ class SelectStatementTest {
   @Test
   void emptyCollection() {
     final String query = "select from bar where name not in :param1";
-    final SqlParser osql = getParserFor(query);
     try {
-      final SimpleNode result = osql.Parse();
-      final SelectStatement stm = (SelectStatement) result;
+      final SelectStatement stm = (SelectStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null).parse(query);
       final Map<String, Object> params = new HashMap<>();
       params.put("param1", new HashSet<>());
 
@@ -713,8 +671,4 @@ class SelectStatementTest {
     checkRightSyntax("SELECT(1+2*3) FROM V");
   }
 
-  protected SqlParser getParserFor(final String string) {
-    final InputStream is = new ByteArrayInputStream(string.getBytes(DatabaseFactory.getDefaultCharset()));
-    return new SqlParser(null, is);
-  }
 }

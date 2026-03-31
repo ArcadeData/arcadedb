@@ -18,14 +18,10 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -79,17 +75,6 @@ public class StatementCache {
   }
 
   /**
-   * Returns true if the ANTLR parser should be used, false for JavaCC parser.
-   */
-  private boolean useAntlrParser() {
-    String parserType = GlobalConfiguration.SQL_PARSER_IMPLEMENTATION.getValueAsString();
-    if (db != null)
-      parserType = db.getConfiguration().getValueAsString(GlobalConfiguration.SQL_PARSER_IMPLEMENTATION);
-
-    return !"javacc".equalsIgnoreCase(parserType);
-  }
-
-  /**
    * parses an SQL statement and returns the corresponding executor
    *
    * @param statement the SQL statement
@@ -98,20 +83,10 @@ public class StatementCache {
    */
   protected Statement parse(final String statement) throws CommandSQLParsingException {
     try {
-      final Statement result;
-      if (useAntlrParser()) {
-        // Use ANTLR4-based SQL parser (reuse parser instance for efficiency)
-        result = antlrParser.parse(statement);
-      } else {
-        // Use legacy JavaCC-based SQL parser
-        result = parseWithJavaCC(statement);
-      }
-
+      final Statement result = antlrParser.parse(statement);
       result.originalStatementAsString = statement;
       return result;
-
     } catch (final CommandSQLParsingException e) {
-      // Re-throw parsing exceptions as-is
       throw e;
     } catch (final Throwable e) {
       throwParsingException(e, statement);
@@ -119,20 +94,7 @@ public class StatementCache {
     return null;
   }
 
-  /**
-   * Parse using the legacy JavaCC parser.
-   */
-  private Statement parseWithJavaCC(final String statement) throws ParseException {
-    final InputStream is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
-    final SqlParser parser = new SqlParser(db, is);
-    return parser.Parse();
-  }
-
   protected static void throwParsingException(final Throwable e, final String statement) {
-    throw new CommandSQLParsingException(e.getMessage(), e, statement);
-  }
-
-  protected static void throwParsingException(final TokenMgrError e, final String statement) {
     throw new CommandSQLParsingException(e.getMessage(), e, statement);
   }
 

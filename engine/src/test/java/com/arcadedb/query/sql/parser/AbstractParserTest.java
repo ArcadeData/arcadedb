@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+
 import static org.assertj.core.api.Assertions.fail;
 
 public abstract class AbstractParserTest {
@@ -27,7 +29,6 @@ public abstract class AbstractParserTest {
     final StringBuilder builder = new StringBuilder();
     result.toString(null, builder);
     return checkSyntax(builder.toString(), true);
-    //    return checkSyntax(query, true);
   }
 
   protected SimpleNode checkRightSyntaxServer(final String query) {
@@ -35,7 +36,6 @@ public abstract class AbstractParserTest {
     final StringBuilder builder = new StringBuilder();
     result.toString(null, builder);
     return checkSyntaxServer(builder.toString(), true);
-    //    return checkSyntax(query, true);
   }
 
   protected SimpleNode checkWrongSyntax(final String query) {
@@ -47,9 +47,9 @@ public abstract class AbstractParserTest {
   }
 
   protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
     try {
-      final Statement result = osql.Parse();
+      final SQLAntlrParser parser = new SQLAntlrParser(null);
+      final Statement result = parser.parse(query);
 
       result.validate();
 
@@ -68,9 +68,10 @@ public abstract class AbstractParserTest {
   }
 
   protected SimpleNode checkSyntaxServer(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
     try {
-      final SimpleNode result = osql.Parse();
+      final SQLAntlrParser parser = new SQLAntlrParser(null);
+      final Statement result = parser.parse(query);
+
       if (!isCorrect)
         fail("");
 
@@ -84,19 +85,4 @@ public abstract class AbstractParserTest {
     }
     return null;
   }
-
-  protected SqlParser getParserFor(final String string) {
-    final SqlParser osql = new SqlParser(null, string);
-    return osql;
-  }
-
-//  private void printTree(final String s) {
-//    final SqlParser osql = getParserFor(s);
-//    try {
-//      final SimpleNode n = osql.parse();
-//
-//    } catch (final ParseException e) {
-//      e.printStackTrace();
-//    }
-//  }
 }

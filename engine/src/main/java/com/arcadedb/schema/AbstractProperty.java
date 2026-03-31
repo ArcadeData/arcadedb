@@ -22,12 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.parser.Expression;
-import com.arcadedb.query.sql.parser.ParseException;
-import com.arcadedb.query.sql.parser.SqlParser;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.*;
 import java.util.*;
 
 public abstract class AbstractProperty implements Property {
@@ -104,10 +102,10 @@ public abstract class AbstractProperty implements Property {
         final Database database = owner.getSchema().getEmbedded().getDatabase();
         final Expression expr;
         try {
-          expr = new SqlParser(database, new ByteArrayInputStream(defaultValue.toString().getBytes())).ParseExpression();
+          expr = new SQLAntlrParser(database).parseExpression(defaultValue.toString());
           final Object result = expr.execute((Record) null, new BasicCommandContext().setDatabase(database));
           return Type.convert(database, result, type.javaDefaultType);
-        } catch (ParseException e) {
+        } catch (Exception e) {
           // IGNORE IT
         }
       }

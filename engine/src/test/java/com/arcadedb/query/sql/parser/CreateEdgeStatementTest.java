@@ -20,38 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-
-import static org.assertj.core.api.Assertions.fail;
-
-public class CreateEdgeStatementTest {
-
-  protected SimpleNode checkRightSyntax(final String query) {
-    final SimpleNode result = checkSyntax(query, true);
-    return checkSyntax(result.toString(), true);
-  }
-
-  protected SimpleNode checkWrongSyntax(final String query) {
-    return checkSyntax(query, false);
-  }
-
-  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
-    try {
-      final SimpleNode result = osql.Parse();
-      if (!isCorrect) {
-        fail("");
-      }
-      return result;
-    } catch (final Exception e) {
-      if (isCorrect) {
-        e.printStackTrace();
-        fail("");
-      }
-    }
-    return null;
-  }
+public class CreateEdgeStatementTest extends AbstractParserTest {
 
   @Test
   void simpleCreate() {
@@ -83,30 +52,17 @@ public class CreateEdgeStatementTest {
     checkRightSyntax("create edge Foo from [#11:0, #11:3] to [#11:1, #12:0] set foo='bar', bar=2");
   }
 
+  @Test
   public void testInputVariables() {
     checkRightSyntax("create edge Foo from ? to ?");
     checkRightSyntax("create edge Foo from :a to :b");
     checkRightSyntax("create edge Foo from [:a, :b] to [:b, :c]");
   }
 
+  @Test
   public void testSubStatements() {
     checkRightSyntax("create edge Foo from (select from Foo) to (select from bar)");
     checkRightSyntax("create edge Foo from (traverse out() from #12:0) to (select from bar)");
     checkRightSyntax("create edge Foo from (MATCH {type:Person, as:A} return $elements) to (select from bar)");
-  }
-
-  private void printTree(final String s) {
-    final SqlParser osql = getParserFor(s);
-    try {
-      final SimpleNode n = osql.Parse();
-    } catch (final ParseException e) {
-      e.printStackTrace();
-    }
-  }
-
-  protected SqlParser getParserFor(final String string) {
-    final InputStream is = new ByteArrayInputStream(string.getBytes());
-    final SqlParser osql = new SqlParser(null, is);
-    return osql;
   }
 }

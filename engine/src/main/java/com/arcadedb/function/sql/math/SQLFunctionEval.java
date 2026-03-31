@@ -21,12 +21,9 @@ package com.arcadedb.function.sql.math;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.parser.ParseException;
-import com.arcadedb.query.sql.parser.SqlParser;
 import com.arcadedb.query.sql.parser.WhereClause;
-
-import java.io.*;
 
 /**
  * Evaluates a complex expression.
@@ -47,14 +44,13 @@ public class SQLFunctionEval extends SQLFunctionMathAbstract {
       throw new CommandExecutionException("invalid expression");
 
     if (predicate == null) {
-      try (final ByteArrayInputStream is = new ByteArrayInputStream(params[0].toString().getBytes())) {
-        predicate = new SqlParser(context.getDatabase(), is).ParseCondition();
-      } catch (IOException e) {
-        throw new CommandSQLParsingException("Error on parsing expression in eval() function", e);
-      } catch (ParseException e) {
+      try {
+        predicate = new SQLAntlrParser(context.getDatabase()).parseCondition(params[0].toString());
+      } catch (final CommandSQLParsingException e) {
+        throw e;
+      } catch (final Exception e) {
         throw new CommandSQLParsingException("Error on parsing expression for the eval()", e);
       }
-
     }
     return predicate.matchesFilters(record, context);
   }

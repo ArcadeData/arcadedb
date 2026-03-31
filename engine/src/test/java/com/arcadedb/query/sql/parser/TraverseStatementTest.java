@@ -20,55 +20,11 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-
-import static org.assertj.core.api.Assertions.fail;
-
-class TraverseStatementTest {
-
-  protected SimpleNode checkRightSyntax(final String query) {
-    return checkSyntax(query, true);
-  }
-
-  protected SimpleNode checkWrongSyntax(final String query) {
-    return checkSyntax(query, false);
-  }
-
-  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
-    try {
-      final SimpleNode result = osql.Parse();
-      if (!isCorrect) {
-        //        System.out.println(query);
-        //        if(result != null ) {
-        //          System.out.println("->");
-        //          System.out.println(result.toString());
-        //          System.out.println("............");
-        //        }
-        fail("");
-      }
-
-      return result;
-    } catch (final Exception e) {
-      if (isCorrect) {
-        System.out.println(query);
-        e.printStackTrace();
-        fail("");
-      }
-    }
-    return null;
-  }
+class TraverseStatementTest extends AbstractParserTest {
 
   @Test
   void depthFirst() {
     checkRightSyntax("traverse out() from #9:0 while $depth <= 2 strategy DEPTH_FIRST");
     checkRightSyntax("traverse out() from #9:0 while $depth <= 2 strategy depth_first");
-  }
-
-  protected SqlParser getParserFor(final String string) {
-    final InputStream is = new ByteArrayInputStream(string.getBytes());
-    final SqlParser osql = new SqlParser(null, is);
-    return osql;
   }
 }

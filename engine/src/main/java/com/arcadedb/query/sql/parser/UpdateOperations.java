@@ -94,7 +94,7 @@ public class UpdateOperations extends SimpleNode {
       break;
     case TYPE_ADD:
       builder.append("ADD ");
-      for (final UpdateIncrementItem item : this.updateIncrementItems) {
+      for (final UpdateItem item : this.updateItems) {
         if (!first) {
           builder.append(", ");
         }

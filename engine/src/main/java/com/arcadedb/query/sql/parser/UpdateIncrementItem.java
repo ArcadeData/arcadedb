@@ -40,6 +40,21 @@ public class UpdateIncrementItem extends SimpleNode {
     right.toString(params, builder);
   }
 
+  public UpdateIncrementItem setLeft(final Identifier left) {
+    this.left = left;
+    return this;
+  }
+
+  public UpdateIncrementItem setLeftModifier(final Modifier leftModifier) {
+    this.leftModifier = leftModifier;
+    return this;
+  }
+
+  public UpdateIncrementItem setRight(final Expression right) {
+    this.right = right;
+    return this;
+  }
+
   public UpdateIncrementItem copy() {
     final UpdateIncrementItem result = new UpdateIncrementItem(-1);
     result.left = left == null ? null : left.copy();

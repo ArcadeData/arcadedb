@@ -77,6 +77,11 @@ public class Timeout extends SimpleNode {
     return failureStrategy;
   }
 
+  public Timeout setFailureStrategy(final String failureStrategy) {
+    this.failureStrategy = failureStrategy;
+    return this;
+  }
+
   public Timeout setValue(final Number val) {
     this.val = val;
     return this;

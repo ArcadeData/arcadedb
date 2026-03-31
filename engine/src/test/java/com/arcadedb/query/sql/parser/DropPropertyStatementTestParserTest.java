@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 class DropPropertyStatementTestParserTest extends AbstractParserTest {
 
   @Test
@@ -27,8 +29,15 @@ class DropPropertyStatementTestParserTest extends AbstractParserTest {
     checkRightSyntax("DROP PROPERTY Foo.bar");
     checkRightSyntax("drop property Foo.bar");
     checkRightSyntax("drop property `Foo bar`.`bar baz`");
-    checkRightSyntax("drop property Foo.bar force");
-    checkRightSyntax("drop property Foo.bar FORCE");
+
+    final DropPropertyStatement withForce = (DropPropertyStatement) checkRightSyntax("drop property Foo.bar force");
+    assertThat(withForce.force).isTrue();
+
+    final DropPropertyStatement withForceUpper = (DropPropertyStatement) checkRightSyntax("drop property Foo.bar FORCE");
+    assertThat(withForceUpper.force).isTrue();
+
+    final DropPropertyStatement withoutForce = (DropPropertyStatement) checkRightSyntax("DROP PROPERTY Foo.bar");
+    assertThat(withoutForce.force).isFalse();
 
     checkWrongSyntax("drop property foo");
     checkWrongSyntax("drop property foo.bar.baz");

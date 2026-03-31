@@ -96,7 +96,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
         if (!first)
           builder.append(", ");
         first = false;
-        entry.getKey().toString(params, builder);
+        builder.append(entry.getKey().value);
         builder.append(" = ");
         entry.getValue().toString(params, builder);
       }

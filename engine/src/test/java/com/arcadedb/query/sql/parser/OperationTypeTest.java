@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.OperationType;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -31,11 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class OperationTypeTest {
 
   private static Statement parse(final String query) {
-    try {
-      return new SqlParser(null, query).Parse();
-    } catch (final ParseException e) {
-      throw new RuntimeException("Failed to parse: " + query, e);
-    }
+    return new SQLAntlrParser(null).parse(query);
   }
 
   @Test

@@ -20,50 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-
-import static org.assertj.core.api.Assertions.fail;
-
-public class UpdateStatementTest {
-
-  protected SimpleNode checkRightSyntax(final String query) {
-    final SimpleNode result = checkSyntax(query, true);
-    return checkSyntax(result.toString(), true);
-  }
-
-  protected SimpleNode checkWrongSyntax(final String query) {
-    return checkSyntax(query, false);
-  }
-
-  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
-    final SqlParser osql = getParserFor(query);
-    try {
-      final SimpleNode result = osql.Parse();
-      if (!isCorrect) {
-        //        System.out.println(query);
-        //        if (result != null) {
-        //          System.out.println("->");
-        //          System.out.println(result.toString());
-        //          System.out.println("............");
-        //        }
-        fail("");
-      }
-      //      System.out.println(query);
-      //      System.out.println("->");
-      //      System.out.println(result.toString());
-      //      System.out.println("............");
-
-      return result;
-    } catch (final Exception e) {
-      if (isCorrect) {
-        //System.out.println(query);
-        e.printStackTrace();
-        fail("");
-      }
-    }
-    return null;
-  }
+public class UpdateStatementTest extends AbstractParserTest {
 
   @Test
   void simpleInsert() {
@@ -79,7 +36,6 @@ public class UpdateStatementTest {
     checkRightSyntax("update  Foo set a = 1+1, c=foo, d='bar'");
     checkRightSyntax("update  Foo set a = a.b.toLowerCase(), b=out('pippo')[0]");
     checkRightSyntax("update  Foo set a = a.b.transform( toLowerCase ), b=out('pippo')[0]");
-    printTree("update  Foo set a = a.b.toLowerCase(), b=out('pippo')[0]");
   }
 
   @Test
@@ -99,19 +55,22 @@ public class UpdateStatementTest {
     checkRightSyntax("update Foo content {'a':'b', 'c':{'d':'e', 'f': ['a', 'b', 4]}} where name = 'foo'");
   }
 
+  @Test
   public void testIncrementOld() {
     checkRightSyntax("update  Foo increment a = 2");
   }
 
+  @Test
   public void testIncrement() {
     checkRightSyntax("update  Foo set a += 2");
-    printTree("update  Foo set a += 2");
   }
 
+  @Test
   public void testDecrement() {
     checkRightSyntax("update  Foo set a -= 2");
   }
 
+  @Test
   public void testQuotedJson() {
     checkRightSyntax("UPDATE V SET key = \"test\", value = {\"f12\":\"test\\\\\"} UPSERT WHERE key = \"test\"");
   }
@@ -138,21 +97,5 @@ public class UpdateStatementTest {
   void returnCount() {
     checkRightSyntax("update foo set bar = 1 RETURN COUNT");
     checkRightSyntax("update foo set bar = 1 return count");
-  }
-
-  private void printTree(final String s) {
-    final SqlParser osql = getParserFor(s);
-    try {
-      final SimpleNode result = osql.Parse();
-
-    } catch (final ParseException e) {
-      e.printStackTrace();
-    }
-  }
-
-  protected SqlParser getParserFor(final String string) {
-    final InputStream is = new ByteArrayInputStream(string.getBytes());
-    final SqlParser osql = new SqlParser(null, is);
-    return osql;
   }
 }
