@@ -75,6 +75,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String SET_BACKUP_CONFIG    = "set backup config";
   private static final String LIST_BACKUPS         = "list backups";
   private static final String TRIGGER_BACKUP       = "trigger backup";
+  private static final String RESTORE_DATABASE     = "restore database";
   private static final String PROFILER             = "profiler";
 
   public PostServerCommandHandler(final HttpServer httpServer) {
@@ -138,6 +139,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return listBackups(extractTarget(command, LIST_BACKUPS));
     else if (command_lc.startsWith(TRIGGER_BACKUP))
       return triggerBackup(extractTarget(command, TRIGGER_BACKUP));
+    else if (command_lc.startsWith(RESTORE_DATABASE))
+      restoreDatabase(extractTarget(command, RESTORE_DATABASE));
     else if (command_lc.startsWith(PROFILER))
       return handleProfilerCommand(extractTarget(command, PROFILER));
     else {
@@ -211,6 +214,47 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       final ReplicatedDatabase replicatedDatabase = (ReplicatedDatabase) db.getWrappedDatabaseInstance();
       replicatedDatabase.createInReplicas();
     }
+  }
+
+  /**
+   * Restores a database from a backup URL. Format: {@code restore database <name> <url>}.
+   * The URL can be a local file (file://), HTTP(S), or classpath resource.
+   * If the database already exists, the command fails.
+   */
+  private void restoreDatabase(final String args) {
+    final int space = args.indexOf(' ');
+    if (space <= 0)
+      throw new IllegalArgumentException("Usage: restore database <name> <url>");
+
+    final String databaseName = args.substring(0, space).trim();
+    final String url = args.substring(space + 1).trim();
+
+    if (databaseName.isEmpty() || url.isEmpty())
+      throw new IllegalArgumentException("Usage: restore database <name> <url>");
+
+    checkServerIsLeaderIfInHA();
+
+    final ArcadeDBServer server = httpServer.getServer();
+    Metrics.counter("http.restore-database").increment();
+
+    final String dbPath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
+        + File.separator + databaseName;
+
+    if (new File(dbPath).exists())
+      throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
+
+    try {
+      final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, dbPath);
+      clazz.getMethod("restoreDatabase").invoke(restorer);
+    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException
+                   | InstantiationException e) {
+      throw new CommandExecutionException("Restore libs not found in classpath", e);
+    } catch (final java.lang.reflect.InvocationTargetException e) {
+      throw new CommandExecutionException("Error restoring database", e.getTargetException());
+    }
+
+    server.getDatabase(databaseName);
   }
 
   private void dropDatabase(final String databaseName) {
