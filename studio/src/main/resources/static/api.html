@@ -355,7 +355,7 @@ var apiEndpoints = {
     requestBody: '{\n  "command": "create database newdb"\n}',
     responseCode: "200 OK",
     responseBody: '{\n  "result": "ok"\n}',
-    notes: "Available commands: <code>create database</code>, <code>drop database</code>, <code>open database</code>, <code>close database</code>, <code>restore database &lt;name&gt; &lt;url&gt;</code>, <code>create user</code>, <code>drop user</code>, <code>shutdown</code>, <code>set server setting</code>, <code>get server events</code>, <code>align database</code>."
+    notes: "Available commands: <code>create database</code>, <code>drop database</code>, <code>open database</code>, <code>close database</code>, <code>restore database &lt;name&gt; &lt;url&gt;</code>, <code>import database &lt;name&gt; &lt;url&gt;</code>, <code>create user</code>, <code>drop user</code>, <code>shutdown</code>, <code>set server setting</code>, <code>get server events</code>, <code>align database</code>. Both <code>restore database</code> and <code>import database</code> support SSE progress streaming when the request includes <code>Accept: text/event-stream</code>."
   },
   databases: {
     method: "GET", path: "/api/v1/databases", auth: true, tryIt: true,

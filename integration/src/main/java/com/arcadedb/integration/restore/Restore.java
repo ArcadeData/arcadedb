@@ -69,6 +69,11 @@ public class Restore {
     return this;
   }
 
+  public Restore setLogger(final ConsoleLogger logger) {
+    this.logger = logger;
+    return this;
+  }
+
   protected AbstractRestoreFormat createFormatImplementation() {
     switch (settings.format.toLowerCase(Locale.ENGLISH)) {
     case "full":
