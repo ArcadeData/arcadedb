@@ -1874,15 +1874,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final boolean isSmallGraph = graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE;
 
     if (isSmallGraph) {
-      // Small graph or first-ever build: synchronous rebuild (fast enough to not block noticeably)
-      lock.writeLock().lock();
-      try {
-        if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0
-            && (graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE))
-          buildGraphFromScratch();
-      } finally {
-        lock.writeLock().unlock();
-      }
+      // Small graph or first-ever build: synchronous rebuild (fast enough to not block noticeably).
+      // buildGraphFromScratch() manages its own locking internally - do not wrap in an external
+      // write lock, as that would prevent the internal lock release during graph build (issue #3722).
+      if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0
+          && (graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE))
+        buildGraphFromScratch();
     } else if (mutations >= threshold && !asyncRebuildInProgress)
       // Large graph (>= 1000 vectors): async rebuild only when threshold reached.
       // Search uses the current graph (valid, just missing newest vectors) while rebuild runs in background.
@@ -2626,6 +2623,52 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Brute-force scan of all indexed vectors to supplement graph search results.
+   * Called as a fallback when graph search returns too few results (issue #3722),
+   * e.g., after a rebuild with corrupted pages produced a poorly connected graph.
+   */
+  private void bruteForceScan(final VectorFloat<?> queryVectorFloat, final int k,
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results,
+      final RandomAccessVectorValues vectors) {
+    // Collect already-seen RIDs to avoid duplicates
+    final RidHashSet seenRIDs = new RidHashSet(results.size());
+    for (final Pair<RID, Float> r : results)
+      seenRIDs.add(r.getFirst());
+
+    boolean added = false;
+    for (int ordinal = 0; ordinal < ordinalToVectorId.length; ordinal++) {
+      final int vectorId = ordinalToVectorId[ordinal];
+      final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+      if (loc == null || loc.deleted)
+        continue;
+      if (seenRIDs.contains(loc.rid))
+        continue;
+      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
+        continue;
+
+      final VectorFloat<?> vec = vectors.getVector(ordinal);
+      if (vec == null)
+        continue;
+
+      final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
+      final float distance = switch (metadata.similarityFunction) {
+        case COSINE -> 2.0f * (1.0f - score);
+        case EUCLIDEAN -> score;
+        case DOT_PRODUCT -> -score;
+        default -> score;
+      };
+      results.add(new Pair<>(loc.rid, distance));
+      added = true;
+    }
+
+    if (added) {
+      results.sort((a, b) -> Float.compare(a.getSecond(), b.getSecond()));
+      if (results.size() > k)
+        results.subList(k, results.size()).clear();
+    }
+  }
+
+  /**
    * Search for k nearest neighbors to the given vector and return results with similarity scores.
    * This method is similar to HnswVectorIndex.findNeighborsFromVector and avoids the need to
    * recalculate distances after the search.
@@ -2759,23 +2802,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final int effectiveEfSearch = Math.max(k, metadata.efSearch);
             searchResult = searcher.search(ssp, k, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
           } else {
-            // Adaptive efSearch: for large indexes, start with a moderate beam and
-            // resume with wider beam if insufficient. For small indexes (< 10K vectors),
-            // use the full default efSearch since the cost is negligible.
+            // Adaptive efSearch with resume for insufficient results (issue #3722).
+            // Both small and large graphs use the same two-pass strategy: search first,
+            // resume with wider beam if too few results are returned.
             final int graphSize = graphIndex.size();
-            if (graphSize < 10_000) {
-              // Small index: full search is cheap, use default efSearch for best quality
-              searchResult = searcher.search(ssp, k, Math.max(k, 100), 0.0f, 0.0f, bitsFilter);
+            final int initialEfSearch;
+            if (graphSize < 10_000)
+              initialEfSearch = Math.max(k, 100);
+            else
+              initialEfSearch = Math.max(k * 2, 20);
+
+            final SearchResult firstPass = searcher.search(ssp, k, initialEfSearch, 0.0f, 0.0f, bitsFilter);
+            if (firstPass.getNodes().length < k && graphSize >= k) {
+              // Graph has enough nodes but beam search found too few - widen the beam
+              searchResult = searcher.resume(k, Math.max(k * 10, 100));
             } else {
-              // Large index: adaptive two-pass search.
-              // First pass with moderate beam (2*k), resume if insufficient.
-              final int firstPassEfSearch = Math.max(k * 2, 20);
-              final SearchResult firstPass = searcher.search(ssp, k, firstPassEfSearch, 0.0f, 0.0f, bitsFilter);
-              if (firstPass.getNodes().length < k) {
-                searchResult = searcher.resume(k, Math.max(k * 10, 100));
-              } else {
-                searchResult = firstPass;
-              }
+              searchResult = firstPass;
             }
           }
         }
@@ -2824,6 +2866,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Merge with delta vectors inserted since last graph rebuild
         mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
+
+        // Issue #3722: If graph search + delta merge returned significantly fewer results than
+        // expected AND there are enough vectors available, fall back to brute-force scan of all
+        // vectors. This handles degraded graph quality after rebuilds with corrupted pages.
+        final int availableVectors = ordinalToVectorId.length;
+        final int expectedResults = Math.min(k, availableVectors);
+        if (results.size() < expectedResults && results.size() < availableVectors * 8 / 10) {
+          LogManager.instance()
+              .log(this, Level.WARNING,
+                  "Graph search returned only %d results (expected %d, available %d) for index %s - "
+                      + "falling back to brute-force scan (graph may need rebuilding)",
+                  results.size(), expectedResults, availableVectors, indexName);
+          bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors);
+        }
 
         LogManager.instance()
             .log(this, Level.INFO, "Vector search returned %d results (skipped: %d out of bounds, %d deleted/null)",
@@ -4375,14 +4431,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // Large graph: async rebuild
             startAsyncGraphRebuild();
           } else {
-            // Small graph: synchronous rebuild
-            lock.writeLock().lock();
-            try {
-              if (mutationsSinceSerialize.get() > 0)
-                buildGraphFromScratch();
-            } finally {
-              lock.writeLock().unlock();
-            }
+            // Small graph: synchronous rebuild.
+            // Do NOT wrap in an external write lock - buildGraphFromScratch() manages
+            // its own locking internally (acquires/releases around preparation and state
+            // update phases, but releases during graph build to allow concurrent reads).
+            // Wrapping in an external lock would cause the internal release to only
+            // decrement the hold count, keeping the lock held during the graph build phase
+            // and potentially blocking ForkJoinPool workers that need database access.
+            if (mutationsSinceSerialize.get() > 0)
+              buildGraphFromScratch();
           }
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,
