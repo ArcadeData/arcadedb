@@ -383,7 +383,17 @@ public class CypherSemanticValidator {
             }
           }
           if (hasWildcard) {
-            // WITH * keeps all variables in scope — don't validate or reset
+            // WITH * keeps all variables in scope; also validate and register any extra aliases
+            for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+              if (item.getExpression() instanceof StarExpression ||
+                  (item.getExpression() instanceof VariableExpression &&
+                      "*".equals(((VariableExpression) item.getExpression()).getVariableName())))
+                continue;
+              checkExpressionScope(item.getExpression(), scope);
+              final String alias = item.getAlias();
+              if (alias != null)
+                scope.add(alias);
+            }
             break;
           }
           // First validate that all referenced variables in WITH are in scope
