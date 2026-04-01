@@ -592,50 +592,79 @@ function importSampleDatabase(name, path, format, fromModal) {
 
   $(overlay).html(
     '<div class="spinner-border text-primary" style="width: 3rem; height: 3rem;"></div>' +
-    '<h5 style="margin-top: 16px; font-weight: 600;">Importing ' + escapeHtml(name) + '...</h5>' +
-    '<p style="color: var(--text-secondary, #888);">Creating database and downloading dataset. This may take a moment.</p>'
+    '<h5 id="importProgressTitle" style="margin-top: 16px; font-weight: 600;">Importing ' + escapeHtml(name) + '...</h5>' +
+    '<p id="importProgressMsg" style="color: var(--text-secondary, #888);">Connecting to server...</p>'
   ).css("display", "flex");
 
-  var onSuccess = function() {
+  var onComplete = function() {
     globalNotify("Success", name + " imported successfully!", "success");
     if (fromModal)
       bootstrap.Modal.getInstance(document.getElementById("importDatasetModal")).hide();
     updateDatabases(null, name);
   };
-  var onError = function(jqXHR) {
-    globalNotifyError(jqXHR.responseText);
+  var onError = function(msg) {
+    globalNotifyError(msg || "Import failed");
     $(overlay).hide();
   };
 
-  if (isRestore) {
-    // ArcadeDB backup: single server command to restore (download + unzip)
-    jQuery.ajax({
-      type: "POST",
-      url: "api/v1/server",
-      data: JSON.stringify({ command: "restore database " + name + " " + url }),
-      contentType: "application/json",
-      timeout: 300000,
-      beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
-    }).done(onSuccess).fail(onError);
-  } else {
-    // OrientDB/GraphML/GraphSON: create database first, then import
-    jQuery.ajax({
-      type: "POST",
-      url: "api/v1/server",
-      data: JSON.stringify({ command: "create database " + name }),
-      contentType: "application/json",
-      beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
-    }).done(function() {
-      jQuery.ajax({
-        type: "POST",
-        url: "api/v1/command/" + encodeURIComponent(name),
-        data: JSON.stringify({ language: "sql", command: "IMPORT DATABASE " + url }),
-        contentType: "application/json",
-        timeout: 300000,
-        beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
-      }).done(onSuccess).fail(onError);
-    }).fail(onError);
-  }
+  // Use SSE streaming for real-time progress
+  var command = isRestore ? "restore database " + name + " " + url : "import database " + name + " " + url;
+  importWithSSE(command, onComplete, onError);
+}
+
+function importWithSSE(command, onComplete, onError) {
+  fetch("api/v1/server", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": globalCredentials,
+      "Accept": "text/event-stream"
+    },
+    body: JSON.stringify({ command: command })
+  }).then(function(response) {
+    if (!response.ok) {
+      response.text().then(function(t) { onError(t); });
+      return;
+    }
+    var reader = response.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = "";
+
+    function processChunk(result) {
+      if (result.done) return;
+      buffer += decoder.decode(result.value, { stream: true });
+      var lines = buffer.split("\n");
+      buffer = lines.pop(); // keep incomplete line in buffer
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line.startsWith("data: ")) continue;
+        try {
+          var event = JSON.parse(line.substring(6));
+          if (event.status === "completed") {
+            onComplete();
+            return;
+          } else if (event.status === "error") {
+            onError(event.message);
+            return;
+          } else if (event.status === "progress") {
+            var msg = event.message || "";
+            if (event.vertices != null || event.edges != null) {
+              var parts = [];
+              if (event.vertices) parts.push(formatNumber(event.vertices) + " vertices");
+              if (event.edges) parts.push(formatNumber(event.edges) + " edges");
+              if (event.parsed) parts.push(formatNumber(event.parsed) + " parsed");
+              msg = parts.join(" &middot; ");
+            }
+            if (msg) $("#importProgressMsg").html(msg);
+          }
+        } catch (e) { /* ignore malformed events */ }
+      }
+      reader.read().then(processChunk);
+    }
+    reader.read().then(processChunk);
+  }).catch(function(err) {
+    onError(err.message || "Connection failed");
+  });
 }
 
 function showImportDatasetModal() {

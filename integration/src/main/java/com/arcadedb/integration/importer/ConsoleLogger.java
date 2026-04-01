@@ -19,25 +19,37 @@
 package com.arcadedb.integration.importer;
 
 /**
- * Console logger used by importers and exporters.
+ * Console logger used by importers and exporters. Supports an optional {@link LogListener}
+ * for structured progress reporting (e.g., SSE streaming to clients).
  *
  * @author Luca Garulli
  */
 public class ConsoleLogger {
-  private final int verboseLevel;
+  private final int         verboseLevel;
+  private       LogListener listener;
+
+  @FunctionalInterface
+  public interface LogListener {
+    void onLogLine(String message);
+  }
 
   public ConsoleLogger(final int verboseLevel) {
     this.verboseLevel = verboseLevel;
+  }
+
+  public ConsoleLogger(final int verboseLevel, final LogListener listener) {
+    this.verboseLevel = verboseLevel;
+    this.listener = listener;
   }
 
   public void logLine(final int level, final String text, final Object... args) {
     if (level > verboseLevel)
       return;
 
-    if (args.length == 0)
-      System.out.println(text);
-    else
-      System.out.printf((text) + "%n", args);
+    final String msg = args.length == 0 ? text : text.formatted(args);
+    System.out.println(msg);
+    if (listener != null)
+      listener.onLogLine(msg);
   }
 
   public void log(final int level, final String text, final Object... args) {
@@ -51,13 +63,17 @@ public class ConsoleLogger {
   }
 
   public void errorLine(final String text, final Object... args) {
-    if (args.length == 0)
-      System.out.println(text);
-    else
-      System.out.printf((text) + "%n", args);
+    final String msg = args.length == 0 ? text : text.formatted(args);
+    System.out.println(msg);
+    if (listener != null)
+      listener.onLogLine(msg);
   }
 
   public int getVerboseLevel() {
     return verboseLevel;
+  }
+
+  public void setListener(final LogListener listener) {
+    this.listener = listener;
   }
 }

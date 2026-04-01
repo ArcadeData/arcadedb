@@ -62,6 +62,14 @@ public abstract class AbstractImporter {
         settings.parseParameter(entry.getKey(), entry.getValue());
   }
 
+  public ImporterContext getContext() {
+    return context;
+  }
+
+  public void setLogger(final ConsoleLogger logger) {
+    this.logger = logger;
+  }
+
   protected void printProgress() {
     if (format != null)
       format.printProgress(settings, context, source, parser, logger);
