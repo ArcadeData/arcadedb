@@ -7,9 +7,11 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.Collection;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -182,5 +184,84 @@ class OpenCypherConstraintTest {
   void dropConstraintIfExists() {
     // Should not throw even if constraint doesn't exist
     database.command("opencypher", "DROP CONSTRAINT nonExistentConstraint IF EXISTS");
+  }
+
+  @Test
+  void createConstraintAutoCreatesVertexType() {
+    // Issue #3760: CREATE CONSTRAINT should auto-create the type if it doesn't exist
+    assertThat(database.getSchema().existsType("NewType")).isFalse();
+
+    database.command("opencypher", "CREATE CONSTRAINT FOR (t:NewType) REQUIRE t.id IS UNIQUE");
+
+    // Verify the type was auto-created as a vertex type
+    assertThat(database.getSchema().existsType("NewType")).isTrue();
+    assertThat(database.getSchema().getType("NewType")).isInstanceOf(VertexType.class);
+
+    // Verify constraint was created
+    final Collection<TypeIndex> indexes = database.getSchema().getType("NewType").getAllIndexes(false);
+    boolean found = false;
+    for (final TypeIndex idx : indexes) {
+      if (idx.isUnique() && idx.getPropertyNames().contains("id")) {
+        found = true;
+        break;
+      }
+    }
+    assertThat(found).isTrue();
+  }
+
+  @Test
+  void createConstraintAutoCreatesEdgeType() {
+    // Issue #3760: CREATE CONSTRAINT should auto-create edge types too
+    assertThat(database.getSchema().existsType("LIKES")).isFalse();
+
+    database.command("opencypher", "CREATE CONSTRAINT FOR ()-[r:LIKES]-() REQUIRE r.since IS NOT NULL");
+
+    // Verify the type was auto-created as an edge type
+    assertThat(database.getSchema().existsType("LIKES")).isTrue();
+    assertThat(database.getSchema().getType("LIKES")).isInstanceOf(EdgeType.class);
+
+    // Verify property is mandatory
+    final Property property = database.getSchema().getType("LIKES").getPropertyIfExists("since");
+    assertThat(property).isNotNull();
+    assertThat(property.isMandatory()).isTrue();
+  }
+
+  @Test
+  void createConstraintAutoCreatesTypeWithIfNotExists() {
+    // Issue #3760: IF NOT EXISTS should also auto-create the type
+    assertThat(database.getSchema().existsType("Widget")).isFalse();
+
+    database.command("opencypher", "CREATE CONSTRAINT IF NOT EXISTS FOR (w:Widget) REQUIRE w.code IS UNIQUE");
+
+    assertThat(database.getSchema().existsType("Widget")).isTrue();
+
+    // Running again should not throw
+    database.command("opencypher", "CREATE CONSTRAINT IF NOT EXISTS FOR (w:Widget) REQUIRE w.code IS UNIQUE");
+  }
+
+  @Test
+  void createNodeKeyConstraintAutoCreatesType() {
+    // Issue #3760: NODE KEY constraint should also auto-create the type
+    assertThat(database.getSchema().existsType("Product")).isFalse();
+
+    database.command("opencypher", "CREATE CONSTRAINT FOR (p:Product) REQUIRE p.sku IS NODE KEY");
+
+    assertThat(database.getSchema().existsType("Product")).isTrue();
+
+    // Verify unique index
+    final Collection<TypeIndex> indexes = database.getSchema().getType("Product").getAllIndexes(false);
+    boolean foundUnique = false;
+    for (final TypeIndex idx : indexes) {
+      if (idx.isUnique() && idx.getPropertyNames().contains("sku")) {
+        foundUnique = true;
+        break;
+      }
+    }
+    assertThat(foundUnique).isTrue();
+
+    // Verify property is mandatory
+    final Property property = database.getSchema().getType("Product").getPropertyIfExists("sku");
+    assertThat(property).isNotNull();
+    assertThat(property.isMandatory()).isTrue();
   }
 }

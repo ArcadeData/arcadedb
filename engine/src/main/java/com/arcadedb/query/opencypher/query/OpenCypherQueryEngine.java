@@ -274,6 +274,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
 
+    // Auto-create the type if it doesn't exist (Cypher does not require types to be pre-declared)
+    if (!schema.existsType(typeName)) {
+      if (ddl.isForRelationship())
+        schema.getOrCreateEdgeType(typeName);
+      else
+        schema.getOrCreateVertexType(typeName);
+    }
+
     // Ensure all properties exist before creating indexes (ArcadeDB requires this)
     for (final String propName : propertyNames) {
       if (schema.getType(typeName).getPropertyIfExists(propName) == null)
