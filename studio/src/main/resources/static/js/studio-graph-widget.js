@@ -157,6 +157,70 @@ function renderGraph() {
   updateGraphStatus(warning);
 }
 
+/**
+ * Appends new query results to the existing graph (cumulative mode).
+ * Skips vertices/edges already present. Runs layout on new nodes only.
+ */
+function appendToGraph(newResult) {
+  if (globalCy == null || newResult == null) return;
+
+  var added = [];
+
+  for (var i in newResult.vertices) {
+    var vertex = newResult.vertices[i];
+    var rid = vertex["r"];
+    if (rid == null || globalRenderedVerticesRID[rid]) continue;
+
+    assignTypeColor(vertex.t);
+    assignProperties(vertex);
+
+    globalResultset.vertices.push(vertex);
+    globalRenderedVerticesRID[rid] = true;
+
+    var node = globalCy.add([{ group: "nodes", data: createVertex(vertex), classes: vertex["t"] }]);
+    added.push(node[0]);
+  }
+
+  for (var i in newResult.edges) {
+    var edge = newResult.edges[i];
+    if (!globalRenderedVerticesRID[edge.i] || !globalRenderedVerticesRID[edge.o]) continue;
+
+    // Skip if edge already in graph
+    if (edge.r && globalCy.getElementById(edge.r).length > 0) continue;
+
+    assignTypeColor(edge.t);
+    assignProperties(edge);
+
+    globalResultset.edges.push(edge);
+    globalCy.add([{ group: "edges", data: createEdge(edge), classes: edge["t"] }]);
+    ++globalTotalEdges;
+  }
+
+  // Merge records
+  if (newResult.records)
+    for (var i in newResult.records)
+      globalResultset.records.push(newResult.records[i]);
+
+  if (added.length > 0) {
+    // Run layout only on the new nodes so existing positions are preserved
+    var newCollection = globalCy.collection(added);
+    newCollection.layout({
+      name: "fcose",
+      animate: true,
+      animationDuration: 300,
+      nodeSeparation: globalGraphSettings.graphSpacing * 3,
+      idealEdgeLength: globalGraphSettings.graphSpacing * 3,
+      quality: "default",
+      randomize: true,
+      fit: false
+    }).run();
+
+    setGraphStyles();
+  }
+
+  updateGraphStatus(null);
+}
+
 function initGraph() {
   setGraphStyles();
 
