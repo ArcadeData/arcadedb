@@ -187,7 +187,10 @@ public class OpenApiSpecGenerator {
     // POST /api/v1/server
     final Operation postOp = new Operation();
     postOp.setSummary("Execute server command");
-    postOp.setDescription("Executes administrative commands on the server (root user only)");
+    postOp.setDescription("Executes administrative commands on the server (root user only). "
+        + "Available commands: create database, drop database, open database, close database, "
+        + "restore database <name> <url>, create user, drop user, shutdown, "
+        + "set server setting, get server events, align database");
     postOp.setOperationId("executeServerCommand");
     postOp.addTagsItem("Server");
     postOp.setSecurity(Arrays.asList(createSecurityRequirement()));

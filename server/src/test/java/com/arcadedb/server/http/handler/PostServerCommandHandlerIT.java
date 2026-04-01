@@ -25,6 +25,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.File;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -306,6 +307,43 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
     // Test complex commands with parameters
     response = executeServerCommand("set database setting graph `arcadedb.dateTimeFormat` 'yyyy-MM-dd HH:mm:ss'");
     assertThat(response.statusCode()).isEqualTo(200);
+  }
+
+  /**
+   * Tests the restore database server command: create a backup, drop the db, then restore via HTTP.
+   */
+  @Test
+  void restoreDatabaseCommand() throws Exception {
+    // Create a backup of the existing "graph" database
+    HttpRequest backupReq = HttpRequest.newBuilder()
+        .uri(new URI("http://localhost:2480/api/v1/command/graph"))
+        .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
+            .put("language", "sql")
+            .put("command", "backup database")
+            .toString()))
+        .setHeader("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .build();
+    HttpResponse<String> backupResp = client.send(backupReq, BodyHandlers.ofString());
+    assertThat(backupResp.statusCode()).isEqualTo(200);
+
+    // Extract the backup file name from the response and resolve to the backup directory
+    JSONObject result = new JSONObject(backupResp.body()).getJSONArray("result").getJSONObject(0);
+    String backupFileName = result.getString("backupFile");
+    File backupPath = new File("./target/backups/graph", backupFileName);
+    assertThat(backupPath.exists()).as("Backup file should exist at: " + backupPath.getAbsolutePath()).isTrue();
+
+    // Now restore as a new database using the server command
+    HttpResponse<String> response = executeServerCommand(
+        "restore database restored_graph file://" + backupPath.getAbsolutePath());
+    assertThat(response.statusCode()).isEqualTo(200);
+
+    // Verify the restored database is accessible
+    HttpResponse<String> listResp = executeServerCommand("list databases");
+    assertThat(listResp.body()).contains("restored_graph");
+
+    // Clean up
+    executeServerCommand("drop database restored_graph");
   }
 
   /**
