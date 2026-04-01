@@ -265,6 +265,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
     case DROP_CONSTRAINT:
       executeDropConstraint(ddl, schema);
       break;
+    case CREATE_INDEX:
+      executeCreateIndex(ddl, schema);
+      break;
+    case DROP_INDEX:
+      executeDropIndex(ddl, schema);
+      break;
     }
 
     return new InternalResultSet();
@@ -387,6 +393,41 @@ public class OpenCypherQueryEngine implements QueryEngine {
         schema.dropIndex(constraintName);
     } else {
       schema.dropIndex(constraintName);
+    }
+  }
+
+  private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema) {
+    final String typeName = ddl.getLabelName();
+    final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
+
+    // Auto-create the type if it doesn't exist (Cypher does not require types to be pre-declared)
+    if (!schema.existsType(typeName)) {
+      if (ddl.isForRelationship())
+        schema.getOrCreateEdgeType(typeName);
+      else
+        schema.getOrCreateVertexType(typeName);
+    }
+
+    // Ensure all properties exist before creating indexes (ArcadeDB requires this)
+    for (final String propName : propertyNames) {
+      if (schema.getType(typeName).getPropertyIfExists(propName) == null)
+        schema.getType(typeName).createProperty(propName, Type.STRING);
+    }
+
+    schema.buildTypeIndex(typeName, propertyNames)
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false)
+        .withIgnoreIfExists(ddl.isIfNotExists())
+        .create();
+  }
+
+  private void executeDropIndex(final CypherDDLStatement ddl, final Schema schema) {
+    final String indexName = ddl.getConstraintName();
+    if (ddl.isIfExists()) {
+      if (schema.existsIndex(indexName))
+        schema.dropIndex(indexName);
+    } else {
+      schema.dropIndex(indexName);
     }
   }
 
