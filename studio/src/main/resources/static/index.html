@@ -355,6 +355,22 @@
 
         $('a[data-bs-toggle="tab"]').on("shown.bs.tab", function (e) {
           var activeTab = this.id;
+
+          // Tabs that don't require a database - always show main content
+          var noDatabaseTabs = ["tab-server-sel", "tab-profiler-sel", "tab-security-sel",
+            "tab-cluster-sel", "tab-api-sel", "tab-resources-sel", "tab-ai-sel", "tab-settings-sel"];
+          if (noDatabaseTabs.indexOf(activeTab) >= 0) {
+            $("#quickStartPanel").hide();
+            $("#mainTabContent").show();
+          }
+
+          // Tabs that require a database - show quick start if none exists
+          var databaseTabs = ["tab-query-sel", "tab-database-sel", "tab-timeseries-sel"];
+          if (databaseTabs.indexOf(activeTab) >= 0 && !getCurrentDatabase()) {
+            $("#mainTabContent").hide();
+            showQuickStart();
+          }
+
           if (activeTab == "tab-query-sel") {
             studioCurrentTab = "query";
             editorFocus();

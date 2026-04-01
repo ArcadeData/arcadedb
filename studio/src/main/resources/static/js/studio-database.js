@@ -2793,17 +2793,25 @@ function executeCommandGraph() {
       globalExplainPlan = data.explainPlan || null;
       renderFlameGraph(globalExplainPlan);
 
-      globalResultset = data.result;
-      globalCy = null;
-
       let activeTab = $("#tabs-command .active").attr("id");
+      let canAppend = globalGraphSettings.cumulativeSelection && globalCy != null
+          && data.result.vertices.length > 0;
 
-      if (data.result.vertices.length == 0 && data.result.records.length > 0) {
-        if (activeTab == "tab-table-sel") renderTable();
-        else globalActivateTab("tab-table");
+      if (canAppend) {
+        // Append new vertices and edges to the existing graph
+        appendToGraph(data.result);
+        $("#result-num").html(globalResultset.records.length);
       } else {
-        if (activeTab == "tab-graph-sel") renderGraph();
-        else globalActivateTab("tab-graph");
+        globalResultset = data.result;
+        globalCy = null;
+
+        if (data.result.vertices.length == 0 && data.result.records.length > 0) {
+          if (activeTab == "tab-table-sel") renderTable();
+          else globalActivateTab("tab-table");
+        } else {
+          if (activeTab == "tab-graph-sel") renderGraph();
+          else globalActivateTab("tab-graph");
+        }
       }
 
       // FORCE RESET OF THE SEARCH FIELD
