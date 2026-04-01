@@ -125,17 +125,21 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   private CypherStatement handleCreateCommand(final Cypher25Parser.CreateCommandContext ctx) {
     if (ctx.createConstraint() != null)
       return handleCreateConstraint(ctx.createConstraint());
+    if (ctx.createIndex() != null)
+      return handleCreateIndex(ctx.createIndex());
     if (ctx.createUser() != null)
       return handleCreateUser(ctx.createUser());
-    throw new CommandParsingException("Only CREATE CONSTRAINT and CREATE USER are currently supported");
+    throw new CommandParsingException("Only CREATE CONSTRAINT, CREATE INDEX and CREATE USER are currently supported");
   }
 
   private CypherStatement handleDropCommand(final Cypher25Parser.DropCommandContext ctx) {
     if (ctx.dropConstraint() != null)
       return handleDropConstraint(ctx.dropConstraint());
+    if (ctx.dropIndex() != null)
+      return handleDropIndex(ctx.dropIndex());
     if (ctx.dropUser() != null)
       return handleDropUser(ctx.dropUser());
-    throw new CommandParsingException("Only DROP CONSTRAINT and DROP USER are currently supported");
+    throw new CommandParsingException("Only DROP CONSTRAINT, DROP INDEX and DROP USER are currently supported");
   }
 
   private CypherAdminStatement handleShowCommand(final Cypher25Parser.ShowCommandContext ctx) {
@@ -240,6 +244,65 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
     return new CypherDDLStatement(CypherDDLStatement.Kind.DROP_CONSTRAINT, null,
         constraintName, null, null, false, ifExists, false);
+  }
+
+  private CypherDDLStatement handleCreateIndex(final Cypher25Parser.CreateIndexContext ctx) {
+    // The grammar supports: INDEX, RANGE INDEX, TEXT INDEX, POINT INDEX, VECTOR INDEX, LOOKUP INDEX, FULLTEXT INDEX
+    // ArcadeDB maps all standard indexes to LSM_TREE
+    final Cypher25Parser.CreateIndex_Context indexCtx;
+    if (ctx.createIndex_() != null)
+      indexCtx = ctx.createIndex_();
+    else
+      throw new CommandParsingException("Only standard, RANGE and TEXT index types are supported");
+
+    // Extract optional index name
+    final String indexName = indexCtx.symbolicNameOrStringParameter() != null
+        ? stripBackticks(indexCtx.symbolicNameOrStringParameter().getText()) : null;
+
+    // IF NOT EXISTS
+    final boolean ifNotExists = indexCtx.IF() != null && indexCtx.NOT() != null && indexCtx.EXISTS() != null;
+
+    // Extract label name and determine if it's for a node or relationship
+    final boolean forRelationship;
+    final String labelName;
+    if (indexCtx.commandNodePattern() != null) {
+      forRelationship = false;
+      labelName = stripBackticks(indexCtx.commandNodePattern().labelType().symbolicNameString().getText());
+    } else if (indexCtx.commandRelPattern() != null) {
+      forRelationship = true;
+      labelName = stripBackticks(indexCtx.commandRelPattern().relType().symbolicNameString().getText());
+    } else {
+      throw new CommandParsingException("CREATE INDEX requires a node or relationship pattern");
+    }
+
+    // Extract property names from propertyList
+    final List<String> propertyNames = extractIndexPropertyNames(indexCtx.propertyList());
+
+    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null,
+        indexName, labelName, propertyNames, ifNotExists, false, forRelationship);
+  }
+
+  private CypherDDLStatement handleDropIndex(final Cypher25Parser.DropIndexContext ctx) {
+    final String indexName = stripBackticks(ctx.symbolicNameOrStringParameter().getText());
+    final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
+    return new CypherDDLStatement(CypherDDLStatement.Kind.DROP_INDEX, null,
+        indexName, null, null, false, ifExists, false);
+  }
+
+  /**
+   * Extracts property names from a propertyList context (used by CREATE INDEX).
+   * Handles both single property (n.id) and property list ((n.first, n.last)).
+   */
+  private List<String> extractIndexPropertyNames(final Cypher25Parser.PropertyListContext propList) {
+    final List<String> names = new ArrayList<>();
+    if (propList.enclosedPropertyList() != null) {
+      final Cypher25Parser.EnclosedPropertyListContext enclosed = propList.enclosedPropertyList();
+      for (final Cypher25Parser.PropertyContext prop : enclosed.property())
+        names.add(stripBackticks(prop.propertyKeyName().getText()));
+    } else {
+      names.add(stripBackticks(propList.property().propertyKeyName().getText()));
+    }
+    return names;
   }
 
   /**

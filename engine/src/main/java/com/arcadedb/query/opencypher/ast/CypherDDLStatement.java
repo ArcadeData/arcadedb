@@ -27,7 +27,7 @@ import java.util.List;
 public class CypherDDLStatement implements CypherStatement {
 
   public enum Kind {
-    CREATE_CONSTRAINT, DROP_CONSTRAINT
+    CREATE_CONSTRAINT, DROP_CONSTRAINT, CREATE_INDEX, DROP_INDEX
   }
 
   public enum ConstraintKind {
