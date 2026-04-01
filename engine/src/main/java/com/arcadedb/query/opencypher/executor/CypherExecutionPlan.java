@@ -95,6 +95,7 @@ import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -1499,11 +1500,17 @@ public class CypherExecutionPlan {
           final String targetVar = targetNode.getVariable();
           if (targetVar != null && stepBeforeMatch != null
               && (boundVariables.contains(targetVar) || matchVariables.contains(targetVar))) {
-            // Target IS bound — reverse the traversal
-            reversed = true;
-            sourceNode = targetNode;
-            sourceVar = targetVar;
-            sourceAlreadyBound = true;
+            // Target IS bound - reverse the traversal for bidirectional edges only.
+            // Unidirectional edges don't store incoming links on the target vertex,
+            // so reverse traversal would return 0 results. In that case, keep the
+            // original direction and scan from the unbound source side.
+            final RelationshipPattern relCheck = pathPattern.getRelationship(0);
+            if (!isAnyEdgeTypeUnidirectional(relCheck.getTypes())) {
+              reversed = true;
+              sourceNode = targetNode;
+              sourceVar = targetVar;
+              sourceAlreadyBound = true;
+            }
           }
         }
 
@@ -1614,13 +1621,39 @@ public class CypherExecutionPlan {
             nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
                 true, effectiveTargetNode, pathPattern.getEffectivePathMode(), context);
           } else {
-            // Pass target node pattern for label filtering, bound variables for identity
-            // checking, and a snapshot for relationship uniqueness scoping.
-            // The snapshot captures only variables from previous steps (via WITH/previous MATCHes).
-            // Relationship uniqueness only applies within a single MATCH clause.
-            nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
-                pathVariable, effectiveTargetNode, boundVariables, new HashSet<>(boundVariables),
-                directionOverride, context);
+            // Check if this hop requires IN traversal on a unidirectional edge.
+            // Unidirectional edges don't store incoming links, so we must restructure:
+            // instead of (bound)-[IN]->(target), scan target type and go (target)-[OUT]->(bound).
+            final Direction effectiveDir = directionOverride != null ? directionOverride : relPattern.getDirection();
+            final boolean needsReverseOnUnidirectional = !reversed
+                && effectiveDir == Direction.IN
+                && (boundVariables.contains(effectiveSourceVar) || matchVariables.contains(effectiveSourceVar))
+                && isAnyEdgeTypeUnidirectional(relPattern.getTypes());
+
+            if (needsReverseOnUnidirectional) {
+              // Restructure: scan target type with MatchNodeStep, then traverse OUT to validate
+              // against the bound source. The bound source becomes the "target" of the relationship.
+              final Set<String> boundWithSource = new HashSet<>(boundVariables);
+              boundWithSource.add(effectiveSourceVar);
+              final MatchNodeStep scanStep = new MatchNodeStep(effectiveTargetVar, effectiveTargetNode, context);
+              if (isOptional && matchChainStart == null) {
+                matchChainStart = scanStep;
+                currentStep = scanStep;
+              } else {
+                scanStep.setPrevious(currentStep);
+                currentStep = scanStep;
+              }
+              // Swap source/target and reverse direction: go OUT from scanned target to bound source
+              nextStep = new MatchRelationshipStep(effectiveTargetVar, relVar, effectiveSourceVar, relPattern,
+                  pathVariable, sourceNode, boundWithSource, new HashSet<>(boundVariables),
+                  Direction.OUT, context);
+            } else {
+              // Normal case: pass target node pattern for label filtering, bound variables for identity
+              // checking, and a snapshot for relationship uniqueness scoping.
+              nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
+                  pathVariable, effectiveTargetNode, boundVariables, new HashSet<>(boundVariables),
+                  directionOverride, context);
+            }
           }
 
           // Update source for next hop in multi-hop patterns
@@ -2275,6 +2308,22 @@ public class CypherExecutionPlan {
    */
   public PhysicalPlan getPhysicalPlan() {
     return physicalPlan;
+  }
+
+  /**
+   * Checks if any of the given edge type names correspond to a unidirectional edge type.
+   * Unidirectional edges only store outgoing links on the source vertex - the target vertex
+   * has no incoming edge records. This means reverse traversal (IN direction) returns 0 results.
+   */
+  private boolean isAnyEdgeTypeUnidirectional(final List<String> edgeTypeNames) {
+    if (edgeTypeNames == null || edgeTypeNames.isEmpty())
+      return false;
+    for (final String typeName : edgeTypeNames)
+      if (database.getSchema().existsType(typeName)
+          && database.getSchema().getType(typeName) instanceof EdgeType et
+          && !et.isBidirectional())
+        return true;
+    return false;
   }
 
   /**
@@ -2956,6 +3005,10 @@ public class CypherExecutionPlan {
           : relDirection == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
     } else if (targetVar != null && (countArgVar == null || countArgVar.equals(sourceVar))) {
       // Reverse: anchor=target, count source's edges (reverse direction)
+      // This requires reverse traversal (IN direction at the target vertex), which only
+      // works for bidirectional edges. Unidirectional edges don't store incoming links.
+      if (isAnyEdgeTypeUnidirectional(relPattern.getTypes()))
+        return null;
       anchorVar = targetVar;
       anchorNode = targetNode;
       final Direction relDirection = relPattern.getDirection();
