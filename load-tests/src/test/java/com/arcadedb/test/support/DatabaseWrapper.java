@@ -379,8 +379,35 @@ public class DatabaseWrapper {
     }
   }
 
-  public void assertThatUserCountIs(int expectedCount) {
-    assertThat(countUsers()).isEqualTo(expectedCount);
+  public void assertThatUserCountIs(final int expectedCount) {
+    // Retry up to 30 s to tolerate Raft replication lag: the leader commits once a majority
+    // acknowledges, so followers may still be applying entries when the assertion fires.
+    final long deadline = System.currentTimeMillis() + 30_000;
+    long actual = -1;
+    Exception lastException = null;
+    do {
+      try {
+        actual = countUsers();
+        if (actual == expectedCount)
+          return;
+        lastException = null;
+      } catch (final Exception e) {
+        lastException = e;
+      }
+      if (System.currentTimeMillis() < deadline) {
+        try {
+          Thread.sleep(2_000);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+    } while (System.currentTimeMillis() < deadline);
+    if (lastException != null)
+      throw new AssertionError(
+          "Expected user count " + expectedCount + " but database was not available after 30s: " + lastException.getMessage(),
+          lastException);
+    assertThat(actual).isEqualTo(expectedCount);
   }
 
   public List<Integer> getUserIds(int numOfUsers, int skip) {
