@@ -667,21 +667,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Parse return items
     final List<ReturnClause.ReturnItem> items = new ArrayList<>();
-    if (body.returnItems().TIMES() != null) {
-      // WITH *
+    if (body.returnItems().TIMES() != null)
+      // WITH * — pass all variables through
       items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
-    } else {
-      for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
-        // Pattern expressions (e.g., (n)-[]->()) are not allowed in WITH projections
-        if (findPatternExpressionRecursive(itemCtx.expression()) != null)
-          throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in WITH projections");
-        final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
-        final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
-        final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
-        if (alias == null)
-          item.setOriginalText(getOriginalText(itemCtx.expression()));
-        items.add(item);
-      }
+    // Always process explicit return items (handles both "WITH expr" and "WITH *, expr AS alias")
+    for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
+      // Pattern expressions (e.g., (n)-[]->()) are not allowed in WITH projections
+      if (findPatternExpressionRecursive(itemCtx.expression()) != null)
+        throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in WITH projections");
+      final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
+      final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
+      final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
+      if (alias == null)
+        item.setOriginalText(getOriginalText(itemCtx.expression()));
+      items.add(item);
     }
 
     // Parse DISTINCT flag

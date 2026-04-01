@@ -227,29 +227,21 @@ public class WithStep extends AbstractExecutionStep {
 
   /**
    * Projects a result according to the WITH clause items.
+   * Handles WITH *, WITH *, extra AS alias, and WITH expr AS alias.
    */
   private ResultInternal projectResult(final Result inputResult) {
     final ResultInternal result = new ResultInternal();
 
-    // WITH * - copy all properties
-    if (withClause.getItems().size() == 1) {
-      final ReturnClause.ReturnItem item = withClause.getItems().get(0);
-      if ("*".equals(item.getOutputName())) {
-        for (final String prop : inputResult.getPropertyNames()) {
-          result.setProperty(prop, inputResult.getProperty(prop));
-        }
-        return result;
-      }
-    }
-
-    // Project specified items
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-      final Expression expr = item.getExpression();
-      final String outputName = item.getOutputName();
-
-      // Evaluate expression
-      final Object value = evaluator.evaluate(expr, inputResult, context);
-      result.setProperty(outputName, value);
+      if ("*".equals(item.getOutputName())) {
+        // WITH * — copy all properties from input
+        for (final String prop : inputResult.getPropertyNames())
+          result.setProperty(prop, inputResult.getProperty(prop));
+      } else {
+        // Evaluate and project the expression
+        final Object value = evaluator.evaluate(item.getExpression(), inputResult, context);
+        result.setProperty(item.getOutputName(), value);
+      }
     }
 
     return result;
