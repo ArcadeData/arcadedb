@@ -511,29 +511,68 @@ function createDatabase() {
 
 // ===== Quick Start Panel (shown when no databases exist) =====
 
-var sampleDatasets = [
-  { name: "OpenBeer", desc: "Beers, breweries, categories and styles", icon: "fa-beer-mug-empty" },
-  { name: "GratefulDeadConcerts", desc: "Grateful Dead concerts and songs", icon: "fa-music" },
-  { name: "MovieRatings", desc: "Movies with viewer ratings", icon: "fa-film" },
-  { name: "Tolkien-Arda", desc: "Tolkien's Middle-earth universe", icon: "fa-hat-wizard" },
-  { name: "Whisky", desc: "Whisky distilleries and brands", icon: "fa-whiskey-glass" },
-  { name: "demodb", desc: "General-purpose demo database", icon: "fa-database" }
-];
+var sampleDatasets = null;
+var datasetsBaseUrl = "https://github.com/ArcadeData/arcadedb-datasets/raw/main/";
+var datasetsJsonUrl = "https://raw.githubusercontent.com/ArcadeData/arcadedb-datasets/main/datasets.json";
+
+function formatNumber(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "K";
+  return "" + n;
+}
 
 function showQuickStart() {
-  var html = "";
-  for (var i = 0; i < sampleDatasets.length; i++) {
-    var ds = sampleDatasets[i];
-    html += '<div class="col-md-4">' +
-      '<div class="card quick-start-card" onclick="importSampleDatabase(\'' + ds.name + '\')">' +
-        '<div class="card-body text-center" style="padding: 20px 16px;">' +
-          '<i class="fa ' + ds.icon + '" style="font-size: 2rem; color: #00aeee; margin-bottom: 10px; display: block;"></i>' +
-          '<div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 4px;">' + ds.name + '</div>' +
-          '<div class="text-muted" style="font-size: 0.8rem;">' + ds.desc + '</div>' +
-        '</div>' +
-      '</div>' +
-    '</div>';
+  if (sampleDatasets != null) {
+    renderQuickStartCards();
+    return;
   }
+
+  $("#quickStartDatasets").html(
+    '<div class="col-12 text-center text-muted" style="padding: 40px;"><i class="fa fa-spinner fa-spin"></i> Loading datasets...</div>'
+  );
+  $("#quickStartOverlay").hide();
+  $("#quickStartPanel").show();
+  $("#mainTabContent").hide();
+
+  jQuery.ajax({
+    type: "GET",
+    url: datasetsJsonUrl,
+    dataType: "json",
+    timeout: 10000
+  }).done(function(data) {
+    sampleDatasets = data.datasets || [];
+    renderQuickStartCards();
+  }).fail(function() {
+    $("#quickStartDatasets").html(
+      '<div class="col-12 text-center text-muted" style="padding: 40px;">Unable to load sample datasets. Create a database manually using the button above.</div>'
+    );
+  });
+}
+
+function buildDatasetCardHtml(ds, fromModal) {
+  var parts = [];
+  if (ds.vertices != null) parts.push(formatNumber(ds.vertices) + " vertices");
+  if (ds.edges != null) parts.push(formatNumber(ds.edges) + " edges");
+  if (ds.fileSizeMB != null) parts.push(ds.fileSizeMB < 1 ? (ds.fileSizeMB * 1000).toFixed(0) + " KB" : ds.fileSizeMB.toFixed(1) + " MB");
+  var stats = parts.length > 0 ? '<div class="text-muted" style="font-size: 0.75rem; margin-top: 4px;">' + parts.join(" &middot; ") + '</div>' : "";
+  var infoLink = ds.url ? ' <a href="' + escapeHtml(ds.url) + '" target="_blank" onclick="event.stopPropagation();" title="More info" style="color: #aaa; font-size: 0.8rem;"><i class="fa fa-circle-info"></i></a>' : "";
+  var onclick = "importSampleDatabase('" + escapeHtml(ds.name) + "', '" + escapeHtml(ds.path) + "', '" + escapeHtml(ds.format) + "'" + (fromModal ? ", true" : "") + ")";
+  return '<div class="col-md-4">' +
+    '<div class="card quick-start-card" onclick="' + onclick + '">' +
+      '<div class="card-body text-center" style="padding: 20px 16px;">' +
+        '<i class="fa ' + escapeHtml(ds.icon) + '" style="font-size: 2rem; color: #00aeee; margin-bottom: 10px; display: block;"></i>' +
+        '<div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 4px;">' + escapeHtml(ds.name) + infoLink + '</div>' +
+        '<div class="text-muted" style="font-size: 0.8rem;">' + escapeHtml(ds.description) + '</div>' +
+        stats +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function renderQuickStartCards() {
+  var html = "";
+  for (var i = 0; i < sampleDatasets.length; i++)
+    html += buildDatasetCardHtml(sampleDatasets[i], false);
   $("#quickStartDatasets").html(html);
   $("#quickStartOverlay").hide();
   $("#quickStartPanel").show();
@@ -546,40 +585,90 @@ function hideQuickStart() {
   $("#mainTabContent").show();
 }
 
-function importSampleDatabase(name) {
-  var url = "https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/" + name + ".gz";
+function importSampleDatabase(name, path, format, fromModal) {
+  var url = datasetsBaseUrl + path;
+  var overlay = fromModal ? "#importDatasetOverlay" : "#quickStartOverlay";
+  var isRestore = (format === "arcadedb");
 
-  $("#quickStartOverlay").html(
+  $(overlay).html(
     '<div class="spinner-border text-primary" style="width: 3rem; height: 3rem;"></div>' +
     '<h5 style="margin-top: 16px; font-weight: 600;">Importing ' + escapeHtml(name) + '...</h5>' +
     '<p style="color: var(--text-secondary, #888);">Creating database and downloading dataset. This may take a moment.</p>'
   ).css("display", "flex");
 
-  jQuery.ajax({
-    type: "POST",
-    url: "api/v1/server",
-    data: JSON.stringify({ command: "create database " + name }),
-    contentType: "application/json",
-    beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
-  }).done(function() {
+  var onSuccess = function() {
+    globalNotify("Success", name + " imported successfully!", "success");
+    if (fromModal)
+      bootstrap.Modal.getInstance(document.getElementById("importDatasetModal")).hide();
+    updateDatabases(null, name);
+  };
+  var onError = function(jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+    $(overlay).hide();
+  };
+
+  if (isRestore) {
+    // ArcadeDB backup: single server command to restore (download + unzip)
     jQuery.ajax({
       type: "POST",
-      url: "api/v1/command/" + encodeURIComponent(name),
-      data: JSON.stringify({ language: "sql", command: "IMPORT DATABASE " + url }),
+      url: "api/v1/server",
+      data: JSON.stringify({ command: "restore database " + name + " " + url }),
       contentType: "application/json",
       timeout: 300000,
       beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+    }).done(onSuccess).fail(onError);
+  } else {
+    // OrientDB/GraphML/GraphSON: create database first, then import
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/server",
+      data: JSON.stringify({ command: "create database " + name }),
+      contentType: "application/json",
+      beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
     }).done(function() {
-      globalNotify("Success", name + " imported successfully!", "success");
-      updateDatabases(null, name);
-    }).fail(function(jqXHR) {
-      globalNotifyError(jqXHR.responseText);
-      $("#quickStartOverlay").hide();
+      jQuery.ajax({
+        type: "POST",
+        url: "api/v1/command/" + encodeURIComponent(name),
+        data: JSON.stringify({ language: "sql", command: "IMPORT DATABASE " + url }),
+        contentType: "application/json",
+        timeout: 300000,
+        beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+      }).done(onSuccess).fail(onError);
+    }).fail(onError);
+  }
+}
+
+function showImportDatasetModal() {
+  var renderCards = function() {
+    var html = "";
+    for (var i = 0; i < sampleDatasets.length; i++)
+      html += buildDatasetCardHtml(sampleDatasets[i], true);
+    $("#importDatasetCards").html(html);
+    $("#importDatasetOverlay").hide();
+  };
+
+  if (sampleDatasets != null) {
+    renderCards();
+  } else {
+    $("#importDatasetCards").html(
+      '<div class="col-12 text-center text-muted" style="padding: 40px;"><i class="fa fa-spinner fa-spin"></i> Loading datasets...</div>'
+    );
+    jQuery.ajax({
+      type: "GET",
+      url: datasetsJsonUrl,
+      dataType: "json",
+      timeout: 10000
+    }).done(function(data) {
+      sampleDatasets = data.datasets || [];
+      renderCards();
+    }).fail(function() {
+      $("#importDatasetCards").html(
+        '<div class="col-12 text-center text-muted" style="padding: 40px;">Unable to load sample datasets.</div>'
+      );
     });
-  }).fail(function(jqXHR) {
-    globalNotifyError(jqXHR.responseText);
-    $("#quickStartOverlay").hide();
-  });
+  }
+
+  new bootstrap.Modal(document.getElementById("importDatasetModal")).show();
 }
 
 function dropDatabase() {

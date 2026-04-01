@@ -321,6 +321,23 @@
       </div>
     </div>
 
+    <!-- Import Dataset modal -->
+    <div class="modal fade" id="importDatasetModal" tabindex="-1" style="z-index: 10100">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="fa fa-download" style="color: #00aeee;"></i> Import Sample Dataset</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <p class="text-muted" style="font-size: 0.9rem;">Select a dataset to create a new database and import it.</p>
+            <div id="importDatasetCards" class="row g-3"></div>
+            <div id="importDatasetOverlay" style="display:none; position: absolute; inset: 0; background: rgba(255,255,255,0.92); z-index: 10; align-items: center; justify-content: center; flex-direction: column; border-radius: 8px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Toast container -->
     <div id="toastContainer" class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 10500;"></div>
 
