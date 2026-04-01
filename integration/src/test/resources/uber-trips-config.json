@@ -1,0 +1,54 @@
+{
+  "vertices": [
+    {
+      "type": "City",
+      "file": "uber_trips_dataset_50k.csv",
+      "nameId": "city",
+      "deduplicate": true,
+      "properties": {
+        "name": "city"
+      }
+    },
+    {
+      "type": "Driver",
+      "file": "uber_trips_dataset_50k.csv",
+      "id": "driver_id",
+      "deduplicate": true,
+      "properties": {
+        "driverId": "int:driver_id"
+      }
+    },
+    {
+      "type": "Rider",
+      "file": "uber_trips_dataset_50k.csv",
+      "id": "rider_id",
+      "deduplicate": true,
+      "properties": {
+        "riderId": "int:rider_id"
+      }
+    },
+    {
+      "type": "Trip",
+      "file": "uber_trips_dataset_50k.csv",
+      "id": "trip_id",
+      "properties": {
+        "tripId": "int:trip_id",
+        "pickupLat": "double:pickup_lat",
+        "pickupLng": "double:pickup_lng",
+        "dropLat": "double:drop_lat",
+        "dropLng": "double:drop_lng",
+        "distance": "double:distance_km",
+        "fare": "double:fare_amount",
+        "status": "status",
+        "payment": "payment_method",
+        "pickupTime": "datetime:pickup_time",
+        "dropTime": "datetime:drop_time"
+      },
+      "edges": [
+        { "attribute": "driver_id", "edge": "DrivenBy", "target": "Driver" },
+        { "attribute": "rider_id", "edge": "RideOf", "target": "Rider" },
+        { "attribute": "city", "edge": "InCity", "target": "City", "byName": true }
+      ]
+    }
+  ]
+}
