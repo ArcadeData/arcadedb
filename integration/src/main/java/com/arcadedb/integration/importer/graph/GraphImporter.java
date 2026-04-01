@@ -29,6 +29,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.File;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -278,6 +282,8 @@ public class GraphImporter implements AutoCloseable {
         final String[] parts = vj.getString("filter").split("=", 2);
         v.filter(parts[0], parts[1]);
       }
+      if (vj.getBoolean("deduplicate", false))
+        v.deduplicate(true);
 
       // Properties: { "dbName": "SourceAttr" } or { "dbName": "int:SourceAttr" }
       if (vj.has("properties")) {
@@ -297,8 +303,13 @@ public class GraphImporter implements AutoCloseable {
           final String edgeType = ej.getString("edge");
           final String target = ej.getString("target");
 
+          final boolean byName = ej.getBoolean("byName", false);
           if (ej.has("split"))
             v.splitEdge(attr, edgeType, target, ej.getString("split"));
+          else if (byName && "in".equals(ej.getString("direction", "out")))
+            v.edgeInByName(attr, edgeType, target);
+          else if (byName)
+            v.edgeOutByName(attr, edgeType, target);
           else if ("in".equals(ej.getString("direction", "out")))
             v.edgeIn(attr, edgeType, target);
           else
@@ -325,6 +336,10 @@ public class GraphImporter implements AutoCloseable {
           final String spec = props.getString(propName);
           if (spec.startsWith("int:"))
             e.intProperty(propName, spec.substring(4));
+          else if (spec.startsWith("long:"))
+            e.longProperty(propName, spec.substring(5));
+          else if (spec.startsWith("double:"))
+            e.doubleProperty(propName, spec.substring(7));
         }
       }
     });
@@ -333,10 +348,38 @@ public class GraphImporter implements AutoCloseable {
   private static void parsePropertySpec(final VertexConfig v, final String propName, final String spec) {
     if (spec.startsWith("int:"))
       v.intProperty(propName, spec.substring(4));
+    else if (spec.startsWith("long:"))
+      v.longProperty(propName, spec.substring(5));
+    else if (spec.startsWith("double:"))
+      v.doubleProperty(propName, spec.substring(7));
     else if (spec.startsWith("bool:"))
       v.boolProperty(propName, spec.substring(5));
+    else if (spec.startsWith("datetime:"))
+      parseDatetimeSpec(v, propName, spec.substring(9));
     else
       v.property(propName, spec);
+  }
+
+  /**
+   * Parses a datetime property spec. Supports two forms:
+   * <ul>
+   *   <li>{@code "datetime:pickup_time"} - uses the default format {@code yyyy-MM-dd HH:mm:ss}</li>
+   *   <li>{@code "datetime:yyyy-MM-dd'T'HH:mm:ss:pickup_time"} - custom format before the last {@code :attr}</li>
+   * </ul>
+   */
+  private static void parseDatetimeSpec(final VertexConfig v, final String propName, final String rest) {
+    // If rest contains a ':' it could be format:attribute, but we need to be careful
+    // because datetime formats themselves contain colons (e.g., HH:mm:ss).
+    // Convention: if the rest contains no format separator, it's just the attribute name.
+    // To specify a format, use "datetime:FORMAT|attribute" with pipe as separator.
+    final int pipe = rest.indexOf('|');
+    if (pipe > 0) {
+      final String format = rest.substring(0, pipe);
+      final String attribute = rest.substring(pipe + 1);
+      v.datetimeProperty(propName, attribute, format);
+    } else {
+      v.datetimeProperty(propName, rest);
+    }
   }
 
   /** Creates the appropriate RecordSource based on file extension or explicit format. */
@@ -419,15 +462,25 @@ public class GraphImporter implements AutoCloseable {
 
   public static class VertexConfig {
     final String typeName;
-    String idAttribute;
-    String nameIdAttribute;
-    String filterAttribute;
-    String filterValue;
+    String  idAttribute;
+    String  nameIdAttribute;
+    String  filterAttribute;
+    String  filterValue;
+    boolean deduplicate;
     final List<PropDef> properties = new ArrayList<>();
     final List<EdgeDef> edges      = new ArrayList<>();
 
     VertexConfig(final String typeName) {
       this.typeName = typeName;
+    }
+
+    /**
+     * Enable deduplication: only the first row with a given id/nameId is imported as a vertex.
+     * Subsequent rows with the same id/nameId are skipped. Useful when extracting a dimension
+     * table from a denormalized file (e.g., extracting unique cities from a trips CSV).
+     */
+    public void deduplicate(final boolean enabled) {
+      this.deduplicate = enabled;
     }
 
     /**
@@ -476,6 +529,35 @@ public class GraphImporter implements AutoCloseable {
     }
 
     /**
+     * Map a long property. Missing/empty values default to 0.
+     */
+    public void longProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.LONG));
+    }
+
+    /**
+     * Map a double property. Missing/empty values default to 0.0.
+     */
+    public void doubleProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.DOUBLE));
+    }
+
+    /**
+     * Map a datetime property. The value is parsed as {@link LocalDateTime} using the default
+     * format {@code yyyy-MM-dd HH:mm:ss} or a custom format if provided.
+     */
+    public void datetimeProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.DATETIME));
+    }
+
+    /**
+     * Map a datetime property with a custom format pattern.
+     */
+    public void datetimeProperty(final String name, final String attribute, final String format) {
+      properties.add(new PropDef(name, attribute, PropType.DATETIME, format));
+    }
+
+    /**
      * Incoming edge: the foreign key references a vertex that points TO this vertex.
      * Example: Post has OwnerUserId → creates edge User→Post (Posted).
      */
@@ -489,6 +571,21 @@ public class GraphImporter implements AutoCloseable {
      */
     public void edgeOut(final String fkAttribute, final String edgeType, final String targetType) {
       edges.add(new EdgeDef(fkAttribute, edgeType, targetType, false, false, null));
+    }
+
+    /**
+     * Outgoing edge resolved by name: the FK attribute value is matched against the target type's
+     * nameId (string-based). Example: Trip has city="Boston" -> creates edge Trip-[InCity]->City.
+     */
+    public void edgeOutByName(final String fkAttribute, final String edgeType, final String targetType) {
+      edges.add(new EdgeDef(fkAttribute, edgeType, targetType, false, false, null, true));
+    }
+
+    /**
+     * Incoming edge resolved by name.
+     */
+    public void edgeInByName(final String fkAttribute, final String edgeType, final String targetType) {
+      edges.add(new EdgeDef(fkAttribute, edgeType, targetType, true, false, null, true));
     }
 
     /**
@@ -524,6 +621,14 @@ public class GraphImporter implements AutoCloseable {
     public void intProperty(final String name, final String attribute) {
       properties.add(new PropDef(name, attribute, PropType.INTEGER));
     }
+
+    public void longProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.LONG));
+    }
+
+    public void doubleProperty(final String name, final String attribute) {
+      properties.add(new PropDef(name, attribute, PropType.DOUBLE));
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -551,6 +656,16 @@ public class GraphImporter implements AutoCloseable {
     default int getInt(final String attribute) {
       final String v = get(attribute);
       return v != null && !v.isEmpty() ? Integer.parseInt(v) : 0;
+    }
+
+    default long getLong(final String attribute) {
+      final String v = get(attribute);
+      return v != null && !v.isEmpty() ? Long.parseLong(v) : 0L;
+    }
+
+    default double getDouble(final String attribute) {
+      final String v = get(attribute);
+      return v != null && !v.isEmpty() ? Double.parseDouble(v) : 0.0;
     }
   }
 
@@ -665,6 +780,20 @@ public class GraphImporter implements AutoCloseable {
           return;
       }
 
+      // Deduplication: skip if this id/nameId was already imported
+      if (vc.deduplicate) {
+        if (vc.idAttribute != null) {
+          final int id = record.getInt(vc.idAttribute);
+          if (ts.idToIdx.get(id, -1) >= 0)
+            return;
+        }
+        if (vc.nameIdAttribute != null) {
+          final String name = record.get(vc.nameIdAttribute);
+          if (name != null && ts.nameToIdx.containsKey(name))
+            return;
+        }
+      }
+
       // Register ID
       final int idx = count[0];
       if (vc.idAttribute != null)
@@ -763,6 +892,24 @@ public class GraphImporter implements AutoCloseable {
         }
         start = pos + 1;
       }
+    } else if (ed.byName) {
+      final String name = record.get(ed.fkAttribute);
+      if (name == null)
+        return;
+      final TypeState targetTs = typeStates.get(ed.targetType);
+      if (targetTs == null)
+        return;
+      final Integer targetIdx = targetTs.nameToIdx.get(name);
+      if (targetIdx == null)
+        return;
+
+      if (ed.incoming) {
+        ec.srcIdx.add(targetIdx);
+        ec.dstIdx.add(thisIdx);
+      } else {
+        ec.srcIdx.add(thisIdx);
+        ec.dstIdx.add(targetIdx);
+      }
     } else {
       final int fk = record.getInt(ed.fkAttribute);
       if (fk == 0)
@@ -808,9 +955,23 @@ public class GraphImporter implements AutoCloseable {
         ec.srcIdx.add(si);
         ec.dstIdx.add(di);
         for (final PropDef pd : cfg.properties) {
-          if (ec.intProps == null)
-            ec.intProps = new HashMap<>();
-          ec.intProps.computeIfAbsent(pd.name, k -> new IntList(100_000)).add(record.getInt(pd.attribute));
+          switch (pd.type) {
+          case LONG:
+            if (ec.longProps == null)
+              ec.longProps = new HashMap<>();
+            ec.longProps.computeIfAbsent(pd.name, k -> new ArrayList<>(100_000)).add(record.getLong(pd.attribute));
+            break;
+          case DOUBLE:
+            if (ec.doubleProps == null)
+              ec.doubleProps = new HashMap<>();
+            ec.doubleProps.computeIfAbsent(pd.name, k -> new DoubleList(100_000)).add(record.getDouble(pd.attribute));
+            break;
+          default:
+            if (ec.intProps == null)
+              ec.intProps = new HashMap<>();
+            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(100_000)).add(record.getInt(pd.attribute));
+            break;
+          }
         }
       }
       count[0]++;
@@ -842,17 +1003,14 @@ public class GraphImporter implements AutoCloseable {
 
       final int[] sSrc = ec.srcIdx.trim();
       final int[] sDst = ec.dstIdx.trim();
-      final boolean hasIntProps = ec.intProps != null && !ec.intProps.isEmpty();
+      final boolean hasProps = ec.hasProperties();
 
       for (int i = 0; i < sSrc.length; i++) {
         final RID src = new RID(null, srcTs.buckets[sSrc[i]], srcTs.positions[sSrc[i]]);
         final RID dst = new RID(null, dstTs.buckets[sDst[i]], dstTs.positions[sDst[i]]);
-        if (hasIntProps) {
+        if (hasProps) {
           final List<Object> props = new ArrayList<>();
-          for (final Map.Entry<String, IntList> pe : ec.intProps.entrySet()) {
-            props.add(pe.getKey());
-            props.add(pe.getValue().data[i]);
-          }
+          ec.appendProperties(props, i);
           batch.newEdge(src, edgeType, dst, props.toArray());
         } else {
           batch.newEdge(src, edgeType, dst);
@@ -875,14 +1033,32 @@ public class GraphImporter implements AutoCloseable {
     return edgeCollectors.computeIfAbsent(key, k -> new EdgeCollector(edgeType, srcType, dstType));
   }
 
+  private static final DateTimeFormatter DEFAULT_DATETIME_FMT = new DateTimeFormatterBuilder()
+      .appendPattern("yyyy-MM-dd HH:mm:ss")
+      .optionalStart().appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).optionalEnd()
+      .toFormatter();
+
   private static Object readProperty(final RecordReader record, final PropDef pd) {
     switch (pd.type) {
-      case INTEGER:
-        return record.getInt(pd.attribute);
-      case BOOLEAN:
-        return "True".equalsIgnoreCase(record.get(pd.attribute));
-      default:
-        return record.get(pd.attribute);
+    case INTEGER:
+      return record.getInt(pd.attribute);
+    case LONG:
+      return record.getLong(pd.attribute);
+    case DOUBLE:
+      return record.getDouble(pd.attribute);
+    case BOOLEAN:
+      return "True".equalsIgnoreCase(record.get(pd.attribute));
+    case DATETIME: {
+      final String v = record.get(pd.attribute);
+      if (v == null)
+        return null;
+      final DateTimeFormatter fmt = pd.datetimeFormat != null
+          ? DateTimeFormatter.ofPattern(pd.datetimeFormat)
+          : DEFAULT_DATETIME_FMT;
+      return LocalDateTime.parse(v, fmt);
+    }
+    default:
+      return record.get(pd.attribute);
     }
   }
 
@@ -897,32 +1073,44 @@ public class GraphImporter implements AutoCloseable {
   //  Internal data structures
   // ═══════════════════════════════════════════════════════════════════
 
-  enum PropType {STRING, INTEGER, BOOLEAN}
+  enum PropType {STRING, INTEGER, LONG, DOUBLE, BOOLEAN, DATETIME}
 
   static class PropDef {
-    final String name, attribute;
+    final String   name, attribute;
     final PropType type;
+    final String   datetimeFormat;
 
     PropDef(final String name, final String attr, final PropType type) {
+      this(name, attr, type, null);
+    }
+
+    PropDef(final String name, final String attr, final PropType type, final String datetimeFormat) {
       this.name = name;
       this.attribute = attr;
       this.type = type;
+      this.datetimeFormat = datetimeFormat;
     }
   }
 
   static class EdgeDef {
-    final String fkAttribute, edgeType, targetType;
-    final boolean incoming, isSplit;
-    final String delimiter;
+    final String  fkAttribute, edgeType, targetType;
+    final boolean incoming, isSplit, byName;
+    final String  delimiter;
 
     EdgeDef(final String fk, final String et, final String tt, final boolean in, final boolean split,
             final String delim) {
+      this(fk, et, tt, in, split, delim, false);
+    }
+
+    EdgeDef(final String fk, final String et, final String tt, final boolean in, final boolean split,
+            final String delim, final boolean byName) {
       this.fkAttribute = fk;
       this.edgeType = et;
       this.targetType = tt;
       this.incoming = in;
       this.isSplit = split;
       this.delimiter = delim;
+      this.byName = byName;
     }
   }
 
@@ -962,12 +1150,38 @@ public class GraphImporter implements AutoCloseable {
     final String edgeTypeName, srcType, dstType;
     final IntList srcIdx = new IntList(100_000);
     final IntList dstIdx = new IntList(100_000);
-    Map<String, IntList> intProps;
+    Map<String, IntList>    intProps;
+    Map<String, List<Long>> longProps;
+    Map<String, DoubleList> doubleProps;
 
     EdgeCollector(final String edgeTypeName, final String src, final String dst) {
       this.edgeTypeName = edgeTypeName;
       this.srcType = src;
       this.dstType = dst;
+    }
+
+    boolean hasProperties() {
+      return (intProps != null && !intProps.isEmpty())
+          || (longProps != null && !longProps.isEmpty())
+          || (doubleProps != null && !doubleProps.isEmpty());
+    }
+
+    void appendProperties(final List<Object> props, final int i) {
+      if (intProps != null)
+        for (final Map.Entry<String, IntList> pe : intProps.entrySet()) {
+          props.add(pe.getKey());
+          props.add(pe.getValue().data[i]);
+        }
+      if (longProps != null)
+        for (final Map.Entry<String, List<Long>> pe : longProps.entrySet()) {
+          props.add(pe.getKey());
+          props.add(pe.getValue().get(i));
+        }
+      if (doubleProps != null)
+        for (final Map.Entry<String, DoubleList> pe : doubleProps.entrySet()) {
+          props.add(pe.getKey());
+          props.add(pe.getValue().data[i]);
+        }
     }
   }
 
@@ -1061,6 +1275,24 @@ public class GraphImporter implements AutoCloseable {
 
     int[] trim() {
       return size == data.length ? data : Arrays.copyOf(data, size);
+    }
+  }
+
+  /**
+   * Growable double array.
+   */
+  static final class DoubleList {
+    double[] data;
+    int      size;
+
+    DoubleList(final int cap) {
+      data = new double[cap];
+    }
+
+    void add(final double v) {
+      if (size == data.length)
+        data = Arrays.copyOf(data, size * 2);
+      data[size++] = v;
     }
   }
 
