@@ -44,7 +44,7 @@ import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -60,6 +60,10 @@ import java.util.zip.GZIPInputStream;
  * <br>
  * Uses {@link GraphBatch} for high-performance bulk import: vertices are created with pre-allocated edge segments,
  * and edges are buffered in flat primitive arrays then flushed sorted by vertex for sequential I/O.
+ * <br>
+ * ID mapping uses a primitive {@link LongLongMap} when Neo4j IDs are numeric (the common case with APOC exports),
+ * falling back to a {@code HashMap<String, Long>} for non-numeric IDs. The primitive map uses ~24 bytes/entry
+ * vs ~156 bytes/entry for a {@code HashMap<String, RID>}, saving ~85% RAM on large imports.
  * <br>
  * Neo4j is a registered mark of Neo4j, Inc.
  *
@@ -89,8 +93,11 @@ public class Neo4jImporter {
   private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
   private final static SimpleDateFormat               dateTimeISO8601Format    = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
-  // Neo4j string ID -> ArcadeDB RID mapping, populated during vertex pass
-  private final        Map<String, RID>               neo4jIdToRID             = new HashMap<>();
+  // Neo4j ID -> packed ArcadeDB RID mapping, populated during vertex pass.
+  // Uses primitive LongLongMap for numeric IDs (common case), falls back to HashMap for non-numeric IDs.
+  private              LongLongMap                    numericIdMap;
+  private              Map<String, Long>              stringIdMap;
+  private              boolean                        useNumericIds            = true;
 
   public Neo4jImporter(final InputStream inputStream, final String... args) {
     parseArguments(args);
@@ -111,6 +118,7 @@ public class Neo4jImporter {
     this.database = database;
     this.context = context;
     this.closeDatabaseAfterImport = false;
+    initPackingConstants();
   }
 
   public static void main(final String[] args) throws IOException {
@@ -189,7 +197,8 @@ public class Neo4jImporter {
         log("- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
 
     } finally {
-      neo4jIdToRID.clear();
+      numericIdMap = null;
+      stringIdMap = null;
       if (database != null && closeDatabaseAfterImport)
         database.close();
     }
@@ -282,6 +291,8 @@ public class Neo4jImporter {
 
   private void parseVertices() throws IOException {
     final AtomicInteger lineNumber = new AtomicInteger();
+    numericIdMap = new LongLongMap(1024);
+    useNumericIds = true;
 
     try (final GraphBatch batch = database.batch()
         .withBidirectional(false)
@@ -324,7 +335,8 @@ public class Neo4jImporter {
             props.put("id", id);
 
             final MutableVertex vertex = batch.createVertex(typeName, props);
-            neo4jIdToRID.put(id, vertex.getIdentity());
+            final long packedRID = packRID(vertex.getIdentity());
+            putId(id, packedRID);
             context.createdVertices.incrementAndGet();
 
             incrementVerticesByType(typeName);
@@ -360,6 +372,7 @@ public class Neo4jImporter {
     log("- Creation of vertices completed: created %,d vertices, skipped %,d edges (%,d vertices/sec elapsed=%,d secs)",
         context.createdVertices.get(), context.skippedEdges.get(),
         elapsedInSecs > 0 ? (context.createdVertices.get() / elapsedInSecs) : 0, elapsedInSecs);
+    log("- ID mapping mode: %s", useNumericIds ? "numeric (primitive long[])" : "string (HashMap)");
   }
 
   private void parseEdges() throws IOException {
@@ -397,8 +410,8 @@ public class Neo4jImporter {
 
           final JSONObject start = json.getJSONObject("start");
           final String startId = start.getString("id");
-          final RID fromRID = neo4jIdToRID.get(startId);
-          if (fromRID == null) {
+          final long fromPacked = getId(startId);
+          if (fromPacked == LongLongMap.EMPTY) {
             log("- cannot create relationship with id '%s'. Vertex id '%s' not found. Skip it.", json.getString("id"), startId);
             context.warnings.incrementAndGet();
             return null;
@@ -406,12 +419,15 @@ public class Neo4jImporter {
 
           final JSONObject end = json.getJSONObject("end");
           final String endId = end.getString("id");
-          final RID toRID = neo4jIdToRID.get(endId);
-          if (toRID == null) {
+          final long toPacked = getId(endId);
+          if (toPacked == LongLongMap.EMPTY) {
             log("- cannot create relationship with id '%s'. Vertex id '%s' not found. Skip it.", json.getString("id"), endId);
             context.warnings.incrementAndGet();
             return null;
           }
+
+          final RID fromRID = unpackRID(fromPacked);
+          final RID toRID = unpackRID(toPacked);
 
           try {
             if (json.has("properties")) {
@@ -452,6 +468,85 @@ public class Neo4jImporter {
     log("- Creation of edges completed: created %,d edges, (%,d edges/sec elapsed=%,d secs)", context.createdEdges.get(),
         elapsedInSecs > 0 ? (context.createdEdges.get() / elapsedInSecs) : 0, elapsedInSecs);
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ID mapping: numeric (primitive) or string (HashMap) mode
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Stores a Neo4j ID -> packed RID mapping. Tries numeric mode first; on the first non-numeric ID,
+   * migrates all existing entries to the string HashMap and switches permanently.
+   */
+  private void putId(final String id, final long packedRID) {
+    if (useNumericIds) {
+      try {
+        final long numericId = Long.parseLong(id);
+        numericIdMap.put(numericId, packedRID);
+        return;
+      } catch (final NumberFormatException e) {
+        // Non-numeric ID detected, migrate to string mode
+        migrateToStringMode();
+      }
+    }
+    stringIdMap.put(id, packedRID);
+  }
+
+  /**
+   * Looks up a Neo4j ID and returns the packed RID, or {@link LongLongMap#EMPTY} if not found.
+   */
+  private long getId(final String id) {
+    if (useNumericIds) {
+      try {
+        return numericIdMap.get(Long.parseLong(id));
+      } catch (final NumberFormatException e) {
+        return LongLongMap.EMPTY;
+      }
+    }
+    final Long packed = stringIdMap.get(id);
+    return packed != null ? packed : LongLongMap.EMPTY;
+  }
+
+  /**
+   * Migrates from primitive LongLongMap to HashMap when a non-numeric ID is encountered.
+   */
+  private void migrateToStringMode() {
+    log("- Non-numeric Neo4j ID detected, switching to string-based ID mapping");
+    useNumericIds = false;
+    stringIdMap = new HashMap<>(numericIdMap.size() * 2);
+    numericIdMap.forEach((key, value) -> stringIdMap.put(Long.toString(key), value));
+    numericIdMap = null;
+  }
+
+  // Bit layout for packing RID (bucketId, position) into a single long.
+  // Default: 10 bits for bucket (max 1,023) and 54 bits for position (max ~18 quadrillion).
+  // Adjustable via -bucketBits <n> to support databases with more buckets at the cost of position range.
+  private              int  bucketBits  = 10;
+  private              int  maxBucketId;
+  private              long posMask;
+
+  private void initPackingConstants() {
+    maxBucketId = (1 << bucketBits) - 1;
+    posMask = (1L << (64 - bucketBits)) - 1;
+  }
+
+  /** Packs a RID (bucketId, position) into a single long. */
+  private long packRID(final RID rid) {
+    final int bucketId = rid.getBucketId();
+    if (bucketId > maxBucketId)
+      throw new IllegalStateException(
+          "Bucket ID " + bucketId + " exceeds the " + bucketBits + "-bit maximum (" + maxBucketId
+              + "). Use -bucketBits <n> to increase (e.g. -bucketBits 16 supports up to 65,535 buckets).");
+    return ((long) bucketId << (64 - bucketBits)) | (rid.getPosition() & posMask);
+  }
+
+  /** Unpacks a long back into a RID. */
+  private RID unpackRID(final long packed) {
+    return new RID(null, (int) (packed >>> (64 - bucketBits)), packed & posMask);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Property conversion
+  // ═══════════════════════════════════════════════════════════════════
 
   private Map<String, Object> setProperties(final JSONObject properties, final Map<String, Type> typeSchema) {
     final Map<String, Object> result = new HashMap<>();
@@ -616,6 +711,7 @@ public class Neo4jImporter {
     log("-i <input-file>: path to the Neo4j export file in JSONL format");
     log("-o: overwrite an existent database");
     log("-decimalType <type>: use <type> for decimals. <type> can be FLOAT, DOUBLE and DECIMAL. By default decimalType is DECIMAL.");
+    log("-bucketBits <n>: bits for bucket ID in RID packing (default 10, max bucket ID 1,023). Increase if you have many types/buckets.");
   }
 
   private void parseArguments(final String... args) {
@@ -635,6 +731,8 @@ public class Neo4jImporter {
         state = "batchSize";
       else if (arg.equals("-decimalType"))
         state = "decimalType";
+      else if (arg.equals("-bucketBits"))
+        state = "bucketBits";
       else if (state != null) {
         if (state.equals("databasePath"))
           databasePath = arg;
@@ -644,7 +742,105 @@ public class Neo4jImporter {
           batchSize = Integer.parseInt(arg);
         else if (state.equals("decimalType"))
           typeForDecimals = Type.valueOf(arg.toUpperCase(Locale.ENGLISH));
+        else if (state.equals("bucketBits")) {
+          bucketBits = Integer.parseInt(arg);
+          if (bucketBits < 1 || bucketBits > 32)
+            syntaxError("bucketBits must be between 1 and 32");
+        }
       }
+    }
+
+    initPackingConstants();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  LongLongMap: open-addressing primitive long-to-long hash map
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Open-addressing hash map from primitive long to primitive long, with no object overhead.
+   * Uses ~24 bytes per entry at 70% load factor (16 bytes for key+value arrays + table overhead).
+   * Modeled after {@code GraphImporter.IntIntMap} but with long keys and values.
+   */
+  static final class LongLongMap {
+    static final long EMPTY = Long.MIN_VALUE;
+
+    private long[] keys;
+    private long[] values;
+    private int    mask;
+    private int    size;
+    private int    threshold;
+
+    LongLongMap(final int expected) {
+      int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
+      keys = new long[cap];
+      values = new long[cap];
+      mask = cap - 1;
+      threshold = (int) (cap * 0.7);
+      Arrays.fill(keys, EMPTY);
+    }
+
+    void put(final long key, final long value) {
+      if (key == EMPTY)
+        throw new IllegalArgumentException("Key cannot be Long.MIN_VALUE (reserved as EMPTY sentinel)");
+      if (size >= threshold)
+        resize();
+      int i = index(key);
+      while (keys[i] != EMPTY && keys[i] != key)
+        i = (i + 1) & mask;
+      if (keys[i] == EMPTY)
+        size++;
+      keys[i] = key;
+      values[i] = value;
+    }
+
+    long get(final long key) {
+      int i = index(key);
+      while (keys[i] != EMPTY) {
+        if (keys[i] == key)
+          return values[i];
+        i = (i + 1) & mask;
+      }
+      return EMPTY;
+    }
+
+    int size() {
+      return size;
+    }
+
+    void forEach(final LongLongConsumer consumer) {
+      for (int i = 0; i < keys.length; i++)
+        if (keys[i] != EMPTY)
+          consumer.accept(keys[i], values[i]);
+    }
+
+    private int index(final long key) {
+      // Fibonacci hashing for good distribution
+      return (int) ((key * 0x9E3779B97F4A7C15L) >>> (64 - Integer.numberOfTrailingZeros(keys.length))) & mask;
+    }
+
+    private void resize() {
+      final int newCap = keys.length << 1;
+      final long[] oldKeys = keys;
+      final long[] oldValues = values;
+      keys = new long[newCap];
+      values = new long[newCap];
+      mask = newCap - 1;
+      threshold = (int) (newCap * 0.7);
+      Arrays.fill(keys, EMPTY);
+      for (int i = 0; i < oldKeys.length; i++)
+        if (oldKeys[i] != EMPTY) {
+          int j = index(oldKeys[i]);
+          while (keys[j] != EMPTY)
+            j = (j + 1) & mask;
+          keys[j] = oldKeys[i];
+          values[j] = oldValues[i];
+        }
+    }
+
+    @FunctionalInterface
+    interface LongLongConsumer {
+      void accept(long key, long value);
     }
   }
 }

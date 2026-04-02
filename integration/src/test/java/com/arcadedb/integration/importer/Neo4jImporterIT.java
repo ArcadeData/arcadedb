@@ -216,6 +216,112 @@ class Neo4jImporterIT {
   }
 
   @Test
+  void importNeo4jMixedIds() throws Exception {
+    // Starts with numeric IDs, then switches to string IDs mid-import to test migration
+    final File databaseDirectory = new File(DATABASE_PATH);
+
+    try {
+      final StringBuilder content = new StringBuilder();
+      // Numeric IDs first
+      content.append("{\"type\":\"node\",\"id\":\"0\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"Alice\"}}\n");
+      content.append("{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"Bob\"}}\n");
+      // Non-numeric ID triggers migration to string mode
+      content.append("{\"type\":\"node\",\"id\":\"node-abc\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"Charlie\"}}\n");
+      content.append("{\"type\":\"node\",\"id\":\"node-def\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"Diana\"}}\n");
+      // Edges: numeric-to-numeric, numeric-to-string, string-to-string
+      content.append("{\"id\":\"r0\",\"type\":\"relationship\",\"label\":\"KNOWS\",\"properties\":{\"since\":2020},");
+      content.append("\"start\":{\"id\":\"0\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"1\",\"labels\":[\"Person\"]}}\n");
+      content.append("{\"id\":\"r1\",\"type\":\"relationship\",\"label\":\"KNOWS\",\"properties\":{\"since\":2021},");
+      content.append("\"start\":{\"id\":\"1\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"node-abc\",\"labels\":[\"Person\"]}}\n");
+      content.append("{\"id\":\"r2\",\"type\":\"relationship\",\"label\":\"KNOWS\",\"properties\":{\"since\":2022},");
+      content.append("\"start\":{\"id\":\"node-abc\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"node-def\",\"labels\":[\"Person\"]}}\n");
+
+      final ByteArrayInputStream is = new ByteArrayInputStream(content.toString().getBytes());
+      final Neo4jImporter importer = new Neo4jImporter(is, (" -d " + DATABASE_PATH + " -o").split(" "));
+      importer.run();
+
+      assertThat(importer.isError()).isFalse();
+
+      try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
+        try (final Database database = factory.open()) {
+          assertThat(database.countType("Person", true)).isEqualTo(4);
+          assertThat(database.countType("KNOWS", true)).isEqualTo(3);
+
+          // Verify all vertices are accessible
+          assertThat(database.lookupByKey("Person", "id", "0").next().asVertex().get("name")).isEqualTo("Alice");
+          assertThat(database.lookupByKey("Person", "id", "1").next().asVertex().get("name")).isEqualTo("Bob");
+          assertThat(database.lookupByKey("Person", "id", "node-abc").next().asVertex().get("name")).isEqualTo("Charlie");
+          assertThat(database.lookupByKey("Person", "id", "node-def").next().asVertex().get("name")).isEqualTo("Diana");
+
+          // Verify edges are traversable across the migration boundary
+          final Vertex alice = database.lookupByKey("Person", "id", "0").next().asVertex();
+          final Iterator<Edge> aliceEdges = alice.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+          assertThat(aliceEdges.hasNext()).isTrue();
+          assertThat(aliceEdges.next().get("since")).isEqualTo(2020);
+
+          final Vertex bob = database.lookupByKey("Person", "id", "1").next().asVertex();
+          final Iterator<Edge> bobEdges = bob.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+          assertThat(bobEdges.hasNext()).isTrue();
+          assertThat(bobEdges.next().get("since")).isEqualTo(2021);
+
+          final Vertex charlie = database.lookupByKey("Person", "id", "node-abc").next().asVertex();
+          final Iterator<Edge> charlieEdges = charlie.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+          assertThat(charlieEdges.hasNext()).isTrue();
+          assertThat(charlieEdges.next().get("since")).isEqualTo(2022);
+        }
+      }
+      TestHelper.checkActiveDatabases();
+    } finally {
+      FileUtils.deleteRecursively(databaseDirectory);
+    }
+  }
+
+  @Test
+  void importNeo4jAllStringIds() throws Exception {
+    // All non-numeric IDs - goes directly to string mode on the first vertex
+    final File databaseDirectory = new File(DATABASE_PATH);
+
+    try {
+      final StringBuilder content = new StringBuilder();
+      content.append("{\"type\":\"node\",\"id\":\"user-alice\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"Alice\"}}\n");
+      content.append("{\"type\":\"node\",\"id\":\"user-bob\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"Bob\"}}\n");
+      content.append("{\"type\":\"node\",\"id\":\"company-acme\",\"labels\":[\"Company\"],\"properties\":{\"name\":\"Acme\"}}\n");
+      content.append("{\"id\":\"rel-1\",\"type\":\"relationship\",\"label\":\"KNOWS\",\"properties\":{\"since\":2019},");
+      content.append("\"start\":{\"id\":\"user-alice\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"user-bob\",\"labels\":[\"Person\"]}}\n");
+      content.append("{\"id\":\"rel-2\",\"type\":\"relationship\",\"label\":\"WORKS_AT\",\"properties\":{},");
+      content.append("\"start\":{\"id\":\"user-alice\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"company-acme\",\"labels\":[\"Company\"]}}\n");
+
+      final ByteArrayInputStream is = new ByteArrayInputStream(content.toString().getBytes());
+      final Neo4jImporter importer = new Neo4jImporter(is, (" -d " + DATABASE_PATH + " -o").split(" "));
+      importer.run();
+
+      assertThat(importer.isError()).isFalse();
+
+      try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
+        try (final Database database = factory.open()) {
+          assertThat(database.countType("Person", true)).isEqualTo(2);
+          assertThat(database.countType("Company", true)).isEqualTo(1);
+          assertThat(database.countType("KNOWS", true)).isEqualTo(1);
+          assertThat(database.countType("WORKS_AT", true)).isEqualTo(1);
+
+          final Vertex alice = database.lookupByKey("Person", "id", "user-alice").next().asVertex();
+          assertThat(alice.get("name")).isEqualTo("Alice");
+
+          final Iterator<Edge> knowsEdges = alice.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+          assertThat(knowsEdges.hasNext()).isTrue();
+          assertThat(knowsEdges.next().get("since")).isEqualTo(2019);
+
+          final Iterator<Edge> worksAtEdges = alice.getEdges(Vertex.DIRECTION.OUT, "WORKS_AT").iterator();
+          assertThat(worksAtEdges.hasNext()).isTrue();
+        }
+      }
+      TestHelper.checkActiveDatabases();
+    } finally {
+      FileUtils.deleteRecursively(databaseDirectory);
+    }
+  }
+
+  @Test
   void importNeo4jMultiTypes() throws Exception {
     final File databaseDirectory = new File(DATABASE_PATH);
 

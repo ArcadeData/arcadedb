@@ -83,7 +83,7 @@ class Neo4jImporterLargeTest {
           assertThat(database.countType("WORKS_AT", true)).isEqualTo(WORKS_AT_COUNT);
 
           // Spot-check a vertex and its edges
-          final Vertex v = database.lookupByKey("Person", "id", "p0").next().asVertex();
+          final Vertex v = database.lookupByKey("Person", "id", "0").next().asVertex();
           assertThat(v.get("name")).isEqualTo("Person_0");
           assertThat(v.get("age")).isEqualTo(20);
 
@@ -104,15 +104,17 @@ class Neo4jImporterLargeTest {
 
   /**
    * Generates a Neo4j APOC JSON export with the specified number of vertices and edges.
+   * Uses numeric IDs (like real Neo4j APOC exports): persons 0..PERSON_COUNT-1,
+   * companies PERSON_COUNT..PERSON_COUNT+COMPANY_COUNT-1.
    * Format matches: CALL apoc.export.json.all("file.json", {useTypes:true})
    */
   private static void generateNeo4jExport(final File file) throws IOException {
     file.getParentFile().mkdirs();
 
     try (final BufferedWriter w = new BufferedWriter(new FileWriter(file), 1024 * 1024)) {
-      // Person vertices
+      // Person vertices (IDs: 0 .. PERSON_COUNT-1)
       for (int i = 0; i < PERSON_COUNT; i++) {
-        w.write("{\"type\":\"node\",\"id\":\"p");
+        w.write("{\"type\":\"node\",\"id\":\"");
         w.write(Integer.toString(i));
         w.write("\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"Person_");
         w.write(Integer.toString(i));
@@ -127,10 +129,11 @@ class Neo4jImporterLargeTest {
         w.newLine();
       }
 
-      // Company vertices
+      // Company vertices (IDs: PERSON_COUNT .. PERSON_COUNT+COMPANY_COUNT-1)
       for (int i = 0; i < COMPANY_COUNT; i++) {
-        w.write("{\"type\":\"node\",\"id\":\"c");
-        w.write(Integer.toString(i));
+        final int companyId = PERSON_COUNT + i;
+        w.write("{\"type\":\"node\",\"id\":\"");
+        w.write(Integer.toString(companyId));
         w.write("\",\"labels\":[\"Company\"],\"properties\":{\"name\":\"Company_");
         w.write(Integer.toString(i));
         w.write("\",\"founded\":");
@@ -145,13 +148,13 @@ class Neo4jImporterLargeTest {
       for (int i = 0; i < KNOWS_COUNT; i++) {
         final int from = i % PERSON_COUNT;
         final int to = (i * 7 + 13) % PERSON_COUNT;
-        w.write("{\"id\":\"k");
+        w.write("{\"id\":\"");
         w.write(Integer.toString(i));
         w.write("\",\"type\":\"relationship\",\"label\":\"KNOWS\",\"properties\":{\"since\":");
         w.write(Integer.toString(2000 + (i % 25)));
-        w.write("},\"start\":{\"id\":\"p");
+        w.write("},\"start\":{\"id\":\"");
         w.write(Integer.toString(from));
-        w.write("\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"p");
+        w.write("\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"");
         w.write(Integer.toString(to));
         w.write("\",\"labels\":[\"Person\"]}}");
         w.newLine();
@@ -160,15 +163,15 @@ class Neo4jImporterLargeTest {
       // WORKS_AT edges (Person -> Company)
       for (int i = 0; i < WORKS_AT_COUNT; i++) {
         final int from = i % PERSON_COUNT;
-        final int to = i % COMPANY_COUNT;
-        w.write("{\"id\":\"w");
-        w.write(Integer.toString(i));
+        final int companyId = PERSON_COUNT + (i % COMPANY_COUNT);
+        w.write("{\"id\":\"");
+        w.write(Integer.toString(KNOWS_COUNT + i));
         w.write("\",\"type\":\"relationship\",\"label\":\"WORKS_AT\",\"properties\":{\"role\":\"Role_");
         w.write(Integer.toString(i % 100));
-        w.write("\"},\"start\":{\"id\":\"p");
+        w.write("\"},\"start\":{\"id\":\"");
         w.write(Integer.toString(from));
-        w.write("\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"c");
-        w.write(Integer.toString(to));
+        w.write("\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"");
+        w.write(Integer.toString(companyId));
         w.write("\",\"labels\":[\"Company\"]}}");
         w.newLine();
       }
