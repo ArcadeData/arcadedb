@@ -701,8 +701,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final List<String> propertyNames = getPropertyNames();
 
     if (propertyNames != null && !propertyNames.isEmpty()) {
+      final DatabaseInternal db = underlyingIndex.getComponent().getDatabase();
       for (final RID sourceRid : sourceRids) {
-        final Identifiable identifiable = sourceRid.getRecord();
+        final Identifiable identifiable = db.lookupByRID(sourceRid, true);
         if (identifiable == null)
           continue;
 
