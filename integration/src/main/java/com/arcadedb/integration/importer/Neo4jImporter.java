@@ -21,13 +21,9 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.Schema;
@@ -62,6 +58,9 @@ import java.util.zip.GZIPInputStream;
  * Importer of a Neo4j database exported in JSONL format. To export a Neo4j database follow the instructions in https://neo4j.com/labs/apoc/4.3/export/json/.
  * The resulting file contains one json per line.
  * <br>
+ * Uses {@link GraphBatch} for high-performance bulk import: vertices are created with pre-allocated edge segments,
+ * and edges are buffered in flat primitive arrays then flushed sorted by vertex for sequential I/O.
+ * <br>
  * Neo4j is a registered mark of Neo4j, Inc.
  *
  * @author Luca Garulli
@@ -89,7 +88,9 @@ public class Neo4jImporter {
   private final        ImporterContext                context;
   private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
   private final static SimpleDateFormat               dateTimeISO8601Format    = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
-  private static final int                            MAX_RETRIES              = 3;
+
+  // Neo4j string ID -> ArcadeDB RID mapping, populated during vertex pass
+  private final        Map<String, RID>               neo4jIdToRID             = new HashMap<>();
 
   public Neo4jImporter(final InputStream inputStream, final String... args) {
     parseArguments(args);
@@ -145,12 +146,12 @@ public class Neo4jImporter {
       log("- Creation of the schema: types, properties and indexes");
       syncSchema();
 
-      // PARSE THE FILE AGAIN TO CREATE VERTICES
+      // PARSE THE FILE AGAIN TO CREATE VERTICES USING GRAPHBATCH
       log("- Creation of vertices started");
       beginTimeVerticesCreation = System.currentTimeMillis();
       parseVertices();
 
-      // PARSE THE FILE AGAIN TO CREATE EDGES
+      // PARSE THE FILE AGAIN TO CREATE EDGES USING GRAPHBATCH
       log("- Creation of edges started: creating edges between vertices");
       beginTimeEdgesCreation = System.currentTimeMillis();
       parseEdges();
@@ -188,6 +189,7 @@ public class Neo4jImporter {
         log("- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
 
     } finally {
+      neo4jIdToRID.clear();
       if (database != null && closeDatabaseAfterImport)
         database.close();
     }
@@ -281,57 +283,77 @@ public class Neo4jImporter {
   private void parseVertices() throws IOException {
     final AtomicInteger lineNumber = new AtomicInteger();
 
-    readFile(json -> {
-      lineNumber.incrementAndGet();
+    try (final GraphBatch batch = database.batch()
+        .withBidirectional(false)
+        .withWAL(false)
+        .withPreAllocateEdgeChunks(true)
+        .withCommitEvery(0)
+        .build()) {
 
-      switch (json.getString("type")) {
-      case "node":
-        context.parsed.incrementAndGet();
-        ++totalVerticesParsed;
-        if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
-          final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
-          log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(),
-              context.skippedEdges.get(), (context.createdVertices.get() / elapsed * 1000));
+      database.begin();
+
+      readFileSimple(json -> {
+        lineNumber.incrementAndGet();
+
+        switch (json.getString("type")) {
+        case "node":
+          context.parsed.incrementAndGet();
+          ++totalVerticesParsed;
+          if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
+            final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
+            log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(),
+                context.skippedEdges.get(), (context.createdVertices.get() / elapsed * 1000));
+          }
+
+          final Pair<String, List<String>> type = typeNameFromLabels(json);
+          if (type == null) {
+            log("- found vertex in line %d without labels. Skip it.", lineNumber.get());
+            context.warnings.incrementAndGet();
+            return null;
+          }
+
+          final String typeName = type.getFirst();
+          final String id = json.getString("id");
+
+          try {
+            final Map<String, Object> props;
+            if (json.has("properties"))
+              props = setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName));
+            else
+              props = new HashMap<>();
+            props.put("id", id);
+
+            final MutableVertex vertex = batch.createVertex(typeName, props);
+            neo4jIdToRID.put(id, vertex.getIdentity());
+            context.createdVertices.incrementAndGet();
+
+            incrementVerticesByType(typeName);
+          } catch (Exception e) {
+            error("- Error on saving vertex with id %s: %s", id, e.getMessage());
+            context.errors.incrementAndGet();
+          }
+
+          if (context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
+            database.commit();
+            database.begin();
+          }
+
+          break;
+
+        case "relationship":
+          context.skippedEdges.incrementAndGet();
+          break;
         }
 
-        final Pair<String, List<String>> type = typeNameFromLabels(json);
-        if (type == null) {
-          log("- found vertex in line %d without labels. Skip it.", lineNumber.get());
-          context.warnings.incrementAndGet();
-          return null;
-        }
+        if (parsingCallback != null)
+          parsingCallback.call(json);
 
-        final String typeName = type.getFirst();
+        return null;
+      });
 
-        final String id = json.getString("id");
-
-        try {
-          final MutableVertex vertex = database.newVertex(typeName);
-
-          if (json.has("properties"))
-            vertex.fromMap(setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName)));
-          vertex.set("id", id);
-          vertex.save();
-          context.createdVertices.incrementAndGet();
-
-          incrementVerticesByType(typeName);
-        } catch (Exception e) {
-          error("- Error on saving vertex with id %s: %s", id, e.getMessage());
-          context.errors.incrementAndGet();
-        }
-
-        break;
-
-      case "relationship":
-        context.skippedEdges.incrementAndGet();
-        break;
-      }
-
-      if (parsingCallback != null)
-        parsingCallback.call(json);
-
-      return null;
-    });
+      if (database.isTransactionActive())
+        database.commit();
+    }
 
     final long elapsedInSecs = (System.currentTimeMillis() - context.startedOn) / 1000;
 
@@ -341,89 +363,93 @@ public class Neo4jImporter {
   }
 
   private void parseEdges() throws IOException {
-    database.begin();
-
     final AtomicInteger lineNumber = new AtomicInteger();
 
-    readFile(json -> {
-      lineNumber.incrementAndGet();
+    try (final GraphBatch batch = database.batch()
+        .withBatchSize(batchSize)
+        .withBidirectional(true)
+        .withWAL(false)
+        .withCommitEvery(batchSize)
+        .build()) {
 
-      switch (json.getString("type")) {
-      case "node":
-        break;
+      readFileSimple(json -> {
+        lineNumber.incrementAndGet();
 
-      case "relationship":
-        context.parsed.incrementAndGet();
-        ++totalEdgesParsed;
-        if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
-          final long elapsed = System.currentTimeMillis() - beginTimeEdgesCreation;
-          log("- Status update: created %,d edges %s (%,d edges/sec)", context.createdEdges.get(), totalEdgesByType,
-              (context.createdEdges.get() / elapsed * 1000));
+        switch (json.getString("type")) {
+        case "node":
+          break;
+
+        case "relationship":
+          context.parsed.incrementAndGet();
+          ++totalEdgesParsed;
+          if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
+            final long elapsed = System.currentTimeMillis() - beginTimeEdgesCreation;
+            log("- Status update: created %,d edges %s (%,d edges/sec)", context.createdEdges.get(), totalEdgesByType,
+                (context.createdEdges.get() / elapsed * 1000));
+          }
+
+          final String type = json.getString("label");
+          if (type == null) {
+            log("- found edge in line %d without labels. Skip it.", lineNumber.get());
+            context.warnings.incrementAndGet();
+            return null;
+          }
+
+          final JSONObject start = json.getJSONObject("start");
+          final String startId = start.getString("id");
+          final RID fromRID = neo4jIdToRID.get(startId);
+          if (fromRID == null) {
+            log("- cannot create relationship with id '%s'. Vertex id '%s' not found. Skip it.", json.getString("id"), startId);
+            context.warnings.incrementAndGet();
+            return null;
+          }
+
+          final JSONObject end = json.getJSONObject("end");
+          final String endId = end.getString("id");
+          final RID toRID = neo4jIdToRID.get(endId);
+          if (toRID == null) {
+            log("- cannot create relationship with id '%s'. Vertex id '%s' not found. Skip it.", json.getString("id"), endId);
+            context.warnings.incrementAndGet();
+            return null;
+          }
+
+          try {
+            if (json.has("properties")) {
+              final Map<String, Object> edgeProps = setProperties(json.getJSONObject("properties"), schemaProperties.get(type));
+              if (!edgeProps.isEmpty()) {
+                // Flatten map to key-value array for GraphBatch
+                final Object[] propsArray = new Object[edgeProps.size() * 2];
+                int i = 0;
+                for (final Map.Entry<String, Object> entry : edgeProps.entrySet()) {
+                  propsArray[i++] = entry.getKey();
+                  propsArray[i++] = entry.getValue();
+                }
+                batch.newEdge(fromRID, type, toRID, propsArray);
+              } else
+                batch.newEdge(fromRID, type, toRID);
+            } else
+              batch.newEdge(fromRID, type, toRID);
+
+            context.createdEdges.incrementAndGet();
+            incrementEdgesByType(type);
+          } catch (Exception e) {
+            error("- Error on saving edge between %s and %s: %s", fromRID, toRID, e.getMessage());
+            context.errors.incrementAndGet();
+          }
+
+          break;
         }
 
-        final String type = json.getString("label");
-        if (type == null) {
-          log("- found edge in line %d without labels. Skip it.", lineNumber.get());
-          context.warnings.incrementAndGet();
-          return null;
-        }
+        if (parsingCallback != null)
+          parsingCallback.call(json);
 
-        final JSONObject start = json.getJSONObject("start");
-        final Pair<String, List<String>> startType = typeNameFromLabels(start);
-        final String startId = start.getString("id");
-
-        final IndexCursor beginCursor = database.lookupByKey(startType.getFirst(), "id", startId);
-        if (!beginCursor.hasNext()) {
-          log("- cannot create relationship with id '%s'. Vertex id '%s' not found in type '%s'. Skip it.", json.getString("id"),
-              startId, startType.getFirst());
-          context.warnings.incrementAndGet();
-          return null;
-        }
-
-        final Vertex fromVertex = beginCursor.next().asVertex();
-
-        final JSONObject end = json.getJSONObject("end");
-        final Pair<String, List<String>> endType = typeNameFromLabels(end);
-        final String endId = end.getString("id");
-
-        final IndexCursor endCursor = database.lookupByKey(endType.getFirst(), "id", endId);
-        if (!endCursor.hasNext()) {
-          log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"),
-              endId);
-          context.warnings.incrementAndGet();
-          return null;
-        }
-
-        final Identifiable toVertex = endCursor.next();
-
-        try {
-          final MutableEdge edge = fromVertex.newEdge(type, toVertex);
-
-          if (json.has("properties"))
-            edge.fromMap(setProperties(json.getJSONObject("properties"), schemaProperties.get(type)));
-          edge.save();
-          context.createdEdges.incrementAndGet();
-
-          incrementEdgesByType(type);
-        } catch (Exception e) {
-          error("- Error on saving edge between %s and %s: %s", fromVertex, toVertex, e.getMessage());
-          context.errors.incrementAndGet();
-        }
-
-        if (context.parsed.get() > 0 && context.parsed.get() % batchSize == 0) {
-          database.commit();
-          database.begin();
-        }
-        break;
-      }
-      return null;
-    });
-
-    database.commit();
+        return null;
+      });
+    }
 
     final long elapsedInSecs = (System.currentTimeMillis() - context.startedOn) / 1000;
 
-    log("- Creation of edged completed: created %,d edges, (%,d edges/sec elapsed=%,d secs)", context.createdEdges.get(),
+    log("- Creation of edges completed: created %,d edges, (%,d edges/sec elapsed=%,d secs)", context.createdEdges.get(),
         elapsedInSecs > 0 ? (context.createdEdges.get() / elapsedInSecs) : 0, elapsedInSecs);
   }
 
@@ -471,84 +497,68 @@ public class Neo4jImporter {
     return file.getName().endsWith("gz") ? new GZIPInputStream(new FileInputStream(file)) : new FileInputStream(file);
   }
 
+  /**
+   * Reads the JSONL file line by line, calling the callback for each valid JSON record.
+   * Used by syncSchema (which only reads, no record creation) with its own transaction management.
+   */
   private void readFile(final Callable<Void, JSONObject> callback) throws IOException {
     database.begin();
 
     try (InputStream inputStream = openInputStream()) {
       try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()))) {
-        long lineNumberStartOfBatch = 0;
-        final List<String> transactionBuffer = new ArrayList<>(batchSize);
-
-        String line = null;
         for (long lineNumber = 0; ; ++lineNumber) {
           try {
-            line = reader.readLine();
-            if (line == null) {
-              if (database.isTransactionActive())
-                database.commit();
-              transactionBuffer.clear();
+            final String line = reader.readLine();
+            if (line == null)
               break;
+
+            final JSONObject json = new JSONObject(line);
+            final String type = json.getString("type");
+            if ("node".equals(type) || "relationship".equals(type))
+              callback.call(json);
+            else {
+              log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+              context.errors.incrementAndGet();
             }
-
-            transactionBuffer.add(line);
-
-            executeCallback(callback, line, lineNumber);
-
-            if (context.parsed.get() > 0 && context.parsed.get() % batchSize == 0 && database.isTransactionActive()) {
-              database.commit();
-              transactionBuffer.clear();
-              lineNumberStartOfBatch = lineNumber;
-              database.begin();
-            }
-
-          } catch (final NeedRetryException | DuplicatedKeyException e) {
-            log("Transaction commit in error (%s), retrying the last transaction batch max %d times", e.getMessage(), MAX_RETRIES);
-
-            // RETRY THE TRANSACTION
-            for (int retry = 0; retry < MAX_RETRIES; retry++) {
-              try {
-                if (database.isTransactionActive())
-                  database.rollback();
-                database.begin();
-
-                for (int i = 0; i < transactionBuffer.size(); i++) {
-                  line = transactionBuffer.get(i);
-                  executeCallback(callback, line, lineNumberStartOfBatch + i);
-                }
-
-                database.commit();
-                transactionBuffer.clear();
-                break;
-
-              } catch (final NeedRetryException | DuplicatedKeyException e2) {
-                log("Concurrent access to the database, retrying the last transaction batch (retry %d/%d)", retry + 1, MAX_RETRIES);
-              }
-            }
-
           } catch (final JSONException e) {
-            log("Error on parsing json on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+            log("Error on parsing json on line %d of the input JSONL file. The line will be ignored.", lineNumber);
             context.errors.incrementAndGet();
           }
         }
       }
     }
+
+    if (database.isTransactionActive())
+      database.commit();
   }
 
-  private void executeCallback(final Callable<Void, JSONObject> callback, final String line, final long lineNumber) {
-    final JSONObject json = new JSONObject(line);
+  /**
+   * Simplified file reader for vertex/edge passes that use GraphBatch.
+   * GraphBatch handles its own transaction management, so this method just reads and dispatches.
+   */
+  private void readFileSimple(final Callable<Void, JSONObject> callback) throws IOException {
+    try (InputStream inputStream = openInputStream()) {
+      try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()))) {
+        for (long lineNumber = 0; ; ++lineNumber) {
+          try {
+            final String line = reader.readLine();
+            if (line == null)
+              break;
 
-    switch (json.getString("type")) {
-    case "node":
-      callback.call(json);
-      break;
-
-    case "relationship":
-      callback.call(json);
-      break;
-
-    default:
-      log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
-      context.errors.incrementAndGet();
+            final JSONObject json = new JSONObject(line);
+            final String type = json.getString("type");
+            if ("node".equals(type) || "relationship".equals(type))
+              callback.call(json);
+            else {
+              log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+              context.errors.incrementAndGet();
+            }
+          } catch (final JSONException e) {
+            log("Error on parsing json on line %d of the input JSONL file. The line will be ignored.", lineNumber);
+            context.errors.incrementAndGet();
+          }
+        }
+      }
     }
   }
 
