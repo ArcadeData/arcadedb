@@ -29,6 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -866,14 +867,34 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     for (final Map.Entry<String, Object> entry : targetNodePattern.getProperties().entrySet()) {
       final Object actual = vertex.get(entry.getKey());
       Object expected = entry.getValue();
-      // Handle string literals: remove quotes
-      if (expected instanceof String) {
+
+      // Resolve parameter references (e.g., $param -> actual value from context)
+      if (expected instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
+        if (context.getInputParameters() != null)
+          expected = context.getInputParameters().get(paramName);
+      } else if (expected instanceof String) {
         final String s = (String) expected;
-        if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\"")))
+        if (s.startsWith("$")) {
+          final String paramName = s.substring(1);
+          if (context.getInputParameters() != null) {
+            final Object paramValue = context.getInputParameters().get(paramName);
+            if (paramValue != null)
+              expected = paramValue;
+          }
+        }
+        // Handle string literals: remove quotes
+        else if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\"")))
           expected = s.substring(1, s.length() - 1);
       }
-      if (actual == null || !actual.equals(expected))
-        return false;
+
+      if (actual == null || !actual.equals(expected)) {
+        if (actual instanceof Number && expected instanceof Number) {
+          if (((Number) actual).longValue() != ((Number) expected).longValue())
+            return false;
+        } else
+          return false;
+      }
     }
     return true;
   }
@@ -936,9 +957,35 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
     for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
       final Object actual = edge.get(entry.getKey());
-      final Object expected = entry.getValue();
-      if (actual == null || !actual.equals(expected))
-        return false;
+      Object expected = entry.getValue();
+
+      // Resolve parameter references (e.g., $param -> actual value from context)
+      if (expected instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
+        if (context.getInputParameters() != null)
+          expected = context.getInputParameters().get(paramName);
+      } else if (expected instanceof String) {
+        final String s = (String) expected;
+        if (s.startsWith("$")) {
+          final String paramName = s.substring(1);
+          if (context.getInputParameters() != null) {
+            final Object paramValue = context.getInputParameters().get(paramName);
+            if (paramValue != null)
+              expected = paramValue;
+          }
+        }
+        // Handle string literals: remove quotes
+        else if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\"")))
+          expected = s.substring(1, s.length() - 1);
+      }
+
+      if (actual == null || !actual.equals(expected)) {
+        if (actual instanceof Number && expected instanceof Number) {
+          if (((Number) actual).longValue() != ((Number) expected).longValue())
+            return false;
+        } else
+          return false;
+      }
     }
     return true;
   }
