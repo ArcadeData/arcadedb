@@ -89,6 +89,7 @@ import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
 import com.arcadedb.query.opencypher.executor.steps.SubqueryStep;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
 import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
 import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
@@ -285,6 +286,39 @@ public class CypherExecutionPlan {
    * @return result set from the inner query execution
    */
   public ResultSet executeWithSeedRow(final Result seedRow) {
+    // Handle UNION inside CALL subqueries: execute each branch with the seed row
+    if (statement instanceof UnionStatement unionStmt) {
+      final List<CypherExecutionPlan> branchPlans = new ArrayList<>();
+      for (final CypherStatement branch : unionStmt.getQueries())
+        branchPlans.add(new CypherExecutionPlan(database, branch, parameters, configuration, null, expressionEvaluator));
+
+      final boolean removeDuplicates = !unionStmt.isAllUnionAll();
+      final BasicCommandContext ctx = new BasicCommandContext();
+      ctx.setDatabase(database);
+      ctx.setInputParameters(parameters);
+      setupFunctionResolver(ctx);
+
+      // Execute each branch with the seed row, collect all results
+      final List<ResultInternal> allResults = new ArrayList<>();
+      final Set<String> seen = removeDuplicates ? new HashSet<>() : null;
+      for (final CypherExecutionPlan branchPlan : branchPlans) {
+        final ResultSet rs = branchPlan.executeWithSeedRow(seedRow);
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          if (removeDuplicates) {
+            final String key = buildResultKey(row);
+            if (!seen.add(key))
+              continue;
+          }
+          final ResultInternal copy = new ResultInternal();
+          for (final String prop : row.getPropertyNames())
+            copy.setProperty(prop, row.getProperty(prop));
+          allResults.add(copy);
+        }
+      }
+      return new IteratorResultSet(allResults.iterator());
+    }
+
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
@@ -324,6 +358,17 @@ public class CypherExecutionPlan {
       return new IteratorResultSet(new ArrayList<ResultInternal>().iterator());
 
     return rootStep.syncPull(context, 100);
+  }
+
+  private static String buildResultKey(final Result result) {
+    final StringBuilder sb = new StringBuilder();
+    for (final String prop : result.getPropertyNames()) {
+      sb.append(prop).append("=");
+      final Object value = result.getProperty(prop);
+      sb.append(value == null ? "null" : value.toString());
+      sb.append("|");
+    }
+    return sb.toString();
   }
 
   /**

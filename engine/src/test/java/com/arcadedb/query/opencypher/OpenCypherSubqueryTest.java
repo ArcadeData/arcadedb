@@ -256,4 +256,49 @@ class OpenCypherSubqueryTest {
       assertThat(sum.longValue()).isEqualTo(a.longValue() + b.longValue());
     }
   }
+
+  /**
+   * Issue #3772: UNION inside CALL subquery should evaluate all branches.
+   * When the first branch's WHERE filters out all rows, the second branch should still produce results.
+   */
+  @Test
+  void callSubqueryWithUnionFallsThrough() {
+    // First query: empty list, so SIZE > 0 is false, but SIZE = 0 is true -> should return success2 = 1
+    final ResultSet result1 = database.query("opencypher",
+        "WITH [] as toRemove " +
+        "CALL { " +
+        "  WITH toRemove WITH toRemove " +
+        "  WHERE SIZE(toRemove) > 0 " +
+        "  RETURN 2 AS success2 " +
+        "  UNION " +
+        "  WITH toRemove WITH toRemove " +
+        "  WHERE SIZE(toRemove) = 0 " +
+        "  RETURN 1 AS success2 " +
+        "} " +
+        "RETURN success2");
+
+    assertThat(result1.hasNext()).isTrue();
+    final Result row1 = result1.next();
+    assertThat(((Number) row1.getProperty("success2")).intValue()).isEqualTo(1);
+    assertThat(result1.hasNext()).isFalse();
+
+    // Second query: non-empty list, so SIZE > 0 is true -> should return success2 = 2
+    final ResultSet result2 = database.query("opencypher",
+        "WITH ['a'] as toRemove " +
+        "CALL { " +
+        "  WITH toRemove WITH toRemove " +
+        "  WHERE SIZE(toRemove) > 0 " +
+        "  RETURN 2 AS success2 " +
+        "  UNION " +
+        "  WITH toRemove WITH toRemove " +
+        "  WHERE SIZE(toRemove) = 0 " +
+        "  RETURN 1 AS success2 " +
+        "} " +
+        "RETURN success2");
+
+    assertThat(result2.hasNext()).isTrue();
+    final Result row2 = result2.next();
+    assertThat(((Number) row2.getProperty("success2")).intValue()).isEqualTo(2);
+    assertThat(result2.hasNext()).isFalse();
+  }
 }
