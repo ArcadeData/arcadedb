@@ -541,8 +541,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public void loadVectorsAfterSchemaLoad() {
     LogManager.instance()
-        .log(this, Level.SEVERE, "loadVectorsAfterSchemaLoad called for index %s: dimensions=%d, mutablePages=%d, hasGraphFile=%s",
-            indexName, metadata.dimensions, mutable.getTotalPages(), graphFile != null);
+        .log(this, Level.FINE, "loadVectorsAfterSchemaLoad called for index %s: dimensions=%d, mutablePages=%d, hasGraphFile=%s",
+            null, indexName, metadata.dimensions, mutable.getTotalPages(), graphFile != null);
 
     // CRASH RECOVERY: Check if index was BUILDING when database crashed/shutdown
     try {
@@ -576,17 +576,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
       try {
         LogManager.instance()
-            .log(this, Level.SEVERE, "Loading vectors for index %s after schema load (dimensions=%d, pages=%d, fileId=%d)",
-                indexName, metadata.dimensions, mutable.getTotalPages(), mutable.getFileId());
+            .log(this, Level.FINE, "Loading vectors for index %s after schema load (dimensions=%d, pages=%d, fileId=%d)",
+                null, indexName, metadata.dimensions, mutable.getTotalPages(), mutable.getFileId());
 
         loadVectorsFromPages();
 
         // Graph will be lazy-loaded on first search via ensureGraphAvailable()
         // Don't build it here - causes deadlock during database load when PageManager isn't fully ready
-        LogManager.instance().log(this, Level.SEVERE,
+        LogManager.instance().log(this, Level.FINE,
             "Successfully loaded %d vector locations for index %s (graph will be lazy-loaded on first search)",
-            vectorIndex.size(),
-            indexName);
+            null, vectorIndex.size(), indexName);
 
         // Load PQ data if PRODUCT quantization is enabled
         if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null) {
@@ -605,9 +604,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     } else {
       LogManager.instance()
-          .log(this, Level.SEVERE, "Skipping vector load for index %s (dimensions=%d, pages=%d)", indexName,
-              metadata.dimensions,
-              mutable.getTotalPages());
+          .log(this, Level.FINE, "Skipping vector load for index %s (dimensions=%d, pages=%d)", null, indexName,
+              metadata.dimensions, mutable.getTotalPages());
     }
   }
 
@@ -807,10 +805,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       // No persisted graph - build now for new indexes
-      LogManager.instance()
-          .log(this, Level.SEVERE, "DEBUG: initializeGraphIndex building graph for %s, vectorIndex.size=%d", indexName,
-              vectorIndex.size());
-
       // NOTE: buildGraphFromScratch() manages locking internally
       // Don't hold lock here - JVector uses parallel threads during graph build
       buildGraphFromScratch();
@@ -1141,6 +1135,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // SECONDARY DEFENSE (issue #3722): Cross-check page-parsed vectors against actual document count.
     // If pages have corrupted entries (e.g., old-format tombstones), the parser may miss many vectors.
     // In that case, fall back to scanning documents directly to rebuild the vector list.
+    boolean documentScanPerformed = false;
     final String typeName = getTypeName();
     if (typeName != null && !ridToLatestVector.isEmpty()) {
       try {
@@ -1159,7 +1154,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final Document doc = (Document) record;
             final RID rid = doc.getIdentity();
             if (!ridToLatestVector.containsKey(rid)) {
-              // Document exists but was not found in pages — add it with a synthetic vector ID
+              // Document exists but was not found in pages - add it with a synthetic vector ID
               final Object vectorObj = doc.get(vectorProp);
               if (vectorObj != null) {
                 final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
@@ -1172,6 +1167,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             return true;
           });
 
+          documentScanPerformed = true;
           LogManager.instance().log(this, Level.INFO,
               "After document scan fallback: %d active vectors for graph build (was %d from pages only)",
               ridToLatestVector.size(), activeVectorIds.length);
@@ -1179,6 +1175,30 @@ public class LSMVectorIndex implements Index, IndexInternal {
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
             "Document count cross-check failed for index %s: %s", indexName, e.getMessage());
+      }
+    }
+
+    // TERTIARY DEFENSE (issue #3722): Cross-check against in-memory vectorIndex.
+    // The vectorIndex contains entries from pages loaded at startup PLUS entries added via put().
+    // If page parsing missed vectors (corruption, stale page count, etc.) but they exist in
+    // the in-memory vectorIndex, recover them. This catches cases where the document scan
+    // fallback could not trigger (e.g., typeName is null, countType failed, or the type has
+    // multiple buckets making the count comparison unreliable).
+    if (!documentScanPerformed) {
+      final int inMemorySize = vectorIndex.size();
+      if (inMemorySize > ridToLatestVector.size()) {
+        final int pageParsedCount = ridToLatestVector.size();
+        // Recover entries from the in-memory vectorIndex that are missing from pages
+        vectorIndex.getAllVectorIds().forEach(vectorId -> {
+          final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+          if (loc != null && !loc.deleted && !ridToLatestVector.containsKey(loc.rid))
+            ridToLatestVector.put(loc.rid,
+                new VectorEntryForGraphBuild(vectorId, loc.rid, loc.isCompacted, loc.absoluteFileOffset));
+        });
+        if (ridToLatestVector.size() > pageParsedCount)
+          LogManager.instance().log(this, Level.WARNING,
+              "Recovered %d vectors from in-memory index (page-parsed: %d, in-memory: %d) for index %s",
+              ridToLatestVector.size() - pageParsedCount, pageParsedCount, inMemorySize, indexName);
       }
     }
 
@@ -3876,10 +3896,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public void setMetadata(final IndexMetadata metadata) {
     checkIsValid();
     this.metadata = (LSMVectorIndexMetadata) metadata;
-
-    // DEBUG: Log metadata being set
-    LogManager.instance().log(this, Level.SEVERE,
-        "DEBUG: setMetadata called for index %s, quantizationType=%s", indexName, this.metadata.quantizationType);
   }
 
   @Override
