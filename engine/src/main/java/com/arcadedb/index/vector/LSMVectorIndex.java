@@ -95,6 +95,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -165,6 +167,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // This prevents vectorNeighbors queries from blocking for minutes on large indexes.
   private volatile Thread  asyncRebuildThread     = null;
   private volatile boolean asyncRebuildInProgress = false;
+
+  // Dedicated ForkJoinPool for graph building, so we can shut it down on close() to cancel
+  // long-running build operations that would otherwise block server shutdown.
+  private volatile ForkJoinPool graphBuildPool;
 
   // Live incremental graph builder: inserts vectors one at a time via addGraphNode()
   // instead of rebuilding the entire graph. The builder stays alive across put() calls.
@@ -994,6 +1000,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Returns the dedicated ForkJoinPool for graph building, creating it if needed.
+   * Using a per-index pool allows us to cancel long-running builds on shutdown
+   * by calling shutdownNow() on this pool.
+   */
+  private synchronized ForkJoinPool getOrCreateGraphBuildPool() {
+    ForkJoinPool pool = graphBuildPool;
+    if (pool == null || pool.isShutdown()) {
+      final int cores = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+      pool = new ForkJoinPool(cores);
+      graphBuildPool = pool;
+    }
+    return pool;
+  }
+
+  /**
    * Build graph from scratch by reading all active vectors and constructing the graph index.
    * After building, persists the graph to disk and transitions to IMMUTABLE state.
    */
@@ -1400,6 +1421,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       // Build the graph index (parallel operation - no lock held)
+      // Use a dedicated pool so we can cancel building on shutdown via shutdownNow()
+      final ForkJoinPool buildPool = getOrCreateGraphBuildPool();
       final ImmutableGraphIndex builtGraph;
       try (final GraphIndexBuilder builder = new GraphIndexBuilder(
           scoreProvider,
@@ -1409,7 +1432,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           metadata.neighborOverflowFactor,    // neighbor overflow factor (default: 1.2)
           metadata.alphaDiversityRelaxation,  // alpha diversity relaxation (default: 1.2)
           metadata.addHierarchy,
-          true)) {         // enable concurrent updates
+          true,            // enable concurrent updates
+          buildPool,       // simdExecutor - dedicated pool for cancellation support
+          buildPool)) {    // parallelExecutor
 
         // Start progress monitoring thread if callback provided
         final Thread progressMonitor;
@@ -1797,6 +1822,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final BuildScoreProvider scoreProvider = BuildScoreProvider.randomAccessScoreProvider(liveVectorValues,
           metadata.similarityFunction);
 
+      final ForkJoinPool buildPool = getOrCreateGraphBuildPool();
       liveBuilder = new GraphIndexBuilder(
           scoreProvider,
           metadata.dimensions,
@@ -1805,7 +1831,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           metadata.neighborOverflowFactor,
           metadata.alphaDiversityRelaxation,
           metadata.addHierarchy,
-          true // concurrent
+          true, // concurrent
+          buildPool, // simdExecutor - dedicated pool for cancellation support
+          buildPool  // parallelExecutor
       );
 
       LogManager.instance().log(this, Level.INFO,
@@ -3690,6 +3718,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public void close() {
     // Cancel inactivity rebuild timer (issue #3737)
     cancelInactivityRebuildTimer();
+
+    // Shut down the dedicated graph build pool to cancel any in-progress build operations.
+    // This interrupts ForkJoinPool workers inside jvector's GraphIndexBuilder.build(),
+    // which otherwise would not respond to Thread.interrupt() on the parent thread.
+    final ForkJoinPool pool = graphBuildPool;
+    if (pool != null && !pool.isShutdown()) {
+      pool.shutdownNow();
+      try {
+        pool.awaitTermination(5, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
 
     // Cancel any in-progress async graph rebuild
     final Thread rebuildThread = asyncRebuildThread;
