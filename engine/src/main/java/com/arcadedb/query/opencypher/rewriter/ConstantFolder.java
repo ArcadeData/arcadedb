@@ -108,11 +108,7 @@ public class ConstantFolder extends ExpressionRewriter {
    * Fold constant arithmetic operations.
    */
   private Object foldArithmetic(final Object left, final Object right, final ArithmeticExpression.Operator op) {
-    // String concatenation
-    if (op == ArithmeticExpression.Operator.ADD && (left instanceof String || right instanceof String))
-      return left.toString() + right.toString();
-
-    // List concatenation/append
+    // List concatenation/append (must be checked before string concatenation)
     if (op == ArithmeticExpression.Operator.ADD) {
       if (left instanceof List && right instanceof List) {
         final List<Object> combined = new ArrayList<>((List<?>) left);
@@ -131,6 +127,10 @@ public class ConstantFolder extends ExpressionRewriter {
         return prepended;
       }
     }
+
+    // String concatenation
+    if (op == ArithmeticExpression.Operator.ADD && (left instanceof String || right instanceof String))
+      return left.toString() + right.toString();
 
     // Numeric operations
     if (!(left instanceof Number) || !(right instanceof Number))

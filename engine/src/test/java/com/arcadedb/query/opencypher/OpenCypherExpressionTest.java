@@ -326,6 +326,51 @@ class OpenCypherExpressionTest {
     assertThat(resultSet.hasNext()).isFalse();
   }
 
+  @SuppressWarnings("unchecked")
+  @Test
+  void listPlusStringAppend() {
+    // GitHub issue #3771: adding constant string to list with + operator should do list append, not string concatenation
+    // Neo4j behavior: [] + "a" returns ["a"]
+    final ResultSet rs1 = database.query("opencypher", "RETURN [] + 'a' AS result");
+    assertThat(rs1.hasNext()).isTrue();
+    final Object result1 = rs1.next().getProperty("result");
+    assertThat(result1).isInstanceOf(List.class);
+    assertThat((List<Object>) result1).containsExactly("a");
+    assertThat(rs1.hasNext()).isFalse();
+
+    // Neo4j behavior: "a" + [] returns ["a"]
+    final ResultSet rs2 = database.query("opencypher", "RETURN 'a' + [] AS result");
+    assertThat(rs2.hasNext()).isTrue();
+    final Object result2 = rs2.next().getProperty("result");
+    assertThat(result2).isInstanceOf(List.class);
+    assertThat((List<Object>) result2).containsExactly("a");
+    assertThat(rs2.hasNext()).isFalse();
+
+    // Neo4j behavior: [] + ["a"] returns ["a"]
+    final ResultSet rs3 = database.query("opencypher", "RETURN [] + ['a'] AS result");
+    assertThat(rs3.hasNext()).isTrue();
+    final Object result3 = rs3.next().getProperty("result");
+    assertThat(result3).isInstanceOf(List.class);
+    assertThat((List<Object>) result3).containsExactly("a");
+    assertThat(rs3.hasNext()).isFalse();
+
+    // Also test with non-empty list: [1, 2] + "a" returns [1, 2, "a"]
+    final ResultSet rs4 = database.query("opencypher", "RETURN [1, 2] + 'a' AS result");
+    assertThat(rs4.hasNext()).isTrue();
+    final Object result4 = rs4.next().getProperty("result");
+    assertThat(result4).isInstanceOf(List.class);
+    assertThat((List<Object>) result4).containsExactly(1L, 2L, "a");
+    assertThat(rs4.hasNext()).isFalse();
+
+    // "a" + [1, 2] returns ["a", 1, 2]
+    final ResultSet rs5 = database.query("opencypher", "RETURN 'a' + [1, 2] AS result");
+    assertThat(rs5.hasNext()).isTrue();
+    final Object result5 = rs5.next().getProperty("result");
+    assertThat(result5).isInstanceOf(List.class);
+    assertThat((List<Object>) result5).containsExactly("a", 1L, 2L);
+    assertThat(rs5.hasNext()).isFalse();
+  }
+
   @Test
   void comparisonWithArithmeticOperands() {
     // Verify that comparisons work when operands contain arithmetic expressions

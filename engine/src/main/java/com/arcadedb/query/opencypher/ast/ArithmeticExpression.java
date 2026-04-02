@@ -97,11 +97,7 @@ public class ArithmeticExpression implements Expression {
     if (leftValue == null || rightValue == null)
       return null;
 
-    // String concatenation for + operator
-    if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String))
-      return leftValue.toString() + rightValue.toString();
-
-    // List concatenation/append for + operator
+    // List concatenation/append for + operator (must be checked before string concatenation)
     if (operator == Operator.ADD) {
       if (leftValue instanceof List && rightValue instanceof List) {
         final List<Object> combined = new ArrayList<>((List<?>) leftValue);
@@ -120,6 +116,10 @@ public class ArithmeticExpression implements Expression {
         return prepended;
       }
     }
+
+    // String concatenation for + operator
+    if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String))
+      return leftValue.toString() + rightValue.toString();
 
     // Temporal arithmetic: date/time ± duration, duration ± duration, duration * number
     final Object temporalResult = evaluateTemporalArithmetic(leftValue, rightValue, operator);

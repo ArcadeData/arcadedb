@@ -151,12 +151,7 @@ public class ExpressionEvaluator {
     if (leftValue == null || rightValue == null)
       return null;
 
-    // String concatenation for + operator
-    if (expression.getOperator() == ArithmeticExpression.Operator.ADD
-        && (leftValue instanceof String || rightValue instanceof String))
-      return leftValue.toString() + rightValue.toString();
-
-    // List concatenation/append for + operator
+    // List concatenation/append for + operator (must be checked before string concatenation)
     if (expression.getOperator() == ArithmeticExpression.Operator.ADD) {
       if (leftValue instanceof List && rightValue instanceof List) {
         final List<Object> combined = new ArrayList<>((List<?>) leftValue);
@@ -175,6 +170,11 @@ public class ExpressionEvaluator {
         return prepended;
       }
     }
+
+    // String concatenation for + operator
+    if (expression.getOperator() == ArithmeticExpression.Operator.ADD
+        && (leftValue instanceof String || rightValue instanceof String))
+      return leftValue.toString() + rightValue.toString();
 
     // Temporal arithmetic with pre-evaluated values
     if (!(leftValue instanceof Number) || !(rightValue instanceof Number)) {
