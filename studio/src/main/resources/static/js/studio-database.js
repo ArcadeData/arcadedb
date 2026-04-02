@@ -2654,6 +2654,85 @@ function applyDefaultLabel(value) {
   if (globalCy != null) renderGraph();
 }
 
+function browseType(typeName) {
+  let database = getCurrentDatabase();
+  if (!database) return;
+
+  let limit = parseInt($("#inputLimit").val()) || 100;
+  let query = "select from `" + typeName + "` limit " + limit;
+
+  // If a graph already exists, append results to it
+  if (globalCy != null && globalResultset != null) {
+    $("#inputLanguage").val("sql");
+    editor.setValue(query);
+    globalActivateTab("tab-query");
+    globalActivateTab("tab-graph");
+
+    $("#executeSpinner").show();
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + database,
+      data: JSON.stringify({ language: "sql", command: escapeHtml(query), limit: limit, serializer: "studio" }),
+      beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+    }).done(function(data) {
+      $("#executeSpinner").hide();
+      appendToGraph(data.result);
+      $("#result-num").html(globalResultset.vertices.length + " vertices, " + globalTotalEdges + " edges");
+      $("#resultJson").val(JSON.stringify({ result: globalResultset }, null, 2));
+    }).fail(function(jqXHR) {
+      $("#executeSpinner").hide();
+      globalNotifyError(jqXHR.responseText);
+    });
+    return;
+  }
+
+  // No existing graph - use normal executeCommand flow
+  executeCommand("sql", query);
+}
+
+function browseType(typeName) {
+  let database = getCurrentDatabase();
+  if (!database) return;
+
+  let limit = parseInt($("#inputLimit").val()) || 100;
+  let query = "select from `" + typeName + "` limit " + limit;
+
+  $("#inputLanguage").val("sql");
+  editor.setValue(query);
+  globalActivateTab("tab-query");
+  globalActivateTab("tab-graph");
+
+  $("#executeSpinner").show();
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/command/" + database,
+    data: JSON.stringify({ language: "sql", command: escapeHtml(query), limit: limit, serializer: "studio" }),
+    beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+  }).done(function(data) {
+    $("#executeSpinner").hide();
+    $("#resultJson").val(JSON.stringify(data, null, 2));
+
+    if (globalCy != null && globalResultset != null && data.result.vertices.length > 0) {
+      // Append to existing graph
+      appendToGraph(data.result);
+      $("#result-num").html(globalResultset.vertices.length + " vertices, " + globalTotalEdges + " edges");
+    } else {
+      // First click or no vertices - create fresh graph
+      globalResultset = data.result;
+      globalCy = null;
+      $("#result-num").html(data.result.records.length);
+      renderGraph();
+    }
+
+    $("#inputGraphSearch").val("");
+  }).fail(function(jqXHR) {
+    $("#executeSpinner").hide();
+    globalNotifyError(jqXHR.responseText);
+  });
+}
+
 function executeCommand(language, query) {
   globalResultset = null;
 
@@ -2793,25 +2872,17 @@ function executeCommandGraph() {
       globalExplainPlan = data.explainPlan || null;
       renderFlameGraph(globalExplainPlan);
 
+      globalResultset = data.result;
+      globalCy = null;
+
       let activeTab = $("#tabs-command .active").attr("id");
-      let canAppend = globalGraphSettings.cumulativeSelection && globalCy != null
-          && data.result.vertices.length > 0;
 
-      if (canAppend) {
-        // Append new vertices and edges to the existing graph
-        appendToGraph(data.result);
-        $("#result-num").html(globalResultset.records.length);
+      if (data.result.vertices.length == 0 && data.result.records.length > 0) {
+        if (activeTab == "tab-table-sel") renderTable();
+        else globalActivateTab("tab-table");
       } else {
-        globalResultset = data.result;
-        globalCy = null;
-
-        if (data.result.vertices.length == 0 && data.result.records.length > 0) {
-          if (activeTab == "tab-table-sel") renderTable();
-          else globalActivateTab("tab-table");
-        } else {
-          if (activeTab == "tab-graph-sel") renderGraph();
-          else globalActivateTab("tab-graph");
-        }
+        if (activeTab == "tab-graph-sel") renderGraph();
+        else globalActivateTab("tab-graph");
       }
 
       // FORCE RESET OF THE SEARCH FIELD
@@ -3195,7 +3266,7 @@ function populateQuerySidebar() {
       let name = escapeHtml(row.name);
       let records = (row.records || 0).toLocaleString();
       html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\`\"); return false;' ";
+      html += "onclick='browseType(\"" + row.name + "\"); return false;' ";
       html += "title='" + name + " (" + records + " records)'>";
       html += "<span class='sidebar-badge-name'>" + name + "</span>";
       html += "<span class='sidebar-badge-count'>" + records + "</span>";
