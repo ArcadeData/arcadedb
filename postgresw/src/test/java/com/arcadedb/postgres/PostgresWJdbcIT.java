@@ -577,7 +577,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
             """);
       }
       try (var st = conn.createStatement()) {
-        try (var rs = st.executeQuery("SELECT * FROM article")) {
+        try (var rs = st.executeQuery("SELECT * FROM article ORDER BY id")) {
           assertThat(rs.next()).isTrue();
           assertThat(rs.getString("title")).isEqualTo("My first article");
           //comments is an array of embedded docs on first row
