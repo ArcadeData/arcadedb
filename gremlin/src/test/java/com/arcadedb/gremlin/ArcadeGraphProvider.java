@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.AbstractGraphProvider;
 import org.apache.tinkerpop.gremlin.LoadGraphWith;
+import org.apache.tinkerpop.gremlin.process.traversal.step.ComparabilitySemanticsTest;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.CountTest;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.ProfileTest;
 import org.apache.tinkerpop.gremlin.structure.Graph;
@@ -52,6 +53,9 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
     IGNORED_TESTS.put(ProfileTest.Traversals.class, Arrays.asList("testProfileStrategyCallback", "testProfileStrategyCallbackSideEffect"));
     IGNORED_TESTS.put(IoGraphTest.class, Arrays.asList("shouldReadWriteClassicToFileWithHelpers[graphml]", "shouldReadWriteModernToFileWithHelpers[graphml]"));
     IGNORED_TESTS.put(CountTest.Traversals.class, Arrays.asList("g_VX1X_valuesXageX_countXlocalX"));
+    // TinkerPop 3.8.0 comparability semantics: COMPARABILITY.compare() throws IllegalStateException for NaN
+    // instead of returning false, causing checkHasNext(false,...) to propagate the exception as a failure
+    IGNORED_TESTS.put(ComparabilitySemanticsTest.class, Arrays.asList("testCompareNaN"));
   }
 
   private static final Set<Class> IMPLEMENTATIONS = new HashSet<>() {{
