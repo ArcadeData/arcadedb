@@ -1136,21 +1136,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // If pages have corrupted entries (e.g., old-format tombstones), the parser may miss many vectors.
     // In that case, fall back to scanning documents directly to rebuild the vector list.
     boolean documentScanPerformed = false;
-    final String typeName = getTypeName();
-    if (typeName != null && !ridToLatestVector.isEmpty()) {
+    if (metadata.associatedBucketId != -1 && !ridToLatestVector.isEmpty()) {
       try {
-        final long docCount = database.countType(typeName, false);
+        final com.arcadedb.engine.Bucket bucket = database.getSchema().getBucketById(metadata.associatedBucketId);
+        final long docCount = database.countBucket(bucket.getName());
         if (ridToLatestVector.size() < docCount * 8 / 10) {
           LogManager.instance().log(this, Level.WARNING,
               "Page-parsed vectors (%d) significantly less than document count (%d) for index %s. "
                   + "Falling back to document scan to recover missing vectors.",
               ridToLatestVector.size(), docCount, indexName);
 
-          // Scan all documents to find vectors missing from the page-parsed set
+          // Scan all documents in the bucket to find vectors missing from the page-parsed set
           final String vectorProp =
               metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() :
                   "vector";
-          database.scanType(typeName, false, record -> {
+          database.scanBucket(bucket.getName(), record -> {
             final Document doc = (Document) record;
             final RID rid = doc.getIdentity();
             if (!ridToLatestVector.containsKey(rid)) {
