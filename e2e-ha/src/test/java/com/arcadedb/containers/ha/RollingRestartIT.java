@@ -420,47 +420,68 @@ class RollingRestartIT extends ContainersTestTemplate {
     db0.close();
     arcade0.stop();
 
-    TimeUnit.SECONDS.sleep(5);
+    // Wait for Raft leader election on the two remaining nodes before writing.
+    // A fixed sleep is insufficient: if the stopped node was the leader, the
+    // election can take longer than 5 s and writes would fail silently.
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> hasLeader(List.of(servers.get(1), servers.get(2))));
+
     db2.addUserAndPhotos(5, 10);
     expectedUsers += 5;
 
     arcade0.start();
-    TimeUnit.SECONDS.sleep(15);
+    waitForContainerHealthy(arcade0, 60);
+    // Create fresh ServerWrapper immediately: Testcontainers assigns a new host port on restart.
+    final ServerWrapper server0 = new ServerWrapper(arcade0);
+    TimeUnit.SECONDS.sleep(10); // allow Raft log catch-up before next write
 
     // Restart arcadedb-1 while writing
     logger.info("Restarting arcadedb-1 while writing");
+    final DatabaseWrapper db0Restart = new DatabaseWrapper(server0, idSupplier, wordSupplier);
     db2.addUserAndPhotos(5, 10);
     expectedUsers += 5;
     db1.close();
     arcade1.stop();
 
-    TimeUnit.SECONDS.sleep(5);
+    // Wait for leader on the two remaining active nodes (restarted arcade0, arcade2).
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> hasLeader(List.of(server0, servers.get(2))));
+
     db2.addUserAndPhotos(5, 10);
     expectedUsers += 5;
 
     arcade1.start();
-    TimeUnit.SECONDS.sleep(15);
+    waitForContainerHealthy(arcade1, 60);
+    // Fresh ServerWrapper for restarted arcade1.
+    final ServerWrapper server1 = new ServerWrapper(arcade1);
+    TimeUnit.SECONDS.sleep(10); // allow Raft log catch-up
 
     // Restart arcadedb-2 while writing
     logger.info("Restarting arcadedb-2 while writing");
-    final ServerWrapper server0 = new ServerWrapper(arcade0);
-    final ServerWrapper server1 = new ServerWrapper(arcade1);
-    final DatabaseWrapper db0Restart = new DatabaseWrapper(server0, idSupplier, wordSupplier);
     final DatabaseWrapper db1Restart = new DatabaseWrapper(server1, idSupplier, wordSupplier);
-
     db0Restart.addUserAndPhotos(5, 10);
     expectedUsers += 5;
     db2.close();
     arcade2.stop();
 
-    TimeUnit.SECONDS.sleep(5);
+    // Wait for leader on the two remaining active nodes (both restarted).
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> hasLeader(List.of(server0, server1)));
+
     db1Restart.addUserAndPhotos(5, 10);
     expectedUsers += 5;
 
     arcade2.start();
-    TimeUnit.SECONDS.sleep(15);
-
+    waitForContainerHealthy(arcade2, 60);
     final ServerWrapper server2 = new ServerWrapper(arcade2);
+    TimeUnit.SECONDS.sleep(10); // allow Raft log catch-up
+
     final DatabaseWrapper db2Restart = new DatabaseWrapper(server2, idSupplier, wordSupplier);
 
     logger.info("Waiting for final convergence (expected {} users)", expectedUsers);

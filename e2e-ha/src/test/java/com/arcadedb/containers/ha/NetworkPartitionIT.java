@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+import static org.assertj.core.api.Assertions.assertThat;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -308,13 +309,19 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     logger.info("Waiting for Raft leader step-down due to quorum loss");
     TimeUnit.SECONDS.sleep(15);
 
+    // Verify that a write is rejected during no-quorum.
+    // We use a plain INSERT (no LOCK TYPE) so the command fails at the Raft layer
+    // without acquiring a server-side type lock that could linger after reconnection.
     logger.info("Attempting write without quorum (should fail - Raft leader stepped down)");
+    boolean writeFailed = false;
     try {
-      db0.addUserAndPhotos(1, 1);
+      db0.command("INSERT INTO User SET id = -1");
       logger.warn("Write succeeded without quorum - unexpected for Raft with majority quorum");
     } catch (final Exception e) {
-      logger.info("Write correctly failed without quorum: {}", e.getMessage());
+      writeFailed = true;
+      logger.info("Write correctly rejected without quorum: {}", e.getMessage());
     }
+    assertThat(writeFailed).as("Write must be rejected when quorum is lost").isTrue();
 
     logger.info("Reconnecting nodes to restore quorum");
     reconnectToNetwork(nodeContainers[1]);
@@ -331,10 +338,6 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     TimeUnit.SECONDS.sleep(10);
 
     // Verify the count stayed at 10 — no writes succeeded during the no-quorum period.
-    // Writing after a complete partition triggers a file-lock bug in ArcadeDB where the
-    // first write holds LOCK TYPE User for ~30s (server-side), causing all subsequent
-    // writes to timeout and eventually crashing the query handler (HTTP 500 on all nodes).
-    // The no-quorum guarantee is validated by the count staying at 10 on all nodes.
     logger.info("Verifying no data was committed during no-quorum period (expected 10 users on all nodes)");
     Awaitility.await()
         .atMost(90, TimeUnit.SECONDS)
