@@ -199,7 +199,8 @@ public class PageManagerFlushThread extends Thread {
   }
 
   public void waitForCurrentFlushToComplete(final Database database) throws InterruptedException {
-    while (nextPagesToFlush.get() != null && database.equals(nextPagesToFlush.get().database))
+    PagesToFlush current;
+    while ((current = nextPagesToFlush.get()) != null && database.equals(current.database))
       Thread.sleep(1);
   }
 
@@ -219,6 +220,9 @@ public class PageManagerFlushThread extends Thread {
               break;
             try {
               pageManager.flushPage(page);
+            } catch (final DatabaseMetadataException e) {
+              // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+              LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
             } catch (final IOException e) {
               LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
             } finally {
@@ -232,15 +236,24 @@ public class PageManagerFlushThread extends Thread {
     // Phase 2: mark the database as no longer suspended
     suspended.remove(database);
 
-    // Phase 3: drain any batches that were deferred during Phase 1 back into the main queue
+    // Phase 3: drain any batches that were deferred during Phase 1 back into the main queue.
+    // These batches were committed while Phase 1 was running; enqueue them so the background
+    // thread picks them up. Note: they are appended to the tail of the queue, so if any
+    // post-unsuspend commits have already been enqueued they will be flushed first. WAL-based
+    // recovery guarantees correctness even if the flush order differs from commit order.
     final ConcurrentLinkedQueue<PagesToFlush> newDeferred = deferredByDatabase.remove(database);
     if (newDeferred != null) {
       for (final PagesToFlush batch : newDeferred) {
-        try {
-          queue.offer(batch, 1, TimeUnit.SECONDS);
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          break;
+        while (running) {
+          try {
+            if (queue.offer(batch, 1, TimeUnit.SECONDS))
+              break;
+            LogManager.instance().log(this, Level.WARNING,
+                "Page flush queue is full while re-enqueueing deferred batch for database '%s'; retrying", database.getName());
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            break;
+          }
         }
       }
     }
