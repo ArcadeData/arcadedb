@@ -18,8 +18,10 @@
  */
 package com.arcadedb.remote;
 
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -139,5 +141,61 @@ class RemoteMutableEdgeTest {
     // Identity may or may not be set depending on source attributes
     if (edge.getIdentity() != null)
       assertThat(map).containsKey("@rid");
+  }
+
+  @Test
+  void getOutVertexLoadsFromRemote() {
+    final Vertex mockVertex = mock(Vertex.class);
+    final Result mockResult = mock(Result.class);
+    final ResultSet mockResultSet = mock(ResultSet.class);
+
+    when(mockDatabase.query(ArgumentMatchers.eq("sql"), ArgumentMatchers.contains("#1:0"))).thenReturn(mockResultSet);
+    when(mockResultSet.hasNext()).thenReturn(true);
+    when(mockResultSet.next()).thenReturn(mockResult);
+    when(mockResult.getVertex()).thenReturn(Optional.of(mockVertex));
+
+    assertThat(edge.getOutVertex()).isSameAs(mockVertex);
+  }
+
+  @Test
+  void getInVertexLoadsFromRemote() {
+    final Vertex mockVertex = mock(Vertex.class);
+    final Result mockResult = mock(Result.class);
+    final ResultSet mockResultSet = mock(ResultSet.class);
+
+    when(mockDatabase.query(ArgumentMatchers.eq("sql"), ArgumentMatchers.contains("#2:0"))).thenReturn(mockResultSet);
+    when(mockResultSet.hasNext()).thenReturn(true);
+    when(mockResultSet.next()).thenReturn(mockResult);
+    when(mockResult.getVertex()).thenReturn(Optional.of(mockVertex));
+
+    assertThat(edge.getInVertex()).isSameAs(mockVertex);
+  }
+
+  @Test
+  void getVertexOutDirectionLoadsFromRemote() {
+    final Vertex mockVertex = mock(Vertex.class);
+    final Result mockResult = mock(Result.class);
+    final ResultSet mockResultSet = mock(ResultSet.class);
+
+    when(mockDatabase.query(ArgumentMatchers.eq("sql"), ArgumentMatchers.contains("#1:0"))).thenReturn(mockResultSet);
+    when(mockResultSet.hasNext()).thenReturn(true);
+    when(mockResultSet.next()).thenReturn(mockResult);
+    when(mockResult.getVertex()).thenReturn(Optional.of(mockVertex));
+
+    assertThat(edge.getVertex(Vertex.DIRECTION.OUT)).isSameAs(mockVertex);
+  }
+
+  @Test
+  void getVertexInDirectionLoadsFromRemote() {
+    final Vertex mockVertex = mock(Vertex.class);
+    final Result mockResult = mock(Result.class);
+    final ResultSet mockResultSet = mock(ResultSet.class);
+
+    when(mockDatabase.query(ArgumentMatchers.eq("sql"), ArgumentMatchers.contains("#2:0"))).thenReturn(mockResultSet);
+    when(mockResultSet.hasNext()).thenReturn(true);
+    when(mockResultSet.next()).thenReturn(mockResult);
+    when(mockResult.getVertex()).thenReturn(Optional.of(mockVertex));
+
+    assertThat(edge.getVertex(Vertex.DIRECTION.IN)).isSameAs(mockVertex);
   }
 }

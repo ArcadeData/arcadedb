@@ -21,10 +21,12 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -145,6 +147,31 @@ public class RemoteMutableEdge extends MutableEdge {
   @Override
   protected Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {
     return value;
+  }
+
+  @Override
+  public Vertex getOutVertex() {
+    return loadVertex(out);
+  }
+
+  @Override
+  public Vertex getInVertex() {
+    return loadVertex(in);
+  }
+
+  @Override
+  public Vertex getVertex(final Vertex.DIRECTION direction) {
+    if (direction == Vertex.DIRECTION.OUT)
+      return getOutVertex();
+    else
+      return getInVertex();
+  }
+
+  private Vertex loadVertex(final RID rid) {
+    final ResultSet result = remoteDatabase.query("sql", "select from " + rid);
+    if (result.hasNext())
+      return result.next().getVertex().get();
+    return null;
   }
 
   @Override

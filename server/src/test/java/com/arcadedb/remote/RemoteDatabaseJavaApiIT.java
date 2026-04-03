@@ -191,7 +191,7 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
 
     assertThat(database.countType("Node", true)).isEqualTo(1);
 
-    assertThat(rid[0].asVertex().getInteger("id")).isEqualTo(CONCURRENT_THREADS * TOT);
+    assertThat(database.lookupByRID(rid[0]).asVertex().getInteger("id")).isEqualTo(CONCURRENT_THREADS * TOT);
     assertThat(committed.get()).isEqualTo(CONCURRENT_THREADS * TOT);
     assertThat(caughtExceptions.get()).isEqualTo(0);
     assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);

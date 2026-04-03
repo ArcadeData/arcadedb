@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 
@@ -25,8 +26,8 @@ import java.util.*;
 
 public class VertexIterator extends ResettableIteratorBase<Vertex> {
 
-  public VertexIterator(final EdgeSegment current) {
-    super(null, current);
+  public VertexIterator(final DatabaseInternal database, final EdgeSegment current) {
+    super(database, current);
   }
 
   @Override
@@ -61,7 +62,7 @@ public class VertexIterator extends ResettableIteratorBase<Vertex> {
 
       try {
         // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
-        return rid.asVertex(false);
+        return (Vertex) database.lookupByRID(rid, false);
       } catch (final RecordNotFoundException e) {
         // SKIP
       }

@@ -193,6 +193,11 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
         (int) (getPosition() / ((LocalBucket) db.getSchema().getBucketById(bucketId)).getMaxRecordsInPage()));
   }
 
+  public PageId getPageId(final BasicDatabase db) {
+    return new PageId(db, bucketId,
+        (int) (getPosition() / ((LocalBucket) db.getSchema().getBucketById(bucketId)).getMaxRecordsInPage()));
+  }
+
   private BasicDatabase requireDatabase() {
     final BasicDatabase db = DatabaseContext.INSTANCE.getActiveDatabase();
     if (db == null)

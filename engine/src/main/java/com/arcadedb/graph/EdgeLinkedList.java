@@ -62,7 +62,7 @@ public class EdgeLinkedList {
 
   public Iterator<Vertex> vertexIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new VertexIterator(lastSegment);
+      return new VertexIterator((DatabaseInternal) vertex.getDatabase(), lastSegment);
     return new VertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
   }
 
