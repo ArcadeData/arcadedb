@@ -40,13 +40,14 @@ import java.util.logging.*;
  * a major bottleneck under high-throughput ingestion.
  */
 public class PageManagerFlushThread extends Thread {
-  private final        PageManager                          pageManager;
-  public final         ArrayBlockingQueue<PagesToFlush>     queue;
-  private final        String                               logContext;
-  private volatile     boolean                              running          = true;
-  private final        ConcurrentHashMap<Database, Boolean> suspended        = new ConcurrentHashMap<>(); // USED DURING BACKUP
-  private final static PagesToFlush                         SHUTDOWN_THREAD  = new PagesToFlush(null);
-  private final        AtomicReference<PagesToFlush>        nextPagesToFlush = new AtomicReference<>();
+  private final        PageManager                                              pageManager;
+  public final         ArrayBlockingQueue<PagesToFlush>                         queue;
+  private final        String                                                   logContext;
+  private volatile     boolean                                                  running             = true;
+  private final        ConcurrentHashMap<Database, Boolean>                     suspended           = new ConcurrentHashMap<>(); // USED DURING BACKUP
+  private final static PagesToFlush                                             SHUTDOWN_THREAD     = new PagesToFlush(null);
+  private final        AtomicReference<PagesToFlush>                            nextPagesToFlush    = new AtomicReference<>();
+  private final        ConcurrentHashMap<Database, ConcurrentLinkedQueue<PagesToFlush>> deferredByDatabase = new ConcurrentHashMap<>();
 
   /** O(1) index: pageId → most recent MutablePage in the flush queue or currently being flushed. */
   private final        ConcurrentHashMap<PageId, MutablePage> pageIndex = new ConcurrentHashMap<>();
@@ -155,6 +156,11 @@ public class PageManagerFlushThread extends Thread {
           running = false;
         else if (!pagesToFlush.pages.isEmpty()) {
           if (database == null || pagesToFlush.database.equals(database)) {
+            if (database == null && isSuspended((Database) pagesToFlush.database)) {
+              deferredByDatabase.computeIfAbsent((Database) pagesToFlush.database, k -> new ConcurrentLinkedQueue<>()).offer(pagesToFlush);
+              return;
+            }
+
             if (!pagesToFlush.database.isOpen())
               return;
 
@@ -192,10 +198,53 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
+  public void waitForCurrentFlushToComplete(final Database database) throws InterruptedException {
+    while (nextPagesToFlush.get() != null && database.equals(nextPagesToFlush.get().database))
+      Thread.sleep(1);
+  }
+
   public boolean setSuspended(final Database database, final boolean value) {
     if (value)
       return suspended.putIfAbsent(database, true) == null;
+
+    // Phase 1: synchronously flush all deferred batches accumulated while suspended
+    final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
+    if (deferred != null) {
+      for (final PagesToFlush batch : deferred) {
+        if (!batch.database.isOpen())
+          continue;
+        synchronized (batch.pages) {
+          for (final MutablePage page : batch.pages) {
+            if (!batch.database.isOpen())
+              break;
+            try {
+              pageManager.flushPage(page);
+            } catch (final IOException e) {
+              LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+            } finally {
+              pageIndex.remove(page.getPageId(), page);
+            }
+          }
+        }
+      }
+    }
+
+    // Phase 2: mark the database as no longer suspended
     suspended.remove(database);
+
+    // Phase 3: drain any batches that were deferred during Phase 1 back into the main queue
+    final ConcurrentLinkedQueue<PagesToFlush> newDeferred = deferredByDatabase.remove(database);
+    if (newDeferred != null) {
+      for (final PagesToFlush batch : newDeferred) {
+        try {
+          queue.offer(batch, 1, TimeUnit.SECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+    }
+
     return true;
   }
 
