@@ -53,9 +53,9 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
     IGNORED_TESTS.put(ProfileTest.Traversals.class, Arrays.asList("testProfileStrategyCallback", "testProfileStrategyCallbackSideEffect"));
     IGNORED_TESTS.put(IoGraphTest.class, Arrays.asList("shouldReadWriteClassicToFileWithHelpers[graphml]", "shouldReadWriteModernToFileWithHelpers[graphml]"));
     IGNORED_TESTS.put(CountTest.Traversals.class, Arrays.asList("g_VX1X_valuesXageX_countXlocalX"));
-    // TinkerPop 3.8.0 comparability semantics: COMPARABILITY.compare() throws IllegalStateException for NaN
+    // TinkerPop 3.8.0 comparability semantics: COMPARABILITY.compare() throws IllegalStateException for mixed types
     // instead of returning false, causing checkHasNext(false,...) to propagate the exception as a failure
-    IGNORED_TESTS.put(ComparabilitySemanticsTest.class, Arrays.asList("testCompareNaN"));
+    IGNORED_TESTS.put(ComparabilitySemanticsTest.class, Arrays.asList("testCompareNaN", "testAnd", "testNot", "testOr", "testXor"));
   }
 
   private static final Set<Class> IMPLEMENTATIONS = new HashSet<>() {{
