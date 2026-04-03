@@ -211,7 +211,7 @@ class JdbcQueriesTest extends ArcadeContainerTemplate {
     }
 
     try (final Statement st = conn.createStatement()) {
-      try (final ResultSet rs = st.executeQuery("SELECT * FROM article")) {
+      try (final ResultSet rs = st.executeQuery("SELECT * FROM article ORDER BY id")) {
         assertThat(rs.next()).isTrue();
         assertThat(rs.getString("title")).isEqualTo("My first article");
         //comments is an array of embedded docs on first row
