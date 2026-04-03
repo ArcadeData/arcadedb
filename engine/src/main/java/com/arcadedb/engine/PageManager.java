@@ -141,7 +141,7 @@ public class PageManager extends LockContext {
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
     if (flushThread.setSuspended(database, true)) {
-      flushThread.flushPagesFromQueueToDisk(database, 0L);
+      flushThread.waitForCurrentFlushToComplete(database);
       try {
         CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
       } finally {
