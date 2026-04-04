@@ -85,8 +85,9 @@ class RaftHTTP2ServersCreateReplicatedDatabaseIT extends BaseRaftHATest {
             .getJSONArray("result").getJSONObject(0).getString(RID_PROPERTY);
 
         testEachServer((checkServer) ->
-            assertThat(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result")).isNotEmpty()
-                .withFailMessage("executed on server " + serverIndex + " checking on server " + checkServer));
+            assertThat(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result"))
+                .withFailMessage("executed on server " + serverIndex + " checking on server " + checkServer)
+                .isNotEmpty());
       }
     });
   }
