@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.*;
  */
 class RaftReplicationWriteAgainstReplicaIT extends BaseRaftHATest {
 
-  private static final int    TXS          = 50;
+  private static final int    TXS          = 50; // sufficient to verify HTTP write forwarding
   private static final String REPLICA_TYPE = "RaftReplicaWrite";
 
   @Override

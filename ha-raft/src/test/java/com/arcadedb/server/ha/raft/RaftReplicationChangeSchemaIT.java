@@ -135,6 +135,12 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
         databases[leaderIndex].newVertex("RaftIndexedVertex0").set("propertyIndexed", i).save();
     });
 
+    // TODO: a follower's commit() call with duplicate unique-key values should throw
+    // TransactionException once the LSM tree index properly validates against replicated
+    // pages during the first-phase commit on the follower. Currently the follower index
+    // state leads to ArrayIndexOutOfBoundsException instead of TransactionException,
+    // indicating a production bug in the index replication path. Covered by RaftIndexOperations3ServersIT.
+
     // DROP INDEX
     databases[leaderIndex].getSchema().dropIndex(idx.getName());
     testOnAllServers((database) -> isNotInSchemaFile(database, idx.getName()));
