@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.Index;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -90,6 +91,13 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
     for (final Database database : databases)
       assertThat(database.getSchema().existsBucket("raftNewBucket"))
           .as("All servers should have bucket raftNewBucket in memory").isTrue();
+
+    // CHANGE SCHEMA FROM A REPLICA (ERROR EXPECTED)
+    // Non-leader index: find any follower
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+    assertThatThrownBy(() -> databases[followerIndex].getSchema().createVertexType("RaftRuntimeVertex1"))
+        .isInstanceOf(ServerIsNotTheLeaderException.class);
+    testOnAllServers((database) -> isNotInSchemaFile(database, "RaftRuntimeVertex1"));
 
     // DROP PROPERTY
     type1.dropProperty("nameNotFoundInDictionary");
@@ -177,20 +185,15 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
   }
 
   private void checkSchemaFilesAreTheSameOnAllServers() {
-    // In the Raft implementation, the schema version counter may differ by one between the leader
-    // and replicas due to the schema version increment in RaftReplicatedDatabase.recordFileChanges.
-    // We verify that the functional content (types, properties, indexes) is identical across nodes
-    // by normalising the schemaVersion field before comparison.
     assertThat(schemaFiles.size()).isEqualTo(getServerCount());
     String first = null;
     for (final Map.Entry<String, String> entry : schemaFiles.entrySet()) {
-      final String normalised = entry.getValue().replaceAll("\"schemaVersion\":\\d+", "\"schemaVersion\":0");
       if (first == null)
-        first = normalised;
+        first = entry.getValue();
       else
-        assertThat(normalised)
+        assertThat(entry.getValue())
             .withFailMessage("Server %s has different schema:\nFIRST:\n%s\n%s:\n%s",
-                entry.getKey(), first, entry.getKey(), normalised)
+                entry.getKey(), first, entry.getKey(), entry.getValue())
             .isEqualTo(first);
     }
   }

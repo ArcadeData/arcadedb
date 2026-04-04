@@ -50,6 +50,7 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ha.HAReplicatedDatabase;
 import com.arcadedb.server.ha.HAServer;
 import org.apache.ratis.protocol.Message;
@@ -763,8 +764,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
-    if (!isLeader())
-      return proxied.recordFileChanges(callback);
+    if (!isLeader()) {
+      final String leaderAddr = raftHAServer.getLeaderHttpAddress();
+      throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
+          leaderAddr != null ? leaderAddr : "");
+    }
 
     // On the leader, record file changes and send them via Raft immediately
     // (like the legacy HA system) so replicas have the files before WAL pages arrive
@@ -799,11 +803,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             removeFiles.put(c.fileId, c.fileName);
         }
 
-      if (schemaChanged) {
-        final JSONObject schemaJson = proxied.getSchema().getEmbedded().toJSON();
-        schemaJson.put("schemaVersion", schemaJson.getLong("schemaVersion") + 1);
-        serializedSchema = schemaJson.toString();
-      }
+      if (schemaChanged)
+        serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
 
       // Collect any WAL entries buffered by commit() calls that occurred inside the callback
       final List<byte[]> walEntries = new ArrayList<>(schemaWalBuffer.get());
