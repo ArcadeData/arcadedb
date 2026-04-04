@@ -27,6 +27,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -327,5 +330,65 @@ class SQLCaseTest {
     assertThat(results.hasNext()).isTrue();
     final Result result = results.next();
     assertThat((Object) result.getProperty("category")).isEqualTo("unknown");
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3777
+   * ORDER BY CASE WHEN ... END fails with NullPointerException on baseExpr.identifier
+   */
+  @Test
+  void orderByCaseWhenExpression() {
+    // SELECT with inline CASE WHEN in ORDER BY - should not throw NPE
+    final ResultSet results = database.query("sql",
+        "SELECT name, status FROM Person WHERE status IS NOT NULL ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END");
+
+    final List<String> names = new ArrayList<>();
+    while (results.hasNext()) {
+      names.add(results.next().getProperty("name"));
+    }
+    // 'active' (Eve) should come before 'inactive' (Frank)
+    assertThat(names).containsExactly("Eve", "Frank");
+  }
+
+  @Test
+  void orderByCaseWhenExpressionDesc() {
+    // ORDER BY CASE WHEN DESC
+    final ResultSet results = database.query("sql",
+        "SELECT name, status FROM Person WHERE status IS NOT NULL ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END DESC");
+
+    final List<String> names = new ArrayList<>();
+    while (results.hasNext()) {
+      names.add(results.next().getProperty("name"));
+    }
+    // DESC: 'inactive' (Frank) first, then 'active' (Eve)
+    assertThat(names).containsExactly("Frank", "Eve");
+  }
+
+  @Test
+  void orderByCaseWhenWithSelectStar() {
+    // SELECT * with CASE WHEN in ORDER BY
+    final ResultSet results = database.query("sql",
+        "SELECT * FROM Person WHERE status IS NOT NULL ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END");
+
+    final List<String> names = new ArrayList<>();
+    while (results.hasNext()) {
+      names.add(results.next().getProperty("name"));
+    }
+    assertThat(names).containsExactly("Eve", "Frank");
+  }
+
+  @Test
+  void orderByExtendedCaseWhenExpression() {
+    // Extended CASE in ORDER BY: CASE expr WHEN val THEN result
+    final ResultSet results = database.query("sql",
+        "SELECT name, age FROM Person WHERE age IS NOT NULL ORDER BY CASE age WHEN 15 THEN 0 WHEN 25 THEN 1 ELSE 2 END");
+
+    final List<String> names = new ArrayList<>();
+    while (results.hasNext()) {
+      names.add(results.next().getProperty("name"));
+    }
+    // Alice (age=15) -> 0, Bob (age=25) -> 1, Charlie/Dave -> 2
+    assertThat(names.get(0)).isEqualTo("Alice");
+    assertThat(names.get(1)).isEqualTo("Bob");
   }
 }
