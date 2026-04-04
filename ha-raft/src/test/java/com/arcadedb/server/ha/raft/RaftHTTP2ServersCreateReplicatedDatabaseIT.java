@@ -43,7 +43,7 @@ class RaftHTTP2ServersCreateReplicatedDatabaseIT extends BaseRaftHATest {
   @Test
   void createReplicatedDatabase() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:2480/api/v1/server").openConnection();
+        "http://127.0.0.1:248" + 0 + "/api/v1/server").openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -83,6 +83,8 @@ class RaftHTTP2ServersCreateReplicatedDatabaseIT extends BaseRaftHATest {
             command(serverIndex, "create vertex RaftCreateVertex" + serverIndex
                 + " content {\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}"))
             .getJSONArray("result").getJSONObject(0).getString(RID_PROPERTY);
+
+        waitForReplicationIsCompleted(serverIndex);
 
         testEachServer((checkServer) ->
             assertThat(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result"))
