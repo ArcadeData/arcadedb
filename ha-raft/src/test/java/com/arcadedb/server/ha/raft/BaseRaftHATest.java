@@ -77,12 +77,13 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   @Override
   protected String getServerAddresses() {
-    // For Raft HA, the server list contains host:raftPort (not HTTP port)
+    // For Raft HA, the server list uses host:raftPort:httpPort so that follower nodes can
+    // forward write commands to the leader via HTTP when needed.
     final StringBuilder sb = new StringBuilder();
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
         sb.append(",");
-      sb.append("localhost:").append(BASE_RAFT_PORT + i);
+      sb.append("localhost:").append(BASE_RAFT_PORT + i).append(":").append(2480 + i);
     }
     return sb.toString();
   }
