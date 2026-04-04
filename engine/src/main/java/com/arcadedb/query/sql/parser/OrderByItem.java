@@ -74,6 +74,8 @@ public class OrderByItem {
     this.directionParameter = directionParameter;
   }
 
+  // Returns null when only `expression` is set; callers that use List.contains(getName())
+  // correctly treat null as "not found" and will generate a computed projection for it.
   public String getName() {
     return alias != null ? alias : recordAttr != null ? recordAttr : null;
   }
@@ -183,6 +185,9 @@ public class OrderByItem {
 
   public boolean refersToParent() {
     if (alias != null && alias.equalsIgnoreCase("$parent"))
+      return true;
+
+    if (expression != null && expression.refersToParent())
       return true;
 
     return modifier != null && modifier.refersToParent();
