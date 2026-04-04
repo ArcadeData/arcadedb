@@ -99,8 +99,10 @@ class RaftHTTPGraphConcurrentIT extends BaseRaftHATest {
               + " WHERE id = \"u1111\" )");
 
       assertThat(select.getJSONObject("result").getJSONArray("records").length())
-          .isEqualTo(THREADS * SCRIPTS)
-          .withFailMessage("Some edges were missing when executing from server " + serverIndex);
+          .withFailMessage("Some edges were missing when executing from server " + serverIndex)
+          .isEqualTo(THREADS * SCRIPTS);
+
+      assertClusterConsistency();
     });
   }
 }

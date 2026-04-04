@@ -60,8 +60,8 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
   void propagationOfSchema() throws Exception {
     testEachServer((serverIndex) -> {
       final String response = command(serverIndex, "create vertex type RaftVertexType" + serverIndex);
-      assertThat(response).contains("RaftVertexType" + serverIndex)
-          .withFailMessage("Type RaftVertexType" + serverIndex + " not found on server " + serverIndex);
+      assertThat(response).withFailMessage("Type RaftVertexType" + serverIndex + " not found on server " + serverIndex)
+          .contains("RaftVertexType" + serverIndex);
     });
 
     Awaitility.await()
