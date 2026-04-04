@@ -35,8 +35,9 @@ public class OrderByItem {
   public static final String   ASC  = "ASC";
   public static final String   DESC = "DESC";
   protected           String   alias;
-  public Modifier modifier;
-  public String   recordAttr;
+  public Modifier    modifier;
+  public String      recordAttr;
+  public Expression  expression; // For complex ORDER BY expressions (e.g., CASE WHEN)
   protected           String   type = ASC;
   // For parameterized order direction (e.g., ORDER BY field :dir)
   protected           InputParameter directionParameter;
@@ -73,12 +74,16 @@ public class OrderByItem {
     this.directionParameter = directionParameter;
   }
 
+  // Returns null when only `expression` is set; callers that use List.contains(getName())
+  // correctly treat null as "not found" and will generate a computed projection for it.
   public String getName() {
     return alias != null ? alias : recordAttr != null ? recordAttr : null;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (alias != null) {
+    if (expression != null) {
+      expression.toString(params, builder);
+    } else if (alias != null) {
       builder.append(alias);
       if (modifier != null) {
         modifier.toString(params, builder);
@@ -115,10 +120,13 @@ public class OrderByItem {
     } else if (alias != null) {
       aVal = a.getProperty(alias);
       bVal = b.getProperty(alias);
-    }
-    if (aVal == null && bVal == null) {
-      aVal = a.getMetadata(alias);
-      bVal = b.getMetadata(alias);
+      if (aVal == null && bVal == null) {
+        aVal = a.getMetadata(alias);
+        bVal = b.getMetadata(alias);
+      }
+    } else if (expression != null) {
+      aVal = expression.execute(a, context);
+      bVal = expression.execute(b, context);
     }
     if (modifier != null) {
       aVal = modifier.execute(a, aVal, context);
@@ -162,6 +170,7 @@ public class OrderByItem {
     result.alias = alias;
     result.modifier = modifier == null ? null : modifier.copy();
     result.recordAttr = recordAttr;
+    result.expression = expression == null ? null : expression.copy();
     result.type = type;
     result.directionParameter = directionParameter == null ? null : directionParameter.copy();
     return result;
@@ -170,10 +179,15 @@ public class OrderByItem {
   public void extractSubQueries(final SubQueryCollector collector) {
     if (modifier != null)
       modifier.extractSubQueries(collector);
+    if (expression != null)
+      expression.extractSubQueries(collector);
   }
 
   public boolean refersToParent() {
     if (alias != null && alias.equalsIgnoreCase("$parent"))
+      return true;
+
+    if (expression != null && expression.refersToParent())
       return true;
 
     return modifier != null && modifier.refersToParent();

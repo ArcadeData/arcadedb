@@ -4104,7 +4104,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             baseExpr.toString(Collections.emptyMap(), sb);
             item.setAlias(sb.toString());
           }
-        } else {
+        } else if (baseExpr.identifier != null) {
           // No modifiers - try simple identifier extraction
           final SuffixIdentifier suffix = baseExpr.identifier.suffix;
 
@@ -4135,12 +4135,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
       }
 
-      // If we couldn't extract anything, use the full expression as alias
+      // If we couldn't extract a simple identifier, store the full expression for evaluation
       if (item.getAlias() == null && item.getRecordAttr() == null && item.modifier == null) {
-        // Use toString to get the expression text
-        final StringBuilder sb = new StringBuilder();
-        expr.toString(Collections.emptyMap(), sb);
-        item.setAlias(sb.toString());
+        item.expression = expr;
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build ORDER BY item: " + e.getMessage(), e);

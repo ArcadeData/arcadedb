@@ -879,16 +879,22 @@ public class SelectExecutionPlanner {
       for (final OrderByItem item : orderBy.getItems()) {
         if (!allAliases.contains(item.getName())) {
           final ProjectionItem newProj = new ProjectionItem(-1);
-          if (item.getAlias() != null) {
+          if (item.expression != null) {
+            // Complex expression (e.g., CASE WHEN) - use the stored expression directly
+            newProj.setExpression(item.expression);
+          } else if (item.getAlias() != null) {
             newProj.setExpression(new Expression(new Identifier(item.getAlias()), item.getModifier()));
           } else if (item.getRecordAttr() != null) {
             final RecordAttribute attr = new RecordAttribute(-1);
             attr.setName(item.getRecordAttr());
             newProj.setExpression(new Expression(attr, item.getModifier()));
+          } else {
+            continue;
           }
           final Identifier newAlias = new Identifier("_$$$ORDER_BY_ALIAS$$$_" + (nextAliasCount++));
           newProj.setAlias(newAlias);
           item.setAlias(newAlias.getStringValue());
+          item.expression = null;
           item.setModifier(null);
           result.add(newProj);
         }
