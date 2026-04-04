@@ -91,7 +91,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
       try {
         final String response = readResponse(connection);
         assertThat(connection.getResponseCode()).isEqualTo(200);
-        assertThat(response.contains("V1")).isTrue();
+        assertThat(response).contains("V1");
       } finally {
         connection.disconnect();
       }
