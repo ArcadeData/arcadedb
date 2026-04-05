@@ -53,8 +53,6 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ha.HAReplicatedDatabase;
 import com.arcadedb.server.ha.HAServer;
-import org.apache.ratis.protocol.Message;
-import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.IOException;
@@ -141,10 +139,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             final Map<Integer, Integer> bucketDeltas = tx.getBucketRecordDelta();
             final ByteString entry = RaftLogEntryCodec.encodeTxEntry(getName(), walData, bucketDeltas);
 
-            final RaftClientReply reply = raftHAServer.getClient().io().send(Message.valueOf(entry));
-
-            if (!reply.isSuccess())
-              throw new TransactionException("Raft consensus failed for transaction commit on database '" + getName() + "'");
+            raftHAServer.getGroupCommitter().submitAndWait(entry.toByteArray(), raftHAServer.getQuorumTimeout());
 
             if (leader)
               tx.commit2ndPhase(phase1);
@@ -817,17 +812,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // replicas apply them immediately after creating the files - in the correct order.
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged) {
         final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
-        final RaftClientReply reply = raftHAServer.getClient().io().send(Message.valueOf(schemaEntry));
-        if (!reply.isSuccess())
-          throw new TransactionException("Raft consensus failed for schema change on database '" + getName() + "'");
+        raftHAServer.getGroupCommitter().submitAndWait(schemaEntry.toByteArray(), raftHAServer.getQuorumTimeout());
         LogManager.instance().log(this, Level.FINE,
             "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d",
             addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size());
       }
 
       return result;
-    } catch (final IOException e) {
-      throw new TransactionException("Error sending schema changes via Raft", e);
     } finally {
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
@@ -885,9 +876,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   public void createInReplicas() {
     final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(getName());
     try {
-      final RaftClientReply reply = raftHAServer.getClient().io().send(Message.valueOf(entry));
-      if (!reply.isSuccess())
-        throw new TransactionException("Raft consensus failed while installing database '" + getName() + "' on replicas");
+      raftHAServer.getGroupCommitter().submitAndWait(entry.toByteArray(), raftHAServer.getQuorumTimeout());
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {

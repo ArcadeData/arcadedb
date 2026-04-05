@@ -35,6 +35,7 @@ import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.storage.RaftStorage;
 
+import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
 import java.io.File;
@@ -79,6 +80,7 @@ public class RaftHAServer {
   private RaftServer                raftServer;
   private RaftClient                raftClient;
   private RaftProperties            raftProperties;
+  private RaftGroupCommitter        groupCommitter;
   private ScheduledExecutorService  lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
@@ -270,6 +272,19 @@ public class RaftHAServer {
     RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, snapshotThreshold);
     RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
 
+    // AppendEntries batching: allow multiple entries per gRPC call to followers
+    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf("4MB"));
+    RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, 256);
+
+    // Log segment and write buffer sizes
+    RaftServerConfigKeys.Log.setSegmentSizeMax(properties, SizeInBytes.valueOf("64MB"));
+    RaftServerConfigKeys.Log.setWriteBufferSize(properties, SizeInBytes.valueOf("8MB"));
+
+    // Leader lease: consistent reads without round-trip
+    RaftServerConfigKeys.Read.setLeaderLeaseEnabled(properties, true);
+    RaftServerConfigKeys.Read.setLeaderLeaseTimeoutRatio(properties, 0.9);
+    RaftServerConfigKeys.Read.setOption(properties, RaftServerConfigKeys.Read.Option.LINEARIZABLE);
+
     final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
     // Only delete existing Raft storage when persistence is not requested.
     // Persistent mode (HA_RAFT_PERSIST_STORAGE=true) is used in tests that restart nodes
@@ -311,6 +326,9 @@ public class RaftHAServer {
         .build();
 
     LogManager.instance().log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
+
+    final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
+    groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, batchSize);
   }
 
   /**
@@ -318,6 +336,10 @@ public class RaftHAServer {
    */
   public void stop() {
     stopLagMonitor();
+    if (groupCommitter != null) {
+      groupCommitter.stop();
+      groupCommitter = null;
+    }
     if (raftClient != null) {
       try {
         raftClient.close();
@@ -384,6 +406,10 @@ public class RaftHAServer {
     return raftClient;
   }
 
+  public RaftGroupCommitter getGroupCommitter() {
+    return groupCommitter;
+  }
+
   /**
    * Closes the current RaftClient and creates a new one with fresh gRPC channels.
    * <p>
@@ -409,6 +435,12 @@ public class RaftHAServer {
         .setParameters(new Parameters())
         .build();
     LogManager.instance().log(this, Level.INFO, "RaftClient refreshed with fresh gRPC channels after leader change");
+
+    if (groupCommitter != null) {
+      groupCommitter.stop();
+      final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
+      groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, batchSize);
+    }
   }
 
   public ArcadeStateMachine getStateMachine() {

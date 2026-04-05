@@ -587,6 +587,10 @@ public enum GlobalConfiguration {
       "HA verbose logging level: 0=off, 1=basic (elections, leader changes), 2=detailed (replication, forwarding), 3=trace (every state machine apply)",
       Integer.class, 0),
 
+  HA_RAFT_GROUP_COMMIT_BATCH_SIZE("arcadedb.ha.raftGroupCommitBatchSize", SCOPE.SERVER,
+      "Maximum number of Raft log entries to batch in a single group commit flush. Higher values improve throughput under concurrent load.",
+      Integer.class, 500),
+
   HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
       "Shared secret for inter-node request forwarding authentication. " +
       "Must be identical on all cluster nodes. " +
