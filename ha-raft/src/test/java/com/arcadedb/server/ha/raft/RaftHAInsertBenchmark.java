@@ -28,6 +28,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 
 import org.junit.jupiter.api.Tag;
@@ -439,6 +440,8 @@ public class RaftHAInsertBenchmark {
   private void cleanUp(final int serverCount) {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
+    // Allow the OS time to release ports from the previous scenario before binding new ones
+    CodeUtils.sleep(1_000);
     for (int i = 0; i < serverCount; i++) {
       FileUtils.deleteRecursively(new File("./target/databases" + i));
       FileUtils.deleteRecursively(new File("./target/raft-storage-peer-" + i));
