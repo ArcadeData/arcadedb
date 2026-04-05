@@ -69,6 +69,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     final String leaderHttpAddress = raftHAServer.getLeaderHttpAddress();
     response.put("leaderHttpAddress", leaderHttpAddress != null ? leaderHttpAddress : JSONObject.NULL);
 
+    final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
+    response.put("electionCount", stateMachine.getElectionCount());
+    response.put("lastElectionTime", stateMachine.getLastElectionTime());
+    response.put("uptime", System.currentTimeMillis() - stateMachine.getStartTime());
+
     final JSONArray peers = new JSONArray();
     for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
       final JSONObject peerJson = new JSONObject();

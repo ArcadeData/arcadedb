@@ -170,6 +170,38 @@ class ArcadeStateMachineTest {
   }
 
   @Test
+  void electionCountStartsAtZero() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    assertThat(sm.getElectionCount()).isZero();
+    assertThat(sm.getLastElectionTime()).isZero();
+  }
+
+  @Test
+  void notifyLeaderChangedIncrementsElectionCount() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final RaftGroupMemberId memberId = RaftGroupMemberId.valueOf(
+        RaftPeerId.valueOf("peer-0"), RaftGroupId.valueOf(UUID.randomUUID()));
+
+    sm.notifyLeaderChanged(memberId, RaftPeerId.valueOf("peer-1"));
+
+    assertThat(sm.getElectionCount()).isEqualTo(1);
+    assertThat(sm.getLastElectionTime()).isGreaterThan(0);
+  }
+
+  @Test
+  void multipleLeaderChangesIncrementCount() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final RaftGroupMemberId memberId = RaftGroupMemberId.valueOf(
+        RaftPeerId.valueOf("peer-0"), RaftGroupId.valueOf(UUID.randomUUID()));
+
+    sm.notifyLeaderChanged(memberId, RaftPeerId.valueOf("peer-1"));
+    sm.notifyLeaderChanged(memberId, RaftPeerId.valueOf("peer-2"));
+    sm.notifyLeaderChanged(memberId, RaftPeerId.valueOf("peer-0"));
+
+    assertThat(sm.getElectionCount()).isEqualTo(3);
+  }
+
+  @Test
   void deserializeWalTransactionZeroPages() {
     final int segmentSize = 0;
     final int totalSize = 24 + 12; // header + footer only
