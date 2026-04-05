@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.*;
 /**
  * Tests for the "align database" command in Raft HA mode.
  * <p>
- * In Raft HA, page-level alignment (legacy HAServer feature) is not supported —
+ * In Raft HA, page-level alignment (legacy HAServer feature) is not supported -
  * consistency is guaranteed by the Raft consensus protocol instead.
  * These tests verify that the command is rejected with an appropriate error.
  */
@@ -60,7 +60,7 @@ class RaftServerDatabaseAlignIT extends BaseRaftHATest {
 
   @Test
   void alignNotSupportedOnLeader() {
-    // In Raft HA mode, page-level alignment is not supported — Raft consensus
+    // In Raft HA mode, page-level alignment is not supported - Raft consensus
     // ensures consistency without manual alignment.
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("Expected a Raft leader to be elected").isGreaterThanOrEqualTo(0);
@@ -79,7 +79,7 @@ class RaftServerDatabaseAlignIT extends BaseRaftHATest {
 
     final Database database = getServer(leaderIndex).getDatabase(getDatabaseName());
     database.transaction(() -> database.iterateType(EDGE2_TYPE_NAME, true).forEachRemaining(record -> {
-      // Just iterate — confirm the edge type is visible and readable on the leader
+      // Just iterate - confirm the edge type is visible and readable on the leader
     }));
 
     assertClusterConsistency();

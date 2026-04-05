@@ -28,7 +28,7 @@ class RaftHAConfigurationIT {
 
   @Test
   void invalidPeerAddressRejected() {
-    // Mix non-localhost IPs with localhost — this should be rejected
+    // Mix non-localhost IPs with localhost - this should be rejected
     assertThatThrownBy(() -> RaftHAServer.parsePeerList("192.168.0.1:2434,192.168.0.1:2435,localhost:2434", 2434))
         .isInstanceOf(ServerException.class)
         .hasMessageContaining("Found a localhost");
@@ -60,7 +60,7 @@ class RaftHAConfigurationIT {
 
   @Test
   void allLocalhostAddressesAllowed() {
-    // All-localhost is fine — only mixing is rejected
+    // All-localhost is fine - only mixing is rejected
     assertThatCode(() -> RaftHAServer.parsePeerList("localhost:2434,localhost:2435,127.0.0.1:2436", 2434))
         .doesNotThrowAnyException();
   }

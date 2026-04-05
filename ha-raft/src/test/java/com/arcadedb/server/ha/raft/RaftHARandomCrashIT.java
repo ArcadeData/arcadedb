@@ -97,11 +97,11 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
               final long count = db.countType(VERTEX1_TYPE_NAME, true);
               if (count > (long) TXS * VERTICES_PER_TX * 9 / 10) {
                 LogManager.instance().log(this, Level.INFO,
-                    "TEST: Skipping crash — near end of test (%d/%d)", count, TXS * VERTICES_PER_TX);
+                    "TEST: Skipping crash - near end of test (%d/%d)", count, TXS * VERTICES_PER_TX);
                 return;
               }
             } catch (final Exception e) {
-              LogManager.instance().log(this, Level.SEVERE, "TEST: Skipping crash — error counting vertices", e);
+              LogManager.instance().log(this, Level.SEVERE, "TEST: Skipping crash - error counting vertices", e);
               continue;
             } finally {
               db.rollback();
@@ -163,7 +163,7 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
           counter = lastGoodCounter;
           CodeUtils.sleep(RETRY_SLEEP_MS);
         } catch (final DuplicatedKeyException e) {
-          // Entry inserted before crash — this is expected
+          // Entry inserted before crash - this is expected
           LogManager.instance().log(this, Level.INFO, "TEST: DuplicatedKey (expected after crash): %s", e);
           break;
         }
