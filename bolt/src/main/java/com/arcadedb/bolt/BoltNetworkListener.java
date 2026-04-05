@@ -26,6 +26,7 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -45,6 +46,7 @@ public class BoltNetworkListener extends Thread {
 
   private final    ArcadeDBServer                      server;
   private final    ServerSocketFactory                 socketFactory;
+  private final    BoltSslHelper                       sslHelper;
   private          ServerSocket                        serverSocket;
   private volatile boolean                             active = true;
   private final    Set<BoltNetworkExecutor>            activeConnections = ConcurrentHashMap.newKeySet();
@@ -52,12 +54,14 @@ public class BoltNetworkListener extends Thread {
 
   public BoltNetworkListener(final ArcadeDBServer server,
       final ServerSocketFactory socketFactory,
+      final BoltSslHelper sslHelper,
       final String hostName,
       final String hostPortRange) {
     super(server.getServerName() + " BOLT listening at " + hostName + ":" + hostPortRange);
 
     this.server = server;
     this.socketFactory = socketFactory;
+    this.sslHelper = sslHelper;
     this.maxConnections = GlobalConfiguration.BOLT_MAX_CONNECTIONS.getValueAsInteger();
 
     listen(hostName, hostPortRange);
@@ -87,8 +91,42 @@ public class BoltNetworkListener extends Thread {
           socket.setPerformancePreferences(0, 2, 1);
           socket.setTcpNoDelay(true);
 
+          // TLS detection: peek at first bytes to decide TLS vs plaintext
+          Socket connectionSocket = socket;
+          byte[] preReadBytes = null;
+
+          if (sslHelper.getTlsMode() != BoltSslHelper.TlsMode.DISABLED) {
+            final byte[] header = new byte[4];
+            final InputStream rawIn = socket.getInputStream();
+            int bytesRead = 0;
+            while (bytesRead < 4) {
+              final int n = rawIn.read(header, bytesRead, 4 - bytesRead);
+              if (n == -1) {
+                socket.close();
+                continue;
+              }
+              bytesRead += n;
+            }
+
+            final boolean isTls = (header[0] == 0x16 && header[1] == 0x03);
+
+            if (isTls) {
+              connectionSocket = sslHelper.wrapWithTls(socket, header);
+            } else if (sslHelper.getTlsMode() == BoltSslHelper.TlsMode.REQUIRED) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "BOLT rejecting non-TLS connection from %s (TLS is REQUIRED). "
+                      + "Configure the client to use bolt+s:// or bolt+ssc://",
+                  socket.getRemoteSocketAddress());
+              socket.close();
+              continue;
+            } else {
+              // OPTIONAL mode with plaintext connection: replay the peeked bytes
+              preReadBytes = header;
+            }
+          }
+
           // Create a new executor for this connection
-          final BoltNetworkExecutor connection = new BoltNetworkExecutor(server, socket, this);
+          final BoltNetworkExecutor connection = new BoltNetworkExecutor(server, connectionSocket, this, preReadBytes);
           activeConnections.add(connection);
           connection.start();
 
@@ -143,7 +181,7 @@ public class BoltNetworkListener extends Thread {
         if (serverSocket.isBound()) {
           LogManager.instance().log(this, Level.INFO,
               "Listening for incoming BOLT connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":"
-                  + inboundAddr.getPort() + "} (protocol v." + BOLT_PROTOCOL_VERSION + ")");
+                  + inboundAddr.getPort() + "} (protocol v." + BOLT_PROTOCOL_VERSION + ", TLS: " + sslHelper.getTlsMode() + ")");
 
           return;
         }
