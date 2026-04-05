@@ -114,19 +114,12 @@ public class RaftHAPlugin implements ServerPlugin {
     if (serverList == null || serverList.isEmpty())
       throw new RuntimeException("HA_SERVER_LIST must be configured for Raft HA");
 
-    final String quorum = configuration.getValueAsString(GlobalConfiguration.HA_QUORUM).toUpperCase();
+    // Validate quorum early - will throw ConfigurationException for invalid values
+    final Quorum quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
+
     final int serverCount = serverList.split(",").length;
-
-    if ("MAJORITY".equals(quorum) && serverCount == 2)
+    if (quorum == Quorum.ALL && serverCount > 3)
       LogManager.instance().log(this, Level.WARNING,
-          "HA_QUORUM=MAJORITY with 2 nodes: losing 1 node will prevent writes. Consider NONE for 2-node setups.");
-
-    if ("NONE".equals(quorum) && serverCount > 2)
-      LogManager.instance().log(this, Level.WARNING,
-          "HA_QUORUM=NONE with %d nodes: replication is asynchronous, data loss possible on leader failure.", serverCount);
-
-    if (!"NONE".equals(quorum) && !"MAJORITY".equals(quorum))
-      LogManager.instance().log(this, Level.WARNING,
-          "Raft HA only supports NONE and MAJORITY quorum modes. '%s' is not supported, defaulting to MAJORITY.", quorum);
+          "HA_QUORUM=ALL with %d nodes: every node must acknowledge writes. A single slow node will throttle the cluster.", serverCount);
   }
 }

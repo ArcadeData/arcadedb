@@ -69,6 +69,8 @@ public class RaftHAServer {
   private final ContextConfiguration       configuration;
   private final ArcadeStateMachine         stateMachine;
   private final ClusterMonitor             clusterMonitor;
+  private final Quorum                     quorum;
+  private final long                       quorumTimeout;
   private final RaftGroup                  raftGroup;
   private final RaftPeerId                 localPeerId;
   private final Map<RaftPeerId, String>    httpAddresses;
@@ -115,6 +117,8 @@ public class RaftHAServer {
     this.stateMachine.setServer(arcadeServer);
 
     this.clusterMonitor = new ClusterMonitor(lagWarningThreshold);
+    this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
+    this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
     LogManager.instance().log(this, Level.INFO,
         "RaftHAServer configured: cluster='%s', localPeer='%s', peers=%d",
@@ -413,6 +417,14 @@ public class RaftHAServer {
 
   public ClusterMonitor getClusterMonitor() {
     return clusterMonitor;
+  }
+
+  public Quorum getQuorum() {
+    return quorum;
+  }
+
+  public long getQuorumTimeout() {
+    return quorumTimeout;
   }
 
   public RaftGroup getRaftGroup() {

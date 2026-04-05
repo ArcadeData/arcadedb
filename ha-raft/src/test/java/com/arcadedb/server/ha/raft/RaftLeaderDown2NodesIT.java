@@ -35,7 +35,7 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration test: 2-node cluster with none quorum.
+ * Integration test: 2-node cluster with majority quorum.
  * Tests leader down scenario in a 2-node setup.
  * <p>
  * With 2 nodes and Raft, losing the leader means the remaining single node cannot form
@@ -48,7 +48,7 @@ class RaftLeaderDown2NodesIT extends BaseRaftHATest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    config.setValue(GlobalConfiguration.HA_QUORUM, "none");
+    config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
   }
 
   @Override

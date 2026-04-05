@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration test: 2-node cluster with none quorum.
+ * Integration test: 2-node cluster with majority quorum.
  * Tests schema and index replication: vertex types, edge types, properties, and indexes
  * are replicated correctly to all nodes.
  */
@@ -37,7 +37,7 @@ class RaftSchemaReplicationIT extends BaseRaftHATest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    config.setValue(GlobalConfiguration.HA_QUORUM, "none");
+    config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
   }
 
   @Override

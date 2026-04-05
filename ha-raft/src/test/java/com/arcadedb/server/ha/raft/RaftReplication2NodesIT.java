@@ -28,14 +28,14 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration test: 2-node cluster with no-quorum replication.
+ * Integration test: 2-node cluster with majority quorum replication.
  */
 class RaftReplication2NodesIT extends BaseRaftHATest {
 
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    config.setValue(GlobalConfiguration.HA_QUORUM, "none");
+    config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
   }
 
   @Override

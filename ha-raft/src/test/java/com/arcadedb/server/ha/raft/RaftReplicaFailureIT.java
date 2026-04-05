@@ -29,7 +29,7 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration test: 3-node cluster with none quorum.
+ * Integration test: 3-node cluster with majority quorum.
  * Tests replica failure: write data, stop a replica (not the leader), write more data,
  * and verify the leader and remaining replica continue operating.
  * <p>
@@ -42,7 +42,7 @@ class RaftReplicaFailureIT extends BaseRaftHATest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    config.setValue(GlobalConfiguration.HA_QUORUM, "none");
+    config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
   }
 
   @Override
