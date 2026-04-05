@@ -143,4 +143,43 @@ class RaftLogEntryCodecTest {
     assertThat(decoded.walEntries()).isEmpty();
     assertThat(decoded.bucketDeltas()).isEmpty();
   }
+
+  @Test
+  void roundTripTxEntryCompressesWalData() {
+    // Create a WAL-like payload with repetitive data that compresses well
+    final byte[] walData = new byte[4096];
+    for (int i = 0; i < walData.length; i++)
+      walData[i] = (byte) (i % 10);
+
+    final Map<Integer, Integer> bucketDeltas = Map.of(0, 5);
+
+    final ByteString encoded = RaftLogEntryCodec.encodeTxEntry("testdb", walData, bucketDeltas);
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.TX_ENTRY);
+    assertThat(decoded.walData()).isEqualTo(walData);
+    assertThat(decoded.bucketRecordDelta()).isEqualTo(bucketDeltas);
+
+    // Verify compression actually reduced size (repetitive data compresses well)
+    assertThat(encoded.size()).isLessThan(walData.length);
+  }
+
+  @Test
+  void roundTripSchemaEntryWithEmbeddedWalCompresses() {
+    final byte[] fakeWal = new byte[2048];
+    java.util.Arrays.fill(fakeWal, (byte) 42);
+    final Map<Integer, Integer> fakeDelta = Map.of(1, 5);
+
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb",
+        "{\"schemaVersion\": 1}",
+        Map.of(1, "User_0"),
+        Map.of(),
+        List.of(fakeWal),
+        List.of(fakeDelta));
+
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.walEntries()).hasSize(1);
+    assertThat(decoded.walEntries().get(0)).isEqualTo(fakeWal);
+  }
 }

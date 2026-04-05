@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.compression.CompressionFactory;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.ByteArrayOutputStream;
@@ -69,8 +70,10 @@ public final class RaftLogEntryCodec {
       dos.writeByte(RaftLogEntryType.TX_ENTRY.getId());
       dos.writeUTF(databaseName);
 
-      dos.writeInt(walData.length);
-      dos.write(walData);
+      final byte[] compressed = CompressionFactory.getDefault().compress(walData);
+      dos.writeInt(walData.length);       // uncompressed length (for decompression)
+      dos.writeInt(compressed.length);    // compressed length
+      dos.write(compressed);
 
       dos.writeInt(bucketRecordDelta.size());
       for (final Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
@@ -111,8 +114,10 @@ public final class RaftLogEntryCodec {
       dos.writeInt(walCount);
       for (int i = 0; i < walCount; i++) {
         final byte[] walData = walEntries.get(i);
-        dos.writeInt(walData.length);
-        dos.write(walData);
+        final byte[] compressedWal = CompressionFactory.getDefault().compress(walData);
+        dos.writeInt(walData.length);         // uncompressed length
+        dos.writeInt(compressedWal.length);   // compressed length
+        dos.write(compressedWal);
 
         final Map<Integer, Integer> delta = (bucketDeltas != null && i < bucketDeltas.size())
             ? bucketDeltas.get(i)
@@ -180,9 +185,11 @@ public final class RaftLogEntryCodec {
   }
 
   private static DecodedEntry decodeTxEntry(final DataInputStream dis, final String databaseName) throws IOException {
-    final int walLength = dis.readInt();
-    final byte[] walData = new byte[walLength];
-    dis.readFully(walData);
+    final int uncompressedLength = dis.readInt();
+    final int compressedLength = dis.readInt();
+    final byte[] compressed = new byte[compressedLength];
+    dis.readFully(compressed);
+    final byte[] walData = CompressionFactory.getDefault().decompress(compressed, uncompressedLength);
 
     final int deltaCount = dis.readInt();
     final Map<Integer, Integer> bucketRecordDelta = HashMap.newHashMap(deltaCount);
@@ -209,9 +216,11 @@ public final class RaftLogEntryCodec {
         walEntries = new ArrayList<>(walCount);
         bucketDeltas = new ArrayList<>(walCount);
         for (int i = 0; i < walCount; i++) {
-          final int walLength = dis.readInt();
-          final byte[] walData = new byte[walLength];
-          dis.readFully(walData);
+          final int walUncompressedLen = dis.readInt();
+          final int walCompressedLen = dis.readInt();
+          final byte[] walCompressed = new byte[walCompressedLen];
+          dis.readFully(walCompressed);
+          final byte[] walData = CompressionFactory.getDefault().decompress(walCompressed, walUncompressedLen);
           walEntries.add(walData);
 
           final int deltaCount = dis.readInt();
