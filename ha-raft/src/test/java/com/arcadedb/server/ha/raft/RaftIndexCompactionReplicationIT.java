@@ -102,7 +102,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
    * Tests that LSM Vector indexes are created and replicated to all replicas.
    * Vector index entry counts must match across all servers after replication completes.
    */
-  @Disabled("Vector index entry count diverges across replicas - replication of vector index entries incomplete in Raft HA")
+  @Disabled("Fails with TransactionException 'Error sending schema changes via Raft' caused by AlreadyClosedException on the Raft client when creating the vertex type; schema change replication for LSMVectorIndexBuilder not yet supported")
   @Test
   void lsmVectorReplication() throws Exception {
     final int leaderIndex = findLeaderIndex();
@@ -251,14 +251,5 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
         database.begin();
       }
     }
-  }
-
-  private int findLeaderIndex() {
-    for (int i = 0; i < getServerCount(); i++) {
-      final RaftHAPlugin plugin = getRaftPlugin(i);
-      if (plugin != null && plugin.isLeader())
-        return i;
-    }
-    return -1;
   }
 }

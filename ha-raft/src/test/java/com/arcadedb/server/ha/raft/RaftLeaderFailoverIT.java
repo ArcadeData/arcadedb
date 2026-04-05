@@ -138,15 +138,6 @@ class RaftLeaderFailoverIT extends BaseRaftHATest {
     return result;
   }
 
-  private int findLeaderIndex() {
-    for (int i = 0; i < getServerCount(); i++) {
-      final RaftHAPlugin plugin = getRaftPlugin(i);
-      if (plugin != null && plugin.isLeader())
-        return i;
-    }
-    return -1;
-  }
-
   private int waitForNewLeader(final int excludeIndex) {
     final long deadline = System.currentTimeMillis() + 30_000;
     while (System.currentTimeMillis() < deadline) {
