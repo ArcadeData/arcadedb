@@ -146,6 +146,10 @@ public class RaftHAServer {
       final String entry = entries[i].trim();
       final String[] parts = entry.split(":");
 
+      if (parts.length > 4 || parts.length == 0 || parts[0].isBlank())
+        throw new ServerException(
+            "Invalid peer address format '" + entry + "'. Expected host[:raftPort[:httpPort[:priority]]]");
+
       final String raftAddress;
       String httpAddress = null;
       int priority = 0;
@@ -154,7 +158,11 @@ public class RaftHAServer {
         // host:raftPort:httpPort:priority
         raftAddress = parts[0] + ":" + parts[1];
         httpAddress = parts[0] + ":" + parts[2];
-        priority = Integer.parseInt(parts[3]);
+        try {
+          priority = Integer.parseInt(parts[3]);
+        } catch (final NumberFormatException e) {
+          throw new ServerException("Invalid priority value '" + parts[3] + "' in peer address '" + entry + "'");
+        }
       } else if (parts.length == 3) {
         // host:raftPort:httpPort
         raftAddress = parts[0] + ":" + parts[1];
