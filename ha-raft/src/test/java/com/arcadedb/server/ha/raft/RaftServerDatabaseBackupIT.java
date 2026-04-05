@@ -1,0 +1,88 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.server.ha.raft;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.FileUtils;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
+
+import static org.assertj.core.api.Assertions.*;
+
+class RaftServerDatabaseBackupIT extends BaseRaftHATest {
+
+  RaftServerDatabaseBackupIT() {
+    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File("./target/databases"));
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+  }
+
+  @Override
+  protected int getServerCount() {
+    return 3;
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    super.endTest();
+    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File("./target/databases"));
+  }
+
+  @Test
+  void sqlBackup() {
+    for (int i = 0; i < getServerCount(); i++) {
+      final Database database = getServer(i).getDatabase(getDatabaseName());
+      final ResultSet result = database.command("sql", "backup database");
+      assertThat(result.hasNext()).isTrue();
+      final Result response = result.next();
+      final String backupFile = response.getProperty("backupFile");
+      assertThat(backupFile).isNotNull();
+      final File file = new File("target/backups/graph/" + backupFile);
+      assertThat(file.exists()).isTrue();
+      file.delete();
+    }
+  }
+
+  @Test
+  void sqlScriptBackup() {
+    // sqlscript always forwards to the leader in Raft HA mode.
+    // Run backup only on the leader to avoid HTTP forwarding without a security context.
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("Expected a Raft leader to be elected").isGreaterThanOrEqualTo(0);
+
+    final Database database = getServer(leaderIndex).getDatabase(getDatabaseName());
+    final ResultSet result = database.command("sqlscript", "backup database");
+    assertThat(result.hasNext()).isTrue();
+    final Result response = result.next();
+    final String backupFile = response.getProperty("backupFile");
+    assertThat(backupFile).isNotNull();
+    final File file = new File("target/backups/graph/" + backupFile);
+    assertThat(file.exists()).isTrue();
+    file.delete();
+  }
+}

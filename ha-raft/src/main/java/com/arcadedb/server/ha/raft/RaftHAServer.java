@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerException;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
@@ -176,6 +177,21 @@ public class RaftHAServer {
       if (httpAddress != null)
         httpAddresses.put(peer.getId(), httpAddress);
     }
+
+    // Validate: mixing localhost/127.0.0.1 with non-localhost addresses is a misconfiguration
+    boolean hasLocalhost = false;
+    boolean hasNonLocalhost = false;
+    for (final RaftPeer peer : peers) {
+      final String host = peer.getAddress().split(":")[0].trim();
+      if (host.equals("localhost") || host.equals("127.0.0.1"))
+        hasLocalhost = true;
+      else
+        hasNonLocalhost = true;
+    }
+    if (hasLocalhost && hasNonLocalhost)
+      throw new ServerException(
+          "Found a localhost (127.0.0.1) in the server list among non-localhost servers. "
+              + "Please fix the server list configuration.");
 
     return new ParsedPeerList(Collections.unmodifiableList(peers), Collections.unmodifiableMap(httpAddresses));
   }
