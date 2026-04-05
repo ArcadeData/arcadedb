@@ -49,10 +49,12 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CollectionUtils;
 
+import java.io.ByteArrayInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.SequenceInputStream;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.net.SocketException;
@@ -129,11 +131,19 @@ public class BoltNetworkExecutor extends Thread {
 
   public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener)
       throws IOException {
+    this(server, socket, listener, null);
+  }
+
+  public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener,
+      final byte[] preReadBytes) throws IOException {
     super("BOLT-" + socket.getRemoteSocketAddress());
     this.server = server;
     this.socket = socket;
     this.listener = listener;
-    this.input = new BoltChunkedInput(socket.getInputStream());
+    final InputStream inputStream = preReadBytes != null
+        ? new SequenceInputStream(new ByteArrayInputStream(preReadBytes), socket.getInputStream())
+        : socket.getInputStream();
+    this.input = new BoltChunkedInput(inputStream);
     this.output = new BoltChunkedOutput(socket.getOutputStream());
     this.debug = GlobalConfiguration.BOLT_DEBUG.getValueAsBoolean();
   }
@@ -236,8 +246,9 @@ public class BoltNetworkExecutor extends Thread {
     if (!Arrays.equals(magic, BOLT_MAGIC)) {
       if (magic[0] == 0x16 && magic[1] == 0x03)
         LogManager.instance().log(this, Level.WARNING,
-            "TLS/SSL connection attempted on BOLT port. ArcadeDB BOLT does not support encryption. "
-                + "Configure the client to use bolt:// (unencrypted) instead of bolt+s:// or bolt+ssc://");
+            "TLS/SSL connection attempted on BOLT port but TLS is disabled. "
+                + "Configure arcadedb.bolt.ssl=OPTIONAL or REQUIRED to enable TLS, "
+                + "or use bolt:// (unencrypted) on the client");
       else
         LogManager.instance().log(this, Level.WARNING,
             "Invalid BOLT magic bytes: [%d, %d, %d, %d]", magic[0], magic[1], magic[2], magic[3]);
