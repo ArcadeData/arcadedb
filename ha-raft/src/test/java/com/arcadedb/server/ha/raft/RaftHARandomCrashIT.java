@@ -45,12 +45,16 @@ import static org.assertj.core.api.Assertions.*;
 
 class RaftHARandomCrashIT extends BaseRaftHATest {
 
-  private static final int TXS             = 1_500;
-  private static final int VERTICES_PER_TX = 10;
-  private static final int MAX_RETRY       = 30;
+  private static final int TXS                   = 1_500;
+  private static final int VERTICES_PER_TX       = 10;
+  private static final int MAX_RETRY             = 30;
+  private static final int CRASH_INITIAL_DELAY_MS = 15_000;
+  private static final int CRASH_INTERVAL_MS     = 10_000;
+  private static final int RESTART_POLL_MS       = 300;
+  private static final int TX_SLEEP_MS           = 100;
+  private static final int RETRY_SLEEP_MS        = 1_000;
 
-  private volatile int  restarts = 0;
-  private volatile long delay    = 0;
+  private volatile int restarts = 0;
 
   @Override
   protected int getServerCount() {
@@ -80,10 +84,8 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
         if (!hasLeader)
           return;
 
-        if (restarts >= getServerCount()) {
-          delay = 0;
+        if (restarts >= getServerCount())
           return;
-        }
 
         final int serverId = ThreadLocalRandom.current().nextInt(getServerCount());
 
@@ -105,12 +107,11 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
               db.rollback();
             }
 
-            delay = 100;
             LogManager.instance().log(this, Level.INFO, "TEST: Stopping server %d", serverId);
             getServer(serverId).stop();
 
             while (getServer(serverId).getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN)
-              CodeUtils.sleep(300);
+              CodeUtils.sleep(RESTART_POLL_MS);
 
             restarts++;
             LogManager.instance().log(this, Level.INFO, "TEST: Restarting server %d", serverId);
@@ -126,18 +127,11 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
 
             LogManager.instance().log(this, Level.INFO, "TEST: Server %d restarted", serverId);
 
-            new Timer().schedule(new TimerTask() {
-              @Override
-              public void run() {
-                delay = 0;
-              }
-            }, 10_000);
-
             return;
           }
         }
       }
-    }, 15_000, 10_000);
+    }, CRASH_INITIAL_DELAY_MS, CRASH_INTERVAL_MS);
 
     final String server0Address = getServer(0).getHttpServer().getListeningAddress();
     final String[] addressParts = HostUtil.parseHostAddress(server0Address, HostUtil.CLIENT_DEFAULT_PORT);
@@ -160,14 +154,14 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
             assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
             assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
           }
-          CodeUtils.sleep(100);
+          CodeUtils.sleep(TX_SLEEP_MS);
           break;
         } catch (final TransactionException | NeedRetryException | RemoteException | TimeoutException e) {
           LogManager.instance().log(this, Level.INFO, "TEST: Error (retry %d/%d): %s", retry, MAX_RETRY, e);
           if (retry >= MAX_RETRY - 1)
             throw e;
           counter = lastGoodCounter;
-          CodeUtils.sleep(1_000);
+          CodeUtils.sleep(RETRY_SLEEP_MS);
         } catch (final DuplicatedKeyException e) {
           // Entry inserted before crash — this is expected
           LogManager.instance().log(this, Level.INFO, "TEST: DuplicatedKey (expected after crash): %s", e);

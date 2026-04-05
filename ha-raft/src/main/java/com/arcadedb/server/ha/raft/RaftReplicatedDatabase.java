@@ -926,10 +926,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // When called from the internal Java API (not HTTP), there is no security context and
     // getCurrentUserName() returns null. Fall back to "root" so the cluster token forwarding
-    // succeeds — the call is already trusted because it originates in-process.
-    String currentUser = proxied.getCurrentUserName();
-    if (currentUser == null || currentUser.isBlank())
-      currentUser = "root";
+    // succeeds — the call is already trusted because it originates in-process. This is safe
+    // only when the cluster token header is also enforced on the receiving side.
+    final String proxiedUser = proxied.getCurrentUserName();
+    final String currentUser = (proxiedUser != null && !proxiedUser.isBlank()) ? proxiedUser : "root";
     builder.header("X-ArcadeDB-Forwarded-User", currentUser);
 
     try {
