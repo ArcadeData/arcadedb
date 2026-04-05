@@ -251,6 +251,54 @@ class UserManagementIT extends BaseGraphServerTest {
     });
   }
 
+  @Test
+  void nonRootUserWithStringGroupInsteadOfArrayShouldWork() throws Exception {
+    testEachServer((serverIndex) -> {
+      // Create user with databases groups as a plain string instead of an array
+      // e.g. {"mydb": "admin"} instead of {"mydb": ["admin"]}
+      // This simulates the scenario from issue #3779
+      final JSONObject payload = new JSONObject();
+      payload.put("name", "stringuser");
+      payload.put("password", "password1234");
+      payload.put("databases", new JSONObject().put(getDatabaseName(), "admin"));
+
+      final HttpURLConnection postConn = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users").openConnection();
+      postConn.setRequestMethod("POST");
+      postConn.setRequestProperty("Authorization", basicAuth());
+      postConn.setDoOutput(true);
+      postConn.setRequestProperty("Content-Type", "application/json");
+      postConn.getOutputStream().write(payload.toString().getBytes());
+      postConn.connect();
+
+      try {
+        assertThat(postConn.getResponseCode()).isEqualTo(201);
+      } finally {
+        postConn.disconnect();
+      }
+
+      // Now try to query with the non-root user - this should NOT throw
+      // "Not a JSON Array" error
+      final String userAuth = "Basic " + Base64.getEncoder()
+          .encodeToString("stringuser:password1234".getBytes());
+      final HttpURLConnection queryConn = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + getDatabaseName()
+              + "/sql/select%201%20as%20value").openConnection();
+      queryConn.setRequestMethod("GET");
+      queryConn.setRequestProperty("Authorization", userAuth);
+      queryConn.connect();
+
+      try {
+        assertThat(queryConn.getResponseCode()).isEqualTo(200);
+      } finally {
+        queryConn.disconnect();
+      }
+
+      // Cleanup
+      deleteUser(serverIndex, "stringuser");
+    });
+  }
+
   private void createUser(final int serverIndex, final String name, final String password,
       final JSONObject databases) throws Exception {
     // Delete user first if it already exists (cleanup from previous test runs)
