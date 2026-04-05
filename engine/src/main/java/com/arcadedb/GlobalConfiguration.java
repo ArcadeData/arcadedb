@@ -583,6 +583,10 @@ public enum GlobalConfiguration {
       "Lower values cause more frequent snapshots and earlier log compaction.",
       Long.class, 10000L),
 
+  HA_LOG_VERBOSE("arcadedb.ha.logVerbose", SCOPE.SERVER,
+      "HA verbose logging level: 0=off, 1=basic (elections, leader changes), 2=detailed (replication, forwarding), 3=trace (every state machine apply)",
+      Integer.class, 0),
+
   HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
       "Shared secret for inter-node request forwarding authentication. " +
       "Must be identical on all cluster nodes. " +
