@@ -123,6 +123,14 @@ public class GetServerHandler extends AbstractServerHttpHandler {
         if (peerId.equals(fs.get("peerId"))) {
           peerJSON.put("matchIndex", fs.get("matchIndex"));
           peerJSON.put("nextIndex", fs.get("nextIndex"));
+          // Add lag warning status from ClusterMonitor
+          final var monitor = raftHA.getClusterMonitor();
+          if (monitor != null) {
+            final var lags = monitor.getReplicaLags();
+            final Long lag = lags.get(peerId);
+            if (lag != null)
+              peerJSON.put("lagging", lag > monitor.getLagWarningThreshold() && monitor.getLagWarningThreshold() > 0);
+          }
           break;
         }
 
@@ -146,6 +154,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     metricsJSON.put("lastElectionTime", raftHA.getLastElectionTime());
     metricsJSON.put("raftLogSize", raftHA.getRaftLogSize());
     metricsJSON.put("startTime", raftHA.getStartTime());
+    metricsJSON.put("lagWarningThreshold", raftHA.getClusterMonitor().getLagWarningThreshold());
     haJSON.put("metrics", metricsJSON);
 
     // These fields are required by RemoteHttpComponent for cluster configuration

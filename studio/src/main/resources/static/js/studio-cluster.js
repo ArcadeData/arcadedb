@@ -4,6 +4,7 @@ var clusterCommitChart = null;
 var clusterLagHistory = {};
 var clusterCommitHistory = [];
 var clusterMaxHistoryPoints = 60;
+var clusterLagWarningThreshold = 0;
 
 function updateCluster(callback) {
   jQuery.ajax({
@@ -84,13 +85,16 @@ function renderNodeCards(ha) {
       : '<span class="badge bg-secondary">FOLLOWER</span>';
     var localBadge = isLocal ? ' <span class="badge bg-info" style="font-size:0.6rem;">LOCAL</span>' : '';
 
-    var statusDot = '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:limegreen; margin-right:6px;"></span>';
+    var isLagging = peer.lagging === true;
+    var dotColor = isLagging ? "red" : "limegreen";
+    var statusDot = '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' + dotColor + '; margin-right:6px;"></span>';
 
     var replicationInfo = "";
     if (!isLeader && peer.matchIndex != null && ha.commitIndex != null) {
       var lag = ha.commitIndex - peer.matchIndex;
       var lagColor = lag === 0 ? "limegreen" : lag < 10 ? "orange" : "red";
-      replicationInfo = '<div class="mt-1" style="font-size:0.75rem;"><span class="text-muted">Lag:</span> <b style="color:' + lagColor + ';">' + lag + '</b> entries'
+      var lagWarning = isLagging ? ' <i class="fas fa-exclamation-triangle" style="color:#ef4444; font-size:0.7rem;" title="Exceeds lag warning threshold"></i>' : '';
+      replicationInfo = '<div class="mt-1" style="font-size:0.75rem;"><span class="text-muted">Lag:</span> <b style="color:' + lagColor + ';">' + lag + '</b> entries' + lagWarning
         + ' <span class="text-muted ms-2">Match:</span> ' + peer.matchIndex
         + ' <span class="text-muted ms-2">Next:</span> ' + (peer.nextIndex || "-") + '</div>';
     }
@@ -212,6 +216,10 @@ function updateMetricsCharts(ha) {
       clusterLagHistory[peer.id].shift();
   }
 
+  // Track lag warning threshold from server
+  if (ha.metrics && ha.metrics.lagWarningThreshold > 0)
+    clusterLagWarningThreshold = ha.metrics.lagWarningThreshold;
+
   // Commit index history
   clusterCommitHistory.push({ x: now, y: ha.commitIndex || 0 });
   if (clusterCommitHistory.length > clusterMaxHistoryPoints)
@@ -231,9 +239,23 @@ function renderLagChart() {
     return;
   }
 
+  // Add warning threshold annotation line if configured
+  var annotations = {};
+  if (clusterLagWarningThreshold > 0) {
+    annotations = {
+      yaxis: [{
+        y: clusterLagWarningThreshold,
+        borderColor: "#ef4444",
+        strokeDashArray: 4,
+        label: { text: "Warning (" + clusterLagWarningThreshold + ")", style: { color: "#fff", background: "#ef4444", fontSize: "10px" }, position: "front" }
+      }]
+    };
+  }
+
   var options = {
     chart: { type: "line", height: 250, animations: { enabled: true, easing: "linear", dynamicAnimation: { speed: 1000 } }, toolbar: { show: false } },
     series: series,
+    annotations: annotations,
     xaxis: { type: "category", labels: { show: false } },
     yaxis: { title: { text: "Entries behind" }, min: 0 },
     stroke: { curve: "smooth", width: 2 },
@@ -244,6 +266,8 @@ function renderLagChart() {
 
   if (clusterLagChart) {
     clusterLagChart.updateSeries(series);
+    if (clusterLagWarningThreshold > 0)
+      clusterLagChart.updateOptions({ annotations: annotations });
   } else {
     clusterLagChart = new ApexCharts(document.querySelector("#chartReplicationLag"), options);
     clusterLagChart.render();
