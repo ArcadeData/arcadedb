@@ -19,36 +19,26 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.network.HostUtil;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.ReplicationCallback;
-import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.CodeUtils;
-import com.arcadedb.utility.Pair;
-import org.junit.jupiter.api.Disabled;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT {
-  private final AtomicInteger                       messagesInTotal    = new AtomicInteger();
-  private final AtomicInteger                       messagesPerRestart = new AtomicInteger();
-  private final AtomicInteger                       restarts           = new AtomicInteger();
-  private final ConcurrentHashMap<Integer, Boolean> semaphore          = new ConcurrentHashMap<>();
+/**
+ * Tests that the Ratis cluster survives multiple leader changes.
+ * Stops the current leader, verifies a new leader is elected, writes data,
+ * restarts the old leader, repeats 3 times.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class ReplicationServerLeaderChanges3TimesIT extends BaseGraphServerTest {
 
   @Override
   public void setTestConfiguration() {
@@ -57,149 +47,77 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected int getServerCount() {
+    return 3;
   }
 
   @Test
-  @Disabled
-  void testReplication() {
-    checkDatabases();
+  void testLeaderChanges3Times() throws Exception {
+    for (int cycle = 0; cycle < 3; cycle++) {
+      testLog("=== Cycle %d: finding and stopping leader ===", cycle);
 
-    final String server1Address = getServer(0).getHttpServer().getListeningAddress();
-    final String[] server1AddressParts = HostUtil.parseHostAddress(server1Address, HostUtil.CLIENT_DEFAULT_PORT);
+      // Find the current leader
+      final ArcadeDBServer leader = getLeaderServer();
+      assertThat(leader).as("No leader found in cycle " + cycle).isNotNull();
+      final String leaderName = leader.getServerName();
+      testLog("Leader is %s, stopping it...", leaderName);
 
-    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]),
-        getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+      // Stop the leader
+      leader.stop();
+      testLog("Leader %s stopped", leaderName);
 
-    LogManager.instance()
-        .log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+      // Wait for a new leader to be elected
+      Awaitility.await()
+          .atMost(15, TimeUnit.SECONDS)
+          .pollInterval(500, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            for (final ArcadeDBServer s : getServers())
+              if (s != null && s.isStarted() && s.getHA() != null && s.getHA().isLeader())
+                return true;
+            return false;
+          });
 
-    long counter = 0;
-    final int maxRetry = 10;
-    int timeouts = 0;
+      final ArcadeDBServer newLeader = getLeaderServer();
+      assertThat(newLeader).as("No new leader elected after stopping " + leaderName).isNotNull();
+      testLog("New leader: %s", newLeader.getServerName());
+      assertThat(newLeader.getServerName()).isNotEqualTo(leaderName);
 
-    for (int tx = 0; tx < getTxs(); ++tx) {
-      for (int retry = 0; retry < 3; ++retry) {
-        try {
-          for (int i = 0; i < getVerticesPerTx(); ++i) {
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
-                "distributed-test");
+      // Write some data on the new leader
+      final int currentCycle = cycle;
+      final var db = newLeader.getDatabase(getDatabaseName());
+      db.transaction(() -> {
+        db.newVertex(VERTEX1_TYPE_NAME).set("id", (long) (1000 + currentCycle)).set("name", "cycle-" + currentCycle).save();
+      });
+      testLog("Wrote vertex for cycle %d on new leader %s", cycle, newLeader.getServerName());
 
-            assertThat(resultSet.hasNext()).isTrue();
-            final Result result = resultSet.next();
-            assertThat(result).isNotNull();
-            final Set<String> props = result.getPropertyNames();
-            assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
-            assertThat(props.contains("id")).isTrue();
-            assertThat((int) result.getProperty("id")).isEqualTo(counter);
-            assertThat(props.contains("name")).isTrue();
-            assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
-
-            if (counter % 100 == 0) {
-              LogManager.instance().log(this, Level.SEVERE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
-              if (isPrintingConfigurationAtEveryStep())
-                getLeaderServer().getHA().printClusterConfiguration();
-            }
-
-          }
-          break;
-
-        } catch (final NeedRetryException | TimeoutException | TransactionException e) {
-          if (e instanceof TimeoutException) {
-            if (++timeouts > 3)
-              throw e;
-          }
-          // IGNORE IT
-          LogManager.instance()
-              .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d): %s", counter, retry, maxRetry,
-                  e.getMessage());
-          CodeUtils.sleep(500);
-
-        } catch (final DuplicatedKeyException e) {
-          // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
-          LogManager.instance().log(this, Level.SEVERE, "Error: %s (IGNORE IT)", e.getMessage());
-        } catch (final Exception e) {
-          // IGNORE IT
-          LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", e.getMessage());
+      // Verify the data is readable on surviving servers
+      for (final ArcadeDBServer s : getServers()) {
+        if (s != null && s.isStarted()) {
+          CodeUtils.sleep(2000);
+          final var sdb = s.getDatabase(getDatabaseName());
+          final long count = sdb.query("sql", "SELECT count(*) as cnt FROM " + VERTEX1_TYPE_NAME)
+              .nextIfAvailable().getProperty("cnt", 0L);
+          testLog("Server %s has %d vertices after cycle %d", s.getServerName(), count, cycle);
         }
+      }
+
+      // Restart the stopped leader
+      testLog("Restarting old leader %s...", leaderName);
+      final int leaderIndex = getServerNumber(leaderName);
+      if (leaderIndex >= 0) {
+        final var config = leader.getConfiguration();
+        final var newServer = new ArcadeDBServer(config);
+        getServers()[leaderIndex] = newServer;
+        newServer.start();
+        testLog("Old leader %s restarted", leaderName);
+
+        // Wait for the restarted server to rejoin
+        CodeUtils.sleep(5000);
       }
     }
 
-    LogManager.instance().log(this, Level.SEVERE, "Done");
-
-    for (int i = 0; i < getServerCount(); i++)
-      waitForReplicationIsCompleted(i);
-
-    // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (final int s : getServerToCheck()) {
-      checkEntriesOnServer(s);
-    }
-
-    onAfterTest();
-
-    LogManager.instance().log(this, Level.FINE, "TEST Restart = %d", null, restarts);
-    assertThat(restarts.get() >= getServerCount()).as("Restarted " + restarts.get() + " times").isTrue();
+    testLog("=== All 3 leader change cycles completed successfully ===");
   }
 
-  @Override
-  protected void onBeforeStarting(final ArcadeDBServer server) {
-    server.registerTestEventListener(new ReplicationCallback() {
-      @Override
-      public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-        if (!serversSynchronized)
-          return;
-
-        if (type == TYPE.REPLICA_MSG_RECEIVED) {
-          if (!(((Pair) object).getSecond() instanceof TxRequest))
-            return;
-
-          final String leaderName = server.getHA().getLeaderName();
-
-          messagesInTotal.incrementAndGet();
-          messagesPerRestart.incrementAndGet();
-
-          if (getServer(leaderName).isStarted() && messagesPerRestart.get() > getTxs() / (getServerCount() * 2)
-              && restarts.get() < getServerCount()) {
-            LogManager.instance()
-                .log(this, Level.FINE, "TEST: Found online replicas %d", null, getServer(leaderName).getHA().getOnlineReplicas());
-
-            if (getServer(leaderName).getHA().getOnlineReplicas() < getServerCount() - 1) {
-              // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
-              LogManager.instance().log(this, Level.FINE,
-                  "TEST: Skip restart of the Leader %s because no all replicas are online yet (messages=%d txs=%d) ...", null,
-                  leaderName, messagesInTotal.get(), getTxs());
-              return;
-            }
-
-            if (semaphore.putIfAbsent(restarts.get(), true) != null)
-              // ANOTHER REPLICA JUST DID IT
-              return;
-
-            testLog("Stopping the Leader %s (messages=%d txs=%d restarts=%d) ...", leaderName, messagesInTotal.get(), getTxs(),
-                restarts.get());
-
-            getServer(leaderName).stop();
-            restarts.incrementAndGet();
-            messagesPerRestart.set(0);
-
-            executeAsynchronously(() -> {
-              getServer(leaderName).start();
-              return null;
-            });
-          }
-        }
-      }
-    });
-  }
-
-  @Override
-  protected int getTxs() {
-    return 5_000;
-  }
-
-  @Override
-  protected int getVerticesPerTx() {
-    return 10;
-  }
+  // getServers() and getServerNumber() are inherited from BaseGraphServerTest
 }

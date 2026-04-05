@@ -47,8 +47,8 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected String getServerRole(int serverIndex) {
+    return "any";
   }
 
   @Test
@@ -97,8 +97,7 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
 
       if (counter % 1000 == 0) {
         LogManager.instance().log(this, Level.FINE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
-        if (isPrintingConfigurationAtEveryStep())
-          getLeaderServer().getHA().printClusterConfiguration();
+          // cluster config not available with Ratis
       }
     }
 

@@ -60,6 +60,11 @@ public class PostLoginHandler extends AbstractServerHttpHandler {
     // Create a new authentication session with metadata
     final HttpAuthSession session = httpServer.getAuthSessionManager().createSession(user, sourceIp, userAgent, country, city);
 
+    // Store the original Basic auth header for HA proxy forwarding
+    final String basicAuth = exchange.getAttachment(BASIC_AUTH_KEY);
+    if (basicAuth != null)
+      session.setBasicAuth(basicAuth);
+
     final JSONObject response = new JSONObject();
     response.put("token", session.getToken());
     response.put("user", user.getName());

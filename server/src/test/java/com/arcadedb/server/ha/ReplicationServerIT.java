@@ -109,8 +109,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
       if (counter % (total / 10) == 0) {
         LogManager.instance().log(this, Level.FINE, "TEST: - Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
-        if (isPrintingConfigurationAtEveryStep())
-          getLeaderServer().getHA().printClusterConfiguration();
+          // cluster config not available with Ratis
       }
     }
 

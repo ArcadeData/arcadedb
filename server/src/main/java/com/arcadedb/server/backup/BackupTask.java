@@ -23,7 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
-import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.ha.ratis.RaftHAServer;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -123,7 +123,7 @@ public class BackupTask implements Runnable {
 
     if (runOnServer.equals("$leader")) {
       // Run only on the leader node
-      final HAServer ha = server.getHA();
+      final RaftHAServer ha = server.getHA();
       if (ha == null)
         return true; // No HA, single server mode, so we are the "leader"
       return ha.isLeader();

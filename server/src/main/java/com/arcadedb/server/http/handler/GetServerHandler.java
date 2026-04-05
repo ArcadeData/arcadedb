@@ -27,8 +27,7 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerDatabase;
-import com.arcadedb.server.ha.HAServer;
-import com.arcadedb.server.ha.ReplicatedDatabase;
+import com.arcadedb.server.ha.ratis.RaftHAServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
@@ -81,71 +80,69 @@ public class GetServerHandler extends AbstractServerHttpHandler {
   }
 
   private void exportCluster(final HttpServerExchange exchange, final JSONObject response) {
-    final HAServer ha = httpServer.getServer().getHA();
-    if (ha != null) {
-      final JSONObject haJSON = new JSONObject();
-      response.put("ha", haJSON);
+    final RaftHAServer raftHA = httpServer.getServer().getHA();
+    if (raftHA == null)
+      return;
 
-      haJSON.put("clusterName", ha.getClusterName());
-      haJSON.put("leader", ha.getLeaderName());
-      haJSON.put("electionStatus", ha.getElectionStatus().toString());
-      haJSON.put("network", ha.getStats());
+    exportRatisCluster(response);
+  }
 
-      if (!ha.isLeader()) {
-        // ASK TO THE LEADER THE NETWORK COMPOSITION
-        HttpURLConnection connection;
-        try {
-          connection = (HttpURLConnection) new URL(
-              "http://" + ha.getLeader().getRemoteHTTPAddress() + "/api/v1/server?mode=cluster").openConnection();
-        } catch (RuntimeException e) {
-          throw e;
-        } catch (Exception e) {
-          throw new RuntimeException(e);
+  private void exportRatisCluster(final JSONObject response) {
+    final RaftHAServer raftHA = httpServer.getServer().getHA();
+
+    final JSONObject haJSON = new JSONObject();
+    response.put("ha", haJSON);
+
+    haJSON.put("protocol", "ratis");
+    haJSON.put("clusterName", raftHA.getClusterName());
+    haJSON.put("leader", raftHA.getLeaderName());
+    haJSON.put("electionStatus", raftHA.getElectionStatus());
+    haJSON.put("isLeader", raftHA.isLeader());
+    haJSON.put("localPeerId", raftHA.getLocalPeerId().toString());
+    haJSON.put("configuredServers", raftHA.getConfiguredServers());
+    haJSON.put("quorum", raftHA.getQuorum().name());
+    haJSON.put("currentTerm", raftHA.getCurrentTerm());
+    haJSON.put("commitIndex", raftHA.getCommitIndex());
+    haJSON.put("lastAppliedIndex", raftHA.getLastAppliedIndex());
+
+    // Peer list with replication state (follower indices available only on leader)
+    final var followerStates = raftHA.getFollowerStates();
+    final JSONArray peers = new JSONArray();
+    for (final var peer : raftHA.getRaftGroup().getPeers()) {
+      final JSONObject peerJSON = new JSONObject();
+      final String peerId = peer.getId().toString();
+      peerJSON.put("id", peerId);
+      peerJSON.put("address", peer.getAddress());
+      peerJSON.put("httpAddress", raftHA.getPeerHTTPAddress(peer.getId()));
+      peerJSON.put("isLocal", peer.getId().equals(raftHA.getLocalPeerId()));
+      peerJSON.put("role", peer.getId().equals(raftHA.getLocalPeerId()) && raftHA.isLeader() ? "LEADER"
+          : peerId.equals(raftHA.getLeaderName()) ? "LEADER" : "FOLLOWER");
+
+      // Add per-follower replication state if available (leader only)
+      for (final var fs : followerStates)
+        if (peerId.equals(fs.get("peerId"))) {
+          peerJSON.put("matchIndex", fs.get("matchIndex"));
+          peerJSON.put("nextIndex", fs.get("nextIndex"));
+          break;
         }
 
-        try {
-          connection.setRequestMethod("GET");
-          connection.setRequestProperty("Authorization", exchange.getRequestHeaders().get("Authorization").getFirst());
-          connection.connect();
-
-          JSONObject leaderResponse = new JSONObject(readResponse(connection));
-          final JSONObject network = leaderResponse.getJSONObject("ha").getJSONObject("network");
-          haJSON.getJSONObject("network").put("replicas", network.getJSONArray("replicas"));
-
-        } catch (RuntimeException e) {
-          throw e;
-        } catch (Exception e) {
-          throw new RuntimeException(e);
-        } finally {
-          connection.disconnect();
-        }
-      }
-
-      final JSONArray databases = new JSONArray();
-
-      for (String dbName : httpServer.getServer().getDatabaseNames()) {
-        final ServerDatabase db = httpServer.getServer().getDatabase(dbName);
-        final ReplicatedDatabase rdb = ((ReplicatedDatabase) db.getWrappedDatabaseInstance());
-
-        final JSONObject databaseJSON = new JSONObject();
-        databaseJSON.put("name", rdb.getName());
-        databaseJSON.put("quorum", rdb.getQuorum());
-        databases.put(databaseJSON);
-      }
-
-      haJSON.put("databases", databases);
-
-      final String leaderServer = ha.isLeader() ?
-          ha.getServer().getHttpServer().getListeningAddress() :
-          ha.getLeader().getRemoteHTTPAddress();
-      final String replicaServers = ha.getReplicaServersHTTPAddressesList();
-
-      haJSON.put("leaderAddress", leaderServer);
-      haJSON.put("replicaAddresses", replicaServers);
-
-      LogManager.instance()
-          .log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
+      peers.put(peerJSON);
     }
+    haJSON.put("peers", peers);
+
+    // Database list
+    final JSONArray databases = new JSONArray();
+    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
+      final JSONObject databaseJSON = new JSONObject();
+      databaseJSON.put("name", dbName);
+      databaseJSON.put("quorum", raftHA.getQuorum().name());
+      databases.put(databaseJSON);
+    }
+    haJSON.put("databases", databases);
+
+    // These fields are required by RemoteHttpComponent for cluster configuration
+    haJSON.put("leaderAddress", raftHA.getLeaderHTTPAddress());
+    haJSON.put("replicaAddresses", raftHA.getReplicaAddresses());
   }
 
   private void exportMetrics(final JSONObject response) {

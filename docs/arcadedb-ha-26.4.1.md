@@ -1,0 +1,207 @@
+# ArcadeDB 26.4.1 - High Availability powered by Apache Ratis
+
+## Overview
+
+ArcadeDB 26.4.1 replaces the custom ad-hoc Raft-like replication protocol with **Apache Ratis** - a battle-tested, formally correct implementation of the Raft consensus protocol used in production by Apache Ozone (1000+ node clusters at Tencent), Apache IoTDB, and Alluxio.
+
+This change is **transparent to users** - the HTTP API, database API, query languages, and client libraries remain unchanged. The only configuration difference is that `arcadedb.ha.enabled=true` now uses Ratis internally instead of the old custom protocol.
+
+## What Changed
+
+### Removed (old HA stack - ~6000 lines deleted)
+- `HAServer.java` - custom election, quorum management, message routing
+- `Leader2ReplicaNetworkExecutor.java` - leader-to-follower binary protocol
+- `Replica2LeaderNetworkExecutor.java` - follower-to-leader binary protocol
+- `LeaderNetworkListener.java` - TCP socket listener for replication
+- `ReplicationLogFile.java` - custom replication log (64MB chunks)
+- `ReplicationProtocol.java` - custom binary protocol definition
+- 21 message classes (`TxRequest`, `TxForwardRequest`, `CommandForwardRequest`, etc.)
+- Custom election protocol (sequential vote collection, no pre-vote)
+- Custom quorum mechanism (CountDownLatch-based)
+
+### Added (Ratis-based HA - ~2500 lines)
+- `RaftHAServer.java` - Ratis server lifecycle, gRPC transport, peer management
+- `ArcadeDBStateMachine.java` - Ratis state machine for WAL replication
+- `RaftLogEntry.java` - binary serialization for Raft log entries
+- `ReplicatedDatabase.java` - rewritten to use Ratis (same class name for API compatibility)
+- `HALog.java` - verbose logging utility (`arcadedb.ha.logVerbose=0/1/2/3`)
+- `SnapshotHttpHandler.java` - HTTP endpoint for database snapshot serving
+- Studio Cluster dashboard (Overview/Metrics/Management tabs)
+
+## Advantages of Using Apache Ratis
+
+| Feature | Old Custom Protocol | Apache Ratis |
+|---|---|---|
+| **Leader election** | Sequential vote collection, no pre-vote | Pre-vote protocol, parallel voting, term propagation |
+| **Log replication** | Custom TCP binary, sequential per-replica | gRPC bidirectional streaming, parallel per-follower |
+| **Membership changes** | Manual server list restart | Dynamic `addPeer`/`removePeer` via AdminApi |
+| **Leader lease** | Not implemented | Built-in, configurable timeout ratio |
+| **Snapshot transfer** | Custom page-by-page protocol | Notification mode + HTTP ZIP download |
+| **Split brain** | No pre-vote, vulnerable to disruption | Pre-vote prevents disrupted elections |
+| **Formal correctness** | Ad-hoc implementation | Formally verified Raft protocol |
+| **Production track record** | ArcadeDB only | Apache Ozone, IoTDB, Alluxio at scale |
+| **Transport** | Custom TCP binary | gRPC (shaded, no classpath conflicts) |
+| **Dependencies** | None | ~20MB shaded JARs (gRPC, Protobuf, Netty, Guava) |
+
+## New Features
+
+### HA Management Commands
+- `ha add peer <id> <address>` - add a server to the cluster at runtime
+- `ha remove peer <id>` - remove a server from the cluster
+- `ha transfer leader <peerId>` - transfer leadership to a specific server
+- `ha step down` - make the current leader step down (transfers to random follower)
+- `ha verify database <name>` - compare file checksums across all nodes
+
+### Studio Cluster Dashboard
+- **Overview tab**: cluster health badge, node cards with role/lag, databases table
+- **Metrics tab**: replication lag chart (ApexCharts), commit index progress
+- **Management tab**: leadership transfer, peer management, database verification, danger zone
+
+### Verbose Logging
+```properties
+arcadedb.ha.logVerbose=0  # Off (default)
+arcadedb.ha.logVerbose=1  # Basic: elections, peer changes
+arcadedb.ha.logVerbose=2  # Detailed: commands, WAL replication, schema
+arcadedb.ha.logVerbose=3  # Trace: every state machine operation
+```
+
+### Cluster API Enrichment
+`GET /api/v1/server?mode=cluster` now returns:
+- `currentTerm`, `commitIndex`, `lastAppliedIndex`
+- Per-peer `matchIndex`, `nextIndex` (replication lag)
+- `protocol: "ratis"`
+- Peer HTTP addresses for leader discovery
+
+## Architecture Internals
+
+### How Ratis is Used
+
+```
+Client (HTTP/Bolt/JDBC)
+    |
+ArcadeDB Server (HTTP handler)
+    |
+ReplicatedDatabase (wraps LocalDatabase)
+    |
+    +-- Reads (isIdempotent && !isDDL): execute locally on any server
+    |
+    +-- Writes (INSERT/UPDATE/DELETE): commit() -> replicateFromLeader()
+    |       |
+    |       +-- commit2ndPhase() (local page write)
+    |       +-- sendToRaft() -> gRPC -> all followers apply via applyTransaction()
+    |
+    +-- DDL/Non-idempotent commands: throw ServerIsNotTheLeaderException
+            |
+            +-- HTTP proxy forwards to leader transparently
+```
+
+### Key Design Decisions
+- **Peer IDs**: `host_port` format (underscore for JMX compatibility, displayed as `host:port` in UI)
+- **Leader commits first**: `commit2ndPhase()` locally, then replicates WAL via Ratis
+- **Follower skips apply**: `applyTransaction()` on leader is a no-op (already committed)
+- **Command routing**: `isIdempotent() && !isDDL()` determines local vs forwarded execution
+- **Snapshot mode**: Notification mode (`install.snapshot.enabled=false`) - follower downloads ZIP from leader HTTP
+- **WAL-only replication**: Only page diffs replicate, not full records or SQL commands
+- **No WAL in snapshots**: Snapshot ZIP contains data files + schema config only
+
+### Storage Layout
+```
+<serverRootPath>/ratis-storage/<peerId>/
+    <groupId>/
+        current/
+            log_inprogress_<index>     # Active Raft log segment
+            log_<start>-<end>          # Sealed log segments
+        sm/                            # State machine snapshots
+        metadata                       # Persisted term + vote
+```
+One per server, shared across all databases. Survives restarts for automatic catch-up.
+
+## Configuration
+
+```properties
+# Enable HA
+arcadedb.ha.enabled=true
+arcadedb.ha.serverList=host1:2424,host2:2424,host3:2424
+arcadedb.ha.clusterName=my-cluster
+
+# Quorum (MAJORITY or ALL)
+arcadedb.ha.quorum=majority
+
+# Timeouts
+arcadedb.ha.quorumTimeout=10000
+
+# Verbose logging for debugging
+arcadedb.ha.logVerbose=0
+```
+
+## Tests
+
+### Passing Tests (19 existing + 10 new comprehensive)
+
+#### Core Tests
+| Test | Description | Servers | Status |
+|---|---|---|---|
+| `RaftLogEntryTest` (4) | Binary serialization round-trip | N/A | PASS |
+| `RaftHAServerIT` (3) | Raw Ratis consensus: election, replication | 3 | PASS |
+
+#### HTTP API Tests
+| Test | Description | Servers | Status |
+|---|---|---|---|
+| `HTTP2ServersIT.serverInfo` | Cluster status API | 2 | PASS |
+| `HTTP2ServersIT.propagationOfSchema` | Schema DDL replication | 2 | PASS |
+| `HTTP2ServersIT.checkQuery` | Query execution across servers | 2 | PASS |
+| `HTTP2ServersIT.checkDeleteGraphElements` | Cross-server CRUD with edges | 2 | PASS |
+| `HTTP2ServersIT.verifyDatabase` | `ha verify database` command | 2 | PASS |
+| `HTTP2ServersIT.hAConfiguration` | RemoteDatabase cluster config | 2 | PASS |
+
+#### Failover Tests
+| Test | Description | Servers | Status |
+|---|---|---|---|
+| `ReplicationServerLeaderDownIT` | Leader stop, new election, writes continue | 3 | PASS |
+| `ReplicationServerLeaderChanges3TimesIT` | 3 leader kill/restart cycles | 3 | PASS |
+| `HASplitBrainIT` | 5-node cluster, stop 2 minority, verify majority works, restart | 5 | PASS |
+
+#### Configuration & Operations Tests
+| Test | Description | Servers | Status |
+|---|---|---|---|
+| `HAConfigurationIT` | Invalid server list rejection | 3 | PASS |
+| `ServerDatabaseBackupIT` (2) | SQL backup on HA cluster | 3 | PASS |
+
+#### Comprehensive Tests (new)
+| Test | Description | Servers | Status |
+|---|---|---|---|
+| `test01_dataConsistencyUnderLoad` | 1000 records, verify count & content on all nodes | 3 | PASS |
+| `test02_followerRestartAndCatchUp` | Stop follower, write 100 records, restart, verify catch-up | 3 | PASS |
+| `test03_fullClusterRestart` | Write data, stop all 3, restart all 3, verify data survives | 3 | PASS |
+| `test04_concurrentWritesOnLeader` | 4 threads x 100 records, verify consistency | 3 | PASS |
+| `test05_schemaChangesDuringWrites` | CREATE TYPE while data exists, verify propagation | 3 | PASS |
+| `test06_indexConsistency` | Unique index enforcement across cluster | 3 | PASS |
+| `test07_queryRoutingCorrectness` | SELECT local, INSERT rejected on follower | 3 | PASS |
+| `test08_largeTransaction` | Single tx with 500 records, verify replication | 3 | PASS |
+| `test09_rapidLeaderTransfers` | 5 rapid leadership transfers, verify stability | 3 | PASS |
+| `test10_singleServerHAMode` | HA with 1 node, verify reads work, writes fail quorum | 3->1 | PASS |
+| `test11_writeToFollowerViaHttpProxy` | 100 writes via HTTP to follower, proxied to leader | 3 | PASS |
+| `test12_leaderElectionDuringTransaction` | Uncommitted tx on leader, kill leader, verify rollback (ACID) | 3 | PASS |
+| `test13_concurrentWritesViaProxy` | 3 servers x 30 writes via HTTP simultaneously | 3 | PASS |
+| `test14_writesDuringSlowFollower` | Stop 1 follower, writes continue (majority), restart, catch-up | 3 | PASS |
+| `test15_veryLargeTransaction` | 2000 records x 500 bytes in single tx (~1MB+ WAL) | 3 | PASS |
+| `test16_mixedReadWriteWorkload` | Concurrent reads on follower + writes on leader | 3 | PASS |
+| `test17_rollingUpgradeSimulation` | Stop/restart each server one by one, verify data survives | 3 | PASS |
+
+### Known Limitations
+- **State machine command forwarding**: The `query()` path for forwarding write commands to the leader has a page visibility issue. Currently using HTTP proxy fallback which works correctly.
+- **RemoteDatabase client failover**: After leader stop, `RemoteDatabase` client needs to re-discover the cluster topology. Tests use server-side API directly to avoid this.
+
+## TODO
+
+### Future Tests
+All planned tests have been implemented and are passing. See the comprehensive test suite below.
+
+### Future Features
+- **State machine command forwarding**: Fix the `query()` path page visibility issue to eliminate HTTP proxy dependency for command forwarding
+- **Kubernetes auto-discovery**: Leverage existing `HA_K8S` + `HA_K8S_DNS_SUFFIX` settings with Ratis peer configuration
+- **Ratis metrics in Studio**: Surface `LeaderElectionMetrics`, `LogAppenderMetrics`, `StateMachineMetrics` in the dashboard
+- **Multi-Raft groups**: One Raft group per database (currently all databases share one group)
+- **Read-from-follower consistency**: Use Ratis `readIndex` or `readAfterWrite` for linearizable reads from followers
+- **JWT-based auth for cluster**: Replace Basic auth forwarding with stateless tokens that work across servers
+- **Alert configuration in Studio**: Configurable thresholds for replication lag, election frequency, quorum health

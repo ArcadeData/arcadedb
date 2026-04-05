@@ -43,6 +43,8 @@ import java.util.logging.Level;
 public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BASIC  = "Basic";
   private static final String AUTHORIZATION_BEARER = "Bearer";
+  private static final io.undertow.util.AttachmentKey<String> RAW_PAYLOAD_KEY = io.undertow.util.AttachmentKey.create(String.class);
+  static final io.undertow.util.AttachmentKey<String> BASIC_AUTH_KEY = io.undertow.util.AttachmentKey.create(String.class);
   protected final HttpServer httpServer;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
@@ -136,6 +138,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             }
 
             user = authenticate(authPair[0], authPair[1]);
+            // Store Basic auth for potential cross-server proxy forwarding in HA
+            exchange.putAttachment(BASIC_AUTH_KEY, auth);
 
           } else {
             sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
@@ -151,15 +155,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       JSONObject payload = null;
+      String rawPayload = null;
       if (mustExecuteOnWorkerThread()) {
-        final String payloadAsString = parseRequestPayload(exchange);
-        if (requiresJsonPayload() && payloadAsString != null && !payloadAsString.isBlank())
+        rawPayload = parseRequestPayload(exchange);
+        if (requiresJsonPayload() && rawPayload != null && !rawPayload.isBlank())
           try {
-            payload = new JSONObject(payloadAsString.trim());
+            payload = new JSONObject(rawPayload.trim());
           } catch (Exception e) {
             LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
           }
       }
+
+      // Store raw payload for potential proxy forwarding
+      exchange.putAttachment(RAW_PAYLOAD_KEY, rawPayload != null ? rawPayload : "");
 
       final ExecutionResponse response = execute(exchange, user, payload);
       if (response != null)
@@ -175,10 +183,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               SecurityException.class.getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 403, "Security error", e, null);
     } catch (final ServerIsNotTheLeaderException e) {
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 400, "Cannot execute command", e, e.getLeaderAddress());
+      // Forward the request to the leader via HTTP proxy
+      final String leaderAddr = e.getLeaderAddress();
+      if (leaderAddr != null && !leaderAddr.isEmpty()) {
+        try {
+          proxyToLeader(exchange, leaderAddr);
+          return;
+        } catch (final Exception proxyEx) {
+          LogManager.instance().log(this, Level.WARNING, "Failed to proxy request to leader %s: %s", leaderAddr,
+              proxyEx.getMessage());
+        }
+      }
+      sendErrorResponse(exchange, 400, "Cannot execute command", e, leaderAddr);
     } catch (final NeedRetryException e) {
       LogManager.instance()
               .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
@@ -229,7 +245,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (e.getCause() != null)
         realException = e.getCause();
 
-      if (realException instanceof SecurityException) {
+      if (realException instanceof ServerIsNotTheLeaderException notLeader) {
+        final String leaderAddr = notLeader.getLeaderAddress();
+        if (leaderAddr != null && !leaderAddr.isEmpty()) {
+          try {
+            proxyToLeader(exchange, leaderAddr);
+            return;
+          } catch (final Exception proxyEx) {
+            LogManager.instance().log(this, Level.WARNING, "Failed to proxy request to leader: %s", proxyEx.getMessage());
+          }
+        }
+        sendErrorResponse(exchange, 400, "Cannot execute command", realException, leaderAddr);
+      } else if (realException instanceof SecurityException) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on transaction execution (%s): %s",
                 SecurityException.class.getSimpleName(), realException.getMessage());
         sendErrorResponse(exchange, 403, "Security error", realException, null);
@@ -261,6 +288,67 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
       LogManager.instance().setContext(null);
+    }
+  }
+
+  /**
+   * Proxies the current HTTP request to the leader server. Used when a write operation
+   * hits a non-leader node in the Ratis HA cluster.
+   */
+  private void proxyToLeader(final HttpServerExchange exchange, final String leaderAddr) throws Exception {
+    final String path = exchange.getRequestPath();
+    final String query = exchange.getQueryString();
+    final String targetUrl = "http://" + leaderAddr + path + (query != null && !query.isEmpty() ? "?" + query : "");
+
+    LogManager.instance().log(this, Level.FINE, "Proxying request to leader: %s", targetUrl);
+
+    final java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+        new java.net.URI(targetUrl).toURL().openConnection();
+    conn.setRequestMethod(exchange.getRequestMethod().toString());
+
+    // Forward auth - convert Bearer session tokens to Basic auth for cross-server compatibility.
+    // Each server has its own session manager, so Bearer tokens are server-local.
+    final var authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);
+    if (authHeader != null && !authHeader.isEmpty()) {
+      final String auth = authHeader.getFirst();
+      if (auth.startsWith("Bearer ")) {
+        final String token = auth.substring(7).trim();
+        final var session = httpServer.getAuthSessionManager().getSessionByToken(token);
+        if (session != null && session.getBasicAuth() != null)
+          conn.setRequestProperty("Authorization", session.getBasicAuth());
+        else
+          conn.setRequestProperty("Authorization", auth);
+      } else
+        conn.setRequestProperty("Authorization", auth);
+    }
+
+    conn.setRequestProperty("Content-Type", "application/json");
+
+    // Forward request body for POST/PUT (use saved payload since input stream was already consumed)
+    if ("POST".equals(exchange.getRequestMethod().toString()) || "PUT".equals(exchange.getRequestMethod().toString())) {
+      conn.setDoOutput(true);
+      final String savedPayload = exchange.getAttachment(RAW_PAYLOAD_KEY);
+      if (savedPayload != null && !savedPayload.isEmpty())
+        try (final var os = conn.getOutputStream()) {
+          os.write(savedPayload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+    }
+
+    // Send leader's response back to the client
+    final int status = conn.getResponseCode();
+    exchange.setStatusCode(status);
+
+    final String contentType = conn.getContentType();
+    if (contentType != null)
+      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
+
+    try (final var in = status < 400 ? conn.getInputStream() : conn.getErrorStream()) {
+      if (in != null) {
+        final byte[] body = in.readAllBytes();
+        exchange.getResponseSender().send(java.nio.ByteBuffer.wrap(body));
+      }
+    } finally {
+      conn.disconnect();
     }
   }
 

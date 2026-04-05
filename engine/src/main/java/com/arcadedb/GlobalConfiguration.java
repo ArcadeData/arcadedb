@@ -504,6 +504,10 @@ public enum GlobalConfiguration {
   // HA
   HA_ENABLED("arcadedb.ha.enabled", SCOPE.SERVER, "True if HA is enabled for the current server", Boolean.class, false),
 
+  HA_LOG_VERBOSE("arcadedb.ha.logVerbose", SCOPE.SERVER,
+      "Verbose logging level for HA/Ratis components. 0=off, 1=basic (election, replication), 2=detailed (commands, WAL), 3=trace (all state machine operations)",
+      Integer.class, 0),
+
   HA_ERROR_RETRIES("arcadedb.ha.errorRetries", SCOPE.SERVER,
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, the operation will be retried a specific amount of times on the next server in the list. 0 (default) is to retry against all the configured servers",
       Integer.class, 0),

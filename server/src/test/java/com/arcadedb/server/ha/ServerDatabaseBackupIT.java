@@ -54,8 +54,9 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
 
   @Test
   void sqlBackup() {
+    // Backup SQL command is classified as DDL; run on leader only (Ratis HA requirement)
     for (int i = 0; i < getServerCount(); i++) {
-      final Database database = getServer(i).getDatabase(getDatabaseName());
+      final Database database = getLeaderServer().getDatabase(getDatabaseName());
 
       final ResultSet result = database.command("sql", "backup database");
       assertThat(result.hasNext()).isTrue();
@@ -73,7 +74,7 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   @Test
   void sqlScriptBackup() {
     for (int i = 0; i < getServerCount(); i++) {
-      final Database database = getServer(i).getDatabase(getDatabaseName());
+      final Database database = getLeaderServer().getDatabase(getDatabaseName());
 
       final ResultSet result = database.command("sqlscript", "backup database");
       assertThat(result.hasNext()).isTrue();

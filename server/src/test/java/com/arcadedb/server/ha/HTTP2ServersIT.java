@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
@@ -43,6 +44,12 @@ class HTTP2ServersIT extends BaseGraphServerTest {
   protected int getServerCount() {
     return 2;
   }
+
+  // Enable HA verbose logging for debugging cluster issues
+  // @Override
+  // protected void onServerConfiguration(final com.arcadedb.ContextConfiguration config) {
+  //   GlobalConfiguration.HA_LOG_VERBOSE.setValue(3);
+  // }
 
   @Test
   void serverInfo() throws Exception {
@@ -251,6 +258,38 @@ class HTTP2ServersIT extends BaseGraphServerTest {
         }
       });
     });
+  }
+
+  @Test
+  void verifyDatabase() throws Exception {
+    // Find the leader's HTTP port
+    final ArcadeDBServer leader = getLeaderServer();
+    assertThat(leader).isNotNull();
+    final int leaderPort = leader.getHttpServer().getPort();
+
+    // Run verify via the server command endpoint on the LEADER
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:" + leaderPort + "/api/v1/server").toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+    try (final var os = connection.getOutputStream()) {
+      os.write(("{\"command\":\"ha verify database " + getDatabaseName() + "\"}").getBytes());
+    }
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+      final String response = readResponse(connection);
+      LogManager.instance().log(this, Level.FINE, "Verify response: %s", response);
+      final JSONObject json = new JSONObject(response);
+      assertThat(json.has("result")).isTrue();
+      final JSONObject result = json.getJSONObject("result");
+      assertThat(result.getString("overallStatus")).isEqualTo("ALL_CONSISTENT");
+      assertThat(result.getJSONArray("peers").length()).isGreaterThan(0);
+    } finally {
+      connection.disconnect();
+    }
   }
 
   @Test

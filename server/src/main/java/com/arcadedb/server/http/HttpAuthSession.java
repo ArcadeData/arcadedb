@@ -38,6 +38,7 @@ public class HttpAuthSession {
   private final String             userAgent;
   private final String             country;
   private final String             city;
+  private       String             basicAuth;
 
   public HttpAuthSession(final ServerSecurityUser user, final String token) {
     this(user, token, null, null, null, null);
@@ -97,5 +98,15 @@ public class HttpAuthSession {
 
   public String getCity() {
     return city;
+  }
+
+  /** Stores the original Basic auth header for cross-server proxy forwarding in HA clusters. */
+  public void setBasicAuth(final String basicAuth) {
+    this.basicAuth = basicAuth;
+  }
+
+  /** Returns the original Basic auth header, or null if the session was created with a different auth method. */
+  public String getBasicAuth() {
+    return basicAuth;
   }
 }

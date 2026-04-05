@@ -18,9 +18,15 @@
  */
 package com.arcadedb.server.ha.network;
 
-import java.io.*;
-import java.net.*;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 
+/**
+ * Abstract factory for creating server sockets. Used by wire protocol modules (Bolt, PostgreSQL, Redis).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public abstract class ServerSocketFactory {
   public abstract ServerSocket createServerSocket(int port, int backlog, InetAddress ifAddress) throws IOException;
 }

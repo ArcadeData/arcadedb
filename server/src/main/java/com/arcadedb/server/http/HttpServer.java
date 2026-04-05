@@ -234,6 +234,10 @@ public class HttpServer implements ServerPlugin {
         .get("/ts/{database}/prom/api/v1/series", new GetPromQLSeriesHandler(this))
     );
 
+    // Ratis HA snapshot endpoint (serves database files as ZIP for follower resync)
+    if (server.getRaftHA() != null)
+      basicRoutes.get("/ha/snapshot/{database}", new com.arcadedb.server.ha.ratis.SnapshotHttpHandler(this));
+
     // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling
     final var mcpConfig = server.getMCPConfiguration();
     routes.addExactPath("/api/v1/mcp", new MCPHttpHandler(this, server, mcpConfig));
