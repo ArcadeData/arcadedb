@@ -90,6 +90,15 @@ public final class VectorUtils {
       }
       return result;
     }
+    if (vectorObj instanceof String s) {
+      final String trimmed = s.trim();
+      final String inner = trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.substring(1, trimmed.length() - 1) : trimmed;
+      final String[] parts = inner.split(",");
+      final float[] result = new float[parts.length];
+      for (int i = 0; i < parts.length; i++)
+        result[i] = Float.parseFloat(parts[i].trim());
+      return result;
+    }
     throw new IllegalArgumentException("Vector must be an array or list, found: " + vectorObj.getClass().getSimpleName());
   }
 

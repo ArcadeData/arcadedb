@@ -42,7 +42,7 @@ public class RoundFunction implements StatelessFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 1 || args.length > 2)
+    if (args.length < 1 || args.length > 3)
       throw new CommandExecutionException("round() requires one or two arguments");
 
     if (args[0] == null)
@@ -61,7 +61,7 @@ public class RoundFunction implements StatelessFunction {
       return (double) Math.round(value);
     }
 
-    // round(value, precision)
+    // round(value, precision) or round(value, precision, mode)
     if (args[1] == null)
       return null;
 
@@ -70,7 +70,22 @@ public class RoundFunction implements StatelessFunction {
 
     final int precision = ((Number) args[1]).intValue();
 
-    final BigDecimal bd = BigDecimal.valueOf(value).setScale(precision, RoundingMode.HALF_UP);
+    RoundingMode mode = RoundingMode.HALF_UP;
+    if (args.length == 3 && args[2] != null) {
+      final String modeStr = args[2].toString().toUpperCase().replace(" ", "_");
+      mode = switch (modeStr) {
+        case "UP" -> RoundingMode.UP;
+        case "DOWN" -> RoundingMode.DOWN;
+        case "CEILING" -> RoundingMode.CEILING;
+        case "FLOOR" -> RoundingMode.FLOOR;
+        case "HALF_UP" -> RoundingMode.HALF_UP;
+        case "HALF_DOWN" -> RoundingMode.HALF_DOWN;
+        case "HALF_EVEN" -> RoundingMode.HALF_EVEN;
+        default -> throw new CommandExecutionException("round() unknown rounding mode: " + args[2]);
+      };
+    }
+
+    final BigDecimal bd = BigDecimal.valueOf(value).setScale(precision, mode);
     return bd.doubleValue();
   }
 }

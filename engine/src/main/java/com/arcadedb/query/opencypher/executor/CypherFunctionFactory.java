@@ -47,6 +47,7 @@ import com.arcadedb.function.cypher.CustomFunctionAdapter;
 import com.arcadedb.function.cypher.LoadCSVFileFunction;
 import com.arcadedb.function.cypher.LoadCSVLineNumberFunction;
 import com.arcadedb.function.cypher.SQLFunctionBridge;
+import com.arcadedb.function.geo.CypherPointDistanceFunction;
 import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.function.geo.PointWithinBBoxFunction;
 import com.arcadedb.function.graph.ElementIdFunction;
@@ -316,7 +317,7 @@ public class CypherFunctionFactory {
       case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "lower", "upper", "ltrim", "rtrim", "btrim" ->
           true;
       // String functions (additional)
-      case "trim", "replace", "char.length", "character.length", "normalize" -> true;
+      case "trim", "replace", "char.length", "character.length", "char_length", "character_length", "normalize" -> true;
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean",
            "tostringornull", "tointegerornull", "tofloatornull", "tobooleanornull",
@@ -345,13 +346,13 @@ public class CypherFunctionFactory {
       // Note: vector_norm and vector_distance with EUCLIDEAN/DOT metrics delegate to SQL functions
       // (vector.magnitude, vector.l1Norm, vector.l2Distance, vector.dotProduct) via the SQL bridge
       case "vector.create", "vector.distance.manhattan", "vector.distance.cosine",
-           "vector", "vector.dimension.count", "vector.distance" -> true;
+           "vector", "vector.dimension.count", "vector_dimension_count", "vector.distance" -> true;
       // Vector distance functions
       case "vector.distance.euclidean" -> true;
       // Vector norm function
       case "vector.norm" -> true;
       // Geo-spatial functions
-      case "point", "distance", "point.withinbbox" -> true;
+      case "point", "distance", "point.withinbbox", "point.distance" -> true;
       // Temporal clock functions (realtime/statement/transaction are aliases for current instant)
       case "date.realtime", "date.statement", "date.transaction" -> true;
       case "localtime.realtime", "localtime.statement", "localtime.transaction" -> true;
@@ -438,7 +439,7 @@ public class CypherFunctionFactory {
       case "rtrim" -> new RTrimFunction();
       case "trim", "btrim" -> new TrimFunction();
       case "replace" -> new ReplaceFunction();
-      case "char.length", "character.length" -> new CharLengthFunction();
+      case "char.length", "character.length", "char_length", "character_length" -> new CharLengthFunction();
       case "normalize" -> new NormalizeFunction();
       // Type conversion functions
       case "tostring" -> new ToStringFunction();
@@ -478,7 +479,7 @@ public class CypherFunctionFactory {
       case "vector", "vector.create" -> new VectorCreateFunction();
       case "vector.distance.manhattan" -> new VectorDistanceManhattanFunction();
       case "vector.distance.cosine" -> new VectorDistanceCosineFunction();
-      case "vector.dimension.count" -> new VectorDimensionCountFunction();
+      case "vector.dimension.count", "vector_dimension_count" -> new VectorDimensionCountFunction();
       case "vector.distance" -> new VectorDistanceFunction();
       // Vector distance functions
       case "vector.distance.euclidean" -> new VectorDistanceEuclideanFunction();
@@ -488,6 +489,7 @@ public class CypherFunctionFactory {
       case "point" -> new CypherPointFunction();
       case "distance" -> new SQLFunctionBridge(sqlFunctionFactory.getFunctionInstance(SQLFunctionGeoDistance.NAME), "distance");
       case "point.withinbbox" -> new PointWithinBBoxFunction();
+      case "point.distance" -> new CypherPointDistanceFunction();
       // Temporal constructor functions
       case "date" -> new DateConstructorFunction();
       case "localtime" -> new LocalTimeConstructorFunction();

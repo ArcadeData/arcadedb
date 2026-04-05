@@ -29,6 +29,8 @@ import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.Map;
 
 /**
@@ -47,8 +49,18 @@ public class LocalTimeConstructorFunction implements StatelessFunction {
       return CypherFunctionHelper.getStatementTime(context).get("localtime");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String)
-      return CypherLocalTime.parse((String) args[0]);
+    if (args[0] instanceof String) {
+      final String str = (String) args[0];
+      try {
+        return CypherLocalTime.parse(str);
+      } catch (final Exception e) {
+        try {
+          return new CypherLocalTime(LocalTime.now(ZoneId.of(str)));
+        } catch (final Exception e2) {
+          throw new CommandExecutionException("localtime() cannot parse '" + str + "' as a local time or timezone");
+        }
+      }
+    }
     if (args[0] instanceof Map)
       return CypherLocalTime.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherLocalTime)

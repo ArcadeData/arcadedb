@@ -115,8 +115,8 @@ public class FunctionValidator {
     registerFunction("tolower", 1, 1, "Convert to lowercase", false);
     registerFunction("toupper", 1, 1, "Convert to uppercase", false);
     registerFunction("trim", 1, 3, "Trim whitespace", false);
-    registerFunction("ltrim", 1, 1, "Trim left whitespace", false);
-    registerFunction("rtrim", 1, 1, "Trim right whitespace", false);
+    registerFunction("ltrim", 1, 2, "Trim left whitespace", false);
+    registerFunction("rtrim", 1, 2, "Trim right whitespace", false);
     registerFunction("substring", 2, 3, "Extract substring", false);
     registerFunction("replace", 3, 3, "Replace string", false);
     registerFunction("split", 2, 2, "Split string", false);
@@ -127,7 +127,7 @@ public class FunctionValidator {
     registerFunction("abs", 1, 1, "Absolute value", false);
     registerFunction("ceil", 1, 1, "Ceiling", false);
     registerFunction("floor", 1, 1, "Floor", false);
-    registerFunction("round", 1, 2, "Round to integer or precision", false);
+    registerFunction("round", 1, 3, "Round to integer or precision", false);
     registerFunction("sign", 1, 1, "Sign of number", false);
     registerFunction("rand", 0, 0, "Random number", false);
     registerFunction("sqrt", 1, 1, "Square root", false);
@@ -170,6 +170,7 @@ public class FunctionValidator {
     // Vector functions
     registerFunction("vector", 1, 2, "Create vector from list (alias for vector.create)", false);
     registerFunction("vector.dimension.count", 1, 1, "Return dimension count of vector", false);
+    registerFunction("vector_dimension_count", 1, 1, "Return dimension count of vector", false);
     registerFunction("vector.distance", 2, 3, "Calculate distance between vectors", false);
     registerFunction("vector.distance.euclidean", 2, 2, "Euclidean distance between vectors", false);
     registerFunction("vector.norm", 1, 1, "L2 norm (magnitude) of vector", false);
@@ -200,6 +201,7 @@ public class FunctionValidator {
 
     // Geo-spatial functions
     registerFunction("point.withinbbox", 3, 3, "Check if point is within bounding box", false);
+    registerFunction("point.distance", 2, 2, "Distance between two points", false);
 
     // Path/Graph functions
     registerFunction("nodes", 1, 1, "Nodes in path", false);
@@ -217,7 +219,7 @@ public class FunctionValidator {
     registerFunction("randomuuid", 0, 0, "Random UUID", false);
     registerFunction("pi", 0, 0, "Pi constant", false);
     registerFunction("e", 0, 0, "Euler's number", false);
-    registerFunction("point", 1, 1, "Create point", false);
+    registerFunction("point", 1, 2, "Create point (map or latitude,longitude)", false);
     registerFunction("distance", 2, 2, "Distance between points", false);
     registerFunction("degrees", 1, 1, "Radians to degrees", false);
     registerFunction("radians", 1, 1, "Degrees to radians", false);
@@ -228,6 +230,8 @@ public class FunctionValidator {
     registerFunction("cot", 1, 1, "Cotangent", false);
     registerFunction("coth", 1, 1, "Hyperbolic cotangent", false);
     registerFunction("charlength", 1, 1, "Character length", false);
+    registerFunction("char_length", 1, 1, "Character length", false);
+    registerFunction("character_length", 1, 1, "Character length", false);
     registerFunction("charat", 2, 2, "Character at position", false);
     registerFunction("normalize", 1, 2, "Normalize string", false);
     registerFunction("isnormalized", 1, 2, "Check if normalized", false);

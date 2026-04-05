@@ -42,6 +42,10 @@ public class VectorCreateFunction implements StatelessFunction {
     if (args[0] == null)
       return null;
 
+    // Null propagation: if dimension is explicitly null, return null
+    if (args.length >= 2 && args[1] == null)
+      return null;
+
     final float[] result = VectorUtils.toFloatArray(args[0]);
 
     // Validate dimension if provided
