@@ -109,6 +109,7 @@
         </dependency>
 
         <!-- Test dependencies -->
+        <!-- arcadedb-integration is needed at runtime for the "backup database" SQL command -->
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-integration</artifactId>
