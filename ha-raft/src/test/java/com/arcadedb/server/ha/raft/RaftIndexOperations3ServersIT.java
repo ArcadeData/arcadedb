@@ -131,11 +131,7 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
 
   /**
    * Tests creating an index later in a distributed fashion, with drop and re-create cycles.
-   * Disabled because the index state becomes invalid on followers when compaction occurs on the
-   * leader - the raft log does not carry COMPACT entries. Additionally, when run after tests that
-   * fail in endTest (due to compaction), the Raft cluster may not have a leader elected in time.
    */
-  @Disabled("Index file state diverges across Raft peers when implicit compaction occurs - no COMPACT log entry type")
   @Test
   void createIndexLaterDistributed() throws Exception {
     final int leaderIndex = findLeaderIndex();
@@ -175,10 +171,7 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
 
   /**
    * Tests that creating a unique index with duplicate data raises an error on all servers.
-   * Disabled because index file state diverges across Raft peers when implicit compaction
-   * occurs, and this test runs after others that cause compaction-related state corruption.
    */
-  @Disabled("Index file state diverges across Raft peers when implicit compaction occurs - no COMPACT log entry type")
   @Test
   void createIndexErrorDistributed() throws Exception {
     final int leaderIndex = findLeaderIndex();
