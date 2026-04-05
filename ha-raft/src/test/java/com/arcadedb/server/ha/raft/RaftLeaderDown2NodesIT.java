@@ -164,13 +164,4 @@ class RaftLeaderDown2NodesIT extends BaseRaftHATest {
     }
     return result;
   }
-
-  private int findLeaderIndex() {
-    for (int i = 0; i < getServerCount(); i++) {
-      final RaftHAPlugin plugin = getRaftPlugin(i);
-      if (plugin != null && plugin.isLeader())
-        return i;
-    }
-    return -1;
-  }
 }

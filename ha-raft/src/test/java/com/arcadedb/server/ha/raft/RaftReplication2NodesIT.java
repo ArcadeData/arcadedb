@@ -79,13 +79,4 @@ class RaftReplication2NodesIT extends BaseRaftHATest {
     final long count = replicaDb.countType("RaftPerson", true);
     assertThat(count).isEqualTo(100);
   }
-
-  private int findLeaderIndex() {
-    for (int i = 0; i < getServerCount(); i++) {
-      final RaftHAPlugin plugin = getRaftPlugin(i);
-      if (plugin != null && plugin.isLeader())
-        return i;
-    }
-    return -1;
-  }
 }

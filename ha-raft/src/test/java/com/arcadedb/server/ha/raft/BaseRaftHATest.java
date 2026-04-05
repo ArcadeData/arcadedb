@@ -188,6 +188,18 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   }
 
   /**
+   * Returns the index of the current Raft leader, or -1 if no leader is elected.
+   */
+  protected int findLeaderIndex() {
+    for (int i = 0; i < getServerCount(); i++) {
+      final RaftHAPlugin plugin = getRaftPlugin(i);
+      if (plugin != null && plugin.isLeader())
+        return i;
+    }
+    return -1;
+  }
+
+  /**
    * Stops server {@code serverIndex} then immediately restarts it using the same
    * {@link com.arcadedb.server.ArcadeDBServer} instance and configuration. Waits for replication to
    * catch up before returning.
