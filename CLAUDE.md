@@ -204,7 +204,11 @@ cd package
 
 ### Server Components
 - **HTTP API**: `com.arcadedb.server.http.*` - REST endpoints, request handling
-- **High Availability**: `com.arcadedb.server.ha.*` - Clustering, replication, leader election
+- **High Availability**: `com.arcadedb.server.ha.*` - Clustering via Apache Ratis, WAL replication, leader election
+  - `RaftHAServer.java` - Ratis server lifecycle, gRPC transport, peer management
+  - `ArcadeDBStateMachine.java` - Ratis state machine for WAL replication
+  - `RaftLogEntry.java` - binary serialization for Raft log entries
+  - `HALog.java` - verbose HA logging (`arcadedb.ha.logVerbose=0/1/2/3`: off/basic/detailed/trace)
 - **Security**: `com.arcadedb.server.security.*` - Authentication, authorization
 - **Monitoring**: `com.arcadedb.server.monitor.*` - Metrics, query profiling, health checks
 - **MCP**: `com.arcadedb.server.mcp.*` - Model Context Protocol server support

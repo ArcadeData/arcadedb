@@ -185,7 +185,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     } catch (final ServerIsNotTheLeaderException e) {
       // Forward the request to the leader via HTTP proxy
       final String leaderAddr = e.getLeaderAddress();
-      if (leaderAddr != null && !leaderAddr.isEmpty()) {
+      if (leaderAddr == null || leaderAddr.isEmpty()) {
+        // Leader unknown (election in progress) - return 503 so client retries
+        sendErrorResponse(exchange, 503, "Leader election in progress, retry later", e, null);
+        return;
+      }
+      {
         try {
           proxyToLeader(exchange, leaderAddr);
           return;
@@ -194,7 +199,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               proxyEx.getMessage());
         }
       }
-      sendErrorResponse(exchange, 400, "Cannot execute command", e, leaderAddr);
+      sendErrorResponse(exchange, 503, "Leader proxy failed, retry later", e, leaderAddr);
     } catch (final NeedRetryException e) {
       LogManager.instance()
               .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());

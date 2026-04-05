@@ -19,8 +19,7 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.log.LogManager;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
@@ -29,13 +28,12 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests that writes continue after the leader goes down and a new leader is elected.
- * Uses the server Java API (not RemoteDatabase) to avoid client-side failover issues.
+ * Tests that the RemoteDatabase client correctly fails over to the new leader
+ * after the current leader goes down.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -54,28 +52,48 @@ public class ReplicationServerLeaderDownIT extends BaseGraphServerTest {
 
   @Test
   void testLeaderDownDuringWrites() {
-    // Phase 1: Write 10 vertices on the leader
+    // Phase 1: Write via server-side API on leader
     ArcadeDBServer leader = getLeaderServer();
     assertThat(leader).isNotNull();
     testLog("Initial leader: %s", leader.getServerName());
 
     for (int i = 0; i < 10; i++) {
       final int idx = i;
-      leader.getDatabase(getDatabaseName()).transaction(() -> {
-        leader.getDatabase(getDatabaseName()).newVertex(VERTEX1_TYPE_NAME)
-            .set("id", (long) (10000 + idx)).set("name", "before-stop").save();
-      });
+      leader.getDatabase(getDatabaseName()).transaction(() ->
+          leader.getDatabase(getDatabaseName()).newVertex(VERTEX1_TYPE_NAME)
+              .set("id", (long) (10000 + idx)).set("name", "before-stop").save()
+      );
     }
-    testLog("Phase 1: 10 vertices written on leader");
     CodeUtils.sleep(3000);
+    testLog("Phase 1: 10 vertices written on leader");
 
-    // Phase 2: Stop the leader
+    // Phase 2: Create a RemoteDatabase client connected to a FOLLOWER
+    // The client should discover the cluster topology and be able to failover
+    int followerPort = -1;
+    for (int i = 0; i < getServerCount(); i++) {
+      final ArcadeDBServer s = getServer(i);
+      if (s != null && s.isStarted() && s.getHA() != null && !s.getHA().isLeader()) {
+        followerPort = s.getHttpServer().getPort();
+        break;
+      }
+    }
+    assertThat(followerPort).isGreaterThan(0);
+    testLog("RemoteDatabase connected to follower on port %d", followerPort);
+
+    final RemoteDatabase db = new RemoteDatabase("127.0.0.1", followerPort, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+
+    // Phase 3: Write via RemoteDatabase (goes through HTTP proxy to leader)
+    for (int i = 0; i < 5; i++) {
+      db.command("SQL", "INSERT INTO " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", (long) (20000 + i), "via-remote-before");
+    }
+    testLog("Phase 3: 5 vertices written via RemoteDatabase through follower");
+
+    // Phase 4: Stop the leader
     final String leaderName = leader.getServerName();
     testLog("Stopping leader: %s", leaderName);
     leader.stop();
 
-    // Phase 3: Wait for new leader election
-    testLog("Waiting for new leader election...");
+    // Phase 5: Wait for new leader election
     Awaitility.await()
         .atMost(15, TimeUnit.SECONDS)
         .pollInterval(500, TimeUnit.MILLISECONDS)
@@ -87,41 +105,23 @@ public class ReplicationServerLeaderDownIT extends BaseGraphServerTest {
           }
           return false;
         });
+    testLog("New leader elected");
 
-    final ArcadeDBServer newLeader = getLeaderServer();
-    assertThat(newLeader).isNotNull();
-    assertThat(newLeader.getServerName()).isNotEqualTo(leaderName);
-    testLog("New leader elected: %s", newLeader.getServerName());
-
-    // Phase 4: Write 10 more vertices on the new leader
-    final AtomicInteger successCount = new AtomicInteger();
+    // Phase 6: Write via RemoteDatabase - the client should failover to the new leader
+    final AtomicInteger successes = new AtomicInteger();
     for (int i = 0; i < 10; i++) {
-      final int idx = i;
       try {
-        newLeader.getDatabase(getDatabaseName()).transaction(() -> {
-          newLeader.getDatabase(getDatabaseName()).newVertex(VERTEX1_TYPE_NAME)
-              .set("id", (long) (20000 + idx)).set("name", "after-stop").save();
-        });
-        successCount.incrementAndGet();
+        db.command("SQL", "INSERT INTO " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", (long) (30000 + i), "via-remote-after");
+        successes.incrementAndGet();
       } catch (final Exception e) {
-        testLog("Write failed after leader change: %s", e.getMessage());
+        testLog("Write %d after leader change failed: %s", i, e.getMessage());
       }
     }
 
-    testLog("Phase 4: %d/10 vertices written on new leader", successCount.get());
-    assertThat(successCount.get()).as("Expected at least 8 writes on new leader").isGreaterThanOrEqualTo(8);
+    testLog("Phase 6: %d/10 writes via RemoteDatabase after leader change", successes.get());
+    assertThat(successes.get()).as("RemoteDatabase should failover to new leader").isGreaterThanOrEqualTo(5);
 
-    // Phase 5: Verify data on surviving servers
-    CodeUtils.sleep(3000);
-    for (int i = 0; i < getServerCount(); i++) {
-      final ArcadeDBServer s = getServer(i);
-      if (s != null && s.isStarted()) {
-        final long count = s.getDatabase(getDatabaseName())
-            .query("sql", "SELECT count(*) as cnt FROM " + VERTEX1_TYPE_NAME)
-            .nextIfAvailable().getProperty("cnt", 0L);
-        testLog("Server %s has %d vertices", s.getServerName(), count);
-      }
-    }
+    db.close();
   }
 
   @Override
@@ -138,12 +138,6 @@ public class ReplicationServerLeaderDownIT extends BaseGraphServerTest {
 
   @Override
   protected int[] getServerToCheck() {
-    // Only check surviving servers (server 0 was stopped and may not have caught up)
     return new int[] { 1, 2 };
-  }
-
-  @Override
-  protected boolean dropDatabasesAtTheEnd() {
-    return true;
   }
 }

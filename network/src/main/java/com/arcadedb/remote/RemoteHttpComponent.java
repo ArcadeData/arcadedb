@@ -267,8 +267,12 @@ public class RemoteHttpComponent extends RWLockContext {
 
         return callback.call(response, jsonResponse);
 
-      } catch (final IOException | ServerIsNotTheLeaderException e) {
+      } catch (final IOException | NeedRetryException e) {
         lastException = e;
+
+        // On connection failure or leader election, ensure enough retries for failover
+        if (maxRetry < 3)
+          maxRetry = 3;
 
         if (!autoReconnect || retry + 1 >= maxRetry)
           break;
@@ -278,12 +282,24 @@ public class RemoteHttpComponent extends RWLockContext {
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
                   connectToServer.getFirst(), connectToServer.getSecond());
         } else {
-          if (!reloadClusterConfiguration())
-            throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
+          if (!reloadClusterConfiguration()) {
+            // Leader unknown (possibly during election). Wait briefly and retry.
+            LogManager.instance().log(this, Level.WARNING,
+                "No leader available (election in progress?), waiting before retry...");
+            try { Thread.sleep(2000); } catch (final InterruptedException ie) { Thread.currentThread().interrupt(); }
+            // Try to reload again after waiting
+            if (!reloadClusterConfiguration()) {
+              // Try connecting to any available replica
+              connectToServer = getNextReplicaAddress();
+              if (connectToServer == null)
+                throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
+              continue;
+            }
+          }
 
           final Pair<String, Integer> currentConnectToServer = connectToServer;
 
-          if (leaderIsPreferable && !currentConnectToServer.equals(leaderServer)) {
+          if (leaderIsPreferable && leaderServer != null && !currentConnectToServer.equals(leaderServer)) {
             connectToServer = leaderServer;
           } else
             connectToServer = getNextReplicaAddress();
@@ -298,7 +314,7 @@ public class RemoteHttpComponent extends RWLockContext {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new RemoteException("Request interrupted", e);
-      } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException |
+      } catch (final RemoteException | DuplicatedKeyException | TransactionException | TimeoutException |
                      SecurityException | RecordNotFoundException e) {
         throw e;
       } catch (final Exception e) {
@@ -375,11 +391,15 @@ public class RemoteHttpComponent extends RWLockContext {
 
       final JSONObject ha = response.getJSONObject("ha");
 
-      final String cfgLeaderServer = (String) ha.get("leaderAddress");
+      final Object cfgLeaderObj = ha.opt("leaderAddress");
+      final String cfgLeaderServer = cfgLeaderObj != null && !cfgLeaderObj.toString().equals("null")
+          ? cfgLeaderObj.toString() : null;
 
-      final String[] leaderServerParts = HostUtil.parseHostAddress(cfgLeaderServer, HostUtil.HA_DEFAULT_PORT);
-
-      leaderServer = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
+      if (cfgLeaderServer != null && !cfgLeaderServer.isEmpty()) {
+        final String[] leaderServerParts = HostUtil.parseHostAddress(cfgLeaderServer, HostUtil.HA_DEFAULT_PORT);
+        leaderServer = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
+      } else
+        leaderServer = null;
 
       final String cfgReplicaServers = (String) ha.get("replicaAddresses");
 
@@ -491,6 +511,10 @@ public class RemoteHttpComponent extends RWLockContext {
               e.toString());
       return e;
     }
+
+    // HTTP 503 = leader unknown or election in progress, trigger retry
+    if (response.statusCode() == 503)
+      return new NeedRetryException(detail != null ? detail : "Service unavailable (leader election in progress)");
 
     if (exception != null) {
       if (detail == null)
