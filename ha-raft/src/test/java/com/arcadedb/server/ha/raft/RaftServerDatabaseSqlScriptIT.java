@@ -55,22 +55,27 @@ class RaftServerDatabaseSqlScriptIT extends BaseRaftHATest {
 
   @Test
   void executeSqlScript() {
-    for (int i = 0; i < getServerCount(); i++) {
-      final Database database = getServer(i).getDatabase(getDatabaseName());
-      database.command("sql", "create vertex type RaftPhotos if not exists");
-      database.command("sql", "create edge type RaftConnected if not exists");
+    // In Raft HA, writes must go through the leader - follower embedded writes
+    // are not forwarded through the Raft log and would cause replica divergence.
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("Expected a Raft leader to be elected").isGreaterThanOrEqualTo(0);
 
-      database.transaction(() -> {
-        final ResultSet result = database.command("sqlscript",
-            """
-            LET photo1 = CREATE vertex RaftPhotos SET id = "3778f235a52d", name = "beach.jpg", status = "";
-            LET photo2 = CREATE vertex RaftPhotos SET id = "23kfkd23223", name = "luca.jpg", status = "";
-            LET connected = Create edge RaftConnected FROM $photo1 to $photo2 set type = "User_Photos";return $photo1;\
-            """);
-        assertThat(result.hasNext()).isTrue();
-        final Result response = result.next();
-        assertThat(response.<String>getProperty("name")).isEqualTo("beach.jpg");
-      });
-    }
+    final Database database = getServer(leaderIndex).getDatabase(getDatabaseName());
+    database.command("sql", "create vertex type RaftPhotos if not exists");
+    database.command("sql", "create edge type RaftConnected if not exists");
+
+    database.transaction(() -> {
+      final ResultSet result = database.command("sqlscript",
+          """
+          LET photo1 = CREATE vertex RaftPhotos SET id = "3778f235a52d", name = "beach.jpg", status = "";
+          LET photo2 = CREATE vertex RaftPhotos SET id = "23kfkd23223", name = "luca.jpg", status = "";
+          LET connected = Create edge RaftConnected FROM $photo1 to $photo2 set type = "User_Photos";return $photo1;\
+          """);
+      assertThat(result.hasNext()).isTrue();
+      final Result response = result.next();
+      assertThat(response.<String>getProperty("name")).isEqualTo("beach.jpg");
+    });
+
+    assertClusterConsistency();
   }
 }
