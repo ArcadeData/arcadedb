@@ -697,18 +697,70 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public ResultSet query(final String language, final String query) {
+    waitForReadConsistency();
     return proxied.query(language, query);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Object... args) {
+    waitForReadConsistency();
     return proxied.query(language, query, args);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> args) {
+    waitForReadConsistency();
     return proxied.query(language, query, args);
   }
+
+  /**
+   * Waits for the follower to catch up to the required consistency level before executing a read.
+   * On the leader, this is a no-op (data is always current).
+   * <p>
+   * The consistency level and bookmark are read from the current thread's request context
+   * (set by the HTTP handler via {@link #setReadConsistencyContext}).
+   */
+  private void waitForReadConsistency() {
+    if (isLeader())
+      return;
+
+    final var raftHA = server.getRaftHA();
+    if (raftHA == null)
+      return;
+
+    final var ctx = READ_CONSISTENCY_CONTEXT.get();
+    if (ctx == null)
+      return;
+
+    final Database.READ_CONSISTENCY consistency = ctx.consistency;
+    if (consistency == null || consistency == Database.READ_CONSISTENCY.EVENTUAL)
+      return;
+
+    if (consistency == Database.READ_CONSISTENCY.READ_YOUR_WRITES) {
+      if (ctx.readAfterIndex >= 0)
+        raftHA.waitForAppliedIndex(ctx.readAfterIndex);
+    } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
+      // Use the client's bookmark if available (from write response headers - reflects the leader's commit index).
+      // Otherwise fall back to waiting for the local commit index to be applied.
+      if (ctx.readAfterIndex >= 0)
+        raftHA.waitForAppliedIndex(ctx.readAfterIndex);
+      else
+        raftHA.waitForLocalApply();
+    }
+  }
+
+  /** Thread-local context for read consistency, set by the HTTP handler before query execution. */
+  private static final ThreadLocal<ReadConsistencyContext> READ_CONSISTENCY_CONTEXT = new ThreadLocal<>();
+
+  public static void setReadConsistencyContext(final Database.READ_CONSISTENCY consistency, final long readAfterIndex) {
+    READ_CONSISTENCY_CONTEXT.set(new ReadConsistencyContext(consistency, readAfterIndex));
+  }
+
+  public static void clearReadConsistencyContext() {
+    READ_CONSISTENCY_CONTEXT.remove();
+  }
+
+  private record ReadConsistencyContext(Database.READ_CONSISTENCY consistency, long readAfterIndex) {}
 
   @Deprecated
   @Override

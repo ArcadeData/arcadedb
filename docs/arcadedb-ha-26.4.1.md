@@ -131,6 +131,12 @@ arcadedb.ha.quorum=majority
 # Timeouts
 arcadedb.ha.quorumTimeout=10000
 
+# Read consistency for follower reads
+# EVENTUAL: read locally (fastest, may be stale)
+# READ_YOUR_WRITES: wait for client's last write to be applied (default)
+# LINEARIZABLE: wait for all committed writes to be applied
+arcadedb.ha.readConsistency=read_your_writes
+
 # Verbose logging for debugging
 arcadedb.ha.logVerbose=0
 ```
@@ -272,6 +278,5 @@ All planned tests have been implemented and are passing. See the comprehensive t
 ### Future Features
 - **State machine command forwarding**: Fix the `query()` path page visibility issue to eliminate HTTP proxy dependency for command forwarding. Currently write commands on non-leader nodes are forwarded via HTTP proxy which works correctly but adds latency.
 - **Multi-Raft groups**: One Raft group per database (currently all databases share one group). This would allow independent replication policies per database.
-- **Read-from-follower consistency**: Use Ratis `readIndex` or `readAfterWrite` for linearizable reads from followers without going to the leader.
 - **JWT-based auth for cluster**: Replace Basic auth forwarding in HTTP proxy with stateless JWT tokens that work across servers without session affinity.
 - **Alert configuration in Studio**: Configurable thresholds for replication lag, election frequency, quorum health with notifications.

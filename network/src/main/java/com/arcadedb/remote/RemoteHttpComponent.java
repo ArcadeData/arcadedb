@@ -62,8 +62,11 @@ import java.util.stream.Collectors;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteHttpComponent extends RWLockContext {
-  public static final  int    DEFAULT_PORT = 2480;
-  private static final String charset      = "UTF-8";
+  public static final  int    DEFAULT_PORT              = 2480;
+  public static final  String HEADER_COMMIT_INDEX       = "X-ArcadeDB-Commit-Index";
+  public static final  String HEADER_READ_CONSISTENCY   = "X-ArcadeDB-Read-Consistency";
+  public static final  String HEADER_READ_AFTER         = "X-ArcadeDB-Read-After";
+  private static final String charset                   = "UTF-8";
 
   protected       String                      protocol                  = "http";
   private final   String                      originalServer;
@@ -151,6 +154,11 @@ public class RemoteHttpComponent extends RWLockContext {
 
   public void setTimeout(final int timeout) {
     this.timeout = timeout;
+  }
+
+  /** Called when a response includes a commit index header. Override in subclasses to track bookmarks. */
+  protected void updateLastCommitIndex(final long commitIndex) {
+    // Default no-op. RemoteDatabase overrides this.
   }
 
   public void setSameServerErrorRetries(Integer maxRetries) {
@@ -259,6 +267,11 @@ public class RemoteHttpComponent extends RWLockContext {
 
           throw lastException;
         }
+
+        // Track commit index from write responses for READ_YOUR_WRITES consistency
+        response.headers().firstValue(HEADER_COMMIT_INDEX).ifPresent(v -> {
+          try { updateLastCommitIndex(Long.parseLong(v)); } catch (final NumberFormatException ignored) {}
+        });
 
         final JSONObject jsonResponse = new JSONObject(response.body());
 

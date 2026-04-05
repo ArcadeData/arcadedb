@@ -347,6 +347,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (contentType != null)
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
 
+    // Forward the commit index header for READ_YOUR_WRITES bookmark tracking
+    final String commitIndex = conn.getHeaderField(com.arcadedb.remote.RemoteHttpComponent.HEADER_COMMIT_INDEX);
+    if (commitIndex != null)
+      exchange.getResponseHeaders().put(
+          new io.undertow.util.HttpString(com.arcadedb.remote.RemoteHttpComponent.HEADER_COMMIT_INDEX), commitIndex);
+
     try (final var in = status < 400 ? conn.getInputStream() : conn.getErrorStream()) {
       if (in != null) {
         final byte[] body = in.readAllBytes();

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
@@ -100,6 +101,9 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
     final int retries = payload != null && !payload.isNull("retries") ? payload.getInt("retries") : 1;
 
+    // Set read consistency context from HTTP headers for HA follower reads
+    setReadConsistencyFromHeaders(exchange);
+
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
       boolean finalAtomicTransaction = atomicTransaction;
@@ -136,6 +140,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         database.commit();
 
     } finally {
+      com.arcadedb.server.ha.ReplicatedDatabase.clearReadConsistencyContext();
 
       if (activeSession != null)
         // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
@@ -152,7 +157,46 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       }
     }
 
+    // Emit commit index header so clients can track bookmarks for READ_YOUR_WRITES consistency
+    final var raftHA = httpServer.getServer().getHA();
+    if (raftHA != null) {
+      final long commitIndex = raftHA.getCommitIndex();
+      if (commitIndex >= 0)
+        exchange.getResponseHeaders().put(
+            new io.undertow.util.HttpString(com.arcadedb.remote.RemoteHttpComponent.HEADER_COMMIT_INDEX),
+            Long.toString(commitIndex));
+    }
+
     return response.get();
+  }
+
+  private void setReadConsistencyFromHeaders(final HttpServerExchange exchange) {
+    final var consistencyHeader = exchange.getRequestHeaders().get(
+        com.arcadedb.remote.RemoteHttpComponent.HEADER_READ_CONSISTENCY);
+
+    Database.READ_CONSISTENCY consistency = null;
+    if (consistencyHeader != null && !consistencyHeader.isEmpty()) {
+      try {
+        consistency = Database.READ_CONSISTENCY.valueOf(consistencyHeader.getFirst().toUpperCase());
+      } catch (final IllegalArgumentException ignored) {}
+    }
+
+    // Fall back to server default if no header
+    if (consistency == null) {
+      final String defaultValue = httpServer.getServer().getConfiguration()
+          .getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY);
+      if (defaultValue != null)
+        try { consistency = Database.READ_CONSISTENCY.valueOf(defaultValue.toUpperCase()); } catch (final IllegalArgumentException ignored) {}
+    }
+
+    long readAfterIndex = -1;
+    final var readAfterHeader = exchange.getRequestHeaders().get(
+        com.arcadedb.remote.RemoteHttpComponent.HEADER_READ_AFTER);
+    if (readAfterHeader != null && !readAfterHeader.isEmpty())
+      try { readAfterIndex = Long.parseLong(readAfterHeader.getFirst()); } catch (final NumberFormatException ignored) {}
+
+    if (consistency != null && consistency != Database.READ_CONSISTENCY.EVENTUAL)
+      com.arcadedb.server.ha.ReplicatedDatabase.setReadConsistencyContext(consistency, readAfterIndex);
   }
 
   private void cleanTL(final Database database, DatabaseContext.DatabaseContextTL current) {

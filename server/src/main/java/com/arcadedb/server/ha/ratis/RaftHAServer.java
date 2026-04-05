@@ -427,12 +427,33 @@ public class RaftHAServer {
   // -- Status --
 
   /**
-   * Waits until the local state machine has applied all committed entries.
-   * Used after command forwarding to ensure the follower has the latest data before reads.
+   * Waits until the local state machine has applied at least the specified index.
+   * Used for READ_YOUR_WRITES consistency: the client sends its last known commit index (bookmark)
+   * and the follower waits until it has applied up to that point before executing a read.
    */
+  public void waitForAppliedIndex(final long targetIndex) {
+    if (targetIndex <= 0)
+      return;
+    try {
+      final long deadline = System.currentTimeMillis() + quorumTimeout;
+      while (System.currentTimeMillis() < deadline) {
+        if (getLastAppliedIndex() >= targetIndex) {
+          HALog.log(this, HALog.TRACE, "Bookmark wait complete: applied >= target=%d", targetIndex);
+          return;
+        }
+        Thread.sleep(10);
+      }
+      HALog.log(this, HALog.DETAILED, "waitForAppliedIndex timed out: applied=%d < target=%d",
+          getLastAppliedIndex(), targetIndex);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
   /**
    * Waits until the local state machine has applied all committed entries.
-   * Polls lastAppliedIndex until it matches commitIndex.
+   * Used for LINEARIZABLE consistency: contacts the leader to get the current commit index,
+   * then waits for the local state machine to catch up.
    */
   public void waitForLocalApply() {
     try {

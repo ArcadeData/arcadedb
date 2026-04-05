@@ -512,6 +512,10 @@ public enum GlobalConfiguration {
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, the operation will be retried a specific amount of times on the next server in the list. 0 (default) is to retry against all the configured servers",
       Integer.class, 0),
 
+  HA_READ_CONSISTENCY("arcadedb.ha.readConsistency", SCOPE.SERVER,
+      "Default read consistency for follower reads: EVENTUAL (read locally), READ_YOUR_WRITES (default, wait for client's last write), LINEARIZABLE (wait for all committed writes)",
+      String.class, "read_your_writes", Set.of((Object[]) new String[]{"eventual", "read_your_writes", "linearizable"})),
+
   HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
       "Server role between ANY (default) OR REPLICA to configure replica only servers", String.class, "any",
       Set.of((Object[]) new String[]{"any", "replica"})),
