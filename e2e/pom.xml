@@ -95,6 +95,19 @@
             <version>${neo4j-driver.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- Toxiproxy for network fault injection in HA e2e tests (available when needed) -->
+        <!-- <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>toxiproxy</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency> -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <version>${awaitility.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 </project>

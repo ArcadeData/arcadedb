@@ -88,10 +88,14 @@ public class RaftHAServer {
   private final Quorum                     quorum;
   private final long                       quorumTimeout;
   private final Map<String, String>        peerHttpAddresses = new java.util.concurrent.ConcurrentHashMap<>();
+  private       String                     clusterToken;
 
-  private RaftServer           raftServer;
-  private RaftClient           raftClient;
-  private ArcadeDBStateMachine stateMachine;
+  private RaftServer                       raftServer;
+  private RaftClient                       raftClient;
+  private RaftProperties                   raftProperties;
+  private ArcadeDBStateMachine             stateMachine;
+  private ClusterMonitor                   clusterMonitor;
+  private java.util.concurrent.ScheduledExecutorService lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     this.server = server;
@@ -112,6 +116,30 @@ public class RaftHAServer {
     final RaftGroupId groupId = RaftGroupId.valueOf(
         UUID.nameUUIDFromBytes(clusterName.getBytes()));
     this.raftGroup = RaftGroup.valueOf(groupId, peers);
+
+    // Initialize cluster token for inter-node HTTP auth
+    initClusterToken();
+
+    // Initialize cluster monitor
+    final int lagThreshold = configuration.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
+    this.clusterMonitor = new ClusterMonitor(lagThreshold);
+  }
+
+  /**
+   * Derives a deterministic cluster token from the cluster name and root password.
+   * All nodes in the same cluster compute the same token without sharing state.
+   */
+  private void initClusterToken() {
+    final String configured = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+    if (configured != null && !configured.isEmpty()) {
+      this.clusterToken = configured;
+      return;
+    }
+    final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
+    final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    final String seed = clusterName + ":" + (rootPassword != null ? rootPassword : "");
+    this.clusterToken = UUID.nameUUIDFromBytes(seed.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, this.clusterToken);
   }
 
   public void startService() {
@@ -121,7 +149,8 @@ public class RaftHAServer {
     try {
       stateMachine = new ArcadeDBStateMachine(server);
 
-      final RaftProperties properties = buildRaftProperties();
+      this.raftProperties = buildRaftProperties();
+      final RaftProperties properties = this.raftProperties;
 
       // Use RECOVER if storage exists from a previous run, FORMAT for fresh start
       final Path storagePath = Path.of(server.getRootPath(), "ratis-storage", localPeerId.toString());
@@ -155,6 +184,8 @@ public class RaftHAServer {
       // This handles StatefulSet scale-up where new pods need to join the existing Raft group.
       if (!storageExists && configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
         tryAutoJoinCluster();
+
+      startLagMonitor();
 
       LogManager.instance().log(this, Level.INFO, "Ratis HA service started (serverId=%s)", localPeerId);
 
@@ -246,6 +277,8 @@ public class RaftHAServer {
 
   public void stopService() {
     LogManager.instance().log(this, Level.INFO, "Stopping Ratis HA service...");
+
+    stopLagMonitor();
 
     // In K8s mode, automatically remove this peer from the Raft cluster before stopping.
     // This ensures clean scale-down without orphaned peers in the cluster configuration.
@@ -663,6 +696,72 @@ public class RaftHAServer {
 
   public RaftServer getRaftServer() {
     return raftServer;
+  }
+
+  // -- gRPC Channel Refresh --
+
+  /**
+   * Closes the current RaftClient and creates a new one with fresh gRPC channels.
+   * After a network partition, gRPC channels enter TRANSIENT_FAILURE with exponential backoff.
+   * Recreating the client forces new channel creation and immediate DNS re-resolution.
+   */
+  public synchronized void refreshRaftClient() {
+    if (raftProperties == null)
+      return;
+    if (raftClient != null) {
+      try {
+        raftClient.close();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing stale RaftClient during refresh", e);
+      }
+    }
+    raftClient = RaftClient.newBuilder()
+        .setRaftGroup(raftGroup)
+        .setProperties(raftProperties)
+        .build();
+    HALog.log(this, HALog.BASIC, "RaftClient refreshed with fresh gRPC channels after leader change");
+  }
+
+  // -- Cluster Token --
+
+  public String getClusterToken() {
+    return clusterToken;
+  }
+
+  // -- Lag Monitor --
+
+  private void startLagMonitor() {
+    if (clusterMonitor.getLagWarningThreshold() <= 0)
+      return;
+    lagMonitorExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+      final Thread t = new Thread(r, "arcadedb-raft-lag-monitor");
+      t.setDaemon(true);
+      return t;
+    });
+    lagMonitorExecutor.scheduleAtFixedRate(this::checkReplicaLag, 5, 5, java.util.concurrent.TimeUnit.SECONDS);
+  }
+
+  private void stopLagMonitor() {
+    if (lagMonitorExecutor != null) {
+      lagMonitorExecutor.shutdownNow();
+      lagMonitorExecutor = null;
+    }
+  }
+
+  private void checkReplicaLag() {
+    try {
+      if (!isLeader())
+        return;
+      clusterMonitor.updateLeaderCommitIndex(getCommitIndex());
+      for (final var fs : getFollowerStates())
+        clusterMonitor.updateReplicaMatchIndex((String) fs.get("peerId"), (Long) fs.get("matchIndex"));
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Error checking replica lag", e);
+    }
+  }
+
+  public ClusterMonitor getClusterMonitor() {
+    return clusterMonitor;
   }
 
   // -- Dynamic Membership --

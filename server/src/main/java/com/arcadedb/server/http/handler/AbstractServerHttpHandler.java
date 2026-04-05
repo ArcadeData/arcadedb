@@ -41,8 +41,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
-  private static final String AUTHORIZATION_BASIC  = "Basic";
-  private static final String AUTHORIZATION_BEARER = "Bearer";
+  private static final String AUTHORIZATION_BASIC      = "Basic";
+  private static final String AUTHORIZATION_BEARER     = "Bearer";
+  private static final String HEADER_CLUSTER_TOKEN     = "X-ArcadeDB-Cluster-Token";
+  private static final String HEADER_FORWARDED_USER    = "X-ArcadeDB-Forwarded-User";
   private static final io.undertow.util.AttachmentKey<String> RAW_PAYLOAD_KEY = io.undertow.util.AttachmentKey.create(String.class);
   static final io.undertow.util.AttachmentKey<String> BASIC_AUTH_KEY = io.undertow.util.AttachmentKey.create(String.class);
   protected final HttpServer httpServer;
@@ -87,8 +89,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
+      // Check cluster-internal token auth first (inter-node forwarding in HA)
+      final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(HEADER_CLUSTER_TOKEN);
       final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
-      if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
+
+      if (isRequireAuthentication() && clusterTokenHeader == null
+          && (authorization == null || authorization.isEmpty())) {
         exchange.setStatusCode(401);
         exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
         sendErrorResponse(exchange, 401, "", null, null);
@@ -96,7 +102,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       ServerSecurityUser user = null;
-      if (authorization != null) {
+      if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
+        user = validateClusterForwardedAuth(exchange, clusterTokenHeader.getFirst(),
+            exchange.getRequestHeaders().get(HEADER_FORWARDED_USER));
+        if (user == null)
+          return; // error response already sent
+      } else if (authorization != null) {
         try {
           final String auth = authorization.getFirst();
 
@@ -311,21 +322,33 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         new java.net.URI(targetUrl).toURL().openConnection();
     conn.setRequestMethod(exchange.getRequestMethod().toString());
 
-    // Forward auth - convert Bearer session tokens to Basic auth for cross-server compatibility.
-    // Each server has its own session manager, so Bearer tokens are server-local.
+    // Forward auth using cluster token for inter-node identity.
+    // The cluster token is a shared secret derived from the cluster name + root password.
+    // For session-based auth (Bearer), we use cluster token + forwarded user instead of
+    // forwarding the per-node session token. For Basic/API tokens, we forward as-is.
+    final var raftHA = httpServer.getServer().getHA();
     final var authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);
-    if (authHeader != null && !authHeader.isEmpty()) {
-      final String auth = authHeader.getFirst();
-      if (auth.startsWith("Bearer ")) {
-        final String token = auth.substring(7).trim();
-        final var session = httpServer.getAuthSessionManager().getSessionByToken(token);
-        if (session != null && session.getBasicAuth() != null)
-          conn.setRequestProperty("Authorization", session.getBasicAuth());
-        else
-          conn.setRequestProperty("Authorization", auth);
-      } else
+    if (raftHA != null && raftHA.getClusterToken() != null) {
+      final String auth = authHeader != null && !authHeader.isEmpty() ? authHeader.getFirst() : null;
+      if (auth != null && auth.startsWith("Bearer AU-")) {
+        // Session token: use cluster-internal auth headers instead
+        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+        final String basicAuth = exchange.getAttachment(BASIC_AUTH_KEY);
+        if (basicAuth != null) {
+          // Extract username from stored Basic auth
+          final String decoded = new String(Base64.getDecoder().decode(
+              basicAuth.substring(AUTHORIZATION_BASIC.length() + 1)), java.nio.charset.StandardCharsets.UTF_8);
+          conn.setRequestProperty(HEADER_FORWARDED_USER, decoded.split(":")[0]);
+        }
+      } else if (auth != null)
         conn.setRequestProperty("Authorization", auth);
-    }
+      else {
+        // No auth header but we have cluster token - use it with root user
+        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+        conn.setRequestProperty(HEADER_FORWARDED_USER, "root");
+      }
+    } else if (authHeader != null && !authHeader.isEmpty())
+      conn.setRequestProperty("Authorization", authHeader.getFirst());
 
     conn.setRequestProperty("Content-Type", "application/json");
 
@@ -361,6 +384,31 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     } finally {
       conn.disconnect();
     }
+  }
+
+  /**
+   * Validates cluster-internal forwarded auth using a shared token.
+   * Returns the user, or null if validation failed (error response already sent).
+   */
+  private ServerSecurityUser validateClusterForwardedAuth(final HttpServerExchange exchange,
+      final String providedToken, final HeaderValues forwardedUserValues) {
+    final var raftHA = httpServer.getServer().getHA();
+    final String expectedToken = raftHA != null ? raftHA.getClusterToken() : null;
+
+    if (expectedToken == null || expectedToken.isEmpty() || !expectedToken.equals(providedToken)) {
+      sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
+      return null;
+    }
+    if (forwardedUserValues == null || forwardedUserValues.isEmpty()) {
+      sendErrorResponse(exchange, 401, "Missing forwarded user", null, null);
+      return null;
+    }
+    final ServerSecurityUser user = httpServer.getServer().getSecurity().getUser(forwardedUserValues.getFirst());
+    if (user == null) {
+      sendErrorResponse(exchange, 401, "Unknown forwarded user: " + forwardedUserValues.getFirst(), null, null);
+      return null;
+    }
+    return user;
   }
 
   /**

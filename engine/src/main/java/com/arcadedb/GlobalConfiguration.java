@@ -516,6 +516,14 @@ public enum GlobalConfiguration {
       "Default read consistency for follower reads: EVENTUAL (read locally), READ_YOUR_WRITES (default, wait for client's last write), LINEARIZABLE (wait for all committed writes)",
       String.class, "read_your_writes", Set.of((Object[]) new String[]{"eventual", "read_your_writes", "linearizable"})),
 
+  HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
+      "Shared secret for inter-node HTTP forwarding auth. If empty (default), auto-derived from cluster name + root password",
+      String.class, ""),
+
+  HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
+      "Raft log index gap threshold for emitting replication lag warnings. 0 = disabled",
+      Integer.class, 1000),
+
   HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
       "Server role between ANY (default) OR REPLICA to configure replica only servers", String.class, "any",
       Set.of((Object[]) new String[]{"any", "replica"})),

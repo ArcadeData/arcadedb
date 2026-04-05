@@ -390,6 +390,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     HALog.log(this, HALog.BASIC, "Leader changed to %s (group: %s)", newLeaderId, groupMemberId);
     electionCount.incrementAndGet();
     lastElectionTime = System.currentTimeMillis();
+
+    // Refresh gRPC channels to force fresh DNS resolution after potential network partition
+    final var raftHA = server.getHA();
+    if (raftHA != null)
+      raftHA.refreshRaftClient();
+
     fireCallback(com.arcadedb.server.ReplicationCallback.TYPE.LEADER_ELECTED, newLeaderId.toString());
   }
 
