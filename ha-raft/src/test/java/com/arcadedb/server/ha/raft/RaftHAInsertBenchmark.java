@@ -51,8 +51,8 @@ import java.util.logging.Level;
 @Tag("benchmark")
 public class RaftHAInsertBenchmark {
 
-  private static final int    BASE_RAFT_PORT = 2434;
-  private static final int    BASE_HTTP_PORT = 2480;
+  private static final int    BASE_RAFT_PORT = 3434;
+  private static final int    BASE_HTTP_PORT = 3480;
   private static final String DB_NAME        = "benchdb";
   private static final String VERTEX_TYPE    = "Sensor";
   private static final int    WARMUP_COUNT   = 500;
