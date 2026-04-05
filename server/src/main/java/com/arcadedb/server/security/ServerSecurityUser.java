@@ -61,7 +61,7 @@ public class ServerSecurityUser implements SecurityUser {
     final JSONObject userDatabases = userConfiguration.getJSONObject("databases");
     final Set<Object> groupSet;
     if (userDatabases.has(databaseName)) {
-      groupSet = new HashSet(userDatabases.getJSONArray(databaseName).toList());
+      groupSet = new HashSet(getGroupsAsList(userDatabases, databaseName));
       Collections.addAll(groupSet, groups);
     } else {
       groupSet = new HashSet(Arrays.asList(groups));
@@ -164,7 +164,7 @@ public class ServerSecurityUser implements SecurityUser {
   private ServerSecurityDatabaseUser registerDatabaseUser(final ArcadeDBServer server, final Database database,
       final String databasePattern) {
     final JSONObject userDatabases = userConfiguration.getJSONObject("databases");
-    final List<Object> groupList = userDatabases.getJSONArray(databasePattern).toList();
+    final List<Object> groupList = getGroupsAsList(userDatabases, databasePattern);
     ServerSecurityDatabaseUser dbu = new ServerSecurityDatabaseUser(database.getName(), name,
         groupList.toArray(new String[groupList.size()]));
 
@@ -184,5 +184,18 @@ public class ServerSecurityUser implements SecurityUser {
     }
 
     return dbu;
+  }
+
+  /**
+   * Returns the group list for a database entry, handling both JSON array (e.g. ["admin"]) and
+   * plain string (e.g. "admin") formats gracefully.
+   */
+  private static List<Object> getGroupsAsList(final JSONObject userDatabases, final String key) {
+    final Object value = userDatabases.get(key);
+    if (value instanceof JSONArray)
+      return ((JSONArray) value).toList();
+    if (value instanceof String)
+      return List.of(value);
+    return List.of();
   }
 }
