@@ -95,6 +95,7 @@ public class RaftHAServer {
   private RaftProperties                   raftProperties;
   private ArcadeDBStateMachine             stateMachine;
   private ClusterMonitor                   clusterMonitor;
+  private RaftGroupCommitter               groupCommitter;
   private java.util.concurrent.ScheduledExecutorService lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
@@ -185,6 +186,7 @@ public class RaftHAServer {
       if (!storageExists && configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
         tryAutoJoinCluster();
 
+      groupCommitter = new RaftGroupCommitter(this);
       startLagMonitor();
 
       LogManager.instance().log(this, Level.INFO, "Ratis HA service started (serverId=%s)", localPeerId);
@@ -278,6 +280,8 @@ public class RaftHAServer {
   public void stopService() {
     LogManager.instance().log(this, Level.INFO, "Stopping Ratis HA service...");
 
+    if (groupCommitter != null)
+      groupCommitter.stop();
     stopLagMonitor();
 
     // In K8s mode, automatically remove this peer from the Raft cluster before stopping.
@@ -426,10 +430,16 @@ public class RaftHAServer {
   }
 
   private void sendToRaft(final byte[] entry) {
-    try {
-      LogManager.instance().log(this, Level.FINE, "Sending %d bytes to Raft cluster (isLeader=%s)...", entry.length, isLeader());
+    HALog.log(this, HALog.TRACE, "Sending %d bytes to Raft cluster (isLeader=%s)...", entry.length, isLeader());
 
-      // Use async send with timeout to avoid hanging indefinitely
+    // Use group committer to batch multiple concurrent transactions into fewer Raft round-trips
+    if (groupCommitter != null) {
+      groupCommitter.submitAndWait(entry, quorumTimeout);
+      return;
+    }
+
+    // Fallback: direct send (used during startup before group committer is initialized)
+    try {
       final var future = raftClient.async().send(Message.valueOf(ByteString.copyFrom(entry)));
       final RaftClientReply reply = future.get(quorumTimeout, TimeUnit.MILLISECONDS);
 
@@ -437,7 +447,6 @@ public class RaftHAServer {
         throw new QuorumNotReachedException(
             "Raft replication failed: " + (reply.getException() != null ? reply.getException().getMessage() : "unknown error"));
 
-      // For ALL quorum: after MAJORITY commit, wait for ALL replicas to apply the entry
       if (quorum == Quorum.ALL) {
         final long logIndex = reply.getLogIndex();
         final RaftClientReply watchReply = raftClient.io().watch(logIndex, RaftProtos.ReplicationLevel.ALL_COMMITTED);
@@ -694,6 +703,14 @@ public class RaftHAServer {
     }
   }
 
+  public RaftClient getRaftClient() {
+    return raftClient;
+  }
+
+  public long getQuorumTimeout() {
+    return quorumTimeout;
+  }
+
   public RaftServer getRaftServer() {
     return raftServer;
   }
@@ -891,6 +908,11 @@ public class RaftHAServer {
 
     // Write buffer (must be >= appender buffer byte-limit + 8)
     RaftServerConfigKeys.Log.setWriteBufferSize(properties, SizeInBytes.valueOf("8MB"));
+
+    // AppendEntries batching: allow multiple log entries in a single gRPC call to followers.
+    // Combined with the group committer, this allows many transactions to be replicated in one round-trip.
+    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf("4MB"));
+    RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, 256);
 
     // Leader lease: enables consistent reads from the leader without a round-trip to followers.
     // The leader can serve reads as long as its lease hasn't expired (based on heartbeat responses).

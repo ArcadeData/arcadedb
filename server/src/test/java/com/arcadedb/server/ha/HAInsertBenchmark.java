@@ -50,12 +50,14 @@ import java.util.logging.Level;
 @Tag("benchmark")
 public class HAInsertBenchmark {
 
-  private static final String DB_NAME           = "benchdb";
-  private static final String VERTEX_TYPE       = "Sensor";
-  private static final int    WARMUP_COUNT      = 500;
-  private static final int    MEASURE_COUNT     = 5000;
-  private static final int    TX_BATCH_SIZE     = 100;
-  private static final String ROOT_PASSWORD     = StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+  private static final String DB_NAME       = "benchdb";
+  private static final String VERTEX_TYPE   = "Sensor";
+  private static final int    WARMUP_COUNT  = 500;
+  private static final int    MEASURE_COUNT = 5000;
+  private static final int    ASYNC_COUNT   = 100_000;
+  private static final int    TX_BATCH_SIZE = 100;
+  private static final int    ASYNC_THREADS = 8;
+  private static final String ROOT_PASSWORD = StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
   @Test
   void runBenchmark() throws Exception {
@@ -64,30 +66,37 @@ public class HAInsertBenchmark {
     report.append("=".repeat(90)).append("\n");
     report.append("  ArcadeDB HA Insert Benchmark\n");
     report.append("=".repeat(90)).append("\n");
-    report.append(String.format("  Records: %,d (warmup: %,d)  |  Batch size: %d  |  Vertex type: %s%n",
-        MEASURE_COUNT, WARMUP_COUNT, TX_BATCH_SIZE, VERTEX_TYPE));
+    report.append(String.format("  Sync:  %,d records (batch %d/tx)  |  Async: %,d records (%d threads)%n",
+        MEASURE_COUNT, TX_BATCH_SIZE, ASYNC_COUNT, ASYNC_THREADS));
     report.append("=".repeat(90)).append("\n\n");
 
-    // Scenario 1: Single server, no HA (baseline)
+    // Sync scenarios
     report.append(runSingleServerBaseline());
-
-    // Scenario 2: 3-server cluster, embedded writes on leader
     report.append(runClusterEmbeddedOnLeader(3));
-
-    // Scenario 3: 5-server cluster, embedded writes on leader
     report.append(runClusterEmbeddedOnLeader(5));
-
-    // Scenario 4: 3-server cluster, RemoteDatabase to follower (HTTP proxy forwarding)
     report.append(runClusterViaFollower(3));
-
-    // Scenario 5: 3-server cluster, concurrent writes from all servers via RemoteDatabase
     report.append(runClusterConcurrentDistributed(3));
-
-    // Scenario 6: 5-server cluster, concurrent writes from all servers via RemoteDatabase
     report.append(runClusterConcurrentDistributed(5));
+
+    // Async scenarios
+    report.append(runSingleServerAsync());
+    report.append(runClusterAsyncOnLeader(3));
+    report.append(runClusterAsyncOnLeader(5));
 
     report.append("=".repeat(90)).append("\n");
     LogManager.instance().log(this, Level.WARNING, report.toString());
+  }
+
+  // ---------------------------------------------------------------------------
+  //  Schema initialization (common for all scenarios)
+  // ---------------------------------------------------------------------------
+
+  private void initSchema(final Database db) {
+    // Use multiple buckets so async threads distribute records across slots
+    db.command("SQL", "CREATE VERTEX TYPE " + VERTEX_TYPE + " IF NOT EXISTS BUCKETS " + ASYNC_THREADS);
+    db.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".sensorId IF NOT EXISTS LONG");
+    db.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".value IF NOT EXISTS DOUBLE");
+    db.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".timestamp IF NOT EXISTS LONG");
   }
 
   // ---------------------------------------------------------------------------
@@ -98,21 +107,14 @@ public class HAInsertBenchmark {
     cleanUp(1);
     createDatabase(0);
 
-    final ContextConfiguration config = serverConfig(0, false, 1);
-    final ArcadeDBServer server = new ArcadeDBServer(config);
+    final ArcadeDBServer server = new ArcadeDBServer(serverConfig(0, false, 1));
     server.start();
 
     try {
       final Database db = server.getDatabase(DB_NAME);
-      db.command("SQL", "CREATE VERTEX TYPE " + VERTEX_TYPE + " IF NOT EXISTS");
-      db.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".sensorId IF NOT EXISTS LONG");
-      db.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".value IF NOT EXISTS DOUBLE");
-      db.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".timestamp IF NOT EXISTS LONG");
+      initSchema(db);
 
-      // Warmup
       insertEmbedded(db, WARMUP_COUNT, 0);
-
-      // Measure
       final long[] latencies = insertEmbedded(db, MEASURE_COUNT, WARMUP_COUNT);
       return formatResult("1 server (no HA) - embedded", latencies, 1);
     } finally {
@@ -129,12 +131,8 @@ public class HAInsertBenchmark {
     try {
       final ArcadeDBServer leader = findLeader(servers);
       final Database db = leader.getDatabase(DB_NAME);
-
-      db.command("SQL", "CREATE VERTEX TYPE " + VERTEX_TYPE + " IF NOT EXISTS");
-      db.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".sensorId IF NOT EXISTS LONG");
-      db.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".value IF NOT EXISTS DOUBLE");
-      db.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".timestamp IF NOT EXISTS LONG");
-      Thread.sleep(2000); // Let schema replicate
+      initSchema(db);
+      Thread.sleep(2000);
 
       insertEmbedded(db, WARMUP_COUNT, 0);
       final long[] latencies = insertEmbedded(db, MEASURE_COUNT, WARMUP_COUNT);
@@ -152,15 +150,9 @@ public class HAInsertBenchmark {
     final ArcadeDBServer[] servers = startCluster(serverCount);
     try {
       final ArcadeDBServer leader = findLeader(servers);
-      final Database leaderDb = leader.getDatabase(DB_NAME);
-
-      leaderDb.command("SQL", "CREATE VERTEX TYPE " + VERTEX_TYPE + " IF NOT EXISTS");
-      leaderDb.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".sensorId IF NOT EXISTS LONG");
-      leaderDb.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".value IF NOT EXISTS DOUBLE");
-      leaderDb.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".timestamp IF NOT EXISTS LONG");
+      initSchema(leader.getDatabase(DB_NAME));
       Thread.sleep(2000);
 
-      // Find a follower
       int followerPort = -1;
       for (final ArcadeDBServer s : servers)
         if (s.getHA() != null && !s.getHA().isLeader()) {
@@ -186,45 +178,32 @@ public class HAInsertBenchmark {
     final ArcadeDBServer[] servers = startCluster(serverCount);
     try {
       final ArcadeDBServer leader = findLeader(servers);
-      final Database leaderDb = leader.getDatabase(DB_NAME);
-
-      leaderDb.command("SQL", "CREATE VERTEX TYPE " + VERTEX_TYPE + " IF NOT EXISTS");
-      leaderDb.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".sensorId IF NOT EXISTS LONG");
-      leaderDb.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".value IF NOT EXISTS DOUBLE");
-      leaderDb.command("SQL", "CREATE PROPERTY " + VERTEX_TYPE + ".timestamp IF NOT EXISTS LONG");
+      initSchema(leader.getDatabase(DB_NAME));
       Thread.sleep(2000);
 
-      // Warmup on leader
       try (final RemoteDatabase db = new RemoteDatabase("127.0.0.1", leader.getHttpServer().getPort(),
           DB_NAME, "root", ROOT_PASSWORD)) {
         insertRemote(db, WARMUP_COUNT, 0);
       }
 
-      // Concurrent writes: one thread per server
       final int perThread = MEASURE_COUNT / serverCount;
       final List<long[]> allLatencies = new ArrayList<>();
       final CountDownLatch startLatch = new CountDownLatch(1);
       final CountDownLatch doneLatch = new CountDownLatch(serverCount);
       final AtomicLong offset = new AtomicLong(WARMUP_COUNT + MEASURE_COUNT);
 
-      final Thread[] threads = new Thread[serverCount];
       for (int i = 0; i < serverCount; i++) {
         final int port = servers[i].getHttpServer().getPort();
         final long base = offset.getAndAdd(perThread);
-        threads[i] = new Thread(() -> {
+        new Thread(() -> {
           try (final RemoteDatabase db = new RemoteDatabase("127.0.0.1", port, DB_NAME, "root", ROOT_PASSWORD)) {
             startLatch.await();
             final long[] latencies = insertRemote(db, perThread, base);
-            synchronized (allLatencies) {
-              allLatencies.add(latencies);
-            }
+            synchronized (allLatencies) { allLatencies.add(latencies); }
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING, "Concurrent write error: %s", e.getMessage());
-          } finally {
-            doneLatch.countDown();
-          }
-        }, "bench-writer-" + i);
-        threads[i].start();
+          } finally { doneLatch.countDown(); }
+        }, "bench-writer-" + i).start();
       }
 
       final long concurrentStart = System.nanoTime();
@@ -232,19 +211,63 @@ public class HAInsertBenchmark {
       doneLatch.await();
       final long concurrentElapsed = System.nanoTime() - concurrentStart;
 
-      // Merge all latencies
       int totalOps = 0;
-      for (final long[] l : allLatencies)
-        totalOps += l.length;
+      for (final long[] l : allLatencies) totalOps += l.length;
       final long[] merged = new long[totalOps];
       int pos = 0;
-      for (final long[] l : allLatencies) {
-        System.arraycopy(l, 0, merged, pos, l.length);
-        pos += l.length;
-      }
+      for (final long[] l : allLatencies) { System.arraycopy(l, 0, merged, pos, l.length); pos += l.length; }
 
       return formatResult(serverCount + " servers (HA) - concurrent (" + serverCount + " threads)",
           merged, serverCount, concurrentElapsed);
+    } finally {
+      stopCluster(servers);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  //  Scenario: Single server, async inserts (no HA)
+  // ---------------------------------------------------------------------------
+
+  private String runSingleServerAsync() throws Exception {
+    cleanUp(1);
+    createDatabase(0);
+
+    final ArcadeDBServer server = new ArcadeDBServer(serverConfig(0, false, 1));
+    server.start();
+
+    try {
+      final Database db = server.getDatabase(DB_NAME);
+      initSchema(db);
+
+      insertAsync(db, WARMUP_COUNT, 0);
+
+      final long start = System.nanoTime();
+      insertAsync(db, ASYNC_COUNT, WARMUP_COUNT);
+      final long elapsed = System.nanoTime() - start;
+      return formatAsyncResult("1 server (no HA) - async", ASYNC_COUNT, elapsed);
+    } finally {
+      server.stop();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  //  Scenario: Cluster, async inserts on leader
+  // ---------------------------------------------------------------------------
+
+  private String runClusterAsyncOnLeader(final int serverCount) throws Exception {
+    final ArcadeDBServer[] servers = startCluster(serverCount);
+    try {
+      final ArcadeDBServer leader = findLeader(servers);
+      final Database db = leader.getDatabase(DB_NAME);
+      initSchema(db);
+      Thread.sleep(2000);
+
+      insertAsync(db, WARMUP_COUNT, 0);
+
+      final long start = System.nanoTime();
+      insertAsync(db, ASYNC_COUNT, WARMUP_COUNT);
+      final long elapsed = System.nanoTime() - start;
+      return formatAsyncResult(serverCount + " servers (HA) - async on leader", ASYNC_COUNT, elapsed);
     } finally {
       stopCluster(servers);
     }
@@ -289,6 +312,34 @@ public class HAInsertBenchmark {
     return latencies;
   }
 
+  /**
+   * Inserts records using database.async() with multiple buckets to distribute across threads.
+   */
+  private void insertAsync(final Database db, final int count, final long startId) {
+    GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE.setValue(16384);
+
+    final var async = db.async();
+    async.setParallelLevel(ASYNC_THREADS);
+    async.setCommitEvery(5_000);
+    async.setBackPressure(80);
+
+    final AtomicLong errors = new AtomicLong(0);
+    async.onError(e -> errors.incrementAndGet());
+
+    for (int i = 0; i < count; i++)
+      async.createRecord(
+          db.newVertex(VERTEX_TYPE)
+              .set("sensorId", startId + i)
+              .set("value", Math.random() * 1000)
+              .set("timestamp", System.currentTimeMillis()),
+          null);
+
+    async.waitCompletion(120_000);
+
+    if (errors.get() > 0)
+      LogManager.instance().log(this, Level.WARNING, "Async insert: %d errors out of %d", errors.get(), count);
+  }
+
   // ---------------------------------------------------------------------------
   //  Cluster lifecycle
   // ---------------------------------------------------------------------------
@@ -297,7 +348,6 @@ public class HAInsertBenchmark {
     cleanUp(serverCount);
     createDatabase(0);
 
-    // Copy database to all servers
     for (int i = 1; i < serverCount; i++) {
       final File src = new File("./target/databases0/" + DB_NAME);
       final File dst = new File("./target/databases" + i + "/" + DB_NAME);
@@ -313,7 +363,6 @@ public class HAInsertBenchmark {
       servers[i].start();
     }
 
-    // Wait for leader election
     final long deadline = System.currentTimeMillis() + 30_000;
     while (System.currentTimeMillis() < deadline) {
       for (final ArcadeDBServer s : servers)
@@ -393,8 +442,7 @@ public class HAInsertBenchmark {
       final long overallElapsedNs) {
     Arrays.sort(latenciesNs);
     final int n = latenciesNs.length;
-    if (n == 0)
-      return scenario + ": NO DATA\n\n";
+    if (n == 0) return scenario + ": NO DATA\n\n";
 
     final long totalNs = Arrays.stream(latenciesNs).sum();
     final double avgUs = (totalNs / (double) n) / 1_000.0;
@@ -403,8 +451,6 @@ public class HAInsertBenchmark {
     final double p99Us = latenciesNs[(int) (n * 0.99)] / 1_000.0;
     final double p95Us = latenciesNs[(int) (n * 0.95)] / 1_000.0;
     final double medianUs = latenciesNs[n / 2] / 1_000.0;
-
-    // Throughput: for concurrent tests use the overall wall-clock time; for single-thread use sum
     final double elapsedSec = overallElapsedNs > 0 ? overallElapsedNs / 1_000_000_000.0 : totalNs / 1_000_000_000.0;
     final double opsPerSec = n / elapsedSec;
 
@@ -413,12 +459,23 @@ public class HAInsertBenchmark {
     sb.append(String.format("  %-55s%n", "-".repeat(55)));
     sb.append(String.format("    Ops:        %,d operations (%d thread%s)%n", n, threads, threads > 1 ? "s" : ""));
     sb.append(String.format("    Throughput: %,.0f ops/sec%n", opsPerSec));
-    sb.append(String.format("    Avg:        %,.0f us%n", avgUs));
-    sb.append(String.format("    Median:     %,.0f us%n", medianUs));
-    sb.append(String.format("    Min:        %,.0f us%n", minUs));
-    sb.append(String.format("    P95:        %,.0f us%n", p95Us));
-    sb.append(String.format("    P99:        %,.0f us%n", p99Us));
-    sb.append(String.format("    Max:        %,.0f us%n", maxUs));
+    sb.append(String.format("    Avg:        %,.0f us  |  Median: %,.0f us%n", avgUs, medianUs));
+    sb.append(String.format("    Min:        %,.0f us  |  P95:    %,.0f us%n", minUs, p95Us));
+    sb.append(String.format("    P99:        %,.0f us  |  Max:    %,.0f us%n", p99Us, maxUs));
+    sb.append("\n");
+    return sb.toString();
+  }
+
+  private String formatAsyncResult(final String scenario, final int count, final long elapsedNs) {
+    final double elapsedSec = elapsedNs / 1_000_000_000.0;
+    final double opsPerSec = count / elapsedSec;
+
+    final StringBuilder sb = new StringBuilder();
+    sb.append(String.format("  %-55s%n", scenario));
+    sb.append(String.format("  %-55s%n", "-".repeat(55)));
+    sb.append(String.format("    Ops:        %,d records (%d async threads, commitEvery=5000)%n", count, ASYNC_THREADS));
+    sb.append(String.format("    Throughput: %,.0f inserts/sec%n", opsPerSec));
+    sb.append(String.format("    Elapsed:    %.1f seconds%n", elapsedSec));
     sb.append("\n");
     return sb.toString();
   }
