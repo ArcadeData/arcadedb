@@ -264,4 +264,115 @@ class OpenCypherConstraintTest {
     assertThat(property).isNotNull();
     assertThat(property.isMandatory()).isTrue();
   }
+
+  @Test
+  void createTypedConstraintString() {
+    database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.email IS TYPED STRING");
+
+    final Property property = database.getSchema().getType("Person").getPropertyIfExists("email");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.STRING);
+  }
+
+  @Test
+  void createTypedConstraintInteger() {
+    // Cypher INTEGER is 64-bit, maps to ArcadeDB LONG
+    database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.age IS TYPED INTEGER");
+
+    final Property property = database.getSchema().getType("Person").getPropertyIfExists("age");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.LONG);
+  }
+
+  @Test
+  void createTypedConstraintBoolean() {
+    database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.active IS TYPED BOOLEAN");
+
+    final Property property = database.getSchema().getType("Person").getPropertyIfExists("active");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.BOOLEAN);
+  }
+
+  @Test
+  void createTypedConstraintFloat() {
+    // Cypher FLOAT is 64-bit (IEEE 754 double), maps to ArcadeDB DOUBLE
+    database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.score IS TYPED FLOAT");
+
+    final Property property = database.getSchema().getType("Person").getPropertyIfExists("score");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.DOUBLE);
+  }
+
+  @Test
+  void createTypedConstraintDate() {
+    database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.born IS TYPED DATE");
+
+    final Property property = database.getSchema().getType("Person").getPropertyIfExists("born");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.DATE);
+  }
+
+  @Test
+  void createTypedConstraintLocalDatetime() {
+    database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.created IS TYPED LOCAL DATETIME");
+
+    final Property property = database.getSchema().getType("Person").getPropertyIfExists("created");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.DATETIME);
+  }
+
+  @Test
+  void createTypedConstraintWithColonColon() {
+    // Alternative syntax: REQUIRE p.email :: STRING
+    database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.email :: STRING");
+
+    final Property property = database.getSchema().getType("Person").getPropertyIfExists("email");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.STRING);
+  }
+
+  @Test
+  void createTypedConstraintAutoCreatesType() {
+    assertThat(database.getSchema().existsType("Animal")).isFalse();
+
+    database.command("opencypher", "CREATE CONSTRAINT FOR (a:Animal) REQUIRE a.species IS TYPED STRING");
+
+    assertThat(database.getSchema().existsType("Animal")).isTrue();
+    assertThat(database.getSchema().getType("Animal")).isInstanceOf(VertexType.class);
+
+    final Property property = database.getSchema().getType("Animal").getPropertyIfExists("species");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.STRING);
+  }
+
+  @Test
+  void createTypedConstraintIfNotExists() {
+    database.command("opencypher", "CREATE CONSTRAINT IF NOT EXISTS FOR (p:Person) REQUIRE p.email IS TYPED STRING");
+    // Run again - should not throw
+    database.command("opencypher", "CREATE CONSTRAINT IF NOT EXISTS FOR (p:Person) REQUIRE p.email IS TYPED STRING");
+
+    final Property property = database.getSchema().getType("Person").getPropertyIfExists("email");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.STRING);
+  }
+
+  @Test
+  void createTypedConstraintOnExistingPropertyChangesType() {
+    database.getSchema().getType("Person").createProperty("code", Type.STRING);
+
+    database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.code IS TYPED INTEGER");
+
+    final Property property = database.getSchema().getType("Person").getPropertyIfExists("code");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.LONG);
+  }
+
+  @Test
+  void createTypedConstraintOnRelationship() {
+    database.command("opencypher", "CREATE CONSTRAINT FOR ()-[r:KNOWS]-() REQUIRE r.since IS TYPED DATE");
+
+    final Property property = database.getSchema().getType("KNOWS").getPropertyIfExists("since");
+    assertThat(property).isNotNull();
+    assertThat(property.getType()).isEqualTo(Type.DATE);
+  }
 }

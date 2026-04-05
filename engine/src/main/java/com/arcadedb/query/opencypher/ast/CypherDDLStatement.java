@@ -31,7 +31,7 @@ public class CypherDDLStatement implements CypherStatement {
   }
 
   public enum ConstraintKind {
-    UNIQUE, NOT_NULL, KEY
+    UNIQUE, NOT_NULL, KEY, TYPED
   }
 
   private final Kind kind;
@@ -42,10 +42,17 @@ public class CypherDDLStatement implements CypherStatement {
   private final boolean ifNotExists;
   private final boolean ifExists;
   private final boolean forRelationship;
+  private final String typedName;
 
   public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
       final String labelName, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
       final boolean forRelationship) {
+    this(kind, constraintKind, constraintName, labelName, propertyNames, ifNotExists, ifExists, forRelationship, null);
+  }
+
+  public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
+      final String labelName, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
+      final boolean forRelationship, final String typedName) {
     this.kind = kind;
     this.constraintKind = constraintKind;
     this.constraintName = constraintName;
@@ -54,6 +61,7 @@ public class CypherDDLStatement implements CypherStatement {
     this.ifNotExists = ifNotExists;
     this.ifExists = ifExists;
     this.forRelationship = forRelationship;
+    this.typedName = typedName;
   }
 
   public Kind getKind() {
@@ -86,6 +94,10 @@ public class CypherDDLStatement implements CypherStatement {
 
   public boolean isForRelationship() {
     return forRelationship;
+  }
+
+  public String getTypedName() {
+    return typedName;
   }
 
   @Override
