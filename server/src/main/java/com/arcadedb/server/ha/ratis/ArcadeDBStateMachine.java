@@ -61,6 +61,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   private final ArcadeDBServer            server;
   private final SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final AtomicLong                lastAppliedIndex = new AtomicLong(-1);
+  private final AtomicLong                electionCount    = new AtomicLong(0);
+  private volatile long                   lastElectionTime = 0;
+  private volatile long                   startTime        = System.currentTimeMillis();
 
   public ArcadeDBStateMachine(final ArcadeDBServer server) {
     this.server = server;
@@ -385,7 +388,21 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   @Override
   public void notifyLeaderChanged(final RaftGroupMemberId groupMemberId, final RaftPeerId newLeaderId) {
     HALog.log(this, HALog.BASIC, "Leader changed to %s (group: %s)", newLeaderId, groupMemberId);
+    electionCount.incrementAndGet();
+    lastElectionTime = System.currentTimeMillis();
     fireCallback(com.arcadedb.server.ReplicationCallback.TYPE.LEADER_ELECTED, newLeaderId.toString());
+  }
+
+  public long getElectionCount() {
+    return electionCount.get();
+  }
+
+  public long getLastElectionTime() {
+    return lastElectionTime;
+  }
+
+  public long getStartTime() {
+    return startTime;
   }
 
   @Override

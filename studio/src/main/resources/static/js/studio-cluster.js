@@ -61,8 +61,9 @@ function renderClusterData(ha) {
   // Verify database buttons
   renderVerifyButtons(ha.databases || []);
 
-  // Update metrics charts
+  // Update metrics charts and summary cards
   updateMetricsCharts(ha);
+  updateMetricsSummary(ha);
 }
 
 function renderNodeCards(ha) {
@@ -267,6 +268,44 @@ function renderCommitChart() {
     clusterCommitChart = new ApexCharts(document.querySelector("#chartCommitIndex"), options);
     clusterCommitChart.render();
   }
+}
+
+function updateMetricsSummary(ha) {
+  var m = ha.metrics || {};
+
+  // Election count
+  $("#metricElectionCount").text(m.electionCount != null ? m.electionCount : "-");
+
+  // Raft log size
+  var logSize = m.raftLogSize != null && m.raftLogSize >= 0 ? m.raftLogSize : "-";
+  $("#metricRaftLogSize").text(logSize);
+
+  // Last election time
+  if (m.lastElectionTime > 0) {
+    var elapsed = Date.now() - m.lastElectionTime;
+    $("#metricLastElection").text(formatDuration(elapsed) + " ago");
+  } else {
+    $("#metricLastElection").text("none");
+  }
+
+  // Uptime
+  if (m.startTime > 0) {
+    var uptime = Date.now() - m.startTime;
+    $("#metricUptime").text(formatDuration(uptime));
+  } else {
+    $("#metricUptime").text("-");
+  }
+}
+
+function formatDuration(ms) {
+  var secs = Math.floor(ms / 1000);
+  if (secs < 60) return secs + "s";
+  var mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + "m " + (secs % 60) + "s";
+  var hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + "h " + (mins % 60) + "m";
+  var days = Math.floor(hours / 24);
+  return days + "d " + (hours % 24) + "h";
 }
 
 // ==================== MANAGEMENT ACTIONS ====================

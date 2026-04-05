@@ -82,6 +82,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String HA_TRANSFER_LEADER   = "ha transfer leader";
   private static final String HA_VERIFY_DATABASE   = "ha verify database";
   private static final String HA_STEP_DOWN        = "ha step down";
+  private static final String HA_LEAVE            = "ha leave";
 
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -160,6 +161,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return haVerifyDatabase(extractTarget(command, HA_VERIFY_DATABASE), response);
     else if (command_lc.equals(HA_STEP_DOWN))
       return haStepDown(response);
+    else if (command_lc.equals(HA_LEAVE))
+      return haLeave(response);
     else {
       Metrics.counter("http.server-command.invalid").increment();
 
@@ -919,6 +922,16 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       }
     }
     return new ExecutionResponse(400, "{ \"error\" : \"No other peer available for leadership transfer\"}");
+  }
+
+  private ExecutionResponse haLeave(final JSONObject response) {
+    final var raftHA = httpServer.getServer().getRaftHA();
+    if (raftHA == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
+
+    raftHA.leaveCluster();
+    response.put("result", "Server " + raftHA.getLocalPeerId() + " leaving cluster");
+    return new ExecutionResponse(200, response.toString());
   }
 
   /**

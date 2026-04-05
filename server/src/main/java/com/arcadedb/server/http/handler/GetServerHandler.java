@@ -140,6 +140,14 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     }
     haJSON.put("databases", databases);
 
+    // Metrics
+    final JSONObject metricsJSON = new JSONObject();
+    metricsJSON.put("electionCount", raftHA.getElectionCount());
+    metricsJSON.put("lastElectionTime", raftHA.getLastElectionTime());
+    metricsJSON.put("raftLogSize", raftHA.getRaftLogSize());
+    metricsJSON.put("startTime", raftHA.getStartTime());
+    haJSON.put("metrics", metricsJSON);
+
     // These fields are required by RemoteHttpComponent for cluster configuration
     haJSON.put("leaderAddress", raftHA.getLeaderHTTPAddress());
     haJSON.put("replicaAddresses", raftHA.getReplicaAddresses());

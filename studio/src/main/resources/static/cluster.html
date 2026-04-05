@@ -79,6 +79,44 @@
 
     <!-- ==================== METRICS TAB ==================== -->
     <div class="tab-pane fade" id="tab-cluster-metrics" role="tabpanel">
+
+      <!-- Metric Summary Cards -->
+      <div class="row g-3 mb-3">
+        <div class="col-md-3">
+          <div class="card text-center" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-body py-2">
+              <div style="font-size: 0.72rem; color: var(--text-secondary);">Elections</div>
+              <div id="metricElectionCount" style="font-size: 1.4rem; font-weight: 700; color: var(--color-brand);">-</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="card text-center" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-body py-2">
+              <div style="font-size: 0.72rem; color: var(--text-secondary);">Raft Log Size</div>
+              <div id="metricRaftLogSize" style="font-size: 1.4rem; font-weight: 700; color: var(--color-brand);">-</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="card text-center" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-body py-2">
+              <div style="font-size: 0.72rem; color: var(--text-secondary);">Last Election</div>
+              <div id="metricLastElection" style="font-size: 0.88rem; font-weight: 600; color: var(--text-primary);">-</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="card text-center" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-body py-2">
+              <div style="font-size: 0.72rem; color: var(--text-secondary);">Uptime</div>
+              <div id="metricUptime" style="font-size: 0.88rem; font-weight: 600; color: var(--text-primary);">-</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts -->
       <div class="row g-3">
         <div class="col-md-6">
           <div class="card" style="border: 1px solid var(--border-light); border-radius: 10px;">

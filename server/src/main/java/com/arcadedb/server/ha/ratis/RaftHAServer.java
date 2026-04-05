@@ -247,6 +247,11 @@ public class RaftHAServer {
   public void stopService() {
     LogManager.instance().log(this, Level.INFO, "Stopping Ratis HA service...");
 
+    // In K8s mode, automatically remove this peer from the Raft cluster before stopping.
+    // This ensures clean scale-down without orphaned peers in the cluster configuration.
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
+      leaveCluster();
+
     try {
       if (raftClient != null) {
         raftClient.close();
@@ -258,6 +263,51 @@ public class RaftHAServer {
       }
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error stopping Ratis HA service", e);
+    }
+  }
+
+  /**
+   * Gracefully removes this server from the Raft cluster. If this server is the leader,
+   * transfers leadership to another peer first. Then contacts the cluster to remove this peer
+   * from the configuration.
+   * <p>
+   * This is best-effort: errors are logged but don't prevent shutdown.
+   */
+  public void leaveCluster() {
+    if (raftServer == null || raftClient == null)
+      return;
+
+    try {
+      final int peerCount = raftGroup.getPeers().size();
+      if (peerCount <= 1) {
+        HALog.log(this, HALog.BASIC, "Single-node cluster, skipping leave");
+        return;
+      }
+
+      // If we're the leader, transfer leadership first
+      if (isLeader()) {
+        for (final RaftPeer peer : raftGroup.getPeers()) {
+          if (!peer.getId().equals(localPeerId)) {
+            HALog.log(this, HALog.BASIC, "Leaving cluster: transferring leadership to %s before removal", peer.getId());
+            try {
+              transferLeadership(peer.getId().toString(), 10_000);
+              // Wait briefly for the transfer to take effect
+              Thread.sleep(1000);
+            } catch (final Exception e) {
+              HALog.log(this, HALog.BASIC, "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
+            }
+            break;
+          }
+        }
+      }
+
+      // Remove self from the cluster configuration
+      HALog.log(this, HALog.BASIC, "Leaving cluster: removing self (%s) from Raft group", localPeerId);
+      removePeer(localPeerId.toString());
+      HALog.log(this, HALog.BASIC, "Successfully left the Raft cluster");
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Failed to leave cluster gracefully: %s", e.getMessage());
     }
   }
 
@@ -565,6 +615,29 @@ public class RaftHAServer {
 
   public RaftPeerId getLocalPeerId() {
     return localPeerId;
+  }
+
+  public long getElectionCount() {
+    return stateMachine != null ? stateMachine.getElectionCount() : 0;
+  }
+
+  public long getLastElectionTime() {
+    return stateMachine != null ? stateMachine.getLastElectionTime() : 0;
+  }
+
+  public long getStartTime() {
+    return stateMachine != null ? stateMachine.getStartTime() : 0;
+  }
+
+  public long getRaftLogSize() {
+    if (raftServer == null)
+      return -1;
+    try {
+      final var log = raftServer.getDivision(raftGroup.getGroupId()).getRaftLog();
+      return log.getLastCommittedIndex() - log.getStartIndex() + 1;
+    } catch (final IOException e) {
+      return -1;
+    }
   }
 
   public RaftServer getRaftServer() {

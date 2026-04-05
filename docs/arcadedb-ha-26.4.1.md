@@ -50,11 +50,12 @@ This change is **transparent to users** - the HTTP API, database API, query lang
 - `ha remove peer <id>` - remove a server from the cluster
 - `ha transfer leader <peerId>` - transfer leadership to a specific server
 - `ha step down` - make the current leader step down (transfers to random follower)
+- `ha leave` - gracefully remove this server from the Raft cluster (transfers leadership if leader)
 - `ha verify database <name>` - compare file checksums across all nodes
 
 ### Studio Cluster Dashboard
 - **Overview tab**: cluster health badge, node cards with role/lag, databases table
-- **Metrics tab**: replication lag chart (ApexCharts), commit index progress
+- **Metrics tab**: election count, raft log size, uptime, last election time; replication lag chart, commit index chart
 - **Management tab**: leadership transfer, peer management, database verification, danger zone
 
 ### Verbose Logging
@@ -201,7 +202,7 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 | Feature | Old HA | Ratis HA |
 |---|---|---|
 | Scale-up | Restart all pods with new server list | Auto-join via `tryAutoJoinCluster()` |
-| Scale-down | Manual disconnect + restart | `ha remove peer` via HTTP API or admin |
+| Scale-down | Manual disconnect + restart | Auto-leave via preStop hook + `leaveCluster()` |
 | Leader failover | Custom election, 3-5s | Ratis pre-vote + election, 1.5-3s |
 | Rolling upgrade | Stop/start one by one, hope for the best | Ratis RECOVER mode auto-catches up |
 | Storage persistence | Custom replication log | Ratis log segments + metadata (term, vote) |
@@ -270,9 +271,7 @@ All planned tests have been implemented and are passing. See the comprehensive t
 
 ### Future Features
 - **State machine command forwarding**: Fix the `query()` path page visibility issue to eliminate HTTP proxy dependency for command forwarding. Currently write commands on non-leader nodes are forwarded via HTTP proxy which works correctly but adds latency.
-- **Ratis metrics in Studio**: Surface `LeaderElectionMetrics`, `LogAppenderMetrics`, `StateMachineMetrics` in the dashboard. Ratis exposes rich metrics via Dropwizard Metrics (timers for append latency, counters for elections, gauges for per-follower lag).
 - **Multi-Raft groups**: One Raft group per database (currently all databases share one group). This would allow independent replication policies per database.
 - **Read-from-follower consistency**: Use Ratis `readIndex` or `readAfterWrite` for linearizable reads from followers without going to the leader.
 - **JWT-based auth for cluster**: Replace Basic auth forwarding in HTTP proxy with stateless JWT tokens that work across servers without session affinity.
 - **Alert configuration in Studio**: Configurable thresholds for replication lag, election frequency, quorum health with notifications.
-- **K8s scale-down automation**: Auto-remove peer when a pod is terminated via `preStop` hook calling `ha remove peer`.

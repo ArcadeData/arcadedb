@@ -61,6 +61,18 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
             {{- include "arcadedb.plugin.parameters" . | nindent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                - /bin/sh
+                - -c
+                - |
+                  curl -s -X POST -H "Content-Type: application/json" \
+                    -u "root:${rootPassword}" \
+                    -d '{"command": "ha leave"}' \
+                    http://localhost:{{ .Values.service.http.port }}/api/v1/server || true
+                  sleep 2
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
