@@ -305,8 +305,11 @@ public class TransactionManager {
       final PageId pageId = new PageId(database, txPage.fileId, txPage.pageNumber);
 
       if (!database.getFileManager().existsFile(txPage.fileId)) {
+        // When ignoreErrors is true (Raft replay), referencing a deleted file is expected —
+        // schema changes may delete files before their prior TX entries are replayed.
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on restoring transaction: received operation on deleted file %d", null, txPage.fileId);
+            .log(this, ignoreErrors ? Level.FINE : Level.WARNING,
+                "Error on restoring transaction: received operation on deleted file %d", null, txPage.fileId);
         if (ignoreErrors)
           continue;
         throw new ConcurrentModificationException(
@@ -329,9 +332,12 @@ public class TransactionManager {
                 page.getVersion());
 
         if (txPage.currentPageVersion <= page.getVersion()) {
-          if (ignoreErrors)
-            // SKIP IT
+          if (ignoreErrors) {
+            LogManager.instance().log(this, Level.FINE,
+                "Skipping already-applied page %s (log v.%d <= db v.%d)", null,
+                pageId, txPage.currentPageVersion, page.getVersion());
             continue;
+          }
           throw new ConcurrentModificationException(
               "Concurrent modification on page " + pageId + " in file '" + database.getFileManager().getFile(pageId.getFileId())
                   .getFileName() + "' (current v." + txPage.currentPageVersion + " <= database v." + page.getVersion()
@@ -340,8 +346,8 @@ public class TransactionManager {
 
         if (txPage.currentPageVersion > page.getVersion() + 1) {
           LogManager.instance().log(this, Level.WARNING,
-              "Cannot apply changes to the database because modified page %s version in WAL (" + txPage.currentPageVersion
-                  + ") does not match with existent version (" + page.getVersion() + ") fileId=" + txPage.fileId, null, pageId);
+              "Cannot apply changes to the database because modified page %s version in WAL (%d) does not match with existent version (%d) fileId=%d",
+              null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
           if (ignoreErrors)
             continue;
           throw new ConcurrentModificationException(
@@ -349,8 +355,6 @@ public class TransactionManager {
                   + txPage.currentPageVersion + ") does not match with existent version (" + page.getVersion() + ") fileId="
                   + txPage.fileId);
         }
-//          throw new WALException("Cannot apply changes to the database because modified page version in WAL (" + txPage.currentPageVersion
-//              + ") does not match with existent version (" + page.getVersion() + ") fileId=" + txPage.fileId);
 
         LogManager.instance().log(this, Level.FINE, "Updating page %s versionInLog=%d versionInDB=%d (txId=%d)", null, pageId,
             txPage.currentPageVersion, page.getVersion(), tx.txId);
@@ -370,9 +374,8 @@ public class TransactionManager {
         if (component != null) {
           component.updatePageCount(modifiedPage.pageId.getPageNumber() + 1);
 
-          // Phase 5: For LSMVectorIndex, incrementally update VectorLocationIndex during replication
-          // This keeps in-memory metadata synchronized with replicated pages
-          // Note: LSMVectorIndexMutable is what gets registered with Schema (via index.getComponent())
+          // For LSMVectorIndex, incrementally update VectorLocationIndex during replication
+          // to keep in-memory metadata synchronized with replicated pages.
           if (component instanceof LSMVectorIndexMutable) {
             final LSMVectorIndexMutable vectorMutable =
                 (LSMVectorIndexMutable) component;
@@ -408,11 +411,13 @@ public class TransactionManager {
       }
     }
 
-    for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
-      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
-      if (bucket.getCachedRecordCount() > -1)
-        // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
-        bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
+    if (changed) {
+      for (final Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
+        final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
+        if (bucket.getCachedRecordCount() > -1)
+          // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
+          bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
+      }
     }
 
     if (involveDictionary) {

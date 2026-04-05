@@ -18,22 +18,32 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ha.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderValues;
 
 import java.io.*;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.*;
 import java.util.logging.*;
 
 public class PostCommandHandler extends AbstractQueryHandler {
+
+  private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
 
   public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -50,6 +60,21 @@ public class PostCommandHandler extends AbstractQueryHandler {
       throws IOException {
     if (json == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
+
+    // If this node is an HA replica and the leader's HTTP address is known, forward the command
+    final DatabaseInternal wrapped = ((DatabaseInternal) database).getWrappedDatabaseInstance();
+    if (wrapped instanceof HAReplicatedDatabase haDb && !haDb.isLeader()) {
+      final String leaderHttpAddress = haDb.getLeaderHttpAddress();
+      if (leaderHttpAddress != null) {
+        final HeaderValues authValues = exchange.getRequestHeaders().get("Authorization");
+        final String authHeader = authValues != null ? authValues.getFirst() : null;
+        final String clusterToken = httpServer.getServer().getConfiguration()
+            .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+        final String userName = user != null ? user.getName() : null;
+        return forwardToLeader(leaderHttpAddress, database.getName(), json.toString(),
+            authHeader, userName, clusterToken);
+      }
+    }
 
     final Map<String, Object> requestMap = json.toMap();
 
@@ -141,6 +166,47 @@ public class PostCommandHandler extends AbstractQueryHandler {
       Metrics.counter("http.command").increment();
 
       return new ExecutionResponse(200, response.toString());
+    }
+  }
+
+  /**
+   * Builds the forwarded HTTP request, substituting internal cluster-auth headers
+   * when the original auth is a per-node session token (Bearer AU-...).
+   * Package-private for testing.
+   */
+  static HttpRequest.Builder buildForwardRequest(final String leaderHttpAddress, final String databaseName,
+      final String jsonBody, final String authHeader, final String userName, final String clusterToken) {
+
+    final HttpRequest.Builder builder = HttpRequest.newBuilder()
+        .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/command/" + databaseName))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+
+    if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
+      // Per-node session token: replace with cluster-internal identity headers
+      if (userName != null)
+        builder.header("X-ArcadeDB-Forwarded-User", userName);
+      if (clusterToken != null && !clusterToken.isBlank())
+        builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+    } else if (authHeader != null) {
+      // Basic or API token: stateless, forward as-is
+      builder.header("Authorization", authHeader);
+    }
+    return builder;
+  }
+
+  private ExecutionResponse forwardToLeader(final String leaderHttpAddress, final String databaseName,
+      final String jsonBody, final String authHeader, final String userName, final String clusterToken)
+      throws IOException {
+
+    final HttpRequest request = buildForwardRequest(leaderHttpAddress, databaseName, jsonBody,
+        authHeader, userName, clusterToken).build();
+    try {
+      final HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+      return new ExecutionResponse(response.statusCode(), response.body());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("Interrupted while forwarding command to leader at " + leaderHttpAddress, e);
     }
   }
 

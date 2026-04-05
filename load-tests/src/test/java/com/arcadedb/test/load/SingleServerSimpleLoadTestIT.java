@@ -39,7 +39,7 @@ class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     //@EnumSource(value = DatabaseWrapper.Protocol.class, names = "GRPC")
   void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws Exception {
 
-    createArcadeContainer("arcade", "none", "none", "any", false, network);
+    createArcadeContainer("arcade", network);
 
     List<ServerWrapper> serverWrappers = startContainers();
     ServerWrapper server = serverWrappers.getFirst();

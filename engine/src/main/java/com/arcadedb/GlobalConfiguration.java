@@ -517,7 +517,10 @@ public enum GlobalConfiguration {
       Constants.PRODUCT.toLowerCase(Locale.ENGLISH)),
 
   HA_SERVER_LIST("arcadedb.ha.serverList", SCOPE.SERVER,
-      "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424",
+      "Servers in the cluster as a list of <hostname/ip-address:raftPort:httpPort[:priority]> items separated by comma. " +
+          "The httpPort is required for replica-to-leader HTTP command forwarding. " +
+          "The optional priority (integer, default 0) sets the preferred leader: the node with the highest priority is preferred during elections. " +
+          "Example: localhost:2434:2480:10,192.168.0.1:2434:2480:0",
       String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
@@ -548,6 +551,35 @@ public enum GlobalConfiguration {
 
   HA_K8S_DNS_SUFFIX("arcadedb.ha.k8sSuffix", SCOPE.SERVER,
       "When running inside Kubernetes use this suffix to reach the other servers. Example: arcadedb.default.svc.cluster.local",
+      String.class, ""),
+
+  // RAFT HA
+  HA_IMPLEMENTATION("arcadedb.ha.implementation", SCOPE.SERVER,
+      "HA implementation to use: 'legacy' for the existing custom protocol, 'raft' for the new Apache Ratis-based implementation",
+      String.class, "legacy", Set.of("legacy", "raft")),
+
+  HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
+      "Raft log index gap threshold for replication lag warnings. When a replica falls behind by more than this many entries, a warning is logged",
+      Long.class, 1000L),
+
+  HA_RAFT_PORT("arcadedb.ha.raftPort", SCOPE.SERVER,
+      "TCP/IP port for Raft gRPC communication. Used as the default port when HA_SERVER_LIST entries do not specify an explicit port",
+      Integer.class, 2434),
+
+  HA_RAFT_PERSIST_STORAGE("arcadedb.ha.raftPersistStorage", SCOPE.SERVER,
+      "If true, the Raft storage directory is not deleted when the server starts. " +
+      "Enables node restart and rejoin in integration tests. Not intended for production use.",
+      Boolean.class, false),
+
+  HA_RAFT_SNAPSHOT_THRESHOLD("arcadedb.ha.raftSnapshotThreshold", SCOPE.SERVER,
+      "Number of Raft log entries after which the leader automatically takes a snapshot. " +
+      "Lower values cause more frequent snapshots and earlier log compaction.",
+      Long.class, 10000L),
+
+  HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
+      "Shared secret for inter-node request forwarding authentication. " +
+      "Must be identical on all cluster nodes. " +
+      "If empty, a random token is auto-generated and stored in raft-storage at startup.",
       String.class, ""),
 
   // POSTGRES

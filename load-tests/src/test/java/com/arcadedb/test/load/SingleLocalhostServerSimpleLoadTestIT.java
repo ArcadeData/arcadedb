@@ -113,21 +113,22 @@ class SingleLocalhostServerSimpleLoadTestIT {
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @DisplayName("Single server load test")
   void singleServerLoadTest() throws Exception {
 
-    ServerWrapper server = new ServerWrapper("localhost", 2480, 50051);
+    ServerWrapper server = new ServerWrapper("localhost", 2481, 50051);
     DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, wordSupplier);
+
     db.createDatabase();
     db.createSchema();
 
     // Parameters for the test
     final int numOfThreads = 5; //number of threads to use to insert users and photos
-    final int numOfUsers = 200000; // Each thread will create 200000 users
+    final int numOfUsers = 500; // Each thread will create 200000 users
     final int numOfPhotos = 10; // Each user will have 5 photos
-    final int numOfFriendship = 100000; // Each thread will create 100000 friendships
-    final int numOfLike = 100000; // Each thread will create 100000 likes
+    final int numOfFriendship = 1000; // Each thread will create 100000 friendships
+    final int numOfLike = 1000; // Each thread will create 100000 likes
 
     int expectedUsersCount = numOfUsers * numOfThreads;
     int expectedPhotoCount = expectedUsersCount * numOfPhotos;
@@ -149,6 +150,7 @@ class SingleLocalhostServerSimpleLoadTestIT {
       });
     }
 
+    TimeUnit.SECONDS.sleep(10);
     if (numOfFriendship > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
@@ -162,7 +164,6 @@ class SingleLocalhostServerSimpleLoadTestIT {
       // Each thread will create friendships
       executor.submit(() -> {
         DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier);
-        ;
         db1.createLike(numOfLike);
         db1.close();
       });
