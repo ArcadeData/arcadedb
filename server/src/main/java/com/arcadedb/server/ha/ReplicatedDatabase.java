@@ -26,7 +26,6 @@ import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.*;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -42,8 +41,6 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
-import com.arcadedb.query.sql.executor.InternalResultSet;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
@@ -56,7 +53,6 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.ratis.HALog;
 import com.arcadedb.server.ha.ratis.RaftHAServer;
-import com.arcadedb.server.ha.ratis.RaftLogEntry;
 
 import java.io.IOException;
 import java.util.*;
@@ -142,6 +138,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
     }
 
     // PHASE 2 (under read lock): quorum reached, commit locally.
+    // If this fails, followers have already applied the changes but the leader has not.
+    // Rollback cannot undo replicated changes, so we log the inconsistency for diagnosis.
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
@@ -149,6 +147,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Phase 2 commit failed AFTER successful Raft replication (db=%s). "
+                + "Leader page cache may be stale until restart. Error: %s", getName(), e.getMessage());
+        throw e;
       } finally {
         current.popIfNotLastTransaction();
       }
@@ -684,51 +687,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
             getLeaderHTTPAddress());
     }
     return proxied.command(language, query, configuration, args);
-  }
-
-  /**
-   * Forwards a command to the leader via the Ratis state machine query() path.
-   * No HTTP proxy, no auth issues - uses the already-established gRPC channel.
-   * <p>
-   * NOTE: Currently unused - kept for future use as an alternative to HTTP proxy forwarding.
-   * Do not remove.
-   * <p>
-   * TODO: The query() path has a page visibility issue - pages modified by the command on the leader
-   * are not visible to the follower's local database until the WAL is replayed. Currently using
-   * HTTP proxy fallback (see AbstractServerHttpHandler.proxyToLeader) instead.
-   */
-  private ResultSet forwardCommandToLeader(final String language, final String query, final Map<String, Object> namedParams,
-      final Object[] positionalParams) {
-    HALog.log(this, HALog.DETAILED, "Forwarding command to leader: %s %s (db=%s)", language, query, getName());
-
-    // Rollback the local transaction started by DatabaseAbstractHandler.transaction() wrapper.
-    // The command executes on the leader, so no local changes should be committed.
-    if (isTransactionActive())
-      rollback();
-
-    final RaftHAServer raftHA = server.getRaftHA();
-    final byte[] resultBytes = raftHA.forwardCommand(getName(), language, query, namedParams, positionalParams);
-    HALog.log(this, HALog.TRACE, "Command forwarded successfully: %d bytes result", resultBytes.length);
-
-    // Wait for the leader's WAL changes to be applied locally on this follower.
-    // Without this, a subsequent read on this server may not see the changes yet.
-    raftHA.waitForLocalApply();
-
-    // Check for error response
-    if (resultBytes.length > 0 && resultBytes[0] == 'E') {
-      final String error = new String(resultBytes, 1, resultBytes.length - 1);
-      throw new CommandExecutionException(error);
-    }
-
-    // Deserialize binary result into ResultSet
-    final List<Map<String, Object>> rows = RaftLogEntry.deserializeCommandResult(resultBytes);
-    final InternalResultSet rs = new InternalResultSet();
-    for (final Map<String, Object> row : rows) {
-      final ResultInternal result = new ResultInternal(proxied);
-      result.setPropertiesFromMap(row);
-      rs.add(result);
-    }
-    return rs;
   }
 
   @Override

@@ -28,6 +28,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.remote.RemoteHttpComponent;
+import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -140,7 +142,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         database.commit();
 
     } finally {
-      com.arcadedb.server.ha.ReplicatedDatabase.clearReadConsistencyContext();
+      ReplicatedDatabase.clearReadConsistencyContext();
 
       if (activeSession != null)
         // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
@@ -163,7 +165,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       final long commitIndex = raftHA.getCommitIndex();
       if (commitIndex >= 0)
         exchange.getResponseHeaders().put(
-            new io.undertow.util.HttpString(com.arcadedb.remote.RemoteHttpComponent.HEADER_COMMIT_INDEX),
+            new HttpString(RemoteHttpComponent.HEADER_COMMIT_INDEX),
             Long.toString(commitIndex));
     }
 
@@ -172,13 +174,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
   private void setReadConsistencyFromHeaders(final HttpServerExchange exchange) {
     final var consistencyHeader = exchange.getRequestHeaders().get(
-        com.arcadedb.remote.RemoteHttpComponent.HEADER_READ_CONSISTENCY);
+        RemoteHttpComponent.HEADER_READ_CONSISTENCY);
 
     Database.READ_CONSISTENCY consistency = null;
     if (consistencyHeader != null && !consistencyHeader.isEmpty()) {
       try {
         consistency = Database.READ_CONSISTENCY.valueOf(consistencyHeader.getFirst().toUpperCase());
-      } catch (final IllegalArgumentException ignored) {}
+      } catch (final IllegalArgumentException e) {
+        LogManager.instance().log(this, Level.FINE, "Ignoring invalid read consistency header value: '%s'",
+            consistencyHeader.getFirst());
+      }
     }
 
     // Fall back to server default if no header
@@ -191,12 +196,12 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
     long readAfterIndex = -1;
     final var readAfterHeader = exchange.getRequestHeaders().get(
-        com.arcadedb.remote.RemoteHttpComponent.HEADER_READ_AFTER);
+        RemoteHttpComponent.HEADER_READ_AFTER);
     if (readAfterHeader != null && !readAfterHeader.isEmpty())
       try { readAfterIndex = Long.parseLong(readAfterHeader.getFirst()); } catch (final NumberFormatException ignored) {}
 
     if (consistency != null && consistency != Database.READ_CONSISTENCY.EVENTUAL)
-      com.arcadedb.server.ha.ReplicatedDatabase.setReadConsistencyContext(consistency, readAfterIndex);
+      ReplicatedDatabase.setReadConsistencyContext(consistency, readAfterIndex);
   }
 
   private void cleanTL(final Database database, DatabaseContext.DatabaseContextTL current) {

@@ -450,11 +450,15 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
 
       LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
 
-      // Explicitly reopen the database so concurrent threads don't hit a closed-database exception
-      server.getDatabase(databaseName);
-
     } finally {
       connection.disconnect();
+      // Ensure database is re-opened even if extraction failed, so it doesn't remain permanently closed
+      try {
+        server.getDatabase(databaseName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Failed to reopen database '%s' after snapshot installation: %s",
+            databaseName, e.getMessage());
+      }
     }
   }
 

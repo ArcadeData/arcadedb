@@ -86,6 +86,9 @@ public class RaftGroupCommitter {
       // If the flusher already sent it and the Raft round-trip eventually succeeds,
       // the transaction was already committed locally (commit1stPhase) so the apply is harmless.
       pending.cancelled.set(true);
+      HALog.log(this, HALog.BASIC,
+          "Group commit entry cancelled after timeout (%dms). If already submitted to Raft, the write may still be applied on followers",
+          timeoutMs);
       throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms");
     } catch (final RuntimeException e) {
       throw e;

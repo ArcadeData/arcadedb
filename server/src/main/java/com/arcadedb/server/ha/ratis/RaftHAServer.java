@@ -23,7 +23,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
@@ -112,7 +111,7 @@ public class RaftHAServer {
   private RaftGroupCommitter               groupCommitter;
   private final Object                     applyNotifier          = new Object();
   private final Object                     leaderChangeNotifier   = new Object();
-  private ScheduledExecutorService lagMonitorExecutor;
+  private ScheduledExecutorService         lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     this.server = server;
@@ -168,9 +167,10 @@ public class RaftHAServer {
       throw new RuntimeException("Failed to derive cluster token", e);
     }
     // Write the derived token back to configuration so all components use the same value.
-    // Note: changing the root password after first boot does NOT rotate this token automatically.
-    // To rotate, set arcadedb.ha.clusterToken explicitly.
     configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, this.clusterToken);
+    LogManager.instance().log(this, Level.WARNING,
+        "Using auto-derived cluster token. Changing root password does NOT rotate this token. "
+            + "To explicitly rotate, set arcadedb.ha.clusterToken=<new-value> and restart all nodes");
   }
 
   public void startService() {
@@ -178,6 +178,9 @@ public class RaftHAServer {
 
     LogManager.instance().log(this, Level.INFO, "Starting Ratis HA service (cluster=%s, peers=%s, quorum=%s)...",
         configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME), raftGroup.getPeers(), quorum);
+    LogManager.instance().log(this, Level.WARNING,
+        "Inter-node snapshot and proxy traffic uses plain HTTP. Cluster token and database data are transmitted unencrypted. "
+            + "Deploy behind a secure network or VPN for production use");
 
     try {
       stateMachine = new ArcadeDBStateMachine(server);
@@ -454,52 +457,6 @@ public class RaftHAServer {
     final byte[] entry = RaftLogEntry.serializeTransactionForward(databaseName, bucketRecordDelta, walBuffer, indexChanges);
 
     sendToRaft(entry);
-  }
-
-  /**
-   * Forwards a command (SQL/Cypher/etc.) to the leader for execution via the Ratis state machine query() path.
-   * This does NOT go through the Raft log - the leader executes the command directly and returns the result.
-   *
-   * @return binary result bytes (deserialize with RaftLogEntry.deserializeCommandResult)
-   */
-  public byte[] forwardCommand(final String databaseName, final String language, final String command,
-      final Map<String, Object> namedParams, final Object[] positionalParams) {
-    final byte[] request = RaftLogEntry.serializeCommandForward(databaseName, language, command, namedParams, positionalParams);
-
-    // sendReadOnly with explicit leader peer ID. This executes via query() on the leader
-    // and does NOT create a log entry, avoiding deadlock with WAL replication inside the command.
-    final var msg = Message.valueOf(org.apache.ratis.thirdparty.com.google.protobuf.ByteString.copyFrom(request));
-    for (int retry = 0; retry < 3; retry++) {
-      try {
-        // Get the current leader and send directly to it
-        final String leaderName = getLeaderName();
-        final RaftClientReply reply;
-        if (leaderName != null)
-          reply = raftClient.io().sendReadOnly(msg, RaftPeerId.valueOf(leaderName));
-        else
-          reply = raftClient.io().sendReadOnly(msg);
-
-        if (!reply.isSuccess()) {
-          final var replyEx = reply.getException();
-          if (replyEx instanceof org.apache.ratis.protocol.exceptions.NotLeaderException && retry < 2) {
-            try { Thread.sleep(500); } catch (final InterruptedException ie) { Thread.currentThread().interrupt(); }
-            continue;
-          }
-          final String err = replyEx != null ? replyEx.getMessage() : "unknown";
-          throw new CommandExecutionException("Command forwarding failed: " + err);
-        }
-
-        return reply.getMessage().getContent().toByteArray();
-
-      } catch (final IOException e) {
-        if (hasCause(e, org.apache.ratis.protocol.exceptions.NotLeaderException.class) && retry < 2) {
-          try { Thread.sleep(500); } catch (final InterruptedException ie) { Thread.currentThread().interrupt(); }
-          continue;
-        }
-        throw new CommandExecutionException("Command forwarding failed: " + e.getMessage());
-      }
-    }
-    throw new CommandExecutionException("Command forwarding failed after retries");
   }
 
   private void sendToRaft(final byte[] entry) {
@@ -1138,16 +1095,6 @@ public class RaftHAServer {
   private int resolveLocalPort() {
     final String ports = configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS);
     return parseFirstPort(ports);
-  }
-
-  private static boolean hasCause(final Throwable throwable, final Class<? extends Throwable> targetType) {
-    Throwable cause = throwable;
-    while (cause != null) {
-      if (targetType.isInstance(cause))
-        return true;
-      cause = cause.getCause();
-    }
-    return false;
   }
 
   private static int parseFirstPort(final String portSpec) {
