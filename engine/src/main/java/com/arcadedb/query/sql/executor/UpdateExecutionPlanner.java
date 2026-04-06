@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -47,6 +48,7 @@ public class UpdateExecutionPlanner {
   protected final boolean                returnCount;
   protected final Projection             returnProjection;
   public final    Limit                  limit;
+  public final    Batch                  batch;
   public final    Timeout                timeout;
 
   public UpdateExecutionPlanner(final UpdateStatement oUpdateStatement) {
@@ -65,6 +67,7 @@ public class UpdateExecutionPlanner {
     this.returnCount = !(returnAfter || returnBefore);
     this.returnProjection = oUpdateStatement.getReturnProjection() == null ? null : oUpdateStatement.getReturnProjection().copy();
     this.limit = oUpdateStatement.getLimit() == null ? null : oUpdateStatement.getLimit().copy();
+    this.batch = oUpdateStatement.getBatch();
     this.timeout = oUpdateStatement.getTimeout() == null ? null : oUpdateStatement.getTimeout().copy();
   }
 
@@ -81,6 +84,7 @@ public class UpdateExecutionPlanner {
     handleOperations(result, context, this.operations);
     handleApplyDefaults(result, context, this.applyDefaults);
     handleSave(result, target.getItem().getBucket(), context);
+    handleBatch(result, context, this.batch);
     handleResultForReturnBefore(result, context, this.returnBefore, returnProjection);
     handleResultForReturnAfter(result, context, this.returnAfter, returnProjection);
     handleResultForReturnCount(result, context, this.returnCount);
@@ -152,6 +156,11 @@ public class UpdateExecutionPlanner {
     if (limit != null) {
       plan.chain(new LimitExecutionStep(limit, context));
     }
+  }
+
+  private void handleBatch(final UpdateExecutionPlan plan, final CommandContext context, final Batch batch) {
+    if (batch != null)
+      plan.chain(new BatchStep(batch, context));
   }
 
   private void handleUpsert(final UpdateExecutionPlan plan, final CommandContext context, final FromClause target,

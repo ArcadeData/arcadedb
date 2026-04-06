@@ -5,47 +5,60 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 
 import java.util.Map;
 import java.util.Objects;
 
 public class Batch extends SimpleNode {
 
-  protected PInteger num;
-
-  protected InputParameter inputParam;
+  public PInteger       num;
+  public InputParameter inputParam;
+  public Expression     expression;
 
   public Batch(final int id) {
     super(id);
   }
 
   public int evaluate(final CommandContext ctx) {
-    if (this.num != null) {
+    if (num != null)
       return num.getValue().intValue();
-    } else if (inputParam != null) {
+
+    if (inputParam != null) {
       final Object obj = inputParam.getValue(ctx.getInputParameters());
       if (!(obj instanceof Number))
         throw new CommandExecutionException(obj + " is not a number (BATCH)");
       return ((Number) obj).intValue();
     }
+
+    if (expression != null) {
+      final Object exprValue = expression.execute((Result) null, ctx);
+      if (exprValue instanceof Number number)
+        return number.intValue();
+      throw new CommandExecutionException(exprValue + " is not a number (BATCH)");
+    }
+
     return -1;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (num == null && inputParam == null)
+    if (num == null && inputParam == null && expression == null)
       return;
 
     builder.append(" BATCH ");
     if (num != null)
       num.toString(params, builder);
-    else
+    else if (inputParam != null)
       inputParam.toString(params, builder);
+    else
+      expression.toString(params, builder);
   }
 
   public Batch copy() {
     final Batch result = new Batch(-1);
-    result.inputParam = inputParam == null ? null : inputParam.copy();
     result.num = num == null ? null : num.copy();
+    result.inputParam = inputParam == null ? null : inputParam.copy();
+    result.expression = expression == null ? null : expression.copy();
     return result;
   }
 
@@ -60,13 +73,16 @@ public class Batch extends SimpleNode {
 
     if (!Objects.equals(num, batch.num))
       return false;
-    return Objects.equals(inputParam, batch.inputParam);
+    if (!Objects.equals(inputParam, batch.inputParam))
+      return false;
+    return Objects.equals(expression, batch.expression);
   }
 
   @Override
   public int hashCode() {
     int result = num != null ? num.hashCode() : 0;
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
+    result = 31 * result + (expression != null ? expression.hashCode() : 0);
     return result;
   }
 
@@ -74,12 +90,12 @@ public class Batch extends SimpleNode {
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();
 
-    if (num != null) {
+    if (num != null)
       json.put("num", num.toString());
-    }
-    if (inputParam != null) {
+    if (inputParam != null)
       json.put("inputParam", inputParam.toString());
-    }
+    if (expression != null)
+      json.put("expression", expression.toString());
 
     return json;
   }

@@ -77,8 +77,14 @@ public class TruncateTypeStatement extends DDLStatement {
       }
     }
 
+    // Scan and delete all records, committing in batches to avoid OOM
+    final long[] count = {0};
     db.scanType(typeName.getStringValue(), polymorphic, rec -> {
       rec.delete();
+      if (++count[0] % TruncateBucketStatement.TRUNCATE_BATCH_SIZE == 0 && db.isTransactionActive()) {
+        db.commit();
+        db.begin();
+      }
       return true;
     });
 

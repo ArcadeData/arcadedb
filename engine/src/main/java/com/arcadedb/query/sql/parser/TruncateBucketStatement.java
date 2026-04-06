@@ -36,6 +36,8 @@ import java.util.*;
 
 public class TruncateBucketStatement extends DDLStatement {
 
+  public static final int TRUNCATE_BATCH_SIZE = 50_000;
+
   public Identifier bucketName;
   public PInteger   bucketNumber;
   public boolean    unsafe = false;
@@ -94,9 +96,14 @@ public class TruncateBucketStatement extends DDLStatement {
       }
     }
 
-    // Scan and delete all records in the bucket
+    // Scan and delete all records in the bucket, committing in batches to avoid OOM
+    final long[] count = {0};
     db.scanBucket(resolvedBucketName, record -> {
       record.delete();
+      if (++count[0] % TRUNCATE_BATCH_SIZE == 0 && db.isTransactionActive()) {
+        db.commit();
+        db.begin();
+      }
       return true;
     });
 

@@ -214,6 +214,71 @@ public class DeleteStatementTest extends TestHelper {
   }
 
   @Test
+  void deleteBatchCommitsInBatches() {
+    database.command("sql", "create document type BatchTest");
+
+    // Insert 100 records
+    for (int i = 0; i < 100; i++)
+      database.newDocument("BatchTest").set("idx", i).save();
+
+    database.commit();
+    database.begin();
+
+    // Verify 100 records exist
+    ResultSet result = database.query("sql", "select count(*) as cnt from BatchTest");
+    assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(100);
+
+    // Delete all with BATCH 10 - should commit every 10 records
+    ResultSet deleteResult = database.command("sql", "DELETE FROM BatchTest BATCH 10");
+    final long deletedCount = deleteResult.next().getProperty("count");
+    assertThat(deletedCount).isEqualTo(100);
+
+    // Verify all records are gone (even after the batch commits, everything should be deleted)
+    result = database.query("sql", "select count(*) as cnt from BatchTest");
+    assertThat(result.next().<Long>getProperty("cnt")).isZero();
+  }
+
+  @Test
+  void deleteBatchWithWhereClause() {
+    database.command("sql", "create document type BatchWhere");
+
+    for (int i = 0; i < 50; i++)
+      database.newDocument("BatchWhere").set("idx", i).save();
+
+    database.commit();
+    database.begin();
+
+    // Delete only even-indexed records with BATCH 5
+    ResultSet deleteResult = database.command("sql", "DELETE FROM BatchWhere WHERE idx % 2 = 0 BATCH 5");
+    final long deletedCount = deleteResult.next().getProperty("count");
+    assertThat(deletedCount).isEqualTo(25);
+
+    // Verify only odd-indexed records remain
+    ResultSet result = database.query("sql", "select count(*) as cnt from BatchWhere");
+    assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(25);
+  }
+
+  @Test
+  void deleteBatchWithLimit() {
+    database.command("sql", "create document type BatchLimit");
+
+    for (int i = 0; i < 100; i++)
+      database.newDocument("BatchLimit").set("idx", i).save();
+
+    database.commit();
+    database.begin();
+
+    // Delete with LIMIT 30 and BATCH 10
+    ResultSet deleteResult = database.command("sql", "DELETE FROM BatchLimit LIMIT 30 BATCH 10");
+    final long deletedCount = deleteResult.next().getProperty("count");
+    assertThat(deletedCount).isEqualTo(30);
+
+    // Verify 70 records remain
+    ResultSet result = database.query("sql", "select count(*) as cnt from BatchLimit");
+    assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(70);
+  }
+
+  @Test
   void deleteEdgesSequentiallyWithOrConditions() {
     // Reproduction test for issue #3452
     // Edge is not deleted when multiple sequential DELETEs with OR conditions are executed

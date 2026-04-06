@@ -43,6 +43,7 @@ public class UpdateStatement extends Statement {
   public boolean                returnCount    = false;
   public Projection             returnProjection;
   public WhereClause            whereClause;
+  public Batch                  batch;
 
   public UpdateStatement(final int id) {
     super(id);
@@ -85,6 +86,9 @@ public class UpdateStatement extends Statement {
     if (limit != null)
       limit.toString(params, builder);
 
+    if (batch != null)
+      batch.toString(params, builder);
+
     if (timeout != null)
       timeout.toString(params, builder);
   }
@@ -105,6 +109,7 @@ public class UpdateStatement extends Statement {
     result.returnProjection = returnProjection == null ? null : returnProjection.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
     result.limit = limit == null ? null : limit.copy();
+    result.batch = batch == null ? null : batch.copy();
     result.timeout = timeout == null ? null : timeout.copy();
     return result;
   }
@@ -219,6 +224,10 @@ public class UpdateStatement extends Statement {
 
   public WhereClause getWhereClause() {
     return whereClause;
+  }
+
+  public Batch getBatch() {
+    return batch;
   }
 
   @Override

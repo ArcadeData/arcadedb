@@ -360,6 +360,7 @@ updateStatement
       (RETURN (BEFORE | AFTER | COUNT) projection?)?
       (WHERE whereClause)?
       limit?
+      (BATCH expression)?
       timeout?
     ;
 
@@ -399,6 +400,7 @@ deleteStatement
       (RETURN BEFORE)?
       (WHERE whereClause)?
       limit?
+      (BATCH expression)?
       UNSAFE?
     ;
 

@@ -37,6 +37,7 @@ public class DeleteStatement extends Statement {
   public FromClause  fromClause;
   public WhereClause whereClause;
   public boolean     returnBefore = false;
+  public Batch       batch;
   public boolean     unsafe       = false;
 
   public DeleteStatement(final int id) {
@@ -56,6 +57,9 @@ public class DeleteStatement extends Statement {
     if (limit != null) {
       limit.toString(params, builder);
     }
+    if (batch != null) {
+      batch.toString(params, builder);
+    }
     if (unsafe) {
       builder.append(" UNSAFE");
     }
@@ -68,13 +72,14 @@ public class DeleteStatement extends Statement {
     result.whereClause = whereClause == null ? null : whereClause.copy();
     result.returnBefore = returnBefore;
     result.limit = limit == null ? null : limit.copy();
+    result.batch = batch == null ? null : batch.copy();
     result.unsafe = unsafe;
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { fromClause, whereClause, returnBefore, limit, unsafe };
+    return new Object[] { fromClause, whereClause, returnBefore, limit, batch, unsafe };
   }
 
   @Override
@@ -118,6 +123,10 @@ public class DeleteStatement extends Statement {
 
   public boolean isReturnBefore() {
     return returnBefore;
+  }
+
+  public Batch getBatch() {
+    return batch;
   }
 
   public boolean isUnsafe() {
