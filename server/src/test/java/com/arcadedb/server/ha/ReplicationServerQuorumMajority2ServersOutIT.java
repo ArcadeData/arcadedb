@@ -38,6 +38,8 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
 
   public ReplicationServerQuorumMajority2ServersOutIT() {
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
+    // Low quorum timeout so the test fails fast once both servers are down
+    GlobalConfiguration.HA_QUORUM_TIMEOUT.setValue(3000L);
   }
 
   @Override
@@ -94,7 +96,22 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
 
   @Override
   protected int getTxs() {
-    return 500;
+    // Need enough txs for both server callbacks to trigger (100 and 200 messages).
+    // REPLICA_MSG_RECEIVED fires per replicated tx, so need > 200 txs.
+    // After both servers are down, writes fail on quorum timeout.
+    return 300;
+  }
+
+  @Override
+  protected int getVerticesPerTx() {
+    // Keep small to reduce total data while ensuring enough transactions
+    return 10;
+  }
+
+  @Override
+  protected int getMaxRetry() {
+    // Lower retries - once quorum is lost, retries just burn time
+    return 3;
   }
 
 }

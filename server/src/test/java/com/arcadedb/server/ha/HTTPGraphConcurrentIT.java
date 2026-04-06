@@ -105,6 +105,9 @@ class HTTPGraphConcurrentIT extends BaseGraphServerTest {
 
       assertThat(atomic.get()).isEqualTo(THREADS * SCRIPTS);
 
+      // Wait for replication to complete before checking results
+      waitForReplicationIsCompleted(serverIndex);
+
       final JSONObject responseAsJsonSelect = executeCommand(serverIndex, "sql", //
           "SELECT id FROM ( SELECT expand( outE('HasUploaded" + serverIndex + "') ) FROM Users" + serverIndex
               + " WHERE id = \"u1111\" )");

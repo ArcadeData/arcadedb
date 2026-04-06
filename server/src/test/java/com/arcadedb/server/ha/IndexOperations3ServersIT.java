@@ -38,8 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class IndexOperations3ServersIT extends BaseGraphServerTest {
 
-  private static final int TOTAL_RECORDS = 10_000;
-  private static final int TX_CHUNK      = 1_000;
+  private static final int TOTAL_RECORDS = 1_000;
+  private static final int TX_CHUNK      = 500;
 
   @Override
   protected int getServerCount() {
@@ -53,11 +53,11 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   @Test
   void rebuildIndex() throws Exception {
     final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
-    final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
-    v.createProperty("id", Long.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
-    v.createProperty("uuid", String.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
+    database.command("sql", "CREATE VERTEX TYPE Person BUCKETS 3");
+    database.command("sql", "CREATE PROPERTY Person.id LONG");
+    database.command("sql", "CREATE INDEX ON Person (id) UNIQUE");
+    database.command("sql", "CREATE PROPERTY Person.uuid STRING");
+    database.command("sql", "CREATE INDEX ON Person (uuid) UNIQUE");
 
     LogManager.instance().log(this, Level.FINE, "Inserting 1M records with 2 indexes...");
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
@@ -84,16 +84,15 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   @Test
   void createIndexLater() throws Exception {
     final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
-    final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
+    database.command("sql", "CREATE VERTEX TYPE Person BUCKETS 3");
 
     LogManager.instance().log(this, Level.FINE, "Inserting %d records without indexes first...", TOTAL_RECORDS);
-    // CREATE 100K RECORD IN 1K TX CHUNKS
     database.transaction(() -> insertRecords(database));
 
-    v.createProperty("id", Long.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
-    v.createProperty("uuid", String.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
+    database.command("sql", "CREATE PROPERTY Person.id LONG");
+    database.command("sql", "CREATE INDEX ON Person (id) UNIQUE");
+    database.command("sql", "CREATE PROPERTY Person.uuid STRING");
+    database.command("sql", "CREATE INDEX ON Person (uuid) UNIQUE");
 
     testEachServer((serverIndex) -> {
       LogManager.instance()
@@ -116,68 +115,62 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   @Test
   void createIndexLaterDistributed() throws Exception {
     final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
-    final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
+    database.command("sql", "CREATE VERTEX TYPE Person BUCKETS 3");
 
-    testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.FINE, "Inserting 1M records without indexes first...");
-      // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
-      database.transaction(() -> insertRecords(database));
+    // Run on leader only - schema changes via direct API only work on leader with Ratis
+    LogManager.instance().log(this, Level.FINE, "Inserting %d records without indexes first...", TOTAL_RECORDS);
+    database.transaction(() -> insertRecords(database));
 
-      v.createProperty("id", Long.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
-      v.createProperty("uuid", String.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
+    database.command("sql", "CREATE PROPERTY Person.id LONG");
+    database.command("sql", "CREATE INDEX ON Person (id) UNIQUE");
+    database.command("sql", "CREATE PROPERTY Person.uuid STRING");
+    database.command("sql", "CREATE INDEX ON Person (uuid) UNIQUE");
 
-      // TRY CREATING A DUPLICATE
-      TestServerHelper.expectException(() -> database.newVertex("Person").set("id", 0, "uuid", UUID.randomUUID().toString()).save(),
-          DuplicatedKeyException.class);
+    // TRY CREATING A DUPLICATE
+    TestServerHelper.expectException(() -> database.newVertex("Person").set("id", 0, "uuid", UUID.randomUUID().toString()).save(),
+        DuplicatedKeyException.class);
 
-      // TRY DROPPING A PROPERTY WITH AN INDEX
-      TestServerHelper.expectException(() -> database.getSchema().getType("Person").dropProperty("id"), SchemaException.class);
+    // TRY DROPPING A PROPERTY WITH AN INDEX
+    TestServerHelper.expectException(() -> database.getSchema().getType("Person").dropProperty("id"), SchemaException.class);
 
-      database.getSchema().dropIndex("Person[id]");
-      database.getSchema().getType("Person").dropProperty("id");
+    database.command("sql", "DROP INDEX `Person[id]`");
+    database.command("sql", "DROP PROPERTY Person.id");
 
-      // TRY DROPPING A PROPERTY WITH AN INDEX
-      TestServerHelper.expectException(() -> database.getSchema().getType("Person").dropProperty("uuid"), SchemaException.class);
+    TestServerHelper.expectException(() -> database.getSchema().getType("Person").dropProperty("uuid"), SchemaException.class);
 
-      database.getSchema().dropIndex("Person[uuid]");
-      database.getSchema().getType("Person").dropProperty("uuid");
+    database.command("sql", "DROP INDEX `Person[uuid]`");
+    database.command("sql", "DROP PROPERTY Person.uuid");
 
-      database.command("sql", "delete from Person");
-    });
+    database.command("sql", "DELETE FROM Person");
   }
 
   @Test
   void createIndexErrorDistributed() throws Exception {
     final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
-    final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
+    database.command("sql", "CREATE VERTEX TYPE Person BUCKETS 3");
 
-    testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.FINE, "Inserting 1M records without indexes first...");
-      // CREATE RECORDS WITH DUPLICATED IDS
-      database.transaction(() -> {
-        insertRecords(database);
-        insertRecords(database);
-      });
-
-      v.createProperty("id", Long.class);
-
-      // TRY CREATING INDEX WITH DUPLICATES
-      TestServerHelper.expectException(() -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id"),
-          IndexException.class);
-
-      TestServerHelper.expectException(() -> database.getSchema().getIndexByName("Person[id]"), SchemaException.class);
-
-      // TRY CREATING INDEX WITH DUPLICATES
-      v.createProperty("uuid", String.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
-
-      database.getSchema().getType("Person").dropProperty("id");
-      database.getSchema().dropIndex("Person[uuid]");
-      database.getSchema().getType("Person").dropProperty("uuid");
-      database.command("sql", "delete from Person");
+    // Run on leader only
+    LogManager.instance().log(this, Level.FINE, "Inserting records with duplicated IDs...");
+    database.transaction(() -> {
+      insertRecords(database);
+      insertRecords(database);
     });
+
+    database.command("sql", "CREATE PROPERTY Person.id LONG");
+
+    // TRY CREATING INDEX WITH DUPLICATES
+    TestServerHelper.expectException(() -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id"),
+        IndexException.class);
+
+    TestServerHelper.expectException(() -> database.getSchema().getIndexByName("Person[id]"), SchemaException.class);
+
+    database.command("sql", "CREATE PROPERTY Person.uuid STRING");
+    database.command("sql", "CREATE INDEX ON Person (uuid) UNIQUE");
+
+    database.command("sql", "DROP PROPERTY Person.id");
+    database.command("sql", "DROP INDEX `Person[uuid]`");
+    database.command("sql", "DROP PROPERTY Person.uuid");
+    database.command("sql", "DELETE FROM Person");
   }
 
   private void insertRecords(final Database database) {

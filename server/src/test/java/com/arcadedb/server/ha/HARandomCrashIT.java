@@ -233,7 +233,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
   @Override
   protected int getTxs() {
-    return 1500;
+    // Need enough txs for the 15s crash timer to fire + restart cycles
+    return 200;
   }
 
   @Override

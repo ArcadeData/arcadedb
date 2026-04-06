@@ -304,10 +304,34 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 ### Known Limitations
 - **State machine command forwarding**: The `query()` path for forwarding write commands to the leader has a page visibility issue. Currently using HTTP proxy fallback which works correctly.
 
+### Removed Tests (not applicable to Ratis)
+| Test | Reason |
+|---|---|
+| `ReplicationServerQuorumNoneIT` | Ratis doesn't support "none" quorum - only MAJORITY and ALL |
+| `ReplicationServerReplicaHotResyncIT` | Tests old HA `REPLICA_HOT_RESYNC` callback - Ratis handles resync internally |
+| `ReplicationServerReplicaRestartForceDbInstallIT` | Tests old HA `REPLICA_FULL_RESYNC` callback - Ratis handles this internally |
+
 ## TODO
 
-### Future Tests
-All planned tests have been implemented and are passing. See the comprehensive test suite below.
+### Failing Tests to Fix
+
+#### Schema replication via Java API
+- **`ReplicationChangeSchemaIT`**: Schema property created via `type.createProperty()` on leader doesn't propagate to followers (schemaVersion 17 vs 16 after 30s). Schema changes through the direct Java API may not be going through the Ratis replication path correctly. SQL-based schema changes (tested in `RaftHAComprehensiveIT`) work fine.
+
+#### Index/data replication lag under load
+- **`IndexCompactionReplicationIT`** (2 of 4 tests): Vector index entries: 1001 on leader vs 72 on follower after `waitForReplicationIsCompleted`. Large index operations may not fully propagate within the Raft commit index window - the index files may need additional sync beyond WAL replay.
+
+#### HTTP proxy DDL forwarding
+- **`HTTP2ServersCreateReplicatedDatabaseIT`**: `create vertex type` command sent via HTTP to a follower returns HTTP 500 instead of being proxied to the leader. The HTTP proxy forwarding (`proxyToLeader`) may not handle DDL commands correctly when the `ServerIsNotTheLeaderException` is thrown from within command execution.
+
+#### Concurrent write conflicts
+- **`HTTPGraphConcurrentIT`**: Page version mismatch (`DB1 204 <> DB2 203`) during `endTest` database comparison. 4 threads x 100 concurrent edge creations via HTTP cause databases to diverge slightly. May be a race in concurrent commit + Ratis replication.
+- **`ReplicationServerFixedClientConnectionIT`**: `DuplicatedKeyException` on unique index during concurrent writes through `RemoteDatabase` with `FIXED` connection strategy. The retry logic may submit duplicate entries after a `NeedRetryException`.
+
+#### Slow tests (>5 min timeout)
+- **`ReplicationServerQuorumMajority2ServersOutIT`**: Stops 2 of 3 servers, then attempts 500 writes - each times out on Ratis quorum (10s default). Total: ~5000s worst case. Consider reducing `getTxs()` or lowering `quorumTimeout` for this test.
+- **`IndexOperations3ServersIT`**: Creates 1M records with index rebuild - too slow for CI. Consider reducing record count.
+- **`HARandomCrashIT`**: Random server crashes with write retries - inherently slow and non-deterministic.
 
 ### Future Features
 - **State machine command forwarding**: Fix the `query()` path page visibility issue to eliminate HTTP proxy dependency for command forwarding. Currently write commands on non-leader nodes are forwarded via HTTP proxy which works correctly but adds latency.

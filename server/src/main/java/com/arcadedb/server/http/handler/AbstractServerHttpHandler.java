@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.remote.RemoteHttpComponent;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
@@ -33,8 +34,13 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
+import io.undertow.util.HttpString;
 import io.undertow.util.StatusCodes;
 
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Deque;
@@ -46,6 +52,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BEARER     = "Bearer";
   private static final String HEADER_CLUSTER_TOKEN     = "X-ArcadeDB-Cluster-Token";
   private static final String HEADER_FORWARDED_USER    = "X-ArcadeDB-Forwarded-User";
+  private static final int    PROXY_CONNECT_TIMEOUT_MS = 5_000;
+  private static final int    PROXY_READ_TIMEOUT_MS    = 30_000;
   private static final io.undertow.util.AttachmentKey<String> RAW_PAYLOAD_KEY = io.undertow.util.AttachmentKey.create(String.class);
   static final io.undertow.util.AttachmentKey<String> BASIC_AUTH_KEY = io.undertow.util.AttachmentKey.create(String.class);
   protected final HttpServer httpServer;
@@ -317,9 +325,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
     LogManager.instance().log(this, Level.FINE, "Proxying request to leader: %s", targetUrl);
 
-    final java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-        new java.net.URI(targetUrl).toURL().openConnection();
+    final HttpURLConnection conn = (HttpURLConnection) new URI(targetUrl).toURL().openConnection();
     conn.setRequestMethod(exchange.getRequestMethod().toString());
+    conn.setConnectTimeout(PROXY_CONNECT_TIMEOUT_MS);
+    conn.setReadTimeout(PROXY_READ_TIMEOUT_MS);
 
     // Forward auth using cluster token for inter-node identity.
     // The cluster token is a shared secret derived from the cluster name + root password.
@@ -334,8 +343,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
         final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
         final HttpAuthSession session = httpServer.getAuthSessionManager().getSessionByToken(token);
-        if (session != null)
-          conn.setRequestProperty(HEADER_FORWARDED_USER, session.getUser().getName());
+        if (session == null) {
+          conn.disconnect();
+          sendErrorResponse(exchange, 401, "Session expired or invalid", null, null);
+          return;
+        }
+        conn.setRequestProperty(HEADER_FORWARDED_USER, session.getUser().getName());
       } else if (auth != null)
         conn.setRequestProperty("Authorization", auth);
       else {
@@ -354,7 +367,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final String savedPayload = exchange.getAttachment(RAW_PAYLOAD_KEY);
       if (savedPayload != null && !savedPayload.isEmpty())
         try (final var os = conn.getOutputStream()) {
-          os.write(savedPayload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+          os.write(savedPayload.getBytes(StandardCharsets.UTF_8));
         }
     }
 
@@ -367,15 +380,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
 
     // Forward the commit index header for READ_YOUR_WRITES bookmark tracking
-    final String commitIndex = conn.getHeaderField(com.arcadedb.remote.RemoteHttpComponent.HEADER_COMMIT_INDEX);
+    final String commitIndex = conn.getHeaderField(RemoteHttpComponent.HEADER_COMMIT_INDEX);
     if (commitIndex != null)
-      exchange.getResponseHeaders().put(
-          new io.undertow.util.HttpString(com.arcadedb.remote.RemoteHttpComponent.HEADER_COMMIT_INDEX), commitIndex);
+      exchange.getResponseHeaders().put(new HttpString(RemoteHttpComponent.HEADER_COMMIT_INDEX), commitIndex);
 
     try (final var in = status < 400 ? conn.getInputStream() : conn.getErrorStream()) {
       if (in != null) {
         final byte[] body = in.readAllBytes();
-        exchange.getResponseSender().send(java.nio.ByteBuffer.wrap(body));
+        exchange.getResponseSender().send(ByteBuffer.wrap(body));
       }
     } finally {
       conn.disconnect();
@@ -402,7 +414,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     }
     final ServerSecurityUser user = httpServer.getServer().getSecurity().getUser(forwardedUserValues.getFirst());
     if (user == null) {
-      sendErrorResponse(exchange, 401, "Unknown forwarded user: " + forwardedUserValues.getFirst(), null, null);
+      sendErrorResponse(exchange, 401, "Invalid forwarded authentication", null, null);
       return null;
     }
     return user;
