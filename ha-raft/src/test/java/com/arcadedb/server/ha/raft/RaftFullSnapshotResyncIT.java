@@ -66,14 +66,16 @@ class RaftFullSnapshotResyncIT extends BaseRaftHATest {
 
   @Override
   protected int getServerCount() {
-    return 2;
+    // 3 nodes so that majority (2) is still reachable when one replica is stopped
+    return 3;
   }
 
   @Test
   void replicaReceivesFullSnapshotAfterRestart() {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    final int replicaIndex = leaderIndex == 0 ? 1 : 0;
+    // Pick any non-leader replica to stop
+    final int replicaIndex = (leaderIndex + 1) % getServerCount();
 
     final var leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
 
