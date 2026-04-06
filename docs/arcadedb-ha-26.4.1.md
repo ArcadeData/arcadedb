@@ -21,11 +21,13 @@ This change is **transparent to users** - the HTTP API, database API, query lang
 
 ### Added (Ratis-based HA - ~2500 lines)
 - `RaftHAServer.java` - Ratis server lifecycle, gRPC transport, peer management
-- `ArcadeDBStateMachine.java` - Ratis state machine for WAL replication
+- `ArcadeDBStateMachine.java` - Ratis state machine for WAL replication with wait/notify index tracking
 - `RaftLogEntry.java` - binary serialization for Raft log entries
+- `RaftGroupCommitter.java` - group commit batching (configurable batch size) to amortize gRPC round-trip cost
+- `ClusterMonitor.java` - per-follower replication lag tracking with configurable warning threshold
 - `ReplicatedDatabase.java` - rewritten to use Ratis (same class name for API compatibility)
-- `HALog.java` - verbose logging utility (`arcadedb.ha.logVerbose=0/1/2/3`)
-- `SnapshotHttpHandler.java` - HTTP endpoint for database snapshot serving
+- `HALog.java` - verbose logging utility with cached config level (`arcadedb.ha.logVerbose=0/1/2/3`)
+- `SnapshotHttpHandler.java` - HTTP endpoint for database snapshot serving (cluster token + Basic auth)
 - Studio Cluster dashboard (Overview/Metrics/Management tabs)
 
 ## Advantages of Using Apache Ratis
@@ -98,12 +100,16 @@ ReplicatedDatabase (wraps LocalDatabase)
 
 ### Key Design Decisions
 - **Peer IDs**: `host_port` format (underscore for JMX compatibility, displayed as `host:port` in UI)
-- **Leader commits first**: `commit2ndPhase()` locally, then replicates WAL via Ratis
+- **Leader commits first**: `commit2ndPhase()` locally, then replicates WAL via Ratis. On replication failure, the exception propagates to the client (retry). Followers eventually catch up via Ratis log replay or snapshot installation.
 - **Follower skips apply**: `applyTransaction()` on leader is a no-op (already committed)
 - **Command routing**: `isIdempotent() && !isDDL()` determines local vs forwarded execution
-- **Snapshot mode**: Notification mode (`install.snapshot.enabled=false`) - follower downloads ZIP from leader HTTP
+- **Snapshot mode**: Notification mode (`install.snapshot.enabled=false`) - follower downloads ZIP from leader HTTP, authenticated via cluster token
 - **WAL-only replication**: Only page diffs replicate, not full records or SQL commands
 - **No WAL in snapshots**: Snapshot ZIP contains data files + schema config only
+- **Group commit**: Multiple concurrent transactions are batched into fewer Raft round-trips via `RaftGroupCommitter`, dramatically improving throughput under concurrent load
+- **Wait/notify for read consistency**: `waitForAppliedIndex()` uses `Object.wait()/notifyAll()` signaled by `applyTransaction()`, eliminating polling latency for READ_YOUR_WRITES consistency
+- **Cluster token**: SHA-256 derived from cluster name + root password (auto-computed). Can be overridden via `arcadedb.ha.clusterToken` for hardened deployments
+- **Inter-node auth**: Cluster token (`X-ArcadeDB-Cluster-Token` header) used for HTTP proxy forwarding and snapshot downloads, avoiding credential transmission between nodes
 
 ### Storage Layout
 ```
@@ -137,8 +143,36 @@ arcadedb.ha.quorumTimeout=10000
 # LINEARIZABLE: wait for all committed writes to be applied
 arcadedb.ha.readConsistency=read_your_writes
 
+# Cluster token for inter-node auth (auto-derived from cluster name + root password if empty)
+arcadedb.ha.clusterToken=
+
 # Verbose logging for debugging
 arcadedb.ha.logVerbose=0
+```
+
+### Ratis Tuning
+
+These settings control the underlying Raft consensus behavior. Defaults work well for LAN clusters; adjust for WAN or high-latency environments.
+
+```properties
+# Election timeouts (ms) - increase for high-latency WAN clusters
+arcadedb.ha.electionTimeoutMin=1500
+arcadedb.ha.electionTimeoutMax=3000
+
+# Snapshot: number of Raft log entries before auto-triggering a snapshot
+arcadedb.ha.snapshotThreshold=100000
+
+# Raft log segment max size
+arcadedb.ha.logSegmentSize=64MB
+
+# AppendEntries batch byte limit for follower replication
+arcadedb.ha.appendBufferSize=4MB
+
+# Group commit: max transactions batched in a single Raft round-trip
+arcadedb.ha.groupCommitBatchSize=500
+
+# Replication lag warning threshold (Raft log index gap). 0 = disabled
+arcadedb.ha.replicationLagWarning=1000
 ```
 
 ## Kubernetes Support
