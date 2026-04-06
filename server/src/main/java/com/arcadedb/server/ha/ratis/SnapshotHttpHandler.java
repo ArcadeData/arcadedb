@@ -95,8 +95,10 @@ public class SnapshotHttpHandler implements HttpHandler {
     LogManager.instance().log(this, Level.INFO, "Serving database snapshot for '%s'...", databaseName);
 
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
+    // Sanitize database name for Content-Disposition to prevent header injection
+    final String safeName = databaseName.replaceAll("[^a-zA-Z0-9._-]", "_");
     exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
-        "attachment; filename=\"" + databaseName + "-snapshot.zip\"");
+        "attachment; filename=\"" + safeName + "-snapshot.zip\"");
 
     exchange.startBlocking();
 

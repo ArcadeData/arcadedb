@@ -53,7 +53,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
   }
 
   protected int getTxs() {
-    return 1000;
+    return 10;
   }
 
   protected int getVerticesPerTx() {

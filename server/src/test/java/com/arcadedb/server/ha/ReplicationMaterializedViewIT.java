@@ -21,11 +21,13 @@ package com.arcadedb.server.ha;
 import com.arcadedb.database.Database;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -51,6 +53,8 @@ class ReplicationMaterializedViewIT extends ReplicationServerIT {
 
     // 1. Create source type on leader using Java API for synchronous replication
     databases[li].getSchema().createDocumentType("Metric");
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
 
     testOnAllServers((database) -> {
       assertThat(database.getSchema().existsType("Metric")).isTrue();
@@ -99,16 +103,17 @@ class ReplicationMaterializedViewIT extends ReplicationServerIT {
   }
 
   private void testOnAllServers(final Callable<String, Database> callback) {
-    schemaFiles.clear();
-    for (final Database database : databases) {
-      try {
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS).untilAsserted(() -> {
+      schemaFiles.clear();
+      for (final Database database : databases) {
         final String result = callback.call(database);
         schemaFiles.put(database.getDatabasePath(), result);
-      } catch (final Exception e) {
-        fail("", e);
       }
-    }
-    checkSchemaFilesAreTheSameOnAllServers();
+      checkSchemaFilesAreTheSameOnAllServers();
+    });
   }
 
   private String isInSchemaFile(final Database database, final String match) {

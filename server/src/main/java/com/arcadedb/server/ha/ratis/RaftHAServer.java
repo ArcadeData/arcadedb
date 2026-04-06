@@ -351,8 +351,10 @@ public class RaftHAServer {
             HALog.log(this, HALog.BASIC, "Leaving cluster: transferring leadership to %s before removal", peer.getId());
             try {
               transferLeadership(peer.getId().toString(), 10_000);
-              // Wait briefly for the transfer to take effect
-              Thread.sleep(1000);
+              // Poll until leadership is transferred or timeout
+              final long deadline = System.currentTimeMillis() + 5_000;
+              while (isLeader() && System.currentTimeMillis() < deadline)
+                Thread.sleep(100);
             } catch (final Exception e) {
               HALog.log(this, HALog.BASIC, "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
             }

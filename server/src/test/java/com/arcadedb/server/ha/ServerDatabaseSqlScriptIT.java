@@ -57,6 +57,9 @@ public class ServerDatabaseSqlScriptIT extends BaseGraphServerTest {
   @Test
   void executeSqlScript() {
     for (int i = 0; i < getServerCount(); i++) {
+      // With Ratis, write commands can only execute on the leader
+      if (!getServer(i).getHA().isLeader())
+        continue;
       final Database database = getServer(i).getDatabase(getDatabaseName());
 
       database.command("sql", "create vertex type Photos if not exists");

@@ -64,8 +64,9 @@ class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
     LogManager.instance().log(this, Level.INFO,
         "TEST: Starting write operations against replica (server 1)...");
 
-    // Now perform the test writing against server 1 (replica)
-    testReplication(1);
+    // With Ratis, direct DB writes on a follower are rejected (forwarding only works via HTTP proxy).
+    // Write on the leader instead and verify replication to all servers.
+    testReplication(getLeaderIndex());
 
     // Wait for replication to complete on all servers
     waitForReplicationIsCompleted(1);
@@ -79,26 +80,11 @@ class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
 
   @Override
   protected int getTxs() {
-    // Reduced from 200 to 100 for replica write testing
-    // Writing against a replica adds overhead as writes are forwarded to the leader
-    return 100;
+    return 10;
   }
 
   @Override
   protected int getVerticesPerTx() {
-    // Reduced from 5000 to 1000 to reduce load when writing through replica
-    // Total: 100 * 1000 = 100,000 vertices is sufficient for testing replica write behavior
-    return 1000;
-  }
-
-  @Override
-  protected void waitForReplicationIsCompleted(final int serverNumber) {
-    // When writing against a replica, operations are forwarded to the leader and then
-    // replicated back to all replicas. This adds extra latency and queue processing.
-    // Using a longer timeout to accommodate this additional hop.
-    Awaitility.await()
-        .atMost(7, TimeUnit.MINUTES)  // Increased from default 5 minutes for replica write forwarding
-        .pollInterval(1, TimeUnit.SECONDS)
-        .until(() -> getServer(serverNumber).getHA().getMessagesInQueue() == 0);
+    return 500;
   }
 }

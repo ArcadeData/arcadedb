@@ -155,6 +155,10 @@ public class RaftLogEntry {
     return result;
   }
 
+  // Max allowed sizes for deserialized buffers to prevent OOM from corrupted entries
+  private static final int MAX_UNCOMPRESSED_SIZE = 512 * 1024 * 1024; // 512 MB
+  private static final int MAX_DELTA_SIZE        = 1_000_000;
+
   // -- Deserialization --
 
   /** Parsed transaction entry ready for application. */
@@ -179,9 +183,13 @@ public class RaftLogEntry {
     final String databaseName = stream.getString();
 
     final int uncompressedLength = stream.getInt();
+    if (uncompressedLength < 0 || uncompressedLength > MAX_UNCOMPRESSED_SIZE)
+      throw new IllegalArgumentException("Invalid WAL uncompressed length: " + uncompressedLength);
     final Binary walBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), uncompressedLength);
 
     final int deltaSize = stream.getInt();
+    if (deltaSize < 0 || deltaSize > MAX_DELTA_SIZE)
+      throw new IllegalArgumentException("Invalid bucket delta size: " + deltaSize);
     final Map<Integer, Integer> bucketRecordDelta = new HashMap<>(deltaSize);
     for (int i = 0; i < deltaSize; i++)
       bucketRecordDelta.put(stream.getInt(), stream.getInt());
@@ -207,9 +215,13 @@ public class RaftLogEntry {
     final String databaseName = stream.getString();
 
     final int uncompressedLength = stream.getInt();
+    if (uncompressedLength < 0 || uncompressedLength > MAX_UNCOMPRESSED_SIZE)
+      throw new IllegalArgumentException("Invalid WAL uncompressed length: " + uncompressedLength);
     final Binary walBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), uncompressedLength);
 
     final int deltaSize = stream.getInt();
+    if (deltaSize < 0 || deltaSize > MAX_DELTA_SIZE)
+      throw new IllegalArgumentException("Invalid bucket delta size: " + deltaSize);
     final Map<Integer, Integer> bucketRecordDelta = new HashMap<>(deltaSize);
     for (int i = 0; i < deltaSize; i++)
       bucketRecordDelta.put(stream.getInt(), stream.getInt());

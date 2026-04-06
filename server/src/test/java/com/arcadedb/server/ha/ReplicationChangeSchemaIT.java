@@ -30,7 +30,10 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.TimeUnit;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
@@ -71,6 +74,8 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // CREATE NEW PROPERTY
     type1.createProperty("nameNotFoundInDictionary", Type.STRING);
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
     testOnAllServers((database) -> isInSchemaFile(database, "nameNotFoundInDictionary"));
 
     // CREATE NEW BUCKET
@@ -146,17 +151,18 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
   }
 
   private void testOnAllServers(final Callable<String, Database> callback) {
-    // CREATE NEW TYPE
-    schemaFiles.clear();
-    for (final Database database : databases) {
-      try {
+    // Wait for replication and schema propagation to all servers
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS).untilAsserted(() -> {
+      schemaFiles.clear();
+      for (final Database database : databases) {
         final String result = callback.call(database);
         schemaFiles.put(database.getDatabasePath(), result);
-      } catch (final Exception e) {
-        fail("", e);
       }
-    }
-    checkSchemaFilesAreTheSameOnAllServers();
+      checkSchemaFilesAreTheSameOnAllServers();
+    });
   }
 
   private String isInSchemaFile(final Database database, final String match) {

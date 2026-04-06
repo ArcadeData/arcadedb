@@ -91,7 +91,8 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
     // The important thing is that it doesn't throw an exception
 
     // WAIT FOR REPLICATION TO COMPLETE
-    Thread.sleep(2000);
+    for (int w = 0; w < getServerCount(); w++)
+      waitForReplicationIsCompleted(w);
 
     // VERIFY THAT COMPACTION WAS REPLICATED BY CHECKING INDEX CONSISTENCY ON ALL SERVERS
     testEachServer((serverIndex) -> {
@@ -161,7 +162,8 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // WAIT FOR REPLICATION TO COMPLETE
     LogManager.instance().log(this, Level.FINE, "Waiting for replication...");
-    Thread.sleep(2000);
+    for (int w = 0; w < getServerCount(); w++)
+      waitForReplicationIsCompleted(w);
 
     // VERIFY THAT VECTOR INDEX DEFINITION IS REPLICATED TO ALL SERVERS
     final String actualIndexName = vectorIndex.getName();
@@ -244,7 +246,8 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // WAIT FOR REPLICATION TO COMPLETE
     LogManager.instance().log(this, Level.FINE, "Waiting for replication...");
-    Thread.sleep(2000);
+    for (int w = 0; w < getServerCount(); w++)
+      waitForReplicationIsCompleted(w);
 
     // VERIFY THAT VECTOR INDEX DEFINITION IS REPLICATED TO ALL SERVERS
     final String actualIndexName = vectorIndex.getName();
@@ -307,7 +310,8 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
     });
 
     // WAIT FOR REPLICATION
-    Thread.sleep(2000);
+    for (int w = 0; w < getServerCount(); w++)
+      waitForReplicationIsCompleted(w);
 
     // VERIFY CONSISTENCY ON ALL SERVERS
     testEachServer((serverIndex) -> {

@@ -43,10 +43,12 @@ import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.nio.file.Path;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Path;
 import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -379,7 +381,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
           LogManager.instance().log(this, Level.FINE, "Extracting snapshot file: %s", targetFile.getName());
 
           try (final FileOutputStream fos = new FileOutputStream(targetFile)) {
-            zipIn.transferTo(fos);
+            copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName()); // 10 GB per entry
           }
           zipIn.closeEntry();
         }
@@ -450,6 +452,20 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       server.lifecycleEvent(type, data);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error firing %s event: %s", e, type, e.getMessage());
+    }
+  }
+
+  private static void copyWithLimit(final InputStream in, final OutputStream out, final long maxBytes,
+      final String entryName) throws IOException {
+    final byte[] buf = new byte[8192];
+    long total = 0;
+    int read;
+    while ((read = in.read(buf)) != -1) {
+      total += read;
+      if (total > maxBytes)
+        throw new ReplicationException(
+            "Snapshot entry '" + entryName + "' exceeds size limit of " + maxBytes + " bytes");
+      out.write(buf, 0, read);
     }
   }
 

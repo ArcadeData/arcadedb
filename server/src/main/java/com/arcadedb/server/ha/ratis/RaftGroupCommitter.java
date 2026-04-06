@@ -47,9 +47,10 @@ import java.util.logging.Level;
  */
 public class RaftGroupCommitter {
 
+  private static final int                             MAX_QUEUE_SIZE = 10_000;
   private final int                                    maxBatchSize;
   private final RaftHAServer                           haServer;
-  private final LinkedBlockingQueue<PendingEntry>      queue      = new LinkedBlockingQueue<>();
+  private final LinkedBlockingQueue<PendingEntry>      queue      = new LinkedBlockingQueue<>(MAX_QUEUE_SIZE);
   private final Thread                                 flusher;
   private volatile boolean                             running    = true;
 
@@ -67,7 +68,9 @@ public class RaftGroupCommitter {
    */
   public void submitAndWait(final byte[] entry, final long timeoutMs) {
     final PendingEntry pending = new PendingEntry(entry);
-    queue.add(pending);
+    if (!queue.offer(pending))
+      throw new QuorumNotReachedException(
+          "Replication queue is full (" + MAX_QUEUE_SIZE + " entries). Server is overloaded or cluster is unreachable");
 
     try {
       final Exception error = pending.future.get(timeoutMs, TimeUnit.MILLISECONDS);
