@@ -102,7 +102,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
    * Tests that LSM Vector indexes are created and replicated to all replicas.
    * Vector index entry counts must match across all servers after replication completes.
    */
-  @Disabled("Fails with TransactionException 'Error sending schema changes via Raft' caused by AlreadyClosedException on the Raft client when creating the vertex type; schema change replication for LSMVectorIndexBuilder not yet supported")
+  @Disabled("General schema replication works, but LSMVectorIndexBuilder causes AlreadyClosedException on the Raft client during vector index creation - likely an async operation lifecycle issue in the builder")
   @Test
   void lsmVectorReplication() throws Exception {
     final int leaderIndex = findLeaderIndex();
