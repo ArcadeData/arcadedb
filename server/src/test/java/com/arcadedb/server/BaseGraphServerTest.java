@@ -32,7 +32,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.ha.ratis.RaftHAServer;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
@@ -97,6 +97,9 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     LogManager.instance().log(this, Level.FINE, "Starting test %s...", getClass().getName());
 
     deleteDatabaseFolders();
+
+    // Delete stale security config so it gets recreated with the test password
+    new File("./target/config/server-users.jsonl").delete();
 
     prepareDatabase();
 
@@ -191,10 +194,18 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected void waitForReplicationIsCompleted(final int serverNumber) {
-    Awaitility.await()
-        .atMost(5, TimeUnit.MINUTES)
-        .pollInterval(1, TimeUnit.SECONDS)
-        .until(() -> getServer(serverNumber).getHA().getMessagesInQueue() == 0);
+    // With Ratis, replication is handled internally. Wait for followers to apply up to the leader's commit index.
+    final ArcadeDBServer leader = getLeaderServer();
+    if (leader == null || leader.getHA() == null)
+      return;
+
+    final long leaderCommit = leader.getHA().getCommitIndex();
+    for (int i = 0; i < getServerCount(); i++) {
+      final ArcadeDBServer s = getServer(i);
+      if (s != leader && s.isStarted() && s.getHA() != null)
+        Awaitility.await().atMost(30, TimeUnit.SECONDS)
+            .until(() -> s.getHA().getLastAppliedIndex() >= leaderCommit);
+    }
   }
 
   @AfterEach
@@ -217,26 +228,9 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       }
 
       if (anyServerRestarted) {
-        // WAIT A BIT FOR THE SERVER TO BE SYNCHRONIZED
+        // Wait for Ratis leader to be re-elected after server restart
         testLog("Wait a bit until realignment is completed");
-        Awaitility.await()
-            .atMost(30, TimeUnit.SECONDS)
-            .pollInterval(500, TimeUnit.MILLISECONDS)
-            .ignoreExceptions()
-            .until(() -> {
-              // Check if all servers are synchronized
-              for (int i = 0; i < servers.length; i++) {
-                if (servers[i] != null && servers[i].isStarted()) {
-                  if (servers[i].getHA() != null && !servers[i].getHA().isLeader()) {
-                    // For replicas, check if they're aligned
-                    if (servers[i].getHA().getMessagesInQueue() > 0) {
-                      return false;
-                    }
-                  }
-                }
-              }
-              return true;
-            });
+        waitAllReplicasAreConnected();
       }
     } finally {
       try {
@@ -307,10 +301,12 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, getServerAddresses());
       config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "localhost");
+      config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS, String.valueOf(2424 + i));
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
+      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(2480 + i));
       config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
-      config.setValue(GlobalConfiguration.HA_SERVER_ROLE, getServerRole(i));
-      //config.setValue(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT, 2000);
+      config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "test-cluster");
+      config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
 
       onServerConfiguration(config);
 
@@ -323,10 +319,13 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     }
 
     waitAllReplicasAreConnected();
+
+    // Give Ratis state machine a moment to settle after leader election
+    try { Thread.sleep(2000); } catch (final InterruptedException e) { Thread.currentThread().interrupt(); }
   }
 
-  protected HAServer.SERVER_ROLE getServerRole(final int serverIndex) {
-    return serverIndex == 0 ? HAServer.SERVER_ROLE.ANY : HAServer.SERVER_ROLE.REPLICA;
+  protected String getServerRole(final int serverIndex) {
+    return "any";
   }
 
   protected void waitAllReplicasAreConnected() {
@@ -339,55 +338,23 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
           .atMost(30, TimeUnit.SECONDS)
           .pollInterval(500, TimeUnit.MILLISECONDS)
           .until(() -> {
-            for (int i = 0; i < serverCount; ++i) {
-              if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
-                // ONLY FOR CANDIDATE LEADERS
-                if (servers[i].getHA() != null) {
-                  if (servers[i].getHA().isLeader()) {
-                    final int onlineReplicas = servers[i].getHA().getOnlineReplicas();
-                    if (onlineReplicas >= serverCount - 1) {
-                      // ALL CONNECTED
-                      serversSynchronized = true;
-                      LogManager.instance().log(this, Level.WARNING, "All %d replicas are online", onlineReplicas);
-                      return true;
-                    }
-                  }
-                }
+            for (int i = 0; i < serverCount; ++i)
+              if (servers[i].getHA() != null && servers[i].getHA().isLeader()) {
+                serversSynchronized = true;
+                LogManager.instance().log(this, Level.WARNING, "Ratis leader elected: %s", servers[i].getServerName());
+                return true;
               }
-            }
             return false;
           });
-    } catch (ConditionTimeoutException e) {
-      int lastTotalConnectedReplica = 0;
-      for (int i = 0; i < serverCount; ++i) {
-        if (getServerRole(i) == HAServer.SERVER_ROLE.ANY && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
-          lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
-          break;
-        }
-      }
-      LogManager.instance()
-          .log(this, Level.SEVERE, "Timeout on waiting for all servers to get online %d < %d", 1 + lastTotalConnectedReplica,
-              serverCount);
+    } catch (final ConditionTimeoutException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Timeout waiting for Ratis leader election");
     }
   }
 
   protected boolean areAllReplicasAreConnected() {
-    final int serverCount = getServerCount();
-
-    int lastTotalConnectedReplica;
-
-    for (int i = 0; i < serverCount; ++i) {
-      if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
-        // ONLY FOR CANDIDATE LEADERS
-        if (servers[i].getHA() != null) {
-          if (servers[i].getHA().isLeader()) {
-            lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
-            if (lastTotalConnectedReplica >= serverCount - 1)
-              return true;
-          }
-        }
-      }
-    }
+    for (int i = 0; i < getServerCount(); ++i)
+      if (servers[i].getHA() != null && servers[i].getHA().isLeader())
+        return true;
     return false;
   }
 
@@ -515,12 +482,21 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   protected ArcadeDBServer getLeaderServer() {
     for (int i = 0; i < getServerCount(); ++i)
-      if (getServer(i).isStarted()) {
-        final ArcadeDBServer onlineServer = getServer(i);
-        final String leaderName = onlineServer.getHA().getLeaderName();
-        return getServer(leaderName);
-      }
+      if (getServer(i).isStarted() && getServer(i).getHA() != null && getServer(i).getHA().isLeader())
+        return getServer(i);
     return null;
+  }
+
+  protected int getServerIndex(final ArcadeDBServer server) {
+    for (int i = 0; i < getServerCount(); ++i)
+      if (getServer(i) == server)
+        return i;
+    return -1;
+  }
+
+  protected int getLeaderIndex() {
+    final ArcadeDBServer leader = getLeaderServer();
+    return leader != null ? getServerIndex(leader) : 0;
   }
 
   protected int[] getServerToCheck() {
@@ -543,6 +519,9 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
           for (final String dbName : getServer(i).getDatabaseNames())
             if (getServer(i).existsDatabase(dbName))
               ((DatabaseInternal) getServer(i).getDatabase(dbName)).getEmbedded().drop();
+
+    // Clean up Ratis storage
+    FileUtils.deleteRecursively(new File("./target/ratis-storage"));
 
     TestServerHelper.checkActiveDatabases(dropDatabasesAtTheEnd());
     TestServerHelper.deleteDatabaseFolders(getServerCount());
@@ -623,7 +602,15 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       return response;
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on connecting to server %s", e, "http://127.0.0.1:248" + serverIndex);
+      // Read error response body for diagnostics
+      try {
+        final var errorStream = initialConnection.getErrorStream();
+        if (errorStream != null) {
+          final String errorBody = new String(errorStream.readAllBytes());
+          System.err.println("HTTP ERROR " + initialConnection.getResponseCode() + " from http://127.0.0.1:248"
+              + serverIndex + ": " + errorBody);
+        }
+      } catch (final Exception ignored) {}
       throw e;
     } finally {
       initialConnection.disconnect();

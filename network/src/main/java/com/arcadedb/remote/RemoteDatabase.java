@@ -69,6 +69,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   private       String                               sessionId;
   private       Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel =
       Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private       Database.READ_CONSISTENCY            readConsistency;
+  private final java.util.concurrent.atomic.AtomicLong lastCommitIndex          = new java.util.concurrent.atomic.AtomicLong(-1);
   private final RemoteSchema                         schema                    = new RemoteSchema(this);
   private       boolean                              open                      = true;
   private       RemoteTransactionExplicitLock        explicitLock;
@@ -88,6 +90,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (ClassNotFoundException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error creating BinarySerializer", e);
     }
+    // Initialize read consistency from configuration
+    final String rc = configuration.getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY);
+    if (rc != null)
+      try { this.readConsistency = Database.READ_CONSISTENCY.valueOf(rc.toUpperCase()); } catch (final IllegalArgumentException ignored) {}
   }
 
   @Override
@@ -538,6 +544,23 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     this.transactionIsolationLevel = transactionIsolationLevel;
   }
 
+  public Database.READ_CONSISTENCY getReadConsistency() {
+    return readConsistency;
+  }
+
+  public void setReadConsistency(final Database.READ_CONSISTENCY readConsistency) {
+    this.readConsistency = readConsistency;
+  }
+
+  public long getLastCommitIndex() {
+    return lastCommitIndex.get();
+  }
+
+  @Override
+  protected void updateLastCommitIndex(final long commitIndex) {
+    lastCommitIndex.updateAndGet(current -> Math.max(current, commitIndex));
+  }
+
   @Override
   public String toString() {
     return databaseName;
@@ -564,6 +587,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     if (getSessionId() != null)
       builder.header(ARCADEDB_SESSION_ID, getSessionId());
+
+    // Add read consistency headers for HA follower reads
+    if (readConsistency != null)
+      builder.header(HEADER_READ_CONSISTENCY, readConsistency.name());
+
+    if (readConsistency == Database.READ_CONSISTENCY.READ_YOUR_WRITES
+        || readConsistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
+      final long bookmark = lastCommitIndex.get();
+      if (bookmark >= 0)
+        builder.header(HEADER_READ_AFTER, Long.toString(bookmark));
+    }
 
     return builder;
   }

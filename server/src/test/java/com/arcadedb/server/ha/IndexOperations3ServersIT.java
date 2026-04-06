@@ -52,7 +52,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
 
   @Test
   void rebuildIndex() throws Exception {
-    final Database database = getServerDatabase(0, getDatabaseName());
+    final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
     v.createProperty("id", Long.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
@@ -83,7 +83,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
 
   @Test
   void createIndexLater() throws Exception {
-    final Database database = getServerDatabase(0, getDatabaseName());
+    final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
 
     LogManager.instance().log(this, Level.FINE, "Inserting %d records without indexes first...", TOTAL_RECORDS);
@@ -115,7 +115,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
 
   @Test
   void createIndexLaterDistributed() throws Exception {
-    final Database database = getServerDatabase(0, getDatabaseName());
+    final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
 
     testEachServer((serverIndex) -> {
@@ -150,7 +150,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
 
   @Test
   void createIndexErrorDistributed() throws Exception {
-    final Database database = getServerDatabase(0, getDatabaseName());
+    final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
 
     testEachServer((serverIndex) -> {

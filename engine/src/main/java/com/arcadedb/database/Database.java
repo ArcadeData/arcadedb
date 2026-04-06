@@ -43,6 +43,19 @@ public interface Database extends BasicDatabase {
     READ_COMMITTED, REPEATABLE_READ
   }
 
+  /**
+   * Read consistency levels for HA clusters. Controls whether reads on follower nodes
+   * wait for replication to catch up before executing.
+   */
+  enum READ_CONSISTENCY {
+    /** Read locally without waiting. May return slightly stale data on followers. */
+    EVENTUAL,
+    /** Wait until the follower has applied the client's last write before reading. Zero network overhead. */
+    READ_YOUR_WRITES,
+    /** Contact the leader to get the latest commit index, then wait for the follower to catch up. Sees all committed writes. */
+    LINEARIZABLE
+  }
+
   ContextConfiguration getConfiguration();
 
   ComponentFile.MODE getMode();

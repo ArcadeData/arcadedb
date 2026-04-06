@@ -62,7 +62,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
   @Test
   public void replication() throws Exception {
-    testReplication(0);
+    // With Ratis, the leader may not be server 0 - find the actual leader
+    testReplication(getLeaderIndex());
   }
 
   public void testReplication(final int serverId) {
@@ -109,8 +110,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
       if (counter % (total / 10) == 0) {
         LogManager.instance().log(this, Level.FINE, "TEST: - Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
-        if (isPrintingConfigurationAtEveryStep())
-          getLeaderServer().getHA().printClusterConfiguration();
+          // cluster config not available with Ratis
       }
     }
 

@@ -55,8 +55,12 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
         databases[i].commit();
     }
 
+    // With Ratis, the leader may not be server 0 - resolve dynamically
+    final int li = getLeaderIndex();
+    final int ri = li == 0 ? 1 : 0; // pick a replica that is not the leader
+
     // CREATE NEW TYPE
-    final VertexType type1 = databases[0].getSchema().createVertexType("RuntimeVertex0");
+    final VertexType type1 = databases[li].getSchema().createVertexType("RuntimeVertex0");
     for (int i = 0; i < getServerCount(); i++) {
       databases[i] = getServer(i).getDatabase(getDatabaseName());
       if (databases[i].isTransactionActive())
@@ -70,7 +74,7 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     testOnAllServers((database) -> isInSchemaFile(database, "nameNotFoundInDictionary"));
 
     // CREATE NEW BUCKET
-    final Bucket newBucket = databases[0].getSchema().createBucket("newBucket");
+    final Bucket newBucket = databases[li].getSchema().createBucket("newBucket");
     for (final Database database : databases)
       assertThat(database.getSchema().existsBucket("newBucket")).isTrue();
 
@@ -78,7 +82,7 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     testOnAllServers((database) -> isInSchemaFile(database, "newBucket"));
 
     // CHANGE SCHEMA FROM A REPLICA (ERROR EXPECTED)
-    assertThatThrownBy(() -> databases[1].getSchema().createVertexType("RuntimeVertex1"))
+    assertThatThrownBy(() -> databases[ri].getSchema().createVertexType("RuntimeVertex1"))
         .isInstanceOf(ServerIsNotTheLeaderException.class);
 
     testOnAllServers((database) -> isNotInSchemaFile(database, "RuntimeVertex1"));
@@ -89,23 +93,23 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // DROP NEW BUCKET
     try {
-      databases[0].getSchema().dropBucket("newBucket");
+      databases[li].getSchema().dropBucket("newBucket");
     } catch (final SchemaException e) {
       // EXPECTED
     }
 
-    databases[0].getSchema().getType("RuntimeVertex0").removeBucket(databases[0].getSchema().getBucketByName("newBucket"));
+    databases[li].getSchema().getType("RuntimeVertex0").removeBucket(databases[li].getSchema().getBucketByName("newBucket"));
     for (final Database database : databases)
       assertThat(database.getSchema().getType("RuntimeVertex0").hasBucket("newBucket")).isFalse();
 
-    databases[0].getSchema().dropBucket("newBucket");
+    databases[li].getSchema().dropBucket("newBucket");
     testOnAllServers((database) -> isNotInSchemaFile(database, "newBucket"));
 
     // DROP TYPE
-    databases[0].getSchema().dropType("RuntimeVertex0");
+    databases[li].getSchema().dropType("RuntimeVertex0");
     testOnAllServers((database) -> isNotInSchemaFile(database, "RuntimeVertex0"));
 
-    final VertexType indexedType = databases[0].getSchema().createVertexType("IndexedVertex0");
+    final VertexType indexedType = databases[li].getSchema().createVertexType("IndexedVertex0");
     testOnAllServers((database) -> isInSchemaFile(database, "IndexedVertex0"));
 
     // CREATE NEW PROPERTY
@@ -117,24 +121,24 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     testOnAllServers((database) -> isInSchemaFile(database, "\"indexes\":{\"IndexedVertex0_"));
 
-    databases[0].transaction(() -> {
+    databases[li].transaction(() -> {
       for (int i = 0; i < 10; i++)
-        databases[0].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
+        databases[li].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
     });
 
-    assertThatThrownBy(() -> databases[1]
+    assertThatThrownBy(() -> databases[ri]
         .transaction(() -> {
           for (int i = 0; i < 10; i++)
-            databases[1].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
+            databases[ri].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
         })
     ).isInstanceOf(TransactionException.class);
 
-    databases[0].getSchema().dropIndex(idx.getName());
+    databases[li].getSchema().dropIndex(idx.getName());
     testOnAllServers((database) -> isNotInSchemaFile(database, idx.getName()));
 
     // CREATE NEW TYPE IN TRANSACTION
-    databases[0].transaction(() -> assertThatCode(() ->
-            databases[0].getSchema().createVertexType("RuntimeVertexTx0")
+    databases[li].transaction(() -> assertThatCode(() ->
+            databases[li].getSchema().createVertexType("RuntimeVertexTx0")
         ).doesNotThrowAnyException()
     );
 

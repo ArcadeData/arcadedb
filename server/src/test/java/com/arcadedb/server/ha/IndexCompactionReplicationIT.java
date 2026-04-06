@@ -68,7 +68,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    */
   @Test
   void lsmTreeCompactionReplication() throws Exception {
-    final Database database = getServerDatabase(0, getDatabaseName());
+    final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
 
     // CREATE SCHEMA WITH INDEX
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
@@ -120,7 +120,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    */
   @Test
   void lsmVectorReplication() throws Exception {
-    final Database database = getServerDatabase(0, getDatabaseName());
+    final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
 
     // CREATE SCHEMA WITH VECTOR INDEX (use 1 bucket for simpler replication testing)
     final VertexType v = database.getSchema().buildVertexType().withName("Embedding").withTotalBuckets(1).create();
@@ -194,7 +194,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    */
   @Test
   void lsmVectorCompactionReplication() throws Exception {
-    final Database database = getServerDatabase(0, getDatabaseName());
+    final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
 
     // CREATE SCHEMA WITH VECTOR INDEX (use 1 bucket for simpler replication testing)
     final VertexType v = database.getSchema().buildVertexType().withName("Embedding").withTotalBuckets(1).create();
@@ -274,7 +274,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    */
   @Test
   void compactionReplicationWithConcurrentWrites() throws Exception {
-    final Database database = getServerDatabase(0, getDatabaseName());
+    final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
 
     // CREATE SCHEMA WITH INDEX
     final VertexType v = database.getSchema().buildVertexType().withName("Item").withTotalBuckets(3).create();

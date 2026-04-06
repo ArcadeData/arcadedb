@@ -53,8 +53,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected String getServerRole(int serverIndex) {
+    return "any";
   }
 
   @Test
@@ -205,8 +205,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
           }
         }
 
-        if (isPrintingConfigurationAtEveryStep())
-          getLeaderServer().getHA().printClusterConfiguration();
+        // Cluster configuration printing not available with Ratis HA
 
         LogManager.instance().flush();
       }

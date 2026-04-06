@@ -38,8 +38,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
-import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
+import com.arcadedb.server.ha.ratis.RaftHAServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
@@ -88,7 +88,7 @@ public class ArcadeDBServer {
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
-  private             HAServer                              haServer;
+  private             RaftHAServer                          raftHAServer;
   private             ServerSecurity                        security;
   private             HttpServer                            httpServer;
   private             MCPConfiguration                      mcpConfiguration;
@@ -176,6 +176,10 @@ public class ArcadeDBServer {
 
     createDirectories();
 
+    // Initialize Ratis HA early (before loadDatabases) so databases get wrapped as ReplicatedDatabase.
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+      raftHAServer = new RaftHAServer(this, configuration);
+
     loadDatabases();
 
     security.loadUsers();
@@ -195,10 +199,9 @@ public class ArcadeDBServer {
 
     httpServer.startService();
 
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-      haServer = new HAServer(this, configuration);
-      haServer.startService();
-    }
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+      // RaftHAServer was already created before loadDatabases(); now start the Raft consensus service
+      raftHAServer.startService();
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
 
@@ -323,8 +326,8 @@ public class ArcadeDBServer {
     if (pluginManager != null)
       pluginManager.stopPlugins();
 
-    if (haServer != null)
-      CodeUtils.executeIgnoringExceptions(haServer::stopService, "Error on stopping HA service", false);
+    if (raftHAServer != null)
+      CodeUtils.executeIgnoringExceptions(raftHAServer::stopService, "Error on stopping Ratis HA service", false);
 
     if (httpServer != null)
       CodeUtils.executeIgnoringExceptions(httpServer::stopService, "Error on stopping HTTP service", false);
@@ -441,8 +444,19 @@ public class ArcadeDBServer {
     return hostAddress;
   }
 
-  public HAServer getHA() {
-    return haServer;
+  /**
+   * Returns the Ratis HA server, or null if HA is not enabled.
+   */
+  public RaftHAServer getHA() {
+    return raftHAServer;
+  }
+
+  /**
+   * @deprecated Use {@link #getHA()} instead.
+   */
+  @Deprecated
+  public RaftHAServer getRaftHA() {
+    return raftHAServer;
   }
 
   public ServerSecurity getSecurity() {

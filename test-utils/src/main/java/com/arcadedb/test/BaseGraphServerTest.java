@@ -33,7 +33,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.ha.ratis.RaftHAServer;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
@@ -191,10 +191,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected void waitForReplicationIsCompleted(final int serverNumber) {
-    Awaitility.await()
-        .atMost(5, TimeUnit.MINUTES)
-        .pollInterval(1, TimeUnit.SECONDS)
-        .until(() -> getServer(serverNumber).getHA().getMessagesInQueue() == 0);
+    // With Ratis, replication is handled internally. Wait briefly for state machine application.
+    try { Thread.sleep(1000); } catch (final InterruptedException e) { Thread.currentThread().interrupt(); }
   }
 
   @AfterEach
@@ -308,6 +306,10 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, getServerAddresses());
       config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "localhost");
+      config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS, String.valueOf(2424 + i));
+      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(2480 + i));
+      config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "test-cluster");
+      config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
       config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
       config.setValue(GlobalConfiguration.HA_SERVER_ROLE, getServerRole(i));
@@ -326,8 +328,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     waitAllReplicasAreConnected();
   }
 
-  protected HAServer.SERVER_ROLE getServerRole(final int serverIndex) {
-    return serverIndex == 0 ? HAServer.SERVER_ROLE.ANY : HAServer.SERVER_ROLE.REPLICA;
+  protected String getServerRole(final int serverIndex) {
+    return "any";
   }
 
   protected void waitAllReplicasAreConnected() {
@@ -341,7 +343,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
           .pollInterval(500, TimeUnit.MILLISECONDS)
           .until(() -> {
             for (int i = 0; i < serverCount; ++i) {
-              if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
+              if (getServerRole(i) == "any") {
                 // ONLY FOR CANDIDATE LEADERS
                 if (servers[i].getHA() != null) {
                   if (servers[i].getHA().isLeader()) {
@@ -361,7 +363,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     } catch (ConditionTimeoutException e) {
       int lastTotalConnectedReplica = 0;
       for (int i = 0; i < serverCount; ++i) {
-        if (getServerRole(i) == HAServer.SERVER_ROLE.ANY && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
+        if (getServerRole(i) == "any" && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
           lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
           break;
         }
@@ -378,7 +380,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     int lastTotalConnectedReplica;
 
     for (int i = 0; i < serverCount; ++i) {
-      if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
+      if (getServerRole(i) == "any") {
         // ONLY FOR CANDIDATE LEADERS
         if (servers[i].getHA() != null) {
           if (servers[i].getHA().isLeader()) {
@@ -518,7 +520,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     for (int i = 0; i < getServerCount(); ++i)
       if (getServer(i).isStarted()) {
         final ArcadeDBServer onlineServer = getServer(i);
-        final String leaderName = onlineServer.getHA().getLeaderName();
+        final String leaderName = onlineServer.getHA() != null && onlineServer.getHA().isLeader() ? onlineServer.getServerName() : "";
         return getServer(leaderName);
       }
     return null;

@@ -35,11 +35,7 @@ import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.backup.DatabaseBackupConfig;
-import com.arcadedb.server.ha.HAServer;
-import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
-import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
-import com.arcadedb.server.ha.ReplicatedDatabase;
-import com.arcadedb.server.ha.message.ServerShutdownRequest;
+import com.arcadedb.server.ha.ratis.RaftHAServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -50,6 +46,7 @@ import io.undertow.util.HttpString;
 import io.undertow.util.StatusCodes;
 
 import java.io.*;
+import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.rmi.*;
@@ -81,6 +78,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String RESTORE_DATABASE     = "restore database";
   private static final String IMPORT_DATABASE      = "import database";
   private static final String PROFILER             = "profiler";
+  private static final String HA_ADD_PEER          = "ha add peer";
+  private static final String HA_REMOVE_PEER       = "ha remove peer";
+  private static final String HA_TRANSFER_LEADER   = "ha transfer leader";
+  private static final String HA_VERIFY_DATABASE   = "ha verify database";
+  private static final String HA_STEP_DOWN        = "ha step down";
+  private static final String HA_LEAVE            = "ha leave";
 
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -149,6 +152,18 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return importDatabase(extractTarget(command, IMPORT_DATABASE), exchange);
     else if (command_lc.startsWith(PROFILER))
       return handleProfilerCommand(extractTarget(command, PROFILER));
+    else if (command_lc.startsWith(HA_ADD_PEER))
+      return haAddPeer(extractTarget(command, HA_ADD_PEER), response);
+    else if (command_lc.startsWith(HA_REMOVE_PEER))
+      return haRemovePeer(extractTarget(command, HA_REMOVE_PEER), response);
+    else if (command_lc.startsWith(HA_TRANSFER_LEADER))
+      return haTransferLeader(extractTarget(command, HA_TRANSFER_LEADER), response);
+    else if (command_lc.startsWith(HA_VERIFY_DATABASE))
+      return haVerifyDatabase(extractTarget(command, HA_VERIFY_DATABASE), response);
+    else if (command_lc.equals(HA_STEP_DOWN))
+      return haStepDown(response);
+    else if (command_lc.equals(HA_LEAVE))
+      return haLeave(response);
     else {
       Metrics.counter("http.server-command.invalid").increment();
 
@@ -193,16 +208,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
           System.exit(0);
         }
       }, 1000);
-    } else {
-      final HAServer ha = getHA();
-      final Leader2ReplicaNetworkExecutor replica = ha.getReplica(serverName);
-      if (replica == null)
-        throw new ServerException("Cannot contact server '" + serverName + "' from the current server");
-
-      final Binary buffer = new Binary();
-      ha.getMessageFactory().serializeCommand(new ServerShutdownRequest(), buffer, -1);
-      replica.sendMessage(buffer);
-    }
+    } else
+      throw new ServerException(
+          "Remote server shutdown via HA is not supported. Use the HTTP API on server '" + serverName + "' directly");
   }
 
   private void createDatabase(final String databaseName) {
@@ -216,10 +224,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-      final ReplicatedDatabase replicatedDatabase = (ReplicatedDatabase) db.getWrappedDatabaseInstance();
-      replicatedDatabase.createInReplicas();
-    }
+    // In Ratis HA mode, new databases are replicated via the Raft state machine
   }
 
   /**
@@ -492,27 +497,17 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private boolean connectCluster(final String serverAddress, final HttpServerExchange exchange) {
-    final HAServer ha = getHA();
-
     Metrics.counter("http.connect-cluster").increment();
-
-    return ha.connectToLeader(serverAddress, exception -> {
-      exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
-      exchange.getResponseSender().send("{ \"error\" : \"" + exception.getMessage() + "\"}");
-      return null;
-    });
+    // With Ratis, cluster membership is managed via 'ha add peer' / 'ha remove peer' commands
+    throw new IllegalArgumentException(
+        "Use 'ha add peer <id> <address>' to manage cluster membership with Ratis HA");
   }
 
   private void disconnectCluster() {
     Metrics.counter("http.server-disconnect").increment();
-
-    final HAServer ha = getHA();
-
-    final Replica2LeaderNetworkExecutor leader = ha.getLeader();
-    if (leader != null)
-      leader.close();
-    else
-      ha.disconnectAllReplicas();
+    // With Ratis, the server can be removed via 'ha remove peer'
+    throw new IllegalArgumentException(
+        "Use 'ha remove peer <id>' to manage cluster membership with Ratis HA");
   }
 
   private void setDatabaseSetting(final String triple) throws IOException {
@@ -871,15 +866,260 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     return null;
   }
 
-  private void checkServerIsLeaderIfInHA() {
-    final HAServer ha = httpServer.getServer().getHA();
-    if (ha != null && !ha.isLeader())
-      // NOT THE LEADER
-      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
+  private ExecutionResponse haAddPeer(final String target, final JSONObject response) {
+    final var raftHA = httpServer.getServer().getRaftHA();
+    if (raftHA == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
+
+    // Format: "peerId address" e.g. "localhost:2426 localhost:2426"
+    final String[] parts = target.split("\\s+");
+    if (parts.length < 2)
+      return new ExecutionResponse(400, "{ \"error\" : \"Usage: ha add peer <peerId> <address>\"}");
+
+    raftHA.addPeer(parts[0], parts[1]);
+    response.put("result", "Peer " + parts[0] + " added");
+    return new ExecutionResponse(200, response.toString());
   }
 
-  private HAServer getHA() {
-    final HAServer ha = httpServer.getServer().getHA();
+  private ExecutionResponse haRemovePeer(final String target, final JSONObject response) {
+    final var raftHA = httpServer.getServer().getRaftHA();
+    if (raftHA == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
+
+    if (target.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Usage: ha remove peer <peerId>\"}");
+
+    raftHA.removePeer(target.trim());
+    response.put("result", "Peer " + target.trim() + " removed");
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  private ExecutionResponse haTransferLeader(final String target, final JSONObject response) {
+    final var raftHA = httpServer.getServer().getRaftHA();
+    if (raftHA == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
+
+    if (target.isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Usage: ha transfer leader <peerId>\"}");
+
+    raftHA.transferLeadership(target.trim(), 30_000);
+    response.put("result", "Leadership transferred to " + target.trim());
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  private ExecutionResponse haStepDown(final JSONObject response) {
+    final var raftHA = httpServer.getServer().getRaftHA();
+    if (raftHA == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
+
+    // Find the current leader and transfer to a random non-leader peer.
+    // Works from any server - Ratis client auto-routes to the leader.
+    final String leaderName = raftHA.getLeaderName();
+    for (final var peer : raftHA.getRaftGroup().getPeers()) {
+      if (!peer.getId().toString().equals(leaderName)) {
+        raftHA.transferLeadership(peer.getId().toString(), 30_000);
+        response.put("result", "Leadership transfer initiated from " + leaderName + " to " + peer.getId());
+        return new ExecutionResponse(200, response.toString());
+      }
+    }
+    return new ExecutionResponse(400, "{ \"error\" : \"No other peer available for leadership transfer\"}");
+  }
+
+  private ExecutionResponse haLeave(final JSONObject response) {
+    final var raftHA = httpServer.getServer().getRaftHA();
+    if (raftHA == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
+
+    raftHA.leaveCluster();
+    response.put("result", "Server " + raftHA.getLocalPeerId() + " leaving cluster");
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Verifies that all nodes in the Ratis cluster have identical database files by comparing CRC checksums.
+   * This is a diagnostic command - with Ratis, alignment is automatic, but this confirms it.
+   * <p>
+   * Usage: {@code ha verify database <name>}
+   * <p>
+   * Returns per-peer checksum comparison: which files match and which differ.
+   */
+  private ExecutionResponse haVerifyDatabase(final String databaseName, final JSONObject response) {
+    final var raftHA = httpServer.getServer().getRaftHA();
+    if (raftHA == null)
+      return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
+
+    if (databaseName.trim().isEmpty())
+      return new ExecutionResponse(400, "{ \"error\" : \"Usage: ha verify database <name>\"}");
+
+    final var server = httpServer.getServer();
+    if (!server.existsDatabase(databaseName.trim()))
+      return new ExecutionResponse(404, "{ \"error\" : \"Database '" + databaseName.trim() + "' not found\"}");
+
+    Metrics.counter("http.ha-verify-database").increment();
+
+    final var db = (com.arcadedb.database.DatabaseInternal) server.getDatabase(databaseName.trim());
+
+    // Compute local checksums with file type categorization
+    final JSONObject localChecksums = new JSONObject();
+    final JSONArray localFiles = new JSONArray();
+    db.executeInReadLock(() -> {
+      db.getPageManager().suspendFlushAndExecute(db, () -> {
+        for (final var file : db.getFileManager().getFiles())
+          if (file != null) {
+            final String name = file.getFileName();
+            final long crc = file.calculateChecksum();
+            localChecksums.put(name, crc);
+
+            final JSONObject fileInfo = new JSONObject();
+            fileInfo.put("name", name);
+            fileInfo.put("checksum", crc);
+            fileInfo.put("size", file.getSize());
+            fileInfo.put("type", categorizeFile(name));
+            localFiles.put(fileInfo);
+          }
+      });
+      return null;
+    });
+
+    // Non-leader: return local checksums only. The leader calls this internally for comparison.
+    // When called from Studio on a follower, the JS handles the UX (shows checksums or redirects).
+    if (!raftHA.isLeader()) {
+      response.put("localChecksums", localChecksums);
+      response.put("files", localFiles);
+      response.put("localServer", server.getServerName());
+      return new ExecutionResponse(200, response.toString());
+    }
+
+    final JSONObject result = new JSONObject();
+    result.put("database", databaseName.trim());
+    result.put("files", localFiles);
+    result.put("localServer", server.getServerName());
+    result.put("localPeerId", raftHA.getLocalPeerId().toString());
+    result.put("localChecksums", localChecksums);
+
+    // Query each remote peer for their checksums via HTTP
+    final JSONArray peerResults = new JSONArray();
+    for (final var peer : raftHA.getRaftGroup().getPeers()) {
+      if (peer.getId().equals(raftHA.getLocalPeerId()))
+        continue;
+
+      final JSONObject peerResult = new JSONObject();
+      peerResult.put("peerId", peer.getId().toString());
+      peerResult.put("httpAddress", raftHA.getPeerHTTPAddress(peer.getId()));
+
+      try {
+        final String peerHttpAddr = raftHA.getPeerHTTPAddress(peer.getId());
+        final String url = "http://" + peerHttpAddr + "/api/v1/server";
+
+        final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setConnectTimeout(30_000);
+        conn.setReadTimeout(60_000);
+
+        // Use cluster token for inter-node auth
+        if (raftHA.getClusterToken() != null) {
+          conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
+          conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
+        }
+
+        conn.setDoOutput(true);
+        final JSONObject commandBody = new JSONObject();
+        commandBody.put("command", "ha verify database " + databaseName.trim());
+        try (final var os = conn.getOutputStream()) {
+          os.write(commandBody.toString().getBytes(StandardCharsets.UTF_8));
+        }
+
+        if (conn.getResponseCode() == 200) {
+          final String body = new String(conn.getInputStream().readAllBytes());
+          final JSONObject peerResponse = new JSONObject(body);
+
+          if (peerResponse.has("localChecksums")) {
+            final JSONObject remoteChecksums = peerResponse.getJSONObject("localChecksums");
+
+            // Compare checksums
+            int matchCount = 0;
+            int mismatchCount = 0;
+            final JSONArray mismatches = new JSONArray();
+
+            for (final String fileName : localChecksums.keySet()) {
+              final long localCrc = localChecksums.getLong(fileName);
+              if (remoteChecksums.has(fileName)) {
+                final long remoteCrc = remoteChecksums.getLong(fileName);
+                if (localCrc == remoteCrc)
+                  matchCount++;
+                else {
+                  mismatchCount++;
+                  mismatches.put(new JSONObject()
+                      .put("file", fileName)
+                      .put("type", categorizeFile(fileName))
+                      .put("localChecksum", localCrc)
+                      .put("remoteChecksum", remoteCrc));
+                }
+              } else {
+                mismatchCount++;
+                mismatches.put(new JSONObject()
+                    .put("file", fileName)
+                    .put("type", categorizeFile(fileName))
+                    .put("localChecksum", localCrc)
+                    .put("remoteChecksum", "MISSING"));
+              }
+            }
+
+            peerResult.put("status", mismatchCount == 0 ? "CONSISTENT" : "INCONSISTENT");
+            peerResult.put("matchingFiles", matchCount);
+            peerResult.put("mismatchedFiles", mismatchCount);
+            if (mismatchCount > 0)
+              peerResult.put("mismatches", mismatches);
+          }
+        } else {
+          peerResult.put("status", "ERROR");
+          peerResult.put("error", "HTTP " + conn.getResponseCode());
+        }
+        conn.disconnect();
+
+      } catch (final Exception e) {
+        peerResult.put("status", "ERROR");
+        peerResult.put("error", e.getMessage());
+      }
+
+      peerResults.put(peerResult);
+    }
+
+    result.put("peers", peerResults);
+
+    // Overall status
+    boolean allConsistent = true;
+    for (int i = 0; i < peerResults.length(); i++)
+      if (!"CONSISTENT".equals(peerResults.getJSONObject(i).getString("status")))
+        allConsistent = false;
+
+    result.put("overallStatus", allConsistent ? "ALL_CONSISTENT" : "INCONSISTENCY_DETECTED");
+    response.put("result", result);
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  private void checkServerIsLeaderIfInHA() {
+    final RaftHAServer ha = httpServer.getServer().getHA();
+    if (ha != null && !ha.isLeader())
+      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderHTTPAddress());
+  }
+
+  private static String categorizeFile(final String fileName) {
+    if (fileName == null) return "unknown";
+    final String lower = fileName.toLowerCase();
+    if (lower.endsWith(".json") || lower.equals("configuration") || lower.contains("schema"))
+      return "config";
+    if (lower.contains("index") || lower.contains(".idx") || lower.contains(".ridx") || lower.contains(".notunique")
+        || lower.contains(".unique") || lower.contains(".dictionary"))
+      return "index";
+    if (lower.contains("bucket") || lower.contains(".pcf"))
+      return "bucket";
+    return "data";
+  }
+
+  private RaftHAServer getHA() {
+    final RaftHAServer ha = httpServer.getServer().getHA();
     if (ha == null)
       throw new CommandExecutionException(
           "ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");

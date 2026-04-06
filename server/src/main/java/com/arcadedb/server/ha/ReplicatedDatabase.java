@@ -50,7 +50,9 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.message.*;
+import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
+import com.arcadedb.server.ha.ratis.HALog;
+import com.arcadedb.server.ha.ratis.RaftHAServer;
 
 import java.io.IOException;
 import java.util.*;
@@ -59,10 +61,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public class ReplicatedDatabase implements DatabaseInternal {
-  private final ArcadeDBServer server;
-  private final LocalDatabase proxied;
-  private final HAServer.QUORUM quorum;
-  private final long timeout;
+  protected final ArcadeDBServer server;
+  protected final LocalDatabase proxied;
+  protected final long timeout;
 
   public ReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied) {
     if (!server.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL))
@@ -72,47 +73,34 @@ public class ReplicatedDatabase implements DatabaseInternal {
     this.proxied = proxied;
     this.timeout = proxied.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     this.proxied.setWrappedDatabaseInstance(this);
-
-    HAServer.QUORUM quorum;
-    final String quorumValue = proxied.getConfiguration().getValueAsString(GlobalConfiguration.HA_QUORUM)
-            .toUpperCase(Locale.ENGLISH);
-    try {
-      quorum = HAServer.QUORUM.valueOf(quorumValue);
-    } catch (Exception e) {
-      LogManager.instance()
-              .log(this, Level.SEVERE, "Error on setting quorum to '%s' for database '%s'. Setting it to MAJORITY", e, quorumValue,
-                      getName());
-      quorum = HAServer.QUORUM.MAJORITY;
-    }
-    this.quorum = quorum;
   }
 
   @Override
   public void commit() {
-    final boolean isLeader = isLeader();
+    final boolean leader = isLeader();
+    HALog.log(this, HALog.TRACE, "commit() called: db=%s, isLeader=%s", getName(), leader);
 
     proxied.executeInReadLock(() -> {
       proxied.checkTransactionIsActive(false);
 
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       final TransactionContext tx = current.getLastTransaction();
-      try {
 
-        final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(isLeader);
+      try {
+        final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
 
         try {
           if (phase1 != null) {
             proxied.incrementStatsWriteTx();
             final Binary bufferChanges = phase1.result;
 
-            if (isLeader)
-              replicateTx(tx, phase1, bufferChanges);
+            if (leader)
+              replicateFromLeader(tx, phase1, bufferChanges);
             else {
-              // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-              final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, getTransactionIsolationLevel(),
-                      tx.getBucketRecordDelta(), bufferChanges, tx.getIndexChanges().toMap());
-              server.getHA().forwardCommandToLeader(command, timeout * 2);
+              // Follower writes must go to the leader. Throw so the client retries on the leader.
               tx.reset();
+              throw new ServerIsNotTheLeaderException("Write operations must be executed on the leader server",
+                  server.getRaftHA().getLeaderHTTPAddress());
             }
           } else {
             proxied.incrementStatsReadTx();
@@ -137,26 +125,46 @@ public class ReplicatedDatabase implements DatabaseInternal {
     });
   }
 
-  public void replicateTx(final TransactionContext tx, final TransactionContext.TransactionPhase1 phase1,
-                          final Binary bufferChanges) {
-    final int configuredServers = server.getHA().getConfiguredServers();
+  /**
+   * Leader path: commit locally first, then replicate via Ratis.
+   */
+  private void replicateFromLeader(final TransactionContext tx, final TransactionContext.TransactionPhase1 phase1,
+      final Binary bufferChanges) {
+    final RaftHAServer raftHA = server.getRaftHA();
 
-    final int reqQuorum = quorum.quorum(configuredServers);
+    // Detect schema changes
+    String schemaJson = null;
+    Map<Integer, String> filesToAdd = null;
+    Map<Integer, String> filesToRemove = null;
 
-    final TxRequest req = new TxRequest(getName(), tx.getBucketRecordDelta(), bufferChanges, reqQuorum > 1);
-
-    final DatabaseChangeStructureRequest changeStructureRequest = getChangeStructure(-1);
-    if (changeStructureRequest != null) {
-      // RESET STRUCTURE CHANGES FROM THIS POINT ONWARDS
+    final DatabaseChangeStructureRequest changeStructure = getChangeStructure(-1);
+    if (changeStructure != null) {
       proxied.getFileManager().stopRecordingChanges();
       proxied.getFileManager().startRecordingChanges();
-      req.changeStructure = changeStructureRequest;
+
+      schemaJson = changeStructure.getSchemaJson();
+      filesToAdd = changeStructure.getFilesToAdd();
+      filesToRemove = changeStructure.getFilesToRemove();
     }
 
-    server.getHA().sendCommandToReplicasWithQuorum(req, reqQuorum, timeout);
+    // Capture delta BEFORE commit2ndPhase (which resets the transaction)
+    final Map<Integer, Integer> delta = tx.getBucketRecordDelta();
+    HALog.log(this, HALog.TRACE, "Captured bucketRecordDelta before commit2ndPhase: %s", delta);
 
-    // COMMIT 2ND PHASE ONLY IF THE QUORUM HAS BEEN REACHED
+    // DESIGN: "leader commits first" - the transaction is committed locally before Ratis replication.
+    // If replicateTransaction() fails (quorum not reached, leader step-down), the local node has the
+    // change but followers do not. This is intentional: it avoids holding locks during the Ratis
+    // round-trip and lets the leader serve reads immediately. Followers will eventually catch up
+    // via Ratis log replay, or via snapshot installation if they fall too far behind.
+    // On replication failure, the exception propagates to the caller (HTTP handler), which returns
+    // an error to the client - the client should retry.
     tx.commit2ndPhase(phase1);
+
+    // Replicate via Ratis
+    HALog.log(this, HALog.DETAILED, "Replicating WAL via Ratis: db=%s, walSize=%d, deltaSize=%d, schema=%s",
+        getName(), bufferChanges.size(), delta.size(), schemaJson != null);
+    raftHA.replicateTransaction(getName(), delta, bufferChanges, schemaJson, filesToAdd, filesToRemove);
+    HALog.log(this, HALog.TRACE, "WAL replication completed: db=%s", getName());
   }
 
   @Override
@@ -615,14 +623,14 @@ public class ReplicatedDatabase implements DatabaseInternal {
                            final Object... args) {
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
-      if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL()) {
-        // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-        final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
-        return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
-      }
+      final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
+      if (!analyzed.isIdempotent() || analyzed.isDDL())
+        // Throw ServerIsNotTheLeaderException - the HTTP proxy in AbstractServerHttpHandler
+        // catches this and forwards the request to the leader transparently
+        throw new ServerIsNotTheLeaderException("Write commands must be executed on the leader server",
+            server.getRaftHA().getLeaderHTTPAddress());
       return proxied.command(language, query, configuration, args);
     }
-
     return proxied.command(language, query, configuration, args);
   }
 
@@ -646,30 +654,126 @@ public class ReplicatedDatabase implements DatabaseInternal {
                            final Map<String, Object> args) {
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
-      if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL()) {
-        // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-        final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
-        return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
-      }
+      final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
+      if (!analyzed.isIdempotent() || analyzed.isDDL())
+        throw new ServerIsNotTheLeaderException("Write commands must be executed on the leader server",
+            server.getRaftHA().getLeaderHTTPAddress());
+    }
+    return proxied.command(language, query, configuration, args);
+  }
+
+  /**
+   * Forwards a command to the leader via the Ratis state machine query() path.
+   * No HTTP proxy, no auth issues - uses the already-established gRPC channel.
+   * <p>
+   * NOTE: Currently unused - kept for future use as an alternative to HTTP proxy forwarding.
+   * Do not remove.
+   * <p>
+   * TODO: The query() path has a page visibility issue - pages modified by the command on the leader
+   * are not visible to the follower's local database until the WAL is replayed. Currently using
+   * HTTP proxy fallback (see AbstractServerHttpHandler.proxyToLeader) instead.
+   */
+  private ResultSet forwardCommandToLeader(final String language, final String query, final Map<String, Object> namedParams,
+      final Object[] positionalParams) {
+    HALog.log(this, HALog.DETAILED, "Forwarding command to leader: %s %s (db=%s)", language, query, getName());
+
+    // Rollback the local transaction started by DatabaseAbstractHandler.transaction() wrapper.
+    // The command executes on the leader, so no local changes should be committed.
+    if (isTransactionActive())
+      rollback();
+
+    final RaftHAServer raftHA = server.getRaftHA();
+    final byte[] resultBytes = raftHA.forwardCommand(getName(), language, query, namedParams, positionalParams);
+    HALog.log(this, HALog.TRACE, "Command forwarded successfully: %d bytes result", resultBytes.length);
+
+    // Wait for the leader's WAL changes to be applied locally on this follower.
+    // Without this, a subsequent read on this server may not see the changes yet.
+    raftHA.waitForLocalApply();
+
+    // Check for error response
+    if (resultBytes.length > 0 && resultBytes[0] == 'E') {
+      final String error = new String(resultBytes, 1, resultBytes.length - 1);
+      throw new com.arcadedb.exception.CommandExecutionException(error);
     }
 
-    return proxied.command(language, query, configuration, args);
+    // Deserialize binary result into ResultSet
+    final java.util.List<Map<String, Object>> rows =
+        com.arcadedb.server.ha.ratis.RaftLogEntry.deserializeCommandResult(resultBytes);
+    final com.arcadedb.query.sql.executor.InternalResultSet rs = new com.arcadedb.query.sql.executor.InternalResultSet();
+    for (final Map<String, Object> row : rows) {
+      final com.arcadedb.query.sql.executor.ResultInternal result = new com.arcadedb.query.sql.executor.ResultInternal(proxied);
+      result.setPropertiesFromMap(row);
+      rs.add(result);
+    }
+    return rs;
   }
 
   @Override
   public ResultSet query(final String language, final String query) {
+    waitForReadConsistency();
     return proxied.query(language, query);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Object... args) {
+    waitForReadConsistency();
     return proxied.query(language, query, args);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> args) {
+    waitForReadConsistency();
     return proxied.query(language, query, args);
   }
+
+  /**
+   * Waits for the follower to catch up to the required consistency level before executing a read.
+   * On the leader, this is a no-op (data is always current).
+   * <p>
+   * The consistency level and bookmark are read from the current thread's request context
+   * (set by the HTTP handler via {@link #setReadConsistencyContext}).
+   */
+  private void waitForReadConsistency() {
+    if (isLeader())
+      return;
+
+    final var raftHA = server.getRaftHA();
+    if (raftHA == null)
+      return;
+
+    final var ctx = READ_CONSISTENCY_CONTEXT.get();
+    if (ctx == null)
+      return;
+
+    final Database.READ_CONSISTENCY consistency = ctx.consistency;
+    if (consistency == null || consistency == Database.READ_CONSISTENCY.EVENTUAL)
+      return;
+
+    if (consistency == Database.READ_CONSISTENCY.READ_YOUR_WRITES) {
+      if (ctx.readAfterIndex >= 0)
+        raftHA.waitForAppliedIndex(ctx.readAfterIndex);
+    } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
+      // Use the client's bookmark if available (from write response headers - reflects the leader's commit index).
+      // Otherwise fall back to waiting for the local commit index to be applied.
+      if (ctx.readAfterIndex >= 0)
+        raftHA.waitForAppliedIndex(ctx.readAfterIndex);
+      else
+        raftHA.waitForLocalApply();
+    }
+  }
+
+  /** Thread-local context for read consistency, set by the HTTP handler before query execution. */
+  private static final ThreadLocal<ReadConsistencyContext> READ_CONSISTENCY_CONTEXT = new ThreadLocal<>();
+
+  public static void setReadConsistencyContext(final Database.READ_CONSISTENCY consistency, final long readAfterIndex) {
+    READ_CONSISTENCY_CONTEXT.set(new ReadConsistencyContext(consistency, readAfterIndex));
+  }
+
+  public static void clearReadConsistencyContext() {
+    READ_CONSISTENCY_CONTEXT.remove();
+  }
+
+  private record ReadConsistencyContext(Database.READ_CONSISTENCY consistency, long readAfterIndex) {}
 
   @Deprecated
   @Override
@@ -750,52 +854,34 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
-    final HAServer ha = server.getHA();
+    final RaftHAServer raftHA = server.getRaftHA();
 
     final AtomicReference<Object> result = new AtomicReference<>();
 
-    // ACQUIRE A DATABASE WRITE LOCK. THE LOCK IS REENTRANT, SO THE ACQUISITION DOWN THE LINE IS GOING TO PASS BECAUSE ALREADY ACQUIRED HERE
-    final AtomicReference<DatabaseChangeStructureRequest> command = new AtomicReference<>();
+    proxied.executeInWriteLock(() -> {
+      if (!isLeader())
+        throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
+            raftHA.getLeaderName());
 
-    try {
-      proxied.executeInWriteLock(() -> {
-        if (!ha.isLeader()) {
-          // NOT THE LEADER: NOT RESPONSIBLE TO SEND CHANGES TO OTHER SERVERS
-          // TODO: Issue #118SchemaException
-          throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
-                  ha.getLeaderName());
-//        result.set(callback.call());
-//        return null;
-        }
-
-        if (!proxied.getFileManager().startRecordingChanges()) {
-          // ALREADY RECORDING
-          result.set(callback.call());
-          return null;
-        }
-
-        final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
-
-        try {
-          result.set(callback.call());
-
-          return null;
-
-        } finally {
-          // EVEN IN CASE OF EXCEPTION PROPAGATE THE CHANGE OF STRUCTURE IF ANY.
-          // THIS IS TYPICAL ON INDEX CREATION THAT FAIL (DUPLICATED KEYS)
-          command.set(getChangeStructure(schemaVersionBefore));
-          proxied.getFileManager().stopRecordingChanges();
-        }
-      });
-
-    } finally {
-      if (command.get() != null) {
-        // SEND THE COMMAND OUTSIDE THE EXCLUSIVE LOCK
-        final int quorum = ha.getConfiguredServers();
-        ha.sendCommandToReplicasWithQuorum(command.get(), quorum, timeout);
+      if (!proxied.getFileManager().startRecordingChanges()) {
+        result.set(callback.call());
+        return null;
       }
-    }
+
+      final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
+
+      try {
+        result.set(callback.call());
+        return null;
+      } finally {
+        final DatabaseChangeStructureRequest command = getChangeStructure(schemaVersionBefore);
+        proxied.getFileManager().stopRecordingChanges();
+
+        if (command != null)
+          raftHA.replicateTransaction(getName(), Map.of(), new Binary(0), command.getSchemaJson(), command.getFilesToAdd(),
+              command.getFilesToRemove());
+      }
+    });
 
     return (RET) result.get();
   }
@@ -820,84 +906,28 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return proxied.getOpenedOn();
   }
 
-  public HAServer.QUORUM getQuorum() {
-    return quorum;
+  public RaftHAServer.Quorum getQuorum() {
+    final RaftHAServer raftHA = server.getRaftHA();
+    return raftHA != null ? raftHA.getQuorum() : RaftHAServer.Quorum.MAJORITY;
   }
 
   /**
-   * Aligns the database against all the replicas. This fixes any replication problem occurred by overwriting the database content of replicas. This process
-   * first calculates the checksum of every files in the database. Then sends the checksums to the replicas, waiting for a response from each of them about
-   * which files differ. In case one or more files differ, a page by page CRC is calculated and sent to the replica. The replica responds with the page id
-   * of the page that differs, so the leader will send only the pages that differ to the replica to be overwritten.
+   * With Ratis, alignment is handled automatically by the Raft log + snapshot mechanism.
    */
   @Override
   public Map<String, Object> alignToReplicas() {
-    final HAServer ha = server.getHA();
-    if (!ha.isLeader()) {
-      // NOT THE LEADER
-      throw new ServerIsNotTheLeaderException("Align database can be executed only on the leader server", ha.getLeaderName());
-    }
-
-    final Map<String, Object> result = new HashMap<>();
-
-    final int quorum = ha.getConfiguredServers();
-    if (quorum == 1)
-      // NO ACTIVE NODES
-      return result;
-
-    final Map<Integer, Long> fileChecksums = new HashMap<>();
-    final Map<Integer, Long> fileSizes = new HashMap<>();
-
-    // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
-    executeInReadLock(() -> {
-      // AVOID FLUSHING OF DATA PAGES TO DISK
-      proxied.getPageManager().suspendFlushAndExecute(this, () -> {
-        final List<ComponentFile> files = proxied.getFileManager().getFiles();
-
-        for (final ComponentFile file : files)
-          if (file != null) {
-            final long fileChecksum = file.calculateChecksum();
-            fileChecksums.put(file.getFileId(), fileChecksum);
-            fileSizes.put(file.getFileId(), file.getSize());
-          }
-
-        final DatabaseAlignRequest request = new DatabaseAlignRequest(getName(), getSchema().getEmbedded().toJSON().toString(),
-                fileChecksums, fileSizes);
-        final List<Object> responsePayloads = ha.sendCommandToReplicasWithQuorum(request, quorum, 120_000);
-
-        if (responsePayloads != null) {
-          for (final Object o : responsePayloads) {
-            final DatabaseAlignResponse response = (DatabaseAlignResponse) o;
-            result.put(response.getRemoteServerName(), response.getAlignedPages());
-          }
-        }
-      });
-
-      return null;
-    });
-
-    return result;
+    LogManager.instance().log(this, Level.INFO, "alignToReplicas() - Raft consensus ensures alignment");
+    return Map.of();
   }
 
   /**
-   * Creates the new database to all the replicas by executing a full sync backup of the database.
+   * With Ratis, new databases are replicated via the Raft state machine on all nodes.
    */
   public void createInReplicas() {
-    final HAServer ha = server.getHA();
-    if (!ha.isLeader())
-      // NOT THE LEADER
-      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
-
-    final int quorum = ha.getConfiguredServers();
-    if (quorum == 1)
-      // NO ACTIVE NODES
-      return;
-
-    final InstallDatabaseRequest request = new InstallDatabaseRequest(getName());
-    ha.sendCommandToReplicasWithQuorum(request, quorum, 30_000);
+    LogManager.instance().log(this, Level.INFO, "createInReplicas() - Raft handles replication to all peers");
   }
 
-  private DatabaseChangeStructureRequest getChangeStructure(final long schemaVersionBefore) {
+  protected DatabaseChangeStructureRequest getChangeStructure(final long schemaVersionBefore) {
     final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
 
     final boolean schemaChanged = proxied.getSchema().getEmbedded().isDirty() || //
@@ -929,7 +959,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return new DatabaseChangeStructureRequest(proxied.getName(), serializedSchema, addFiles, removeFiles);
   }
 
-  private boolean isLeader() {
-    return server.getHA() != null && server.getHA().isLeader();
+  protected boolean isLeader() {
+    final RaftHAServer raftHA = server.getRaftHA();
+    return raftHA != null && raftHA.isLeader();
   }
 }

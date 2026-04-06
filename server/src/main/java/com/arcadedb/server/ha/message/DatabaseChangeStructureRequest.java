@@ -18,28 +18,18 @@
  */
 package com.arcadedb.server.ha.message;
 
-import com.arcadedb.database.Binary;
-import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.ComponentFile;
-import com.arcadedb.log.LogManager;
-import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.HAServer;
-import com.arcadedb.server.ha.ReplicationException;
+import java.util.Map;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
-
-public class DatabaseChangeStructureRequest extends HAAbstractCommand {
-  private String               databaseName;
-  private String               schemaJson;
-  private Map<Integer, String> filesToAdd;
-  private Map<Integer, String> filesToRemove;
-
-  public DatabaseChangeStructureRequest() {
-  }
+/**
+ * Holds schema/file structure change information for replication via Ratis.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class DatabaseChangeStructureRequest {
+  private final String               databaseName;
+  private final String               schemaJson;
+  private final Map<Integer, String> filesToAdd;
+  private final Map<Integer, String> filesToRemove;
 
   public DatabaseChangeStructureRequest(final String databaseName, final String schemaJson, final Map<Integer, String> filesToAdd,
       final Map<Integer, String> filesToRemove) {
@@ -49,92 +39,20 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
     this.filesToRemove = filesToRemove;
   }
 
-  @Override
-  public void toStream(final Binary stream) {
-    stream.putString(databaseName);
-    stream.putString(schemaJson);
-
-    stream.putUnsignedNumber(filesToAdd.size());
-    for (final Map.Entry<Integer, String> file : filesToAdd.entrySet()) {
-      stream.putInt(file.getKey());
-      stream.putByte((byte) (file.getValue() != null ? 1 : 0));
-      if (file.getValue() != null)
-        stream.putString(file.getValue());
-    }
-
-    stream.putUnsignedNumber(filesToRemove.size());
-    for (final Map.Entry<Integer, String> file : filesToRemove.entrySet()) {
-      stream.putInt(file.getKey());
-      stream.putByte((byte) (file.getValue() != null ? 1 : 0));
-      if (file.getValue() != null)
-        stream.putString(file.getValue());
-    }
+  public String getDatabaseName() {
+    return databaseName;
   }
 
-  @Override
-  public void fromStream(final ArcadeDBServer server, final Binary stream) {
-    databaseName = stream.getString();
-    schemaJson = stream.getString();
-
-    filesToAdd = new HashMap<>();
-    int fileCount = (int) stream.getUnsignedNumber();
-    for (int i = 0; i < fileCount; ++i) {
-      final int fileId = stream.getInt();
-      final boolean notNull = stream.getByte() == 1;
-      if (notNull)
-        filesToAdd.put(fileId, stream.getString());
-      else
-        filesToAdd.put(fileId, null);
-    }
-
-    filesToRemove = new HashMap<>();
-    fileCount = (int) stream.getUnsignedNumber();
-    for (int i = 0; i < fileCount; ++i) {
-      final int fileId = stream.getInt();
-      final boolean notNull = stream.getByte() == 1;
-      if (notNull)
-        filesToRemove.put(fileId, stream.getString());
-      else
-        filesToRemove.put(fileId, null);
-    }
+  public String getSchemaJson() {
+    return schemaJson;
   }
 
-  @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    try {
-      final DatabaseInternal db = server.getServer().getDatabase(databaseName);
-
-      DatabaseContext.INSTANCE.init(db);
-
-      updateFiles(db);
-
-      // RELOAD SCHEMA
-      db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
-      return new DatabaseChangeStructureResponse();
-
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on changing database structure request from the leader node", e);
-      throw new ReplicationException("Error on changing database structure request from the leader node", e);
-    }
+  public Map<Integer, String> getFilesToAdd() {
+    return filesToAdd;
   }
 
-  public void updateFiles(final DatabaseInternal db) throws IOException {
-    final String databasePath = db.getDatabasePath();
-
-    // ADD FILES
-    for (final Map.Entry<Integer, String> entry : filesToAdd.entrySet())
-      db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + File.separator + entry.getValue());
-
-    // REMOVE FILES
-    for (final Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {
-      db.getPageManager().deleteFile(db, entry.getKey());
-      db.getFileManager().dropFile(entry.getKey());
-      db.getSchema().getEmbedded().removeFile(entry.getKey());
-    }
-
-    if (!schemaJson.isEmpty())
-      // REPLACE SCHEMA FILE
-      db.getSchema().getEmbedded().update(new JSONObject(schemaJson));
+  public Map<Integer, String> getFilesToRemove() {
+    return filesToRemove;
   }
 
   @Override

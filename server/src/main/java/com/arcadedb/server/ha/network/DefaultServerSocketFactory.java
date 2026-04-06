@@ -18,11 +18,12 @@
  */
 package com.arcadedb.server.ha.network;
 
-import java.io.*;
-import java.net.*;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 
 /**
- * Default factory for TCP/IP sockets.
+ * Default factory for TCP/IP server sockets.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

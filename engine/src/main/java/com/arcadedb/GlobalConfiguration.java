@@ -504,9 +504,25 @@ public enum GlobalConfiguration {
   // HA
   HA_ENABLED("arcadedb.ha.enabled", SCOPE.SERVER, "True if HA is enabled for the current server", Boolean.class, false),
 
+  HA_LOG_VERBOSE("arcadedb.ha.logVerbose", SCOPE.SERVER,
+      "Verbose logging level for HA/Ratis components. 0=off, 1=basic (election, replication), 2=detailed (commands, WAL), 3=trace (all state machine operations)",
+      Integer.class, 0),
+
   HA_ERROR_RETRIES("arcadedb.ha.errorRetries", SCOPE.SERVER,
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, the operation will be retried a specific amount of times on the next server in the list. 0 (default) is to retry against all the configured servers",
       Integer.class, 0),
+
+  HA_READ_CONSISTENCY("arcadedb.ha.readConsistency", SCOPE.SERVER,
+      "Default read consistency for follower reads: EVENTUAL (read locally), READ_YOUR_WRITES (default, wait for client's last write), LINEARIZABLE (wait for all committed writes)",
+      String.class, "read_your_writes", Set.of((Object[]) new String[]{"eventual", "read_your_writes", "linearizable"})),
+
+  HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
+      "Shared secret for inter-node HTTP forwarding auth. If empty (default), auto-derived from cluster name + root password",
+      String.class, ""),
+
+  HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
+      "Raft log index gap threshold for emitting replication lag warnings. 0 = disabled",
+      Integer.class, 1000),
 
   HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
       "Server role between ANY (default) OR REPLICA to configure replica only servers", String.class, "any",
@@ -525,6 +541,24 @@ public enum GlobalConfiguration {
       Set.of("none", "one", "two", "three", "majority", "all")),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
+
+  HA_ELECTION_TIMEOUT_MIN("arcadedb.ha.electionTimeoutMin", SCOPE.SERVER,
+      "Minimum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 1500),
+
+  HA_ELECTION_TIMEOUT_MAX("arcadedb.ha.electionTimeoutMax", SCOPE.SERVER,
+      "Maximum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 3000),
+
+  HA_SNAPSHOT_THRESHOLD("arcadedb.ha.snapshotThreshold", SCOPE.SERVER,
+      "Number of Raft log entries before triggering an automatic snapshot", Long.class, 100000L),
+
+  HA_LOG_SEGMENT_SIZE("arcadedb.ha.logSegmentSize", SCOPE.SERVER,
+      "Maximum Raft log segment size (e.g. '64MB', '128MB')", String.class, "64MB"),
+
+  HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
+      "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),
+
+  HA_GROUP_COMMIT_BATCH_SIZE("arcadedb.ha.groupCommitBatchSize", SCOPE.SERVER,
+      "Maximum number of transactions batched in a single Raft round-trip", Integer.class, 500),
 
   HA_REPLICATION_QUEUE_SIZE("arcadedb.ha.replicationQueueSize", SCOPE.SERVER, "Queue size for replicating messages between servers",
       Integer.class, 512),

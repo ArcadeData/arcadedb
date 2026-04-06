@@ -35,14 +35,19 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
 
+import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Deque;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
-  private static final String AUTHORIZATION_BASIC  = "Basic";
-  private static final String AUTHORIZATION_BEARER = "Bearer";
+  private static final String AUTHORIZATION_BASIC      = "Basic";
+  private static final String AUTHORIZATION_BEARER     = "Bearer";
+  private static final String HEADER_CLUSTER_TOKEN     = "X-ArcadeDB-Cluster-Token";
+  private static final String HEADER_FORWARDED_USER    = "X-ArcadeDB-Forwarded-User";
+  private static final io.undertow.util.AttachmentKey<String> RAW_PAYLOAD_KEY = io.undertow.util.AttachmentKey.create(String.class);
+  static final io.undertow.util.AttachmentKey<String> BASIC_AUTH_KEY = io.undertow.util.AttachmentKey.create(String.class);
   protected final HttpServer httpServer;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
@@ -85,8 +90,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
+      // Check cluster-internal token auth first (inter-node forwarding in HA)
+      final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(HEADER_CLUSTER_TOKEN);
       final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
-      if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
+
+      if (isRequireAuthentication() && clusterTokenHeader == null
+          && (authorization == null || authorization.isEmpty())) {
         exchange.setStatusCode(401);
         exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
         sendErrorResponse(exchange, 401, "", null, null);
@@ -94,7 +103,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       ServerSecurityUser user = null;
-      if (authorization != null) {
+      if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
+        user = validateClusterForwardedAuth(exchange, clusterTokenHeader.getFirst(),
+            exchange.getRequestHeaders().get(HEADER_FORWARDED_USER));
+        if (user == null)
+          return; // error response already sent
+      } else if (authorization != null) {
         try {
           final String auth = authorization.getFirst();
 
@@ -136,6 +150,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             }
 
             user = authenticate(authPair[0], authPair[1]);
+            // Store Basic auth for potential cross-server proxy forwarding in HA
+            exchange.putAttachment(BASIC_AUTH_KEY, auth);
 
           } else {
             sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
@@ -151,15 +167,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       JSONObject payload = null;
+      String rawPayload = null;
       if (mustExecuteOnWorkerThread()) {
-        final String payloadAsString = parseRequestPayload(exchange);
-        if (requiresJsonPayload() && payloadAsString != null && !payloadAsString.isBlank())
+        rawPayload = parseRequestPayload(exchange);
+        if (requiresJsonPayload() && rawPayload != null && !rawPayload.isBlank())
           try {
-            payload = new JSONObject(payloadAsString.trim());
+            payload = new JSONObject(rawPayload.trim());
           } catch (Exception e) {
             LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
           }
       }
+
+      // Store raw payload for potential proxy forwarding
+      exchange.putAttachment(RAW_PAYLOAD_KEY, rawPayload != null ? rawPayload : "");
 
       final ExecutionResponse response = execute(exchange, user, payload);
       if (response != null)
@@ -175,10 +195,21 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               SecurityException.class.getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 403, "Security error", e, null);
     } catch (final ServerIsNotTheLeaderException e) {
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 400, "Cannot execute command", e, e.getLeaderAddress());
+      // Forward the request to the leader via HTTP proxy
+      final String leaderAddr = e.getLeaderAddress();
+      if (leaderAddr == null || leaderAddr.isEmpty()) {
+        // Leader unknown (election in progress) - return 503 so client retries
+        sendErrorResponse(exchange, 503, "Leader election in progress, retry later", e, null);
+        return;
+      }
+      try {
+        proxyToLeader(exchange, leaderAddr);
+        return;
+      } catch (final Exception proxyEx) {
+        LogManager.instance().log(this, Level.WARNING, "Failed to proxy request to leader %s: %s", leaderAddr,
+            proxyEx.getMessage());
+      }
+      sendErrorResponse(exchange, 503, "Leader proxy failed, retry later", e, leaderAddr);
     } catch (final NeedRetryException e) {
       LogManager.instance()
               .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
@@ -229,7 +260,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (e.getCause() != null)
         realException = e.getCause();
 
-      if (realException instanceof SecurityException) {
+      if (realException instanceof ServerIsNotTheLeaderException notLeader) {
+        final String leaderAddr = notLeader.getLeaderAddress();
+        if (leaderAddr != null && !leaderAddr.isEmpty()) {
+          try {
+            proxyToLeader(exchange, leaderAddr);
+            return;
+          } catch (final Exception proxyEx) {
+            LogManager.instance().log(this, Level.WARNING, "Failed to proxy request to leader: %s", proxyEx.getMessage());
+          }
+        }
+        sendErrorResponse(exchange, 400, "Cannot execute command", realException, leaderAddr);
+      } else if (realException instanceof SecurityException) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on transaction execution (%s): %s",
                 SecurityException.class.getSimpleName(), realException.getMessage());
         sendErrorResponse(exchange, 403, "Security error", realException, null);
@@ -262,6 +304,108 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     } finally {
       LogManager.instance().setContext(null);
     }
+  }
+
+  /**
+   * Proxies the current HTTP request to the leader server. Used when a write operation
+   * hits a non-leader node in the Ratis HA cluster.
+   */
+  private void proxyToLeader(final HttpServerExchange exchange, final String leaderAddr) throws Exception {
+    final String path = exchange.getRequestPath();
+    final String query = exchange.getQueryString();
+    final String targetUrl = "http://" + leaderAddr + path + (query != null && !query.isEmpty() ? "?" + query : "");
+
+    LogManager.instance().log(this, Level.FINE, "Proxying request to leader: %s", targetUrl);
+
+    final java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+        new java.net.URI(targetUrl).toURL().openConnection();
+    conn.setRequestMethod(exchange.getRequestMethod().toString());
+
+    // Forward auth using cluster token for inter-node identity.
+    // The cluster token is a shared secret derived from the cluster name + root password.
+    // For session-based auth (Bearer), we use cluster token + forwarded user instead of
+    // forwarding the per-node session token. For Basic/API tokens, we forward as-is.
+    final var raftHA = httpServer.getServer().getHA();
+    final var authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);
+    if (raftHA != null && raftHA.getClusterToken() != null) {
+      final String auth = authHeader != null && !authHeader.isEmpty() ? authHeader.getFirst() : null;
+      if (auth != null && auth.startsWith("Bearer AU-")) {
+        // Session token: use cluster-internal auth headers instead
+        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+        final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
+        final HttpAuthSession session = httpServer.getAuthSessionManager().getSessionByToken(token);
+        if (session != null)
+          conn.setRequestProperty(HEADER_FORWARDED_USER, session.getUser().getName());
+      } else if (auth != null)
+        conn.setRequestProperty("Authorization", auth);
+      else {
+        // No auth header but we have cluster token - use it with root user
+        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+        conn.setRequestProperty(HEADER_FORWARDED_USER, "root");
+      }
+    } else if (authHeader != null && !authHeader.isEmpty())
+      conn.setRequestProperty("Authorization", authHeader.getFirst());
+
+    conn.setRequestProperty("Content-Type", "application/json");
+
+    // Forward request body for POST/PUT (use saved payload since input stream was already consumed)
+    if ("POST".equals(exchange.getRequestMethod().toString()) || "PUT".equals(exchange.getRequestMethod().toString())) {
+      conn.setDoOutput(true);
+      final String savedPayload = exchange.getAttachment(RAW_PAYLOAD_KEY);
+      if (savedPayload != null && !savedPayload.isEmpty())
+        try (final var os = conn.getOutputStream()) {
+          os.write(savedPayload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+    }
+
+    // Send leader's response back to the client
+    final int status = conn.getResponseCode();
+    exchange.setStatusCode(status);
+
+    final String contentType = conn.getContentType();
+    if (contentType != null)
+      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
+
+    // Forward the commit index header for READ_YOUR_WRITES bookmark tracking
+    final String commitIndex = conn.getHeaderField(com.arcadedb.remote.RemoteHttpComponent.HEADER_COMMIT_INDEX);
+    if (commitIndex != null)
+      exchange.getResponseHeaders().put(
+          new io.undertow.util.HttpString(com.arcadedb.remote.RemoteHttpComponent.HEADER_COMMIT_INDEX), commitIndex);
+
+    try (final var in = status < 400 ? conn.getInputStream() : conn.getErrorStream()) {
+      if (in != null) {
+        final byte[] body = in.readAllBytes();
+        exchange.getResponseSender().send(java.nio.ByteBuffer.wrap(body));
+      }
+    } finally {
+      conn.disconnect();
+    }
+  }
+
+  /**
+   * Validates cluster-internal forwarded auth using a shared token.
+   * Returns the user, or null if validation failed (error response already sent).
+   */
+  private ServerSecurityUser validateClusterForwardedAuth(final HttpServerExchange exchange,
+      final String providedToken, final HeaderValues forwardedUserValues) {
+    final var raftHA = httpServer.getServer().getHA();
+    final String expectedToken = raftHA != null ? raftHA.getClusterToken() : null;
+
+    if (expectedToken == null || expectedToken.isEmpty()
+        || !MessageDigest.isEqual(expectedToken.getBytes(), providedToken.getBytes())) {
+      sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
+      return null;
+    }
+    if (forwardedUserValues == null || forwardedUserValues.isEmpty()) {
+      sendErrorResponse(exchange, 401, "Missing forwarded user", null, null);
+      return null;
+    }
+    final ServerSecurityUser user = httpServer.getServer().getSecurity().getUser(forwardedUserValues.getFirst());
+    if (user == null) {
+      sendErrorResponse(exchange, 401, "Unknown forwarded user: " + forwardedUserValues.getFirst(), null, null);
+      return null;
+    }
+    return user;
   }
 
   /**

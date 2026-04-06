@@ -45,8 +45,12 @@ class ReplicationMaterializedViewIT extends ReplicationServerIT {
         databases[i].commit();
     }
 
-    // 1. Create source type on leader (server 0) using Java API for synchronous replication
-    databases[0].getSchema().createDocumentType("Metric");
+    // With Ratis, the leader may not be server 0 - resolve dynamically
+    final int li = getLeaderIndex();
+    final int ri = li == 0 ? 1 : 0; // pick a replica
+
+    // 1. Create source type on leader using Java API for synchronous replication
+    databases[li].getSchema().createDocumentType("Metric");
 
     testOnAllServers((database) -> {
       assertThat(database.getSchema().existsType("Metric")).isTrue();
@@ -54,13 +58,13 @@ class ReplicationMaterializedViewIT extends ReplicationServerIT {
     });
 
     // Insert source data via leader transaction (replicated via ReplicatedDatabase.commit)
-    databases[0].transaction(() -> {
-      databases[0].newDocument("Metric").set("name", "cpu").set("value", 80).save();
-      databases[0].newDocument("Metric").set("name", "mem").set("value", 60).save();
+    databases[li].transaction(() -> {
+      databases[li].newDocument("Metric").set("name", "cpu").set("value", 80).save();
+      databases[li].newDocument("Metric").set("name", "mem").set("value", 60).save();
     });
 
     // 2. Create materialized view on leader using Java API
-    databases[0].getSchema().buildMaterializedView()
+    databases[li].getSchema().buildMaterializedView()
         .withName("HighMetrics")
         .withQuery("SELECT name, value FROM Metric WHERE value > 70")
         .create();
@@ -77,13 +81,13 @@ class ReplicationMaterializedViewIT extends ReplicationServerIT {
       isInSchemaFile(database, "materializedViews");
     }
 
-    // 5. Query view on a replica (server 1)
-    try (final var rs = databases[1].query("sql", "SELECT FROM HighMetrics")) {
+    // 5. Query view on a replica
+    try (final var rs = databases[ri].query("sql", "SELECT FROM HighMetrics")) {
       assertThat(rs.stream().count()).isEqualTo(1); // Only cpu > 70
     }
 
     // 6. Drop the view on leader
-    databases[0].getSchema().dropMaterializedView("HighMetrics");
+    databases[li].getSchema().dropMaterializedView("HighMetrics");
 
     // 7. Verify view is gone on all servers
     testOnAllServers((database) -> {
