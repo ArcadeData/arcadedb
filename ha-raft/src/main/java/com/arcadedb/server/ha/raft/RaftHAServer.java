@@ -27,6 +27,7 @@ import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.conf.Parameters;
+import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
@@ -404,6 +405,26 @@ public class RaftHAServer {
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error getting leader ID", e);
       return null;
+    }
+  }
+
+  /**
+   * Asks the Raft leader to step down, triggering a new election. This forces all servers
+   * to recreate their internal gRPC log-appender channels, which resolves stale connections
+   * to restarted peers whose gRPC channels are stuck in exponential backoff.
+   *
+   * @param timeoutMs maximum time to wait for the transfer to complete
+   * @return true if the transfer succeeded
+   */
+  public boolean transferLeadership(final long timeoutMs) {
+    if (raftClient == null)
+      return false;
+    try {
+      final RaftClientReply reply = raftClient.admin().transferLeadership(null, timeoutMs);
+      return reply.isSuccess();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.INFO, "Leadership transfer request: %s", e.getMessage());
+      return false;
     }
   }
 

@@ -138,6 +138,19 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
 
             LogManager.instance().log(this, Level.INFO, "TEST: Server %d restarted", serverId);
 
+            // Force leadership transfer so all Raft servers recreate their internal
+            // gRPC log-appender channels. Without this, the leader's stale channels to
+            // the restarted peer remain stuck in exponential backoff.
+            CodeUtils.sleep(2_000);
+            for (int j = 0; j < getServerCount(); j++) {
+              final RaftHAPlugin p = getRaftPlugin(j);
+              if (p != null && p.isLeader()) {
+                LogManager.instance().log(this, Level.INFO, "TEST: Transferring leadership from server %d", j);
+                p.getRaftHAServer().transferLeadership(5_000);
+                break;
+              }
+            }
+
             return;
           }
         }
