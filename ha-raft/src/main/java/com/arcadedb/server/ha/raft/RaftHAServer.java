@@ -80,7 +80,7 @@ public class RaftHAServer {
   private RaftServer                raftServer;
   private RaftClient                raftClient;
   private RaftProperties            raftProperties;
-  private RaftGroupCommitter        groupCommitter;
+  private volatile RaftGroupCommitter groupCommitter;
   private ScheduledExecutorService  lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
@@ -438,25 +438,34 @@ public class RaftHAServer {
   public synchronized void refreshRaftClient() {
     if (raftProperties == null)
       return;
-    if (raftClient != null) {
-      try {
-        raftClient.close();
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.WARNING, "Error closing stale RaftClient during refresh", e);
-      }
-    }
+
+    // Stop the group committer FIRST so its flusher thread is no longer using the old raftClient.
+    // Create the replacement committer before stopping the old one to minimize the window where
+    // no committer is available to concurrent callers (the field is volatile).
+    final RaftClient oldClient = raftClient;
+
     raftClient = RaftClient.newBuilder()
         .setRaftGroup(raftGroup)
         .setProperties(raftProperties)
         .setParameters(new Parameters())
         .build();
-    LogManager.instance().log(this, Level.INFO, "RaftClient refreshed with fresh gRPC channels after leader change");
 
     if (groupCommitter != null) {
-      groupCommitter.stop();
       final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
+      final RaftGroupCommitter oldCommitter = groupCommitter;
       groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, batchSize);
+      oldCommitter.stop();
     }
+
+    if (oldClient != null) {
+      try {
+        oldClient.close();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing stale RaftClient during refresh", e);
+      }
+    }
+
+    LogManager.instance().log(this, Level.INFO, "RaftClient refreshed with fresh gRPC channels after leader change");
   }
 
   public ArcadeStateMachine getStateMachine() {

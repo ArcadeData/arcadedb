@@ -34,7 +34,7 @@
     <name>ArcadeDB HA Raft</name>
 
     <properties>
-        <ratis.version>3.2.0</ratis.version>
+        <ratis.version>3.2.2</ratis.version>
     </properties>
 
     <dependencies>

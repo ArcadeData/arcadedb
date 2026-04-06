@@ -101,15 +101,26 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   @Override
   protected void waitForReplicationIsCompleted(final int serverNumber) {
-    // Find the leader's last applied index
+    // Find the leader's last applied index, retrying briefly in case we hit a leaderless window
+    // during an election transition
     long leaderLastIndex = -1;
-    for (int i = 0; i < getServerCount(); i++) {
-      final RaftHAPlugin plugin = getRaftPlugin(i);
-      if (plugin != null && plugin.isLeader()) {
-        final var termIndex = plugin.getRaftHAServer().getStateMachine().getLastAppliedTermIndex();
-        if (termIndex != null)
-          leaderLastIndex = termIndex.getIndex();
-        break;
+    for (int attempt = 0; attempt < 30 && leaderLastIndex <= 0; attempt++) {
+      for (int i = 0; i < getServerCount(); i++) {
+        final RaftHAPlugin plugin = getRaftPlugin(i);
+        if (plugin != null && plugin.isLeader()) {
+          final var termIndex = plugin.getRaftHAServer().getStateMachine().getLastAppliedTermIndex();
+          if (termIndex != null)
+            leaderLastIndex = termIndex.getIndex();
+          break;
+        }
+      }
+      if (leaderLastIndex <= 0) {
+        try {
+          Thread.sleep(100);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return;
+        }
       }
     }
 

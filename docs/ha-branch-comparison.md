@@ -9,12 +9,12 @@ Both branches rewrite ArcadeDB's High Availability stack on top of Apache Ratis.
 
 ## 1. Module Structure
 
-| | `ha-redesign` | `apache-ratis` |
-|---|---|---|
-| Location | Separate top-level module `ha-raft/` | Inside `server/` module |
-| Package | `com.arcadedb.server.ha.raft` | `com.arcadedb.server.ha.ratis` |
-| Server dep scope | `provided` (plugin-style) | `compile` (direct) |
-| Ratis version | 3.2.0 | 3.2.1 |
+| | `ha-redesign`                                           | `apache-ratis` |
+|---|---------------------------------------------------------|---|
+| Location | Separate top-level module `ha-raft/`                    | Inside `server/` module |
+| Package | `com.arcadedb.server.ha.raft`                           | `com.arcadedb.server.ha.ratis` |
+| Server dep scope | `provided` (plugin-style)                               | `compile` (direct) |
+| Ratis version | 3.2.2                                                   | 3.2.1 |
 | Activation | `HA_IMPLEMENTATION=raft` toggle, `ServiceLoader` plugin | Wired directly into `ArcadeDBServer` startup |
 | Distribution | Shade plugin configured, ready for modular distribution | Bundled with server |
 

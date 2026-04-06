@@ -156,7 +156,8 @@ public class RaftGroupCommitter {
 
         batch.get(i).future.complete(null); // success - after ALL check
       } catch (final Exception e) {
-        batch.get(i).future.complete(new QuorumNotReachedException("Group commit entry failed: " + e.getMessage()));
+        final String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+        batch.get(i).future.complete(new QuorumNotReachedException("Group commit entry failed: " + detail));
       }
     }
 
