@@ -64,16 +64,11 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
   }
 
   @Override
-  protected boolean persistentRaftStorage() {
-    return true;
-  }
-
-  @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    // The test creates ~15000 entries. Set the snapshot threshold high enough to prevent
-    // log compaction, since snapshot-based resync (installSnapshot) is not yet fully
-    // wired. Without this, a restarted peer may need purged entries and hang forever.
+    // Disable log compaction so a restarted peer can catch up via log replay.
+    // The test creates ~15000 entries; keeping them all in the log avoids the need
+    // for snapshot-based resync (which is not yet fully wired).
     config.setValue(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD, 100_000L);
   }
 
@@ -137,19 +132,6 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
             }
 
             LogManager.instance().log(this, Level.INFO, "TEST: Server %d restarted", serverId);
-
-            // Force leadership transfer so all Raft servers recreate their internal
-            // gRPC log-appender channels. Without this, the leader's stale channels to
-            // the restarted peer remain stuck in exponential backoff.
-            CodeUtils.sleep(2_000);
-            for (int j = 0; j < getServerCount(); j++) {
-              final RaftHAPlugin p = getRaftPlugin(j);
-              if (p != null && p.isLeader()) {
-                LogManager.instance().log(this, Level.INFO, "TEST: Transferring leadership from server %d", j);
-                p.getRaftHAServer().transferLeadership(5_000);
-                break;
-              }
-            }
 
             return;
           }
