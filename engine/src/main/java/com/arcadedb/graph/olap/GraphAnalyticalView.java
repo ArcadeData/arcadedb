@@ -264,12 +264,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Atomic swap — readers see all-or-nothing
       this.snapshot = snapshotFromResult(result, durationMs);
       this.status = Status.READY;
+      this.notifyAll();
 
       if (deltaCollector == null)
         registerChangeListeners();
     } catch (final Exception e) {
       this.buildError = e;
       this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      this.notifyAll();
       throw e;
     } finally {
       latch.countDown();
@@ -300,10 +302,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
             final long durationMs = System.currentTimeMillis() - buildStart;
 
-            this.snapshot = snapshotFromResult(result, durationMs);
-            this.status = Status.READY;
-
             synchronized (GraphAnalyticalView.this) {
+              this.snapshot = snapshotFromResult(result, durationMs);
+              this.status = Status.READY;
+              GraphAnalyticalView.this.notifyAll();
               if (deltaCollector == null)
                 registerChangeListeners();
             }
@@ -312,15 +314,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               database.rollback();
           }
         } catch (final Exception e) {
-          this.buildError = e;
-          if (snapshot != null) {
-            this.status = Status.STALE;
-          } else {
-            this.status = Status.NOT_BUILT;
-            // Unregister failed GAV so the name can be reused for a fresh build
-            GraphTraversalProviderRegistry.unregister(database, this);
-            if (name != null)
-              GraphAnalyticalViewRegistry.unregister(database, name);
+          synchronized (GraphAnalyticalView.this) {
+            this.buildError = e;
+            if (snapshot != null) {
+              this.status = Status.STALE;
+            } else {
+              this.status = Status.NOT_BUILT;
+              // Unregister failed GAV so the name can be reused for a fresh build
+              GraphTraversalProviderRegistry.unregister(database, this);
+              if (name != null)
+                GraphAnalyticalViewRegistry.unregister(database, name);
+            }
+            GraphAnalyticalView.this.notifyAll();
           }
           LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
         } finally {
@@ -332,6 +337,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     } catch (final RejectedExecutionException e) {
       this.buildError = e;
       this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      this.notifyAll();
       buildQueued.set(false);
       latch.countDown();
       LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async build rejected (executor shut down)", name);
@@ -346,25 +352,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public boolean awaitReady(final long timeout, final TimeUnit unit) {
     final long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
     try {
-      // Loop to handle follow-up rebuilds triggered by asyncRebuildNeeded.
-      // Each rebuild creates a new latch, so we re-read the field after each wait.
-      while (status != Status.READY || asyncRebuildNeeded) {
-        if (status == Status.STALE)
-          return false;
-        final long remainingNanos = deadlineNanos - System.nanoTime();
-        if (remainingNanos <= 0)
-          return false;
-        final CountDownLatch latch = readyLatch;
-        if (latch == null)
-          return status == Status.READY && !asyncRebuildNeeded;
-        if (!latch.await(remainingNanos, TimeUnit.NANOSECONDS))
-          return false;
+      // Both status and asyncRebuildNeeded must be read atomically under the monitor
+      // to prevent a race where onRelevantCommit() resets asyncRebuildNeeded=false and
+      // sets status=BUILDING between the two volatile reads, causing a premature exit.
+      synchronized (this) {
+        while (status != Status.READY || asyncRebuildNeeded) {
+          if (status == Status.STALE)
+            return false;
+          final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+          if (remainingMs <= 0)
+            return false;
+          this.wait(remainingMs);
+        }
       }
+      return true;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       return false;
     }
-    return true;
   }
 
   /**
@@ -1199,6 +1204,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                 if (updateMode == UpdateMode.ASYNCHRONOUS) {
                   this.snapshot = snapshotFromResult(result, durationMs);
                   this.status = Status.READY;
+                  GraphAnalyticalView.this.notifyAll();
                 } else
                   LogManager.instance().log(this, Level.INFO,
                       "GraphAnalyticalView '%s': async rebuild result discarded (update mode changed to %s during rebuild)", name, updateMode);
@@ -1209,8 +1215,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                 database.rollback();
             }
           } catch (final Exception e) {
-            this.buildError = e;
-            this.status = Status.STALE;
+            synchronized (GraphAnalyticalView.this) {
+              this.buildError = e;
+              this.status = Status.STALE;
+              GraphAnalyticalView.this.notifyAll();
+            }
             LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
           } finally {
             BUILD_PERMITS.release();
@@ -1224,12 +1233,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         });
       } catch (final RejectedExecutionException e) {
         this.status = Status.STALE;
+        this.notifyAll();
         compacting.set(false);
         latch.countDown();
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async rebuild rejected (executor shut down)", name);
       }
     } else {
       this.status = Status.STALE;
+      this.notifyAll();
     }
   }
 
