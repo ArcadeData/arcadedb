@@ -101,10 +101,10 @@ public class RaftHAServer {
   private final Quorum                     quorum;
   private final long                       quorumTimeout;
   private final Map<String, String>        peerHttpAddresses = new ConcurrentHashMap<>();
-  private       String                     clusterToken;
+  private volatile String                  clusterToken;
 
   private RaftServer                       raftServer;
-  private RaftClient                       raftClient;
+  private volatile RaftClient              raftClient;
   private RaftProperties                   raftProperties;
   private ArcadeDBStateMachine             stateMachine;
   private ClusterMonitor                   clusterMonitor;
@@ -133,9 +133,6 @@ public class RaftHAServer {
         UUID.nameUUIDFromBytes(clusterName.getBytes(StandardCharsets.UTF_8)));
     this.raftGroup = RaftGroup.valueOf(groupId, peers);
 
-    // Initialize cluster token for inter-node HTTP auth
-    initClusterToken();
-
     // Initialize cluster monitor
     final int lagThreshold = configuration.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
     this.clusterMonitor = new ClusterMonitor(lagThreshold);
@@ -146,7 +143,9 @@ public class RaftHAServer {
    * All nodes in the same cluster compute the same token without sharing state.
    * PBKDF2 is used instead of plain SHA-256 to resist brute-force attacks if the token is captured.
    */
-  private void initClusterToken() {
+  private synchronized void initClusterToken() {
+    if (clusterToken != null)
+      return;
     final String configured = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
     if (configured != null && !configured.isEmpty()) {
       this.clusterToken = configured;
@@ -322,7 +321,9 @@ public class RaftHAServer {
       }
     }
 
-    HALog.log(this, HALog.BASIC, "K8s auto-join: no existing cluster found, starting as new cluster");
+    LogManager.instance().log(this, Level.WARNING,
+        "K8s auto-join: no existing cluster found, starting as new cluster. "
+            + "If other nodes exist but are unreachable, this may create a split-brain. Verify network connectivity");
   }
 
   public void stopService() {
@@ -813,6 +814,8 @@ public class RaftHAServer {
   // -- Cluster Token --
 
   public String getClusterToken() {
+    if (clusterToken == null)
+      initClusterToken();
     return clusterToken;
   }
 

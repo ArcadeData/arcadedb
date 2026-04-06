@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.ratis;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
@@ -29,6 +30,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.server.ha.ReplicationException;
 import org.apache.ratis.proto.RaftProtos;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftGroupMemberId;
@@ -54,6 +56,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.zip.ZipEntry;
@@ -76,7 +79,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   private volatile long                   lastElectionTime = 0;
   private volatile long                   startTime        = System.currentTimeMillis();
   /** True when this follower is replaying log entries to catch up after being behind. */
-  private volatile boolean                catchingUp       = false;
+  private final AtomicBoolean             catchingUp       = new AtomicBoolean(false);
 
   public ArcadeDBStateMachine(final ArcadeDBServer server) {
     this.server = server;
@@ -149,14 +152,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
         // consecutive applies), it's catching up. When it reaches the commit index, it's done.
         if (!isCurrentNodeLeader()) {
           final long gap = index - previousApplied;
-          if (gap > 1 && !catchingUp) {
-            catchingUp = true;
+          if (gap > 1 && catchingUp.compareAndSet(false, true))
             HALog.log(this, HALog.BASIC, "Follower catching up: gap=%d (previous=%d, current=%d)", gap, previousApplied, index);
-          }
-          if (catchingUp) {
+          if (catchingUp.get()) {
             final long commitIndex = raftHA.getCommitIndex();
             if (commitIndex > 0 && index >= commitIndex) {
-              catchingUp = false;
+              catchingUp.set(false);
               HALog.log(this, HALog.BASIC, "Hot resync complete: applied=%d >= commit=%d", index, commitIndex);
               fireCallback(ReplicationCallback.TYPE.REPLICA_HOT_RESYNC, server.getServerName());
             }
@@ -214,7 +215,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       db.getSchema().getEmbedded().initComponents();
 
     // Fire REPLICA_MSG_RECEIVED callback for test infrastructure
-    fireCallback(com.arcadedb.server.ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED, entry.databaseName());
+    fireCallback(ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED, entry.databaseName());
   }
 
   private void applyTransactionForwardEntry(final byte[] data) {
@@ -308,7 +309,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       HALog.log(this, HALog.DETAILED, "Executing forwarded command on leader: %s %s (db=%s, isLeader=%s)",
           entry.language(), entry.command(), entry.databaseName(), isCurrentNodeLeader());
 
-      final com.arcadedb.query.sql.executor.ResultSet rs;
+      final ResultSet rs;
       if (entry.namedParams() != null)
         rs = db.command(entry.language(), entry.command(), entry.namedParams());
       else if (entry.positionalParams() != null)
@@ -318,14 +319,14 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
 
       final byte[] resultBytes = RaftLogEntry.serializeCommandResult(rs);
       return CompletableFuture.completedFuture(Message.valueOf(
-          org.apache.ratis.thirdparty.com.google.protobuf.ByteString.copyFrom(resultBytes)));
+          ByteString.copyFrom(resultBytes)));
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing forwarded command", e);
       final String errMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
       final byte[] errBytes = ("E" + errMsg).getBytes(StandardCharsets.UTF_8);
       return CompletableFuture.completedFuture(Message.valueOf(
-          org.apache.ratis.thirdparty.com.google.protobuf.ByteString.copyFrom(errBytes)));
+          ByteString.copyFrom(errBytes)));
     }
   }
 
@@ -477,7 +478,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       raftHA.notifyLeaderChanged();
     }
 
-    fireCallback(com.arcadedb.server.ReplicationCallback.TYPE.LEADER_ELECTED, newLeaderId.toString());
+    fireCallback(ReplicationCallback.TYPE.LEADER_ELECTED, newLeaderId.toString());
   }
 
   public long getElectionCount() {
@@ -499,16 +500,16 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
         term, index, newConf.getPeersList().size());
     // Fire REPLICA_ONLINE for each peer in the new configuration
     for (final var peer : newConf.getPeersList())
-      fireCallback(com.arcadedb.server.ReplicationCallback.TYPE.REPLICA_ONLINE, peer.getId().toStringUtf8());
+      fireCallback(ReplicationCallback.TYPE.REPLICA_ONLINE, peer.getId().toStringUtf8());
   }
 
   @Override
   public void notifyServerShutdown(final org.apache.ratis.proto.RaftProtos.RoleInfoProto roleInfo, final boolean allServer) {
     HALog.log(this, HALog.BASIC, "Server shutdown notification (allServer=%s)", allServer);
-    fireCallback(com.arcadedb.server.ReplicationCallback.TYPE.REPLICA_OFFLINE, server.getServerName());
+    fireCallback(ReplicationCallback.TYPE.REPLICA_OFFLINE, server.getServerName());
   }
 
-  private void fireCallback(final com.arcadedb.server.ReplicationCallback.TYPE type, final Object data) {
+  private void fireCallback(final ReplicationCallback.TYPE type, final Object data) {
     try {
       server.lifecycleEvent(type, data);
     } catch (final Exception e) {

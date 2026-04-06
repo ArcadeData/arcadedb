@@ -30,8 +30,9 @@ import java.io.File;
 import java.io.IOException;
 
 /**
- * Starts a 3-node Ratis HA cluster for manual testing of Studio.
+ * Developer utility (NOT a JUnit test) that starts a 3-node Ratis HA cluster for manual testing of Studio.
  * Run this, then open http://localhost:2480 in your browser and click the Cluster tab.
+ * System.out is intentional here since this is an interactive CLI tool.
  *
  * Ctrl+C to stop.
  *

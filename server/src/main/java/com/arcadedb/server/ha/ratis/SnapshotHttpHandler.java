@@ -139,6 +139,7 @@ public class SnapshotHttpHandler implements HttpHandler {
     final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
     if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
       final var raftHA = httpServer.getServer().getHA();
+      // Constant-time comparison to prevent timing attacks (token is hex-encoded PBKDF2 output)
       if (raftHA != null && raftHA.getClusterToken() != null
           && java.security.MessageDigest.isEqual(
               raftHA.getClusterToken().getBytes(java.nio.charset.StandardCharsets.UTF_8),
@@ -177,6 +178,12 @@ public class SnapshotHttpHandler implements HttpHandler {
   private void addFileToZip(final ZipOutputStream zipOut, final File inputFile) throws Exception {
     if (!inputFile.exists())
       return;
+
+    // Security: verify the file is not a symlink pointing outside the database directory
+    if (!inputFile.getCanonicalPath().equals(inputFile.getAbsolutePath())) {
+      LogManager.instance().log(this, Level.WARNING, "Skipping symlinked file in snapshot: %s", inputFile.getAbsolutePath());
+      return;
+    }
 
     final ZipEntry entry = new ZipEntry(inputFile.getName());
     zipOut.putNextEntry(entry);

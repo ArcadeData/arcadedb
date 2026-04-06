@@ -82,13 +82,24 @@ public class RaftGroupCommitter {
       if (error != null)
         throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
     } catch (final java.util.concurrent.TimeoutException e) {
-      // Mark the entry as cancelled so the flusher skips it if it hasn't been sent yet.
-      // If the flusher already sent it and the Raft round-trip eventually succeeds,
-      // the transaction was already committed locally (commit1stPhase) so the apply is harmless.
+      if (pending.dispatched.get()) {
+        // Entry was already sent to Raft. We MUST wait for the result to prevent phantom
+        // commits (replicated on followers but commit2ndPhase never called on the leader).
+        HALog.log(this, HALog.BASIC,
+            "Group commit entry already dispatched to Raft, waiting for result (initial timeout %dms expired)", timeoutMs);
+        try {
+          final Exception error = pending.future.get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
+          if (error != null)
+            throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
+          return; // Raft succeeded after extended wait
+        } catch (final java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException
+            | InterruptedException e2) {
+          throw new QuorumNotReachedException("Group commit timed out after extended wait (dispatched to Raft but no reply)");
+        }
+      }
+      // Entry not yet dispatched to Raft, safe to cancel
       pending.cancelled.set(true);
-      HALog.log(this, HALog.BASIC,
-          "Group commit entry cancelled after timeout (%dms). If already submitted to Raft, the write may still be applied on followers",
-          timeoutMs);
+      HALog.log(this, HALog.BASIC, "Group commit entry cancelled after timeout (%dms), not yet dispatched to Raft", timeoutMs);
       throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms");
     } catch (final RuntimeException e) {
       throw e;
@@ -155,6 +166,10 @@ public class RaftGroupCommitter {
     if (batch.isEmpty())
       return;
 
+    // Mark all entries as dispatched before sending (prevents cancellation after this point)
+    for (final PendingEntry p : batch)
+      p.dispatched.set(true);
+
     // Send all entries asynchronously (pipelined)
     final List<CompletableFuture<RaftClientReply>> futures = new ArrayList<>(batch.size());
     for (int i = 0; i < batch.size(); i++) {
@@ -175,7 +190,9 @@ public class RaftGroupCommitter {
         // Handle ALL quorum if needed - must complete BEFORE marking success
         if (haServer.getQuorum() == RaftHAServer.Quorum.ALL) {
           try {
-            final RaftClientReply watchReply = client.io().watch(reply.getLogIndex(), RaftProtos.ReplicationLevel.ALL_COMMITTED);
+            final RaftClientReply watchReply = client.async()
+                .watch(reply.getLogIndex(), RaftProtos.ReplicationLevel.ALL_COMMITTED)
+                .get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
             if (!watchReply.isSuccess()) {
               batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum not reached"));
               continue;
@@ -198,8 +215,9 @@ public class RaftGroupCommitter {
 
   private static class PendingEntry {
     final byte[]                       entry;
-    final CompletableFuture<Exception> future    = new CompletableFuture<>();
-    final AtomicBoolean                cancelled = new AtomicBoolean(false);
+    final CompletableFuture<Exception> future     = new CompletableFuture<>();
+    final AtomicBoolean                cancelled  = new AtomicBoolean(false);
+    final AtomicBoolean                dispatched = new AtomicBoolean(false);
 
     PendingEntry(final byte[] entry) {
       this.entry = entry;
