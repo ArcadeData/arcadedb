@@ -126,22 +126,40 @@ public class SnapshotHttpHandler implements HttpHandler {
   }
 
   private ServerSecurityUser authenticate(final HttpServerExchange exchange) {
+    // Cluster token auth (inter-node communication)
+    final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
+    if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
+      final var server = httpServer.getServer();
+      final String expectedToken = server.getConfiguration().getValueAsString(
+          com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+      if (expectedToken != null && !expectedToken.isEmpty()
+          && java.security.MessageDigest.isEqual(
+              expectedToken.getBytes(), clusterTokenHeader.getFirst().getBytes())) {
+        final ServerSecurityUser rootUser = server.getSecurity().getUser("root");
+        if (rootUser == null) {
+          LogManager.instance().log(this, Level.SEVERE, "Cluster token valid but 'root' user not found");
+          return null;
+        }
+        return rootUser;
+      }
+    }
+
     final HeaderValues authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);
     if (authHeader == null || authHeader.isEmpty())
       return null;
 
     final String auth = authHeader.getFirst();
     if (auth.startsWith("Basic ")) {
-      final String decoded = new String(Base64.getDecoder().decode(auth.substring(6)));
-      final int colonPos = decoded.indexOf(':');
-      if (colonPos > 0) {
-        final String userName = decoded.substring(0, colonPos);
-        final String password = decoded.substring(colonPos + 1);
-        try {
+      try {
+        final String decoded = new String(Base64.getDecoder().decode(auth.substring(6)));
+        final int colonPos = decoded.indexOf(':');
+        if (colonPos > 0) {
+          final String userName = decoded.substring(0, colonPos);
+          final String password = decoded.substring(colonPos + 1);
           return httpServer.getServer().getSecurity().authenticate(userName, password, null);
-        } catch (final Exception e) {
-          return null;
         }
+      } catch (final Exception e) {
+        return null;
       }
     }
     return null;

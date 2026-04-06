@@ -230,11 +230,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     connection.setConnectTimeout(30_000);
     connection.setReadTimeout(300_000);
 
-    if (clusterToken != null && !clusterToken.isEmpty()) {
-      final String auth = java.util.Base64.getEncoder().encodeToString(
-          ("root:" + clusterToken).getBytes(java.nio.charset.StandardCharsets.UTF_8));
-      connection.setRequestProperty("Authorization", "Basic " + auth);
-    }
+    if (clusterToken != null && !clusterToken.isEmpty())
+      connection.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
 
     try {
       final int responseCode = connection.getResponseCode();
@@ -245,13 +242,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final String databasePath = db.getDatabasePath();
       db.close();
 
+      final java.nio.file.Path dbPath = java.nio.file.Path.of(databasePath).normalize().toAbsolutePath();
       try (final java.util.zip.ZipInputStream zipIn = new java.util.zip.ZipInputStream(
           connection.getInputStream())) {
         java.util.zip.ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {
           final java.io.File targetFile = new java.io.File(databasePath, zipEntry.getName());
 
-          if (!targetFile.getCanonicalPath().startsWith(new java.io.File(databasePath).getCanonicalPath()))
+          if (!targetFile.toPath().normalize().toAbsolutePath().startsWith(dbPath))
             throw new java.io.IOException("Zip slip detected in snapshot: " + zipEntry.getName());
 
           try (final java.io.FileOutputStream fos = new java.io.FileOutputStream(targetFile)) {
@@ -265,7 +263,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final java.io.File[] walFiles = dbDir.listFiles((dir, name) -> name.endsWith(".wal"));
       if (walFiles != null)
         for (final java.io.File walFile : walFiles)
-          walFile.delete();
+          if (!walFile.delete())
+            LogManager.instance().log(this, Level.WARNING, "Failed to delete stale WAL file: %s", walFile.getName());
 
       HALog.log(this, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
 
