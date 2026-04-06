@@ -99,7 +99,7 @@ public class RaftHAServer {
     this.httpAddresses = parsed.httpAddresses();
     this.localPeerId = findLocalPeerId(peers, serverName, arcadeServer);
     this.raftGroup = RaftGroup.valueOf(
-        RaftGroupId.valueOf(UUID.nameUUIDFromBytes(clusterName.getBytes())),
+        RaftGroupId.valueOf(UUID.nameUUIDFromBytes(clusterName.getBytes(StandardCharsets.UTF_8))),
         peers);
 
     // Build human-readable display names: "ServerName-N (host:httpPort)"
@@ -271,8 +271,10 @@ public class RaftHAServer {
     GrpcConfigKeys.Server.setPort(properties, localRaftPort);
 
     // Configure Raft RPC timeouts for cluster stability
-    RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(2, TimeUnit.SECONDS));
-    RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(5, TimeUnit.SECONDS));
+    final int electionMin = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN);
+    final int electionMax = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX);
+    RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(electionMin, TimeUnit.MILLISECONDS));
+    RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(electionMax, TimeUnit.MILLISECONDS));
     RaftServerConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
 
     final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD);
@@ -285,11 +287,13 @@ public class RaftHAServer {
     RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, true);
 
     // AppendEntries batching: allow multiple entries per gRPC call to followers
-    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf("4MB"));
+    final String appendBufferSize = configuration.getValueAsString(GlobalConfiguration.HA_APPEND_BUFFER_SIZE);
+    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf(appendBufferSize));
     RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, 256);
 
     // Log segment and write buffer sizes
-    RaftServerConfigKeys.Log.setSegmentSizeMax(properties, SizeInBytes.valueOf("64MB"));
+    final String logSegmentSize = configuration.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE);
+    RaftServerConfigKeys.Log.setSegmentSizeMax(properties, SizeInBytes.valueOf(logSegmentSize));
     RaftServerConfigKeys.Log.setWriteBufferSize(properties, SizeInBytes.valueOf("8MB"));
 
     // Leader lease: consistent reads without round-trip
@@ -499,9 +503,18 @@ public class RaftHAServer {
     // because each node stored its token in its own private Raft storage directory.
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
-    final String seed = clusterName + ":" + (rootPassword != null ? rootPassword : "");
-    final String token = UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8)).toString();
-    configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, token);
+    final String password = clusterName + ":" + (rootPassword != null ? rootPassword : "");
+    try {
+      final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
+      final javax.crypto.SecretKeyFactory factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+      final javax.crypto.spec.PBEKeySpec spec = new javax.crypto.spec.PBEKeySpec(
+          password.toCharArray(), salt, 100_000, 256);
+      final byte[] hash = factory.generateSecret(spec).getEncoded();
+      final String token = java.util.HexFormat.of().formatHex(hash);
+      configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, token);
+    } catch (final Exception e) {
+      throw new RuntimeException("Failed to derive cluster token", e);
+    }
   }
 
   /**

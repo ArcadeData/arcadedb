@@ -536,6 +536,18 @@ public enum GlobalConfiguration {
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
+  HA_ELECTION_TIMEOUT_MIN("arcadedb.ha.electionTimeoutMin", SCOPE.SERVER,
+      "Minimum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 2000),
+
+  HA_ELECTION_TIMEOUT_MAX("arcadedb.ha.electionTimeoutMax", SCOPE.SERVER,
+      "Maximum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 5000),
+
+  HA_LOG_SEGMENT_SIZE("arcadedb.ha.logSegmentSize", SCOPE.SERVER,
+      "Maximum Raft log segment size (e.g. '64MB', '128MB')", String.class, "64MB"),
+
+  HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
+      "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),
+
   HA_REPLICATION_QUEUE_SIZE("arcadedb.ha.replicationQueueSize", SCOPE.SERVER, "Queue size for replicating messages between servers",
       Integer.class, 512),
 
