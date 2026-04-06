@@ -190,9 +190,7 @@ public class HAPacketLossE2ETest extends ArcadeHAToxiproxyTemplate {
   }
 
   private void addPacketLoss(final Proxy proxy, final ToxicDirection direction, final int percentage) throws IOException {
-    // Toxiproxy "slow_close" + "limit_data" simulate packet loss behavior.
-    // The "timeout" toxic with a probability achieves drop behavior.
-    // Using bandwidth toxic with very low rate to simulate packet-level loss.
+    // Using bandwidth toxic with very low rate to simulate degraded network conditions.
     proxy.toxics().bandwidth(proxy.getName() + "-loss-" + direction.name(), direction,
         (long) (1024 * 1024 * (100 - percentage) / 100)); // Reduce bandwidth proportionally
   }

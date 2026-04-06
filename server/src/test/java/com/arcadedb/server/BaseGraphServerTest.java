@@ -194,8 +194,18 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected void waitForReplicationIsCompleted(final int serverNumber) {
-    // With Ratis, replication is handled internally. Wait for state machine application.
-    try { Thread.sleep(5000); } catch (final InterruptedException e) { Thread.currentThread().interrupt(); }
+    // With Ratis, replication is handled internally. Wait for followers to apply up to the leader's commit index.
+    final ArcadeDBServer leader = getLeaderServer();
+    if (leader == null || leader.getHA() == null)
+      return;
+
+    final long leaderCommit = leader.getHA().getCommitIndex();
+    for (int i = 0; i < getServerCount(); i++) {
+      final ArcadeDBServer s = getServer(i);
+      if (s != leader && s.isStarted() && s.getHA() != null)
+        Awaitility.await().atMost(30, TimeUnit.SECONDS)
+            .until(() -> s.getHA().getLastAppliedIndex() >= leaderCommit);
+    }
   }
 
   @AfterEach

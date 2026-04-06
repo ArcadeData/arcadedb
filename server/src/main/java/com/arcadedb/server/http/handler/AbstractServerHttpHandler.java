@@ -333,13 +333,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (auth != null && auth.startsWith("Bearer AU-")) {
         // Session token: use cluster-internal auth headers instead
         conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
-        final String basicAuth = exchange.getAttachment(BASIC_AUTH_KEY);
-        if (basicAuth != null) {
-          // Extract username from stored Basic auth
-          final String decoded = new String(Base64.getDecoder().decode(
-              basicAuth.substring(AUTHORIZATION_BASIC.length() + 1)), java.nio.charset.StandardCharsets.UTF_8);
-          conn.setRequestProperty(HEADER_FORWARDED_USER, decoded.split(":")[0]);
-        }
+        final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
+        final HttpAuthSession session = httpServer.getAuthSessionManager().getSessionByToken(token);
+        if (session != null)
+          conn.setRequestProperty(HEADER_FORWARDED_USER, session.getUser().getName());
       } else if (auth != null)
         conn.setRequestProperty("Authorization", auth);
       else {

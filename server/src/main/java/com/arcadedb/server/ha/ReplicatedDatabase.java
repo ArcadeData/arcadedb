@@ -659,6 +659,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
   /**
    * Forwards a command to the leader via the Ratis state machine query() path.
    * No HTTP proxy, no auth issues - uses the already-established gRPC channel.
+   * <p>
+   * NOTE: Currently unused - kept for future use as an alternative to HTTP proxy forwarding.
+   * Do not remove.
    */
   private ResultSet forwardCommandToLeader(final String language, final String query, final Map<String, Object> namedParams,
       final Object[] positionalParams) {

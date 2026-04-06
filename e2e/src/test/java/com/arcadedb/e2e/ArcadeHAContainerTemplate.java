@@ -108,7 +108,9 @@ public abstract class ArcadeHAContainerTemplate {
               final JSONObject cluster = getClusterInfo(container);
               if (cluster.has("isLeader") && cluster.getBoolean("isLeader"))
                 return true;
-            } catch (final Exception ignored) {}
+            } catch (final Exception ignored) {
+              // Expected: node may not be ready yet during leader election polling
+            }
           }
           return false;
         });

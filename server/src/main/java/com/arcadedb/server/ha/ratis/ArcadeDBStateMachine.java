@@ -356,7 +356,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
           final java.io.File targetFile = new java.io.File(databasePath, zipEntry.getName());
 
           // Security: prevent zip slip
-          if (!targetFile.getCanonicalPath().startsWith(new java.io.File(databasePath).getCanonicalPath()))
+          if (!targetFile.getCanonicalPath().startsWith(new java.io.File(databasePath).getCanonicalPath() + java.io.File.separator))
             throw new ReplicationException("Zip slip detected in snapshot: " + zipEntry.getName());
 
           LogManager.instance().log(this, Level.FINE, "Extracting snapshot file: %s", targetFile.getName());
