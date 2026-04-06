@@ -41,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Integration test for the Ratis-based HA system. Starts 3 ArcadeDB servers with HA_ENABLED=true,
@@ -224,21 +225,18 @@ class RaftReplicationIT {
 
     // Writing on a follower should throw an exception indicating the leader address
     final Database followerDb = follower.getDatabase(DATABASE_NAME);
-    try {
-      followerDb.transaction(() -> {
-        final MutableVertex v = followerDb.newVertex("TestVertex");
-        v.set("id", 100L);
-        v.set("name", "follower-vertex");
-        v.save();
-      });
-      org.assertj.core.api.Assertions.fail("Expected exception on follower write");
-    } catch (final com.arcadedb.exception.TransactionException e) {
-      // The ServerIsNotTheLeaderException is wrapped in TransactionException
-      assertThat(e.getCause()).isInstanceOf(com.arcadedb.network.binary.ServerIsNotTheLeaderException.class);
-      final var notLeader = (com.arcadedb.network.binary.ServerIsNotTheLeaderException) e.getCause();
-      assertThat(notLeader.getLeaderAddress()).isNotNull();
-      assertThat(notLeader.getLeaderAddress()).contains("localhost:");
-    }
+    // ServerIsNotTheLeaderException extends NeedRetryException, so it's rethrown directly (not wrapped)
+    assertThatThrownBy(() -> followerDb.transaction(() -> {
+      final MutableVertex v = followerDb.newVertex("TestVertex");
+      v.set("id", 100L);
+      v.set("name", "follower-vertex");
+      v.save();
+    })).isInstanceOf(com.arcadedb.network.binary.ServerIsNotTheLeaderException.class)
+        .satisfies(e -> {
+          final var notLeader = (com.arcadedb.network.binary.ServerIsNotTheLeaderException) e;
+          assertThat(notLeader.getLeaderAddress()).isNotNull();
+          assertThat(notLeader.getLeaderAddress()).contains("localhost:");
+        });
   }
 
   @Test
