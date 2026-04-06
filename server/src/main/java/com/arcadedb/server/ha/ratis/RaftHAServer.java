@@ -38,12 +38,14 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -115,7 +117,7 @@ public class RaftHAServer {
     // Create Raft group using cluster name as group ID seed
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     final RaftGroupId groupId = RaftGroupId.valueOf(
-        UUID.nameUUIDFromBytes(clusterName.getBytes()));
+        UUID.nameUUIDFromBytes(clusterName.getBytes(StandardCharsets.UTF_8)));
     this.raftGroup = RaftGroup.valueOf(groupId, peers);
 
     // Initialize cluster token for inter-node HTTP auth
@@ -139,7 +141,7 @@ public class RaftHAServer {
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
     final String seed = clusterName + ":" + (rootPassword != null ? rootPassword : "");
-    this.clusterToken = UUID.nameUUIDFromBytes(seed.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    this.clusterToken = UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8)).toString();
     configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, this.clusterToken);
   }
 
@@ -155,12 +157,12 @@ public class RaftHAServer {
 
       // Use RECOVER if storage exists from a previous run, FORMAT for fresh start
       final Path storagePath = Path.of(server.getRootPath(), "ratis-storage", localPeerId.toString());
-      final boolean storageExists = java.nio.file.Files.exists(storagePath)
-          && java.nio.file.Files.list(storagePath).findAny().isPresent();
+      final boolean storageExists = Files.exists(storagePath)
+          && Files.list(storagePath).findAny().isPresent();
 
       final var startupOption = storageExists
-          ? org.apache.ratis.server.storage.RaftStorage.StartupOption.RECOVER
-          : org.apache.ratis.server.storage.RaftStorage.StartupOption.FORMAT;
+          ? RaftStorage.StartupOption.RECOVER
+          : RaftStorage.StartupOption.FORMAT;
 
       HALog.log(this, HALog.BASIC, "Ratis startup: storage=%s, option=%s", storagePath, startupOption);
 

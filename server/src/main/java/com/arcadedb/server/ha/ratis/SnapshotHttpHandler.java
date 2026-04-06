@@ -76,7 +76,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
-    final String databaseName = exchange.getQueryParameters().get("database").getFirst();
+    final String databaseName = exchange.getPathParameters().get("database").getFirst();
 
     if (databaseName == null || databaseName.isEmpty()) {
       exchange.setStatusCode(400);
@@ -133,6 +133,15 @@ public class SnapshotHttpHandler implements HttpHandler {
   }
 
   private ServerSecurityUser authenticate(final HttpServerExchange exchange) {
+    // Cluster token auth (inter-node communication)
+    final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
+    if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
+      final var raftHA = httpServer.getServer().getHA();
+      if (raftHA != null && clusterTokenHeader.getFirst().equals(raftHA.getClusterToken()))
+        return httpServer.getServer().getSecurity().getUser("root");
+    }
+
+    // Basic auth
     final HeaderValues authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);
     if (authHeader == null || authHeader.isEmpty())
       return null;

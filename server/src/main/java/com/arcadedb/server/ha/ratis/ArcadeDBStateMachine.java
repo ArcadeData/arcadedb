@@ -41,12 +41,18 @@ import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * Ratis state machine for ArcadeDB replication. Each committed Raft log entry contains a serialized
@@ -328,15 +334,20 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
 
     LogManager.instance().log(this, Level.INFO, "Downloading database snapshot from %s...", snapshotUrl);
 
-    final java.net.HttpURLConnection connection;
+    final HttpURLConnection connection;
     try {
-      connection = (java.net.HttpURLConnection) new java.net.URI(snapshotUrl).toURL().openConnection();
-    } catch (final java.net.URISyntaxException e) {
+      connection = (HttpURLConnection) new URI(snapshotUrl).toURL().openConnection();
+    } catch (final URISyntaxException e) {
       throw new IOException("Invalid snapshot URL: " + snapshotUrl, e);
     }
     connection.setRequestMethod("GET");
     connection.setConnectTimeout(30_000);
     connection.setReadTimeout(300_000); // 5 minutes for large databases
+
+    // Authenticate with cluster token for inter-node auth
+    final var raftHA = server.getHA();
+    if (raftHA != null && raftHA.getClusterToken() != null)
+      connection.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
 
     try {
       final int responseCode = connection.getResponseCode();
@@ -349,19 +360,18 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       db.close();
 
       // Extract the ZIP to the database directory, overwriting existing files
-      try (final java.util.zip.ZipInputStream zipIn = new java.util.zip.ZipInputStream(
-          connection.getInputStream())) {
-        java.util.zip.ZipEntry zipEntry;
+      try (final ZipInputStream zipIn = new ZipInputStream(connection.getInputStream())) {
+        ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {
-          final java.io.File targetFile = new java.io.File(databasePath, zipEntry.getName());
+          final File targetFile = new File(databasePath, zipEntry.getName());
 
           // Security: prevent zip slip
-          if (!targetFile.getCanonicalPath().startsWith(new java.io.File(databasePath).getCanonicalPath() + java.io.File.separator))
+          if (!targetFile.getCanonicalPath().startsWith(new File(databasePath).getCanonicalPath() + File.separator))
             throw new ReplicationException("Zip slip detected in snapshot: " + zipEntry.getName());
 
           LogManager.instance().log(this, Level.FINE, "Extracting snapshot file: %s", targetFile.getName());
 
-          try (final java.io.FileOutputStream fos = new java.io.FileOutputStream(targetFile)) {
+          try (final FileOutputStream fos = new FileOutputStream(targetFile)) {
             zipIn.transferTo(fos);
           }
           zipIn.closeEntry();
@@ -369,10 +379,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       }
 
       // Delete WAL files - they are stale after snapshot installation
-      final java.io.File dbDir = new java.io.File(databasePath);
-      final java.io.File[] walFiles = dbDir.listFiles((dir, name) -> name.endsWith(".wal"));
+      final File dbDir = new File(databasePath);
+      final File[] walFiles = dbDir.listFiles((dir, name) -> name.endsWith(".wal"));
       if (walFiles != null)
-        for (final java.io.File walFile : walFiles)
+        for (final File walFile : walFiles)
           walFile.delete();
 
       LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);

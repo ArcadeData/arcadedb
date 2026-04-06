@@ -46,6 +46,7 @@ import io.undertow.util.HttpString;
 import io.undertow.util.StatusCodes;
 
 import java.io.*;
+import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.rmi.*;
@@ -1010,21 +1011,23 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         final String peerHttpAddr = raftHA.getPeerHTTPAddress(peer.getId());
         final String url = "http://" + peerHttpAddr + "/api/v1/server";
 
-        final var conn = (java.net.HttpURLConnection) new java.net.URI(url).toURL().openConnection();
+        final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
+        conn.setConnectTimeout(30_000);
+        conn.setReadTimeout(60_000);
 
-        // Forward auth from the current request
-        final var authHeader = httpServer.getServer().getSecurity() != null ? "root" : null;
-        conn.setRequestProperty("Authorization",
-            httpServer.getServer().getConfiguration().getValueAsString(
-                com.arcadedb.GlobalConfiguration.SERVER_ROOT_PASSWORD) != null ?
-                "Basic " + java.util.Base64.getEncoder().encodeToString(
-                    ("root:" + com.arcadedb.GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString()).getBytes()) : "");
+        // Use cluster token for inter-node auth
+        if (raftHA.getClusterToken() != null) {
+          conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
+          conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
+        }
 
         conn.setDoOutput(true);
+        final JSONObject commandBody = new JSONObject();
+        commandBody.put("command", "ha verify database " + databaseName.trim());
         try (final var os = conn.getOutputStream()) {
-          os.write(("{\"command\":\"ha verify database " + databaseName.trim() + "\"}").getBytes());
+          os.write(commandBody.toString().getBytes(StandardCharsets.UTF_8));
         }
 
         if (conn.getResponseCode() == 200) {
