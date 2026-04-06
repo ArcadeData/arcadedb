@@ -554,12 +554,25 @@ public class ArcadeDBServer {
     if (databaseWrapper == null)
       return;
 
-    for (final var entry : databases.entrySet()) {
-      final ServerDatabase serverDb = entry.getValue();
-      final DatabaseInternal wrapped = serverDb.getWrappedDatabaseInstance();
+    synchronized (databases) {
+      for (final var entry : databases.entrySet()) {
+        final ServerDatabase serverDb = entry.getValue();
+        final DatabaseInternal wrapped = serverDb.getWrappedDatabaseInstance();
 
-      // Only re-wrap if the underlying database is a plain LocalDatabase (not already wrapped)
-      if (wrapped instanceof LocalDatabase localDb) {
+        // Get the underlying LocalDatabase, whether it's plain or already wrapped by an HA layer.
+        // On server restart the old wrapper may hold a stale/null raftHAServer reference, so we
+        // must always unwrap to the LocalDatabase and re-wrap with the current wrapper.
+        final LocalDatabase localDb;
+        if (wrapped instanceof LocalDatabase ld)
+          localDb = ld;
+        else if (wrapped.getEmbedded() instanceof LocalDatabase ld)
+          localDb = ld;
+        else
+          localDb = null;
+
+        if (localDb == null)
+          continue;
+
         final DatabaseInternal newWrapped = databaseWrapper.apply(localDb);
         final ServerDatabase newServerDb = new ServerDatabase(this, newWrapped);
         databases.put(entry.getKey(), newServerDb);

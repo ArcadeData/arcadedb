@@ -84,6 +84,10 @@ public class RaftHAPlugin implements ServerPlugin {
       raftHAServer.stop();
       raftHAServer = null;
     }
+    // Clear the wrapper so databases loaded during restart don't capture a stale/null raftHAServer.
+    // startService() will set a fresh wrapper and call rewrapDatabases().
+    if (server != null)
+      server.setDatabaseWrapper(null);
   }
 
   public RaftHAServer getRaftHAServer() {
