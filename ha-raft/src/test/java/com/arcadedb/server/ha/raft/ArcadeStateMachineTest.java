@@ -39,9 +39,10 @@ class ArcadeStateMachineTest {
   }
 
   @Test
-  void getLastAppliedTermIndexInitiallyNull() {
+  void getLastAppliedTermIndexInitiallyDefault() {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    assertThat(sm.getLastAppliedTermIndex()).isNull();
+    // BaseStateMachine returns INITIAL_VALUE (not null) before any transaction is applied
+    assertThat(sm.getLastAppliedTermIndex()).isNotNull();
   }
 
   @Test
