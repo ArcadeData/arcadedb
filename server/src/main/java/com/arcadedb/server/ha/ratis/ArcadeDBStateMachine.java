@@ -132,6 +132,11 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       lastAppliedIndex.set(index);
       updateLastAppliedTermIndex(logEntry.getTerm(), index);
 
+      // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
+      final var raftHA = server.getHA();
+      if (raftHA != null)
+        raftHA.notifyApplied();
+
       return CompletableFuture.completedFuture(Message.EMPTY);
 
     } catch (final Exception e) {
@@ -361,14 +366,14 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       db.close();
 
       // Extract the ZIP to the database directory, overwriting existing files
-      final Path dbPath = Path.of(databasePath).toRealPath();
+      final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
       try (final ZipInputStream zipIn = new ZipInputStream(connection.getInputStream())) {
         ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {
           final File targetFile = new File(databasePath, zipEntry.getName());
 
-          // Security: prevent zip slip
-          if (!targetFile.toPath().normalize().startsWith(dbPath))
+          // Security: prevent zip slip (lexical check - both sides normalized the same way)
+          if (!targetFile.toPath().normalize().toAbsolutePath().startsWith(dbPath))
             throw new ReplicationException("Zip slip detected in snapshot: " + zipEntry.getName());
 
           LogManager.instance().log(this, Level.FINE, "Extracting snapshot file: %s", targetFile.getName());

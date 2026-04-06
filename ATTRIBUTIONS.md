@@ -165,6 +165,21 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | io.undertow | undertow-core | ~2.3.x | Apache 2.0 | https://undertow.io/ |
 | io.netty | netty-* | ~4.1.x | Apache 2.0 | https://netty.io/ |
 
+### Apache Ratis (High Availability)
+
+| Group ID | Artifact ID | Version | License | Homepage |
+|----------|-------------|---------|---------|----------|
+| org.apache.ratis | ratis-server | 3.2.1 | Apache 2.0 | https://ratis.apache.org/ |
+| org.apache.ratis | ratis-grpc | 3.2.1 | Apache 2.0 | https://ratis.apache.org/ |
+| org.apache.ratis | ratis-common | 3.2.1 | Apache 2.0 | https://ratis.apache.org/ |
+| org.apache.ratis | ratis-client | 3.2.1 | Apache 2.0 | https://ratis.apache.org/ |
+| org.apache.ratis | ratis-server-api | 3.2.1 | Apache 2.0 | https://ratis.apache.org/ |
+| org.apache.ratis | ratis-proto | 3.2.1 | Apache 2.0 | https://ratis.apache.org/ |
+| org.apache.ratis | ratis-metrics-default | 3.2.1 | Apache 2.0 | https://ratis.apache.org/ |
+| org.apache.ratis | ratis-thirdparty-misc | 1.0.10 | Apache 2.0 | https://ratis.apache.org/ |
+
+**Apache Ratis Notice:** Apache Ratis is a Java library for building fault-tolerant distributed systems using the Raft consensus algorithm. It provides the foundation for ArcadeDB's High Availability clustering. Apache Ratis, Ratis, Apache, the Apache feather, and the Apache Ratis project logo are trademarks of The Apache Software Foundation.
+
 ### Apache TinkerPop / Gremlin (Optional Module)
 
 | Group ID | Artifact ID | Version | License | Homepage |

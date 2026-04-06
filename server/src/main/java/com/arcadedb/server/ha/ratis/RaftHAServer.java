@@ -98,6 +98,7 @@ public class RaftHAServer {
   private ArcadeDBStateMachine             stateMachine;
   private ClusterMonitor                   clusterMonitor;
   private RaftGroupCommitter               groupCommitter;
+  private final Object                     applyNotifier = new Object();
   private java.util.concurrent.ScheduledExecutorService lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
@@ -141,11 +142,20 @@ public class RaftHAServer {
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
     final String seed = clusterName + ":" + (rootPassword != null ? rootPassword : "");
-    this.clusterToken = UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8)).toString();
+    try {
+      final java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+      final byte[] hash = digest.digest(seed.getBytes(StandardCharsets.UTF_8));
+      this.clusterToken = java.util.HexFormat.of().formatHex(hash);
+    } catch (final java.security.NoSuchAlgorithmException e) {
+      // SHA-256 is guaranteed to be available in all JVMs
+      throw new RuntimeException(e);
+    }
     configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, this.clusterToken);
   }
 
   public void startService() {
+    HALog.refreshLevel();
+
     LogManager.instance().log(this, Level.INFO, "Starting Ratis HA service (cluster=%s, peers=%s, quorum=%s)...",
         configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME), raftGroup.getPeers(), quorum);
 
@@ -188,7 +198,8 @@ public class RaftHAServer {
       if (!storageExists && configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
         tryAutoJoinCluster();
 
-      groupCommitter = new RaftGroupCommitter(this);
+      groupCommitter = new RaftGroupCommitter(this,
+          configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE));
       startLagMonitor();
 
       LogManager.instance().log(this, Level.INFO, "Ratis HA service started (serverId=%s)", localPeerId);
@@ -480,15 +491,19 @@ public class RaftHAServer {
       return;
     try {
       final long deadline = System.currentTimeMillis() + quorumTimeout;
-      while (System.currentTimeMillis() < deadline) {
-        if (getLastAppliedIndex() >= targetIndex) {
-          HALog.log(this, HALog.TRACE, "Bookmark wait complete: applied >= target=%d", targetIndex);
-          return;
+      synchronized (applyNotifier) {
+        while (getLastAppliedIndex() < targetIndex) {
+          final long remaining = deadline - System.currentTimeMillis();
+          if (remaining <= 0) {
+            LogManager.instance().log(this, Level.WARNING,
+                "READ_YOUR_WRITES consistency timeout: applied=%d < target=%d (consistency guarantee degraded to EVENTUAL)",
+                getLastAppliedIndex(), targetIndex);
+            return;
+          }
+          applyNotifier.wait(remaining);
         }
-        Thread.sleep(10);
       }
-      HALog.log(this, HALog.DETAILED, "waitForAppliedIndex timed out: applied=%d < target=%d",
-          getLastAppliedIndex(), targetIndex);
+      HALog.log(this, HALog.TRACE, "Bookmark wait complete: applied >= target=%d", targetIndex);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
@@ -505,17 +520,20 @@ public class RaftHAServer {
       if (commitIndex <= 0)
         return;
 
-      // Poll until local apply catches up to the commit index
       final long deadline = System.currentTimeMillis() + quorumTimeout;
-      while (System.currentTimeMillis() < deadline) {
-        final long applied = getLastAppliedIndex();
-        if (applied >= commitIndex) {
-          HALog.log(this, HALog.TRACE, "Local apply caught up: applied=%d >= commit=%d", applied, commitIndex);
-          return;
+      synchronized (applyNotifier) {
+        while (getLastAppliedIndex() < commitIndex) {
+          final long remaining = deadline - System.currentTimeMillis();
+          if (remaining <= 0) {
+            HALog.log(this, HALog.DETAILED, "waitForLocalApply timed out: applied=%d < commit=%d",
+                getLastAppliedIndex(), commitIndex);
+            return;
+          }
+          applyNotifier.wait(remaining);
         }
-        Thread.sleep(10);
       }
-      HALog.log(this, HALog.DETAILED, "waitForLocalApply timed out: applied=%d < commit=%d", getLastAppliedIndex(), commitIndex);
+      HALog.log(this, HALog.TRACE, "Local apply caught up: applied=%d >= commit=%d",
+          getLastAppliedIndex(), commitIndex);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     } catch (final Exception e) {
@@ -573,6 +591,13 @@ public class RaftHAServer {
       return raftServer.getDivision(raftGroup.getGroupId()).getInfo().getLastAppliedIndex();
     } catch (final IOException e) {
       return -1;
+    }
+  }
+
+  /** Called by ArcadeDBStateMachine after applying a log entry to wake up waiters. */
+  public void notifyApplied() {
+    synchronized (applyNotifier) {
+      applyNotifier.notifyAll();
     }
   }
 
@@ -895,25 +920,29 @@ public class RaftHAServer {
     // RPC factory
     properties.set("raft.server.rpc.type", "GRPC");
 
-    // Timeouts
-    RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(1500, TimeUnit.MILLISECONDS));
-    RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(3000, TimeUnit.MILLISECONDS));
+    // Election timeouts (configurable for WAN clusters)
+    final int electionMin = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN);
+    final int electionMax = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX);
+    RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(electionMin, TimeUnit.MILLISECONDS));
+    RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(electionMax, TimeUnit.MILLISECONDS));
 
     // Snapshot: notification mode (ArcadeDB handles the actual transfer)
     RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, false);
-    // Auto-trigger snapshots after 100K entries
+    final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD);
     RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, true);
-    RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, 100000L);
+    RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, snapshotThreshold);
 
-    // Log segment size (64MB, matching current ReplicationLogFile chunk size)
-    RaftServerConfigKeys.Log.setSegmentSizeMax(properties, SizeInBytes.valueOf("64MB"));
+    // Log segment size
+    final String logSegmentSize = configuration.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE);
+    RaftServerConfigKeys.Log.setSegmentSizeMax(properties, SizeInBytes.valueOf(logSegmentSize));
 
     // Write buffer (must be >= appender buffer byte-limit + 8)
     RaftServerConfigKeys.Log.setWriteBufferSize(properties, SizeInBytes.valueOf("8MB"));
 
     // AppendEntries batching: allow multiple log entries in a single gRPC call to followers.
     // Combined with the group committer, this allows many transactions to be replicated in one round-trip.
-    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf("4MB"));
+    final String appendBufferSize = configuration.getValueAsString(GlobalConfiguration.HA_APPEND_BUFFER_SIZE);
+    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf(appendBufferSize));
     RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, 256);
 
     // Leader lease: enables consistent reads from the leader without a round-trip to followers.

@@ -47,15 +47,15 @@ import java.util.logging.Level;
  */
 public class RaftGroupCommitter {
 
-  private static final int MAX_BATCH_SIZE     = 500;
-
+  private final int                                    maxBatchSize;
   private final RaftHAServer                           haServer;
   private final LinkedBlockingQueue<PendingEntry>      queue      = new LinkedBlockingQueue<>();
   private final Thread                                 flusher;
   private volatile boolean                             running    = true;
 
-  public RaftGroupCommitter(final RaftHAServer haServer) {
+  public RaftGroupCommitter(final RaftHAServer haServer, final int maxBatchSize) {
     this.haServer = haServer;
+    this.maxBatchSize = maxBatchSize;
     this.flusher = new Thread(this::flushLoop, "arcadedb-raft-group-committer");
     this.flusher.setDaemon(true);
     this.flusher.start();
@@ -92,7 +92,7 @@ public class RaftGroupCommitter {
   }
 
   private void flushLoop() {
-    final List<PendingEntry> batch = new ArrayList<>(MAX_BATCH_SIZE);
+    final List<PendingEntry> batch = new ArrayList<>(maxBatchSize);
 
     while (running) {
       try {
@@ -107,7 +107,7 @@ public class RaftGroupCommitter {
         // Drain all entries already in the queue (non-blocking).
         // Under concurrent load, multiple entries accumulate while we process.
         // Under single-thread load, the queue is empty and we flush immediately (zero overhead).
-        queue.drainTo(batch, MAX_BATCH_SIZE - 1);
+        queue.drainTo(batch, maxBatchSize - 1);
 
         // Send all entries via pipelined async calls
         flushBatch(batch);

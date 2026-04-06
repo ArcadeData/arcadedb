@@ -499,14 +499,14 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private boolean connectCluster(final String serverAddress, final HttpServerExchange exchange) {
     Metrics.counter("http.connect-cluster").increment();
     // With Ratis, cluster membership is managed via 'ha add peer' / 'ha remove peer' commands
-    throw new UnsupportedOperationException(
+    throw new IllegalArgumentException(
         "Use 'ha add peer <id> <address>' to manage cluster membership with Ratis HA");
   }
 
   private void disconnectCluster() {
     Metrics.counter("http.server-disconnect").increment();
     // With Ratis, the server can be removed via 'ha remove peer'
-    throw new UnsupportedOperationException(
+    throw new IllegalArgumentException(
         "Use 'ha remove peer <id>' to manage cluster membership with Ratis HA");
   }
 
