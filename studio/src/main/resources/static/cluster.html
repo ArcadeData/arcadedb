@@ -1,65 +1,148 @@
 <div class="tab-pane fade" id="tab-cluster" role="tabpanel">
-  <div class="d-flex justify-content-around">
-    <div class="p-2 flex-grow-1">
-      <div>
-        <h4><i class="fa fa-server"></i> Cluster</h4>
-      </div>
-      <div class="p-2">
-        <span id="serverInfo"></span>
-      </div>
-    </div>
-    <div class="p-2">
-      <button id="clusterConnectButton" type="button" class="btn btn-secondary" onclick="connectToCluster()">Connect <i class="fas fa-wifi"></i></button>
-      <button id="clusterDisconnectButton" type="button" class="btn btn-secondary" onclick="disconnectFromCluster()" style="display: none">
-        Disconnect <i class="fas fa-wifi"></i>
-      </button>
-    </div>
-  </div>
 
-  <hr />
-
-  <div class="d-flex justify-content-around pb-3">
-    <div class="flex-grow-1 py-1 form-inline">
-      <div class="form-row row">
-        <button class="btn btn-pill" onclick="updateCluster()">Refresh <i class="fa fa-sync"></i></button>
-        <select id="clusterRefreshTimeout" class="form-control form-select" onchange="startClusterRefreshTimer(true)">
-          <option value="0">Off</option>
-          <option value="10">Every 10 sec</option>
-          <option value="30">Every 30 sec</option>
-          <option value="60">Every 1 min</option>
-          <option value="300">Every 5 min</option>
-        </select>
-      </div>
+  <!-- Header Bar -->
+  <div class="d-flex align-items-center px-3 py-2" style="border-bottom: 1px solid var(--border-light);">
+    <div class="flex-grow-1 d-flex align-items-center gap-3">
+      <span style="font-size: 0.88rem; color: var(--text-secondary);">
+        <i class="fa fa-server" style="color: var(--color-brand); margin-right: 6px;"></i>
+        Cluster <b id="clusterNameLabel"></b>
+        <span id="clusterRoleBadge" class="badge ms-2" style="font-size: 0.7rem;"></span>
+        <span id="clusterHealthBadge" class="badge ms-2" style="font-size: 0.7rem;"></span>
+      </span>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <button class="btn btn-sm db-action-btn" onclick="updateCluster()"><i class="fa fa-sync"></i> Refresh</button>
+      <select id="clusterRefreshTimeout" class="form-select form-select-sm" style="width: auto; font-size: 0.8rem;" onchange="startClusterRefreshTimer(true)">
+        <option value="0">Auto Off</option>
+        <option value="5">5 sec</option>
+        <option value="10">10 sec</option>
+        <option value="30">30 sec</option>
+        <option value="60">1 min</option>
+      </select>
     </div>
   </div>
 
-  <div class="row pt-2">
-    <div class="col-12">
-      <label><h5>Online Replicas</h5></label>
+  <!-- Subtabs -->
+  <div class="d-flex align-items-center px-2 py-1">
+    <div class="flex-grow-1">
+      <ul class="nav nav-tabs text-center" style="float: right">
+        <li class="nav-item"><a data-bs-toggle="tab" href="#tab-cluster-overview" class="active show nav-link" id="tab-cluster-overview-sel">Overview</a></li>
+        <li class="nav-item"><a data-bs-toggle="tab" href="#tab-cluster-metrics" class="nav-link" id="tab-cluster-metrics-sel">Metrics</a></li>
+        <li class="nav-item"><a data-bs-toggle="tab" href="#tab-cluster-management" class="nav-link" id="tab-cluster-management-sel">Management</a></li>
+      </ul>
     </div>
   </div>
 
-  <div class="row">
-    <div class="col-12">
-      <div class="table-responsive">
-        <table id="serverOnlineReplicaTable" class="table table-striped table-sm" style="width: 100%; table-layout: fixed"></table>
+  <div class="tab-content px-3 pt-3">
+
+    <!-- ==================== OVERVIEW TAB ==================== -->
+    <div class="tab-pane fade show active" id="tab-cluster-overview" role="tabpanel">
+
+      <!-- Cluster Info Row -->
+      <div class="row mb-3">
+        <div class="col-12">
+          <div class="card" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-body py-2 px-3">
+              <div class="d-flex flex-wrap gap-4" style="font-size: 0.85rem;">
+                <div><span class="text-muted">Leader:</span> <b id="clusterLeaderName">-</b></div>
+                <div><span class="text-muted">Leader HTTP:</span> <b id="clusterLeaderHttp">-</b></div>
+                <div><span class="text-muted">Local Peer:</span> <b id="clusterLocalPeer">-</b></div>
+                <div><span class="text-muted">Servers:</span> <b id="clusterServerCount">-</b></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Node Cards -->
+      <div class="row mb-3">
+        <div class="col-12">
+          <h6 style="color: var(--text-secondary); font-weight: 600;">Cluster Nodes</h6>
+        </div>
+      </div>
+      <div class="row g-3 mb-4" id="clusterNodeCards">
+        <!-- Dynamically populated by JS -->
+      </div>
+
+    </div>
+
+    <!-- ==================== METRICS TAB ==================== -->
+    <div class="tab-pane fade" id="tab-cluster-metrics" role="tabpanel">
+
+      <!-- Metric Summary Cards -->
+      <div class="row g-3 mb-3">
+        <div class="col-md-4">
+          <div class="card text-center" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-body py-2">
+              <div style="font-size: 0.72rem; color: var(--text-secondary);">Elections</div>
+              <div id="metricElectionCount" style="font-size: 1.4rem; font-weight: 700; color: var(--color-brand);">-</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="card text-center" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-body py-2">
+              <div style="font-size: 0.72rem; color: var(--text-secondary);">Last Election</div>
+              <div id="metricLastElection" style="font-size: 0.88rem; font-weight: 600; color: var(--text-primary);">-</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="card text-center" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-body py-2">
+              <div style="font-size: 0.72rem; color: var(--text-secondary);">Uptime</div>
+              <div id="metricUptime" style="font-size: 0.88rem; font-weight: 600; color: var(--text-primary);">-</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ==================== MANAGEMENT TAB ==================== -->
+    <div class="tab-pane fade" id="tab-cluster-management" role="tabpanel">
+      <div class="row g-3">
+
+        <!-- Left column: Peers -->
+        <div class="col-md-6">
+
+          <!-- Peer Management Card -->
+          <div class="card mb-3" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-header py-2" style="background: var(--bg-hover); border-bottom: 1px solid var(--border-light); border-radius: 10px 10px 0 0;">
+              <i class="fas fa-network-wired" style="color: var(--color-brand);"></i>
+              <span style="font-weight: 600; font-size: 0.88rem; margin-left: 6px;">Cluster Membership</span>
+            </div>
+            <div class="card-body py-3">
+              <div id="peerManagementList" class="mb-3">
+                <!-- Dynamically populated -->
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Right column: Danger -->
+        <div class="col-md-6">
+
+          <!-- Danger Zone Card -->
+          <div class="card" style="border: 1px solid #fca5a5; border-radius: 10px;">
+            <div class="card-header py-2" style="background: #fef2f2; border-bottom: 1px solid #fca5a5; border-radius: 10px 10px 0 0;">
+              <i class="fas fa-exclamation-triangle" style="color: #ef4444;"></i>
+              <span style="font-weight: 600; font-size: 0.88rem; margin-left: 6px; color: #dc2626;">Danger Zone</span>
+            </div>
+            <div class="card-body py-3">
+              <p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 10px;">
+                These actions can disrupt the cluster. Use with caution.
+              </p>
+              <button class="btn btn-sm btn-outline-danger" onclick="shutdownServer()">
+                <i class="fas fa-power-off"></i> Shutdown This Server
+              </button>
+            </div>
+          </div>
+
+        </div>
       </div>
     </div>
-  </div>
 
-  <br />
-
-  <div class="row">
-    <div class="col-12">
-      <label><h5>Replicated Databases</h5></label>
-    </div>
-  </div>
-
-  <div class="row">
-    <div class="col-12">
-      <div class="table-responsive">
-        <table id="replicatedDatabasesTable" class="table table-striped table-sm" style="width: 100%; table-layout: fixed"></table>
-      </div>
-    </div>
   </div>
 </div>

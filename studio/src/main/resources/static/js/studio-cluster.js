@@ -1,222 +1,200 @@
 var clusterRefreshTimer = null;
 
 function updateCluster(callback) {
-  jQuery
-    .ajax({
-      type: "GET",
-      url: "api/v1/server?mode=cluster",
-      beforeSend: function (xhr) {
-        xhr.setRequestHeader("Authorization", globalCredentials);
-      },
-    })
-    .done(function (data) {
-      if (data.ha != null) {
-        $("#serverInfo").html(
-          "Server <b>" +
-            data.ha.network.current.name +
-            "</b> works as <b>" +
-            data.ha.network.current.role +
-            "</b> in cluster <b>" +
-            data.ha.clusterName +
-            "</b> joined on <b>" +
-            data.ha.network.current.joinedOn +
-            "</b> (election=<b>" +
-            data.ha.electionStatus +
-            "</b>)",
-        );
-
-        if ($.fn.dataTable.isDataTable("#serverOnlineReplicaTable"))
-          try {
-            $("#serverOnlineReplicaTable").DataTable().destroy();
-            $("#serverOnlineReplicaTable").empty();
-          } catch (e) {}
-
-        var tableRecords = [];
-
-        if (data.ha.network.replicas.length > 0) {
-          $("#clusterConnectButton").hide();
-          $("#clusterDisconnectButton").show();
-
-          for (let i in data.ha.network.replicas) {
-            let row = data.ha.network.replicas[i];
-
-            let record = [];
-            record.push(escapeHtml(row.name));
-            record.push(escapeHtml(row.address));
-            record.push(escapeHtml(row.status));
-            record.push(escapeHtml(row.joinedOn));
-            record.push(escapeHtml(row.leftOn));
-            record.push(escapeHtml(row.throughput));
-            record.push(escapeHtml(row.latency));
-            record.push("<button class='btn' onclick='shutdownServer(\"" + row.name + "\")'><i class='fas fa-power-off' style='color: red;'></i></button>");
-
-            tableRecords.push(record);
-          }
-
-          $("#serverOnlineReplicaTable").DataTable({
-            searching: false,
-            paging: false,
-            ordering: false,
-            columns: [
-              { title: "Server Name" },
-              { title: "Server Address" },
-              { title: "Status" },
-              { title: "Joined On" },
-              { title: "Left On" },
-              { title: "Throughput" },
-              { title: "Latency" },
-              { title: "Commands", width: "7%" },
-            ],
-            data: tableRecords,
-          });
-        } else {
-          $("#clusterConnectButton").show();
-          $("#clusterDisconnectButton").hide();
-        }
-
-        if ($.fn.dataTable.isDataTable("#replicatedDatabasesTable"))
-          try {
-            $("#replicatedDatabasesTable").DataTable().destroy();
-            $("#replicatedDatabasesTable").empty();
-          } catch (e) {}
-
-        tableRecords = [];
-
-        if (data.ha.databases.length > 0) {
-          for (let i in data.ha.databases) {
-            let row = data.ha.databases[i];
-
-            let record = [];
-            record.push(escapeHtml(row.name));
-            record.push(escapeHtml(row.quorum));
-            record.push("<button class='btn' onclick='alignDatabase(\"" + row.name + "\")'><i class='fas fa-sync' style='color: green;'></i></button>");
-
-            tableRecords.push(record);
-          }
-
-          $("#replicatedDatabasesTable").DataTable({
-            searching: false,
-            paging: false,
-            ordering: false,
-            columns: [{ title: "Database Name" }, { title: "Quorum" }, { title: "Commands", width: "7%" }],
-            data: tableRecords,
-          });
-        }
-      }
-
-      if (callback) callback();
-
-      startClusterRefreshTimer();
-    })
-    .fail(function (jqXHR, textStatus, errorThrown) {
-      globalNotifyError(jqXHR.responseText);
-    });
+  jQuery.ajax({
+    type: "GET",
+    url: "api/v1/cluster",
+    beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+  })
+  .done(function(data) {
+    renderClusterData(data);
+    if (callback) callback();
+    startClusterRefreshTimer();
+  })
+  .fail(function(jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
 }
 
-function renderDatabases(databases) {
-  let result = '<table cellpadding="1" cellspacing="0" border="0" style="padding-left:50px;">';
+function renderClusterData(data) {
+  // Header
+  $("#clusterNameLabel").text(data.clusterName || "");
 
-  for (let i in databases) {
-    let db = databases[i];
-    result += "<tr><td>" + db.name + "</td><td><button enabled='false'></td>";
+  var isLeader = data.isLeader === true;
+  var leaderId = data.leaderId;
+  var localPeerId = data.localPeerId;
+
+  // Determine local role
+  var localRole = isLeader ? "LEADER" : "FOLLOWER";
+  $("#clusterRoleBadge")
+    .text(localRole)
+    .removeClass("bg-success bg-warning bg-secondary bg-primary")
+    .addClass(isLeader ? "bg-success" : "bg-primary");
+
+  var healthy = leaderId != null && leaderId !== "";
+  $("#clusterHealthBadge")
+    .text(healthy ? "HEALTHY" : "NO LEADER")
+    .removeClass("bg-success bg-warning")
+    .addClass(healthy ? "bg-success" : "bg-warning");
+
+  // Info bar
+  $("#clusterLeaderName").text(leaderId || "none");
+  $("#clusterLeaderHttp").text(data.leaderHttpAddress || "-");
+  $("#clusterLocalPeer").text(localPeerId || "-");
+  var peers = data.peers || [];
+  $("#clusterServerCount").text(peers.length);
+
+  // Node cards
+  renderNodeCards(data);
+
+  // Peer management list
+  renderPeerManagement(data);
+
+  // Update metrics summary
+  updateMetricsSummary(data);
+}
+
+function renderNodeCards(data) {
+  var container = $("#clusterNodeCards");
+  container.empty();
+
+  var peers = data.peers || [];
+  var colClass = peers.length <= 3 ? "col-md-4" : "col-md-3";
+
+  for (var i = 0; i < peers.length; i++) {
+    var peer = peers[i];
+    var isLeader = peer.role === "LEADER";
+    var isLocal = peer.id === data.localPeerId;
+
+    var borderColor = isLeader ? "var(--color-brand)" : "var(--border-light)";
+    var roleBadge = isLeader
+      ? '<span class="badge bg-success">LEADER</span>'
+      : '<span class="badge bg-secondary">FOLLOWER</span>';
+    var localBadge = isLocal ? ' <span class="badge bg-info" style="font-size:0.6rem;">LOCAL</span>' : '';
+
+    var dotColor = "limegreen";
+    var statusDot = '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' + dotColor + '; margin-right:6px;"></span>';
+
+    var card = '<div class="' + colClass + '">'
+      + '<div class="card h-100" style="border: 2px solid ' + borderColor + '; border-radius: 10px;">'
+      + '<div class="card-body py-2 px-3">'
+      + '<div class="d-flex align-items-center justify-content-between">'
+      + '<div>' + statusDot + '<b style="font-size:0.85rem;">' + escapeHtml(peer.id) + '</b>' + localBadge + '</div>'
+      + '<div>' + roleBadge + '</div>'
+      + '</div>'
+      + '<div style="font-size:0.78rem; color:var(--text-secondary); margin-top:4px;">'
+      + '<i class="fas fa-network-wired" style="margin-right:4px;"></i>' + escapeHtml(peer.address || "")
+      + '</div>'
+      + '</div></div></div>';
+
+    container.append(card);
   }
-  result += "</table>";
-  return result;
 }
+
+function renderPeerManagement(data) {
+  var container = $("#peerManagementList");
+  container.empty();
+  var peers = data.peers || [];
+  for (var i = 0; i < peers.length; i++) {
+    var peer = peers[i];
+    var isLeader = peer.role === "LEADER";
+    var isLocal = peer.id === data.localPeerId;
+    var roleBadge = isLeader
+      ? '<span class="badge bg-success" style="font-size:0.65rem;">LEADER</span>'
+      : '<span class="badge bg-secondary" style="font-size:0.65rem;">FOLLOWER</span>';
+    var localTag = isLocal ? ' <span class="badge bg-info" style="font-size:0.6rem;">LOCAL</span>' : '';
+
+    container.append(
+      '<div class="d-flex align-items-center justify-content-between py-1 px-2 mb-1" '
+      + 'style="font-size:0.82rem; background:var(--bg-main); border-radius:6px; border:1px solid var(--border-light);">'
+      + '<div><i class="fa fa-server" style="color:var(--color-brand); margin-right:6px;"></i>'
+      + escapeHtml(peer.id) + ' <span style="color:var(--text-secondary); font-size:0.75rem;">(' + escapeHtml(peer.address || "") + ')</span>'
+      + localTag + ' ' + roleBadge + '</div>'
+      + '</div>'
+    );
+  }
+}
+
+function updateMetricsSummary(data) {
+  // Election count
+  $("#metricElectionCount").text(data.electionCount != null ? data.electionCount : "-");
+
+  // Last election time
+  if (data.lastElectionTime > 0) {
+    var elapsed = Date.now() - data.lastElectionTime;
+    $("#metricLastElection").text(formatDuration(elapsed) + " ago");
+  } else {
+    $("#metricLastElection").text("none");
+  }
+
+  // Uptime
+  if (data.uptime != null && data.uptime > 0) {
+    $("#metricUptime").text(formatDuration(data.uptime));
+  } else {
+    $("#metricUptime").text("-");
+  }
+}
+
+function formatDuration(ms) {
+  var secs = Math.floor(ms / 1000);
+  if (secs < 60) return secs + "s";
+  var mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + "m " + (secs % 60) + "s";
+  var hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + "h " + (mins % 60) + "m";
+  var days = Math.floor(hours / 24);
+  return days + "d " + (hours % 24) + "h";
+}
+
+// ==================== MANAGEMENT ACTIONS ====================
 
 function shutdownServer(serverName) {
-  let command = serverName != null ? "shutdown " + serverName : "shutdown";
-  let message = serverName != null ? "Are you sure to shut down the server '" + serverName + "'?" : "Are you sure to shut down the current server?";
-  globalConfirm("Shutdown Server", message, "warning", function () {
-    executeServerCommand(command, "Server shutdown request sent successfully");
+  var command = serverName ? "shutdown " + serverName : "shutdown";
+  var message = serverName ? "Shut down server '" + serverName + "'?" : "Shut down this server?";
+  globalConfirm("Shutdown Server", message, "warning", function() {
+    executeClusterCommand(command, "Shutdown request sent");
   });
 }
 
-function disconnectFromCluster() {
-  globalConfirm("Shutdown Server", "Are you sure to disconnect current server from the cluster?", "warning", function () {
-    executeServerCommand("disconnect cluster", "Disconnection from the cluster request sent successfully");
+function executeClusterCommand(command, successMessage) {
+  if (!command) return;
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/server",
+    data: JSON.stringify({ command: command }),
+    contentType: "application/json",
+    beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+  })
+  .done(function(data) {
+    globalNotify("Success", successMessage, "success");
+    setTimeout(function() { updateCluster(); }, 2000);
+  })
+  .fail(function(jqXHR) {
+    var msg = "Unknown error";
+    if (jqXHR.responseJSON)
+      msg = jqXHR.responseJSON.detail || jqXHR.responseJSON.error || msg;
+    else if (jqXHR.responseText)
+      try { msg = JSON.parse(jqXHR.responseText).error || msg; } catch(e) { msg = jqXHR.responseText; }
+    globalNotify("Error", msg, "danger");
   });
 }
 
-function alignDatabase(dbName) {
-  let message = "Are you sure to realign the database '" + dbName + "' from the leader to all the replicas?";
-  globalConfirm("Align Database", message, "warning", function (result) {
-    executeServerCommand("align database " + dbName, "Align Database executed");
-  });
-}
-
-function connectToCluster() {
-  let lastClusterServerAddress = globalStorageLoad("lastClusterServerAddress", "");
-
-  let html = "<label for='clusterServerAddress'>Enter the server name/ip-address and the optional port with the format &lt;ip&gt;[:&lt;port&gt;].<br>The default port for replication is 2424.</label>" +
-    "<input class='form-control mt-2' id='clusterServerAddress' value='" + escapeHtml(lastClusterServerAddress) + "' " +
-    "onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
-
-  globalPrompt("Connect to a cluster", html, "Connect", function() {
-    let serverAddress = encodeURI($("#clusterServerAddress").val().trim());
-    if (serverAddress == "") {
-      globalNotify("Error", "Server address is empty", "danger");
-      return;
-    }
-
-    globalStorageSave("lastClusterServerAddress", serverAddress);
-
-    jQuery
-      .ajax({
-        type: "POST",
-        url: "api/v1/server",
-        data: "{ 'command': 'connect cluster " + serverAddress + "' }",
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", globalCredentials);
-        },
-      })
-      .done(function (data) {
-        globalNotify("Connection to the cluster", "The command was correctly sent to the server", "success");
-        updateCluster();
-      })
-      .fail(function (jqXHR, textStatus, errorThrown) {
-        globalNotifyError(jqXHR.responseText);
-      });
-  });
-}
-
-function executeServerCommand(command, successMessage) {
-  if (command == null || command == "") return;
-
-  jQuery
-    .ajax({
-      type: "POST",
-      url: "api/v1/server",
-      data: JSON.stringify({
-        command: command,
-      }),
-      beforeSend: function (xhr) {
-        xhr.setRequestHeader("Authorization", globalCredentials);
-      },
-    })
-    .done(function (data) {
-      globalNotify(successMessage, data.result, "success");
-    })
-    .fail(function (jqXHR, textStatus, errorThrown) {
-      globalNotify("Error", jqXHR.responseJSON.detail, "danger");
-    });
-}
+// ==================== REFRESH TIMER ====================
 
 function startClusterRefreshTimer(userChange) {
   if (clusterRefreshTimer != null) clearTimeout(clusterRefreshTimer);
 
-  const clusterRefreshTimeoutInSecs = $("#clusterRefreshTimeout").val();
-  if (clusterRefreshTimeoutInSecs > 0) {
-    clusterRefreshTimer = setTimeout(function () {
+  var secs = parseInt($("#clusterRefreshTimeout").val());
+  if (secs > 0) {
+    clusterRefreshTimer = setTimeout(function() {
       if (studioCurrentTab == "cluster") updateCluster();
-    }, clusterRefreshTimeoutInSecs * 1000);
+    }, secs * 1000);
   }
 
-  if (userChange) globalSetCookie("clusterRefreshTimeoutInSecs", clusterRefreshTimeoutInSecs, 365);
+  if (userChange) globalSetCookie("clusterRefreshTimeoutInSecs", secs, 365);
 }
 
-document.addEventListener("DOMContentLoaded", function (event) {
-  let clusterRefreshTimeoutInSecs = globalGetCookie("clusterRefreshTimeoutInSecs");
-  if (clusterRefreshTimeoutInSecs == null) serverRefreshTimeoutInSecs = 0;
-  $("#clusterRefreshTimeout").val(clusterRefreshTimeoutInSecs);
+document.addEventListener("DOMContentLoaded", function() {
+  var saved = globalGetCookie("clusterRefreshTimeoutInSecs");
+  if (saved != null) $("#clusterRefreshTimeout").val(saved);
 });
