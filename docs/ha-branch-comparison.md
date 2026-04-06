@@ -1,6 +1,6 @@
 # HA Branch Comparison: `ha-redesign` vs `apache-ratis`
 
-**Date:** 2026-04-06
+**Date:** 2026-04-06 (updated after second port round)
 **Compared against:** `main` branch
 
 Both branches rewrite ArcadeDB's High Availability stack on top of Apache Ratis. They share the same goal but differ in architecture, scope, and maturity.
@@ -38,7 +38,7 @@ Both branches rewrite ArcadeDB's High Availability stack on top of Apache Ratis.
 | `GetClusterHandler` | HTTP endpoint returning cluster status JSON |
 | `SnapshotManager` | CRC32 checksum and file-diff utilities |
 | `ClusterMonitor` | Replication lag tracking per replica |
-| `HALog` | Structured HA logging (BASIC/DETAILED/TRACE) |
+| `HALog` | Structured HA logging (BASIC/DETAILED/TRACE) with cached level |
 | `Quorum` | Enum: MAJORITY, ALL |
 | `RaftLogEntryType` | Enum: TX_ENTRY, SCHEMA_ENTRY, INSTALL_DATABASE_ENTRY |
 | `package-info.java` | Package documentation |
@@ -59,93 +59,63 @@ Both branches rewrite ArcadeDB's High Availability stack on top of Apache Ratis.
 
 ## 3. Shared Features (Both Branches)
 
-These features exist on both sides with similar implementations:
+These features exist on both sides with equivalent implementations:
 
 | Feature | Notes |
 |---------|-------|
 | Group Committer | Batched Raft writes via pipelined `async().send()`, configurable batch size |
+| ALL Quorum correctness | Success only reported after ALL watch completes (race condition fixed) |
 | LZ4 WAL Compression | WAL data in log entries compressed via `CompressionFactory` |
 | Snapshot Install | `notifyInstallSnapshotFromLeader()` + HTTP-based ZIP download |
-| HALog | 3 verbosity levels (BASIC/DETAILED/TRACE), controlled by `HA_LOG_VERBOSE` |
+| Snapshot auth | `X-ArcadeDB-Cluster-Token` header with timing-safe `MessageDigest.isEqual` |
+| HALog | 3 verbosity levels (BASIC/DETAILED/TRACE) with cached level, no config read on hot path |
 | Quorum Enum | MAJORITY and ALL modes, ALL enforced via Ratis Watch API |
 | SimpleStateMachineStorage | Replaces hand-rolled last-applied tracking |
 | Election Metrics | `electionCount`, `lastElectionTime`, exposed via cluster status |
-| Cluster Token | Deterministic derivation from cluster name + root password |
+| PBKDF2 Cluster Token | 100K-iteration PBKDF2WithHmacSHA256 derivation from cluster name + root password |
 | Leader Lease | `LINEARIZABLE` reads enabled with 0.9 timeout ratio |
-| Ratis Config Tuning | 64MB segments, 8MB write buffer, 4MB/256-element append batching |
+| Configurable election timeouts | `HA_ELECTION_TIMEOUT_MIN/MAX` for WAN cluster tuning |
+| Configurable Ratis tuning | Log segment size, append buffer size, write buffer all configurable |
+| NIO zip-slip protection | `Path.normalize().toAbsolutePath().startsWith()` for snapshot extraction |
+| WAL deletion logging | Warning logged when stale `.wal` file deletion fails |
 
 ---
 
-## 4. Key Implementation Differences
+## 4. Remaining Implementation Differences
 
-### 4.1 Group Committer - ALL Quorum Bug Fix
+### 4.1 Command Forwarding
 
-`apache-ratis` fixed a subtle bug in `flushBatch()`: with `Quorum.ALL`, the original code would `complete(null)` (success) on the future BEFORE checking the ALL watch, meaning the caller could see success even if ALL quorum was not reached. The fix moves `complete(null)` AFTER the watch succeeds, with `continue` on failure branches.
+| | `ha-redesign` | `apache-ratis` |
+|---|---|---|
+| Mechanism | HTTP POST to leader via `HttpClient` | Ratis `query()` path (state machine) |
+| Auth | Cluster token via HTTP header | Cluster token via HTTP header |
+| Constraint validation | Delegated to leader's normal commit path | Explicit index key changes in TRANSACTION_FORWARD |
 
-**Status on ha-redesign:** Has the original (buggy) ordering. **Should be ported.**
+`apache-ratis` also has a `TRANSACTION_FORWARD` Raft log entry type that forwards writes from replicas with index key changes for constraint validation. However, this is noted as having a page visibility issue and is currently unused in favor of HTTP proxy forwarding.
 
-### 4.2 Cluster Token Derivation
+### 4.2 Log Entry Format
 
-`apache-ratis` upgraded from `UUID.nameUUIDFromBytes()` (MD5-based) to **PBKDF2WithHmacSHA256** with 100,000 iterations for cluster token derivation. This resists brute-force attacks if the token is captured on the wire.
+| | `ha-redesign` | `apache-ratis` |
+|---|---|---|
+| Architecture | Separate `RaftLogEntryCodec` + `RaftLogEntryType` enum | Single `RaftLogEntry` class |
+| Entry types | TX_ENTRY, SCHEMA_ENTRY, INSTALL_DATABASE_ENTRY | TRANSACTION, TRANSACTION_FORWARD, COMMAND_FORWARD |
+| Serialization | `DataInputStream`/`DataOutputStream` | `Binary` class (ArcadeDB native) |
 
-**Status on ha-redesign:** Still uses UUID/MD5. **Should be ported.**
+### 4.3 Wait-for-Apply Notification (applyNotifier)
 
-### 4.3 HALog Cached Level
+`apache-ratis` replaced polling loops (`Thread.sleep(10)`) with a proper `Object` monitor. The state machine calls `raftHAServer.notifyApplied()` after each apply, waking up blocked readers. This eliminates polling overhead for READ_YOUR_WRITES consistency.
 
-`apache-ratis` added a `cachedLevel` volatile field to avoid calling `GlobalConfiguration.getValueAsInteger()` on every log check. Includes a `refreshLevel()` method called at service startup. Removes the `System.out.println` that was in the original.
+`ha-redesign` does not have `waitForAppliedIndex` / `waitForLocalApply` methods (different forwarding approach). Worth noting if read-after-write consistency is added.
 
-**Status on ha-redesign:** Reads config on every call (negligible perf impact, but easy win). Never had the `System.out.println`. **Nice to have.**
+### 4.4 Ratis Configuration Defaults
 
-### 4.4 Wait-for-Apply Notification (applyNotifier)
+| Setting | `ha-redesign` | `apache-ratis` |
+|---------|---------------|----------------|
+| Election timeout min (default) | 2000ms | 1500ms |
+| Election timeout max (default) | 5000ms | 3000ms |
+| Snapshot threshold (default) | 10,000 | 100,000 |
 
-`apache-ratis` replaced polling loops (`Thread.sleep(10)` in `waitForAppliedIndex` and `waitForLocalApply`) with a proper `Object` monitor (`applyNotifier`). The state machine calls `raftHAServer.notifyApplied()` after each apply, waking up blocked readers. This eliminates the 10ms polling overhead and makes READ_YOUR_WRITES consistency much more responsive.
-
-**Status on ha-redesign:** Does not have `waitForAppliedIndex` / `waitForLocalApply` methods (different forwarding approach). **Not directly applicable** but worth noting if read-after-write consistency is added.
-
-### 4.5 Snapshot Auth: Cluster Token Header
-
-`apache-ratis` switched snapshot authentication from Basic auth to a dedicated `X-ArcadeDB-Cluster-Token` header with constant-time comparison (`MessageDigest.isEqual`). The `SnapshotHttpHandler` accepts both the token header and Basic auth as fallback. The state machine sends the token header instead of Basic auth credentials.
-
-**Status on ha-redesign:** Uses Basic auth with cluster token as password. **Should be ported** - the token header approach is more secure (avoids sending root password, uses timing-safe comparison).
-
-### 4.6 Zip Slip Protection
-
-`apache-ratis` improved zip-slip protection in snapshot install from `getCanonicalPath().startsWith()` to `toPath().normalize().toAbsolutePath().startsWith()`. The NIO path normalization is more reliable across OS edge cases.
-
-**Status on ha-redesign:** Uses `getCanonicalPath()`. **Should be ported** (minor but safer).
-
-### 4.7 Configurable Election Timeouts
-
-`apache-ratis` added `HA_ELECTION_TIMEOUT_MIN` and `HA_ELECTION_TIMEOUT_MAX` config entries, allowing operators to tune election timeouts for WAN clusters. Previously hardcoded to 1500/3000ms.
-
-**Status on ha-redesign:** Hardcoded to 2000/5000ms. **Should be ported** - makes WAN deployments tunable.
-
-### 4.8 Configurable Log Segment and Buffer Sizes
-
-`apache-ratis` added `HA_LOG_SEGMENT_SIZE` and `HA_APPEND_BUFFER_SIZE` config entries for runtime tuning.
-
-**Status on ha-redesign:** Hardcoded to 64MB / 4MB. **Nice to have.**
-
-### 4.9 Command Forwarding Retry with NotLeaderException
-
-`apache-ratis` improved the command forwarding retry logic in `sendCommand()` to use proper `hasCause()` chain walking instead of string matching on the exception message. Also uses a typed `CommandExecutionException` import.
-
-**Status on ha-redesign:** Uses HTTP forwarding (different approach). **Not applicable.**
-
-### 4.10 HTTP Handler Improvements
-
-`apache-ratis` improved `AbstractServerHttpHandler`:
-- Removed unnecessary nested braces around proxy-to-leader try block
-- Uses constant-time `MessageDigest.isEqual` for cluster token validation instead of `String.equals`
-- Fixed session token forwarding to use `HttpAuthSession` lookup instead of parsing stored Basic auth
-
-**Status on ha-redesign:** Different handler structure. The timing-safe token comparison is relevant to any cluster token validation code. **Security fix worth reviewing.**
-
-### 4.11 WAL File Deletion Logging
-
-`apache-ratis` added a warning log when WAL file deletion fails during snapshot install instead of silently ignoring.
-
-**Status on ha-redesign:** Silently ignores. **Should be ported** (one-liner).
+`ha-redesign` uses more conservative election timeouts (less likely to trigger false elections under load) and a lower snapshot threshold (more frequent log compaction).
 
 ---
 
@@ -168,16 +138,12 @@ These features exist on both sides with similar implementations:
 
 | Feature | Description |
 |---------|-------------|
-| `TRANSACTION_FORWARD` entry type | Raft-native write forwarding with index key changes for constraint validation |
-| Command forwarding via `query()` | Forwarded commands execute on leader's state machine (noted as having page visibility issue, currently unused in favor of HTTP proxy) |
+| `TRANSACTION_FORWARD` entry type | Raft-native write forwarding with index key changes for constraint validation (currently unused due to page visibility issue) |
+| Command forwarding via `query()` | Forwarded commands execute on leader's state machine (currently unused in favor of HTTP proxy) |
 | K8s auto-join | `tryAutoJoinCluster()` via Ratis AdminApi for StatefulSet scale-up |
 | Dynamic membership | `addPeer()`, `removePeer()`, `transferLeadership()` |
-| PBKDF2 cluster token | 100K-iteration key derivation instead of UUID/MD5 |
 | applyNotifier | Wait-for-apply without polling for READ_YOUR_WRITES consistency |
-| Configurable election timeouts | `HA_ELECTION_TIMEOUT_MIN/MAX` for WAN clusters |
 | BOLT + TLS support | `BOLT_SSL` config (DISABLED/OPTIONAL/REQUIRED) |
-| Cluster token auth header | `X-ArcadeDB-Cluster-Token` with timing-safe comparison |
-| Timing-safe token validation | `MessageDigest.isEqual` instead of `String.equals` |
 
 ---
 
@@ -202,53 +168,33 @@ These features exist on both sides with similar implementations:
 
 | | `ha-redesign` | `apache-ratis` |
 |---|---|---|
-| Commits ahead of main | 86 | 21 |
-| Files changed | ~111 (+25,299 / -380) | ~94 (+8,677 / -6,711) |
+| Commits ahead of main | 90 | 21 |
+| Files changed | 111 (+23,988 / -380) | ~94 (+8,677 / -6,711) |
 
 ---
 
-## 8. Recommended Ports to ha-redesign
+## 8. Future Consideration
 
-Priority items from the recent `apache-ratis` updates:
-
-### Must Port (correctness / security)
+Features from `apache-ratis` that could be added to `ha-redesign` in future iterations:
 
 | Item | Effort | Reason |
 |------|--------|--------|
-| Group committer ALL quorum fix | Small | Bug: success reported before ALL watch completes |
-| PBKDF2 cluster token derivation | Small | Security: MD5-based UUID is weak if token is captured |
-| Timing-safe token comparison | Small | Security: prevents timing attacks on cluster token |
-| Snapshot auth via cluster token header | Medium | Security: avoids sending root password in Basic auth |
-| Zip-slip NIO path normalization | Trivial | Defense-in-depth: more reliable path validation |
-| WAL file deletion logging | Trivial | Ops: know when cleanup fails |
-
-### Should Port (operational)
-
-| Item | Effort | Reason |
-|------|--------|--------|
-| Configurable election timeouts | Small | Needed for WAN cluster deployments |
-| Configurable log segment / buffer sizes | Small | Runtime tuning for large clusters |
-| HALog cached level | Trivial | Avoids repeated config reads on hot path |
-
-### Future Consideration
-
-| Item | Effort | Reason |
-|------|--------|--------|
-| Dynamic membership API | Medium | Needed for elastic clusters |
-| K8s auto-join | Medium | Needed for Kubernetes deployments |
+| Dynamic membership API | Medium | `addPeer()`, `removePeer()`, `transferLeadership()` for elastic clusters |
+| K8s auto-join | Medium | Automatic cluster discovery for StatefulSet scaling |
 | applyNotifier pattern | Medium | Better READ_YOUR_WRITES consistency if that feature is added |
-| TRANSACTION_FORWARD | Large | More efficient follower writes (noted as having page visibility issues) |
+| TRANSACTION_FORWARD | Large | More efficient follower writes (noted as having page visibility issues, currently unused on apache-ratis) |
 
 ---
 
 ## 9. Summary
 
-After the recent feature port, both branches share the same core HA capabilities (group commit, compression, snapshot install, HALog, Quorum). The branches now differ primarily in:
+After two rounds of porting, `ha-redesign` now includes all production-relevant features from `apache-ratis`:
 
-1. **Architecture**: `ha-redesign` is modular and plugin-based; `apache-ratis` is embedded
-2. **Testing**: `ha-redesign` has 7x more test coverage including chaos engineering
-3. **Security hardening**: `apache-ratis` has PBKDF2 tokens and timing-safe comparisons
-4. **Operational config**: `apache-ratis` has configurable election timeouts and buffer sizes
-5. **Advanced features**: `apache-ratis` has dynamic membership, K8s auto-join, and the (currently unused) TRANSACTION_FORWARD mechanism
+- **Performance:** Group committer with batched Raft writes, LZ4 WAL compression, configurable Ratis tuning
+- **Correctness:** ALL quorum race fix, snapshot-based resync for lagging replicas, NIO zip-slip protection
+- **Security:** PBKDF2 cluster token derivation, timing-safe token comparison, cluster token header auth for snapshots
+- **Operability:** HALog with cached verbosity levels, configurable election timeouts, WAL deletion logging, Studio cluster UI
 
-`ha-redesign` is the production-ready choice. The "Must Port" items above should be addressed before merging to `main`.
+The only remaining `apache-ratis`-exclusive features are infrastructure-level (K8s auto-join, dynamic membership) and an experimental write-forwarding mechanism (`TRANSACTION_FORWARD`) that is currently unused due to a page visibility issue.
+
+`ha-redesign` is the production-ready choice: modular architecture, 40-file test suite with chaos engineering, safe rollout via `HA_IMPLEMENTATION` toggle, and now feature-complete with all security and performance hardening from `apache-ratis`.
