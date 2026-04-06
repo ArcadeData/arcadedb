@@ -101,7 +101,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
           if (!leader) {
             tx.reset();
             throw new ServerIsNotTheLeaderException("Write operations must be executed on the leader server",
-                server.getRaftHA().getLeaderHTTPAddress());
+                getLeaderHTTPAddress());
           }
 
           return captureReplicationPayload(tx, phase1);
@@ -652,7 +652,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
         // Throw ServerIsNotTheLeaderException - the HTTP proxy in AbstractServerHttpHandler
         // catches this and forwards the request to the leader transparently
         throw new ServerIsNotTheLeaderException("Write commands must be executed on the leader server",
-            server.getRaftHA().getLeaderHTTPAddress());
+            getLeaderHTTPAddress());
       return proxied.command(language, query, configuration, args);
     }
     return proxied.command(language, query, configuration, args);
@@ -681,7 +681,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
       if (!analyzed.isIdempotent() || analyzed.isDDL())
         throw new ServerIsNotTheLeaderException("Write commands must be executed on the leader server",
-            server.getRaftHA().getLeaderHTTPAddress());
+            getLeaderHTTPAddress());
     }
     return proxied.command(language, query, configuration, args);
   }
@@ -989,5 +989,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
   protected boolean isLeader() {
     final RaftHAServer raftHA = server.getRaftHA();
     return raftHA != null && raftHA.isLeader();
+  }
+
+  private String getLeaderHTTPAddress() {
+    final RaftHAServer raftHA = server.getRaftHA();
+    return raftHA != null ? raftHA.getLeaderHTTPAddress() : null;
   }
 }

@@ -299,8 +299,12 @@ public class RaftHAServer {
                   }
                   newPeers.add(localPeer);
 
-                  tempClient.admin().setConfiguration(newPeers);
-                  HALog.log(this, HALog.BASIC, "K8s auto-join: successfully joined cluster with %d peers", newPeers.size());
+                  final RaftClientReply joinReply = tempClient.admin().setConfiguration(newPeers);
+                  if (!joinReply.isSuccess())
+                    LogManager.instance().log(this, Level.WARNING, "K8s auto-join: setConfiguration rejected: %s",
+                        joinReply.getException() != null ? joinReply.getException().getMessage() : "unknown");
+                  else
+                    HALog.log(this, HALog.BASIC, "K8s auto-join: successfully joined cluster with %d peers", newPeers.size());
                 }
               } else {
                 HALog.log(this, HALog.BASIC, "K8s auto-join: already a member of the cluster");

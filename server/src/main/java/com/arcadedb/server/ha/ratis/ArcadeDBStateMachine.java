@@ -544,8 +544,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     final int segmentSize = buffer.getInt(pos);
     pos += Binary.INT_SERIALIZED_SIZE;
 
-    if (pos + segmentSize + Binary.LONG_SERIALIZED_SIZE > buffer.size())
-      throw new ReplicationException("Replicated transaction buffer is corrupted");
+    if (segmentSize < 0 || pos + segmentSize + Binary.LONG_SERIALIZED_SIZE > buffer.size())
+      throw new ReplicationException("Replicated transaction buffer is corrupted (segmentSize=" + segmentSize + ")");
 
     tx.pages = new WALFile.WALPage[pages];
 
@@ -564,6 +564,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       pos += Binary.INT_SERIALIZED_SIZE;
 
       final int deltaSize = tx.pages[i].changesTo - tx.pages[i].changesFrom + 1;
+      if (deltaSize <= 0)
+        throw new ReplicationException(
+            "Invalid delta range in replicated transaction: changesFrom=" + tx.pages[i].changesFrom + " changesTo=" + tx.pages[i].changesTo);
 
       tx.pages[i].currentPageVersion = buffer.getInt(pos);
       pos += Binary.INT_SERIALIZED_SIZE;
