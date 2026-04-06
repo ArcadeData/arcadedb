@@ -80,7 +80,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
     final boolean leader = isLeader();
     HALog.log(this, HALog.TRACE, "commit() called: db=%s, isLeader=%s", getName(), leader);
 
-    proxied.executeInReadLock(() -> {
+    // PHASE 1 (under read lock): prepare the transaction, capture all data needed for replication.
+    // After this phase, all WAL bytes, delta, and schema changes are in local variables.
+    final ReplicationPayload payload = proxied.executeInReadLock(() -> {
       proxied.checkTransactionIsActive(false);
 
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
@@ -89,50 +91,82 @@ public class ReplicatedDatabase implements DatabaseInternal {
       try {
         final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
 
-        try {
-          if (phase1 != null) {
-            proxied.incrementStatsWriteTx();
-            final Binary bufferChanges = phase1.result;
+        if (phase1 != null) {
+          proxied.incrementStatsWriteTx();
 
-            if (leader)
-              replicateFromLeader(tx, phase1, bufferChanges);
-            else {
-              // Follower writes must go to the leader. Throw so the client retries on the leader.
-              tx.reset();
-              throw new ServerIsNotTheLeaderException("Write operations must be executed on the leader server",
-                  server.getRaftHA().getLeaderHTTPAddress());
-            }
-          } else {
-            proxied.incrementStatsReadTx();
+          if (!leader) {
             tx.reset();
+            throw new ServerIsNotTheLeaderException("Write operations must be executed on the leader server",
+                server.getRaftHA().getLeaderHTTPAddress());
           }
-        } catch (final NeedRetryException | TransactionException e) {
-          rollback();
-          throw e;
-        } catch (final Exception e) {
-          rollback();
-          throw new TransactionException("Error on commit distributed transaction", e);
+
+          return captureReplicationPayload(tx, phase1);
+        } else {
+          proxied.incrementStatsReadTx();
+          tx.reset();
+          return null;
         }
+      } catch (final NeedRetryException | TransactionException e) {
+        rollback();
+        throw e;
+      } catch (final Exception e) {
+        rollback();
+        throw new TransactionException("Error on commit distributed transaction (phase 1)", e);
+      }
+    });
+
+    // Read-only transaction or follower rejection: nothing more to do.
+    if (payload == null)
+      return;
+
+    // REPLICATION (no lock held): send WAL to Ratis and wait for quorum.
+    // No database lock is needed - we only send captured bytes over gRPC.
+    // If this fails (quorum not reached), phase 2 never executes -> no local writes -> no divergence.
+    try {
+      final RaftHAServer raftHA = server.getRaftHA();
+      HALog.log(this, HALog.DETAILED, "Replicating WAL via Ratis: db=%s, walSize=%d, deltaSize=%d, schema=%s",
+          getName(), payload.bufferChanges.size(), payload.delta.size(), payload.schemaJson != null);
+      raftHA.replicateTransaction(getName(), payload.delta, payload.bufferChanges,
+          payload.schemaJson, payload.filesToAdd, payload.filesToRemove);
+      HALog.log(this, HALog.TRACE, "WAL replication completed: db=%s", getName());
+    } catch (final NeedRetryException | TransactionException e) {
+      rollback();
+      throw e;
+    } catch (final Exception e) {
+      rollback();
+      throw new TransactionException("Error on commit distributed transaction (replication)", e);
+    }
+
+    // PHASE 2 (under read lock): quorum reached, commit locally.
+    proxied.executeInReadLock(() -> {
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+      try {
+        payload.tx.commit2ndPhase(payload.phase1);
 
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
-
       } finally {
         current.popIfNotLastTransaction();
       }
-
       return null;
     });
   }
 
-  /**
-   * Leader path: commit locally first, then replicate via Ratis.
-   */
-  private void replicateFromLeader(final TransactionContext tx, final TransactionContext.TransactionPhase1 phase1,
-      final Binary bufferChanges) {
-    final RaftHAServer raftHA = server.getRaftHA();
+  /** Holds all data captured in phase 1 needed for replication and local commit. */
+  private record ReplicationPayload(TransactionContext tx, TransactionContext.TransactionPhase1 phase1,
+      Binary bufferChanges, Map<Integer, Integer> delta, String schemaJson,
+      Map<Integer, String> filesToAdd, Map<Integer, String> filesToRemove) {
+  }
 
-    // Detect schema changes
+  /**
+   * Captures everything needed for replication from the current transaction state.
+   * Called under read lock during phase 1. All returned data is immutable/captured - safe to use
+   * after releasing the lock.
+   */
+  private ReplicationPayload captureReplicationPayload(final TransactionContext tx,
+      final TransactionContext.TransactionPhase1 phase1) {
+    final Binary bufferChanges = phase1.result;
+
     String schemaJson = null;
     Map<Integer, String> filesToAdd = null;
     Map<Integer, String> filesToRemove = null;
@@ -147,24 +181,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
       filesToRemove = changeStructure.getFilesToRemove();
     }
 
-    // Capture delta BEFORE commit2ndPhase (which resets the transaction)
     final Map<Integer, Integer> delta = tx.getBucketRecordDelta();
-    HALog.log(this, HALog.TRACE, "Captured bucketRecordDelta before commit2ndPhase: %s", delta);
+    HALog.log(this, HALog.TRACE, "Captured replication payload: delta=%s", delta);
 
-    // DESIGN: "leader commits first" - the transaction is committed locally before Ratis replication.
-    // If replicateTransaction() fails (quorum not reached, leader step-down), the local node has the
-    // change but followers do not. This is intentional: it avoids holding locks during the Ratis
-    // round-trip and lets the leader serve reads immediately. Followers will eventually catch up
-    // via Ratis log replay, or via snapshot installation if they fall too far behind.
-    // On replication failure, the exception propagates to the caller (HTTP handler), which returns
-    // an error to the client - the client should retry.
-    tx.commit2ndPhase(phase1);
-
-    // Replicate via Ratis
-    HALog.log(this, HALog.DETAILED, "Replicating WAL via Ratis: db=%s, walSize=%d, deltaSize=%d, schema=%s",
-        getName(), bufferChanges.size(), delta.size(), schemaJson != null);
-    raftHA.replicateTransaction(getName(), delta, bufferChanges, schemaJson, filesToAdd, filesToRemove);
-    HALog.log(this, HALog.TRACE, "WAL replication completed: db=%s", getName());
+    return new ReplicationPayload(tx, phase1, bufferChanges, delta, schemaJson, filesToAdd, filesToRemove);
   }
 
   @Override

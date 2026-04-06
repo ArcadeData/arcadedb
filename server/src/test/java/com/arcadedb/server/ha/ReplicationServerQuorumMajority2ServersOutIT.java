@@ -22,103 +22,89 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ReplicationCallback;
+import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
 
-public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationServerIT {
-  private final AtomicInteger messages = new AtomicInteger();
+/**
+ * Tests that writes fail with QuorumNotReachedException when 2 out of 3 servers are stopped
+ * and MAJORITY quorum cannot be reached.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class ReplicationServerQuorumMajority2ServersOutIT extends BaseGraphServerTest {
 
-  public ReplicationServerQuorumMajority2ServersOutIT() {
+  @Override
+  protected int getServerCount() {
+    return 3;
+  }
+
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
-    // Low quorum timeout so the first write after quorum loss fails quickly
+    // Short quorum timeout so writes fail fast when quorum is lost
     GlobalConfiguration.HA_QUORUM_TIMEOUT.setValue(2000L);
   }
 
-  @Override
-  protected void onBeforeStarting(final ArcadeDBServer server) {
-    if (server.getServerName().equals("ArcadeDB_1"))
-      server.registerTestEventListener(new ReplicationCallback() {
-        @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          if (!serversSynchronized)
-            return;
-          if (type == TYPE.REPLICA_MSG_RECEIVED) {
-            if (messages.incrementAndGet() > 10) {
-              // Don't stop if this server is the leader (Ratis needs it for writes)
-              if (server.getHA() != null && server.getHA().isLeader())
-                return;
-              LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 1...");
-              getServer(1).stop();
-            }
-          }
-        }
-      });
-
-    if (server.getServerName().equals("ArcadeDB_2"))
-      server.registerTestEventListener(new ReplicationCallback() {
-        @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          if (!serversSynchronized)
-            return;
-          if (type == TYPE.REPLICA_MSG_RECEIVED) {
-            if (messages.incrementAndGet() > 20) {
-              if (server.getHA() != null && server.getHA().isLeader())
-                return;
-              LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 2...");
-              getServer(2).stop();
-            }
-          }
-        }
-      });
-  }
-
   @Test
-  void testReplication() throws Exception {
-    assertThatThrownBy(super::replication)
-        .isInstanceOf(QuorumNotReachedException.class);
+  void quorumLostAfterStoppingTwoServers() {
+    // Write some data first to confirm cluster is healthy
+    final ArcadeDBServer leader = getLeaderServer();
+    assertThat(leader).isNotNull();
+
+    final Database db = leader.getDatabase(getDatabaseName());
+    for (int i = 0; i < 5; i++) {
+      final int idx = i;
+      db.transaction(() -> db.newVertex(VERTEX1_TYPE_NAME).set("id", 10000L + idx).set("name", "pre-stop").save());
+    }
+
+    LogManager.instance().log(this, Level.INFO, "TEST: Cluster healthy, stopping 2 non-leader servers...");
+
+    // Stop both followers (keep the leader running)
+    for (int i = 0; i < getServerCount(); i++) {
+      final ArcadeDBServer s = getServer(i);
+      if (s != leader && s.isStarted()) {
+        LogManager.instance().log(this, Level.INFO, "TEST: Stopping server %s...", s.getServerName());
+        s.stop();
+      }
+    }
+
+    LogManager.instance().log(this, Level.INFO, "TEST: Both followers stopped. Next write should fail on quorum...");
+
+    // Now writes should fail because MAJORITY quorum (2/3) is unreachable.
+    // The failure can manifest as:
+    // - QuorumNotReachedException: Ratis can't replicate to majority
+    // - ServerIsNotTheLeaderException: old leader lost leadership (no election possible with 1/3)
+    assertThatThrownBy(() -> {
+      for (int i = 0; i < 3; i++) {
+        final int idx = i;
+        db.transaction(() ->
+            db.newVertex(VERTEX1_TYPE_NAME).set("id", System.nanoTime()).set("name", "should-fail-" + idx).save()
+        );
+      }
+    }).satisfiesAnyOf(
+        e -> assertThat(e).isInstanceOf(QuorumNotReachedException.class),
+        e -> assertThat(e).isInstanceOf(ServerIsNotTheLeaderException.class),
+        e -> assertThat(e).hasCauseInstanceOf(QuorumNotReachedException.class),
+        e -> assertThat(e).hasCauseInstanceOf(ServerIsNotTheLeaderException.class)
+    );
+
+    LogManager.instance().log(this, Level.INFO, "TEST: QuorumNotReachedException received as expected.");
   }
 
+  @Override
   protected int[] getServerToCheck() {
+    // Skip database comparison: with "leader commits first" design (ReplicatedDatabase.commit2ndPhase
+    // runs before Ratis replication), the leader may have locally committed writes that failed to
+    // replicate after quorum was lost. Additionally, followers stopped mid-replication may not have
+    // applied all pre-stop writes. So databases are expected to diverge in this test.
     return new int[] {};
   }
-
-  protected void checkEntriesOnServer(final int server) {
-    final Database db = getServerDatabase(server, getDatabaseName());
-    db.begin();
-    try {
-      assertThat(1 + (long) getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true))
-          .as("Check for vertex count for server" + server)
-          .isTrue();
-
-    } catch (final Exception e) {
-      fail("Error on checking on server" + server  , e);
-    }
-  }
-
-  @Override
-  protected int getTxs() {
-    // Need enough txs for both callbacks to trigger (10 and 20 messages).
-    // After both servers are down, the next write fails on quorum timeout.
-    return 50;
-  }
-
-  @Override
-  protected int getVerticesPerTx() {
-    return 10;
-  }
-
-  @Override
-  protected int getMaxRetry() {
-    // No retries: once quorum is lost, QuorumNotReachedException must propagate immediately.
-    return 1;
-  }
-
 }

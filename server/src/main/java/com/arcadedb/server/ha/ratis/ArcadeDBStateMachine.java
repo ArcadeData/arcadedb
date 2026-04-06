@@ -26,6 +26,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.server.ha.ReplicationException;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;
@@ -73,6 +74,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   private final AtomicLong                electionCount    = new AtomicLong(0);
   private volatile long                   lastElectionTime = 0;
   private volatile long                   startTime        = System.currentTimeMillis();
+  /** True when this follower is replaying log entries to catch up after being behind. */
+  private volatile boolean                catchingUp       = false;
 
   public ArcadeDBStateMachine(final ArcadeDBServer server) {
     this.server = server;
@@ -129,15 +132,36 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       switch (type) {
         case TRANSACTION -> applyTransactionEntry(data);
         case TRANSACTION_FORWARD -> applyTransactionForwardEntry(data);
+        case CREATE_DATABASE -> applyCreateDatabase(data);
       }
 
-      lastAppliedIndex.set(index);
+      final long previousApplied = lastAppliedIndex.getAndSet(index);
       updateLastAppliedTermIndex(logEntry.getTerm(), index);
 
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
       final var raftHA = server.getHA();
-      if (raftHA != null)
+      if (raftHA != null) {
         raftHA.notifyApplied();
+
+        // Detect hot resync (log replay catch-up) on followers.
+        // When a follower applies multiple entries in rapid succession (gap > 1 between
+        // consecutive applies), it's catching up. When it reaches the commit index, it's done.
+        if (!isCurrentNodeLeader()) {
+          final long gap = index - previousApplied;
+          if (gap > 1 && !catchingUp) {
+            catchingUp = true;
+            HALog.log(this, HALog.BASIC, "Follower catching up: gap=%d (previous=%d, current=%d)", gap, previousApplied, index);
+          }
+          if (catchingUp) {
+            final long commitIndex = raftHA.getCommitIndex();
+            if (commitIndex > 0 && index >= commitIndex) {
+              catchingUp = false;
+              HALog.log(this, HALog.BASIC, "Hot resync complete: applied=%d >= commit=%d", index, commitIndex);
+              fireCallback(ReplicationCallback.TYPE.REPLICA_HOT_RESYNC, server.getServerName());
+            }
+          }
+        }
+      }
 
       return CompletableFuture.completedFuture(Message.EMPTY);
 
@@ -154,10 +178,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     if (!db.isOpen())
       throw new ReplicationException("Database '" + entry.databaseName() + "' is closed");
 
-    // On the leader, the transaction was already committed locally via commit2ndPhase().
-    // Skip the entire apply to avoid double-applying page changes and bucket record deltas.
+    // On the leader, commit2ndPhase() handles the local page writes AFTER replicateTransaction() returns.
+    // Skip the state machine apply to avoid double-applying page changes and bucket record deltas.
     if (isCurrentNodeLeader()) {
-      HALog.log(this, HALog.TRACE, "Skipping WAL apply on leader (already committed locally): db=%s", entry.databaseName());
+      HALog.log(this, HALog.TRACE, "Skipping WAL apply on leader (commit2ndPhase handles it): db=%s", entry.databaseName());
       return;
     }
     HALog.log(this, HALog.DETAILED, "Applying WAL on follower: db=%s, walSize=%d, deltaSize=%d, hasSchema=%s",
@@ -205,6 +229,24 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
         walTx.txId, walTx.pages.length, entry.databaseName());
 
     db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
+  }
+
+  private void applyCreateDatabase(final byte[] data) {
+    final String databaseName = RaftLogEntry.deserializeCreateDatabase(data);
+
+    // On the leader, the database was already created locally before the Ratis entry was sent.
+    if (isCurrentNodeLeader()) {
+      HALog.log(this, HALog.TRACE, "Skipping CREATE_DATABASE on leader (already created): db=%s", databaseName);
+      return;
+    }
+
+    if (server.existsDatabase(databaseName)) {
+      HALog.log(this, HALog.BASIC, "Database '%s' already exists on this follower, skipping create", databaseName);
+      return;
+    }
+
+    HALog.log(this, HALog.BASIC, "Creating database '%s' on follower (replicated from leader)", databaseName);
+    server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
   }
 
   private boolean isCurrentNodeLeader() {

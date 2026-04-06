@@ -46,6 +46,8 @@ public class RaftLogEntry {
     TRANSACTION((byte) 1),
     /** Forward a write from a non-leader node (includes index key changes for constraint validation). */
     TRANSACTION_FORWARD((byte) 2),
+    /** Replicate database creation to all nodes. */
+    CREATE_DATABASE((byte) 3),
     /**
      * Forward a command (SQL/Cypher) to the leader via the query() path (not logged in Raft).
      * Uses 'C' (0x43) intentionally to distinguish from log-replicated types (1, 2) since
@@ -240,6 +242,24 @@ public class RaftLogEntry {
   // -- Command forwarding (via Ratis query(), not logged) --
 
   /** Serializes a command forward request for execution on the leader via the state machine query() path. */
+  // -- CREATE_DATABASE serialization --
+
+  public static byte[] serializeCreateDatabase(final String databaseName) {
+    final Binary stream = new Binary(64);
+    stream.putByte(EntryType.CREATE_DATABASE.code());
+    stream.putString(databaseName);
+    stream.flip();
+    return stream.toByteArray();
+  }
+
+  public static String deserializeCreateDatabase(final byte[] data) {
+    final Binary stream = new Binary(data);
+    stream.getByte(); // skip type byte
+    return stream.getString();
+  }
+
+  // -- COMMAND_FORWARD serialization --
+
   public static byte[] serializeCommandForward(final String databaseName, final String language, final String command,
       final Map<String, Object> namedParams, final Object[] positionalParams) {
     final Binary stream = new Binary(256);

@@ -403,6 +403,12 @@ public class RaftHAServer {
    * @param filesToAdd        files to add (null if no structural change)
    * @param filesToRemove     files to remove (null if no structural change)
    */
+  /** Sends a pre-serialized Raft log entry (e.g., CREATE_DATABASE) to the cluster. */
+  public void replicateRawEntry(final byte[] entry) {
+    HALog.log(this, HALog.BASIC, "Replicating raw entry: %d bytes, type=%d", entry.length, entry.length > 0 ? entry[0] : -1);
+    sendToRaft(entry);
+  }
+
   public void replicateTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
       final Binary walBuffer, final String schemaJson, final Map<Integer, String> filesToAdd,
       final Map<Integer, String> filesToRemove) {

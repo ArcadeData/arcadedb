@@ -224,7 +224,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
-    // In Ratis HA mode, new databases are replicated via the Raft state machine
+    // Replicate database creation to all followers via Ratis
+    final RaftHAServer raftHA = server.getHA();
+    if (raftHA != null) {
+      final byte[] entry = com.arcadedb.server.ha.ratis.RaftLogEntry.serializeCreateDatabase(databaseName);
+      raftHA.replicateRawEntry(entry);
+    }
   }
 
   /**

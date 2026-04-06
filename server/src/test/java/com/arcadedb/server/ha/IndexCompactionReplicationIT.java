@@ -120,7 +120,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
-  @org.junit.jupiter.api.Disabled("Vector index (float[] property + Java API index) doesn't fully replicate to followers via Ratis. See TODO in arcadedb-ha-26.4.1.md")
+  @org.junit.jupiter.api.Disabled("Vector index entries don't fully replicate via WAL - vector index files use a different storage mechanism than LSM-Tree indexes")
   void lsmVectorReplication() throws Exception {
     final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
 
@@ -193,7 +193,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
-  @org.junit.jupiter.api.Disabled("Vector index (float[] property + Java API index) doesn't fully replicate to followers via Ratis. See TODO in arcadedb-ha-26.4.1.md")
+  @org.junit.jupiter.api.Disabled("Vector index entries don't fully replicate via WAL - vector index files use a different storage mechanism than LSM-Tree indexes")
   void lsmVectorCompactionReplication() throws Exception {
     final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
 

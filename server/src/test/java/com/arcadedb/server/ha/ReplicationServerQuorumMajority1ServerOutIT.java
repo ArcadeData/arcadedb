@@ -38,9 +38,10 @@ public class ReplicationServerQuorumMajority1ServerOutIT extends ReplicationServ
             return;
 
           if (type == TYPE.REPLICA_MSG_RECEIVED) {
-            if (messages.incrementAndGet() > 100) {
-              LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 2...");
-              getServer(2).stop();
+            if (messages.incrementAndGet() == 101) {
+              // Stop asynchronously to avoid disrupting the Ratis applyTransaction thread
+              LogManager.instance().log(this, Level.FINE, "TEST: Scheduling stop of Replica 2...");
+              new Thread(() -> getServer(2).stop(), "test-stop-server2").start();
             }
           }
         }

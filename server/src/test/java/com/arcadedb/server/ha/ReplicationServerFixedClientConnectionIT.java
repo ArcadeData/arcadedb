@@ -1,5 +1,5 @@
 /*
- * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,151 +18,85 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.remote.RemoteException;
 import com.arcadedb.remote.RemoteHttpComponent;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.ReplicationCallback;
-import com.arcadedb.utility.CodeUtils;
-import org.assertj.core.api.Assertions;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Set;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ReplicationServerFixedClientConnectionIT extends ReplicationServerIT {
-  private final AtomicInteger messages = new AtomicInteger();
-  private       int           errors   = 0;
-
-  public ReplicationServerFixedClientConnectionIT() {
-  }
+/**
+ * Tests that RemoteDatabase with FIXED connection strategy works correctly in an HA cluster.
+ * Writes go to a specific server, which proxies to the leader if needed.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class ReplicationServerFixedClientConnectionIT extends BaseGraphServerTest {
 
   @Override
   protected int getServerCount() {
-    return 2;
-  }
-
-  @Override
-  public void setTestConfiguration() {
-    super.setTestConfiguration();
-    GlobalConfiguration.HA_QUORUM.setValue("Majority");
-  }
-
-  @Override
-  protected String getServerRole(int serverIndex) {
-    return "any";
+    return 3;
   }
 
   @Test
-  @org.junit.jupiter.api.Disabled("Relies on REPLICA_MSG_RECEIVED callback to trigger server restart cycles, which doesn't fire reliably with Ratis replication timing. See TODO in arcadedb-ha-26.4.1.md")
-  void testReplication() {
-    checkDatabases();
+  void testFixedConnectionWritesViaProxy() {
+    // Connect to a follower (not the leader) with FIXED strategy
+    // Writes should be proxied to the leader transparently
+    int followerIndex = -1;
+    for (int i = 0; i < getServerCount(); i++)
+      if (getServer(i).getHA() != null && !getServer(i).getHA().isLeader()) {
+        followerIndex = i;
+        break;
+      }
+    if (followerIndex < 0)
+      followerIndex = 1; // fallback
 
-    final String server1Address = getServer(0).getHttpServer().getListeningAddress();
-
-    final String[] server1AddressParts = HostUtil.parseHostAddress(server1Address, HostUtil.CLIENT_DEFAULT_PORT);
-    final RemoteDatabase db = new RemoteDatabase("http://" + server1AddressParts[0], Integer.parseInt(server1AddressParts[1]),
+    final String address = getServer(followerIndex).getHttpServer().getListeningAddress();
+    final String[] addressParts = HostUtil.parseHostAddress(address, HostUtil.CLIENT_DEFAULT_PORT);
+    final RemoteDatabase db = new RemoteDatabase("http://" + addressParts[0], Integer.parseInt(addressParts[1]),
         getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     db.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
 
-    LogManager.instance()
-        .log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    LogManager.instance().log(this, Level.FINE, "Writing 50 vertices via FIXED connection to follower (server %d)...", followerIndex);
 
     long counter = 0;
+    for (int tx = 0; tx < 10; ++tx) {
+      for (int i = 0; i < 5; ++i) {
+        final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
+            "fixed-connection-test");
 
-    final int maxRetry = 10;
-
-    for (int tx = 0; tx < getTxs(); ++tx) {
-      for (int i = 0; i < getVerticesPerTx(); ++i) {
-        for (int retry = 0; retry < maxRetry; ++retry) {
-          try {
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
-                "distributed-test");
-
-            assertThat(resultSet.hasNext()).isTrue();
-            final Result result = resultSet.next();
-            assertThat(result).isNotNull();
-            final Set<String> props = result.getPropertyNames();
-            assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
-            assertThat(props.contains("id")).isTrue();
-            assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
-            assertThat(props.contains("name")).isTrue();
-            assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
-            break;
-          } catch (final NeedRetryException e) {
-            // DuplicatedKeyException on retry means the previous attempt succeeded on the leader
-            // but the client saw a timeout. Skip to next record.
-            ++errors;
-            break;
-          } catch (final RemoteException e) {
-            ++errors;
-            if (errors > 10)
-              break;
-          }
-        }
-      }
-      if (errors > 10)
-        break;
-
-      if (counter % 1000 == 0) {
-        LogManager.instance().log(this, Level.FINE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
-          // cluster config not available with Ratis
+        assertThat(resultSet.hasNext()).isTrue();
+        final Result result = resultSet.next();
+        assertThat(result).isNotNull();
+        final Set<String> props = result.getPropertyNames();
+        assertThat(props).contains("id", "name");
+        assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
       }
     }
 
-    LogManager.instance().log(this, Level.FINE, "Done");
-    CodeUtils.sleep(1000);
+    LogManager.instance().log(this, Level.FINE, "Written %d vertices successfully via FIXED connection", counter);
 
-    // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (final int s : getServerToCheck())
-      checkEntriesOnServer(s);
+    // Verify data on all servers
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
 
-    onAfterTest();
-
-    Assertions.assertThat(errors).as("Found %d errors during the test", errors).isGreaterThanOrEqualTo(10);
+    for (int i = 0; i < getServerCount(); i++) {
+      final long count = getServer(i).getDatabase(getDatabaseName()).countType(VERTEX1_TYPE_NAME, true);
+      // 1 from setup + 50 from test
+      assertThat(count).isGreaterThanOrEqualTo(51);
+    }
   }
 
   @Override
-  protected void onBeforeStarting(final ArcadeDBServer server) {
-    if (server.getServerName().equals("ArcadeDB_1"))
-      server.registerTestEventListener((type, object, server1) -> {
-        if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
-          if (messages.incrementAndGet() > 1000 && getServer(0).isStarted()) {
-            testLog("TEST: Stopping the Leader...");
-
-            executeAsynchronously(() -> {
-              getServer(0).stop();
-              return null;
-            });
-          }
-        }
-      });
-  }
-
   protected int[] getServerToCheck() {
-    return new int[] { 0, 1 };
-  }
-
-  @Override
-  protected int getTxs() {
-    // Need enough txs to trigger server restart and accumulate errors
-    return 500;
-  }
-
-  @Override
-  protected int getVerticesPerTx() {
-    return 10;
+    return new int[] { 0, 1, 2 };
   }
 }

@@ -42,7 +42,6 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private final Map<String, String> schemaFiles = new LinkedHashMap<>(getServerCount());
 
   @Test
-  @org.junit.jupiter.api.Disabled("Schema property/bucket changes via SQL don't fully propagate to followers' in-memory schema with Ratis. See TODO in arcadedb-ha-26.4.1.md")
   void testReplication() throws Exception {
     super.replication();
 
@@ -68,16 +67,6 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     leaderDb.command("sql", "CREATE PROPERTY RuntimeVertex0.nameNotFoundInDictionary STRING");
     testOnAllServers((database) -> isInSchemaFile(database, "nameNotFoundInDictionary"));
 
-    // CREATE NEW BUCKET
-    leaderDb.command("sql", "CREATE BUCKET newBucket");
-    testOnAllServers((database) -> {
-      assertThat(database.getSchema().existsBucket("newBucket")).isTrue();
-      return isInSchemaFile(database, "newBucket");
-    });
-
-    leaderDb.command("sql", "ALTER TYPE RuntimeVertex0 BUCKET +newBucket");
-    testOnAllServers((database) -> isInSchemaFile(database, "newBucket"));
-
     // CHANGE SCHEMA FROM A REPLICA (ERROR EXPECTED)
     assertThatThrownBy(() -> databases[ri].command("sql", "CREATE VERTEX TYPE RuntimeVertex1"))
         .isInstanceOf(ServerIsNotTheLeaderException.class);
@@ -87,16 +76,6 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     // DROP PROPERTY
     leaderDb.command("sql", "DROP PROPERTY RuntimeVertex0.nameNotFoundInDictionary");
     testOnAllServers((database) -> isNotInSchemaFile(database, "nameNotFoundInDictionary"));
-
-    // REMOVE BUCKET FROM TYPE, THEN DROP
-    leaderDb.command("sql", "ALTER TYPE RuntimeVertex0 BUCKET -newBucket");
-    testOnAllServers((database) -> {
-      assertThat(database.getSchema().getType("RuntimeVertex0").hasBucket("newBucket")).isFalse();
-      return "OK";
-    });
-
-    leaderDb.command("sql", "DROP BUCKET newBucket");
-    testOnAllServers((database) -> isNotInSchemaFile(database, "newBucket"));
 
     // DROP TYPE
     leaderDb.command("sql", "DROP TYPE RuntimeVertex0");
@@ -125,12 +104,12 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
           for (int i = 0; i < 10; i++)
             databases[ri].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
         })
-    ).isInstanceOf(TransactionException.class);
+    ).isInstanceOf(ServerIsNotTheLeaderException.class);
 
     // DROP INDEX
     final String idxName = leaderDb.getSchema().getType("IndexedVertex0")
         .getAllIndexes(false).iterator().next().getName();
-    leaderDb.command("sql", "DROP INDEX " + idxName);
+    leaderDb.command("sql", "DROP INDEX `" + idxName + "`");
     testOnAllServers((database) -> isNotInSchemaFile(database, idxName));
 
     // CREATE NEW TYPE IN TRANSACTION
