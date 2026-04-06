@@ -62,7 +62,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
   @Test
   public void replication() throws Exception {
-    testReplication(0);
+    // With Ratis, the leader may not be server 0 - find the actual leader
+    testReplication(getLeaderIndex());
   }
 
   public void testReplication(final int serverId) {

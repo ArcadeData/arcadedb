@@ -487,6 +487,18 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     return null;
   }
 
+  protected int getServerIndex(final ArcadeDBServer server) {
+    for (int i = 0; i < getServerCount(); ++i)
+      if (getServer(i) == server)
+        return i;
+    return -1;
+  }
+
+  protected int getLeaderIndex() {
+    final ArcadeDBServer leader = getLeaderServer();
+    return leader != null ? getServerIndex(leader) : 0;
+  }
+
   protected int[] getServerToCheck() {
     final int[] result = new int[getServerCount()];
     for (int i = 0; i < result.length; ++i)
