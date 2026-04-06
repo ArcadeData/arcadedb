@@ -176,8 +176,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     final RaftLogEntry.TransactionEntry entry = RaftLogEntry.deserializeTransaction(data);
 
     final DatabaseInternal db = server.getDatabase(entry.databaseName());
-    if (!db.isOpen())
-      throw new ReplicationException("Database '" + entry.databaseName() + "' is closed");
+    if (db == null || !db.isOpen())
+      throw new ReplicationException("Database '" + entry.databaseName() + "' is not available");
 
     // On the leader, commit2ndPhase() handles the local page writes AFTER replicateTransaction() returns.
     // Skip the state machine apply to avoid double-applying page changes and bucket record deltas.
@@ -221,8 +221,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     final RaftLogEntry.TransactionForwardEntry entry = RaftLogEntry.deserializeTransactionForward(data);
 
     final DatabaseInternal db = server.getDatabase(entry.databaseName());
-    if (!db.isOpen())
-      throw new ReplicationException("Database '" + entry.databaseName() + "' is closed");
+    if (db == null || !db.isOpen())
+      throw new ReplicationException("Database '" + entry.databaseName() + "' is not available");
 
     final WALFile.WALTransaction walTx = parseWalTransaction(entry.walBuffer());
 
@@ -301,6 +301,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
           entry.language(), entry.command(), entry.databaseName());
 
       final DatabaseInternal db = server.getDatabase(entry.databaseName());
+      if (db == null)
+        throw new ReplicationException("Database '" + entry.databaseName() + "' not found for forwarded command");
       DatabaseContext.INSTANCE.init(db);
 
       HALog.log(this, HALog.DETAILED, "Executing forwarded command on leader: %s %s (db=%s, isLeader=%s)",
@@ -367,6 +369,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
               dbName, leaderHttpAddr);
 
           final DatabaseInternal db = server.getDatabase(dbName);
+          if (db == null)
+            throw new ReplicationException("Database '" + dbName + "' not found during snapshot installation");
           installDatabaseSnapshot(db, leaderHttpAddr, dbName);
         }
 

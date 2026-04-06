@@ -880,6 +880,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     final RaftHAServer raftHA = server.getRaftHA();
 
     final AtomicReference<Object> result = new AtomicReference<>();
+    final AtomicReference<DatabaseChangeStructureRequest> replicationCommand = new AtomicReference<>();
 
     proxied.executeInWriteLock(() -> {
       if (!isLeader())
@@ -897,14 +898,17 @@ public class ReplicatedDatabase implements DatabaseInternal {
         result.set(callback.call());
         return null;
       } finally {
-        final DatabaseChangeStructureRequest command = getChangeStructure(schemaVersionBefore);
+        replicationCommand.set(getChangeStructure(schemaVersionBefore));
         proxied.getFileManager().stopRecordingChanges();
-
-        if (command != null)
-          raftHA.replicateTransaction(getName(), Map.of(), new Binary(0), command.getSchemaJson(), command.getFilesToAdd(),
-              command.getFilesToRemove());
       }
     });
+
+    // SEND THE REPLICATION COMMAND OUTSIDE THE WRITE LOCK to avoid blocking all readers/writers
+    // during the Raft quorum round-trip (network I/O)
+    final DatabaseChangeStructureRequest command = replicationCommand.get();
+    if (command != null)
+      raftHA.replicateTransaction(getName(), Map.of(), new Binary(0), command.getSchemaJson(), command.getFilesToAdd(),
+          command.getFilesToRemove());
 
     return (RET) result.get();
   }

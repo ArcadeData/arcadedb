@@ -153,16 +153,16 @@ public class RaftGroupCommitter {
       return;
 
     // Send all entries asynchronously (pipelined)
-    final CompletableFuture<RaftClientReply>[] futures = new CompletableFuture[batch.size()];
+    final List<CompletableFuture<RaftClientReply>> futures = new ArrayList<>(batch.size());
     for (int i = 0; i < batch.size(); i++) {
       final Message msg = Message.valueOf(ByteString.copyFrom(batch.get(i).entry));
-      futures[i] = client.async().send(msg);
+      futures.add(client.async().send(msg));
     }
 
     // Wait for all replies
     for (int i = 0; i < batch.size(); i++) {
       try {
-        final RaftClientReply reply = futures[i].get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
+        final RaftClientReply reply = futures.get(i).get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
         if (!reply.isSuccess()) {
           final String err = reply.getException() != null ? reply.getException().getMessage() : "replication failed";
           batch.get(i).future.complete(new QuorumNotReachedException("Raft replication failed: " + err));

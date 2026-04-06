@@ -159,7 +159,7 @@ public class RaftLogEntry {
   }
 
   // Max allowed sizes for deserialized buffers to prevent OOM from corrupted entries
-  private static final int MAX_UNCOMPRESSED_SIZE = 512 * 1024 * 1024; // 512 MB
+  private static final int MAX_UNCOMPRESSED_SIZE = 256 * 1024 * 1024; // 256 MB
   private static final int MAX_DELTA_SIZE        = 1_000_000;
 
   // -- Deserialization --
