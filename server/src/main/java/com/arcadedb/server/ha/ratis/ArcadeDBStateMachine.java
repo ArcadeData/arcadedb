@@ -204,20 +204,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     if (entry.walBuffer() != null && entry.walBuffer().size() > 0) {
       final WALFile.WALTransaction walTx = parseWalTransaction(entry.walBuffer());
 
-      // Diagnostic logging for replication investigation
-      if (walTx.pages.length > 0) {
-        final StringBuilder pageDebug = new StringBuilder();
-        for (final WALFile.WALPage wp : walTx.pages) {
-          String fileName = "?";
-          try {
-            fileName = db.getFileManager().getFile(wp.fileId).getFileName();
-            fileName = fileName.substring(fileName.lastIndexOf('/') + 1);
-          } catch (final Exception ignored) {}
-          pageDebug.append(String.format(" [%s(id=%d),pg=%d,v=%d]", fileName, wp.fileId, wp.pageNumber, wp.currentPageVersion));
-        }
-        LogManager.instance().log(this, Level.WARNING, "Applying Raft tx %d (pages=%d, db=%s):%s",
-            walTx.txId, walTx.pages.length, entry.databaseName(), pageDebug);
-      }
+      LogManager.instance().log(this, Level.FINE, "Applying Raft tx %d (modifiedPages=%d, db=%s)...", walTx.txId,
+          walTx.pages.length, entry.databaseName());
 
       db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
     }

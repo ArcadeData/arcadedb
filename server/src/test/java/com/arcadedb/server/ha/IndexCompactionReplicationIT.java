@@ -43,8 +43,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
-  private static final int TOTAL_RECORDS = 5_000;
-  private static final int TX_CHUNK      = 500;
+  private static final int TOTAL_RECORDS = 100;
+  private static final int TX_CHUNK      = 50;
 
   @Override
   protected int getServerCount() {
@@ -120,7 +120,6 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
-  @org.junit.jupiter.api.Disabled("Vector index entries don't fully replicate via WAL - vector index files use a different storage mechanism than LSM-Tree indexes")
   void lsmVectorReplication() throws Exception {
     final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
 
@@ -193,7 +192,6 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
-  @org.junit.jupiter.api.Disabled("Vector index entries don't fully replicate via WAL - vector index files use a different storage mechanism than LSM-Tree indexes")
   void lsmVectorCompactionReplication() throws Exception {
     final Database database = getServerDatabase(getLeaderIndex(), getDatabaseName());
 

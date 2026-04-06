@@ -311,21 +311,13 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 |---|---|
 | `ReplicationServerQuorumNoneIT` | Ratis doesn't support "none" quorum - only MAJORITY and ALL |
 
-### Disabled Test Methods (`@Disabled`)
-| Test | Method | Root Cause |
-|---|---|---|
-| `IndexCompactionReplicationIT` | `lsmVectorReplication` | Vector index entries don't fully replicate via WAL - vector index files use a different storage mechanism than LSM-Tree indexes. |
-| `IndexCompactionReplicationIT` | `lsmVectorCompactionReplication` | Same as above. |
+### All Tests Passing
+All HA tests pass. No disabled test methods remain.
 
 ## TODO
 
-### Disabled Tests to Fix
-
-#### Vector index replication
-- **`IndexCompactionReplicationIT`** (2 disabled methods): Vector index entries (1001 on leader vs 72 on follower) don't fully replicate via WAL. Vector index files use a different storage mechanism than LSM-Tree indexes. Need to investigate how vector index page writes are captured in the WAL and whether they require special handling in follower `applyChanges()`.
-
-#### Vector index replication (engine-level)
-- The vector index uses a different storage mechanism than LSM-Tree indexes. Vector index page writes may not be fully captured in the WAL, causing followers to have fewer entries than the leader after replication.
+### Resolved Issues
+- **Vector index replication**: Fixed 1-byte parsing misalignment in `LSMVectorIndex.applyReplicatedPageUpdate()` - the `quantization_type` byte (always written after `deleted` flag) was not being read, causing cumulative offset drift when parsing entries on followers.
 
 ### Future Features
 - **State machine command forwarding**: Fix the `query()` path page visibility issue to eliminate HTTP proxy dependency for command forwarding. Currently write commands on non-leader nodes are forwarded via HTTP proxy which works correctly but adds latency.
