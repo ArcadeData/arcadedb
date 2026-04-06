@@ -48,12 +48,8 @@ public class RaftLogEntry {
     TRANSACTION_FORWARD((byte) 2),
     /** Replicate database creation to all nodes. */
     CREATE_DATABASE((byte) 3),
-    /**
-     * Forward a command (SQL/Cypher) to the leader via the query() path (not logged in Raft).
-     * Uses 'C' (0x43) intentionally to distinguish from log-replicated types (1, 2) since
-     * command forwards are sent via sendReadOnly and never appear in the Raft log.
-     */
-    COMMAND_FORWARD((byte) 'C');
+    /** Forward a command (SQL/Cypher) to the leader via the query() path (not logged in Raft). */
+    COMMAND_FORWARD((byte) 4);
 
     private final byte code;
 
@@ -69,7 +65,8 @@ public class RaftLogEntry {
       return switch (code) {
         case 1 -> TRANSACTION;
         case 2 -> TRANSACTION_FORWARD;
-        case 'C' -> COMMAND_FORWARD;
+        case 3 -> CREATE_DATABASE;
+        case 4 -> COMMAND_FORWARD;
         default -> throw new IllegalArgumentException("Unknown RaftLogEntry type code: " + code);
       };
     }

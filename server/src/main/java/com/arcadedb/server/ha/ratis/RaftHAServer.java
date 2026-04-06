@@ -46,6 +46,8 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -58,7 +60,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import java.util.stream.Stream;
 
@@ -106,7 +112,7 @@ public class RaftHAServer {
   private RaftGroupCommitter               groupCommitter;
   private final Object                     applyNotifier          = new Object();
   private final Object                     leaderChangeNotifier   = new Object();
-  private java.util.concurrent.ScheduledExecutorService lagMonitorExecutor;
+  private ScheduledExecutorService lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     this.server = server;
@@ -152,8 +158,8 @@ public class RaftHAServer {
     final String password = clusterName + ":" + (rootPassword != null ? rootPassword : "");
     try {
       final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
-      final javax.crypto.SecretKeyFactory factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-      final javax.crypto.spec.PBEKeySpec spec = new javax.crypto.spec.PBEKeySpec(
+      final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+      final PBEKeySpec spec = new PBEKeySpec(
           password.toCharArray(), salt, 100_000, 256);
       final byte[] hash = factory.generateSecret(spec).getEncoded();
       this.clusterToken = HexFormat.of().formatHex(hash);
@@ -395,6 +401,15 @@ public class RaftHAServer {
   /**
    * Submits a transaction to the Raft cluster. The entry is replicated to all nodes and applied
    * via ArcadeDBStateMachine.applyTransaction() on each node.
+   * <p>
+   * <b>Timeout semantics:</b> If this method throws {@link QuorumNotReachedException} due to a timeout,
+   * the outcome is ambiguous - the transaction may or may not have been committed by the cluster.
+   * The caller (ReplicatedDatabase) has already completed commit1stPhase locally, so:
+   * <ul>
+   *   <li>If the cluster DID commit: follower state machines will apply it normally</li>
+   *   <li>If the cluster did NOT commit: the local commit is rolled back by the caller</li>
+   * </ul>
+   * Callers that need exactly-once semantics should use idempotency keys or check-before-retry logic.
    *
    * @param databaseName      target database
    * @param bucketRecordDelta per-bucket record count changes
@@ -507,9 +522,9 @@ public class RaftHAServer {
           throw new QuorumNotReachedException("Raft ALL quorum not reached: not all replicas acknowledged the entry");
       }
 
-    } catch (final java.util.concurrent.TimeoutException e) {
+    } catch (final TimeoutException e) {
       throw new QuorumNotReachedException("Raft replication timed out after " + quorumTimeout + "ms");
-    } catch (final java.util.concurrent.ExecutionException e) {
+    } catch (final ExecutionException e) {
       throw new QuorumNotReachedException("Raft replication failed: " + e.getCause().getMessage());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -844,12 +859,12 @@ public class RaftHAServer {
   private void startLagMonitor() {
     if (clusterMonitor.getLagWarningThreshold() <= 0)
       return;
-    lagMonitorExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+    lagMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
       final Thread t = new Thread(r, "arcadedb-raft-lag-monitor");
       t.setDaemon(true);
       return t;
     });
-    lagMonitorExecutor.scheduleAtFixedRate(this::checkReplicaLag, 5, 5, java.util.concurrent.TimeUnit.SECONDS);
+    lagMonitorExecutor.scheduleAtFixedRate(this::checkReplicaLag, 5, 5, TimeUnit.SECONDS);
   }
 
   private void stopLagMonitor() {

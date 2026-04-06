@@ -50,6 +50,7 @@ import java.net.http.HttpResponse;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
@@ -70,7 +71,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   private       Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel =
       Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       Database.READ_CONSISTENCY            readConsistency;
-  private final java.util.concurrent.atomic.AtomicLong lastCommitIndex          = new java.util.concurrent.atomic.AtomicLong(-1);
+  private final AtomicLong lastCommitIndex          = new AtomicLong(-1);
   private final RemoteSchema                         schema                    = new RemoteSchema(this);
   private       boolean                              open                      = true;
   private       RemoteTransactionExplicitLock        explicitLock;
@@ -93,7 +94,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     // Initialize read consistency from configuration
     final String rc = configuration.getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY);
     if (rc != null)
-      try { this.readConsistency = Database.READ_CONSISTENCY.valueOf(rc.toUpperCase()); } catch (final IllegalArgumentException ignored) {}
+      try {
+        this.readConsistency = Database.READ_CONSISTENCY.valueOf(rc.toUpperCase());
+      } catch (final IllegalArgumentException e) {
+        LogManager.instance().log(this, Level.WARNING, "Unknown read consistency value '%s', using default", rc);
+      }
   }
 
   @Override

@@ -44,7 +44,6 @@ class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest {
   }
 
   @Test
-  @org.junit.jupiter.api.Disabled("Dynamic database creation via HTTP + subsequent DDL replication needs the follower's empty DB to receive schema changes via Ratis. The CREATE_DATABASE entry creates the DB but subsequent DDL schema changes don't propagate to the follower's in-memory schema correctly for dynamically-created databases.")
   void createReplicatedDatabase() throws Exception {
     // CREATE DATABASE ON THE LEADER (database creation is a server-level op, not replicated via Ratis).
     // With Ratis, the leader creates the DB locally and followers auto-create it when the first

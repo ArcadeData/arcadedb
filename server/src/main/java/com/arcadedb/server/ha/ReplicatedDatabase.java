@@ -26,6 +26,7 @@ import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.*;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -41,6 +42,8 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
@@ -53,6 +56,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.ratis.HALog;
 import com.arcadedb.server.ha.ratis.RaftHAServer;
+import com.arcadedb.server.ha.ratis.RaftLogEntry;
 
 import java.io.IOException;
 import java.util.*;
@@ -713,15 +717,14 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // Check for error response
     if (resultBytes.length > 0 && resultBytes[0] == 'E') {
       final String error = new String(resultBytes, 1, resultBytes.length - 1);
-      throw new com.arcadedb.exception.CommandExecutionException(error);
+      throw new CommandExecutionException(error);
     }
 
     // Deserialize binary result into ResultSet
-    final java.util.List<Map<String, Object>> rows =
-        com.arcadedb.server.ha.ratis.RaftLogEntry.deserializeCommandResult(resultBytes);
-    final com.arcadedb.query.sql.executor.InternalResultSet rs = new com.arcadedb.query.sql.executor.InternalResultSet();
+    final List<Map<String, Object>> rows = RaftLogEntry.deserializeCommandResult(resultBytes);
+    final InternalResultSet rs = new InternalResultSet();
     for (final Map<String, Object> row : rows) {
-      final com.arcadedb.query.sql.executor.ResultInternal result = new com.arcadedb.query.sql.executor.ResultInternal(proxied);
+      final ResultInternal result = new ResultInternal(proxied);
       result.setPropertiesFromMap(row);
       rs.add(result);
     }

@@ -51,6 +51,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
@@ -203,8 +204,20 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     if (entry.walBuffer() != null && entry.walBuffer().size() > 0) {
       final WALFile.WALTransaction walTx = parseWalTransaction(entry.walBuffer());
 
-      LogManager.instance().log(this, Level.FINE, "Applying Raft tx %d (modifiedPages=%d, db=%s)...", walTx.txId,
-          walTx.pages.length, entry.databaseName());
+      // Diagnostic logging for replication investigation
+      if (walTx.pages.length > 0) {
+        final StringBuilder pageDebug = new StringBuilder();
+        for (final WALFile.WALPage wp : walTx.pages) {
+          String fileName = "?";
+          try {
+            fileName = db.getFileManager().getFile(wp.fileId).getFileName();
+            fileName = fileName.substring(fileName.lastIndexOf('/') + 1);
+          } catch (final Exception ignored) {}
+          pageDebug.append(String.format(" [%s(id=%d),pg=%d,v=%d]", fileName, wp.fileId, wp.pageNumber, wp.currentPageVersion));
+        }
+        LogManager.instance().log(this, Level.WARNING, "Applying Raft tx %d (pages=%d, db=%s):%s",
+            walTx.txId, walTx.pages.length, entry.databaseName(), pageDebug);
+      }
 
       db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
     }
@@ -320,7 +333,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing forwarded command", e);
       final String errMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-      final byte[] errBytes = ("E" + errMsg).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      final byte[] errBytes = ("E" + errMsg).getBytes(StandardCharsets.UTF_8);
       return CompletableFuture.completedFuture(Message.valueOf(
           org.apache.ratis.thirdparty.com.google.protobuf.ByteString.copyFrom(errBytes)));
     }

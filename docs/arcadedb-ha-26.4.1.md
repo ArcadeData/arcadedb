@@ -316,7 +316,6 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 |---|---|---|
 | `IndexCompactionReplicationIT` | `lsmVectorReplication` | Vector index entries don't fully replicate via WAL - vector index files use a different storage mechanism than LSM-Tree indexes. |
 | `IndexCompactionReplicationIT` | `lsmVectorCompactionReplication` | Same as above. |
-| `HTTP2ServersCreateReplicatedDatabaseIT` | `createReplicatedDatabase` | Dynamic database creation + subsequent DDL replication: the CREATE_DATABASE Ratis entry creates the DB on followers, but schema changes for the dynamically-created DB don't propagate correctly to followers' in-memory schema. |
 
 ## TODO
 
@@ -325,8 +324,8 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 #### Vector index replication
 - **`IndexCompactionReplicationIT`** (2 disabled methods): Vector index entries (1001 on leader vs 72 on follower) don't fully replicate via WAL. Vector index files use a different storage mechanism than LSM-Tree indexes. Need to investigate how vector index page writes are captured in the WAL and whether they require special handling in follower `applyChanges()`.
 
-#### Dynamic database creation + DDL replication
-- **`HTTP2ServersCreateReplicatedDatabaseIT`**: Database creation IS replicated via the new `CREATE_DATABASE` Ratis entry type (creates empty DB on followers). However, subsequent DDL commands (`CREATE VERTEX TYPE`) run on the leader and their schema changes don't fully propagate to the dynamically-created follower DB's in-memory schema. The follower's `ReplicatedDatabase` wrapper and schema loading may need initialization after auto-creation.
+#### Vector index replication (engine-level)
+- The vector index uses a different storage mechanism than LSM-Tree indexes. Vector index page writes may not be fully captured in the WAL, causing followers to have fewer entries than the leader after replication.
 
 ### Future Features
 - **State machine command forwarding**: Fix the `query()` path page visibility issue to eliminate HTTP proxy dependency for command forwarding. Currently write commands on non-leader nodes are forwarded via HTTP proxy which works correctly but adds latency.

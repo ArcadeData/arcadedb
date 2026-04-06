@@ -84,6 +84,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String HA_VERIFY_DATABASE   = "ha verify database";
   private static final String HA_STEP_DOWN        = "ha step down";
   private static final String HA_LEAVE            = "ha leave";
+  private static final int    PEER_CONNECT_TIMEOUT_MS = 30_000;
+  private static final int    PEER_READ_TIMEOUT_MS    = 60_000;
 
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -1017,71 +1019,74 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         final String url = "http://" + peerHttpAddr + "/api/v1/server";
 
         final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setConnectTimeout(30_000);
-        conn.setReadTimeout(60_000);
+        try {
+          conn.setRequestMethod("POST");
+          conn.setRequestProperty("Content-Type", "application/json");
+          conn.setConnectTimeout(PEER_CONNECT_TIMEOUT_MS);
+          conn.setReadTimeout(PEER_READ_TIMEOUT_MS);
 
-        // Use cluster token for inter-node auth
-        if (raftHA.getClusterToken() != null) {
-          conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
-          conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
-        }
+          // Use cluster token for inter-node auth (admin-only operation, root is appropriate)
+          if (raftHA.getClusterToken() != null) {
+            conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
+            conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
+          }
 
-        conn.setDoOutput(true);
-        final JSONObject commandBody = new JSONObject();
-        commandBody.put("command", "ha verify database " + databaseName.trim());
-        try (final var os = conn.getOutputStream()) {
-          os.write(commandBody.toString().getBytes(StandardCharsets.UTF_8));
-        }
+          conn.setDoOutput(true);
+          final JSONObject commandBody = new JSONObject();
+          commandBody.put("command", "ha verify database " + databaseName.trim());
+          try (final var os = conn.getOutputStream()) {
+            os.write(commandBody.toString().getBytes(StandardCharsets.UTF_8));
+          }
 
-        if (conn.getResponseCode() == 200) {
-          final String body = new String(conn.getInputStream().readAllBytes());
-          final JSONObject peerResponse = new JSONObject(body);
+          if (conn.getResponseCode() == 200) {
+            final String body = new String(conn.getInputStream().readAllBytes());
+            final JSONObject peerResponse = new JSONObject(body);
 
-          if (peerResponse.has("localChecksums")) {
-            final JSONObject remoteChecksums = peerResponse.getJSONObject("localChecksums");
+            if (peerResponse.has("localChecksums")) {
+              final JSONObject remoteChecksums = peerResponse.getJSONObject("localChecksums");
 
-            // Compare checksums
-            int matchCount = 0;
-            int mismatchCount = 0;
-            final JSONArray mismatches = new JSONArray();
+              // Compare checksums
+              int matchCount = 0;
+              int mismatchCount = 0;
+              final JSONArray mismatches = new JSONArray();
 
-            for (final String fileName : localChecksums.keySet()) {
-              final long localCrc = localChecksums.getLong(fileName);
-              if (remoteChecksums.has(fileName)) {
-                final long remoteCrc = remoteChecksums.getLong(fileName);
-                if (localCrc == remoteCrc)
-                  matchCount++;
-                else {
+              for (final String fileName : localChecksums.keySet()) {
+                final long localCrc = localChecksums.getLong(fileName);
+                if (remoteChecksums.has(fileName)) {
+                  final long remoteCrc = remoteChecksums.getLong(fileName);
+                  if (localCrc == remoteCrc)
+                    matchCount++;
+                  else {
+                    mismatchCount++;
+                    mismatches.put(new JSONObject()
+                        .put("file", fileName)
+                        .put("type", categorizeFile(fileName))
+                        .put("localChecksum", localCrc)
+                        .put("remoteChecksum", remoteCrc));
+                  }
+                } else {
                   mismatchCount++;
                   mismatches.put(new JSONObject()
                       .put("file", fileName)
                       .put("type", categorizeFile(fileName))
                       .put("localChecksum", localCrc)
-                      .put("remoteChecksum", remoteCrc));
+                      .put("remoteChecksum", "MISSING"));
                 }
-              } else {
-                mismatchCount++;
-                mismatches.put(new JSONObject()
-                    .put("file", fileName)
-                    .put("type", categorizeFile(fileName))
-                    .put("localChecksum", localCrc)
-                    .put("remoteChecksum", "MISSING"));
               }
-            }
 
-            peerResult.put("status", mismatchCount == 0 ? "CONSISTENT" : "INCONSISTENT");
-            peerResult.put("matchingFiles", matchCount);
-            peerResult.put("mismatchedFiles", mismatchCount);
-            if (mismatchCount > 0)
-              peerResult.put("mismatches", mismatches);
+              peerResult.put("status", mismatchCount == 0 ? "CONSISTENT" : "INCONSISTENT");
+              peerResult.put("matchingFiles", matchCount);
+              peerResult.put("mismatchedFiles", mismatchCount);
+              if (mismatchCount > 0)
+                peerResult.put("mismatches", mismatches);
+            }
+          } else {
+            peerResult.put("status", "ERROR");
+            peerResult.put("error", "HTTP " + conn.getResponseCode());
           }
-        } else {
-          peerResult.put("status", "ERROR");
-          peerResult.put("error", "HTTP " + conn.getResponseCode());
+        } finally {
+          conn.disconnect();
         }
-        conn.disconnect();
 
       } catch (final Exception e) {
         peerResult.put("status", "ERROR");
