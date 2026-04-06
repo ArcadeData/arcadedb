@@ -98,4 +98,11 @@ public class UpdateStatementTest extends AbstractParserTest {
     checkRightSyntax("update foo set bar = 1 RETURN COUNT");
     checkRightSyntax("update foo set bar = 1 return count");
   }
+
+  @Test
+  void batchSyntax() {
+    checkRightSyntax("update Foo set a = 1 BATCH 1000");
+    checkRightSyntax("update Foo set a = 1 WHERE name = 'test' BATCH 500");
+    checkRightSyntax("update Foo set a = 1 LIMIT 100 BATCH 10");
+  }
 }

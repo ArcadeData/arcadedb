@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
@@ -39,6 +40,7 @@ public class DeleteExecutionPlanner {
   private final WhereClause whereClause;
   private final boolean     returnBefore;
   private final Limit       limit;
+  private final Batch       batch;
   private final boolean     unsafe;
 
   public DeleteExecutionPlanner(final DeleteStatement stm) {
@@ -46,6 +48,7 @@ public class DeleteExecutionPlanner {
     this.whereClause = stm.getWhereClause() == null ? null : stm.getWhereClause().copy();
     this.returnBefore = stm.isReturnBefore();
     this.limit = stm.getLimit();
+    this.batch = stm.getBatch();
     this.unsafe = stm.isUnsafe();
   }
 
@@ -68,6 +71,7 @@ public class DeleteExecutionPlanner {
       handleUnsafe(result, context, this.unsafe);
       handleLimit(result, context, this.limit);
       handleDelete(result, context);
+      handleBatch(result, context, this.batch);
       handleReturn(result, context, this.returnBefore);
     }
     return result;
@@ -150,6 +154,11 @@ public class DeleteExecutionPlanner {
 
   private void handleDelete(final DeleteExecutionPlan result, final CommandContext context) {
     result.chain(new DeleteStep(context));
+  }
+
+  private void handleBatch(final DeleteExecutionPlan result, final CommandContext context, final Batch batch) {
+    if (batch != null)
+      result.chain(new BatchStep(batch, context));
   }
 
   private void handleUnsafe(final DeleteExecutionPlan result, final CommandContext context, final boolean unsafe) {

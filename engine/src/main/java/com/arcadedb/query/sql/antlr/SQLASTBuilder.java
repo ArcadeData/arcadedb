@@ -4451,6 +4451,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.limit = (Limit) visit(updateCtx.limit());
     }
 
+    // BATCH clause
+    if (updateCtx.BATCH() != null) {
+      final Batch batch = new Batch(-1);
+      final Expression expr = (Expression) visit(updateCtx.expression());
+      if (expr.mathExpression instanceof BaseExpression baseExpr) {
+        if (baseExpr.number instanceof PInteger)
+          batch.num = (PInteger) baseExpr.number;
+        else if (baseExpr.inputParam != null)
+          batch.inputParam = baseExpr.inputParam;
+        else
+          batch.expression = expr;
+      } else {
+        batch.expression = expr;
+      }
+      stmt.batch = batch;
+    }
+
     // TIMEOUT clause
     if (updateCtx.timeout() != null) {
       stmt.timeout = (Timeout) visit(updateCtx.timeout());
@@ -4618,6 +4635,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // LIMIT clause
     if (deleteCtx.limit() != null) {
       stmt.limit = (Limit) visit(deleteCtx.limit());
+    }
+
+    // BATCH clause
+    if (deleteCtx.BATCH() != null) {
+      final Batch batch = new Batch(-1);
+      final Expression expr = (Expression) visit(deleteCtx.expression());
+      if (expr.mathExpression instanceof BaseExpression baseExpr) {
+        if (baseExpr.number instanceof PInteger)
+          batch.num = (PInteger) baseExpr.number;
+        else if (baseExpr.inputParam != null)
+          batch.inputParam = baseExpr.inputParam;
+        else
+          batch.expression = expr;
+      } else {
+        batch.expression = expr;
+      }
+      stmt.batch = batch;
     }
 
     // UNSAFE flag

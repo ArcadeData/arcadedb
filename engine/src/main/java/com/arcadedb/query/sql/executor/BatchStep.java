@@ -36,24 +36,32 @@ public class BatchStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext ctx, final int records) throws TimeoutException {
-    final ResultSet prevResult = getPrev().syncPull(ctx, records);
-    while (prevResult.hasNext()) {
-      final Result result = prevResult.next();
-      result.getVertex().ifPresent(x -> mapResult(ctx, result));
-    }
-    return prevResult;
-  }
-
-  private Result mapResult(final CommandContext ctx, final Result result) {
-    if (count % batchSize == 0) {
-      final DatabaseInternal db = ctx.getDatabase();
-      if (db.getTransaction().isActive()) {
-        db.commit();
-        db.begin();
+    final ResultSet upstream = getPrev().syncPull(ctx, records);
+    return new ResultSet() {
+      @Override
+      public boolean hasNext() {
+        return upstream.hasNext();
       }
-    }
-    count++;
-    return result;
+
+      @Override
+      public Result next() {
+        final Result result = upstream.next();
+        count++;
+        if (count % batchSize == 0) {
+          final DatabaseInternal db = ctx.getDatabase();
+          if (db.getTransaction().isActive()) {
+            db.commit();
+            db.begin();
+          }
+        }
+        return result;
+      }
+
+      @Override
+      public void close() {
+        upstream.close();
+      }
+    };
   }
 
   @Override
