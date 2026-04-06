@@ -29,11 +29,13 @@ class HALogTest {
   @AfterEach
   void resetLogLevel() {
     GlobalConfiguration.HA_LOG_VERBOSE.setValue(0);
+    HALog.refreshLevel();
   }
 
   @Test
   void isEnabledReturnsFalseWhenLevelIsZero() {
     GlobalConfiguration.HA_LOG_VERBOSE.setValue(0);
+    HALog.refreshLevel();
     assertThat(HALog.isEnabled(HALog.BASIC)).isFalse();
     assertThat(HALog.isEnabled(HALog.DETAILED)).isFalse();
     assertThat(HALog.isEnabled(HALog.TRACE)).isFalse();
@@ -42,6 +44,7 @@ class HALogTest {
   @Test
   void isEnabledRespectsConfiguredLevel() {
     GlobalConfiguration.HA_LOG_VERBOSE.setValue(2);
+    HALog.refreshLevel();
     assertThat(HALog.isEnabled(HALog.BASIC)).isTrue();
     assertThat(HALog.isEnabled(HALog.DETAILED)).isTrue();
     assertThat(HALog.isEnabled(HALog.TRACE)).isFalse();
@@ -50,12 +53,14 @@ class HALogTest {
   @Test
   void logDoesNotThrowWhenDisabled() {
     GlobalConfiguration.HA_LOG_VERBOSE.setValue(0);
+    HALog.refreshLevel();
     HALog.log(this, HALog.BASIC, "should not appear: %s", "test");
   }
 
   @Test
   void logDoesNotThrowWhenEnabled() {
     GlobalConfiguration.HA_LOG_VERBOSE.setValue(3);
+    HALog.refreshLevel();
     HALog.log(this, HALog.TRACE, "trace message: %s %d", "test", 42);
   }
 }
