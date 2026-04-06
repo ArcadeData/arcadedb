@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ha.HAReplicatedDatabase;
+import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;

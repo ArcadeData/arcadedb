@@ -52,8 +52,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.server.ha.HAReplicatedDatabase;
-import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.HAReplicatedDatabase;
+import com.arcadedb.server.HAServerPlugin;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.IOException;
@@ -877,9 +877,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
-  public HAServer.QUORUM getQuorum() {
+  public HAServerPlugin.QUORUM getQuorum() {
     // Raft consensus is inherently majority-based
-    return HAServer.QUORUM.MAJORITY;
+    return HAServerPlugin.QUORUM.MAJORITY;
   }
 
   @Override

@@ -16,36 +16,14 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha;
+package com.arcadedb.server.network;
 
-import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.ServerException;
+import java.io.*;
+import java.net.*;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
-
-class HAConfigurationIT extends BaseGraphServerTest {
-  protected int getServerCount() {
-    return 3;
-  }
-
+public class DefaultServerSocketFactory extends ServerSocketFactory {
   @Override
-  protected String getServerAddresses() {
-    return "192.168.0.1:2424,192.168.0.1:2425,localhost:2424";
-  }
-
-
-  @Test
-  void replication() {
-    try {
-      super.beginTest();
-      fail("");
-    } catch (ServerException e) {
-      // EXPECTED
-      assertThat(e.getMessage().contains("Found a localhost")).isTrue();
-    }
+  public ServerSocket createServerSocket(final int port, final int backlog, final InetAddress ifAddress) throws IOException {
+    return new ServerSocket(port, backlog, ifAddress);
   }
 }

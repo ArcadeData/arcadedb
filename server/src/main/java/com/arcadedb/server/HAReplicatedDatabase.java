@@ -1,5 +1,5 @@
 /*
- * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,20 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha;
+package com.arcadedb.server;
 
-public class ReplicationLogException extends ReplicationException {
-  public ReplicationLogException(final String s) {
-    super(s);
-  }
+/**
+ * Common interface for replicated database wrappers. Allows server-layer code to interact
+ * with the replicated database abstraction without knowing which concrete HA implementation
+ * is active.
+ */
+public interface HAReplicatedDatabase {
 
-  public ReplicationLogException(final String s, final Throwable e) {
-    super(s, e);
-  }
+  void createInReplicas();
+
+  HAServerPlugin.QUORUM getQuorum();
+
+  boolean isLeader();
+
+  String getLeaderHttpAddress();
 }

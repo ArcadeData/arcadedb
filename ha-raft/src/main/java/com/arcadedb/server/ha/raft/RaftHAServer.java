@@ -77,6 +77,7 @@ public class RaftHAServer {
   private final RaftPeerId                 localPeerId;
   private final Map<RaftPeerId, String>    httpAddresses;
   private final Map<RaftPeerId, String>    peerDisplayNames;
+  private final String                     clusterName;
 
   private RaftServer                raftServer;
   private RaftClient                raftClient;
@@ -90,6 +91,7 @@ public class RaftHAServer {
 
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
+    this.clusterName = clusterName;
     final long lagWarningThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
     final int raftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
 
@@ -507,6 +509,69 @@ public class RaftHAServer {
 
   public RaftGroup getRaftGroup() {
     return raftGroup;
+  }
+
+  public Map<RaftPeerId, String> getHttpAddresses() {
+    return httpAddresses;
+  }
+
+  public String getClusterName() {
+    return clusterName;
+  }
+
+  public int getConfiguredServers() {
+    return raftGroup.getPeers().size();
+  }
+
+  public String getLeaderName() {
+    final RaftPeerId leaderId = getLeaderId();
+    if (leaderId == null)
+      return null;
+    final String display = peerDisplayNames.get(leaderId);
+    return display != null ? display : leaderId.toString();
+  }
+
+  public Map<String, Object> getStats() {
+    final Map<String, Object> stats = new HashMap<>();
+    stats.put("localPeerId", localPeerId.toString());
+    stats.put("isLeader", isLeader());
+    stats.put("configuredServers", getConfiguredServers());
+
+    if (clusterMonitor != null) {
+      final Map<String, Long> lags = clusterMonitor.getReplicaLags();
+      if (!lags.isEmpty())
+        stats.put("replicaLags", lags);
+    }
+
+    final List<Map<String, String>> replicas = new ArrayList<>();
+    for (final RaftPeer peer : raftGroup.getPeers()) {
+      if (!peer.getId().equals(localPeerId)) {
+        final Map<String, String> replicaInfo = new HashMap<>();
+        replicaInfo.put("id", peer.getId().toString());
+        replicaInfo.put("address", peer.getAddress().toString());
+        final String httpAddr = httpAddresses.get(peer.getId());
+        if (httpAddr != null)
+          replicaInfo.put("httpAddress", httpAddr);
+        replicas.add(replicaInfo);
+      }
+    }
+    stats.put("replicas", replicas);
+    return stats;
+  }
+
+  public String getReplicaAddresses() {
+    final StringBuilder sb = new StringBuilder();
+    for (final RaftPeer peer : raftGroup.getPeers()) {
+      if (!peer.getId().equals(localPeerId)) {
+        final String httpAddr = httpAddresses.get(peer.getId());
+        if (httpAddr != null) {
+          if (!sb.isEmpty())
+            sb.append(",");
+          sb.append(httpAddr);
+        }
+      }
+    }
+    return sb.toString();
   }
 
   public RaftPeerId getLocalPeerId() {

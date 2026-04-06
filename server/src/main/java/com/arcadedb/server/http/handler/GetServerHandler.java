@@ -27,8 +27,8 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerDatabase;
-import com.arcadedb.server.ha.HAReplicatedDatabase;
-import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.HAReplicatedDatabase;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
@@ -81,7 +81,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
   }
 
   private void exportCluster(final HttpServerExchange exchange, final JSONObject response) {
-    final HAServer ha = httpServer.getServer().getHA();
+    final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha != null) {
       final JSONObject haJSON = new JSONObject();
       response.put("ha", haJSON);
@@ -96,7 +96,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
         HttpURLConnection connection;
         try {
           connection = (HttpURLConnection) new URL(
-              "http://" + ha.getLeader().getRemoteHTTPAddress() + "/api/v1/server?mode=cluster").openConnection();
+              "http://" + ha.getLeaderAddress() + "/api/v1/server?mode=cluster").openConnection();
         } catch (RuntimeException e) {
           throw e;
         } catch (Exception e) {
@@ -134,10 +134,8 @@ public class GetServerHandler extends AbstractServerHttpHandler {
 
       haJSON.put("databases", databases);
 
-      final String leaderServer = ha.isLeader() ?
-          ha.getServer().getHttpServer().getListeningAddress() :
-          ha.getLeader().getRemoteHTTPAddress();
-      final String replicaServers = ha.getReplicaServersHTTPAddressesList();
+      final String leaderServer = ha.getLeaderAddress();
+      final String replicaServers = ha.getReplicaAddresses();
 
       haJSON.put("leaderAddress", leaderServer);
       haJSON.put("replicaAddresses", replicaServers);

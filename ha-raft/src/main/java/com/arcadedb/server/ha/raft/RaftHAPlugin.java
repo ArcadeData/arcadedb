@@ -22,7 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.HAServerPlugin;
 
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.handlers.PathHandler;
@@ -35,7 +35,7 @@ import java.util.logging.Level;
  * Discovered via Java ServiceLoader when {@code HA_ENABLED=true} and
  * {@code HA_IMPLEMENTATION=raft}.
  */
-public class RaftHAPlugin implements ServerPlugin {
+public class RaftHAPlugin implements HAServerPlugin {
 
   private ArcadeDBServer       server;
   private ContextConfiguration configuration;
@@ -72,6 +72,9 @@ public class RaftHAPlugin implements ServerPlugin {
       // Re-wrap any databases that were already loaded before this plugin started
       server.rewrapDatabases();
 
+      // Register this plugin as the HA implementation on the server
+      server.setHA(this);
+
       LogManager.instance().log(this, Level.INFO, "Raft HA plugin started successfully");
     } catch (final IOException e) {
       throw new RuntimeException("Failed to start Raft HA server", e);
@@ -105,14 +108,96 @@ public class RaftHAPlugin implements ServerPlugin {
     LogManager.instance().log(this, Level.INFO, "Raft snapshot endpoint registered at /api/v1/ha/snapshot/{database}");
   }
 
+  @Override
   public boolean isLeader() {
     return raftHAServer != null && raftHAServer.isLeader();
   }
 
+  @Override
+  public String getLeaderName() {
+    return raftHAServer != null ? raftHAServer.getLeaderName() : null;
+  }
+
+  @Override
+  public HAServerPlugin.ELECTION_STATUS getElectionStatus() {
+    if (raftHAServer == null)
+      return ELECTION_STATUS.DONE;
+    return raftHAServer.getLeaderId() != null ? ELECTION_STATUS.DONE : ELECTION_STATUS.VOTING_FOR_ME;
+  }
+
+  @Override
+  public String getClusterName() {
+    return raftHAServer != null ? raftHAServer.getClusterName() : null;
+  }
+
+  @Override
+  public java.util.Map<String, Object> getStats() {
+    return raftHAServer != null ? raftHAServer.getStats() : java.util.Collections.emptyMap();
+  }
+
+  @Override
+  public int getConfiguredServers() {
+    return raftHAServer != null ? raftHAServer.getConfiguredServers() : 1;
+  }
+
+  @Override
+  public String getLeaderAddress() {
+    return raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+  }
+
+  @Override
+  public String getReplicaAddresses() {
+    return raftHAServer != null ? raftHAServer.getReplicaAddresses() : "";
+  }
+
+  @Override
+  public void shutdownRemoteServer(final String serverName) {
+    if (raftHAServer == null)
+      throw new RuntimeException("Raft HA server not started");
+
+    String targetAddr = null;
+    for (final var peer : raftHAServer.getRaftGroup().getPeers()) {
+      final String httpAddr = raftHAServer.getHttpAddresses().get(peer.getId());
+      if (httpAddr != null && (peer.getId().toString().contains(serverName) || httpAddr.contains(serverName))) {
+        targetAddr = httpAddr;
+        break;
+      }
+    }
+    if (targetAddr == null)
+      throw new com.arcadedb.server.ServerException("Cannot find server '" + serverName + "' in the cluster");
+
+    try {
+      final java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+          new java.net.URL("http://" + targetAddr + "/api/v1/server").openConnection();
+      conn.setRequestMethod("POST");
+      conn.setDoOutput(true);
+      conn.setRequestProperty("Content-Type", "application/json");
+
+      final String token = configuration.getValueAsString(com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+      if (token != null && !token.isEmpty())
+        conn.setRequestProperty("Authorization", "Bearer " + token);
+
+      conn.getOutputStream().write("{\"command\":\"shutdown\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      conn.getResponseCode();
+      conn.disconnect();
+    } catch (final java.io.IOException e) {
+      throw new RuntimeException("Failed to shutdown remote server '" + serverName + "'", e);
+    }
+  }
+
+  @Override
+  public void disconnectCluster() {
+    if (raftHAServer != null)
+      raftHAServer.stop();
+  }
+
   private boolean isRaftEnabled() {
-    return configuration != null
-        && configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)
-        && "raft".equalsIgnoreCase(configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION));
+    if (configuration == null)
+      return false;
+    if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+      return false;
+    final String impl = configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION);
+    return impl == null || impl.isEmpty() || "raft".equalsIgnoreCase(impl);
   }
 
   private void validateConfiguration() {

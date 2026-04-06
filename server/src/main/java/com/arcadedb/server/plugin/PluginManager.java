@@ -82,7 +82,7 @@ public class PluginManager {
   }
 
   private void discoverPluginsOnMainClassLoader() {
-    final boolean autoDiscoverRaft = isRaftHAEnabled();
+    final boolean autoDiscoverRaft = isHAEnabled();
 
     // Use the thread context class loader so that modules on the classpath (e.g. ha-raft)
     // that are not in the server module's own class loader are still discovered.
@@ -112,9 +112,8 @@ public class PluginManager {
     }
   }
 
-  private boolean isRaftHAEnabled() {
-    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)
-        && "raft".equalsIgnoreCase(configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION));
+  private boolean isHAEnabled() {
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED);
   }
 
   /**

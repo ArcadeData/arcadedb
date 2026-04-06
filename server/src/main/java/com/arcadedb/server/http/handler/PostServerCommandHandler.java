@@ -19,7 +19,6 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
@@ -35,11 +34,8 @@ import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.backup.DatabaseBackupConfig;
-import com.arcadedb.server.ha.HAReplicatedDatabase;
-import com.arcadedb.server.ha.HAServer;
-import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
-import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
-import com.arcadedb.server.ha.message.ServerShutdownRequest;
+import com.arcadedb.server.HAReplicatedDatabase;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -194,14 +190,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         }
       }, 1000);
     } else {
-      final HAServer ha = getHA();
-      final Leader2ReplicaNetworkExecutor replica = ha.getReplica(serverName);
-      if (replica == null)
-        throw new ServerException("Cannot contact server '" + serverName + "' from the current server");
-
-      final Binary buffer = new Binary();
-      ha.getMessageFactory().serializeCommand(new ServerShutdownRequest(), buffer, -1);
-      replica.sendMessage(buffer);
+      getHA().shutdownRemoteServer(serverName);
     }
   }
 
@@ -491,27 +480,16 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private boolean connectCluster(final String serverAddress, final HttpServerExchange exchange) {
-    final HAServer ha = getHA();
-
     Metrics.counter("http.connect-cluster").increment();
 
-    return ha.connectToLeader(serverAddress, exception -> {
-      exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
-      exchange.getResponseSender().send("{ \"error\" : \"" + exception.getMessage() + "\"}");
-      return null;
-    });
+    throw new CommandExecutionException(
+        "Connect cluster operation is not supported by the current HA implementation. Use the cluster configuration to join nodes.");
   }
 
   private void disconnectCluster() {
     Metrics.counter("http.server-disconnect").increment();
 
-    final HAServer ha = getHA();
-
-    final Replica2LeaderNetworkExecutor leader = ha.getLeader();
-    if (leader != null)
-      leader.close();
-    else
-      ha.disconnectAllReplicas();
+    getHA().disconnectCluster();
   }
 
   private void setDatabaseSetting(final String triple) throws IOException {
@@ -871,14 +849,14 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private void checkServerIsLeaderIfInHA() {
-    final HAServer ha = httpServer.getServer().getHA();
+    final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha != null && !ha.isLeader())
       // NOT THE LEADER
       throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
   }
 
-  private HAServer getHA() {
-    final HAServer ha = httpServer.getServer().getHA();
+  private HAServerPlugin getHA() {
+    final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha == null)
       throw new CommandExecutionException(
           "ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");

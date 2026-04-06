@@ -16,22 +16,11 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha.message;
+package com.arcadedb.server.network;
 
-import com.arcadedb.server.ha.HAServer;
+import java.io.*;
+import java.net.*;
 
-/**
- * Response for a request. This is needed to check the quorum by the leader.
- */
-public class OkResponse extends HAAbstractCommand {
-  @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    server.receivedResponse(remoteServerName, messageNumber, null);
-    return null;
-  }
-
-  @Override
-  public String toString() {
-    return "ok-response";
-  }
+public abstract class ServerSocketFactory {
+  public abstract ServerSocket createServerSocket(int port, int backlog, InetAddress ifAddress) throws IOException;
 }

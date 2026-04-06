@@ -38,8 +38,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
-import com.arcadedb.server.ha.HAServer;
-import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
@@ -89,7 +87,7 @@ public class ArcadeDBServer {
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
-  private             HAServer                              haServer;
+  private             HAServerPlugin                        haServer;
   private             ServerSecurity                        security;
   private             HttpServer                            httpServer;
   private             MCPConfiguration                      mcpConfiguration;
@@ -225,15 +223,7 @@ public class ArcadeDBServer {
 
     httpServer.startService();
 
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-      final String haImpl = configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION);
-      if ("raft".equalsIgnoreCase(haImpl))
-        LogManager.instance().log(this, Level.INFO, "Using Raft HA implementation (loaded via plugin manager)");
-      else {
-        haServer = new HAServer(this, configuration);
-        haServer.startService();
-      }
-    }
+    // HA is started via the plugin manager (RaftHAPlugin discovered via ServiceLoader)
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
 
@@ -494,12 +484,8 @@ public class ArcadeDBServer {
         embeddedDatabase = (DatabaseInternal) factory.open(mode);
       }
 
-      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-        if (databaseWrapper != null)
-          embeddedDatabase = databaseWrapper.apply((LocalDatabase) embeddedDatabase);
-        else if (!"raft".equalsIgnoreCase(configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION)))
-          embeddedDatabase = new ReplicatedDatabase(this, (LocalDatabase) embeddedDatabase);
-      }
+      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) && databaseWrapper != null)
+        embeddedDatabase = databaseWrapper.apply((LocalDatabase) embeddedDatabase);
 
       serverDatabase = new ServerDatabase(this, embeddedDatabase);
 
@@ -533,8 +519,12 @@ public class ArcadeDBServer {
     return hostAddress;
   }
 
-  public HAServer getHA() {
+  public HAServerPlugin getHA() {
     return haServer;
+  }
+
+  public void setHA(final HAServerPlugin ha) {
+    this.haServer = ha;
   }
 
   /**
@@ -669,12 +659,8 @@ public class ArcadeDBServer {
             embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
         }
 
-        if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-          if (databaseWrapper != null)
-            embDatabase = databaseWrapper.apply((LocalDatabase) embDatabase);
-          else if (!"raft".equalsIgnoreCase(configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION)))
-            embDatabase = new ReplicatedDatabase(this, (LocalDatabase) embDatabase);
-        }
+        if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) && databaseWrapper != null)
+          embDatabase = databaseWrapper.apply((LocalDatabase) embDatabase);
 
         db = new ServerDatabase(this, embDatabase);
 

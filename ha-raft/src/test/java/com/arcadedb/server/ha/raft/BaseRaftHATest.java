@@ -23,7 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
@@ -94,9 +94,9 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(final int serverIndex) {
+  protected HAServerPlugin.SERVER_ROLE getServerRole(final int serverIndex) {
     // With Raft, leader election is automatic; all nodes start as ANY
-    return HAServer.SERVER_ROLE.ANY;
+    return HAServerPlugin.SERVER_ROLE.ANY;
   }
 
   @Override
