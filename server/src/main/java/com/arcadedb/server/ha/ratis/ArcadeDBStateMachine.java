@@ -243,7 +243,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     final ByteBuffer buf = request.getContent().asReadOnlyByteBuffer();
     final byte[] data = new byte[buf.remaining()];
     buf.get(data);
-    if (data.length > 0 && data[0] == 'C')
+    if (data.length > 0 && data[0] == RaftLogEntry.EntryType.COMMAND_FORWARD.code())
       return executeForwardedCommand(data);
     return CompletableFuture.completedFuture(Message.EMPTY);
   }

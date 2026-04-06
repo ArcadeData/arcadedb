@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
@@ -50,11 +51,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
+import java.util.stream.Stream;
 
 /**
  * Manages the Ratis RaftServer lifecycle for ArcadeDB HA. This class:
@@ -89,7 +93,7 @@ public class RaftHAServer {
   private final RaftPeerId                 localPeerId;
   private final Quorum                     quorum;
   private final long                       quorumTimeout;
-  private final Map<String, String>        peerHttpAddresses = new java.util.concurrent.ConcurrentHashMap<>();
+  private final Map<String, String>        peerHttpAddresses = new ConcurrentHashMap<>();
   private       String                     clusterToken;
 
   private RaftServer                       raftServer;
@@ -130,8 +134,9 @@ public class RaftHAServer {
   }
 
   /**
-   * Derives a deterministic cluster token from the cluster name and root password.
+   * Derives a deterministic cluster token from the cluster name and root password using PBKDF2.
    * All nodes in the same cluster compute the same token without sharing state.
+   * PBKDF2 is used instead of plain SHA-256 to resist brute-force attacks if the token is captured.
    */
   private void initClusterToken() {
     final String configured = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
@@ -141,14 +146,16 @@ public class RaftHAServer {
     }
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
-    final String seed = clusterName + ":" + (rootPassword != null ? rootPassword : "");
+    final String password = clusterName + ":" + (rootPassword != null ? rootPassword : "");
     try {
-      final java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-      final byte[] hash = digest.digest(seed.getBytes(StandardCharsets.UTF_8));
-      this.clusterToken = java.util.HexFormat.of().formatHex(hash);
-    } catch (final java.security.NoSuchAlgorithmException e) {
-      // SHA-256 is guaranteed to be available in all JVMs
-      throw new RuntimeException(e);
+      final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
+      final javax.crypto.SecretKeyFactory factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+      final javax.crypto.spec.PBEKeySpec spec = new javax.crypto.spec.PBEKeySpec(
+          password.toCharArray(), salt, 100_000, 256);
+      final byte[] hash = factory.generateSecret(spec).getEncoded();
+      this.clusterToken = HexFormat.of().formatHex(hash);
+    } catch (final Exception e) {
+      throw new RuntimeException("Failed to derive cluster token", e);
     }
     configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, this.clusterToken);
   }
@@ -167,8 +174,11 @@ public class RaftHAServer {
 
       // Use RECOVER if storage exists from a previous run, FORMAT for fresh start
       final Path storagePath = Path.of(server.getRootPath(), "ratis-storage", localPeerId.toString());
-      final boolean storageExists = Files.exists(storagePath)
-          && Files.list(storagePath).findAny().isPresent();
+      boolean storageExists = false;
+      if (Files.exists(storagePath))
+        try (final Stream<Path> stream = Files.list(storagePath)) {
+          storageExists = stream.findAny().isPresent();
+        }
 
       final var startupOption = storageExists
           ? RaftStorage.StartupOption.RECOVER
@@ -425,21 +435,26 @@ public class RaftHAServer {
           reply = raftClient.io().sendReadOnly(msg);
 
         if (!reply.isSuccess()) {
-          final String err = reply.getException() != null ? reply.getException().getMessage() : "unknown";
-          throw new com.arcadedb.exception.CommandExecutionException("Command forwarding failed: " + err);
+          final var replyEx = reply.getException();
+          if (replyEx instanceof org.apache.ratis.protocol.exceptions.NotLeaderException && retry < 2) {
+            try { Thread.sleep(500); } catch (final InterruptedException ie) { Thread.currentThread().interrupt(); }
+            continue;
+          }
+          final String err = replyEx != null ? replyEx.getMessage() : "unknown";
+          throw new CommandExecutionException("Command forwarding failed: " + err);
         }
 
         return reply.getMessage().getContent().toByteArray();
 
       } catch (final IOException e) {
-        if (e.getMessage() != null && e.getMessage().contains("NotLeaderException") && retry < 2) {
+        if (hasCause(e, org.apache.ratis.protocol.exceptions.NotLeaderException.class) && retry < 2) {
           try { Thread.sleep(500); } catch (final InterruptedException ie) { Thread.currentThread().interrupt(); }
           continue;
         }
-        throw new com.arcadedb.exception.CommandExecutionException("Command forwarding failed: " + e.getMessage());
+        throw new CommandExecutionException("Command forwarding failed: " + e.getMessage());
       }
     }
-    throw new com.arcadedb.exception.CommandExecutionException("Command forwarding failed after retries");
+    throw new CommandExecutionException("Command forwarding failed after retries");
   }
 
   private void sendToRaft(final byte[] entry) {
@@ -1046,6 +1061,16 @@ public class RaftHAServer {
   private int resolveLocalPort() {
     final String ports = configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS);
     return parseFirstPort(ports);
+  }
+
+  private static boolean hasCause(final Throwable throwable, final Class<? extends Throwable> targetType) {
+    Throwable cause = throwable;
+    while (cause != null) {
+      if (targetType.isInstance(cause))
+        return true;
+      cause = cause.getCause();
+    }
+    return false;
   }
 
   private static int parseFirstPort(final String portSpec) {

@@ -35,6 +35,7 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
 
+import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Deque;
 import java.util.concurrent.atomic.AtomicReference;
@@ -201,14 +202,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         sendErrorResponse(exchange, 503, "Leader election in progress, retry later", e, null);
         return;
       }
-      {
-        try {
-          proxyToLeader(exchange, leaderAddr);
-          return;
-        } catch (final Exception proxyEx) {
-          LogManager.instance().log(this, Level.WARNING, "Failed to proxy request to leader %s: %s", leaderAddr,
-              proxyEx.getMessage());
-        }
+      try {
+        proxyToLeader(exchange, leaderAddr);
+        return;
+      } catch (final Exception proxyEx) {
+        LogManager.instance().log(this, Level.WARNING, "Failed to proxy request to leader %s: %s", leaderAddr,
+            proxyEx.getMessage());
       }
       sendErrorResponse(exchange, 503, "Leader proxy failed, retry later", e, leaderAddr);
     } catch (final NeedRetryException e) {
@@ -392,7 +391,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final var raftHA = httpServer.getServer().getHA();
     final String expectedToken = raftHA != null ? raftHA.getClusterToken() : null;
 
-    if (expectedToken == null || expectedToken.isEmpty() || !expectedToken.equals(providedToken)) {
+    if (expectedToken == null || expectedToken.isEmpty()
+        || !MessageDigest.isEqual(expectedToken.getBytes(), providedToken.getBytes())) {
       sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
       return null;
     }

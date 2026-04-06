@@ -57,10 +57,10 @@ public class ClusterMonitor {
   public Map<String, Long> getReplicaLags() {
     if (replicaMatchIndexes.isEmpty())
       return Collections.emptyMap();
-    final Map<String, Long> lags = new ConcurrentHashMap<>();
+    final Map<String, Long> lags = new java.util.HashMap<>(replicaMatchIndexes.size());
     for (final var entry : replicaMatchIndexes.entrySet())
       lags.put(entry.getKey(), leaderCommitIndex - entry.getValue());
-    return lags;
+    return Collections.unmodifiableMap(lags);
   }
 
   public long getLeaderCommitIndex() {

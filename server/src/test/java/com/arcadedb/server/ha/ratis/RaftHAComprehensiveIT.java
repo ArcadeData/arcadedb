@@ -38,6 +38,7 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.io.IOException;
@@ -61,6 +62,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("IntegrationTest")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@Timeout(120)
 class RaftHAComprehensiveIT {
 
   private static final int    SERVER_COUNT   = 3;

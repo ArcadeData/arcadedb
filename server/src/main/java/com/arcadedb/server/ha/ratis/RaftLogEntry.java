@@ -22,7 +22,10 @@ import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.database.Binary;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -42,7 +45,9 @@ public class RaftLogEntry {
     /** Replicate a committed transaction (WAL page diffs + optional schema changes). */
     TRANSACTION((byte) 1),
     /** Forward a write from a non-leader node (includes index key changes for constraint validation). */
-    TRANSACTION_FORWARD((byte) 2);
+    TRANSACTION_FORWARD((byte) 2),
+    /** Forward a command (SQL/Cypher) to the leader via the query() path (not logged in Raft). */
+    COMMAND_FORWARD((byte) 'C');
 
     private final byte code;
 
@@ -58,6 +63,7 @@ public class RaftLogEntry {
       return switch (code) {
         case 1 -> TRANSACTION;
         case 2 -> TRANSACTION_FORWARD;
+        case 'C' -> COMMAND_FORWARD;
         default -> throw new IllegalArgumentException("Unknown RaftLogEntry type code: " + code);
       };
     }
@@ -81,26 +87,8 @@ public class RaftLogEntry {
       final Map<Integer, String> filesToRemove) {
 
     final Binary stream = new Binary(walBuffer.size() + 256);
-
-    // Type marker
     stream.putByte(EntryType.TRANSACTION.code());
-
-    // Database name
-    stream.putString(databaseName);
-
-    // WAL changes (compressed)
-    walBuffer.rewind();
-    final int uncompressedLength = walBuffer.size();
-    final Binary compressed = CompressionFactory.getDefault().compress(walBuffer);
-    stream.putInt(uncompressedLength);
-    stream.putBytes(compressed.getContent(), compressed.size());
-
-    // Bucket record delta
-    stream.putInt(bucketRecordDelta.size());
-    for (final Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
-      stream.putInt(entry.getKey());
-      stream.putInt(entry.getValue());
-    }
+    writeCommonTransactionFields(stream, databaseName, bucketRecordDelta, walBuffer);
 
     // Schema change (optional)
     final boolean hasSchemaChange = schemaJson != null;
@@ -111,10 +99,7 @@ public class RaftLogEntry {
       writeFileMap(stream, filesToRemove);
     }
 
-    stream.flip();
-    final byte[] result = new byte[stream.size()];
-    stream.getByteBuffer().get(result);
-    return result;
+    return toByteArray(stream);
   }
 
   /**
@@ -130,10 +115,21 @@ public class RaftLogEntry {
       final Binary walBuffer, final byte[] indexChanges) {
 
     final Binary stream = new Binary(walBuffer.size() + 256);
-
-    // Type marker
     stream.putByte(EntryType.TRANSACTION_FORWARD.code());
+    writeCommonTransactionFields(stream, databaseName, bucketRecordDelta, walBuffer);
 
+    // Index changes (optional, for unique constraint validation on leader)
+    if (indexChanges != null) {
+      stream.putByte((byte) 1);
+      stream.putBytes(indexChanges, indexChanges.length);
+    } else
+      stream.putByte((byte) 0);
+
+    return toByteArray(stream);
+  }
+
+  private static void writeCommonTransactionFields(final Binary stream, final String databaseName,
+      final Map<Integer, Integer> bucketRecordDelta, final Binary walBuffer) {
     // Database name
     stream.putString(databaseName);
 
@@ -150,14 +146,9 @@ public class RaftLogEntry {
       stream.putInt(entry.getKey());
       stream.putInt(entry.getValue());
     }
+  }
 
-    // Index changes (optional, for unique constraint validation on leader)
-    if (indexChanges != null) {
-      stream.putByte((byte) 1);
-      stream.putBytes(indexChanges, indexChanges.length);
-    } else
-      stream.putByte((byte) 0);
-
+  private static byte[] toByteArray(final Binary stream) {
     stream.flip();
     final byte[] result = new byte[stream.size()];
     stream.getByteBuffer().get(result);
@@ -236,7 +227,7 @@ public class RaftLogEntry {
   public static byte[] serializeCommandForward(final String databaseName, final String language, final String command,
       final Map<String, Object> namedParams, final Object[] positionalParams) {
     final Binary stream = new Binary(256);
-    stream.putByte((byte) 'C'); // Command forward marker
+    stream.putByte(EntryType.COMMAND_FORWARD.code()); // Command forward marker
     stream.putString(databaseName);
     stream.putString(language);
     stream.putString(command);
@@ -281,7 +272,7 @@ public class RaftLogEntry {
     final int namedCount = stream.getInt();
     Map<String, Object> namedParams = null;
     if (namedCount > 0) {
-      namedParams = new java.util.LinkedHashMap<>(namedCount);
+      namedParams = new LinkedHashMap<>(namedCount);
       for (int i = 0; i < namedCount; i++)
         namedParams.put(stream.getString(), readValue(stream));
     }
@@ -302,7 +293,7 @@ public class RaftLogEntry {
     final Binary stream = new Binary(1024);
     stream.putByte((byte) 'R'); // Result marker
     // Collect all results first (ResultSet is consumed once)
-    final java.util.List<Map<String, Object>> rows = new java.util.ArrayList<>();
+    final List<Map<String, Object>> rows = new ArrayList<>();
     while (rs.hasNext())
       rows.add(rs.next().toMap());
     stream.putInt(rows.size());
@@ -320,14 +311,14 @@ public class RaftLogEntry {
   }
 
   /** Deserializes a command result from binary format into a list of property maps. */
-  public static java.util.List<Map<String, Object>> deserializeCommandResult(final byte[] data) {
+  public static List<Map<String, Object>> deserializeCommandResult(final byte[] data) {
     final Binary stream = new Binary(data);
     stream.getByte(); // skip marker
     final int rowCount = stream.getInt();
-    final java.util.List<Map<String, Object>> rows = new java.util.ArrayList<>(rowCount);
+    final List<Map<String, Object>> rows = new ArrayList<>(rowCount);
     for (int r = 0; r < rowCount; r++) {
       final int propCount = stream.getInt();
-      final Map<String, Object> row = new java.util.LinkedHashMap<>(propCount);
+      final Map<String, Object> row = new LinkedHashMap<>(propCount);
       for (int p = 0; p < propCount; p++) {
         final String key = stream.getString();
         final Object value = readValue(stream);

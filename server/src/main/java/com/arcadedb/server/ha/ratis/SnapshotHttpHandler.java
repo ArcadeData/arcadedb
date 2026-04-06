@@ -137,8 +137,16 @@ public class SnapshotHttpHandler implements HttpHandler {
     final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
     if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
       final var raftHA = httpServer.getServer().getHA();
-      if (raftHA != null && clusterTokenHeader.getFirst().equals(raftHA.getClusterToken()))
-        return httpServer.getServer().getSecurity().getUser("root");
+      if (raftHA != null && raftHA.getClusterToken() != null
+          && java.security.MessageDigest.isEqual(
+              raftHA.getClusterToken().getBytes(), clusterTokenHeader.getFirst().getBytes())) {
+        final ServerSecurityUser rootUser = httpServer.getServer().getSecurity().getUser("root");
+        if (rootUser == null) {
+          LogManager.instance().log(this, Level.SEVERE, "Cluster token valid but 'root' user not found");
+          return null;
+        }
+        return rootUser;
+      }
     }
 
     // Basic auth
