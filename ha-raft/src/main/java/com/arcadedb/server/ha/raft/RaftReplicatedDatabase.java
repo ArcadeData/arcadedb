@@ -90,6 +90,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     this.proxied.setWrappedDatabaseInstance(this);
   }
 
+  private RaftHAServer requireRaftServer() {
+    final RaftHAServer s = raftHAServer;
+    if (s == null)
+      throw new NeedRetryException("Raft HA server is not available (server may be restarting)");
+    return s;
+  }
+
   @Override
   public void commit() {
     proxied.incrementStatsWriteTx();
@@ -139,7 +146,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             final Map<Integer, Integer> bucketDeltas = tx.getBucketRecordDelta();
             final ByteString entry = RaftLogEntryCodec.encodeTxEntry(getName(), walData, bucketDeltas);
 
-            raftHAServer.getGroupCommitter().submitAndWait(entry.toByteArray(), raftHAServer.getQuorumTimeout());
+            final RaftHAServer raft = requireRaftServer();
+            raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
 
             if (leader)
               tx.commit2ndPhase(phase1);
@@ -760,7 +768,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
     if (!isLeader()) {
-      final String leaderAddr = raftHAServer.getLeaderHttpAddress();
+      final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
       throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
           leaderAddr != null ? leaderAddr : "");
     }
@@ -812,7 +820,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // replicas apply them immediately after creating the files - in the correct order.
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged) {
         final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
-        raftHAServer.getGroupCommitter().submitAndWait(schemaEntry.toByteArray(), raftHAServer.getQuorumTimeout());
+        final RaftHAServer raft = requireRaftServer();
+        raft.getGroupCommitter().submitAndWait(schemaEntry.toByteArray(), raft.getQuorumTimeout());
         HALog.log(this, HALog.DETAILED,
             "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d",
             addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size());
@@ -876,7 +885,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   public void createInReplicas() {
     final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(getName());
     try {
-      raftHAServer.getGroupCommitter().submitAndWait(entry.toByteArray(), raftHAServer.getQuorumTimeout());
+      final RaftHAServer raft = requireRaftServer();
+      raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -892,7 +902,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs) {
-    final String leaderHttpAddress = raftHAServer.getLeaderHttpAddress();
+    final RaftHAServer raft = requireRaftServer();
+    final String leaderHttpAddress = raft.getLeaderHttpAddress();
     if (leaderHttpAddress == null)
       throw new TransactionException("Cannot forward command to leader: leader HTTP address is not available");
 
