@@ -186,6 +186,17 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     return null;
   }
 
+  @Override
+  protected void checkDatabasesAreIdentical() {
+    // Ensure all Raft replicas have caught up before comparing pages.
+    // The base endTest() calls this directly without a Raft-aware wait.
+    for (int i = 0; i < getServerCount(); i++) {
+      if (getServer(i) != null && getServer(i).isStarted())
+        waitForReplicationIsCompleted(i);
+    }
+    super.checkDatabasesAreIdentical();
+  }
+
   /**
    * Waits for replication to propagate across the cluster, then verifies
    * that all server databases are identical.
