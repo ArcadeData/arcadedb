@@ -22,7 +22,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.logging.Level;
@@ -50,7 +49,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ol>
  * Once implemented, re-enable this test and verify it passes.
  */
-@Disabled("Requires ArcadeStateMachine.installSnapshot() for snapshot-based replica resync")
 class RaftFullSnapshotResyncIT extends BaseRaftHATest {
 
   @Override

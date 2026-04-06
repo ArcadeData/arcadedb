@@ -239,6 +239,13 @@ public class RaftHAServer {
   }
 
   /**
+   * Returns the HTTP address for a peer, or null if not configured.
+   */
+  public String getPeerHttpAddress(final RaftPeerId peerId) {
+    return httpAddresses.get(peerId);
+  }
+
+  /**
    * Returns a human-readable display name for a peer, e.g. "arcadedb-0 (localhost:2480)".
    * Falls back to the raw peer ID string if the peer is unknown.
    */
@@ -271,6 +278,11 @@ public class RaftHAServer {
     final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD);
     RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, snapshotThreshold);
     RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
+
+    // Disable Ratis built-in snapshot transfer; use notification mode
+    // so ArcadeDB controls the snapshot transfer via HTTP
+    RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, false);
+    RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, true);
 
     // AppendEntries batching: allow multiple entries per gRPC call to followers
     RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf("4MB"));
@@ -526,7 +538,7 @@ public class RaftHAServer {
       final long commitIndex = info.getLastAppliedIndex();
       clusterMonitor.updateLeaderCommitIndex(commitIndex);
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Error checking replica lag", e);
+      HALog.log(this, HALog.TRACE, "Error checking replica lag", e);
     }
   }
 

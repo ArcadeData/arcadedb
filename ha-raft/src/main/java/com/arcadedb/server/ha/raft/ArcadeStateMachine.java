@@ -20,11 +20,13 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftGroupId;
@@ -130,19 +132,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * transaction is already durably flushed by the {@link com.arcadedb.engine.TransactionManager}.
    * Returning the last-applied index here tells Ratis it may purge log entries up to that index,
    * reducing log disk usage over time.
-   * <p>
-   * <b>Limitation:</b> snapshot-based resync ({@code installSnapshot()}) for replicas that fall
-   * behind the compacted log is not yet implemented. Replicas that miss purged log entries
-   * cannot catch up automatically and require a manual data copy from the leader's database
-   * directory. To minimise this risk, set {@code HA_RAFT_SNAPSHOT_THRESHOLD} high enough that
-   * replicas can recover via normal log replay before entries are purged (default: 10 000).
    */
   @Override
   public long takeSnapshot() {
     final long currentIndex = lastAppliedIndex.get();
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
-    LogManager.instance().log(this, Level.FINE, "ArcadeStateMachine: snapshot checkpoint at index %d", currentIndex);
+    HALog.log(this, HALog.BASIC, "ArcadeStateMachine: snapshot checkpoint at index %d", currentIndex);
     return currentIndex;
   }
 
@@ -179,6 +175,105 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
   }
 
+  /**
+   * Called by Ratis when the follower's log is too far behind the leader's compacted log.
+   * Downloads the full database snapshot from the leader via HTTP and replaces local database files.
+   */
+  @Override
+  public CompletableFuture<TermIndex> notifyInstallSnapshotFromLeader(
+      final RaftProtos.RoleInfoProto roleInfoProto, final TermIndex firstTermIndexInLog) {
+
+    LogManager.instance().log(this, Level.INFO,
+        "Snapshot installation requested from leader (firstLogIndex=%s). Starting full resync...", firstTermIndexInLog);
+
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        final RaftPeerId leaderId = RaftPeerId.valueOf(
+            roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
+        final String leaderHttpAddr = raftHAServer.getPeerHttpAddress(leaderId);
+
+        if (leaderHttpAddr == null)
+          throw new RuntimeException("Cannot determine leader HTTP address for snapshot download");
+
+        final String clusterToken = server.getConfiguration().getValueAsString(
+            com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+
+        for (final String dbName : server.getDatabaseNames()) {
+          LogManager.instance().log(this, Level.INFO,
+              "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
+          installDatabaseSnapshot(dbName, leaderHttpAddr, clusterToken);
+        }
+
+        LogManager.instance().log(this, Level.INFO, "Full resync from leader completed");
+        return firstTermIndexInLog;
+
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error during snapshot installation from leader", e);
+        throw new RuntimeException("Error during Raft snapshot installation", e);
+      }
+    });
+  }
+
+  private void installDatabaseSnapshot(final String databaseName, final String leaderHttpAddr,
+      final String clusterToken) throws java.io.IOException {
+
+    final String snapshotUrl = "http://" + leaderHttpAddr + "/api/v1/ha/snapshot/" + databaseName;
+    HALog.log(this, HALog.BASIC, "Downloading snapshot from %s", snapshotUrl);
+
+    final java.net.HttpURLConnection connection;
+    try {
+      connection = (java.net.HttpURLConnection) new java.net.URI(snapshotUrl).toURL().openConnection();
+    } catch (final java.net.URISyntaxException e) {
+      throw new java.io.IOException("Invalid snapshot URL: " + snapshotUrl, e);
+    }
+    connection.setRequestMethod("GET");
+    connection.setConnectTimeout(30_000);
+    connection.setReadTimeout(300_000);
+
+    if (clusterToken != null && !clusterToken.isEmpty()) {
+      final String auth = java.util.Base64.getEncoder().encodeToString(
+          ("root:" + clusterToken).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      connection.setRequestProperty("Authorization", "Basic " + auth);
+    }
+
+    try {
+      final int responseCode = connection.getResponseCode();
+      if (responseCode != 200)
+        throw new java.io.IOException("Failed to download snapshot: HTTP " + responseCode);
+
+      final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
+      final String databasePath = db.getDatabasePath();
+      db.close();
+
+      try (final java.util.zip.ZipInputStream zipIn = new java.util.zip.ZipInputStream(
+          connection.getInputStream())) {
+        java.util.zip.ZipEntry zipEntry;
+        while ((zipEntry = zipIn.getNextEntry()) != null) {
+          final java.io.File targetFile = new java.io.File(databasePath, zipEntry.getName());
+
+          if (!targetFile.getCanonicalPath().startsWith(new java.io.File(databasePath).getCanonicalPath()))
+            throw new java.io.IOException("Zip slip detected in snapshot: " + zipEntry.getName());
+
+          try (final java.io.FileOutputStream fos = new java.io.FileOutputStream(targetFile)) {
+            zipIn.transferTo(fos);
+          }
+          zipIn.closeEntry();
+        }
+      }
+
+      final java.io.File dbDir = new java.io.File(databasePath);
+      final java.io.File[] walFiles = dbDir.listFiles((dir, name) -> name.endsWith(".wal"));
+      if (walFiles != null)
+        for (final java.io.File walFile : walFiles)
+          walFile.delete();
+
+      HALog.log(this, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
+
+    } finally {
+      connection.disconnect();
+    }
+  }
+
   public long getElectionCount() {
     return electionCount.get();
   }
@@ -195,14 +290,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // On the leader, the transaction was already applied via commit2ndPhase() in RaftReplicatedDatabase.
     // Only replicas need to apply WAL changes from the state machine.
     if (raftHAServer != null && raftHAServer.isLeader()) {
-      LogManager.instance().log(this, Level.FINE, "Skipping tx apply on leader for database '%s'", decoded.databaseName());
+      HALog.log(this, HALog.TRACE, "Skipping tx apply on leader for database '%s'", decoded.databaseName());
       return;
     }
 
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
     final WALFile.WALTransaction walTx = deserializeWalTransaction(decoded.walData());
 
-    LogManager.instance().log(this, Level.FINE, "Applying tx %d to database '%s' (pages=%d)",
+    HALog.log(this, HALog.DETAILED, "Applying tx %d to database '%s' (pages=%d)",
         walTx.txId, decoded.databaseName(), walTx.pages.length);
 
     // ignoreErrors=true: during Raft log replay on restart, log entries may already be applied to the
@@ -214,14 +309,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private void applySchemaEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     // On the leader, schema changes were already applied locally during the transaction
     if (raftHAServer != null && raftHAServer.isLeader()) {
-      LogManager.instance().log(this, Level.FINE, "Skipping schema apply on leader for database '%s'", decoded.databaseName());
+      HALog.log(this, HALog.TRACE, "Skipping schema apply on leader for database '%s'", decoded.databaseName());
       return;
     }
 
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
     final String databasePath = db.getDatabasePath();
 
-    LogManager.instance().log(this, Level.FINE,
+    HALog.log(this, HALog.DETAILED,
         "Applying schema entry to database '%s': filesToAdd=%d, filesToRemove=%d, hasSchemaJson=%s",
         decoded.databaseName(),
         decoded.filesToAdd() != null ? decoded.filesToAdd().size() : 0,
@@ -264,12 +359,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // ignoreErrors=true: same rationale as applyTxEntry - replay safety during node restart
         db.getTransactionManager().applyChanges(walTx, bucketDelta, true);
       }
-      LogManager.instance().log(this, Level.FINE,
+      HALog.log(this, HALog.DETAILED,
           "Applied %d buffered WAL entries from schema entry to database '%s'",
           walEntries.size(), decoded.databaseName());
     }
 
-    LogManager.instance().log(this, Level.FINE, "Applied schema change to database '%s'", decoded.databaseName());
+    HALog.log(this, HALog.DETAILED, "Applied schema change to database '%s'", decoded.databaseName());
   }
 
   private void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
@@ -281,7 +376,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // received by a follower, which created the database locally and committed the Raft entry.
     // In that case the leader has never opened the database and must create it here.
     if (server.existsDatabase(databaseName)) {
-      LogManager.instance().log(this, Level.FINE, "Database '%s' already present, skipping install-database entry", databaseName);
+      HALog.log(this, HALog.TRACE, "Database '%s' already present, skipping install-database entry", databaseName);
       return;
     }
 

@@ -813,7 +813,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged) {
         final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
         raftHAServer.getGroupCommitter().submitAndWait(schemaEntry.toByteArray(), raftHAServer.getQuorumTimeout());
-        LogManager.instance().log(this, Level.FINE,
+        HALog.log(this, HALog.DETAILED,
             "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d",
             addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size());
       }

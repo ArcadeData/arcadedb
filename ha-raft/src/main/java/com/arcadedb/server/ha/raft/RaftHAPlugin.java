@@ -55,7 +55,7 @@ public class RaftHAPlugin implements ServerPlugin {
   @Override
   public void startService() {
     if (!isRaftEnabled()) {
-      LogManager.instance().log(this, Level.FINE, "Raft HA plugin not activated (HA_IMPLEMENTATION != raft or HA not enabled)");
+      HALog.log(this, HALog.TRACE, "Raft HA plugin not activated (HA_IMPLEMENTATION != raft or HA not enabled)");
       return;
     }
 
@@ -97,6 +97,8 @@ public class RaftHAPlugin implements ServerPlugin {
     // so isRaftEnabled() cannot be checked here.
     routes.addExactPath("/api/v1/cluster", new GetClusterHandler(httpServer, this));
     LogManager.instance().log(this, Level.INFO, "Raft cluster status endpoint registered at /api/v1/cluster");
+    routes.addPrefixPath("/api/v1/ha/snapshot/", new SnapshotHttpHandler(httpServer));
+    LogManager.instance().log(this, Level.INFO, "Raft snapshot endpoint registered at /api/v1/ha/snapshot/{database}");
   }
 
   public boolean isLeader() {
