@@ -26,208 +26,229 @@ Both branches rewrite ArcadeDB's High Availability stack on top of Apache Ratis.
 
 ### ha-redesign (14 main classes)
 
-| Class | LOC | Purpose |
-|-------|-----|---------|
-| `RaftReplicatedDatabase` | 975 | `DatabaseInternal` wrapper, intercepts `commit()` for Raft consensus |
-| `RaftHAServer` | ~500 | Ratis `RaftServer`/`RaftClient` lifecycle, peer parsing, lag monitor |
-| `ArcadeStateMachine` | ~350 | Ratis state machine with `SimpleStateMachineStorage`, election metrics |
-| `RaftLogEntryCodec` | 267 | Encode/decode Raft log entries with LZ4 compression |
-| `RaftGroupCommitter` | ~160 | Batched Raft submissions via pipelined async sends |
-| `RaftHAPlugin` | 132 | `ServerPlugin` for ServiceLoader-based HA discovery |
-| `SnapshotHttpHandler` | ~130 | HTTP handler serving database ZIP snapshots |
-| `GetClusterHandler` | 89 | HTTP endpoint returning cluster status JSON |
-| `SnapshotManager` | 94 | CRC32 checksum and file-diff utilities |
-| `ClusterMonitor` | 84 | Replication lag tracking per replica |
-| `HALog` | ~40 | Structured HA logging (BASIC/DETAILED/TRACE) |
-| `Quorum` | ~20 | Enum: MAJORITY, ALL |
-| `RaftLogEntryType` | ~20 | Enum: TX_ENTRY, SCHEMA_ENTRY, INSTALL_DATABASE_ENTRY |
-| `package-info.java` | - | Package documentation |
+| Class | Purpose |
+|-------|---------|
+| `RaftReplicatedDatabase` | `DatabaseInternal` wrapper, intercepts `commit()` for Raft consensus |
+| `RaftHAServer` | Ratis `RaftServer`/`RaftClient` lifecycle, peer parsing, lag monitor |
+| `ArcadeStateMachine` | Ratis state machine with `SimpleStateMachineStorage`, election metrics |
+| `RaftLogEntryCodec` | Encode/decode Raft log entries with LZ4 compression |
+| `RaftGroupCommitter` | Batched Raft submissions via pipelined async sends |
+| `RaftHAPlugin` | `ServerPlugin` for ServiceLoader-based HA discovery |
+| `SnapshotHttpHandler` | HTTP handler serving database ZIP snapshots |
+| `GetClusterHandler` | HTTP endpoint returning cluster status JSON |
+| `SnapshotManager` | CRC32 checksum and file-diff utilities |
+| `ClusterMonitor` | Replication lag tracking per replica |
+| `HALog` | Structured HA logging (BASIC/DETAILED/TRACE) |
+| `Quorum` | Enum: MAJORITY, ALL |
+| `RaftLogEntryType` | Enum: TX_ENTRY, SCHEMA_ENTRY, INSTALL_DATABASE_ENTRY |
+| `package-info.java` | Package documentation |
 
 ### apache-ratis (7 main classes)
 
-| Class | LOC | Purpose |
-|-------|-----|---------|
-| `ArcadeDBStateMachine` | 494 | State machine with schema apply, command forwarding via `query()` |
-| `RaftLogEntry` | 409 | Integrated entry format + serialization with compression |
-| `RaftHAServer` | ~600 | Server lifecycle, Quorum inner enum, K8s auto-join, dynamic membership |
-| `RaftGroupCommitter` | ~150 | Batched Raft submissions |
-| `SnapshotHttpHandler` | ~140 | HTTP handler serving database ZIP snapshots |
-| `ClusterMonitor` | ~70 | Replication lag tracking |
-| `HALog` | ~50 | Structured HA logging |
+| Class | Purpose |
+|-------|---------|
+| `ArcadeDBStateMachine` | State machine with schema apply, command forwarding via `query()` |
+| `RaftLogEntry` | Integrated entry format + serialization with compression |
+| `RaftHAServer` | Server lifecycle, Quorum inner enum, K8s auto-join, dynamic membership |
+| `RaftGroupCommitter` | Batched Raft submissions (configurable batch size) |
+| `SnapshotHttpHandler` | HTTP handler serving database ZIP snapshots |
+| `ClusterMonitor` | Replication lag tracking |
+| `HALog` | Structured HA logging with cached level |
 
 ---
 
-## 3. Key Implementation Differences
+## 3. Shared Features (Both Branches)
 
-### State Machine
+These features exist on both sides with similar implementations:
 
-| Aspect | `ha-redesign` | `apache-ratis` |
-|--------|---------------|----------------|
-| Class name | `ArcadeStateMachine` | `ArcadeDBStateMachine` |
-| Storage | `SimpleStateMachineStorage` | `SimpleStateMachineStorage` |
-| DI style | Setter injection (`setServer()`, `setRaftHAServer()`) | Constructor injection |
-| Election metrics | `electionCount`, `lastElectionTime`, `startTime` | Same |
-| Snapshot install | `notifyInstallSnapshotFromLeader()` with HTTP download | Same approach |
-| Leader skip | Skips WAL apply on leader (already committed locally) | Same |
-
-Both state machines are functionally equivalent. The main difference is dependency injection style.
-
-### Log Entry Format
-
-| Aspect | `ha-redesign` | `apache-ratis` |
-|--------|---------------|----------------|
-| Architecture | Separate `RaftLogEntryCodec` + `RaftLogEntryType` enum | Single `RaftLogEntry` class |
-| Entry types | TX_ENTRY, SCHEMA_ENTRY, INSTALL_DATABASE_ENTRY | TRANSACTION, TRANSACTION_FORWARD |
-| Compression | LZ4 via `CompressionFactory` | LZ4 via `CompressionFactory` |
-| Serialization | `DataInputStream`/`DataOutputStream` | `Binary` class (ArcadeDB native) |
-| Write forwarding | Not in log format (uses HTTP) | TRANSACTION_FORWARD entry type with index key changes |
-
-The biggest format difference is how write-from-replica is handled: `ha-redesign` forwards commands via HTTP to the leader, while `apache-ratis` has a dedicated `TRANSACTION_FORWARD` Raft log entry type that includes index key changes for constraint validation on the leader.
-
-### Group Committer
-
-Both implementations are nearly identical:
-- `LinkedBlockingQueue<PendingEntry>` with a daemon flusher thread
-- `submitAndWait(byte[], long timeoutMs)` blocks caller on `CompletableFuture`
-- Pipelined `raftClient.async().send()` for batched entries
-- `Quorum.ALL` support via Ratis Watch API
-- Max batch size: 500 (configurable)
-
-Minor difference: `apache-ratis` passes `RaftHAServer` to the constructor; `ha-redesign` passes `RaftClient`, `Quorum`, and `quorumTimeout` directly.
-
-### Command Forwarding
-
-| | `ha-redesign` | `apache-ratis` |
-|---|---|---|
-| Mechanism | HTTP POST to leader via `HttpClient` | Ratis `query()` path (state machine) |
-| Auth | Cluster token via Basic auth | Cluster token via Basic auth |
-| Constraint validation | Delegated to leader's normal commit path | Explicit index key changes in TRANSACTION_FORWARD |
-| Complexity | Simpler (HTTP) | More integrated (Raft-native) |
-
-### Quorum
-
-Functionally equivalent. `ha-redesign` uses a standalone `Quorum` enum; `apache-ratis` uses an inner enum in `RaftHAServer`. Both support MAJORITY and ALL modes with Watch API enforcement.
-
-### Ratis Configuration
-
-Both configure nearly identical `RaftProperties`:
-
-| Setting | `ha-redesign` | `apache-ratis` |
-|---------|---------------|----------------|
-| RPC timeout min/max | 2s / 5s | 1.5s / 3s |
-| Request timeout | 10s | (default) |
-| AppendEntries buffer | 4MB / 256 elements | 4MB / 256 elements |
-| Log segment max | 64MB | 64MB |
-| Write buffer | 8MB | 8MB |
-| Snapshot auto-trigger | Configurable (`HA_RAFT_SNAPSHOT_THRESHOLD`) | 100,000 entries |
-| Install snapshot mode | Notification (HTTP-based) | Notification (HTTP-based) |
-| Leader lease | Enabled, 0.9 ratio, LINEARIZABLE | Same |
-
-The main difference is `ha-redesign` uses slightly more conservative RPC timeouts (2-5s vs 1.5-3s) to reduce false leader elections under load.
+| Feature | Notes |
+|---------|-------|
+| Group Committer | Batched Raft writes via pipelined `async().send()`, configurable batch size |
+| LZ4 WAL Compression | WAL data in log entries compressed via `CompressionFactory` |
+| Snapshot Install | `notifyInstallSnapshotFromLeader()` + HTTP-based ZIP download |
+| HALog | 3 verbosity levels (BASIC/DETAILED/TRACE), controlled by `HA_LOG_VERBOSE` |
+| Quorum Enum | MAJORITY and ALL modes, ALL enforced via Ratis Watch API |
+| SimpleStateMachineStorage | Replaces hand-rolled last-applied tracking |
+| Election Metrics | `electionCount`, `lastElectionTime`, exposed via cluster status |
+| Cluster Token | Deterministic derivation from cluster name + root password |
+| Leader Lease | `LINEARIZABLE` reads enabled with 0.9 timeout ratio |
+| Ratis Config Tuning | 64MB segments, 8MB write buffer, 4MB/256-element append batching |
 
 ---
 
-## 4. Features Unique to Each Branch
+## 4. Key Implementation Differences
+
+### 4.1 Group Committer - ALL Quorum Bug Fix
+
+`apache-ratis` fixed a subtle bug in `flushBatch()`: with `Quorum.ALL`, the original code would `complete(null)` (success) on the future BEFORE checking the ALL watch, meaning the caller could see success even if ALL quorum was not reached. The fix moves `complete(null)` AFTER the watch succeeds, with `continue` on failure branches.
+
+**Status on ha-redesign:** Has the original (buggy) ordering. **Should be ported.**
+
+### 4.2 Cluster Token Derivation
+
+`apache-ratis` upgraded from `UUID.nameUUIDFromBytes()` (MD5-based) to **PBKDF2WithHmacSHA256** with 100,000 iterations for cluster token derivation. This resists brute-force attacks if the token is captured on the wire.
+
+**Status on ha-redesign:** Still uses UUID/MD5. **Should be ported.**
+
+### 4.3 HALog Cached Level
+
+`apache-ratis` added a `cachedLevel` volatile field to avoid calling `GlobalConfiguration.getValueAsInteger()` on every log check. Includes a `refreshLevel()` method called at service startup. Removes the `System.out.println` that was in the original.
+
+**Status on ha-redesign:** Reads config on every call (negligible perf impact, but easy win). Never had the `System.out.println`. **Nice to have.**
+
+### 4.4 Wait-for-Apply Notification (applyNotifier)
+
+`apache-ratis` replaced polling loops (`Thread.sleep(10)` in `waitForAppliedIndex` and `waitForLocalApply`) with a proper `Object` monitor (`applyNotifier`). The state machine calls `raftHAServer.notifyApplied()` after each apply, waking up blocked readers. This eliminates the 10ms polling overhead and makes READ_YOUR_WRITES consistency much more responsive.
+
+**Status on ha-redesign:** Does not have `waitForAppliedIndex` / `waitForLocalApply` methods (different forwarding approach). **Not directly applicable** but worth noting if read-after-write consistency is added.
+
+### 4.5 Snapshot Auth: Cluster Token Header
+
+`apache-ratis` switched snapshot authentication from Basic auth to a dedicated `X-ArcadeDB-Cluster-Token` header with constant-time comparison (`MessageDigest.isEqual`). The `SnapshotHttpHandler` accepts both the token header and Basic auth as fallback. The state machine sends the token header instead of Basic auth credentials.
+
+**Status on ha-redesign:** Uses Basic auth with cluster token as password. **Should be ported** - the token header approach is more secure (avoids sending root password, uses timing-safe comparison).
+
+### 4.6 Zip Slip Protection
+
+`apache-ratis` improved zip-slip protection in snapshot install from `getCanonicalPath().startsWith()` to `toPath().normalize().toAbsolutePath().startsWith()`. The NIO path normalization is more reliable across OS edge cases.
+
+**Status on ha-redesign:** Uses `getCanonicalPath()`. **Should be ported** (minor but safer).
+
+### 4.7 Configurable Election Timeouts
+
+`apache-ratis` added `HA_ELECTION_TIMEOUT_MIN` and `HA_ELECTION_TIMEOUT_MAX` config entries, allowing operators to tune election timeouts for WAN clusters. Previously hardcoded to 1500/3000ms.
+
+**Status on ha-redesign:** Hardcoded to 2000/5000ms. **Should be ported** - makes WAN deployments tunable.
+
+### 4.8 Configurable Log Segment and Buffer Sizes
+
+`apache-ratis` added `HA_LOG_SEGMENT_SIZE` and `HA_APPEND_BUFFER_SIZE` config entries for runtime tuning.
+
+**Status on ha-redesign:** Hardcoded to 64MB / 4MB. **Nice to have.**
+
+### 4.9 Command Forwarding Retry with NotLeaderException
+
+`apache-ratis` improved the command forwarding retry logic in `sendCommand()` to use proper `hasCause()` chain walking instead of string matching on the exception message. Also uses a typed `CommandExecutionException` import.
+
+**Status on ha-redesign:** Uses HTTP forwarding (different approach). **Not applicable.**
+
+### 4.10 HTTP Handler Improvements
+
+`apache-ratis` improved `AbstractServerHttpHandler`:
+- Removed unnecessary nested braces around proxy-to-leader try block
+- Uses constant-time `MessageDigest.isEqual` for cluster token validation instead of `String.equals`
+- Fixed session token forwarding to use `HttpAuthSession` lookup instead of parsing stored Basic auth
+
+**Status on ha-redesign:** Different handler structure. The timing-safe token comparison is relevant to any cluster token validation code. **Security fix worth reviewing.**
+
+### 4.11 WAL File Deletion Logging
+
+`apache-ratis` added a warning log when WAL file deletion fails during snapshot install instead of silently ignoring.
+
+**Status on ha-redesign:** Silently ignores. **Should be ported** (one-liner).
+
+---
+
+## 5. Features Unique to Each Branch
 
 ### Only in `ha-redesign`
 
-- **Modular plugin architecture** - `RaftHAPlugin` via `ServiceLoader`, `HA_IMPLEMENTATION` toggle for legacy/raft switching
-- **`GetClusterHandler`** - REST endpoint at `/api/v1/cluster` returning cluster status with election metrics
-- **`INSTALL_DATABASE_ENTRY`** log type - replicates `createDatabase()` calls across the cluster
-- **`SnapshotManager`** utilities - CRC32 checksums and file-diff helpers for future delta sync
-- **`HA_RAFT_PERSIST_STORAGE`** config - preserves Raft storage across server restarts in tests
-- **Enhanced Studio cluster UI** - topology visualization, election count, uptime display
-- **Comprehensive test suite** - 40 test files covering split-brain, chaos, read consistency, benchmarks
+| Feature | Description |
+|---------|-------------|
+| Modular plugin architecture | `RaftHAPlugin` via `ServiceLoader`, `HA_IMPLEMENTATION` toggle |
+| `GetClusterHandler` | REST endpoint at `/api/v1/cluster` with election metrics, uptime |
+| `INSTALL_DATABASE_ENTRY` | Raft log entry type for replicating `createDatabase()` |
+| `SnapshotManager` utilities | CRC32 checksums and file-diff helpers for delta sync |
+| `HA_RAFT_PERSIST_STORAGE` | Preserves Raft storage across restarts in tests |
+| Enhanced Studio cluster UI | Topology visualization, election count, uptime |
+| Comprehensive test suite | 40 test files with split-brain, chaos, read consistency, benchmarks |
+| E2E chaos tests | 9 Toxiproxy-based ITs in `e2e-ha/` module |
 
 ### Only in `apache-ratis`
 
-- **`TRANSACTION_FORWARD`** entry type - Raft-native write forwarding from replicas with index key changes for constraint validation
-- **Command forwarding via `query()`** - forwarded commands execute on the leader's state machine directly, with binary-serialized results returned to the follower
-- **K8s auto-join** - `tryAutoJoinCluster()` via Ratis AdminApi for StatefulSet scale-up
-- **Dynamic membership** - `addPeer()`, `removePeer()`, `transferLeadership()` methods
-- **Command result serialization** - `serializeCommandResult()` / `deserializeCommandResult()` for forwarded command responses
+| Feature | Description |
+|---------|-------------|
+| `TRANSACTION_FORWARD` entry type | Raft-native write forwarding with index key changes for constraint validation |
+| Command forwarding via `query()` | Forwarded commands execute on leader's state machine (noted as having page visibility issue, currently unused in favor of HTTP proxy) |
+| K8s auto-join | `tryAutoJoinCluster()` via Ratis AdminApi for StatefulSet scale-up |
+| Dynamic membership | `addPeer()`, `removePeer()`, `transferLeadership()` |
+| PBKDF2 cluster token | 100K-iteration key derivation instead of UUID/MD5 |
+| applyNotifier | Wait-for-apply without polling for READ_YOUR_WRITES consistency |
+| Configurable election timeouts | `HA_ELECTION_TIMEOUT_MIN/MAX` for WAN clusters |
+| BOLT + TLS support | `BOLT_SSL` config (DISABLED/OPTIONAL/REQUIRED) |
+| Cluster token auth header | `X-ArcadeDB-Cluster-Token` with timing-safe comparison |
+| Timing-safe token validation | `MessageDigest.isEqual` instead of `String.equals` |
 
 ---
 
-## 5. Test Coverage
+## 6. Test Coverage
 
 | Category | `ha-redesign` | `apache-ratis` |
 |----------|---------------|----------------|
 | Unit tests | 13 classes | 3 classes |
 | Integration tests | 27 classes | 3 classes |
-| Lines of test code | ~5,800 | ~1,500 (estimated) |
-| Split-brain tests | 3-node and 5-node | None dedicated |
-| Chaos/crash tests | Random crash, leader/replica crash-recover | Comprehensive IT only |
-| Read consistency | Dedicated `RaftReadConsistencyIT` | None |
+| Test lines | ~5,800 | ~1,500 (est.) |
+| Split-brain | 3-node and 5-node | None |
+| Chaos/crash | Random crash, leader/replica recovery | Comprehensive IT only |
+| Read consistency | Dedicated IT | None |
 | Schema replication | 2 dedicated ITs | Covered in comprehensive IT |
-| Index operations | 2 dedicated ITs | None |
-| HTTP layer tests | 3 dedicated ITs | None |
 | Snapshot resync | `RaftFullSnapshotResyncIT` | None |
-| Benchmark | `RaftHAInsertBenchmark` (sync + async) | `HAInsertBenchmark` |
-| E2E chaos (Toxiproxy) | 9 ITs in separate `e2e-ha/` module | Referenced but fewer |
+| Benchmark | `RaftHAInsertBenchmark` | `HAInsertBenchmark` |
+| E2E (Toxiproxy) | 9 ITs in `e2e-ha/` | Referenced |
 
 ---
 
-## 6. Commit Activity
+## 7. Commit Activity
 
 | | `ha-redesign` | `apache-ratis` |
 |---|---|---|
-| Commits ahead of main | 86 | 13 |
-| Files changed | 111 (+25,299 / -380) | 94 (+8,677 / -6,711) |
-
-`ha-redesign` has 6.6x more commits, reflecting iterative development with extensive test porting, chaos engineering, and the recent feature port from `apache-ratis`.
+| Commits ahead of main | 86 | 21 |
+| Files changed | ~111 (+25,299 / -380) | ~94 (+8,677 / -6,711) |
 
 ---
 
-## 7. Pros and Cons
+## 8. Recommended Ports to ha-redesign
 
-### `ha-redesign`
+Priority items from the recent `apache-ratis` updates:
 
-**Pros:**
-- Clean modular boundary - HA is a pluggable module with `provided` server dependency
-- `HA_IMPLEMENTATION` toggle enables safe rollout alongside legacy HA
-- Comprehensive test coverage (40 files) including chaos engineering with Toxiproxy
-- `INSTALL_DATABASE_ENTRY` handles `createDatabase()` replication
-- Enhanced Studio UI for cluster monitoring
-- Well-documented with design specs and implementation plans
-- All features from `apache-ratis` now ported (group committer, compression, snapshot install, HALog, Quorum)
+### Must Port (correctness / security)
 
-**Cons:**
-- No Raft-native write forwarding (uses HTTP instead of `TRANSACTION_FORWARD`) - simpler but adds HTTP overhead for follower writes
-- No dynamic membership API (`addPeer`/`removePeer`/`transferLeadership`)
-- No K8s auto-join via Ratis AdminApi
-- No command result serialization (forwarded commands go via HTTP, not Raft)
-- Slightly more conservative RPC timeouts may delay leader election
+| Item | Effort | Reason |
+|------|--------|--------|
+| Group committer ALL quorum fix | Small | Bug: success reported before ALL watch completes |
+| PBKDF2 cluster token derivation | Small | Security: MD5-based UUID is weak if token is captured |
+| Timing-safe token comparison | Small | Security: prevents timing attacks on cluster token |
+| Snapshot auth via cluster token header | Medium | Security: avoids sending root password in Basic auth |
+| Zip-slip NIO path normalization | Trivial | Defense-in-depth: more reliable path validation |
+| WAL file deletion logging | Trivial | Ops: know when cleanup fails |
 
-### `apache-ratis`
+### Should Port (operational)
 
-**Pros:**
-- Raft-native write forwarding with constraint validation via `TRANSACTION_FORWARD` - lower overhead for follower writes
-- Dynamic membership management (`addPeer`, `removePeer`, `transferLeadership`)
-- K8s auto-join via Ratis AdminApi for seamless StatefulSet scaling
-- Command forwarding via Ratis `query()` - avoids HTTP layer for forwarded commands
-- Fewer classes, more consolidated codebase
+| Item | Effort | Reason |
+|------|--------|--------|
+| Configurable election timeouts | Small | Needed for WAN cluster deployments |
+| Configurable log segment / buffer sizes | Small | Runtime tuning for large clusters |
+| HALog cached level | Trivial | Avoids repeated config reads on hot path |
 
-**Cons:**
-- Tightly coupled to `server/` module - no clean extraction or swap path
-- Minimal test coverage (~6 files vs 40)
-- No `HA_IMPLEMENTATION` toggle - all-or-nothing replacement of legacy HA
-- No `createDatabase()` replication across cluster
-- No `SnapshotManager` utilities for future delta sync
-- No Studio cluster monitoring UI enhancements
-- No dedicated chaos engineering tests
+### Future Consideration
+
+| Item | Effort | Reason |
+|------|--------|--------|
+| Dynamic membership API | Medium | Needed for elastic clusters |
+| K8s auto-join | Medium | Needed for Kubernetes deployments |
+| applyNotifier pattern | Medium | Better READ_YOUR_WRITES consistency if that feature is added |
+| TRANSACTION_FORWARD | Large | More efficient follower writes (noted as having page visibility issues) |
 
 ---
 
-## 8. Summary
+## 9. Summary
 
-After the recent feature port, `ha-redesign` now includes all the performance-critical features that were previously `apache-ratis`-only (group committer, LZ4 compression, snapshot install, HALog, Quorum enum). The remaining differences are architectural:
+After the recent feature port, both branches share the same core HA capabilities (group commit, compression, snapshot install, HALog, Quorum). The branches now differ primarily in:
 
-**`ha-redesign` is the production-ready choice:** modular architecture, comprehensive tests, Studio UI, safe rollout path via toggle. It is the clear candidate for merging to `main`.
+1. **Architecture**: `ha-redesign` is modular and plugin-based; `apache-ratis` is embedded
+2. **Testing**: `ha-redesign` has 7x more test coverage including chaos engineering
+3. **Security hardening**: `apache-ratis` has PBKDF2 tokens and timing-safe comparisons
+4. **Operational config**: `apache-ratis` has configurable election timeouts and buffer sizes
+5. **Advanced features**: `apache-ratis` has dynamic membership, K8s auto-join, and the (currently unused) TRANSACTION_FORWARD mechanism
 
-**`apache-ratis` retains three features worth future consideration:**
-1. **`TRANSACTION_FORWARD`** - Raft-native write forwarding avoids HTTP overhead for follower writes
-2. **Dynamic membership** - `addPeer`/`removePeer`/`transferLeadership` for elastic clusters
-3. **K8s auto-join** - automatic cluster discovery for StatefulSet scaling
-
-These are additive features that could be ported into `ha-redesign` in future iterations without architectural changes.
+`ha-redesign` is the production-ready choice. The "Must Port" items above should be addressed before merging to `main`.
