@@ -148,16 +148,16 @@ public class SnapshotHttpHandler implements HttpHandler {
 
     final String auth = authHeader.getFirst();
     if (auth.startsWith("Basic ")) {
-      final String decoded = new String(Base64.getDecoder().decode(auth.substring(6)));
-      final int colonPos = decoded.indexOf(':');
-      if (colonPos > 0) {
-        final String userName = decoded.substring(0, colonPos);
-        final String password = decoded.substring(colonPos + 1);
-        try {
+      try {
+        final String decoded = new String(Base64.getDecoder().decode(auth.substring(6)));
+        final int colonPos = decoded.indexOf(':');
+        if (colonPos > 0) {
+          final String userName = decoded.substring(0, colonPos);
+          final String password = decoded.substring(colonPos + 1);
           return httpServer.getServer().getSecurity().authenticate(userName, password, null);
-        } catch (final Exception e) {
-          return null;
         }
+      } catch (final Exception e) {
+        return null;
       }
     }
     return null;

@@ -46,11 +46,8 @@ public final class HALog {
   }
 
   public static void log(final Object caller, final int level, final String message, final Object... args) {
-    if (GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger() >= level) {
-      final String formatted = String.format(message.replace("%s", "%s").replace("%d", "%s"), args);
-      System.out.println("[HA-" + level + "] " + formatted);
+    if (GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger() >= level)
       LogManager.instance().log(caller, Level.INFO, "[HA-" + level + "] " + message, null, args);
-    }
   }
 
   public static void log(final Object caller, final int level, final String message, final Throwable exception,

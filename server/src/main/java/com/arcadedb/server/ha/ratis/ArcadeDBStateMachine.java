@@ -44,6 +44,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.HttpURLConnection;
+import java.nio.file.Path;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
@@ -360,13 +361,14 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       db.close();
 
       // Extract the ZIP to the database directory, overwriting existing files
+      final Path dbPath = Path.of(databasePath).toRealPath();
       try (final ZipInputStream zipIn = new ZipInputStream(connection.getInputStream())) {
         ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {
           final File targetFile = new File(databasePath, zipEntry.getName());
 
           // Security: prevent zip slip
-          if (!targetFile.getCanonicalPath().startsWith(new File(databasePath).getCanonicalPath() + File.separator))
+          if (!targetFile.toPath().normalize().startsWith(dbPath))
             throw new ReplicationException("Zip slip detected in snapshot: " + zipEntry.getName());
 
           LogManager.instance().log(this, Level.FINE, "Extracting snapshot file: %s", targetFile.getName());
@@ -383,7 +385,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       final File[] walFiles = dbDir.listFiles((dir, name) -> name.endsWith(".wal"));
       if (walFiles != null)
         for (final File walFile : walFiles)
-          walFile.delete();
+          if (!walFile.delete())
+            LogManager.instance().log(this, Level.WARNING, "Failed to delete stale WAL file: %s", walFile.getName());
 
       LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
 

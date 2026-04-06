@@ -151,10 +151,16 @@ public class ReplicatedDatabase implements DatabaseInternal {
     final Map<Integer, Integer> delta = tx.getBucketRecordDelta();
     HALog.log(this, HALog.TRACE, "Captured bucketRecordDelta before commit2ndPhase: %s", delta);
 
-    // Commit locally first
+    // DESIGN: "leader commits first" - the transaction is committed locally before Ratis replication.
+    // If replicateTransaction() fails (quorum not reached, leader step-down), the local node has the
+    // change but followers do not. This is intentional: it avoids holding locks during the Ratis
+    // round-trip and lets the leader serve reads immediately. Followers will eventually catch up
+    // via Ratis log replay, or via snapshot installation if they fall too far behind.
+    // On replication failure, the exception propagates to the caller (HTTP handler), which returns
+    // an error to the client - the client should retry.
     tx.commit2ndPhase(phase1);
 
-    // Then replicate via Ratis
+    // Replicate via Ratis
     HALog.log(this, HALog.DETAILED, "Replicating WAL via Ratis: db=%s, walSize=%d, deltaSize=%d, schema=%s",
         getName(), bufferChanges.size(), delta.size(), schemaJson != null);
     raftHA.replicateTransaction(getName(), delta, bufferChanges, schemaJson, filesToAdd, filesToRemove);
@@ -662,6 +668,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
    * <p>
    * NOTE: Currently unused - kept for future use as an alternative to HTTP proxy forwarding.
    * Do not remove.
+   * <p>
+   * TODO: The query() path has a page visibility issue - pages modified by the command on the leader
+   * are not visible to the follower's local database until the WAL is replayed. Currently using
+   * HTTP proxy fallback (see AbstractServerHttpHandler.proxyToLeader) instead.
    */
   private ResultSet forwardCommandToLeader(final String language, final String query, final Map<String, Object> namedParams,
       final Object[] positionalParams) {
