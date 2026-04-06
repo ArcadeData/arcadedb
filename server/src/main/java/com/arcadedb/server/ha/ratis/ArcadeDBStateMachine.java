@@ -286,6 +286,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
 
   // -- Snapshots --
 
+  /**
+   * Returns the last applied index without writing state to SimpleStateMachineStorage.
+   * ArcadeDB state lives in the database files on disk, not in the Ratis state machine storage.
+   * When a follower is too far behind, notifyInstallSnapshotFromLeader() handles the full resync
+   * by downloading the database via HTTP from the leader.
+   */
   @Override
   public long takeSnapshot() throws IOException {
     final long currentIndex = lastAppliedIndex.get();
@@ -397,7 +403,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
 
       LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
 
-      // Reopen the database (will be re-loaded by the server on next access)
+      // Explicitly reopen the database so concurrent threads don't hit a closed-database exception
+      server.getDatabase(databaseName);
+
     } finally {
       connection.disconnect();
     }
@@ -413,8 +421,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
 
     // Refresh gRPC channels to force fresh DNS resolution after potential network partition
     final var raftHA = server.getHA();
-    if (raftHA != null)
+    if (raftHA != null) {
       raftHA.refreshRaftClient();
+      raftHA.notifyLeaderChanged();
+    }
 
     fireCallback(com.arcadedb.server.ReplicationCallback.TYPE.LEADER_ELECTED, newLeaderId.toString());
   }

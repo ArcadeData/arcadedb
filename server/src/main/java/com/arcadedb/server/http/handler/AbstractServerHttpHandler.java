@@ -317,6 +317,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   /**
    * Proxies the current HTTP request to the leader server. Used when a write operation
    * hits a non-leader node in the Ratis HA cluster.
+   * <p>
+   * SECURITY NOTE: Inter-node communication currently uses plain HTTP. In production deployments,
+   * nodes should be connected via a secure overlay network (e.g., VPN, mTLS sidecar, or private subnet)
+   * to protect WAL data and authentication credentials in transit.
    */
   private void proxyToLeader(final HttpServerExchange exchange, final String leaderAddr) throws Exception {
     final String path = exchange.getRequestPath();
@@ -404,7 +408,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final String expectedToken = raftHA != null ? raftHA.getClusterToken() : null;
 
     if (expectedToken == null || expectedToken.isEmpty()
-        || !MessageDigest.isEqual(expectedToken.getBytes(), providedToken.getBytes())) {
+        || !MessageDigest.isEqual(expectedToken.getBytes(StandardCharsets.UTF_8), providedToken.getBytes(StandardCharsets.UTF_8))) {
       sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
       return null;
     }

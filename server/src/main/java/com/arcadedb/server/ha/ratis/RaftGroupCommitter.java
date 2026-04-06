@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -59,6 +60,10 @@ public class RaftGroupCommitter {
     this.maxBatchSize = maxBatchSize;
     this.flusher = new Thread(this::flushLoop, "arcadedb-raft-group-committer");
     this.flusher.setDaemon(true);
+  }
+
+  /** Starts the background flusher thread. Call after server startup is complete. */
+  public void start() {
     this.flusher.start();
   }
 
@@ -77,6 +82,10 @@ public class RaftGroupCommitter {
       if (error != null)
         throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
     } catch (final java.util.concurrent.TimeoutException e) {
+      // Mark the entry as cancelled so the flusher skips it if it hasn't been sent yet.
+      // If the flusher already sent it and the Raft round-trip eventually succeeds,
+      // the transaction was already committed locally (commit1stPhase) so the apply is harmless.
+      pending.cancelled.set(true);
       throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms");
     } catch (final RuntimeException e) {
       throw e;
@@ -138,6 +147,11 @@ public class RaftGroupCommitter {
       return;
     }
 
+    // Skip entries that were cancelled by a timed-out caller (phantom commit prevention)
+    batch.removeIf(p -> p.cancelled.get());
+    if (batch.isEmpty())
+      return;
+
     // Send all entries asynchronously (pipelined)
     final CompletableFuture<RaftClientReply>[] futures = new CompletableFuture[batch.size()];
     for (int i = 0; i < batch.size(); i++) {
@@ -181,7 +195,8 @@ public class RaftGroupCommitter {
 
   private static class PendingEntry {
     final byte[]                       entry;
-    final CompletableFuture<Exception> future = new CompletableFuture<>();
+    final CompletableFuture<Exception> future    = new CompletableFuture<>();
+    final AtomicBoolean                cancelled = new AtomicBoolean(false);
 
     PendingEntry(final byte[] entry) {
       this.entry = entry;

@@ -38,8 +38,8 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
 
   public ReplicationServerQuorumMajority2ServersOutIT() {
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
-    // Low quorum timeout so the test fails fast once both servers are down
-    GlobalConfiguration.HA_QUORUM_TIMEOUT.setValue(3000L);
+    // Low quorum timeout so the first write after quorum loss fails quickly
+    GlobalConfiguration.HA_QUORUM_TIMEOUT.setValue(2000L);
   }
 
   @Override
@@ -48,8 +48,13 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+          if (!serversSynchronized)
+            return;
           if (type == TYPE.REPLICA_MSG_RECEIVED) {
-            if (messages.incrementAndGet() > 100) {
+            if (messages.incrementAndGet() > 10) {
+              // Don't stop if this server is the leader (Ratis needs it for writes)
+              if (server.getHA() != null && server.getHA().isLeader())
+                return;
               LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 1...");
               getServer(1).stop();
             }
@@ -61,8 +66,12 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+          if (!serversSynchronized)
+            return;
           if (type == TYPE.REPLICA_MSG_RECEIVED) {
-            if (messages.incrementAndGet() > 200) {
+            if (messages.incrementAndGet() > 20) {
+              if (server.getHA() != null && server.getHA().isLeader())
+                return;
               LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 2...");
               getServer(2).stop();
             }
@@ -96,22 +105,20 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
 
   @Override
   protected int getTxs() {
-    // Need enough txs for both server callbacks to trigger (100 and 200 messages).
-    // REPLICA_MSG_RECEIVED fires per replicated tx, so need > 200 txs.
-    // After both servers are down, writes fail on quorum timeout.
-    return 300;
+    // Need enough txs for both callbacks to trigger (10 and 20 messages).
+    // After both servers are down, the next write fails on quorum timeout.
+    return 50;
   }
 
   @Override
   protected int getVerticesPerTx() {
-    // Keep small to reduce total data while ensuring enough transactions
     return 10;
   }
 
   @Override
   protected int getMaxRetry() {
-    // Lower retries - once quorum is lost, retries just burn time
-    return 3;
+    // No retries: once quorum is lost, QuorumNotReachedException must propagate immediately.
+    return 1;
   }
 
 }

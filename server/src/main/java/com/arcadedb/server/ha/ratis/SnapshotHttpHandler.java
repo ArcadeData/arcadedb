@@ -141,7 +141,8 @@ public class SnapshotHttpHandler implements HttpHandler {
       final var raftHA = httpServer.getServer().getHA();
       if (raftHA != null && raftHA.getClusterToken() != null
           && java.security.MessageDigest.isEqual(
-              raftHA.getClusterToken().getBytes(), clusterTokenHeader.getFirst().getBytes())) {
+              raftHA.getClusterToken().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+              clusterTokenHeader.getFirst().getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
         final ServerSecurityUser rootUser = httpServer.getServer().getSecurity().getUser("root");
         if (rootUser == null) {
           LogManager.instance().log(this, Level.SEVERE, "Cluster token valid but 'root' user not found");

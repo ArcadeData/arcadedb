@@ -37,6 +37,7 @@ import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.storage.RaftStorage;
@@ -50,6 +51,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
@@ -102,7 +104,8 @@ public class RaftHAServer {
   private ArcadeDBStateMachine             stateMachine;
   private ClusterMonitor                   clusterMonitor;
   private RaftGroupCommitter               groupCommitter;
-  private final Object                     applyNotifier = new Object();
+  private final Object                     applyNotifier          = new Object();
+  private final Object                     leaderChangeNotifier   = new Object();
   private java.util.concurrent.ScheduledExecutorService lagMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
@@ -157,6 +160,9 @@ public class RaftHAServer {
     } catch (final Exception e) {
       throw new RuntimeException("Failed to derive cluster token", e);
     }
+    // Write the derived token back to configuration so all components use the same value.
+    // Note: changing the root password after first boot does NOT rotate this token automatically.
+    // To rotate, set arcadedb.ha.clusterToken explicitly.
     configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, this.clusterToken);
   }
 
@@ -210,6 +216,7 @@ public class RaftHAServer {
 
       groupCommitter = new RaftGroupCommitter(this,
           configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE));
+      groupCommitter.start();
       startLagMonitor();
 
       LogManager.instance().log(this, Level.INFO, "Ratis HA service started (serverId=%s)", localPeerId);
@@ -233,9 +240,13 @@ public class RaftHAServer {
         continue;
 
       try {
-        // Create a temporary client targeting this specific peer to check if the cluster exists
+        // Create a temporary client with short timeouts to probe if the cluster exists.
+        // Without explicit timeouts, a firewalled peer blocks for the full default gRPC timeout.
         final RaftProperties tempProps = new RaftProperties();
         tempProps.set("raft.server.rpc.type", "GRPC");
+        RaftServerConfigKeys.Rpc.setTimeoutMin(tempProps, TimeDuration.valueOf(3, TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setTimeoutMax(tempProps, TimeDuration.valueOf(5, TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setRequestTimeout(tempProps, TimeDuration.valueOf(5, TimeUnit.SECONDS));
 
         // Build a group with just the target peer to query it
         final RaftGroup targetGroup = RaftGroup.valueOf(raftGroup.getGroupId(), peer);
@@ -270,7 +281,7 @@ public class RaftHAServer {
 
                 if (localPeer != null) {
                   // Build the new configuration: existing peers + us
-                  final java.util.List<RaftPeer> newPeers = new ArrayList<>();
+                  final List<RaftPeer> newPeers = new ArrayList<>();
                   for (final var existingPeer : conf.getPeersList()) {
                     final String existingId = existingPeer.getId().toStringUtf8();
                     for (final RaftPeer p : raftGroup.getPeers())
@@ -338,23 +349,29 @@ public class RaftHAServer {
       return;
 
     try {
-      final int peerCount = raftGroup.getPeers().size();
-      if (peerCount <= 1) {
+      final Collection<RaftPeer> livePeers = getLivePeers();
+      if (livePeers.size() <= 1) {
         HALog.log(this, HALog.BASIC, "Single-node cluster, skipping leave");
         return;
       }
 
       // If we're the leader, transfer leadership first
       if (isLeader()) {
-        for (final RaftPeer peer : raftGroup.getPeers()) {
+        for (final RaftPeer peer : livePeers) {
           if (!peer.getId().equals(localPeerId)) {
             HALog.log(this, HALog.BASIC, "Leaving cluster: transferring leadership to %s before removal", peer.getId());
             try {
               transferLeadership(peer.getId().toString(), 10_000);
-              // Poll until leadership is transferred or timeout
+              // Wait for leadership change notification instead of polling
               final long deadline = System.currentTimeMillis() + 5_000;
-              while (isLeader() && System.currentTimeMillis() < deadline)
-                Thread.sleep(100);
+              synchronized (leaderChangeNotifier) {
+                while (isLeader()) {
+                  final long remaining = deadline - System.currentTimeMillis();
+                  if (remaining <= 0)
+                    break;
+                  leaderChangeNotifier.wait(remaining);
+                }
+              }
             } catch (final Exception e) {
               HALog.log(this, HALog.BASIC, "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
             }
@@ -618,13 +635,20 @@ public class RaftHAServer {
     }
   }
 
+  /** Called by ArcadeDBStateMachine when the leader changes to wake up leaveCluster(). */
+  public void notifyLeaderChanged() {
+    synchronized (leaderChangeNotifier) {
+      leaderChangeNotifier.notifyAll();
+    }
+  }
+
   /**
    * Returns per-follower replication state (only available on the leader).
    * Each entry maps a peer ID to {matchIndex, nextIndex}.
    */
-  public java.util.List<java.util.Map<String, Object>> getFollowerStates() {
+  public List<Map<String, Object>> getFollowerStates() {
     if (raftServer == null || !isLeader())
-      return java.util.List.of();
+      return List.of();
     try {
       final var division = raftServer.getDivision(raftGroup.getGroupId());
       final var info = division.getInfo();
@@ -632,12 +656,12 @@ public class RaftHAServer {
       final long[] nextIndices = info.getFollowerNextIndices();
 
       // The indices arrays correspond to followers in the order returned by the group's peers (excluding self)
-      final java.util.List<java.util.Map<String, Object>> result = new ArrayList<>();
+      final List<Map<String, Object>> result = new ArrayList<>();
       int idx = 0;
-      for (final RaftPeer peer : raftGroup.getPeers()) {
+      for (final RaftPeer peer : getLivePeers()) {
         if (peer.getId().equals(localPeerId))
           continue;
-        final java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+        final Map<String, Object> state = new java.util.LinkedHashMap<>();
         state.put("peerId", peer.getId().toString());
         state.put("matchIndex", idx < matchIndices.length ? matchIndices[idx] : -1);
         state.put("nextIndex", idx < nextIndices.length ? nextIndices[idx] : -1);
@@ -646,7 +670,7 @@ public class RaftHAServer {
       }
       return result;
     } catch (final IOException e) {
-      return java.util.List.of();
+      return List.of();
     }
   }
 
@@ -667,7 +691,7 @@ public class RaftHAServer {
   }
 
   public int getConfiguredServers() {
-    return raftGroup.getPeers().size();
+    return getLivePeers().size();
   }
 
   public String getElectionStatus() {
@@ -690,7 +714,7 @@ public class RaftHAServer {
    */
   public String getReplicaAddresses() {
     final StringBuilder sb = new StringBuilder();
-    for (final RaftPeer peer : raftGroup.getPeers()) {
+    for (final RaftPeer peer : getLivePeers()) {
       if (peer.getId().equals(localPeerId))
         continue;
       if (!sb.isEmpty())
@@ -713,7 +737,27 @@ public class RaftHAServer {
    * Provided for compatibility with test infrastructure.
    */
   public int getOnlineReplicas() {
-    return raftGroup.getPeers().size() - 1;
+    return getLivePeers().size() - 1;
+  }
+
+  /**
+   * Returns the current live peers from the Raft server's committed configuration.
+   * Unlike raftGroup.getPeers() which is static from construction time, this reflects
+   * dynamic membership changes from addPeer/removePeer calls.
+   * Falls back to the static raftGroup if the server is not running.
+   */
+  public Collection<RaftPeer> getLivePeers() {
+    if (raftServer != null) {
+      try {
+        final var division = raftServer.getDivision(raftGroup.getGroupId());
+        final var conf = division.getRaftConf();
+        if (conf != null)
+          return conf.getCurrentPeers();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.FINE, "Cannot read live peers from Raft server, using static list", e);
+      }
+    }
+    return raftGroup.getPeers();
   }
 
   public RaftGroup getRaftGroup() {
@@ -840,7 +884,7 @@ public class RaftHAServer {
         .setAddress(address)
         .build();
 
-    final List<RaftPeer> newPeers = new ArrayList<>(raftGroup.getPeers());
+    final List<RaftPeer> newPeers = new ArrayList<>(getLivePeers());
     newPeers.add(newPeer);
 
     try {
@@ -860,12 +904,13 @@ public class RaftHAServer {
    * @param peerId the peer ID to remove
    */
   public void removePeer(final String peerId) {
+    final Collection<RaftPeer> livePeers = getLivePeers();
     final List<RaftPeer> newPeers = new ArrayList<>();
-    for (final RaftPeer peer : raftGroup.getPeers())
+    for (final RaftPeer peer : livePeers)
       if (!peer.getId().toString().equals(peerId))
         newPeers.add(peer);
 
-    if (newPeers.size() == raftGroup.getPeers().size())
+    if (newPeers.size() == livePeers.size())
       throw new ConfigurationException("Peer " + peerId + " not found in cluster");
 
     try {
@@ -971,6 +1016,10 @@ public class RaftHAServer {
     // Note: Ratis uses MAJORITY consensus by default.
     // For ALL quorum mode, we use the Watch API after each write to wait for ALL replicas.
     // See sendToRaft() for the ALL quorum implementation.
+
+    // Client request timeout: bounds how long the Ratis client waits for a single RPC.
+    // Without this, the client retries indefinitely when the majority is unreachable.
+    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(quorumTimeout, TimeUnit.MILLISECONDS));
 
     return properties;
   }

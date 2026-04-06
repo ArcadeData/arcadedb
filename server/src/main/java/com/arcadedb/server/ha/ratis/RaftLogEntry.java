@@ -46,7 +46,11 @@ public class RaftLogEntry {
     TRANSACTION((byte) 1),
     /** Forward a write from a non-leader node (includes index key changes for constraint validation). */
     TRANSACTION_FORWARD((byte) 2),
-    /** Forward a command (SQL/Cypher) to the leader via the query() path (not logged in Raft). */
+    /**
+     * Forward a command (SQL/Cypher) to the leader via the query() path (not logged in Raft).
+     * Uses 'C' (0x43) intentionally to distinguish from log-replicated types (1, 2) since
+     * command forwards are sent via sendReadOnly and never appear in the Raft log.
+     */
     COMMAND_FORWARD((byte) 'C');
 
     private final byte code;
