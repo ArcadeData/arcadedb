@@ -226,17 +226,21 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Determine constraint kind
     final CypherDDLStatement.ConstraintKind constraintKind;
+    String typedName = null;
     if (constraintType instanceof Cypher25Parser.ConstraintIsUniqueContext)
       constraintKind = CypherDDLStatement.ConstraintKind.UNIQUE;
     else if (constraintType instanceof Cypher25Parser.ConstraintIsNotNullContext)
       constraintKind = CypherDDLStatement.ConstraintKind.NOT_NULL;
     else if (constraintType instanceof Cypher25Parser.ConstraintKeyContext)
       constraintKind = CypherDDLStatement.ConstraintKind.KEY;
-    else
+    else if (constraintType instanceof Cypher25Parser.ConstraintTypedContext) {
+      constraintKind = CypherDDLStatement.ConstraintKind.TYPED;
+      typedName = extractCypherTypeName(((Cypher25Parser.ConstraintTypedContext) constraintType).type());
+    } else
       throw new CommandParsingException("Unsupported constraint type: " + constraintType.getText());
 
     return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_CONSTRAINT, constraintKind,
-        constraintName, labelName, propertyNames, ifNotExists, false, forRelationship);
+        constraintName, labelName, propertyNames, ifNotExists, false, forRelationship, typedName);
   }
 
   private CypherDDLStatement handleDropConstraint(final Cypher25Parser.DropConstraintContext ctx) {
@@ -318,6 +322,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       propList = ((Cypher25Parser.ConstraintIsNotNullContext) ctx).propertyList();
     else if (ctx instanceof Cypher25Parser.ConstraintKeyContext)
       propList = ((Cypher25Parser.ConstraintKeyContext) ctx).propertyList();
+    else if (ctx instanceof Cypher25Parser.ConstraintTypedContext)
+      propList = ((Cypher25Parser.ConstraintTypedContext) ctx).propertyList();
     else
       throw new CommandParsingException("Unsupported constraint type for property extraction");
 
@@ -332,6 +338,26 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       names.add(stripBackticks(propList.property().propertyKeyName().getText()));
     }
     return names;
+  }
+
+  /**
+   * Extracts the Cypher type name from a type context (e.g., STRING, INTEGER, BOOLEAN, FLOAT, DATE, LOCAL DATETIME).
+   * Returns a normalized uppercase string that can be mapped to an ArcadeDB Type.
+   */
+  private String extractCypherTypeName(final Cypher25Parser.TypeContext typeCtx) {
+    // The type rule is: typePart (BAR typePart)* - we only support single types (no union types)
+    if (typeCtx.typePart().size() != 1)
+      throw new CommandParsingException("Union types are not supported in IS TYPED constraints");
+    final Cypher25Parser.TypePartContext typePart = typeCtx.typePart(0);
+    final Cypher25Parser.TypeNameContext typeName = typePart.typeName();
+    // Build the normalized type name from the tokens (e.g., "LOCAL DATETIME" has two tokens)
+    final StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < typeName.getChildCount(); i++) {
+      if (i > 0)
+        sb.append(' ');
+      sb.append(typeName.getChild(i).getText().toUpperCase());
+    }
+    return sb.toString();
   }
 
   @Override

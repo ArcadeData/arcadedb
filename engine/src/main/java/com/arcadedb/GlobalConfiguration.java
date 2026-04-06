@@ -595,6 +595,10 @@ public enum GlobalConfiguration {
   BOLT_MAX_CONNECTIONS("arcadedb.bolt.maxConnections", SCOPE.SERVER,
       "Maximum number of concurrent BOLT connections. 0 means unlimited. Default is 0", Integer.class, 0),
 
+  BOLT_SSL("arcadedb.bolt.ssl", SCOPE.SERVER,
+      "TLS mode for BOLT connections: DISABLED (no TLS, default), OPTIONAL (auto-detect TLS or plaintext), REQUIRED (TLS only)",
+      String.class, "DISABLED"),
+
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),

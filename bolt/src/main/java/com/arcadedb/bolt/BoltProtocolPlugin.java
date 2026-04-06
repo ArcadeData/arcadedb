@@ -43,7 +43,8 @@ public class BoltProtocolPlugin implements ServerPlugin {
 
   @Override
   public void startService() {
-    listener = new BoltNetworkListener(server, new DefaultServerSocketFactory(), host, String.valueOf(port));
+    final BoltSslHelper sslHelper = new BoltSslHelper(server.getConfiguration());
+    listener = new BoltNetworkListener(server, new DefaultServerSocketFactory(), sslHelper, host, String.valueOf(port));
   }
 
   @Override
