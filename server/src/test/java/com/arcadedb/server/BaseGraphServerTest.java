@@ -623,7 +623,15 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       return response;
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on connecting to server %s", e, "http://127.0.0.1:248" + serverIndex);
+      // Try to read the error stream for more context on server-side errors
+      String errorBody = null;
+      try {
+        if (initialConnection.getErrorStream() != null)
+          errorBody = FileUtils.readStreamAsString(initialConnection.getErrorStream(), "utf8");
+      } catch (final Exception ignored) {
+      }
+      LogManager.instance().log(this, Level.SEVERE, "Error on connecting to server %s (error body: %s)", e,
+          "http://127.0.0.1:248" + serverIndex, errorBody);
       throw e;
     } finally {
       initialConnection.disconnect();

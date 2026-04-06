@@ -26,6 +26,7 @@ import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.*;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
@@ -155,7 +156,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
               tx.reset();
           } else
             tx.reset();
-        } catch (final NeedRetryException | TransactionException e) {
+        } catch (final ArcadeDBException e) {
           rollback();
           throw e;
         } catch (final Exception e) {

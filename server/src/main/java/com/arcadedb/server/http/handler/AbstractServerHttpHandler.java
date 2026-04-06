@@ -250,6 +250,22 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                         realException.getMessage());
         sendErrorResponse(exchange, 400, "Query is not idempotent", realException, null);
+      } else if (realException instanceof NeedRetryException) {
+        LogManager.instance()
+                .log(this, Level.FINE, "Error on transaction execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 503, "Cannot execute command", realException, null);
+      } else if (realException instanceof DuplicatedKeyException dke) {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 503, "Found duplicate key in index", realException,
+                dke.getIndexName() + "|" + dke.getKeys() + "|" + dke.getCurrentIndexedRID());
+      } else if (realException instanceof ServerIsNotTheLeaderException sle) {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", realException, sle.getLeaderAddress());
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
