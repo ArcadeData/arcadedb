@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -64,6 +66,15 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
   @Override
   protected boolean persistentRaftStorage() {
     return true;
+  }
+
+  @Override
+  protected void onServerConfiguration(final ContextConfiguration config) {
+    super.onServerConfiguration(config);
+    // The test creates ~15000 entries. Set the snapshot threshold high enough to prevent
+    // log compaction, since snapshot-based resync (installSnapshot) is not yet fully
+    // wired. Without this, a restarted peer may need purged entries and hang forever.
+    config.setValue(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD, 100_000L);
   }
 
   @Test
