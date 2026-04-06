@@ -23,7 +23,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
-import com.arcadedb.server.ha.network.ServerSocketFactory;
+import com.arcadedb.server.network.ServerSocketFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
