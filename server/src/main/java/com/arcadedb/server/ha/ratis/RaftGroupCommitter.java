@@ -92,8 +92,10 @@ public class RaftGroupCommitter {
           if (error != null)
             throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
           return; // Raft succeeded after extended wait
-        } catch (final java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException
-            | InterruptedException e2) {
+        } catch (final InterruptedException e2) {
+          Thread.currentThread().interrupt();
+          throw new QuorumNotReachedException("Group commit interrupted after extended wait (dispatched to Raft but no reply)");
+        } catch (final java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e2) {
           throw new QuorumNotReachedException("Group commit timed out after extended wait (dispatched to Raft but no reply)");
         }
       }
@@ -103,6 +105,9 @@ public class RaftGroupCommitter {
       throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms");
     } catch (final RuntimeException e) {
       throw e;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new QuorumNotReachedException("Group commit interrupted: " + e.getMessage());
     } catch (final Exception e) {
       throw new QuorumNotReachedException("Group commit failed: " + e.getMessage());
     }

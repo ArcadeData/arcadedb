@@ -336,7 +336,7 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 
 ## Tests
 
-### Passing Tests (42 total: 19 existing + 17 comprehensive + 6 e2e)
+### Passing Tests (40 total: 19 existing + 17 comprehensive + 4 e2e passing, 4 e2e blocked)
 
 #### Core Tests
 | Test | Description | Servers | Status |
@@ -391,23 +391,21 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 #### E2E Tests (Docker/TestContainers)
 | Test | Description | Servers | Status |
 |---|---|---|---|
-| `HARollingRestartE2ETest` | Rolling restart with continuous writes, verify zero data loss | 3 | PASS |
 | `HANetworkPartitionE2ETest` | Follower network disconnect/reconnect, catch-up via Raft log replay | 3 | PASS |
-| `HASnapshotCatchUpE2ETest` | Follower lags behind log purge boundary, catches up via snapshot download | 3 | PASS |
-| `HALeaderPartitionE2ETest` | Leader network-partitioned, majority elects new leader, old leader reconnects and catches up | 3 | PASS |
-| `HAColdStartE2ETest` | All 3 nodes stopped, restarted from cold, Ratis log recovery + data intact + index survives | 3 | PASS |
-| `HAQuorumLossRecoveryE2ETest` | Stop 2 of 3 nodes, writes fail, restart both, cluster recovers and accepts writes | 3 | PASS |
+| `HAQuorumLossRecoveryE2ETest` | Network-isolate 2 of 3 nodes, writes fail, reconnect both, cluster recovers | 3 | PASS |
+| `HARollingRestartE2ETest` | Rolling network-isolation with writes on survivors, each node catches up | 3 | BLOCKED |
+| `HASnapshotCatchUpE2ETest` | Follower lags behind log purge boundary, catches up via snapshot download | 3 | BLOCKED |
+| `HALeaderPartitionE2ETest` | Leader network-partitioned, majority elects new leader, old leader reconnects and catches up | 3 | BLOCKED |
+| `HAColdStartE2ETest` | All 3 nodes restarted via docker restart, Ratis log recovery + data intact + index survives | 3 | BLOCKED |
 
 ### Known Limitations
 - **State machine command forwarding**: The `query()` path for forwarding write commands to the leader has a page visibility issue. Currently using HTTP proxy fallback which works correctly.
+- **gRPC channel recovery after network partition**: Ratis's internal gRPC channels (NettyChannelBuilder) do not configure TCP keepalive. After a Docker network disconnect/reconnect, stale gRPC channels are not detected or re-established. This causes: (a) the leader cannot send AppendEntries to a reconnected follower, (b) a reconnected old leader does not receive AppendEntries from the new leader. Short partitions (seconds) recover because gRPC's internal reconnection backoff completes in time. Longer partitions or leader partitions fail. The fix requires either gRPC keepalive on the channels (Ratis doesn't expose this) or a Ratis-level mechanism to detect and refresh stale channels.
 
 ### Removed Tests (not applicable to Ratis)
 | Test | Reason |
 |---|---|
 | `ReplicationServerQuorumNoneIT` | Ratis doesn't support "none" quorum - only MAJORITY and ALL |
-
-### All Tests Passing
-All HA tests pass. No disabled test methods remain.
 
 ## TODO
 
@@ -419,13 +417,27 @@ These tests exercise full cluster scenarios using Docker containers (TestContain
 
 | # | Test | Description | Key scenario | Status |
 |---|---|---|---|---|
-| 1 | `HALeaderPartitionE2ETest` | Leader gets network-partitioned. Majority elects new leader, accepts writes. Old leader reconnects, steps down, catches up | Leader stepdown + follower resync | DONE |
+| 1 | `HALeaderPartitionE2ETest` | Leader gets network-partitioned. Majority elects new leader, accepts writes. Old leader reconnects, steps down, catches up | Leader stepdown + follower resync | BLOCKED (gRPC) |
 | 2 | `HAMultiDatabaseSnapshotE2ETest` | Cluster with 2-3 databases. Follower lags behind, snapshot installs all databases. Verify no partial failures | `notifyInstallSnapshotFromLeader` loops over all DBs | TODO |
 | 3 | `HASnapshotDuringWritesE2ETest` | Follower reconnects while writes are actively happening on the leader. Verify snapshot install + concurrent Raft log apply don't conflict | Snapshot + concurrent writes | TODO |
-| 4 | `HAColdStartE2ETest` | Write data, stop all 3 nodes, start all 3 from cold. Verify Ratis log recovery from disk + leader re-election + data intact | Full cluster restart from persisted state | DONE |
-| 5 | `HAQuorumLossRecoveryE2ETest` | Stop 2 of 3 nodes (quorum lost). Writes must fail. Restart both nodes. Cluster recovers, writes succeed again | Disaster recovery | DONE |
+| 4 | `HAColdStartE2ETest` | Write data, restart all 3 nodes, verify Ratis log recovery from disk + leader re-election + data intact | Full cluster restart from persisted state | BLOCKED (gRPC) |
+| 5 | `HAQuorumLossRecoveryE2ETest` | Network-isolate 2 of 3 nodes (quorum lost). Writes must fail. Reconnect both nodes. Cluster recovers, writes succeed again | Disaster recovery | DONE |
 | 6 | `HADynamicDatabaseE2ETest` | Create a database on the leader after cluster formation. Verify schema + data replicate to followers. Then lag a follower, verify snapshot includes the new database | Post-formation DB creation + snapshot | TODO |
 | 7 | `HALargeDataSnapshotE2ETest` | Insert large records (BLOBs, many properties) to exercise the ZIP streaming path with realistic data sizes | Snapshot HTTP streaming under load | TODO |
+
+### Blocker: gRPC channel recovery after network partition
+
+Tests #1, #4, `HARollingRestartE2ETest`, and `HASnapshotCatchUpE2ETest` are blocked by the same root cause: Ratis's internal gRPC channels (built by `GrpcServerProtocolClient` and `GrpcClientProtocolClient` via `NettyChannelBuilder`) do not configure TCP keepalive. After a Docker network disconnect/reconnect or container restart, stale gRPC channels remain in `TRANSIENT_FAILURE` state indefinitely.
+
+Fixes already applied (partial improvement):
+- ExponentialBackoffRetry on RaftClient (fixes QuorumLoss reconnection)
+- slownessTimeout=300s, closeThreshold=300s (prevents leader from dropping peers)
+- gRPC flowControlWindow=4MB (helps catch-up throughput)
+
+Remaining fix needed: gRPC keepalive on the Ratis channels. Options:
+1. Upstream Ratis PR to expose keepalive config via `GrpcConfigKeys`
+2. Use `GrpcServices.Customizer` to inject keepalive on the server side
+3. Periodic "health probe" that detects stale channels and triggers Ratis client refresh
 
 ### Future Features
 - **State machine command forwarding**: Fix the `query()` path page visibility issue to eliminate HTTP proxy dependency for command forwarding. Currently write commands on non-leader nodes are forwarded via HTTP proxy which works correctly but adds latency.

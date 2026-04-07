@@ -83,14 +83,16 @@ public class RaftLogEntry {
    * @param schemaJson        optional schema JSON (null if no schema change)
    * @param filesToAdd        optional files to add (null if no structural change)
    * @param filesToRemove     optional files to remove (null if no structural change)
+   * @param originPeerId      the peer ID of the node that originated this transaction
    * @return serialized bytes
    */
   public static byte[] serializeTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
       final Binary walBuffer, final String schemaJson, final Map<Integer, String> filesToAdd,
-      final Map<Integer, String> filesToRemove) {
+      final Map<Integer, String> filesToRemove, final String originPeerId) {
 
     final Binary stream = new Binary(walBuffer.size() + 256);
     stream.putByte(EntryType.TRANSACTION.code());
+    stream.putString(originPeerId);
     writeCommonTransactionFields(stream, databaseName, bucketRecordDelta, walBuffer);
 
     // Schema change (optional)
@@ -165,7 +167,7 @@ public class RaftLogEntry {
   // -- Deserialization --
 
   /** Parsed transaction entry ready for application. */
-  public record TransactionEntry(String databaseName, int uncompressedLength, Binary walBuffer,
+  public record TransactionEntry(String originPeerId, String databaseName, int uncompressedLength, Binary walBuffer,
       Map<Integer, Integer> bucketRecordDelta, String schemaJson, Map<Integer, String> filesToAdd,
       Map<Integer, String> filesToRemove) {
   }
@@ -183,6 +185,7 @@ public class RaftLogEntry {
     final Binary stream = new Binary(data);
     stream.getByte(); // skip type marker
 
+    final String originPeerId = stream.getString();
     final String databaseName = stream.getString();
 
     final int uncompressedLength = stream.getInt();
@@ -207,7 +210,7 @@ public class RaftLogEntry {
       filesToRemove = readFileMap(stream);
     }
 
-    return new TransactionEntry(databaseName, uncompressedLength, walBuffer, bucketRecordDelta, schemaJson, filesToAdd,
+    return new TransactionEntry(originPeerId, databaseName, uncompressedLength, walBuffer, bucketRecordDelta, schemaJson, filesToAdd,
         filesToRemove);
   }
 
@@ -241,18 +244,25 @@ public class RaftLogEntry {
   /** Serializes a command forward request for execution on the leader via the state machine query() path. */
   // -- CREATE_DATABASE serialization --
 
-  public static byte[] serializeCreateDatabase(final String databaseName) {
+  /** Parsed CREATE_DATABASE entry. */
+  public record CreateDatabaseEntry(String originPeerId, String databaseName) {
+  }
+
+  public static byte[] serializeCreateDatabase(final String databaseName, final String originPeerId) {
     final Binary stream = new Binary(64);
     stream.putByte(EntryType.CREATE_DATABASE.code());
+    stream.putString(originPeerId);
     stream.putString(databaseName);
     stream.flip();
     return stream.toByteArray();
   }
 
-  public static String deserializeCreateDatabase(final byte[] data) {
+  public static CreateDatabaseEntry deserializeCreateDatabase(final byte[] data) {
     final Binary stream = new Binary(data);
     stream.getByte(); // skip type byte
-    return stream.getString();
+    final String originPeerId = stream.getString();
+    final String databaseName = stream.getString();
+    return new CreateDatabaseEntry(originPeerId, databaseName);
   }
 
   // -- COMMAND_FORWARD serialization --

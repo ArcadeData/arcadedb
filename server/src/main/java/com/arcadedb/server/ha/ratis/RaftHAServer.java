@@ -128,6 +128,24 @@ public class RaftHAServer {
     final List<RaftPeer> peers = parsePeers(serverList);
     this.localPeerId = resolveLocalPeerId(peers);
 
+    // If this node is configured as a replica, set its priority to 0 to prevent leader election.
+    // Priority 0 tells Ratis this peer should never become leader.
+    final String serverRole = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_ROLE);
+    if ("replica".equalsIgnoreCase(serverRole)) {
+      for (int i = 0; i < peers.size(); i++) {
+        if (peers.get(i).getId().equals(localPeerId)) {
+          peers.set(i, RaftPeer.newBuilder()
+              .setId(localPeerId)
+              .setAddress(peers.get(i).getAddress())
+              .setPriority(0)
+              .build());
+          LogManager.instance().log(this, Level.INFO,
+              "Node configured as replica (priority=0, will not become leader): %s", localPeerId);
+          break;
+        }
+      }
+    }
+
     // Create Raft group using cluster name as group ID seed
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     final RaftGroupId groupId = RaftGroupId.valueOf(
@@ -449,7 +467,7 @@ public class RaftHAServer {
       final Map<Integer, String> filesToRemove) {
 
     final byte[] entry = RaftLogEntry.serializeTransaction(databaseName, bucketRecordDelta, walBuffer, schemaJson, filesToAdd,
-        filesToRemove);
+        filesToRemove, localPeerId.toString());
 
     HALog.log(this, HALog.TRACE, "replicateTransaction: db=%s, entrySize=%d bytes", databaseName, entry.length);
     sendToRaft(entry);
@@ -894,6 +912,19 @@ public class RaftHAServer {
       final RaftClientReply reply = raftClient.admin().setConfiguration(newPeers);
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
+
+      // Derive and store HTTP address from the Raft address (host:raftPort -> host:httpPort)
+      final int colonIdx = address.lastIndexOf(':');
+      if (colonIdx > 0) {
+        final String host = address.substring(0, colonIdx);
+        try {
+          final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));
+          peerHttpAddresses.put(peerId, host + ":" + (raftPort + getHttpPortOffset()));
+        } catch (final NumberFormatException ignored) {
+          // Non-numeric port, skip HTTP address derivation
+        }
+      }
+
       LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster", peerId);
     } catch (final IOException e) {
       throw new ConfigurationException("Failed to add peer " + peerId, e);
@@ -950,7 +981,7 @@ public class RaftHAServer {
    */
   public void stepDown() {
     final String leaderName = getLeaderName();
-    for (final var peer : getRaftGroup().getPeers()) {
+    for (final var peer : getLivePeers()) {
       if (!peer.getId().toString().equals(leaderName)) {
         try {
           transferLeadership(peer.getId().toString(), 10_000);
@@ -969,10 +1000,38 @@ public class RaftHAServer {
 
   /**
    * Returns the HTTP address of a peer given its Raft peer ID.
+   * If no explicit mapping exists (e.g., peer added dynamically), derives the HTTP address
+   * from the peer ID (host_raftPort) using the configured HTTP/Raft port offset.
    */
   public String getPeerHTTPAddress(final RaftPeerId peerId) {
     final String httpAddr = peerHttpAddresses.get(peerId.toString());
-    return httpAddr != null ? httpAddr : peerId.toString();
+    if (httpAddr != null)
+      return httpAddr;
+
+    // Derive HTTP address from peer ID format "host_raftPort" using port offset
+    final String peerIdStr = peerId.toString();
+    final int lastUnderscore = peerIdStr.lastIndexOf('_');
+    if (lastUnderscore > 0 && lastUnderscore < peerIdStr.length() - 1) {
+      final String host = peerIdStr.substring(0, lastUnderscore);
+      try {
+        final int raftPort = Integer.parseInt(peerIdStr.substring(lastUnderscore + 1));
+        final int httpPort = raftPort + getHttpPortOffset();
+        final String derived = host + ":" + httpPort;
+        peerHttpAddresses.put(peerIdStr, derived);
+        return derived;
+      } catch (final NumberFormatException ignored) {
+        // Fall through to return peer ID as-is
+      }
+    }
+    return peerIdStr;
+  }
+
+  private int getHttpPortOffset() {
+    final int localHttpPort = parseFirstPort(
+        configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT));
+    final int localRaftPort = parseFirstPort(
+        configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
+    return localHttpPort - localRaftPort;
   }
 
   /**
@@ -1083,12 +1142,7 @@ public class RaftHAServer {
     final List<RaftPeer> peers = new ArrayList<>();
     final String[] entries = serverList.split(",");
 
-    // Get the local HTTP port to compute offset for deriving HTTP addresses
-    final int localHttpPort = parseFirstPort(
-        configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT));
-    final int localRaftPort = parseFirstPort(
-        configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
-    final int httpPortOffset = localHttpPort - localRaftPort;
+    final int httpPortOffset = getHttpPortOffset();
 
     for (final String entry : entries) {
       final String trimmed = entry.trim();

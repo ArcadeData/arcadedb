@@ -45,7 +45,7 @@ class RaftLogEntryTest {
     bucketDelta.put(2, -3);
 
     // Serialize
-    final byte[] serialized = RaftLogEntry.serializeTransaction("testDb", bucketDelta, walBuffer, null, null, null);
+    final byte[] serialized = RaftLogEntry.serializeTransaction("testDb", bucketDelta, walBuffer, null, null, null, "node-1");
 
     // Verify type marker
     assertThat(RaftLogEntry.readType(ByteBuffer.wrap(serialized))).isEqualTo(RaftLogEntry.EntryType.TRANSACTION);
@@ -53,6 +53,7 @@ class RaftLogEntryTest {
     // Deserialize
     final RaftLogEntry.TransactionEntry entry = RaftLogEntry.deserializeTransaction(serialized);
 
+    assertThat(entry.originPeerId()).isEqualTo("node-1");
     assertThat(entry.databaseName()).isEqualTo("testDb");
     assertThat(entry.bucketRecordDelta()).hasSize(2);
     assertThat(entry.bucketRecordDelta().get(1)).isEqualTo(5);
@@ -86,11 +87,12 @@ class RaftLogEntryTest {
 
     // Serialize
     final byte[] serialized = RaftLogEntry.serializeTransaction("myDb", bucketDelta, walBuffer, schemaJson, filesToAdd,
-        filesToRemove);
+        filesToRemove, "leader-0");
 
     // Deserialize
     final RaftLogEntry.TransactionEntry entry = RaftLogEntry.deserializeTransaction(serialized);
 
+    assertThat(entry.originPeerId()).isEqualTo("leader-0");
     assertThat(entry.databaseName()).isEqualTo("myDb");
     assertThat(entry.schemaJson()).isEqualTo(schemaJson);
     assertThat(entry.filesToAdd()).hasSize(2);
@@ -138,6 +140,18 @@ class RaftLogEntryTest {
 
     assertThat(entry.databaseName()).isEqualTo("db");
     assertThat(entry.indexChanges()).isNull();
+  }
+
+  @Test
+  void testCreateDatabaseSerializationRoundTrip() {
+    final byte[] serialized = RaftLogEntry.serializeCreateDatabase("newDb", "leader-node");
+
+    assertThat(RaftLogEntry.readType(ByteBuffer.wrap(serialized))).isEqualTo(RaftLogEntry.EntryType.CREATE_DATABASE);
+
+    final RaftLogEntry.CreateDatabaseEntry entry = RaftLogEntry.deserializeCreateDatabase(serialized);
+
+    assertThat(entry.originPeerId()).isEqualTo("leader-node");
+    assertThat(entry.databaseName()).isEqualTo("newDb");
   }
 
   /**

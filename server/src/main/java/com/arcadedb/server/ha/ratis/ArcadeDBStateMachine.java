@@ -27,6 +27,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.server.ha.ReplicationException;
@@ -67,8 +68,9 @@ import java.util.zip.ZipInputStream;
 /**
  * Ratis state machine for ArcadeDB replication. Each committed Raft log entry contains a serialized
  * database transaction (WAL page diffs) that is applied identically on all follower nodes.
- * On the leader, transactions are committed locally via commit2ndPhase() and the state machine
- * apply is skipped to avoid double-application.
+ * On the originating node, transactions are committed locally via commit2ndPhase() and the state machine
+ * apply is skipped to avoid double-application. Origin is determined by comparing the originPeerId
+ * embedded in the log entry against the local peer ID, avoiding TOCTOU races with live leadership state.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -182,10 +184,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     if (db == null || !db.isOpen())
       throw new ReplicationException("Database '" + entry.databaseName() + "' is not available");
 
-    // On the leader, commit2ndPhase() handles the local page writes AFTER replicateTransaction() returns.
+    // The originating node already applied changes locally (commit2ndPhase on leader, or direct create).
     // Skip the state machine apply to avoid double-applying page changes and bucket record deltas.
-    if (isCurrentNodeLeader()) {
-      HALog.log(this, HALog.TRACE, "Skipping WAL apply on leader (commit2ndPhase handles it): db=%s", entry.databaseName());
+    // We compare originPeerId from the log entry (immutable) rather than querying live leadership state,
+    // which avoids a TOCTOU race if leadership changes between commit and apply.
+    if (isOriginNode(entry.originPeerId())) {
+      HALog.log(this, HALog.TRACE, "Skipping WAL apply on origin node (commit2ndPhase handles it): db=%s", entry.databaseName());
       return;
     }
     HALog.log(this, HALog.DETAILED, "Applying WAL on follower: db=%s, walSize=%d, deltaSize=%d, hasSchema=%s",
@@ -248,21 +252,31 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   }
 
   private void applyCreateDatabase(final byte[] data) {
-    final String databaseName = RaftLogEntry.deserializeCreateDatabase(data);
+    final RaftLogEntry.CreateDatabaseEntry entry = RaftLogEntry.deserializeCreateDatabase(data);
 
-    // On the leader, the database was already created locally before the Ratis entry was sent.
-    if (isCurrentNodeLeader()) {
-      HALog.log(this, HALog.TRACE, "Skipping CREATE_DATABASE on leader (already created): db=%s", databaseName);
+    // The originating node already created the database locally before submitting the Ratis entry.
+    if (isOriginNode(entry.originPeerId())) {
+      HALog.log(this, HALog.TRACE, "Skipping CREATE_DATABASE on origin node (already created): db=%s", entry.databaseName());
       return;
     }
 
-    if (server.existsDatabase(databaseName)) {
-      HALog.log(this, HALog.BASIC, "Database '%s' already exists on this follower, skipping create", databaseName);
+    if (server.existsDatabase(entry.databaseName())) {
+      HALog.log(this, HALog.BASIC, "Database '%s' already exists on this follower, skipping create", entry.databaseName());
       return;
     }
 
-    HALog.log(this, HALog.BASIC, "Creating database '%s' on follower (replicated from leader)", databaseName);
-    server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    HALog.log(this, HALog.BASIC, "Creating database '%s' on follower (replicated from leader)", entry.databaseName());
+    server.createDatabase(entry.databaseName(), ComponentFile.MODE.READ_WRITE);
+  }
+
+  /**
+   * Checks whether this node originated the given log entry by comparing the peer ID
+   * embedded in the entry against the local peer ID. This avoids a TOCTOU race that would
+   * occur if we queried live leadership state (which can change between commit and apply).
+   */
+  private boolean isOriginNode(final String originPeerId) {
+    final RaftHAServer raftHA = server.getHA();
+    return raftHA != null && raftHA.getLocalPeerId().toString().equals(originPeerId);
   }
 
   private boolean isCurrentNodeLeader() {
@@ -443,8 +457,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
             "Failed to download snapshot from " + snapshotUrl + ": HTTP " + responseCode);
 
       // Clean up leftover temp/backup dirs from previous failed attempts
-      deleteDirectoryQuietly(tempDir);
-      deleteDirectoryQuietly(backupDir);
+      FileUtils.deleteRecursively(tempDir.toFile());
+      FileUtils.deleteRecursively(backupDir.toFile());
 
       Files.createDirectories(tempDir);
 
@@ -467,7 +481,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
         }
       } catch (final Exception e) {
         // Extraction failed - clean up temp dir and leave database untouched
-        deleteDirectoryQuietly(tempDir);
+        FileUtils.deleteRecursively(tempDir.toFile());
         throw e;
       }
 
@@ -489,7 +503,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
               LogManager.instance().log(this, Level.WARNING, "Failed to delete stale WAL file: %s", walFile.getName());
 
         // Clean up the backup
-        deleteDirectoryQuietly(backupDir);
+        FileUtils.deleteRecursively(backupDir.toFile());
 
         LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
 
@@ -498,7 +512,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
         LogManager.instance().log(this, Level.SEVERE, "Snapshot swap failed for '%s', attempting rollback...", databaseName);
         try {
           if (Files.exists(backupDir)) {
-            deleteDirectoryQuietly(dbPath);   // remove partial move if any
+            FileUtils.deleteRecursively(dbPath.toFile());   // remove partial move if any
             Files.move(backupDir, dbPath);
           }
         } catch (final Exception rollbackEx) {
@@ -506,7 +520,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
               "CRITICAL: Failed to rollback snapshot swap for '%s'. Database may be unavailable. Error: %s",
               databaseName, rollbackEx.getMessage());
         }
-        deleteDirectoryQuietly(tempDir);
+        FileUtils.deleteRecursively(tempDir.toFile());
         throw new ReplicationException("Snapshot installation failed during directory swap", e);
       }
 
@@ -523,21 +537,6 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
                 + "This node may need to be restarted to recover. Error: %s",
             databaseName, e.getMessage());
       }
-    }
-  }
-
-  private static void deleteDirectoryQuietly(final Path dir) {
-    if (!Files.exists(dir))
-      return;
-    try {
-      final File[] files = dir.toFile().listFiles();
-      if (files != null)
-        for (final File f : files)
-          f.delete();
-      Files.delete(dir);
-    } catch (final IOException e) {
-      LogManager.instance().log(ArcadeDBStateMachine.class, Level.WARNING,
-          "Failed to clean up directory: %s (%s)", dir, e.getMessage());
     }
   }
 

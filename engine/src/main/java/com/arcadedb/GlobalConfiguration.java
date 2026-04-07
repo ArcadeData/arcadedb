@@ -108,7 +108,6 @@ public enum GlobalConfiguration {
         ASYNC_TX_BATCH_SIZE.setValue(8);
         PAGE_FLUSH_QUEUE.setValue(8);
         SQL_STATEMENT_CACHE.setValue(16);
-        HA_REPLICATION_QUEUE_SIZE.setValue(8);
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(10_000);
@@ -571,13 +570,6 @@ public enum GlobalConfiguration {
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
       "Read timeout in milliseconds when proxying requests from followers to the leader. Increase for long-running queries",
       Integer.class, 30_000),
-
-  HA_REPLICATION_QUEUE_SIZE("arcadedb.ha.replicationQueueSize", SCOPE.SERVER, "Queue size for replicating messages between servers",
-      Integer.class, 512),
-
-  // TODO: USE THIS FOR CREATING NEW FILES
-  HA_REPLICATION_FILE_MAXSIZE("arcadedb.ha.replicationFileMaxSize", SCOPE.SERVER,
-      "Maximum file size for replicating messages between servers. Default is 1GB", Long.class, 1024 * 1024 * 1024),
 
   HA_REPLICATION_CHUNK_MAXSIZE("arcadedb.ha.replicationChunkMaxSize", SCOPE.SERVER,
       "Maximum channel chunk size for replicating messages between servers. Default is 16777216", Integer.class, 16384 * 1024),

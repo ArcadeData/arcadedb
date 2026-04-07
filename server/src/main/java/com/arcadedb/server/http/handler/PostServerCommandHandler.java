@@ -228,7 +228,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     // Replicate database creation to all followers via Ratis
     final RaftHAServer raftHA = server.getHA();
     if (raftHA != null) {
-      final byte[] entry = com.arcadedb.server.ha.ratis.RaftLogEntry.serializeCreateDatabase(databaseName);
+      final byte[] entry = com.arcadedb.server.ha.ratis.RaftLogEntry.serializeCreateDatabase(databaseName,
+          raftHA.getLocalPeerId().toString());
       raftHA.replicateRawEntry(entry);
     }
   }
