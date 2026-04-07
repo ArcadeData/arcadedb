@@ -414,7 +414,6 @@ public class RaftHAInsertBenchmark {
     config.setValue(GlobalConfiguration.HA_ENABLED, haEnabled);
 
     if (haEnabled) {
-      config.setValue(GlobalConfiguration.HA_IMPLEMENTATION, "raft");
       config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "bench-cluster");
       config.setValue(GlobalConfiguration.HA_RAFT_PORT, BASE_RAFT_PORT + index);
       config.setValue(GlobalConfiguration.HA_QUORUM, "MAJORITY");

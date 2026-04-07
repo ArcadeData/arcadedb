@@ -49,7 +49,6 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
-    config.setValue(GlobalConfiguration.HA_IMPLEMENTATION, "raft");
     if (persistentRaftStorage())
       config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, true);
 

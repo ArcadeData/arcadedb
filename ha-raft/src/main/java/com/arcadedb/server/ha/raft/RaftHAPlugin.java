@@ -32,8 +32,7 @@ import java.util.logging.Level;
 
 /**
  * ServerPlugin implementation that bootstraps the Raft-based HA subsystem.
- * Discovered via Java ServiceLoader when {@code HA_ENABLED=true} and
- * {@code HA_IMPLEMENTATION=raft}.
+ * Discovered via Java ServiceLoader when {@code HA_ENABLED=true}.
  */
 public class RaftHAPlugin implements HAServerPlugin {
 
@@ -55,7 +54,7 @@ public class RaftHAPlugin implements HAServerPlugin {
   @Override
   public void startService() {
     if (!isRaftEnabled()) {
-      HALog.log(this, HALog.TRACE, "Raft HA plugin not activated (HA_IMPLEMENTATION != raft or HA not enabled)");
+      HALog.log(this, HALog.TRACE, "Raft HA plugin not activated (HA not enabled)");
       return;
     }
 
@@ -192,12 +191,8 @@ public class RaftHAPlugin implements HAServerPlugin {
   }
 
   private boolean isRaftEnabled() {
-    if (configuration == null)
-      return false;
-    if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-      return false;
-    final String impl = configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION);
-    return impl == null || impl.isEmpty() || "raft".equalsIgnoreCase(impl);
+    return configuration != null
+        && configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED);
   }
 
   private void validateConfiguration() {

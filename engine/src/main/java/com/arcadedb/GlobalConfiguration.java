@@ -108,7 +108,7 @@ public enum GlobalConfiguration {
         ASYNC_TX_BATCH_SIZE.setValue(8);
         PAGE_FLUSH_QUEUE.setValue(8);
         SQL_STATEMENT_CACHE.setValue(16);
-        HA_REPLICATION_QUEUE_SIZE.setValue(8);
+
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(10_000);
@@ -515,10 +515,6 @@ public enum GlobalConfiguration {
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, the operation will be retried a specific amount of times on the next server in the list. 0 (default) is to retry against all the configured servers",
       Integer.class, 0),
 
-  HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
-      "Server role between ANY (default) OR REPLICA to configure replica only servers", String.class, "any",
-      Set.of((Object[]) new String[]{"any", "replica"})),
-
   HA_CLUSTER_NAME("arcadedb.ha.clusterName", SCOPE.SERVER,
       "Cluster name. By default is 'arcadedb'. Useful in case of multiple clusters in the same network", String.class,
       Constants.PRODUCT.toLowerCase(Locale.ENGLISH)),
@@ -548,22 +544,8 @@ public enum GlobalConfiguration {
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
       "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),
 
-  HA_REPLICATION_QUEUE_SIZE("arcadedb.ha.replicationQueueSize", SCOPE.SERVER, "Queue size for replicating messages between servers",
-      Integer.class, 512),
-
-  // TODO: USE THIS FOR CREATING NEW FILES
-  HA_REPLICATION_FILE_MAXSIZE("arcadedb.ha.replicationFileMaxSize", SCOPE.SERVER,
-      "Maximum file size for replicating messages between servers. Default is 1GB", Long.class, 1024 * 1024 * 1024),
-
   HA_REPLICATION_CHUNK_MAXSIZE("arcadedb.ha.replicationChunkMaxSize", SCOPE.SERVER,
       "Maximum channel chunk size for replicating messages between servers. Default is 16777216", Integer.class, 16384 * 1024),
-
-  HA_REPLICATION_INCOMING_HOST("arcadedb.ha.replicationIncomingHost", SCOPE.SERVER,
-      "TCP/IP host name used for incoming replication connections. By default is 0.0.0.0 (listens to all the configured network interfaces)",
-      String.class, "0.0.0.0"),
-
-  HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", SCOPE.SERVER,
-      "TCP/IP port number used for incoming replication connections", String.class, "2424-2433"),
 
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
@@ -573,10 +555,6 @@ public enum GlobalConfiguration {
       String.class, ""),
 
   // RAFT HA
-  HA_IMPLEMENTATION("arcadedb.ha.implementation", SCOPE.SERVER,
-      "HA implementation to use: 'legacy' for the existing custom protocol, 'raft' for the new Apache Ratis-based implementation",
-      String.class, "legacy", Set.of("legacy", "raft")),
-
   HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
       "Raft log index gap threshold for replication lag warnings. When a replica falls behind by more than this many entries, a warning is logged",
       Long.class, 1000L),
