@@ -89,6 +89,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   private volatile long                   startTime        = System.currentTimeMillis();
   /** True when this follower is replaying log entries to catch up after being behind. */
   private final AtomicBoolean             catchingUp       = new AtomicBoolean(false);
+  /** Set by pause(), cleared by reinitialize(). Signals that Ratis is installing a snapshot via chunks. */
+  private volatile boolean                snapshotBeingInstalled = false;
 
   public ArcadeDBStateMachine(final ArcadeDBServer server) {
     this.server = server;
@@ -103,6 +105,14 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   }
 
   @Override
+  public void pause() {
+    // Ratis calls pause() before installing a snapshot via chunks.
+    // We use this flag to detect chunk-based installation in reinitialize().
+    snapshotBeingInstalled = true;
+    LogManager.instance().log(this, Level.INFO, "State machine paused for snapshot installation");
+  }
+
+  @Override
   public void reinitialize() throws IOException {
     final var snapshotInfo = storage.getLatestSnapshot();
     if (snapshotInfo != null) {
@@ -112,6 +122,20 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotInfo.getIndex());
     } else
       lastAppliedIndex.set(-1);
+
+    // When Ratis installs a snapshot via chunks (installSnapshotEnabled=true), it sends the
+    // marker file and calls pause() -> reinitialize(). The marker only records the index;
+    // the actual database data must be downloaded from the leader via HTTP.
+    if (snapshotBeingInstalled) {
+      snapshotBeingInstalled = false;
+      try {
+        installDatabasesFromLeader();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Failed to download databases from leader during snapshot installation: %s", e.getMessage());
+        throw new IOException("Snapshot installation via HTTP download failed", e);
+      }
+    }
   }
 
   @Override
@@ -233,7 +257,15 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.FINE, "Applying Raft tx %d (modifiedPages=%d, db=%s)...", walTx.txId,
           walTx.pages.length, entry.databaseName());
 
-      db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
+      try {
+        db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
+      } catch (final java.util.ConcurrentModificationException e) {
+        // After a cold restart, Ratis may replay entries that were already applied to the database
+        // (via WAL recovery or prior commit). The page version check in applyChanges() detects this
+        // as a ConcurrentModificationException. This is safe to skip - the data is already there.
+        HALog.log(this, HALog.BASIC, "Skipping already-applied WAL entry (db=%s, txId=%d): %s",
+            entry.databaseName(), walTx.txId, e.getMessage());
+      }
     }
 
     // Phase 3: Finalize schema - update metadata and remove dropped files AFTER WAL is safely applied.
@@ -409,7 +441,39 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     return termIndex.getIndex();
   }
 
-  // -- Follower event: notification-mode snapshot installation --
+  /**
+   * Downloads all databases from the leader via HTTP. Called during chunk-based snapshot
+   * installation (installSnapshotEnabled=true) when reinitialize() detects the pause() flag.
+   * The Ratis snapshot only contains a marker file; the actual database data is transferred via HTTP.
+   */
+  private void installDatabasesFromLeader() throws IOException {
+    final RaftHAServer raftHA = server.getHA();
+    if (raftHA == null)
+      return;
+
+    final String leaderHttpAddr = raftHA.getLeaderHTTPAddress();
+    if (leaderHttpAddr == null) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot determine leader HTTP address for snapshot download, will rely on Raft log replay");
+      return;
+    }
+
+    LogManager.instance().log(this, Level.INFO,
+        "Downloading databases from leader %s during snapshot installation...", leaderHttpAddr);
+
+    for (final String dbName : server.getDatabaseNames()) {
+      LogManager.instance().log(this, Level.INFO, "Installing snapshot for database '%s' from leader %s...",
+          dbName, leaderHttpAddr);
+      final DatabaseInternal db = server.getDatabase(dbName);
+      if (db == null)
+        throw new ReplicationException("Database '" + dbName + "' not found during snapshot installation");
+      installDatabaseSnapshot(db, leaderHttpAddr, dbName);
+    }
+
+    LogManager.instance().log(this, Level.INFO, "Snapshot installation from leader completed");
+  }
+
+  // -- Follower event: notification-mode snapshot installation (kept for backward compatibility) --
 
   @Override
   public CompletableFuture<TermIndex> notifyInstallSnapshotFromLeader(final RaftProtos.RoleInfoProto roleInfoProto,

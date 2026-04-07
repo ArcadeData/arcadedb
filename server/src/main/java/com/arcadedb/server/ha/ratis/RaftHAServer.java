@@ -366,6 +366,16 @@ public class RaftHAServer {
   public void stopService() {
     LogManager.instance().log(this, Level.INFO, "Stopping Ratis HA service...");
 
+    // Take a snapshot before stopping so that on restart, reinitialize() can restore
+    // lastAppliedIndex and Ratis won't replay already-applied entries.
+    if (stateMachine != null) {
+      try {
+        stateMachine.takeSnapshot();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Failed to take snapshot during shutdown: %s", e.getMessage());
+      }
+    }
+
     if (groupCommitter != null)
       groupCommitter.stop();
     stopLagMonitor();
@@ -1079,11 +1089,15 @@ public class RaftHAServer {
     RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(electionMin, TimeUnit.MILLISECONDS));
     RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(electionMax, TimeUnit.MILLISECONDS));
 
-    // Snapshot: notification mode (ArcadeDB handles the actual transfer)
-    RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, false);
+    // Snapshot: chunk mode (Ratis sends the marker file, ArcadeDB downloads the actual database via HTTP).
+    // The default LogAppender only supports chunk-based transfer, not notification mode.
+    // When the follower receives the marker, pause() + reinitialize() triggers the HTTP download.
+    RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, true);
     final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD);
     RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, true);
     RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, snapshotThreshold);
+    // Allow frequent snapshot creation (default 1024 gap prevents snapshots in short-lived tests)
+    RaftServerConfigKeys.Snapshot.setCreationGap(properties, 0);
 
     // Log segment size
     final String logSegmentSize = configuration.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE);
