@@ -148,9 +148,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
             final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
 
-            final String[] authPair = authPairClear.split(":");
+            final String[] authPair = authPairClear.split(":", 2);
 
-            if (authPair.length != 2) {
+            if (authPair.length < 2) {
               sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
               return;
             }

@@ -79,7 +79,7 @@ import java.util.zip.ZipInputStream;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ArcadeDBStateMachine extends BaseStateMachine {
+public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache.ratis.statemachine.StateMachine.EventApi {
 
   private final ArcadeDBServer            server;
   private final SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
@@ -91,6 +91,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   private final AtomicBoolean             catchingUp       = new AtomicBoolean(false);
   /** Set by pause(), cleared by reinitialize(). Signals that Ratis is installing a snapshot via chunks. */
   private volatile boolean                snapshotBeingInstalled = false;
+  /** Set by reinitialize() when a snapshot gap is detected, cleared after download. */
+  private volatile boolean                needsSnapshotDownload  = false;
 
   public ArcadeDBStateMachine(final ArcadeDBServer server) {
     this.server = server;
@@ -116,26 +118,26 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   public void reinitialize() throws IOException {
     final var snapshotInfo = storage.getLatestSnapshot();
     if (snapshotInfo != null) {
-      lastAppliedIndex.set(snapshotInfo.getIndex());
-      // Restore BaseStateMachine's internal TermIndex so Ratis knows where we left off
-      // and won't replay already-applied entries after a cold restart.
-      updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotInfo.getIndex());
+      final long snapshotIndex = snapshotInfo.getIndex();
+
+      // Check if the snapshot index is ahead of what we last persisted as applied.
+      // This detects chunk-based snapshot installation: Ratis installs a marker file (updating
+      // the snapshot index) but the database doesn't have the actual data. We must download
+      // the database from the leader to bridge the gap.
+      // The download is deferred to notifyLeaderChanged() because during reinitialize()
+      // the Ratis server hasn't joined the cluster yet and the leader is unknown.
+      final long persistedApplied = readPersistedAppliedIndex();
+      if (persistedApplied >= 0 && snapshotIndex > persistedApplied + 10) {
+        LogManager.instance().log(this, Level.INFO,
+            "Snapshot index %d is ahead of persisted applied index %d, will download from leader when available",
+            snapshotIndex, persistedApplied);
+        needsSnapshotDownload = true;
+      }
+
+      lastAppliedIndex.set(snapshotIndex);
+      updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotIndex);
     } else
       lastAppliedIndex.set(-1);
-
-    // When Ratis installs a snapshot via chunks (installSnapshotEnabled=true), it sends the
-    // marker file and calls pause() -> reinitialize(). The marker only records the index;
-    // the actual database data must be downloaded from the leader via HTTP.
-    if (snapshotBeingInstalled) {
-      snapshotBeingInstalled = false;
-      try {
-        installDatabasesFromLeader();
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Failed to download databases from leader during snapshot installation: %s", e.getMessage());
-        throw new IOException("Snapshot installation via HTTP download failed", e);
-      }
-    }
   }
 
   @Override
@@ -259,10 +261,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
 
       try {
         db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
-      } catch (final java.util.ConcurrentModificationException e) {
-        // After a cold restart, Ratis may replay entries that were already applied to the database
-        // (via WAL recovery or prior commit). The page version check in applyChanges() detects this
-        // as a ConcurrentModificationException. This is safe to skip - the data is already there.
+      } catch (final java.util.ConcurrentModificationException | com.arcadedb.exception.ConcurrentModificationException e) {
+        // After a cold restart or snapshot installation, Ratis may replay entries that were already
+        // applied to the database (via WAL recovery or prior commit). The page version check in
+        // applyChanges() detects this as a ConcurrentModificationException. This is safe to skip.
         HALog.log(this, HALog.BASIC, "Skipping already-applied WAL entry (db=%s, txId=%d): %s",
             entry.databaseName(), walTx.txId, e.getMessage());
       }
@@ -414,12 +416,20 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   // -- Snapshots --
 
   /**
-   * Persists a snapshot marker file so that Ratis can restore lastAppliedIndex on restart.
+   * Persists a snapshot marker file so that Ratis can purge old log entries and restore
+   * lastAppliedIndex on restart.
+   * <p>
    * ArcadeDB state lives in the database files on disk, not in this marker file. The marker
-   * simply records the term and index so that after a cold restart, reinitialize() knows
-   * where the state machine left off and Ratis won't replay already-applied entries.
-   * When a follower is too far behind for log replay, notifyInstallSnapshotFromLeader()
-   * handles the full resync by downloading the database via HTTP from the leader.
+   * records the term and index so that:
+   * <ol>
+   *   <li><b>Log compaction:</b> Ratis uses the returned index as the purge boundary. Without this,
+   *       the Raft log would grow unboundedly. Auto-triggered every {@code arcadedb.ha.snapshotThreshold}
+   *       entries (see {@link com.arcadedb.GlobalConfiguration#HA_SNAPSHOT_THRESHOLD}).</li>
+   *   <li><b>Restart recovery:</b> reinitialize() reads the snapshot index so Ratis skips
+   *       already-applied entries on cold start.</li>
+   *   <li><b>Follower catch-up:</b> when a follower is too far behind for log replay,
+   *       notifyInstallSnapshotFromLeader() handles full resync via HTTP.</li>
+   * </ol>
    */
   @Override
   public long takeSnapshot() throws IOException {
@@ -436,9 +446,39 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     storage.updateLatestSnapshot(
         new SingleFileSnapshotInfo(new FileInfo(snapshotFile.toPath(), digest), termIndex));
 
+    // Persist the applied index so that reinitialize() can detect snapshot gaps
+    writePersistedAppliedIndex(termIndex.getIndex());
+
     LogManager.instance().log(this, Level.INFO, "Raft snapshot taken at term=%d, index=%d",
         termIndex.getTerm(), termIndex.getIndex());
     return termIndex.getIndex();
+  }
+
+  // -- Persisted applied index (for snapshot gap detection) --
+
+  private Path getAppliedIndexFile() {
+    return Path.of(server.getRootPath(), "ratis-storage", "applied-index");
+  }
+
+  private long readPersistedAppliedIndex() {
+    try {
+      final Path file = getAppliedIndexFile();
+      if (Files.exists(file))
+        return Long.parseLong(Files.readString(file).trim());
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not read persisted applied index: %s", e.getMessage());
+    }
+    return -1;
+  }
+
+  private void writePersistedAppliedIndex(final long index) {
+    try {
+      final Path file = getAppliedIndexFile();
+      Files.createDirectories(file.getParent());
+      Files.writeString(file, Long.toString(index));
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not write persisted applied index: %s", e.getMessage());
+    }
   }
 
   /**
@@ -451,7 +491,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     if (raftHA == null)
       return;
 
-    final String leaderHttpAddr = raftHA.getLeaderHTTPAddress();
+    String leaderHttpAddr = raftHA.getLeaderHTTPAddress();
     if (leaderHttpAddr == null) {
       LogManager.instance().log(this, Level.WARNING,
           "Cannot determine leader HTTP address for snapshot download, will rely on Raft log replay");
@@ -521,11 +561,121 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
    * Extraction happens to a temp directory first. The database directory is only replaced after
    * the full download and extraction succeeds, preventing partial-failure corruption.
    */
+  private static final int    SNAPSHOT_DOWNLOAD_MAX_RETRIES = 3;
+  private static final long[] SNAPSHOT_DOWNLOAD_BACKOFF_MS  = { 5_000, 10_000, 20_000 };
+
   private void installDatabaseSnapshot(final DatabaseInternal db, final String leaderHttpAddr,
       final String databaseName) throws IOException {
     final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final String snapshotUrl = (useSsl ? "https" : "http") + "://" + leaderHttpAddr + "/api/v1/ha/snapshot/" + databaseName;
 
+    final String databasePath = db.getDatabasePath();
+    final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
+    final Path tempDir = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-tmp");
+    final Path backupDir = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-old");
+
+    // Phase 1: Download and extract to temp directory (database stays open and operational).
+    // Retries handle transient leader unavailability (e.g., mid-election, restart).
+    downloadSnapshotWithRetry(snapshotUrl, tempDir, databaseName);
+
+    // Phase 2: Close database and swap directories using a crash-safe marker file.
+    // The marker ensures recovery can complete or rollback the swap if the process crashes.
+    db.close();
+
+    final Path markerFile = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-pending");
+
+    try {
+      // Write the pending marker BEFORE any destructive operation.
+      // If we crash after this point, recoverPendingSnapshotSwaps() will finish the job.
+      Files.writeString(markerFile, databaseName);
+
+      // Move current database dir out of the way
+      if (Files.exists(dbPath))
+        Files.move(dbPath, backupDir);
+
+      // Move fully-extracted temp dir into place
+      Files.move(tempDir, dbPath);
+
+      // Delete WAL files from the new database dir - they are stale after snapshot installation
+      deleteStaleWalFiles(dbPath);
+
+      // Swap succeeded - remove marker and backup
+      Files.deleteIfExists(markerFile);
+      FileUtils.deleteRecursively(backupDir.toFile());
+
+      LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
+
+    } catch (final Exception e) {
+      // Swap failed - try to restore original database
+      LogManager.instance().log(this, Level.SEVERE, "Snapshot swap failed for '%s', attempting rollback...", databaseName);
+      try {
+        if (Files.exists(backupDir)) {
+          FileUtils.deleteRecursively(dbPath.toFile());   // remove partial move if any
+          Files.move(backupDir, dbPath);
+        }
+      } catch (final Exception rollbackEx) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "CRITICAL: Failed to rollback snapshot swap for '%s'. Database may be unavailable. Error: %s",
+            databaseName, rollbackEx.getMessage());
+      }
+      Files.deleteIfExists(markerFile);
+      FileUtils.deleteRecursively(tempDir.toFile());
+      throw new ReplicationException("Snapshot installation failed during directory swap", e);
+    } finally {
+      // Ensure database is re-opened, whether we swapped successfully or rolled back.
+      // If reopening fails, the database is effectively unavailable and subsequent Raft applies will
+      // cascade-fail. Log at SEVERE so operators can investigate and restart the node.
+      try {
+        server.getDatabase(databaseName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "CRITICAL: Failed to reopen database '%s' after snapshot installation. "
+                + "This node may need to be restarted to recover. Error: %s",
+            databaseName, e.getMessage());
+      }
+    }
+  }
+
+  /**
+   * Downloads and extracts a snapshot ZIP into the temp directory, retrying on transient failures
+   * (connection refused, HTTP errors) that are common during leader elections or restarts.
+   * On success the temp directory contains the fully extracted snapshot.
+   * On permanent failure (all retries exhausted) the temp directory is cleaned up and an
+   * IOException is thrown.
+   */
+  private void downloadSnapshotWithRetry(final String snapshotUrl, final Path tempDir,
+      final String databaseName) throws IOException {
+    for (int attempt = 1; attempt <= SNAPSHOT_DOWNLOAD_MAX_RETRIES; attempt++) {
+      try {
+        downloadSnapshot(snapshotUrl, tempDir, databaseName);
+        return; // success
+      } catch (final IOException | ReplicationException e) {
+        FileUtils.deleteRecursively(tempDir.toFile());
+        if (attempt == SNAPSHOT_DOWNLOAD_MAX_RETRIES)
+          throw e instanceof IOException ? (IOException) e
+              : new IOException("Snapshot download failed after " + SNAPSHOT_DOWNLOAD_MAX_RETRIES + " attempts", e);
+
+        final long backoff = SNAPSHOT_DOWNLOAD_BACKOFF_MS[attempt - 1];
+        LogManager.instance().log(this, Level.WARNING,
+            "Snapshot download from %s failed (attempt %d/%d), retrying in %dms: %s",
+            snapshotUrl, attempt, SNAPSHOT_DOWNLOAD_MAX_RETRIES, backoff, e.getMessage());
+        try {
+          Thread.sleep(backoff);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new IOException("Snapshot download interrupted during retry backoff", ie);
+        }
+      }
+    }
+  }
+
+  /**
+   * Downloads a snapshot ZIP from the leader and extracts it into the given temp directory.
+   * The temp directory is created fresh (any leftover from a previous attempt is cleaned up).
+   * On failure the temp directory is cleaned up and the exception is thrown.
+   */
+  private void downloadSnapshot(final String snapshotUrl, final Path tempDir,
+      final String databaseName) throws IOException {
     LogManager.instance().log(this, Level.INFO, "Downloading database snapshot from %s...", snapshotUrl);
 
     final HttpURLConnection connection;
@@ -543,24 +693,16 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     if (raftHA != null && raftHA.getClusterToken() != null)
       connection.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
 
-    final String databasePath = db.getDatabasePath();
-    final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
-    final Path tempDir = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-tmp");
-    final Path backupDir = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-old");
-
     try {
       final int responseCode = connection.getResponseCode();
       if (responseCode != 200)
         throw new ReplicationException(
             "Failed to download snapshot from " + snapshotUrl + ": HTTP " + responseCode);
 
-      // Clean up leftover temp/backup dirs from previous failed attempts
+      // Clean up leftover temp dir from previous failed attempts
       FileUtils.deleteRecursively(tempDir.toFile());
-      FileUtils.deleteRecursively(backupDir.toFile());
-
       Files.createDirectories(tempDir);
 
-      // Phase 1: Extract to temp directory (database stays open and operational)
       try (final ZipInputStream zipIn = new ZipInputStream(connection.getInputStream())) {
         ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {
@@ -578,69 +720,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
           zipIn.closeEntry();
         }
       } catch (final Exception e) {
-        // Extraction failed - clean up temp dir and leave database untouched
+        // Extraction failed - clean up temp dir
         FileUtils.deleteRecursively(tempDir.toFile());
         throw e;
       }
-
-      // Phase 2: Close database and swap directories using a crash-safe marker file.
-      // The marker ensures recovery can complete or rollback the swap if the process crashes.
-      db.close();
-
-      final Path markerFile = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-pending");
-
-      try {
-        // Write the pending marker BEFORE any destructive operation.
-        // If we crash after this point, recoverPendingSnapshotSwaps() will finish the job.
-        Files.writeString(markerFile, databaseName);
-
-        // Move current database dir out of the way
-        if (Files.exists(dbPath))
-          Files.move(dbPath, backupDir);
-
-        // Move fully-extracted temp dir into place
-        Files.move(tempDir, dbPath);
-
-        // Delete WAL files from the new database dir - they are stale after snapshot installation
-        deleteStaleWalFiles(dbPath);
-
-        // Swap succeeded - remove marker and backup
-        Files.deleteIfExists(markerFile);
-        FileUtils.deleteRecursively(backupDir.toFile());
-
-        LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
-
-      } catch (final Exception e) {
-        // Swap failed - try to restore original database
-        LogManager.instance().log(this, Level.SEVERE, "Snapshot swap failed for '%s', attempting rollback...", databaseName);
-        try {
-          if (Files.exists(backupDir)) {
-            FileUtils.deleteRecursively(dbPath.toFile());   // remove partial move if any
-            Files.move(backupDir, dbPath);
-          }
-        } catch (final Exception rollbackEx) {
-          LogManager.instance().log(this, Level.SEVERE,
-              "CRITICAL: Failed to rollback snapshot swap for '%s'. Database may be unavailable. Error: %s",
-              databaseName, rollbackEx.getMessage());
-        }
-        Files.deleteIfExists(markerFile);
-        FileUtils.deleteRecursively(tempDir.toFile());
-        throw new ReplicationException("Snapshot installation failed during directory swap", e);
-      }
-
     } finally {
       connection.disconnect();
-      // Ensure database is re-opened, whether we swapped successfully or rolled back.
-      // If reopening fails, the database is effectively unavailable and subsequent Raft applies will
-      // cascade-fail. Log at SEVERE so operators can investigate and restart the node.
-      try {
-        server.getDatabase(databaseName);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "CRITICAL: Failed to reopen database '%s' after snapshot installation. "
-                + "This node may need to be restarted to recover. Error: %s",
-            databaseName, e.getMessage());
-      }
     }
   }
 
@@ -701,14 +786,17 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
           LogManager.instance().log(ArcadeDBStateMachine.class, Level.INFO,
               "Snapshot swap already completed for database '%s', cleaning up", baseName);
         }
+        // Recovery succeeded - delete the marker
+        marker.delete();
       } catch (final IOException e) {
+        // Recovery failed - keep the marker so the next restart can retry.
+        // Do NOT delete it: the database directory may be in an intermediate state
+        // (e.g., live path moved to backup but snapshot not yet moved into place)
+        // and the marker is the only signal that recovery is still needed.
         LogManager.instance().log(ArcadeDBStateMachine.class, Level.SEVERE,
             "CRITICAL: Failed to recover snapshot swap for database '%s'. "
-                + "Manual intervention may be required. Error: %s",
+                + "The marker file has been preserved for retry on next startup. Error: %s",
             baseName, e.getMessage());
-      } finally {
-        // Always delete the marker, even if recovery partially failed
-        marker.delete();
       }
     }
   }
@@ -729,6 +817,20 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     HALog.log(this, HALog.BASIC, "Leader changed to %s (group: %s)", newLeaderId, groupMemberId);
     electionCount.incrementAndGet();
     lastElectionTime = System.currentTimeMillis();
+
+    // If a snapshot gap was detected in reinitialize(), download now that we know the leader
+    if (needsSnapshotDownload) {
+      needsSnapshotDownload = false;
+      new Thread(() -> {
+        try {
+          Thread.sleep(2000); // Wait for the leader's HTTP server to be ready
+          installDatabasesFromLeader();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to download databases after leader discovery: %s", e.getMessage());
+        }
+      }, "snapshot-download").start();
+    }
 
     // Refresh gRPC channels to force fresh DNS resolution after potential network partition
     final var raftHA = server.getHA();
@@ -766,6 +868,21 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   public void notifyServerShutdown(final org.apache.ratis.proto.RaftProtos.RoleInfoProto roleInfo, final boolean allServer) {
     HALog.log(this, HALog.BASIC, "Server shutdown notification (allServer=%s)", allServer);
     fireCallback(ReplicationCallback.TYPE.REPLICA_OFFLINE, server.getServerName());
+
+    // If the server is still supposed to be running (not in SHUTTING_DOWN), the Ratis server
+    // closed due to an error (e.g., network partition). Schedule a restart after close completes.
+    if (server.getStatus() == ArcadeDBServer.STATUS.ONLINE) {
+      new Thread(() -> {
+        try {
+          Thread.sleep(2000); // Wait for Ratis close to complete
+          final RaftHAServer raftHA = server.getHA();
+          if (raftHA != null)
+            raftHA.restartRatisIfNeeded();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Failed to restart Ratis after shutdown: %s", e.getMessage());
+        }
+      }, "ratis-restart").start();
+    }
   }
 
   private void fireCallback(final ReplicationCallback.TYPE type, final Object data) {

@@ -521,7 +521,7 @@ public enum GlobalConfiguration {
 
   HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
       "Raft log index gap threshold for emitting replication lag warnings. 0 = disabled",
-      Integer.class, 1000),
+      Long.class, 1000L),
 
   HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
       "Server role between ANY (default) OR REPLICA to configure replica only servers", String.class, "any",

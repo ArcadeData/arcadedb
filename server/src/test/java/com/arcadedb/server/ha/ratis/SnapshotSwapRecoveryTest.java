@@ -239,4 +239,75 @@ class SnapshotSwapRecoveryTest {
     assertThat(livePath.resolve("txlog_1.wal")).doesNotExist();
     assertThat(markerPath).doesNotExist();
   }
+
+  /**
+   * If the marker exists but both the temp snapshot and backup are missing, and the live
+   * path is also gone, recovery cannot restore the database. It should log CRITICAL,
+   * clean up the marker, and not throw - the database will be unavailable but the process
+   * stays up so an operator can investigate.
+   */
+  @Test
+  void testRecoverWhenBothSnapshotAndBackupMissing() throws IOException {
+    final Path dbDir = tempDir.resolve("databases");
+    Files.createDirectories(dbDir);
+
+    final Path livePath = dbDir.resolve("testdb");
+    final Path backupPath = dbDir.resolve("testdb.snapshot-old");
+    final Path snapshotPath = dbDir.resolve("testdb.snapshot-tmp");
+
+    // Everything is gone except the marker - worst-case scenario
+    final Path markerPath = dbDir.resolve("testdb.snapshot-pending");
+    Files.writeString(markerPath, "testdb");
+
+    // Recovery should not throw
+    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+
+    // No IOException thrown (no branch matched), so marker is cleaned up
+    assertThat(livePath).doesNotExist();
+    assertThat(backupPath).doesNotExist();
+    assertThat(snapshotPath).doesNotExist();
+    assertThat(markerPath).doesNotExist();
+  }
+
+  /**
+   * If recovery hits an IOException (e.g., Files.move fails because the backup path already
+   * exists as a non-empty directory), the marker file must be preserved so the next startup
+   * can retry recovery. Deleting it would leave the database in an unknown state with no
+   * signal that recovery is still needed.
+   */
+  @Test
+  void testMarkerPreservedOnRecoveryFailure() throws IOException {
+    final Path dbDir = tempDir.resolve("databases");
+    Files.createDirectories(dbDir);
+
+    final Path livePath = dbDir.resolve("testdb");
+    final Path backupPath = dbDir.resolve("testdb.snapshot-old");
+    final Path snapshotPath = dbDir.resolve("testdb.snapshot-tmp");
+
+    // Live DB exists
+    Files.createDirectories(livePath);
+    Files.writeString(livePath.resolve("data.dat"), "live data");
+
+    // Temp snapshot is ready
+    Files.createDirectories(snapshotPath);
+    Files.writeString(snapshotPath.resolve("new-data.dat"), "new data");
+
+    // Backup path already exists as a non-empty directory - Files.move(livePath, backupPath)
+    // will throw FileAlreadyExistsException because the target is a non-empty directory
+    Files.createDirectories(backupPath);
+    Files.writeString(backupPath.resolve("stale.dat"), "stale");
+
+    // Write the pending marker
+    final Path markerPath = dbDir.resolve("testdb.snapshot-pending");
+    Files.writeString(markerPath, "testdb");
+
+    // Recovery should not throw (it catches IOException internally)
+    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+
+    // The marker must be preserved for retry on next startup
+    assertThat(markerPath).exists();
+
+    // The live path should still exist (move failed before it was removed)
+    assertThat(livePath).exists();
+  }
 }

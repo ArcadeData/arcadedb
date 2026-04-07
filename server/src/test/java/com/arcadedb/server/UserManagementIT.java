@@ -299,6 +299,32 @@ class UserManagementIT extends BaseGraphServerTest {
     });
   }
 
+  @Test
+  void passwordWithColonsShouldAuthenticateSuccessfully() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String passwordWithColons = "pass:word:with:colons";
+      createUser(serverIndex, "colonuser", passwordWithColons,
+          new JSONObject().put(getDatabaseName(), new JSONArray().put("admin")));
+
+      final String userAuth = "Basic " + Base64.getEncoder()
+          .encodeToString(("colonuser:" + passwordWithColons).getBytes());
+      final HttpURLConnection queryConn = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + getDatabaseName()
+              + "/sql/select%201%20as%20value").openConnection();
+      queryConn.setRequestMethod("GET");
+      queryConn.setRequestProperty("Authorization", userAuth);
+      queryConn.connect();
+
+      try {
+        assertThat(queryConn.getResponseCode()).isEqualTo(200);
+      } finally {
+        queryConn.disconnect();
+      }
+
+      deleteUser(serverIndex, "colonuser");
+    });
+  }
+
   private void createUser(final int serverIndex, final String name, final String password,
       final JSONObject databases) throws Exception {
     // Delete user first if it already exists (cleanup from previous test runs)

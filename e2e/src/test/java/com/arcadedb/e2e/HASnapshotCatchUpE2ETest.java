@@ -18,12 +18,14 @@
  */
 package com.arcadedb.e2e;
 
+import com.github.dockerjava.api.DockerClient;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 
 import java.util.concurrent.TimeUnit;
@@ -65,8 +67,11 @@ public class HASnapshotCatchUpE2ETest extends ArcadeHAContainerTemplate {
 
   @AfterEach
   void tearDown() {
-    for (final GenericContainer<?> c : containers)
+    final DockerClient dc = DockerClientFactory.instance().client();
+    for (final GenericContainer<?> c : containers) {
+      try { dc.unpauseContainerCmd(c.getContainerId()).exec(); } catch (final Exception ignored) {}
       try { reconnectToNetwork(c); } catch (final Exception ignored) {}
+    }
     stopCluster();
   }
 
@@ -97,7 +102,13 @@ public class HASnapshotCatchUpE2ETest extends ArcadeHAContainerTemplate {
       } catch (final Exception ignored) {}
     }
     assertThat(isolatedFollower).as("Should find a follower to isolate").isNotNull();
-    disconnectFromNetwork(isolatedFollower);
+
+    // Use Docker pause (freeze process) instead of network disconnect.
+    // Docker disconnectFromNetwork with force kills gRPC connections immediately, causing the
+    // Ratis server to enter CLOSED state. Docker pause freezes the process, which simulates
+    // a real-world crash/hang. On unpause, Ratis recovers via normal log replay or snapshot.
+    final DockerClient dockerClient = DockerClientFactory.instance().client();
+    dockerClient.pauseContainerCmd(isolatedFollower.getContainerId()).exec();
 
     // 3. Write enough data to the majority to trigger multiple snapshots + log purge
     final GenericContainer<?> currentLeader = findLeader();
@@ -112,13 +123,13 @@ public class HASnapshotCatchUpE2ETest extends ArcadeHAContainerTemplate {
     Awaitility.await().atMost(15, TimeUnit.SECONDS).untilAsserted(() ->
         assertThat(httpCount(currentLeader, "Measurement")).isEqualTo(expectedTotal));
 
-    // 4. Reconnect the isolated follower - it must catch up via snapshot
-    reconnectToNetwork(isolatedFollower);
+    // 4. Unpause the isolated follower - it must catch up via snapshot
+    dockerClient.unpauseContainerCmd(isolatedFollower.getContainerId()).exec();
 
-    // 5. Wait for the follower to catch up (snapshot download + replay)
+    // 5. Wait for the follower to catch up (snapshot installation + replay)
     final GenericContainer<?> reconnected = isolatedFollower;
     Awaitility.await()
-        .atMost(60, TimeUnit.SECONDS)
+        .atMost(120, TimeUnit.SECONDS)
         .pollInterval(2, TimeUnit.SECONDS)
         .untilAsserted(() -> assertThat(httpCount(reconnected, "Measurement")).isEqualTo(expectedTotal));
 

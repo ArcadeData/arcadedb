@@ -65,6 +65,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.stream.Stream;
 
@@ -110,9 +113,12 @@ public class RaftHAServer {
   private ArcadeDBStateMachine             stateMachine;
   private ClusterMonitor                   clusterMonitor;
   private RaftGroupCommitter               groupCommitter;
-  private final Object                     applyNotifier          = new Object();
+  private final ReentrantLock               applyLock              = new ReentrantLock();
+  private final Condition                   applyCondition         = applyLock.newCondition();
+  private final AtomicInteger               applyWaiterCount       = new AtomicInteger();
   private final Object                     leaderChangeNotifier   = new Object();
   private ScheduledExecutorService         lagMonitorExecutor;
+  private ScheduledExecutorService         healthMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     this.server = server;
@@ -153,7 +159,7 @@ public class RaftHAServer {
     this.raftGroup = RaftGroup.valueOf(groupId, peers);
 
     // Initialize cluster monitor
-    final int lagThreshold = configuration.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
+    final long lagThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
     this.clusterMonitor = new ClusterMonitor(lagThreshold);
   }
 
@@ -248,11 +254,78 @@ public class RaftHAServer {
           configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE));
       groupCommitter.start();
       startLagMonitor();
+      startRatisHealthMonitor();
 
       LogManager.instance().log(this, Level.INFO, "Ratis HA service started (serverId=%s)", localPeerId);
 
     } catch (final IOException e) {
       throw new ConfigurationException("Failed to start Ratis HA service", e);
+    }
+  }
+
+  /**
+   * Restarts the Ratis server if it has entered CLOSED or CLOSING state (e.g., after a network
+   * partition caused gRPC connection failures). The existing state machine is reused since the
+   * database state is on disk. The Ratis log and metadata are recovered from the persisted storage.
+   */
+  public synchronized void restartRatisIfNeeded() {
+    if (raftServer == null)
+      return;
+
+    // Check the group-specific RaftServerImpl state, not the RaftServerProxy state.
+    // The proxy can be RUNNING while the inner group impl is CLOSED after a network partition.
+    org.apache.ratis.util.LifeCycle.State state;
+    try {
+      state = raftServer.getDivision(raftGroup.getGroupId()).getInfo().getLifeCycleState();
+    } catch (final Exception e) {
+      // getDivision can throw if the group is already removed
+      state = raftServer.getLifeCycleState();
+    }
+    if (state != org.apache.ratis.util.LifeCycle.State.CLOSED && state != org.apache.ratis.util.LifeCycle.State.CLOSING)
+      return;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Ratis server is in %s state, restarting for partition recovery...", state);
+
+    try {
+      try {
+        raftClient.close();
+      } catch (final Exception ignored) {
+      }
+      try {
+        raftServer.close();
+      } catch (final Exception ignored) {
+      }
+
+      // Create a fresh state machine for the restart. The old state machine has a stale
+      // lastAppliedTermIndex that conflicts with RECOVER mode's replay. The database state
+      // on disk is the source of truth; the new state machine reads it from the snapshot.
+      stateMachine = new ArcadeDBStateMachine(server);
+
+      raftServer = RaftServer.newBuilder()
+          .setServerId(localPeerId)
+          .setStateMachine(stateMachine)
+          .setProperties(raftProperties)
+          .setGroup(raftGroup)
+          .setOption(RaftStorage.StartupOption.RECOVER)
+          .build();
+
+      raftServer.start();
+
+      raftClient = RaftClient.newBuilder()
+          .setRaftGroup(raftGroup)
+          .setProperties(raftProperties)
+          .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
+              .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
+              .setMaxSleepTime(TimeDuration.valueOf(5, TimeUnit.SECONDS))
+              .build())
+          .build();
+
+      LogManager.instance().log(this, Level.INFO, "Ratis server restarted successfully after partition recovery");
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Failed to restart Ratis server after partition: %s", e.getMessage());
     }
   }
 
@@ -384,6 +457,8 @@ public class RaftHAServer {
     // This ensures clean scale-down without orphaned peers in the cluster configuration.
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
       leaveCluster();
+
+    stopHealthMonitor();
 
     try {
       if (raftClient != null) {
@@ -556,9 +631,11 @@ public class RaftHAServer {
   public void waitForAppliedIndex(final long targetIndex) {
     if (targetIndex <= 0)
       return;
+    applyWaiterCount.incrementAndGet();
     try {
       final long deadline = System.currentTimeMillis() + quorumTimeout;
-      synchronized (applyNotifier) {
+      applyLock.lock();
+      try {
         while (getLastAppliedIndex() < targetIndex) {
           final long remaining = deadline - System.currentTimeMillis();
           if (remaining <= 0) {
@@ -567,12 +644,16 @@ public class RaftHAServer {
                 getLastAppliedIndex(), targetIndex);
             return;
           }
-          applyNotifier.wait(remaining);
+          applyCondition.await(remaining, TimeUnit.MILLISECONDS);
         }
+      } finally {
+        applyLock.unlock();
       }
       HALog.log(this, HALog.TRACE, "Bookmark wait complete: applied >= target=%d", targetIndex);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
+    } finally {
+      applyWaiterCount.decrementAndGet();
     }
   }
 
@@ -587,20 +668,28 @@ public class RaftHAServer {
       if (commitIndex <= 0)
         return;
 
-      final long deadline = System.currentTimeMillis() + quorumTimeout;
-      synchronized (applyNotifier) {
-        while (getLastAppliedIndex() < commitIndex) {
-          final long remaining = deadline - System.currentTimeMillis();
-          if (remaining <= 0) {
-            HALog.log(this, HALog.DETAILED, "waitForLocalApply timed out: applied=%d < commit=%d",
-                getLastAppliedIndex(), commitIndex);
-            return;
+      applyWaiterCount.incrementAndGet();
+      try {
+        final long deadline = System.currentTimeMillis() + quorumTimeout;
+        applyLock.lock();
+        try {
+          while (getLastAppliedIndex() < commitIndex) {
+            final long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0) {
+              HALog.log(this, HALog.DETAILED, "waitForLocalApply timed out: applied=%d < commit=%d",
+                  getLastAppliedIndex(), commitIndex);
+              return;
+            }
+            applyCondition.await(remaining, TimeUnit.MILLISECONDS);
           }
-          applyNotifier.wait(remaining);
+        } finally {
+          applyLock.unlock();
         }
+        HALog.log(this, HALog.TRACE, "Local apply caught up: applied=%d >= commit=%d",
+            getLastAppliedIndex(), commitIndex);
+      } finally {
+        applyWaiterCount.decrementAndGet();
       }
-      HALog.log(this, HALog.TRACE, "Local apply caught up: applied=%d >= commit=%d",
-          getLastAppliedIndex(), commitIndex);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     } catch (final Exception e) {
@@ -663,8 +752,13 @@ public class RaftHAServer {
 
   /** Called by ArcadeDBStateMachine after applying a log entry to wake up waiters. */
   public void notifyApplied() {
-    synchronized (applyNotifier) {
-      applyNotifier.notifyAll();
+    if (applyWaiterCount.get() > 0) {
+      applyLock.lock();
+      try {
+        applyCondition.signalAll();
+      } finally {
+        applyLock.unlock();
+      }
     }
   }
 
@@ -685,21 +779,30 @@ public class RaftHAServer {
     try {
       final var division = raftServer.getDivision(raftGroup.getGroupId());
       final var info = division.getInfo();
+
+      // Get follower peer IDs from the RoleInfoProto, which snapshots the LogAppender list once.
+      // The index arrays are derived from the same LogAppender list, so their ordering matches
+      // as long as no membership change occurs between calls.
+      final var roleInfo = info.getRoleInfoProto();
+      if (!roleInfo.hasLeaderInfo())
+        return List.of();
+
+      final List<RaftProtos.ServerRpcProto> followerInfos = roleInfo.getLeaderInfo().getFollowerInfoList();
       final long[] matchIndices = info.getFollowerMatchIndices();
       final long[] nextIndices = info.getFollowerNextIndices();
 
-      // The indices arrays correspond to followers in the order returned by the group's peers (excluding self)
-      final List<Map<String, Object>> result = new ArrayList<>();
-      int idx = 0;
-      for (final RaftPeer peer : getLivePeers()) {
-        if (peer.getId().equals(localPeerId))
-          continue;
+      // If sizes diverge, a membership change happened between the calls - return what we can
+      // safely correlate rather than risk misattributing indices to the wrong peer.
+      final int safeSize = Math.min(followerInfos.size(), Math.min(matchIndices.length, nextIndices.length));
+
+      final List<Map<String, Object>> result = new ArrayList<>(safeSize);
+      for (int i = 0; i < safeSize; i++) {
+        final String peerId = followerInfos.get(i).getId().getId().toStringUtf8();
         final Map<String, Object> state = new java.util.LinkedHashMap<>();
-        state.put("peerId", peer.getId().toString());
-        state.put("matchIndex", idx < matchIndices.length ? matchIndices[idx] : -1);
-        state.put("nextIndex", idx < nextIndices.length ? nextIndices[idx] : -1);
+        state.put("peerId", peerId);
+        state.put("matchIndex", matchIndices[i]);
+        state.put("nextIndex", nextIndices[i]);
         result.add(state);
-        idx++;
       }
       return result;
     } catch (final IOException e) {
@@ -892,6 +995,32 @@ public class RaftHAServer {
     }
   }
 
+  // -- Ratis Health Monitor --
+
+  private void startRatisHealthMonitor() {
+    healthMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+      final Thread t = new Thread(r, "arcadedb-ratis-health-monitor");
+      t.setDaemon(true);
+      return t;
+    });
+    healthMonitorExecutor.scheduleAtFixedRate(() -> {
+      if (server.getStatus() != ArcadeDBServer.STATUS.ONLINE)
+        return;
+      try {
+        restartRatisIfNeeded();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Health monitor error: %s", e.getMessage());
+      }
+    }, 5, 3, TimeUnit.SECONDS);
+  }
+
+  private void stopHealthMonitor() {
+    if (healthMonitorExecutor != null) {
+      healthMonitorExecutor.shutdownNow();
+      healthMonitorExecutor = null;
+    }
+  }
+
   private void checkReplicaLag() {
     try {
       if (!isLeader())
@@ -932,15 +1061,12 @@ public class RaftHAServer {
         throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
 
       // Derive and store HTTP address from the Raft address (host:raftPort -> host:httpPort)
-      final int colonIdx = address.lastIndexOf(':');
-      if (colonIdx > 0) {
-        final String host = address.substring(0, colonIdx);
-        try {
-          final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));
-          peerHttpAddresses.put(peerId, host + ":" + (raftPort + getHttpPortOffset()));
-        } catch (final NumberFormatException ignored) {
-          // Non-numeric port, skip HTTP address derivation
-        }
+      try {
+        final String[] addrParts = parseHostPort(address);
+        final int raftPort = Integer.parseInt(addrParts[1]);
+        peerHttpAddresses.put(peerId, addrParts[0] + ":" + (raftPort + getHttpPortOffset()));
+      } catch (final ConfigurationException | NumberFormatException ignored) {
+        // Malformed address, skip HTTP address derivation
       }
 
       LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster", peerId);
@@ -1109,6 +1235,13 @@ public class RaftHAServer {
     final boolean purgeUptoSnapshot = configuration.getValueAsBoolean(GlobalConfiguration.HA_LOG_PURGE_UPTO_SNAPSHOT);
     RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, purgeUptoSnapshot);
 
+    // Partition tolerance: prevent Ratis from closing the server during network partitions.
+    // slownessTimeout: how long a peer can be unresponsive before being marked slow (default 120s).
+    // closeThreshold: how long before the server closes itself when isolated (default 300s).
+    // High values ensure the server survives partitions and can recover when the network is restored.
+    RaftServerConfigKeys.Rpc.setSlownessTimeout(properties, TimeDuration.valueOf(300, TimeUnit.SECONDS));
+    RaftServerConfigKeys.setCloseThreshold(properties, TimeDuration.valueOf(600, TimeUnit.SECONDS));
+
     // Write buffer (must be >= appender buffer byte-limit + 8)
     RaftServerConfigKeys.Log.setWriteBufferSize(properties, SizeInBytes.valueOf("8MB"));
 
@@ -1157,8 +1290,9 @@ public class RaftHAServer {
    * <ul>
    *   <li>"host1:raftPort,host2:raftPort" - HTTP address derived from raft host + configured HTTP port offset</li>
    *   <li>"host1:raftPort:httpPort,host2:raftPort:httpPort" - explicit HTTP port per peer</li>
+   *   <li>"[::1]:raftPort,[2001:db8::1]:raftPort" - IPv6 addresses in bracketed notation</li>
    * </ul>
-   * The peer ID is derived from the host:raftPort string for deterministic identification.
+   * The peer ID is derived from the host_raftPort string for deterministic identification.
    */
   private List<RaftPeer> parsePeers(final String serverList) {
     final List<RaftPeer> peers = new ArrayList<>();
@@ -1171,7 +1305,7 @@ public class RaftHAServer {
       if (trimmed.isEmpty())
         continue;
 
-      final String[] parts = trimmed.split(":");
+      final String[] parts = parseHostPort(trimmed);
       final String host = parts[0];
       final int raftPort = Integer.parseInt(parts[1]);
       final String raftAddress = host + ":" + raftPort;
@@ -1270,5 +1404,56 @@ public class RaftHAServer {
     if (portSpec.contains(","))
       return Integer.parseInt(portSpec.split(",")[0].trim());
     return Integer.parseInt(portSpec.trim());
+  }
+
+  /**
+   * Parses a host:port string, supporting both IPv4/hostname and bracketed IPv6 notation.
+   * <p>
+   * Accepted formats:
+   * <ul>
+   *   <li>"hostname:port" or "hostname:port:extraPort"</li>
+   *   <li>"1.2.3.4:port" or "1.2.3.4:port:extraPort"</li>
+   *   <li>"[::1]:port" or "[2001:db8::1]:port:extraPort"</li>
+   * </ul>
+   * Bare (un-bracketed) IPv6 addresses are rejected because they are ambiguous with the port delimiter.
+   *
+   * @return array where [0]=host (including brackets for IPv6), [1]=first port, and optionally [2]=second port
+   */
+  static String[] parseHostPort(final String address) {
+    if (address == null || address.isEmpty())
+      throw new ConfigurationException("HA peer address is empty");
+
+    if (address.startsWith("[")) {
+      // Bracketed IPv6: [addr]:port or [addr]:port:extraPort
+      final int closeBracket = address.indexOf(']');
+      if (closeBracket < 0)
+        throw new ConfigurationException("Invalid IPv6 address (missing closing bracket): " + address);
+
+      final String host = address.substring(0, closeBracket + 1);
+      final String remainder = address.substring(closeBracket + 1);
+      if (remainder.isEmpty() || remainder.charAt(0) != ':')
+        throw new ConfigurationException("HA peer address missing port after IPv6 host: " + address);
+
+      final String[] ports = remainder.substring(1).split(":");
+      final String[] result = new String[1 + ports.length];
+      result[0] = host;
+      System.arraycopy(ports, 0, result, 1, ports.length);
+      return result;
+    }
+
+    // Detect bare (un-bracketed) IPv6 by counting colons: more than 2 colons and no dots means
+    // this is likely an IPv6 address without brackets (e.g., "::1:2424" or "2001:db8::1:2424").
+    // The maximum for host:raft:http is 2 colons, so 3+ colons without dots is always IPv6.
+    final long colonCount = address.chars().filter(c -> c == ':').count();
+    if (colonCount > 2 && !address.contains("."))
+      throw new ConfigurationException(
+          "IPv6 addresses must use bracketed notation (e.g., [::1]:2424) in HA peer address: " + address);
+
+    // IPv4 or hostname: host:port or host:port:extraPort
+    final String[] parts = address.split(":");
+    if (parts.length < 2)
+      throw new ConfigurationException("HA peer address missing port: " + address);
+
+    return parts;
   }
 }

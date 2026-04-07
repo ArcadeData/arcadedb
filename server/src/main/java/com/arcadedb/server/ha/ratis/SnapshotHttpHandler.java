@@ -68,6 +68,18 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
+    try {
+      handleRequestInternal(exchange);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error in snapshot handler: %s", e, e.getMessage());
+      if (!exchange.isResponseStarted()) {
+        exchange.setStatusCode(500);
+        exchange.getResponseSender().send("Internal error: " + e.getMessage());
+      }
+    }
+  }
+
+  private void handleRequestInternal(final HttpServerExchange exchange) throws Exception {
     // Authenticate the request
     final ServerSecurityUser user = authenticate(exchange);
     if (user == null) {
@@ -84,7 +96,18 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
-    final String databaseName = exchange.getPathParameters().get("database").getFirst();
+    // Extract database name from path parameters or URL path directly.
+    // After dispatch(), path parameters may be empty in some Undertow versions.
+    final var dbParam = exchange.getPathParameters().get("database");
+    final String databaseName;
+    if (dbParam != null && !dbParam.isEmpty())
+      databaseName = dbParam.getFirst();
+    else {
+      // Fallback: extract from URL path (e.g., /api/v1/ha/snapshot/testdb -> testdb)
+      final String path = exchange.getRelativePath();
+      final int lastSlash = path.lastIndexOf('/');
+      databaseName = lastSlash >= 0 ? path.substring(lastSlash + 1) : null;
+    }
 
     if (databaseName == null || databaseName.isEmpty()) {
       exchange.setStatusCode(400);
@@ -111,21 +134,26 @@ public class SnapshotHttpHandler implements HttpHandler {
     exchange.startBlocking();
 
     final DatabaseInternal db = server.getDatabase(databaseName);
+    // Unwrap ServerDatabase -> ReplicatedDatabase -> LocalDatabase for file access
+    DatabaseInternal unwrapped = db.getEmbedded();
+    if (unwrapped != null && !(unwrapped instanceof LocalDatabase))
+      unwrapped = unwrapped.getEmbedded();
+    final LocalDatabase localDb = (LocalDatabase) unwrapped;
 
-    db.executeInReadLock(() -> {
-      db.getPageManager().suspendFlushAndExecute(db, () -> {
+    localDb.executeInReadLock(() -> {
+      localDb.getPageManager().suspendFlushAndExecute(localDb, () -> {
         try (final OutputStream out = exchange.getOutputStream();
              final ZipOutputStream zipOut = new ZipOutputStream(out)) {
 
-          final File configFile = ((LocalDatabase) db.getEmbedded()).getConfigurationFile();
+          final File configFile = localDb.getConfigurationFile();
           if (configFile.exists())
             addFileToZip(zipOut, configFile);
 
-          final File schemaFile = ((LocalSchema) db.getSchema()).getConfigurationFile();
+          final File schemaFile = ((LocalSchema) localDb.getSchema()).getConfigurationFile();
           if (schemaFile.exists())
             addFileToZip(zipOut, schemaFile);
 
-          final Collection<ComponentFile> files = db.getFileManager().getFiles();
+          final Collection<ComponentFile> files = localDb.getFileManager().getFiles();
           for (final ComponentFile file : new ArrayList<>(files))
             if (file != null)
               addFileToZip(zipOut, file.getOSFile());
