@@ -73,8 +73,8 @@ public class PacketLossIT extends ContainersTestTemplate {
     toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster");
-    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -139,8 +139,8 @@ public class PacketLossIT extends ContainersTestTemplate {
     toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster");
-    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -203,8 +203,8 @@ public class PacketLossIT extends ContainersTestTemplate {
     toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster");
-    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -340,8 +340,8 @@ public class PacketLossIT extends ContainersTestTemplate {
     toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
 
     logger.info("Creating 2-node Raft HA cluster");
-    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "none", network);
-    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();

@@ -37,8 +37,8 @@ class SimpleHaScenarioIT extends ContainersTestTemplate {
   @Test
   @DisplayName("Two-node Raft HA: schema and data replication")
   void twoNodeRaftReplication() throws InterruptedException {
-    createArcadeContainer("arcadedb-0", SERVER_LIST, "none", network);
-    createArcadeContainer("arcadedb-1", SERVER_LIST, "none", network);
+    createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
 
     logger.info("Starting the containers");
     final List<ServerWrapper> servers = startCluster();
