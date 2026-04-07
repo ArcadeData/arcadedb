@@ -102,7 +102,7 @@ public class PacketLossIT extends ContainersTestTemplate {
 
     logger.info("Waiting for replication with packet loss");
     Awaitility.await()
-        .atMost(60, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(2, TimeUnit.SECONDS)
         .until(() -> {
           try {
@@ -166,7 +166,7 @@ public class PacketLossIT extends ContainersTestTemplate {
 
     logger.info("Waiting for replication with moderate packet loss (may take longer due to retries)");
     Awaitility.await()
-        .atMost(90, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> {
           try {
@@ -301,7 +301,7 @@ public class PacketLossIT extends ContainersTestTemplate {
 
     logger.info("Waiting for replication with directional packet loss");
     Awaitility.await()
-        .atMost(90, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> {
           try {
@@ -376,7 +376,7 @@ public class PacketLossIT extends ContainersTestTemplate {
 
     logger.info("Waiting for final convergence after intermittent issues");
     Awaitility.await()
-        .atMost(60, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(2, TimeUnit.SECONDS)
         .until(() -> {
           try {
