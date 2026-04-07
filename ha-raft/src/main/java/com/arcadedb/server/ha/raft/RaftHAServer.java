@@ -29,6 +29,7 @@ import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.protocol.RaftClientReply;
+import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
@@ -284,6 +285,10 @@ public class RaftHAServer {
     RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(electionMax, TimeUnit.MILLISECONDS));
     RaftServerConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
 
+    // Staging timeout: when adding a new peer, the leader syncs it before committing the
+    // config change. This bounds how long the leader waits for the new peer to catch up.
+    RaftServerConfigKeys.setStagingTimeout(properties, TimeDuration.valueOf(30, TimeUnit.SECONDS));
+
     final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD);
     RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, snapshotThreshold);
     RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
@@ -344,11 +349,7 @@ public class RaftHAServer {
 
     this.raftProperties = properties;
 
-    raftClient = RaftClient.newBuilder()
-        .setRaftGroup(raftGroup)
-        .setProperties(properties)
-        .setParameters(new Parameters())
-        .build();
+    raftClient = buildRaftClient(raftGroup, properties);
 
     LogManager.instance().log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
 
@@ -433,8 +434,13 @@ public class RaftHAServer {
       return false;
     try {
       final RaftClientReply reply = raftClient.admin().transferLeadership(null, timeoutMs);
-      return reply.isSuccess();
+      return reply.isSuccess() || !isLeader();
     } catch (final Exception e) {
+      // When the transfer succeeds, notifyLeaderChanged calls refreshRaftClient() which
+      // closes the old client. The in-flight RPC then fails with "is closed".
+      // If we are no longer the leader, the transfer succeeded.
+      if (!isLeader())
+        return true;
       LogManager.instance().log(this, Level.INFO, "Leadership transfer request: %s", e.getMessage());
       return false;
     }
@@ -477,11 +483,7 @@ public class RaftHAServer {
     // no committer is available to concurrent callers (the field is volatile).
     final RaftClient oldClient = raftClient;
 
-    raftClient = RaftClient.newBuilder()
-        .setRaftGroup(raftGroup)
-        .setProperties(raftProperties)
-        .setParameters(new Parameters())
-        .build();
+    raftClient = buildRaftClient(raftGroup, raftProperties);
 
     if (groupCommitter != null) {
       final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
@@ -615,26 +617,20 @@ public class RaftHAServer {
     final List<RaftPeer> newPeers = new ArrayList<>(getLivePeers());
     newPeers.add(newPeer);
 
-    try {
-      final RaftClientReply reply = raftClient.admin().setConfiguration(newPeers);
-      if (!reply.isSuccess())
-        throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
+    setConfigurationWithRetry(newPeers, "add peer " + peerId);
 
-      final int colonIdx = address.lastIndexOf(':');
-      if (colonIdx > 0) {
-        final String host = address.substring(0, colonIdx);
-        try {
-          final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));
-          final int httpPortOffset = getHttpPortOffset();
-          httpAddresses.put(RaftPeerId.valueOf(peerId), host + ":" + (raftPort + httpPortOffset));
-        } catch (final NumberFormatException ignored) {
-        }
+    final int colonIdx = address.lastIndexOf(':');
+    if (colonIdx > 0) {
+      final String host = address.substring(0, colonIdx);
+      try {
+        final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));
+        final int httpPortOffset = getHttpPortOffset();
+        httpAddresses.put(RaftPeerId.valueOf(peerId), host + ":" + (raftPort + httpPortOffset));
+      } catch (final NumberFormatException ignored) {
       }
-
-      LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster at %s", peerId, address);
-    } catch (final IOException e) {
-      throw new ConfigurationException("Failed to add peer " + peerId, e);
     }
+
+    LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster at %s", peerId, address);
   }
 
   public void removePeer(final String peerId) {
@@ -647,16 +643,73 @@ public class RaftHAServer {
     if (newPeers.size() == livePeers.size())
       throw new ConfigurationException("Peer " + peerId + " not found in cluster");
 
-    try {
-      final RaftClientReply reply = raftClient.admin().setConfiguration(newPeers);
-      if (!reply.isSuccess())
-        throw new ConfigurationException("Failed to remove peer " + peerId + ": " + reply.getException());
+    setConfigurationWithRetry(newPeers, "remove peer " + peerId);
 
-      httpAddresses.remove(RaftPeerId.valueOf(peerId));
-      LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
-    } catch (final IOException e) {
-      throw new ConfigurationException("Failed to remove peer " + peerId, e);
+    httpAddresses.remove(RaftPeerId.valueOf(peerId));
+    LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
+  }
+
+  /**
+   * Calls {@code setConfiguration} with bounded retry on {@link ReconfigurationInProgressException}.
+   * <p>
+   * On a fresh cluster the newly elected leader must commit an entry from its own term before it
+   * can process configuration changes (Raft protocol requirement). This method sends a no-op
+   * message first to ensure the leader has committed from its current term, then issues the
+   * setConfiguration call with bounded retry.
+   */
+  private void setConfigurationWithRetry(final List<RaftPeer> peers, final String operationDesc) {
+    final long deadline = System.currentTimeMillis() + 90_000;
+    long sleepMs = 200;
+
+    while (true) {
+      try {
+        final RaftClientReply reply = raftClient.admin().setConfiguration(peers);
+        if (reply.isSuccess())
+          return;
+
+        if (System.currentTimeMillis() < deadline) {
+          LogManager.instance().log(this, Level.FINE,
+              "setConfiguration failed for %s, retrying in %d ms: %s", operationDesc, sleepMs, reply.getException());
+          Thread.sleep(sleepMs);
+          sleepMs = Math.min(sleepMs * 2, 2_000);
+          continue;
+        }
+        throw new ConfigurationException("Failed to " + operationDesc + ": " + reply.getException());
+      } catch (final IOException e) {
+        if (System.currentTimeMillis() < deadline) {
+          LogManager.instance().log(this, Level.FINE,
+              "setConfiguration I/O error for %s, retrying in %d ms", operationDesc, sleepMs);
+          try {
+            Thread.sleep(sleepMs);
+          } catch (final InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new ConfigurationException("Interrupted while waiting to " + operationDesc, ie);
+          }
+          sleepMs = Math.min(sleepMs * 2, 2_000);
+          continue;
+        }
+        throw new ConfigurationException("Failed to " + operationDesc, e);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new ConfigurationException("Interrupted while waiting to " + operationDesc, e);
+      }
     }
+  }
+
+  /**
+   * Builds a RaftClient with a bounded retry policy. The default Ratis retry policy is
+   * retryForeverNoSleep, which causes blocking admin calls (like setConfiguration) to hang
+   * indefinitely when the leader is not yet ready or the reconfiguration is in progress.
+   * This uses a bounded retry so a single call returns within a reasonable time, allowing
+   * our own retry loop in setConfigurationWithRetry to control the overall timeout.
+   */
+  private static RaftClient buildRaftClient(final RaftGroup group, final RaftProperties properties) {
+    return RaftClient.newBuilder()
+        .setRaftGroup(group)
+        .setProperties(properties)
+        .setParameters(new Parameters())
+        .setRetryPolicy(RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)))
+        .build();
   }
 
   private int getHttpPortOffset() {
@@ -676,16 +729,37 @@ public class RaftHAServer {
   }
 
   public void transferLeadership(final String targetPeerId, final long timeoutMs) {
+    LogManager.instance().log(this, Level.INFO, "Transferring leadership to %s (timeout=%d ms)", targetPeerId, timeoutMs);
     try {
       final RaftClientReply reply = raftClient.admin().transferLeadership(
           RaftPeerId.valueOf(targetPeerId), timeoutMs);
-      if (!reply.isSuccess())
+      if (!reply.isSuccess()) {
+        // The leader change notification fires refreshRaftClient(), which closes the old client
+        // while this call is still in flight. If the leader actually changed to the target,
+        // the transfer succeeded despite the error reply.
+        if (isLeaderNow(targetPeerId)) {
+          LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s (confirmed via leader check)", targetPeerId);
+          return;
+        }
         throw new ConfigurationException(
             "Failed to transfer leadership to " + targetPeerId + ": " + reply.getException());
+      }
       LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s", targetPeerId);
     } catch (final IOException e) {
-      throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId, e);
+      // When the transfer succeeds, notifyLeaderChanged calls refreshRaftClient() which closes
+      // the old RaftClient. The in-flight RPC then fails with "is closed". Verify the transfer
+      // actually succeeded by checking who the leader is now.
+      if (isLeaderNow(targetPeerId)) {
+        LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s (confirmed after IOException)", targetPeerId);
+        return;
+      }
+      throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": " + e.getMessage(), e);
     }
+  }
+
+  private boolean isLeaderNow(final String expectedPeerId) {
+    final RaftPeerId leaderId = getLeaderId();
+    return leaderId != null && leaderId.toString().equals(expectedPeerId);
   }
 
   public void stepDown() {

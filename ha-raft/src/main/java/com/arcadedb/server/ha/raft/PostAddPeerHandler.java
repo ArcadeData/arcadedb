@@ -35,6 +35,11 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
+  @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();

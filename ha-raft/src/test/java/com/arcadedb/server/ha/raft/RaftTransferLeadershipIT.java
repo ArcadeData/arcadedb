@@ -55,8 +55,16 @@ class RaftTransferLeadershipIT extends BaseRaftHATest {
     final String body = new JSONObject().put("peerId", "peer-" + targetIndex).put("timeoutMs", 10_000).toString();
     conn.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
 
-    assertThat(conn.getResponseCode()).isEqualTo(200);
+    final int responseCode = conn.getResponseCode();
+    final String responseBody;
+    if (responseCode >= 400 && conn.getErrorStream() != null)
+      responseBody = new String(conn.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+    else if (conn.getInputStream() != null)
+      responseBody = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    else
+      responseBody = "";
     conn.disconnect();
+    assertThat(responseCode).as("Response: %s", responseBody).isEqualTo(200);
 
     Thread.sleep(3_000);
 

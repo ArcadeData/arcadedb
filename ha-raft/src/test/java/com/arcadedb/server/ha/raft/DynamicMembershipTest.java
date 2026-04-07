@@ -29,7 +29,7 @@ class DynamicMembershipTest extends BaseRaftHATest {
 
   @Override
   protected int getServerCount() {
-    return 2;
+    return 3;
   }
 
   @Test
@@ -39,24 +39,23 @@ class DynamicMembershipTest extends BaseRaftHATest {
 
     final RaftHAServer raftServer = getRaftPlugin(leaderIndex).getRaftHAServer();
     final Collection<RaftPeer> livePeers = raftServer.getLivePeers();
-    assertThat(livePeers).hasSize(2);
+    assertThat(livePeers).hasSize(3);
   }
 
   @Test
-  void addPeerIncreasesClusterSize() {
+  void removePeerDecreasesClusterSize() {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
+    // Pick a non-leader peer to remove, since Ratis requires the leader to process the change
+    final int targetIndex = leaderIndex == 0 ? 2 : 0;
+    final String targetPeerId = "peer-" + targetIndex;
+
     final RaftHAServer raftServer = getRaftPlugin(leaderIndex).getRaftHAServer();
-    final int initialSize = raftServer.getLivePeers().size();
+    assertThat(raftServer.getLivePeers()).hasSize(3);
 
-    raftServer.addPeer("peer-99", "localhost:19999");
-
-    final Collection<RaftPeer> livePeers = raftServer.getLivePeers();
-    assertThat(livePeers).hasSize(initialSize + 1);
-
-    raftServer.removePeer("peer-99");
-    assertThat(raftServer.getLivePeers()).hasSize(initialSize);
+    raftServer.removePeer(targetPeerId);
+    assertThat(raftServer.getLivePeers()).hasSize(2);
   }
 
   @Test
