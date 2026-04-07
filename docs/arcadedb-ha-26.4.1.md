@@ -396,8 +396,8 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 | `HAQuorumLossRecoveryE2ETest` | Network-isolate 2 of 3 nodes, writes fail, reconnect both, cluster recovers | 3 | PASS (20s) |
 | `HALeaderPartitionE2ETest` | Leader network-partitioned, majority elects new leader, old leader reconnects and catches up | 3 | PASS (27s) |
 | `HARollingRestartE2ETest` | Rolling network-isolation with writes on survivors, each node catches up | 3 | WIP |
-| `HAColdStartE2ETest` | All 3 nodes restarted via docker restart, Ratis log recovery + data intact + index survives | 3 | WIP |
-| `HASnapshotCatchUpE2ETest` | Follower lags behind log purge boundary, catches up via snapshot download | 3 | WIP |
+| `HAColdStartE2ETest` | All 3 nodes restarted via docker restart, Ratis log recovery + data intact + index survives | 3 | DONE |
+| `HASnapshotCatchUpE2ETest` | Follower lags behind log purge boundary, catches up via snapshot download | 3 | DONE |
 
 ### Known Limitations
 - **State machine command forwarding**: The `query()` path for forwarding write commands to the leader has a page visibility issue. Currently using HTTP proxy fallback which works correctly.
@@ -410,6 +410,8 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 ## TODO
 
 ### Resolved Issues
+- **Snapshot persistence for cold restart**: `takeSnapshot()` was not persisting a snapshot marker file to `SimpleStateMachineStorage`. After a cold restart, `reinitialize()` found no snapshot, set `lastAppliedIndex=-1`, and Ratis replayed ALL committed log entries, double-applying WAL page diffs and corrupting the database. Fixed by writing a marker file (`snapshot.<term>_<index>`) and updating `reinitialize()` to restore both `lastAppliedIndex` and `BaseStateMachine`'s internal `TermIndex`. This also fixes snapshot-based catch-up: Ratis now knows a snapshot exists and can trigger `notifyInstallSnapshotFromLeader()` for lagging followers.
+- **Database loading safety**: Added filter in `loadDatabases()` to skip `.snapshot-tmp` and `.snapshot-old` directories that could be leftover from a crash during snapshot installation.
 - **Vector index replication**: Fixed 1-byte parsing misalignment in `LSMVectorIndex.applyReplicatedPageUpdate()` - the `quantization_type` byte (always written after `deleted` flag) was not being read, causing cumulative offset drift when parsing entries on followers.
 
 ### TODO: E2E Tests
@@ -420,20 +422,14 @@ These tests exercise full cluster scenarios using Docker containers (TestContain
 | 1 | `HALeaderPartitionE2ETest` | Leader gets network-partitioned. Majority elects new leader, accepts writes. Old leader reconnects, steps down, catches up | Leader stepdown + follower resync | DONE |
 | 2 | `HAMultiDatabaseSnapshotE2ETest` | Cluster with 2-3 databases. Follower lags behind, snapshot installs all databases. Verify no partial failures | `notifyInstallSnapshotFromLeader` loops over all DBs | TODO |
 | 3 | `HASnapshotDuringWritesE2ETest` | Follower reconnects while writes are actively happening on the leader. Verify snapshot install + concurrent Raft log apply don't conflict | Snapshot + concurrent writes | TODO |
-| 4 | `HAColdStartE2ETest` | Write data, restart all 3 nodes, verify Ratis log recovery from disk + leader re-election + data intact | Full cluster restart from persisted state | WIP |
+| 4 | `HAColdStartE2ETest` | Write data, restart all 3 nodes, verify Ratis log recovery from disk + leader re-election + data intact | Full cluster restart from persisted state | DONE |
 | 5 | `HAQuorumLossRecoveryE2ETest` | Network-isolate 2 of 3 nodes (quorum lost). Writes must fail. Reconnect both nodes. Cluster recovers, writes succeed again | Disaster recovery | DONE |
 | 6 | `HADynamicDatabaseE2ETest` | Create a database on the leader after cluster formation. Verify schema + data replicate to followers. Then lag a follower, verify snapshot includes the new database | Post-formation DB creation + snapshot | TODO |
 | 7 | `HALargeDataSnapshotE2ETest` | Insert large records (BLOBs, many properties) to exercise the ZIP streaming path with realistic data sizes | Snapshot HTTP streaming under load | TODO |
 
 ### WIP: Remaining E2E test issues
 
-Three e2e tests need further debugging:
-
 **`HARollingRestartE2ETest`**: Times out at 5 min. Three sequential disconnect/write/reconnect cycles accumulate latency (election ~5s + gRPC reconnection ~10s + catch-up per cycle). Needs investigation into whether iterations compound or if there's a specific failure point.
-
-**`HAColdStartE2ETest`**: After `docker restart` all 3 containers in parallel, the database type is not found (`count=-1`). Likely cause: `docker restart` causes `defaultDatabases` to recreate the database fresh (empty schema) instead of reopening the existing one, or the Ratis state machine doesn't replay committed entries on restart.
-
-**`HASnapshotCatchUpE2ETest`**: Follower catches up to 24 records (partial) but not 220. The Raft log purging + snapshot mechanism isn't triggering `notifyInstallSnapshotFromLeader`. Needs investigation into whether `logPurgeGap=1` + `snapshotThreshold=10` + `logSegmentSize=64KB` actually forces log purging in Ratis 3.2.1.
 
 ### Resolved issues during E2E testing
 

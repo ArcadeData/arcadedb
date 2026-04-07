@@ -643,8 +643,13 @@ public class ArcadeDBServer {
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP)) {
         final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
-        for (final File f : databaseDirectories)
-          getDatabase(f.getName());
+        for (final File f : databaseDirectories) {
+          final String name = f.getName();
+          // Skip snapshot temp/backup directories (leftover from crash during snapshot installation)
+          if (name.endsWith(".snapshot-tmp") || name.endsWith(".snapshot-old"))
+            continue;
+          getDatabase(name);
+        }
       }
     }
   }

@@ -45,6 +45,11 @@ import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
 
+import org.apache.ratis.io.MD5Hash;
+import org.apache.ratis.server.storage.FileInfo;
+import org.apache.ratis.statemachine.impl.SingleFileSnapshotInfo;
+import org.apache.ratis.util.MD5FileUtil;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -100,9 +105,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   @Override
   public void reinitialize() throws IOException {
     final var snapshotInfo = storage.getLatestSnapshot();
-    if (snapshotInfo != null)
+    if (snapshotInfo != null) {
       lastAppliedIndex.set(snapshotInfo.getIndex());
-    else
+      // Restore BaseStateMachine's internal TermIndex so Ratis knows where we left off
+      // and won't replay already-applied entries after a cold restart.
+      updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotInfo.getIndex());
+    } else
       lastAppliedIndex.set(-1);
   }
 
@@ -369,16 +377,31 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   // -- Snapshots --
 
   /**
-   * Returns the last applied index without writing state to SimpleStateMachineStorage.
-   * ArcadeDB state lives in the database files on disk, not in the Ratis state machine storage.
-   * When a follower is too far behind, notifyInstallSnapshotFromLeader() handles the full resync
-   * by downloading the database via HTTP from the leader.
+   * Persists a snapshot marker file so that Ratis can restore lastAppliedIndex on restart.
+   * ArcadeDB state lives in the database files on disk, not in this marker file. The marker
+   * simply records the term and index so that after a cold restart, reinitialize() knows
+   * where the state machine left off and Ratis won't replay already-applied entries.
+   * When a follower is too far behind for log replay, notifyInstallSnapshotFromLeader()
+   * handles the full resync by downloading the database via HTTP from the leader.
    */
   @Override
   public long takeSnapshot() throws IOException {
-    final long currentIndex = lastAppliedIndex.get();
-    LogManager.instance().log(this, Level.INFO, "Raft snapshot taken at index %d", currentIndex);
-    return currentIndex;
+    final TermIndex termIndex = getLastAppliedTermIndex();
+    if (termIndex == null || termIndex.getIndex() <= 0) {
+      LogManager.instance().log(this, Level.FINE, "Skipping snapshot: no entries applied yet");
+      return lastAppliedIndex.get();
+    }
+
+    final File snapshotFile = storage.getSnapshotFile(termIndex.getTerm(), termIndex.getIndex());
+    Files.writeString(snapshotFile.toPath(), "arcadedb-snapshot-marker");
+
+    final MD5Hash digest = MD5FileUtil.computeAndSaveMd5ForFile(snapshotFile);
+    storage.updateLatestSnapshot(
+        new SingleFileSnapshotInfo(new FileInfo(snapshotFile.toPath(), digest), termIndex));
+
+    LogManager.instance().log(this, Level.INFO, "Raft snapshot taken at term=%d, index=%d",
+        termIndex.getTerm(), termIndex.getIndex());
+    return termIndex.getIndex();
   }
 
   // -- Follower event: notification-mode snapshot installation --
