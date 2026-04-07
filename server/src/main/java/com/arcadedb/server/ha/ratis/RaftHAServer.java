@@ -1063,11 +1063,18 @@ public class RaftHAServer {
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
 
-      // Derive and store HTTP address from the Raft address (host:raftPort -> host:httpPort)
+      // Derive and store HTTP address from the Raft address (host:raftPort -> host:httpPort).
+      // This assumes the dynamically added peer uses the same HTTP/Raft port gap as this node.
       try {
         final String[] addrParts = parseHostPort(address);
         final int raftPort = Integer.parseInt(addrParts[1]);
-        peerHttpAddresses.put(peerId, addrParts[0] + ":" + (raftPort + getHttpPortOffset()));
+        final int httpPortOffset = getHttpPortOffset();
+        final String derivedHttp = addrParts[0] + ":" + (raftPort + httpPortOffset);
+        peerHttpAddresses.put(peerId, derivedHttp);
+        LogManager.instance().log(this, Level.WARNING,
+            "Dynamically added peer '%s': HTTP address derived as %s using local port offset (%+d). "
+                + "If incorrect, remove and re-add with explicit HTTP port in HA_SERVER_LIST",
+            peerId, derivedHttp, httpPortOffset);
       } catch (final ConfigurationException | NumberFormatException ignored) {
         // Malformed address, skip HTTP address derivation
       }
@@ -1155,15 +1162,22 @@ public class RaftHAServer {
     if (httpAddr != null)
       return httpAddr;
 
-    // Derive HTTP address from peer ID format "host_raftPort" using port offset
+    // Derive HTTP address from peer ID format "host_raftPort" using port offset.
+    // This assumes all nodes use the same HTTP-to-Raft port gap as this node,
+    // which may be wrong if remote nodes use different port configurations.
     final String peerIdStr = peerId.toString();
     final int lastUnderscore = peerIdStr.lastIndexOf('_');
     if (lastUnderscore > 0 && lastUnderscore < peerIdStr.length() - 1) {
       final String host = peerIdStr.substring(0, lastUnderscore);
       try {
         final int raftPort = Integer.parseInt(peerIdStr.substring(lastUnderscore + 1));
-        final int httpPort = raftPort + getHttpPortOffset();
+        final int httpPortOffset = getHttpPortOffset();
+        final int httpPort = raftPort + httpPortOffset;
         final String derived = host + ":" + httpPort;
+        LogManager.instance().log(this, Level.WARNING,
+            "No explicit HTTP address for peer '%s', deriving %s using local HTTP/Raft port offset (%+d). "
+                + "If this peer uses a different port layout, specify explicit HTTP ports in HA_SERVER_LIST (format: host:raftPort:httpPort)",
+            peerIdStr, derived, httpPortOffset);
         peerHttpAddresses.put(peerIdStr, derived);
         return derived;
       } catch (final NumberFormatException ignored) {
@@ -1313,12 +1327,17 @@ public class RaftHAServer {
       final int raftPort = Integer.parseInt(parts[1]);
       final String raftAddress = host + ":" + raftPort;
 
-      // Determine HTTP address
+      // Determine HTTP address: use explicit httpPort if provided, otherwise derive from local offset
       final String httpAddress;
       if (parts.length >= 3)
         httpAddress = host + ":" + parts[2];
-      else
+      else {
         httpAddress = host + ":" + (raftPort + httpPortOffset);
+        LogManager.instance().log(this, Level.INFO,
+            "Peer '%s:%d': no explicit HTTP port in HA_SERVER_LIST, deriving HTTP address %s using local port offset (%+d). "
+                + "Use format 'host:raftPort:httpPort' if peers have different port layouts",
+            host, raftPort, httpAddress, httpPortOffset);
+      }
 
       // Use underscore in peer ID to avoid JMX ObjectName issues (colon is invalid in JMX values)
       final String peerIdStr = host + "_" + raftPort;
