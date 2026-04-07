@@ -18,8 +18,6 @@
  */
 package com.arcadedb.e2e;
 
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.remote.RemoteDatabase;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,49 +54,37 @@ public class HAReplicationE2ETest extends ArcadeHAContainerTemplate {
   }
 
   @Test
-  void testBasicReplication() {
+  void testBasicReplication() throws Exception {
     // Write on the leader
     final GenericContainer<?> leader = findLeader();
     assertThat(leader).isNotNull();
 
-    try (final RemoteDatabase db = createRemoteDatabase(leader)) {
-      db.command("SQL", "CREATE VERTEX TYPE Person IF NOT EXISTS");
-      for (int i = 0; i < 10; i++)
-        db.command("SQL", "INSERT INTO Person SET name = ?, age = ?", "person-" + i, i * 10);
-    }
+    httpCommand(leader, "SQL", "CREATE VERTEX TYPE Person IF NOT EXISTS");
+    for (int i = 0; i < 10; i++)
+      httpCommand(leader, "SQL", "INSERT INTO Person CONTENT {\"name\":\"person-" + i + "\",\"age\":" + (i * 10) + "}");
 
     // Verify replication on all nodes
     Awaitility.await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
-      for (final GenericContainer<?> container : containers) {
-        try (final RemoteDatabase db = createRemoteDatabase(container)) {
-          final ResultSet rs = db.query("SQL", "SELECT count(*) as cnt FROM Person");
-          assertThat(rs.hasNext()).isTrue();
-          assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(10L);
-        }
-      }
+      for (final GenericContainer<?> container : containers)
+        assertThat(httpCount(container, "Person")).isEqualTo(10L);
     });
   }
 
   @Test
-  void testLeaderFailover() {
+  void testLeaderFailover() throws Exception {
     // Setup: create schema and write initial data on the leader
     final GenericContainer<?> leader = findLeader();
     assertThat(leader).isNotNull();
 
-    try (final RemoteDatabase db = createRemoteDatabase(leader)) {
-      db.command("SQL", "CREATE VERTEX TYPE Order IF NOT EXISTS");
-      for (int i = 0; i < 5; i++)
-        db.command("SQL", "INSERT INTO Order SET id = ?, status = ?", i, "created");
-    }
+    httpCommand(leader, "SQL", "CREATE VERTEX TYPE Order IF NOT EXISTS");
+    for (int i = 0; i < 5; i++)
+      httpCommand(leader, "SQL", "INSERT INTO Order CONTENT {\"id\":" + i + ",\"status\":\"created\"}");
 
     // Wait for replication
     Awaitility.await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
       for (final GenericContainer<?> c : containers) {
         if (!c.isRunning()) continue;
-        try (final RemoteDatabase db = createRemoteDatabase(c)) {
-          final ResultSet rs = db.query("SQL", "SELECT count(*) as cnt FROM Order");
-          assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(5L);
-        }
+        assertThat(httpCount(c, "Order")).isEqualTo(5L);
       }
     });
 
@@ -123,25 +109,20 @@ public class HAReplicationE2ETest extends ArcadeHAContainerTemplate {
     assertThat(newLeader).isNotNull();
     assertThat(newLeader).isNotSameAs(leader);
 
-    try (final RemoteDatabase db = createRemoteDatabase(newLeader)) {
-      for (int i = 5; i < 10; i++)
-        db.command("SQL", "INSERT INTO Order SET id = ?, status = ?", i, "after-failover");
-    }
+    for (int i = 5; i < 10; i++)
+      httpCommand(newLeader, "SQL", "INSERT INTO Order CONTENT {\"id\":" + i + ",\"status\":\"after-failover\"}");
 
     // Verify data on surviving nodes
     Awaitility.await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
       for (final GenericContainer<?> c : containers) {
         if (!c.isRunning()) continue;
-        try (final RemoteDatabase db = createRemoteDatabase(c)) {
-          final ResultSet rs = db.query("SQL", "SELECT count(*) as cnt FROM Order");
-          assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(10L);
-        }
+        assertThat(httpCount(c, "Order")).isEqualTo(10L);
       }
     });
   }
 
   @Test
-  void testWriteToFollowerProxy() {
+  void testWriteToFollowerProxy() throws Exception {
     // Write through a follower (should be proxied to leader transparently)
     GenericContainer<?> follower = null;
     for (final GenericContainer<?> c : containers) {
@@ -155,20 +136,14 @@ public class HAReplicationE2ETest extends ArcadeHAContainerTemplate {
     }
     assertThat(follower).isNotNull();
 
-    try (final RemoteDatabase db = createRemoteDatabase(follower)) {
-      db.command("SQL", "CREATE VERTEX TYPE Item IF NOT EXISTS");
-      for (int i = 0; i < 20; i++)
-        db.command("SQL", "INSERT INTO Item SET name = ?, value = ?", "item-" + i, i * 100);
-    }
+    httpCommand(follower, "SQL", "CREATE VERTEX TYPE Item IF NOT EXISTS");
+    for (int i = 0; i < 20; i++)
+      httpCommand(follower, "SQL", "INSERT INTO Item CONTENT {\"name\":\"item-" + i + "\",\"value\":" + (i * 100) + "}");
 
     // Verify on all nodes
     Awaitility.await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
-      for (final GenericContainer<?> c : containers) {
-        try (final RemoteDatabase db = createRemoteDatabase(c)) {
-          final ResultSet rs = db.query("SQL", "SELECT count(*) as cnt FROM Item");
-          assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(20L);
-        }
-      }
+      for (final GenericContainer<?> c : containers)
+        assertThat(httpCount(c, "Item")).isEqualTo(20L);
     });
   }
 }

@@ -18,15 +18,12 @@
  */
 package com.arcadedb.e2e;
 
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.remote.RemoteDatabase;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 
 import java.util.concurrent.TimeUnit;
@@ -46,18 +43,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("e2e-ha")
-@Timeout(value = 10, unit = TimeUnit.MINUTES)
+@Timeout(value = 3, unit = TimeUnit.MINUTES)
 public class HASnapshotCatchUpE2ETest extends ArcadeHAContainerTemplate {
 
   // Aggressive settings to force snapshot-based catch-up:
   // - snapshot every 10 Raft entries
   // - purge logs up to the snapshot index with a gap of 1
-  // - small log segments (1KB) so purging can actually remove them
+  // - small log segments (64KB) so purging can remove them, but large enough for Ratis to function
+  // - longer quorum timeout to handle the partition + reconnection window
   private static final String SNAPSHOT_OPTS =
       "-Darcadedb.ha.snapshotThreshold=10"
           + " -Darcadedb.ha.logPurgeGap=1"
           + " -Darcadedb.ha.logPurgeUptoSnapshot=true"
-          + " -Darcadedb.ha.logSegmentSize=1KB";
+          + " -Darcadedb.ha.logSegmentSize=64KB"
+          + " -Darcadedb.ha.quorumTimeout=30000";
 
   @BeforeEach
   void setUp() {
@@ -77,20 +76,14 @@ public class HASnapshotCatchUpE2ETest extends ArcadeHAContainerTemplate {
     final GenericContainer<?> leader = findLeader();
     assertThat(leader).isNotNull();
 
-    try (final RemoteDatabase db = createRemoteDatabase(leader)) {
-      db.command("SQL", "CREATE VERTEX TYPE Measurement IF NOT EXISTS");
-      for (int i = 0; i < 20; i++)
-        db.command("SQL", "INSERT INTO Measurement SET sensor = ?, value = ?, phase = ?",
-            "sensor-" + i, i * 1.5, "seed");
-    }
+    httpCommand(leader, "SQL", "CREATE VERTEX TYPE Measurement IF NOT EXISTS");
+    for (int i = 0; i < 20; i++)
+      httpCommand(leader, "SQL", "INSERT INTO Measurement CONTENT {\"sensor\":\"sensor-" + i + "\",\"value\":" + (i * 1.5) + ",\"phase\":\"seed\"}");
 
     // Wait for all nodes to replicate the seed data
     Awaitility.await().atMost(15, TimeUnit.SECONDS).untilAsserted(() -> {
-      for (final GenericContainer<?> c : containers) {
-        try (final RemoteDatabase db = createRemoteDatabase(c)) {
-          assertThat(countMeasurements(db)).isEqualTo(20);
-        }
-      }
+      for (final GenericContainer<?> c : containers)
+        assertThat(httpCount(c, "Measurement")).isEqualTo(20);
     });
 
     // 2. Isolate a follower via Docker network disconnect
@@ -106,26 +99,18 @@ public class HASnapshotCatchUpE2ETest extends ArcadeHAContainerTemplate {
     assertThat(isolatedFollower).as("Should find a follower to isolate").isNotNull();
     disconnectFromNetwork(isolatedFollower);
 
-    // 3. Write enough data to the majority to trigger multiple snapshots + log purge.
-    //    With snapshotThreshold=10 and purgeGap=1, after ~50 writes the Raft log entries
-    //    from before the partition will be purged, forcing snapshot installation on rejoin.
+    // 3. Write enough data to the majority to trigger multiple snapshots + log purge
     final GenericContainer<?> currentLeader = findLeader();
     assertThat(currentLeader).as("Majority should still have a leader").isNotNull();
 
-    try (final RemoteDatabase db = createRemoteDatabase(currentLeader)) {
-      for (int i = 0; i < 200; i++)
-        db.command("SQL", "INSERT INTO Measurement SET sensor = ?, value = ?, phase = ?",
-            "post-partition-" + i, i * 2.0, "during-partition");
-    }
+    for (int i = 0; i < 200; i++)
+      httpCommand(currentLeader, "SQL", "INSERT INTO Measurement CONTENT {\"sensor\":\"post-partition-" + i + "\",\"value\":" + (i * 2.0) + ",\"phase\":\"during-partition\"}");
 
     final long expectedTotal = 220; // 20 seed + 200 during partition
 
     // Verify the majority has all data before reconnecting
-    Awaitility.await().atMost(15, TimeUnit.SECONDS).untilAsserted(() -> {
-      try (final RemoteDatabase db = createRemoteDatabase(currentLeader)) {
-        assertThat(countMeasurements(db)).isEqualTo(expectedTotal);
-      }
-    });
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).untilAsserted(() ->
+        assertThat(httpCount(currentLeader, "Measurement")).isEqualTo(expectedTotal));
 
     // 4. Reconnect the isolated follower - it must catch up via snapshot
     reconnectToNetwork(isolatedFollower);
@@ -135,41 +120,10 @@ public class HASnapshotCatchUpE2ETest extends ArcadeHAContainerTemplate {
     Awaitility.await()
         .atMost(60, TimeUnit.SECONDS)
         .pollInterval(2, TimeUnit.SECONDS)
-        .untilAsserted(() -> {
-          try (final RemoteDatabase db = createRemoteDatabase(reconnected)) {
-            assertThat(countMeasurements(db)).isEqualTo(expectedTotal);
-          }
-        });
+        .untilAsserted(() -> assertThat(httpCount(reconnected, "Measurement")).isEqualTo(expectedTotal));
 
     // 6. Final verification: all nodes converge
-    for (final GenericContainer<?> c : containers) {
-      try (final RemoteDatabase db = createRemoteDatabase(c)) {
-        assertThat(countMeasurements(db)).isEqualTo(expectedTotal);
-      }
-    }
-  }
-
-  private void disconnectFromNetwork(final GenericContainer<?> container) {
-    final var dockerClient = DockerClientFactory.instance().client();
-    dockerClient.disconnectFromNetworkCmd()
-        .withNetworkId(network.getId())
-        .withContainerId(container.getContainerId())
-        .withForce(true)
-        .exec();
-  }
-
-  private void reconnectToNetwork(final GenericContainer<?> container) {
-    try {
-      final var dockerClient = DockerClientFactory.instance().client();
-      dockerClient.connectToNetworkCmd()
-          .withNetworkId(network.getId())
-          .withContainerId(container.getContainerId())
-          .exec();
-    } catch (final Exception ignored) {}
-  }
-
-  private long countMeasurements(final RemoteDatabase db) {
-    final ResultSet rs = db.query("SQL", "SELECT count(*) as cnt FROM Measurement");
-    return rs.hasNext() ? ((Number) rs.next().getProperty("cnt")).longValue() : -1;
+    for (final GenericContainer<?> c : containers)
+      assertThat(httpCount(c, "Measurement")).isEqualTo(expectedTotal);
   }
 }

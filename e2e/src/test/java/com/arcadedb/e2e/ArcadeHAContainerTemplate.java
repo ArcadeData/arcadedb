@@ -18,9 +18,10 @@
  */
 package com.arcadedb.e2e;
 
-import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
+import com.github.dockerjava.api.DockerClient;
 import org.awaitility.Awaitility;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -156,11 +157,102 @@ public abstract class ArcadeHAContainerTemplate {
   }
 
   /**
-   * Creates a RemoteDatabase connected to a specific container.
+   * Executes a SQL command on a specific container via direct HTTP POST.
+   * Bypasses RemoteDatabase to avoid cluster address discovery issues in Docker.
+   * The command is sent as-is (no parameter substitution). Callers should build
+   * the complete SQL string with values already inlined.
    */
-  protected RemoteDatabase createRemoteDatabase(final GenericContainer<?> container) {
-    return new RemoteDatabase(container.getHost(), container.getMappedPort(HTTP_PORT),
-        DATABASE_NAME, "root", ROOT_PASSWORD);
+  protected JSONObject httpCommand(final GenericContainer<?> container, final String language,
+      final String command) throws Exception {
+    final String url = "http://" + container.getHost() + ":" + container.getMappedPort(HTTP_PORT)
+        + "/api/v1/command/" + DATABASE_NAME;
+
+    final JSONObject body = new JSONObject();
+    body.put("language", language);
+    body.put("command", command);
+
+    final HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .header("Authorization", basicAuth())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+        .build();
+
+    final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    if (response.statusCode() != 200)
+      throw new RuntimeException("HTTP " + response.statusCode() + ": " + response.body());
+
+    return new JSONObject(response.body());
+  }
+
+  /**
+   * Counts records of a given type on a specific container.
+   * Returns -1 if the type doesn't exist yet (schema not yet replicated).
+   */
+  protected long httpCount(final GenericContainer<?> container, final String typeName) {
+    try {
+      final JSONObject result = httpCommand(container, "SQL", "SELECT count(*) as cnt FROM " + typeName);
+      return result.getJSONArray("result").getJSONObject(0).getLong("cnt");
+    } catch (final Exception e) {
+      return -1;
+    }
+  }
+
+  /**
+   * Restarts a container using Docker client directly (preserves filesystem and port mappings).
+   * Uses docker restart (atomic stop+start) to avoid Ryuk reaping the container during the gap.
+   */
+  protected void dockerRestart(final GenericContainer<?> container) {
+    final DockerClient dockerClient = DockerClientFactory.instance().client();
+    dockerClient.restartContainerCmd(container.getContainerId()).withTimeout(30).exec();
+    Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+      try {
+        final var response = httpClient.send(
+            HttpRequest.newBuilder()
+                .uri(URI.create("http://" + container.getHost() + ":" + container.getMappedPort(HTTP_PORT) + "/api/v1/ready"))
+                .GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+        return response.statusCode() == 204;
+      } catch (final Exception ignored) {
+        return false;
+      }
+    });
+  }
+
+  /**
+   * Disconnects a container from the cluster network, simulating a network partition.
+   */
+  protected void disconnectFromNetwork(final GenericContainer<?> container) {
+    final DockerClient dockerClient = DockerClientFactory.instance().client();
+    dockerClient.disconnectFromNetworkCmd()
+        .withNetworkId(network.getId())
+        .withContainerId(container.getContainerId())
+        .withForce(true)
+        .exec();
+  }
+
+  /**
+   * Reconnects a container to the cluster network, restoring its network alias.
+   * Docker does NOT preserve aliases after disconnect/reconnect, so we must
+   * re-add the alias explicitly to allow DNS resolution by other nodes.
+   */
+  protected void reconnectToNetwork(final GenericContainer<?> container) {
+    try {
+      final DockerClient dockerClient = DockerClientFactory.instance().client();
+      final String alias = container.getNetworkAliases().stream()
+          .filter(a -> a.startsWith("arcadedb-"))
+          .findFirst().orElse(null);
+
+      final var endpointConfig = new com.github.dockerjava.api.model.ContainerNetwork();
+      if (alias != null)
+        endpointConfig.withAliases(alias);
+
+      dockerClient.connectToNetworkCmd()
+          .withNetworkId(network.getId())
+          .withContainerId(container.getContainerId())
+          .withContainerNetwork(endpointConfig)
+          .exec();
+    } catch (final Exception ignored) {}
   }
 
   protected String basicAuth() {
