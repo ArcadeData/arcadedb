@@ -39,6 +39,7 @@ import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.ReplicatedDatabase;
+import com.arcadedb.server.ha.ratis.ArcadeDBStateMachine;
 import com.arcadedb.server.ha.ratis.RaftHAServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
@@ -636,6 +637,9 @@ public class ArcadeDBServer {
       if (!databaseDir.isDirectory())
         throw new ConfigurationException("Configured database directory '" + databaseDir + "' is not a directory on " +
             "file system");
+
+      // Recover any pending snapshot swaps from a previous crash before opening databases
+      ArcadeDBStateMachine.recoverPendingSnapshotSwaps(databaseDir.toPath());
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP)) {
         final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);

@@ -259,11 +259,15 @@ public class RaftHAServer {
   /**
    * Attempts to join an existing Ratis cluster by contacting a peer and adding this server.
    * Used in Kubernetes when a new pod is added via StatefulSet scale-up.
-   * If no existing cluster is found (fresh deployment), this is a no-op.
+   * If no existing cluster is found (fresh deployment), this is a no-op - the Raft server
+   * was already started with the full peer list from HA_SERVER_LIST, so there is no risk
+   * of split-brain. All pods share the same Raft group configuration and will elect a
+   * leader via normal Raft consensus once a majority becomes reachable.
    */
   private void tryAutoJoinCluster() {
     // Randomized jitter (0-3s) to prevent thundering herd when multiple pods start simultaneously
-    // (e.g. K8s Parallel pod management policy or mass restart).
+    // (e.g. K8s Parallel pod management policy or mass restart) and all try setConfiguration()
+    // at the same time during scale-up.
     final long jitterMs = Math.abs(localPeerId.hashCode() % 3000L);
     if (jitterMs > 0) {
       HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
@@ -350,9 +354,13 @@ public class RaftHAServer {
       }
     }
 
-    LogManager.instance().log(this, Level.WARNING,
-        "K8s auto-join: no existing cluster found, starting as new cluster. "
-            + "If other nodes exist but are unreachable, this may create a split-brain. Verify network connectivity");
+    // No peers responded - this is expected on a fresh cold-start deployment where all pods
+    // start simultaneously. The Raft server already has the full peer list configured
+    // (from HA_SERVER_LIST), so it will participate in normal Raft leader election once
+    // a majority becomes reachable. No split-brain risk because no single-node group is created.
+    LogManager.instance().log(this, Level.INFO,
+        "K8s auto-join: no existing cluster found. This node will participate in "
+            + "Raft leader election with the configured peer group once peers are reachable");
   }
 
   public void stopService() {

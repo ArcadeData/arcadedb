@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests serialization and deserialization of Raft log entries.
@@ -152,6 +153,61 @@ class RaftLogEntryTest {
 
     assertThat(entry.originPeerId()).isEqualTo("leader-node");
     assertThat(entry.databaseName()).isEqualTo("newDb");
+  }
+
+  @Test
+  void testDeserializeTransactionRejectsCorruptedStringLength() {
+    // Craft a binary buffer that looks like a TRANSACTION entry but has a corrupted string
+    // length field that declares a huge string (e.g. 1GB), which would cause OOM if uncapped.
+    final Binary stream = new Binary(64);
+    stream.putByte(RaftLogEntry.EntryType.TRANSACTION.code()); // type marker
+
+    // Write originPeerId with a legitimate-looking varint length prefix that's way too large.
+    // Binary.putString() uses putUnsignedNumber() for length. We'll manually write a large varint.
+    // Varint encoding for 1_000_000_000 (0x3B9ACA00):
+    //   0x80 | (0x00) = 0x80
+    //   0x80 | (0x14) = 0x94
+    //   0x80 | (0x69) = 0xE9
+    //   0x80 | (0x5C) = 0xDC
+    //   0x03
+    // But this is bigger than our buffer, so deserialization should reject it.
+    stream.putByte((byte) 0x80);
+    stream.putByte((byte) 0x94);
+    stream.putByte((byte) 0xE9);
+    stream.putByte((byte) 0xDC);
+    stream.putByte((byte) 0x03);
+    // No actual string data follows
+
+    stream.flip();
+    final byte[] data = new byte[stream.size()];
+    stream.getByteBuffer().get(data);
+
+    assertThatThrownBy(() -> RaftLogEntry.deserializeTransaction(data))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("exceeds");
+  }
+
+  @Test
+  void testDeserializeCommandForwardRejectsCorruptedStringLength() {
+    // Craft a COMMAND_FORWARD entry with a bogus database name length
+    final Binary stream = new Binary(64);
+    stream.putByte(RaftLogEntry.EntryType.COMMAND_FORWARD.code());
+
+    // Write a varint length of 500_000_000 for the database name
+    // 500_000_000 = 0x1DCD6500
+    stream.putByte((byte) 0x80);
+    stream.putByte((byte) 0xCA);
+    stream.putByte((byte) 0xB5);
+    stream.putByte((byte) 0xEE);
+    stream.putByte((byte) 0x01);
+
+    stream.flip();
+    final byte[] data = new byte[stream.size()];
+    stream.getByteBuffer().get(data);
+
+    assertThatThrownBy(() -> RaftLogEntry.deserializeCommandForward(data))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("exceeds");
   }
 
   /**

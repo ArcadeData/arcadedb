@@ -188,6 +188,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     // Skip the state machine apply to avoid double-applying page changes and bucket record deltas.
     // We compare originPeerId from the log entry (immutable) rather than querying live leadership state,
     // which avoids a TOCTOU race if leadership changes between commit and apply.
+    //
+    // Ordering safety: Ratis guarantees that applyTransaction() is called only for COMMITTED entries
+    // (quorum already reached). Followers never apply before quorum. On the leader side,
+    // ReplicatedDatabase.commit() calls replicateTransaction() (Raft quorum) BEFORE commit2ndPhase()
+    // (local apply), so the leader also never applies before quorum. The origin-skip here simply
+    // prevents double-application on the node that already committed via commit2ndPhase().
     if (isOriginNode(entry.originPeerId())) {
       HALog.log(this, HALog.TRACE, "Skipping WAL apply on origin node (commit2ndPhase handles it): db=%s", entry.databaseName());
       return;
@@ -485,24 +491,29 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
         throw e;
       }
 
-      // Phase 2: Close database and swap directories atomically
+      // Phase 2: Close database and swap directories using a crash-safe marker file.
+      // The marker ensures recovery can complete or rollback the swap if the process crashes.
       db.close();
 
+      final Path markerFile = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-pending");
+
       try {
+        // Write the pending marker BEFORE any destructive operation.
+        // If we crash after this point, recoverPendingSnapshotSwaps() will finish the job.
+        Files.writeString(markerFile, databaseName);
+
         // Move current database dir out of the way
-        Files.move(dbPath, backupDir);
+        if (Files.exists(dbPath))
+          Files.move(dbPath, backupDir);
 
         // Move fully-extracted temp dir into place
         Files.move(tempDir, dbPath);
 
         // Delete WAL files from the new database dir - they are stale after snapshot installation
-        final File[] walFiles = dbPath.toFile().listFiles((dir, name) -> name.endsWith(".wal"));
-        if (walFiles != null)
-          for (final File walFile : walFiles)
-            if (!walFile.delete())
-              LogManager.instance().log(this, Level.WARNING, "Failed to delete stale WAL file: %s", walFile.getName());
+        deleteStaleWalFiles(dbPath);
 
-        // Clean up the backup
+        // Swap succeeded - remove marker and backup
+        Files.deleteIfExists(markerFile);
         FileUtils.deleteRecursively(backupDir.toFile());
 
         LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
@@ -520,6 +531,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
               "CRITICAL: Failed to rollback snapshot swap for '%s'. Database may be unavailable. Error: %s",
               databaseName, rollbackEx.getMessage());
         }
+        Files.deleteIfExists(markerFile);
         FileUtils.deleteRecursively(tempDir.toFile());
         throw new ReplicationException("Snapshot installation failed during directory swap", e);
       }
@@ -538,6 +550,84 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
             databaseName, e.getMessage());
       }
     }
+  }
+
+  // -- Crash recovery for snapshot swap --
+
+  /**
+   * Scans the database directory for pending snapshot swap markers and completes or rolls back
+   * the swap. This must be called on startup BEFORE opening databases, to handle the case
+   * where the process crashed mid-swap.
+   * <p>
+   * Recovery logic:
+   * <ul>
+   *   <li>If the temp snapshot dir exists, complete the swap (move temp to live, clean up backup)</li>
+   *   <li>If the temp snapshot is gone but backup exists, rollback (restore backup to live)</li>
+   *   <li>If the live path already exists (swap completed, marker not deleted), just clean up</li>
+   * </ul>
+   */
+  public static void recoverPendingSnapshotSwaps(final Path databaseDir) {
+    final File[] markerFiles = databaseDir.toFile().listFiles(
+        (dir, name) -> name.endsWith(".snapshot-pending"));
+    if (markerFiles == null || markerFiles.length == 0)
+      return;
+
+    for (final File marker : markerFiles) {
+      final String baseName = marker.getName().replace(".snapshot-pending", "");
+      final Path livePath = databaseDir.resolve(baseName);
+      final Path backupPath = databaseDir.resolve(baseName + ".snapshot-old");
+      final Path snapshotPath = databaseDir.resolve(baseName + ".snapshot-tmp");
+
+      LogManager.instance().log(ArcadeDBStateMachine.class, Level.WARNING,
+          "Found pending snapshot swap marker for database '%s', recovering...", baseName);
+
+      try {
+        if (Files.exists(snapshotPath)) {
+          // Temp snapshot exists - complete the swap
+          if (Files.exists(livePath))
+            // Live path still there (crash before move-away), move it to backup first
+            Files.move(livePath, backupPath);
+
+          Files.move(snapshotPath, livePath);
+          deleteStaleWalFiles(livePath);
+          FileUtils.deleteRecursively(backupPath.toFile());
+
+          LogManager.instance().log(ArcadeDBStateMachine.class, Level.INFO,
+              "Snapshot swap recovery completed for database '%s'", baseName);
+
+        } else if (Files.exists(backupPath) && !Files.exists(livePath)) {
+          // Temp snapshot is gone, backup exists, live path missing - rollback
+          Files.move(backupPath, livePath);
+
+          LogManager.instance().log(ArcadeDBStateMachine.class, Level.WARNING,
+              "Snapshot swap rolled back for database '%s' (snapshot data was lost)", baseName);
+
+        } else if (Files.exists(livePath)) {
+          // Swap already completed, just clean up leftovers
+          FileUtils.deleteRecursively(backupPath.toFile());
+
+          LogManager.instance().log(ArcadeDBStateMachine.class, Level.INFO,
+              "Snapshot swap already completed for database '%s', cleaning up", baseName);
+        }
+      } catch (final IOException e) {
+        LogManager.instance().log(ArcadeDBStateMachine.class, Level.SEVERE,
+            "CRITICAL: Failed to recover snapshot swap for database '%s'. "
+                + "Manual intervention may be required. Error: %s",
+            baseName, e.getMessage());
+      } finally {
+        // Always delete the marker, even if recovery partially failed
+        marker.delete();
+      }
+    }
+  }
+
+  private static void deleteStaleWalFiles(final Path dbPath) {
+    final File[] walFiles = dbPath.toFile().listFiles((dir, name) -> name.endsWith(".wal"));
+    if (walFiles != null)
+      for (final File walFile : walFiles)
+        if (!walFile.delete())
+          LogManager.instance().log(ArcadeDBStateMachine.class, Level.WARNING,
+              "Failed to delete stale WAL file: %s", walFile.getName());
   }
 
   // -- Event notifications --

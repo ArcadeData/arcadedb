@@ -122,6 +122,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // REPLICATION (no lock held): send WAL to Ratis and wait for quorum.
     // No database lock is needed - we only send captured bytes over gRPC.
     // If this fails (quorum not reached), phase 2 never executes -> no local writes -> no divergence.
+    //
+    // Safety: server.getHA() is guaranteed non-null here because ReplicatedDatabase is only created
+    // when HA is enabled, and the RaftHAServer instance is set before databases are loaded.
+    // The isLeader() check above already verified that the Raft server is started and this node
+    // is the leader - if not, we would have thrown ServerIsNotTheLeaderException in phase 1.
     try {
       final RaftHAServer raftHA = server.getHA();
       HALog.log(this, HALog.DETAILED, "Replicating WAL via Ratis: db=%s, walSize=%d, deltaSize=%d, schema=%s",

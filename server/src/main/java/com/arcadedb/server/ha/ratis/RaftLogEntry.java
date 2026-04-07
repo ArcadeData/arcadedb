@@ -163,6 +163,7 @@ public class RaftLogEntry {
   // Max allowed sizes for deserialized buffers to prevent OOM from corrupted entries
   private static final int MAX_UNCOMPRESSED_SIZE = 256 * 1024 * 1024; // 256 MB
   private static final int MAX_DELTA_SIZE        = 1_000_000;
+  private static final int MAX_STRING_LENGTH     = 64 * 1024 * 1024;  // 64 MB (covers large schema JSON)
 
   // -- Deserialization --
 
@@ -185,8 +186,8 @@ public class RaftLogEntry {
     final Binary stream = new Binary(data);
     stream.getByte(); // skip type marker
 
-    final String originPeerId = stream.getString();
-    final String databaseName = stream.getString();
+    final String originPeerId = readBoundedString(stream);
+    final String databaseName = readBoundedString(stream);
 
     final int uncompressedLength = stream.getInt();
     if (uncompressedLength < 0 || uncompressedLength > MAX_UNCOMPRESSED_SIZE)
@@ -205,7 +206,7 @@ public class RaftLogEntry {
     Map<Integer, String> filesToRemove = null;
 
     if (stream.getByte() == 1) {
-      schemaJson = stream.getString();
+      schemaJson = readBoundedString(stream);
       filesToAdd = readFileMap(stream);
       filesToRemove = readFileMap(stream);
     }
@@ -218,7 +219,7 @@ public class RaftLogEntry {
     final Binary stream = new Binary(data);
     stream.getByte(); // skip type marker
 
-    final String databaseName = stream.getString();
+    final String databaseName = readBoundedString(stream);
 
     final int uncompressedLength = stream.getInt();
     if (uncompressedLength < 0 || uncompressedLength > MAX_UNCOMPRESSED_SIZE)
@@ -260,8 +261,8 @@ public class RaftLogEntry {
   public static CreateDatabaseEntry deserializeCreateDatabase(final byte[] data) {
     final Binary stream = new Binary(data);
     stream.getByte(); // skip type byte
-    final String originPeerId = stream.getString();
-    final String databaseName = stream.getString();
+    final String originPeerId = readBoundedString(stream);
+    final String databaseName = readBoundedString(stream);
     return new CreateDatabaseEntry(originPeerId, databaseName);
   }
 
@@ -308,19 +309,23 @@ public class RaftLogEntry {
     final Binary stream = new Binary(data);
     stream.getByte(); // skip marker
 
-    final String databaseName = stream.getString();
-    final String language = stream.getString();
-    final String command = stream.getString();
+    final String databaseName = readBoundedString(stream);
+    final String language = readBoundedString(stream);
+    final String command = readBoundedString(stream);
 
     final int namedCount = stream.getInt();
+    if (namedCount < 0 || namedCount > MAX_DELTA_SIZE)
+      throw new IllegalArgumentException("Invalid named param count: " + namedCount);
     Map<String, Object> namedParams = null;
     if (namedCount > 0) {
       namedParams = new LinkedHashMap<>(namedCount);
       for (int i = 0; i < namedCount; i++)
-        namedParams.put(stream.getString(), readValue(stream));
+        namedParams.put(readBoundedString(stream), readValue(stream));
     }
 
     final int positionalCount = stream.getInt();
+    if (positionalCount < 0 || positionalCount > MAX_DELTA_SIZE)
+      throw new IllegalArgumentException("Invalid positional param count: " + positionalCount);
     Object[] positionalParams = null;
     if (positionalCount > 0) {
       positionalParams = new Object[positionalCount];
@@ -358,12 +363,16 @@ public class RaftLogEntry {
     final Binary stream = new Binary(data);
     stream.getByte(); // skip marker
     final int rowCount = stream.getInt();
+    if (rowCount < 0 || rowCount > MAX_DELTA_SIZE)
+      throw new IllegalArgumentException("Invalid row count: " + rowCount);
     final List<Map<String, Object>> rows = new ArrayList<>(rowCount);
     for (int r = 0; r < rowCount; r++) {
       final int propCount = stream.getInt();
+      if (propCount < 0 || propCount > MAX_DELTA_SIZE)
+        throw new IllegalArgumentException("Invalid property count: " + propCount);
       final Map<String, Object> row = new LinkedHashMap<>(propCount);
       for (int p = 0; p < propCount; p++) {
-        final String key = stream.getString();
+        final String key = readBoundedString(stream);
         final Object value = readValue(stream);
         row.put(key, value);
       }
@@ -404,7 +413,7 @@ public class RaftLogEntry {
     final byte type = stream.getByte();
     return switch (type) {
       case 0 -> null;
-      case 1 -> stream.getString();
+      case 1 -> readBoundedString(stream);
       case 2 -> stream.getInt();
       case 3 -> stream.getLong();
       case 4 -> Double.longBitsToDouble(stream.getLong());
@@ -430,13 +439,36 @@ public class RaftLogEntry {
     }
   }
 
+  /**
+   * Reads a length-prefixed string from the stream, validating that the declared length
+   * does not exceed the cap or the remaining buffer bytes. Prevents OOM from corrupted entries
+   * that declare a huge string length.
+   */
+  private static String readBoundedString(final Binary stream) {
+    final int pos = stream.position();
+    final long declaredLength = stream.getUnsignedNumber();
+    if (declaredLength < 0 || declaredLength > MAX_STRING_LENGTH)
+      throw new IllegalArgumentException(
+          "String length " + declaredLength + " exceeds maximum " + MAX_STRING_LENGTH + " at position " + pos);
+    final int remaining = stream.size() - stream.position();
+    if (declaredLength > remaining)
+      throw new IllegalArgumentException(
+          "String length " + declaredLength + " exceeds remaining buffer bytes " + remaining + " at position " + pos);
+    final byte[] bytes = new byte[(int) declaredLength];
+    if (bytes.length > 0)
+      stream.getByteArray(bytes);
+    return new String(bytes, com.arcadedb.database.DatabaseFactory.getDefaultCharset());
+  }
+
   private static Map<Integer, String> readFileMap(final Binary stream) {
     final int count = stream.getInt();
+    if (count < 0 || count > MAX_DELTA_SIZE)
+      throw new IllegalArgumentException("Invalid file map count: " + count);
     final Map<Integer, String> result = new HashMap<>(count);
     for (int i = 0; i < count; i++) {
       final int fileId = stream.getInt();
       final boolean notNull = stream.getByte() == 1;
-      result.put(fileId, notNull ? stream.getString() : null);
+      result.put(fileId, notNull ? readBoundedString(stream) : null);
     }
     return result;
   }
