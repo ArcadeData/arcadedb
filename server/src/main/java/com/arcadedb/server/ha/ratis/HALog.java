@@ -38,23 +38,11 @@ public final class HALog {
   /** Level 3: every state machine operation, entry parsing, serialization */
   public static final int TRACE = 3;
 
-  private static volatile int cachedLevel = -1;
-
   private HALog() {
   }
 
-  /** Refreshes the cached verbose level from GlobalConfiguration. Call after config changes. */
-  public static void refreshLevel() {
-    cachedLevel = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
-  }
-
   private static int getLevel() {
-    int level = cachedLevel;
-    if (level < 0) {
-      level = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
-      cachedLevel = level;
-    }
-    return level;
+    return GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
   }
 
   public static boolean isEnabled(final int level) {

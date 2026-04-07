@@ -289,6 +289,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     fireCallback(ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED, entry.databaseName());
   }
 
+  // WARNING: This path only applies WAL page changes. It does NOT handle schema changes
+  // (filesToAdd, filesToRemove, schemaJson). Activating forwardTransaction() for schema-modifying
+  // operations will cause silent schema divergence across nodes. If this path is ever used in
+  // production, it must be extended to match applyTransactionEntry()'s three-phase apply logic.
   private void applyTransactionForwardEntry(final byte[] data) {
     final RaftLogEntry.TransactionForwardEntry entry = RaftLogEntry.deserializeTransactionForward(data);
 
@@ -521,6 +525,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     LogManager.instance().log(this, Level.INFO,
         "Raft snapshot installation requested from leader (firstLogIndex=%s). Triggering full resync...", firstTermIndexInLog);
 
+    // Threading safety: Ratis calls this method inside synchronized(RaftServerImpl) in
+    // SnapshotInstallationHandler.notifyStateMachineToInstallSnapshot(), but only attaches a
+    // whenComplete() callback to the returned future - it does NOT block (.join()) on it before
+    // releasing the monitor. The heavy work (HTTP download, db.close(), server.getDatabase()) runs
+    // on the ForkJoinPool and only synchronizes on ArcadeDBServer.databases, never on RaftServerImpl,
+    // so there is no deadlock risk.
     return CompletableFuture.supplyAsync(() -> {
       try {
         // Resolve the leader's HTTP address for snapshot download
@@ -818,7 +828,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     electionCount.incrementAndGet();
     lastElectionTime = System.currentTimeMillis();
 
-    // If a snapshot gap was detected in reinitialize(), download now that we know the leader
+    // If a snapshot gap was detected in reinitialize(), download now that we know the leader.
+    // Threading safety: Ratis calls notifyLeaderChanged() from ServerState.setLeader() which
+    // uses AtomicReference (no synchronized block). The download runs on a dedicated thread
+    // and only synchronizes on ArcadeDBServer.databases, never on Ratis internals.
     if (needsSnapshotDownload) {
       needsSnapshotDownload = false;
       new Thread(() -> {

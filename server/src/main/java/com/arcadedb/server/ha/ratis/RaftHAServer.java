@@ -196,7 +196,6 @@ public class RaftHAServer {
   }
 
   public void startService() {
-    HALog.refreshLevel();
 
     LogManager.instance().log(this, Level.INFO, "Starting Ratis HA service (cluster=%s, peers=%s, quorum=%s)...",
         configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME), raftGroup.getPeers(), quorum);
@@ -570,6 +569,10 @@ public class RaftHAServer {
    * Reserved for future use: forwards a transaction from a non-leader node through the Raft cluster.
    * Currently not called from production code - followers use HTTP proxy forwarding via
    * {@code ServerIsNotTheLeaderException} instead. Kept as public API for future direct WAL forwarding.
+   * <p>
+   * WARNING: The corresponding apply path ({@code applyTransactionForwardEntry}) only handles WAL
+   * page changes. It does NOT propagate schema changes (filesToAdd, filesToRemove, schemaJson).
+   * Using this for schema-modifying transactions will cause silent schema divergence across nodes.
    *
    * @param databaseName      target database
    * @param bucketRecordDelta per-bucket record count changes
