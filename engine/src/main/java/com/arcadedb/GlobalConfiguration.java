@@ -654,7 +654,8 @@ public enum GlobalConfiguration {
   private final        SCOPE                    scope;
   private final        Callable<Object, Object> callback;
   private final        Callable<Object, Object> callbackIfNoSet;
-  private volatile     Object                   value  = nullValue;
+  private volatile     Object                   value          = nullValue;
+  private volatile     boolean                  explicitlySet  = false;
   private final        String                   description;
   private final        Boolean                  canChangeAtRuntime;
   private final        boolean                  hidden;
@@ -719,6 +720,7 @@ public enum GlobalConfiguration {
       value = callbackIfNoSet.call(null);
     else
       value = defValue;
+    explicitlySet = false;
   }
 
   public static void dumpConfiguration(final PrintStream out) {
@@ -836,7 +838,7 @@ public enum GlobalConfiguration {
    * @return {@literal true} if configuration was changed from default value and {@literal false} otherwise.
    */
   public boolean isChanged() {
-    return value != defValue;
+    return explicitlySet;
   }
 
   /**
@@ -863,6 +865,7 @@ public enum GlobalConfiguration {
 
   public void setValue(final Object iValue) {
     final Object oldValue = value;
+    explicitlySet = true;
 
     try {
       if (iValue == null)

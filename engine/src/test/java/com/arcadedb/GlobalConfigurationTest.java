@@ -92,6 +92,104 @@ class GlobalConfigurationTest extends TestHelper {
   }
 
   @Test
+  void productionModeDefaultsWalFlush() {
+    final String originalMode = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    final int originalFlush = GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger();
+
+    try {
+      // Reset TX_WAL_FLUSH to default (0) so isChanged() returns false
+      GlobalConfiguration.TX_WAL_FLUSH.reset();
+      assertThat(GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger()).isEqualTo(0);
+      assertThat(GlobalConfiguration.TX_WAL_FLUSH.isChanged()).isFalse();
+
+      // Simulate the production mode logic from ArcadeDBServer.start()
+      GlobalConfiguration.SERVER_MODE.setValue("production");
+      if ("production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())
+          && !GlobalConfiguration.TX_WAL_FLUSH.isChanged()) {
+        GlobalConfiguration.TX_WAL_FLUSH.setValue(1);
+      }
+
+      assertThat(GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger()).isEqualTo(1);
+    } finally {
+      GlobalConfiguration.SERVER_MODE.setValue(originalMode);
+      GlobalConfiguration.TX_WAL_FLUSH.setValue(originalFlush);
+    }
+  }
+
+  @Test
+  void productionModeRespectsExplicitWalFlush() {
+    final String originalMode = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    final int originalFlush = GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger();
+
+    try {
+      // User explicitly sets TX_WAL_FLUSH to 0
+      GlobalConfiguration.TX_WAL_FLUSH.setValue(0);
+      assertThat(GlobalConfiguration.TX_WAL_FLUSH.isChanged()).isTrue();
+
+      // Production mode should NOT override an explicit setting
+      GlobalConfiguration.SERVER_MODE.setValue("production");
+      if ("production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())
+          && !GlobalConfiguration.TX_WAL_FLUSH.isChanged()) {
+        GlobalConfiguration.TX_WAL_FLUSH.setValue(1);
+      }
+
+      assertThat(GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger()).isEqualTo(0);
+    } finally {
+      GlobalConfiguration.SERVER_MODE.setValue(originalMode);
+      GlobalConfiguration.TX_WAL_FLUSH.setValue(originalFlush);
+    }
+  }
+
+  @Test
+  void productionModeDisablesLoadCsvFileUrls() {
+    final String originalMode = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    final boolean originalLoadCsv = GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.getValueAsBoolean();
+
+    try {
+      // Reset so isChanged() returns false
+      GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.reset();
+      assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.getValueAsBoolean()).isTrue();
+      assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.isChanged()).isFalse();
+
+      // Simulate production mode logic
+      GlobalConfiguration.SERVER_MODE.setValue("production");
+      if ("production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())
+          && !GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.isChanged()) {
+        GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.setValue(false);
+      }
+
+      assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.getValueAsBoolean()).isFalse();
+    } finally {
+      GlobalConfiguration.SERVER_MODE.setValue(originalMode);
+      GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.setValue(originalLoadCsv);
+    }
+  }
+
+  @Test
+  void productionModeRespectsExplicitLoadCsvFileUrls() {
+    final String originalMode = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    final boolean originalLoadCsv = GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.getValueAsBoolean();
+
+    try {
+      // User explicitly enables LOAD CSV file access
+      GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.setValue(true);
+      assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.isChanged()).isTrue();
+
+      // Production mode should NOT override an explicit setting
+      GlobalConfiguration.SERVER_MODE.setValue("production");
+      if ("production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())
+          && !GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.isChanged()) {
+        GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.setValue(false);
+      }
+
+      assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.getValueAsBoolean()).isTrue();
+    } finally {
+      GlobalConfiguration.SERVER_MODE.setValue(originalMode);
+      GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.setValue(originalLoadCsv);
+    }
+  }
+
+  @Test
   void defaultValue() {
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.reset();
     final int original = GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getValueAsInteger();
