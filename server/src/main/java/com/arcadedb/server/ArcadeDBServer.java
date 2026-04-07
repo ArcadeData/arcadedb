@@ -154,8 +154,9 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
         GlobalConfiguration.SERVER_MODE.getValueAsString(), getAllPluginNames());
 
-    // IN PRODUCTION MODE, ENSURE WAL FLUSH IS ENABLED FOR DURABILITY
+    // IN PRODUCTION MODE, APPLY SAFE DEFAULTS
     if ("production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
+      // WAL FLUSH: DEFAULT TO 1 FOR DURABILITY
       if (!GlobalConfiguration.TX_WAL_FLUSH.isChanged()) {
         GlobalConfiguration.TX_WAL_FLUSH.setValue(1);
         LogManager.instance().log(this, Level.INFO,
@@ -167,6 +168,14 @@ public class ArcadeDBServer {
                 + "Committed transactions may be lost on power failure or OS crash "
                 + "unless your storage has battery-backed write cache or power-loss protection. "
                 + "Set arcadedb.txWalFlush=1 or =2 for durability on standard hardware");
+      }
+
+      // LOAD CSV: DISABLE LOCAL FILE ACCESS FOR SECURITY
+      if (!GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.isChanged()) {
+        GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.setValue(false);
+        LogManager.instance().log(this, Level.INFO,
+            "Production mode: LOAD CSV file access automatically disabled for security. "
+                + "Set arcadedb.opencypher.loadCsv.allowFileUrls=true explicitly to enable");
       }
     }
 
@@ -238,6 +247,9 @@ public class ArcadeDBServer {
 
     getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, msg);
 
+    if ("production".equals(mode))
+      logProductionChecklist();
+
     if (!"production".equals(mode)) {
       final InputStream file = getClass().getClassLoader().getResourceAsStream("static/index.html");
       if (file != null) {
@@ -253,6 +265,54 @@ public class ArcadeDBServer {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
+  }
+
+  private void logProductionChecklist() {
+    LogManager.instance().log(this, Level.INFO, "Production checklist:");
+
+    // WAL FLUSH
+    final int walFlush = GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger();
+    if (walFlush > 0)
+      LogManager.instance().log(this, Level.INFO, "  - WAL flush: %d (%s) [OK]", walFlush,
+          walFlush == 1 ? "flush without metadata" : "full fsync");
+    else
+      LogManager.instance().log(this, Level.WARNING, "  - WAL flush: disabled [WARNING]");
+
+    // SSL
+    final boolean ssl = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    if (ssl)
+      LogManager.instance().log(this, Level.INFO, "  - SSL: enabled [OK]");
+    else
+      LogManager.instance().log(this, Level.INFO, "  - SSL: disabled. Consider enabling for encrypted connections");
+
+    // HA
+    final boolean ha = configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED);
+    if (ha)
+      LogManager.instance().log(this, Level.INFO, "  - High availability: enabled [OK]");
+    else
+      LogManager.instance().log(this, Level.INFO, "  - High availability: disabled. Consider enabling for fault tolerance");
+
+    // LOAD CSV FILE ACCESS
+    final boolean loadCsvFiles = GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.getValueAsBoolean();
+    if (!loadCsvFiles)
+      LogManager.instance().log(this, Level.INFO, "  - LOAD CSV file access: disabled [OK]");
+    else
+      LogManager.instance().log(this, Level.WARNING,
+          "  - LOAD CSV file access: enabled [WARNING]. Consider disabling for multi-tenant security");
+
+    // BACKUP
+    final boolean backup = configuration.getValueAsBoolean(GlobalConfiguration.BACKUP_ENABLED);
+    if (backup)
+      LogManager.instance().log(this, Level.INFO, "  - Backup support: enabled [OK]");
+    else
+      LogManager.instance().log(this, Level.WARNING,
+          "  - Backup support: disabled [WARNING]. Set arcadedb.backup.enabled=true for production safety");
+
+    // DEFAULT ROOT PASSWORD
+    final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    if (rootPassword != null && !rootPassword.isEmpty())
+      LogManager.instance().log(this, Level.WARNING,
+          "  - Root password: set via configuration [WARNING]. Consider using server-users.json instead");
   }
 
   private void createDirectories() {
