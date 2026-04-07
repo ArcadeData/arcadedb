@@ -418,16 +418,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final var raftHA = httpServer.getServer().getHA();
     final String expectedToken = raftHA != null ? raftHA.getClusterToken() : null;
 
-    if (expectedToken == null || expectedToken.isEmpty()
+    if (providedToken == null || expectedToken == null || expectedToken.isEmpty()
         || !MessageDigest.isEqual(expectedToken.getBytes(StandardCharsets.UTF_8), providedToken.getBytes(StandardCharsets.UTF_8))) {
       sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
       return null;
     }
-    if (forwardedUserValues == null || forwardedUserValues.isEmpty()) {
+    final String forwardedUser = forwardedUserValues != null && !forwardedUserValues.isEmpty()
+        ? forwardedUserValues.getFirst() : null;
+    if (forwardedUser == null || forwardedUser.isEmpty()) {
       sendErrorResponse(exchange, 401, "Missing forwarded user", null, null);
       return null;
     }
-    final ServerSecurityUser user = httpServer.getServer().getSecurity().getUser(forwardedUserValues.getFirst());
+    final ServerSecurityUser user = httpServer.getServer().getSecurity().getUser(forwardedUser);
     if (user == null) {
       sendErrorResponse(exchange, 401, "Invalid forwarded authentication", null, null);
       return null;

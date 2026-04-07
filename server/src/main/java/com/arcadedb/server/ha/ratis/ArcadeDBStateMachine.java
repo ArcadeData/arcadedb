@@ -225,8 +225,19 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
       return CompletableFuture.completedFuture(Message.EMPTY);
 
-    } catch (final Exception e) {
+    } catch (final ReplicationException | IllegalArgumentException | IllegalStateException e) {
+      // Expected errors (database unavailable, corrupted entry, unknown value type): return
+      // failed future so Ratis can handle the failure without crashing the node.
       LogManager.instance().log(this, Level.SEVERE, "Error applying Raft log entry at index %d", e, index);
+      return CompletableFuture.failedFuture(e);
+    } catch (final Exception e) {
+      // Unexpected errors (NPE, ClassCastException, etc.) indicate a bug that could cause
+      // state divergence if silently swallowed. Crash the state machine so the node recovers
+      // via snapshot rather than continuing with potentially inconsistent state.
+      LogManager.instance().log(this, Level.SEVERE,
+          "CRITICAL: Unexpected error applying Raft log entry at index %d. "
+              + "Shutting down to prevent state divergence.", e, index);
+      server.stop();
       return CompletableFuture.failedFuture(e);
     }
   }

@@ -98,6 +98,15 @@ public class RaftHAServer {
     }
   }
 
+  // PBKDF2 parameters for cluster token derivation (initClusterToken)
+  private static final int  PBKDF2_ITERATIONS       = 100_000;
+  private static final int  PBKDF2_KEY_LENGTH_BITS   = 256;
+
+  // K8s auto-join parameters (tryAutoJoinCluster)
+  private static final long AUTO_JOIN_JITTER_MAX_MS  = 3000L;
+  private static final int  AUTO_JOIN_RPC_TIMEOUT_MIN_SECS = 3;
+  private static final int  AUTO_JOIN_RPC_TIMEOUT_MAX_SECS = 5;
+
   private final ArcadeDBServer              server;
   private final ContextConfiguration       configuration;
   private final RaftGroup                  raftGroup;
@@ -183,7 +192,7 @@ public class RaftHAServer {
       final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
       final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
       final PBEKeySpec spec = new PBEKeySpec(
-          password.toCharArray(), salt, 100_000, 256);
+          password.toCharArray(), salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH_BITS);
       final byte[] hash = factory.generateSecret(spec).getEncoded();
       spec.clearPassword();
       this.clusterToken = HexFormat.of().formatHex(hash);
@@ -340,7 +349,7 @@ public class RaftHAServer {
     // Randomized jitter (0-3s) to prevent thundering herd when multiple pods start simultaneously
     // (e.g. K8s Parallel pod management policy or mass restart) and all try setConfiguration()
     // at the same time during scale-up.
-    final long jitterMs = Math.abs(localPeerId.hashCode() % 3000L);
+    final long jitterMs = Math.abs(localPeerId.hashCode() % AUTO_JOIN_JITTER_MAX_MS);
     if (jitterMs > 0) {
       HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
       try { Thread.sleep(jitterMs); } catch (final InterruptedException e) { Thread.currentThread().interrupt(); return; }
@@ -358,9 +367,9 @@ public class RaftHAServer {
         // Without explicit timeouts, a firewalled peer blocks for the full default gRPC timeout.
         final RaftProperties tempProps = new RaftProperties();
         tempProps.set("raft.server.rpc.type", "GRPC");
-        RaftServerConfigKeys.Rpc.setTimeoutMin(tempProps, TimeDuration.valueOf(3, TimeUnit.SECONDS));
-        RaftServerConfigKeys.Rpc.setTimeoutMax(tempProps, TimeDuration.valueOf(5, TimeUnit.SECONDS));
-        RaftServerConfigKeys.Rpc.setRequestTimeout(tempProps, TimeDuration.valueOf(5, TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setTimeoutMin(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MIN_SECS, TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setTimeoutMax(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MAX_SECS, TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setRequestTimeout(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MAX_SECS, TimeUnit.SECONDS));
 
         // Build a group with just the target peer to query it
         final RaftGroup targetGroup = RaftGroup.valueOf(raftGroup.getGroupId(), peer);
