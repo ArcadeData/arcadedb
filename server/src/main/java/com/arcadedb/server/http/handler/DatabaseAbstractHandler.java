@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
@@ -26,6 +27,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
@@ -104,6 +106,26 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
     final int retries = payload != null && !payload.isNull("retries") ? payload.getInt("retries") : 1;
 
+    // Set read consistency context for HA follower reads
+    if (database instanceof HAReplicatedDatabase haDb) {
+      final HeaderValues readConsistencyHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Read-Consistency");
+      final HeaderValues commitIndexHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Commit-Index");
+
+      final String consistencyStr = readConsistencyHeader != null && !readConsistencyHeader.isEmpty()
+          ? readConsistencyHeader.getFirst()
+          : database.getConfiguration().getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY);
+
+      final long bookmarkIndex = commitIndexHeader != null && !commitIndexHeader.isEmpty()
+          ? Long.parseLong(commitIndexHeader.getFirst()) : -1;
+
+      try {
+        final Database.READ_CONSISTENCY consistency = Database.READ_CONSISTENCY.valueOf(consistencyStr.toUpperCase());
+        haDb.setReadConsistencyContext(consistency, bookmarkIndex);
+      } catch (final IllegalArgumentException ignored) {
+        // Invalid consistency level, skip
+      }
+    }
+
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
       boolean finalAtomicTransaction = atomicTransaction;
@@ -139,7 +161,17 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         // STARTED ATOMIC TRANSACTION, COMMIT
         database.commit();
 
+      // Emit bookmark header for read-your-writes consistency
+      if (database instanceof HAReplicatedDatabase haDb) {
+        final long lastApplied = haDb.getLastAppliedIndex();
+        if (lastApplied >= 0)
+          exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), String.valueOf(lastApplied));
+      }
+
     } finally {
+      // Clear read consistency context
+      if (database instanceof HAReplicatedDatabase haDb)
+        haDb.clearReadConsistencyContext();
 
       if (activeSession != null)
         // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD

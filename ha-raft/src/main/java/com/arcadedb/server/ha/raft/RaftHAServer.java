@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
@@ -43,6 +44,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -75,7 +77,7 @@ public class RaftHAServer {
   private final long                       quorumTimeout;
   private final RaftGroup                  raftGroup;
   private final RaftPeerId                 localPeerId;
-  private final Map<RaftPeerId, String>    httpAddresses;
+  private final Map<RaftPeerId, String>    httpAddresses = new HashMap<>();
   private final Map<RaftPeerId, String>    peerDisplayNames;
   private final String                     clusterName;
 
@@ -84,6 +86,8 @@ public class RaftHAServer {
   private RaftProperties            raftProperties;
   private volatile RaftGroupCommitter groupCommitter;
   private ScheduledExecutorService  lagMonitorExecutor;
+  private final Object              leaderChangeNotifier = new Object();
+  private final Object              applyNotifier        = new Object();
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -99,7 +103,7 @@ public class RaftHAServer {
     final List<RaftPeer> peers = parsed.peers();
     final String serverName = arcadeServer.getServerName();
 
-    this.httpAddresses = parsed.httpAddresses();
+    this.httpAddresses.putAll(parsed.httpAddresses());
     this.localPeerId = findLocalPeerId(peers, serverName, arcadeServer);
     this.raftGroup = RaftGroup.valueOf(
         RaftGroupId.valueOf(UUID.nameUUIDFromBytes(clusterName.getBytes(StandardCharsets.UTF_8))),
@@ -325,6 +329,8 @@ public class RaftHAServer {
         ? RaftStorage.StartupOption.RECOVER
         : RaftStorage.StartupOption.FORMAT;
 
+    final boolean hadExistingStorage = hasExistingRaftStorage();
+
     raftServer = RaftServer.newBuilder()
         .setServerId(localPeerId)
         .setGroup(raftGroup)
@@ -348,6 +354,10 @@ public class RaftHAServer {
 
     final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
     groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, batchSize);
+
+    // K8s auto-join: if running in Kubernetes with no existing storage, try to join an existing cluster
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S) && !hadExistingStorage)
+      tryAutoJoinCluster();
   }
 
   /**
@@ -576,6 +586,348 @@ public class RaftHAServer {
 
   public RaftPeerId getLocalPeerId() {
     return localPeerId;
+  }
+
+  public Collection<RaftPeer> getLivePeers() {
+    if (raftServer != null) {
+      try {
+        final var division = raftServer.getDivision(raftGroup.getGroupId());
+        final var conf = division.getRaftConf();
+        if (conf != null)
+          return conf.getCurrentPeers();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.FINE, "Cannot read live peers from Raft server, using static list", e);
+      }
+    }
+    return raftGroup.getPeers();
+  }
+
+  Object getLeaderChangeNotifier() {
+    return leaderChangeNotifier;
+  }
+
+  public void addPeer(final String peerId, final String address) {
+    final RaftPeer newPeer = RaftPeer.newBuilder()
+        .setId(RaftPeerId.valueOf(peerId))
+        .setAddress(address)
+        .build();
+
+    final List<RaftPeer> newPeers = new ArrayList<>(getLivePeers());
+    newPeers.add(newPeer);
+
+    try {
+      final RaftClientReply reply = raftClient.admin().setConfiguration(newPeers);
+      if (!reply.isSuccess())
+        throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
+
+      final int colonIdx = address.lastIndexOf(':');
+      if (colonIdx > 0) {
+        final String host = address.substring(0, colonIdx);
+        try {
+          final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));
+          final int httpPortOffset = getHttpPortOffset();
+          httpAddresses.put(RaftPeerId.valueOf(peerId), host + ":" + (raftPort + httpPortOffset));
+        } catch (final NumberFormatException ignored) {
+        }
+      }
+
+      LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster at %s", peerId, address);
+    } catch (final IOException e) {
+      throw new ConfigurationException("Failed to add peer " + peerId, e);
+    }
+  }
+
+  public void removePeer(final String peerId) {
+    final Collection<RaftPeer> livePeers = getLivePeers();
+    final List<RaftPeer> newPeers = new ArrayList<>();
+    for (final RaftPeer peer : livePeers)
+      if (!peer.getId().toString().equals(peerId))
+        newPeers.add(peer);
+
+    if (newPeers.size() == livePeers.size())
+      throw new ConfigurationException("Peer " + peerId + " not found in cluster");
+
+    try {
+      final RaftClientReply reply = raftClient.admin().setConfiguration(newPeers);
+      if (!reply.isSuccess())
+        throw new ConfigurationException("Failed to remove peer " + peerId + ": " + reply.getException());
+
+      httpAddresses.remove(RaftPeerId.valueOf(peerId));
+      LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
+    } catch (final IOException e) {
+      throw new ConfigurationException("Failed to remove peer " + peerId, e);
+    }
+  }
+
+  private int getHttpPortOffset() {
+    for (final RaftPeer peer : raftGroup.getPeers()) {
+      final String httpAddr = httpAddresses.get(peer.getId());
+      if (httpAddr != null) {
+        try {
+          final int httpPort = Integer.parseInt(httpAddr.substring(httpAddr.lastIndexOf(':') + 1));
+          final int raftPort = Integer.parseInt(
+              peer.getAddress().toString().substring(peer.getAddress().toString().lastIndexOf(':') + 1));
+          return httpPort - raftPort;
+        } catch (final NumberFormatException ignored) {
+        }
+      }
+    }
+    return 46;
+  }
+
+  public void transferLeadership(final String targetPeerId, final long timeoutMs) {
+    try {
+      final RaftClientReply reply = raftClient.admin().transferLeadership(
+          RaftPeerId.valueOf(targetPeerId), timeoutMs);
+      if (!reply.isSuccess())
+        throw new ConfigurationException(
+            "Failed to transfer leadership to " + targetPeerId + ": " + reply.getException());
+      LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s", targetPeerId);
+    } catch (final IOException e) {
+      throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId, e);
+    }
+  }
+
+  public void stepDown() {
+    for (final var peer : getLivePeers()) {
+      if (!peer.getId().toString().equals(localPeerId.toString())) {
+        try {
+          transferLeadership(peer.getId().toString(), 10_000);
+          return;
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to step down (transfer to %s): %s", peer.getId(), e.getMessage());
+        }
+      }
+    }
+    LogManager.instance().log(this, Level.SEVERE,
+        "Cannot step down: no other peer available for leadership transfer");
+  }
+
+  public void leaveCluster() {
+    if (raftServer == null || raftClient == null)
+      return;
+
+    try {
+      final Collection<RaftPeer> livePeers = getLivePeers();
+      if (livePeers.size() <= 1) {
+        HALog.log(this, HALog.BASIC, "Single-node cluster, skipping leave");
+        return;
+      }
+
+      if (isLeader()) {
+        for (final RaftPeer peer : livePeers) {
+          if (!peer.getId().equals(localPeerId)) {
+            HALog.log(this, HALog.BASIC,
+                "Leaving cluster: transferring leadership to %s before removal", peer.getId());
+            try {
+              transferLeadership(peer.getId().toString(), 10_000);
+              final long deadline = System.currentTimeMillis() + 5_000;
+              synchronized (leaderChangeNotifier) {
+                while (isLeader()) {
+                  final long remaining = deadline - System.currentTimeMillis();
+                  if (remaining <= 0)
+                    break;
+                  leaderChangeNotifier.wait(remaining);
+                }
+              }
+            } catch (final Exception e) {
+              HALog.log(this, HALog.BASIC,
+                  "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
+            }
+            break;
+          }
+        }
+      }
+
+      HALog.log(this, HALog.BASIC, "Leaving cluster: removing self (%s) from Raft group", localPeerId);
+      removePeer(localPeerId.toString());
+      HALog.log(this, HALog.BASIC, "Successfully left the Raft cluster");
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Failed to leave cluster gracefully: %s", e.getMessage());
+    }
+  }
+
+  public void notifyApplied() {
+    synchronized (applyNotifier) {
+      applyNotifier.notifyAll();
+    }
+  }
+
+  public void waitForAppliedIndex(final long targetIndex) {
+    if (targetIndex <= 0)
+      return;
+    try {
+      final long deadline = System.currentTimeMillis() + quorumTimeout;
+      synchronized (applyNotifier) {
+        while (getLastAppliedIndex() < targetIndex) {
+          final long remaining = deadline - System.currentTimeMillis();
+          if (remaining <= 0) {
+            LogManager.instance().log(this, Level.WARNING,
+                "READ_YOUR_WRITES consistency timeout: applied=%d < target=%d (consistency degraded to EVENTUAL)",
+                getLastAppliedIndex(), targetIndex);
+            return;
+          }
+          applyNotifier.wait(remaining);
+        }
+      }
+      HALog.log(this, HALog.TRACE, "Bookmark wait complete: applied >= target=%d", targetIndex);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  public void waitForLocalApply() {
+    try {
+      final long commitIndex = getCommitIndex();
+      if (commitIndex <= 0)
+        return;
+
+      final long deadline = System.currentTimeMillis() + quorumTimeout;
+      synchronized (applyNotifier) {
+        while (getLastAppliedIndex() < commitIndex) {
+          final long remaining = deadline - System.currentTimeMillis();
+          if (remaining <= 0) {
+            HALog.log(this, HALog.DETAILED, "waitForLocalApply timed out: applied=%d < commit=%d",
+                getLastAppliedIndex(), commitIndex);
+            return;
+          }
+          applyNotifier.wait(remaining);
+        }
+      }
+      HALog.log(this, HALog.TRACE, "Local apply caught up: applied=%d >= commit=%d",
+          getLastAppliedIndex(), commitIndex);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (final Exception e) {
+      HALog.log(this, HALog.DETAILED, "waitForLocalApply failed: %s", e.getMessage());
+    }
+  }
+
+  public long getLastAppliedIndex() {
+    if (raftServer == null)
+      return -1;
+    try {
+      return raftServer.getDivision(raftGroup.getGroupId()).getInfo().getLastAppliedIndex();
+    } catch (final IOException e) {
+      return -1;
+    }
+  }
+
+  public long getCommitIndex() {
+    if (raftServer == null)
+      return -1;
+    try {
+      return raftServer.getDivision(raftGroup.getGroupId()).getRaftLog().getLastCommittedIndex();
+    } catch (final IOException e) {
+      return -1;
+    }
+  }
+
+  void tryAutoJoinCluster() {
+    final long jitterMs = Math.abs(localPeerId.hashCode() % 3000L);
+    if (jitterMs > 0) {
+      HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
+      try {
+        Thread.sleep(jitterMs);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
+
+    HALog.log(this, HALog.BASIC, "K8s auto-join: attempting to join existing cluster...");
+
+    for (final RaftPeer peer : raftGroup.getPeers()) {
+      if (peer.getId().equals(localPeerId))
+        continue;
+
+      try {
+        final RaftProperties tempProps = new RaftProperties();
+        RaftServerConfigKeys.Rpc.setTimeoutMin(tempProps, TimeDuration.valueOf(3, TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setTimeoutMax(tempProps, TimeDuration.valueOf(5, TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setRequestTimeout(tempProps, TimeDuration.valueOf(5, TimeUnit.SECONDS));
+
+        final RaftGroup targetGroup = RaftGroup.valueOf(raftGroup.getGroupId(), peer);
+        try (final RaftClient tempClient = RaftClient.newBuilder()
+            .setRaftGroup(targetGroup)
+            .setProperties(tempProps)
+            .build()) {
+
+          final var groupInfo = tempClient.getGroupManagementApi(peer.getId())
+              .info(raftGroup.getGroupId());
+
+          if (groupInfo != null && groupInfo.isSuccess()) {
+            final var confOpt = groupInfo.getConf();
+            if (confOpt.isPresent()) {
+              final var conf = confOpt.get();
+              boolean alreadyMember = false;
+              for (final var p : conf.getPeersList())
+                if (p.getId().toStringUtf8().equals(localPeerId.toString())) {
+                  alreadyMember = true;
+                  break;
+                }
+
+              if (!alreadyMember) {
+                HALog.log(this, HALog.BASIC,
+                    "K8s auto-join: adding self (%s) to existing cluster via peer %s",
+                    localPeerId, peer.getId());
+
+                RaftPeer localPeer = null;
+                for (final RaftPeer p : raftGroup.getPeers())
+                  if (p.getId().equals(localPeerId)) {
+                    localPeer = p;
+                    break;
+                  }
+
+                if (localPeer != null) {
+                  final List<RaftPeer> newPeers = new ArrayList<>();
+                  for (final var existingPeer : conf.getPeersList()) {
+                    final String existingId = existingPeer.getId().toStringUtf8();
+                    for (final RaftPeer p : raftGroup.getPeers())
+                      if (p.getId().toString().equals(existingId)) {
+                        newPeers.add(p);
+                        break;
+                      }
+                  }
+                  newPeers.add(localPeer);
+
+                  final RaftClientReply joinReply = tempClient.admin().setConfiguration(newPeers);
+                  if (!joinReply.isSuccess())
+                    LogManager.instance().log(this, Level.WARNING,
+                        "K8s auto-join: setConfiguration rejected: %s",
+                        joinReply.getException() != null ? joinReply.getException().getMessage() : "unknown");
+                  else
+                    HALog.log(this, HALog.BASIC,
+                        "K8s auto-join: successfully joined cluster with %d peers", newPeers.size());
+                }
+              } else {
+                HALog.log(this, HALog.BASIC, "K8s auto-join: already a member of the cluster");
+              }
+            }
+            return;
+          }
+        }
+      } catch (final Exception e) {
+        HALog.log(this, HALog.DETAILED,
+            "K8s auto-join: peer %s not reachable (%s), trying next...",
+            peer.getId(), e.getMessage());
+      }
+    }
+
+    LogManager.instance().log(this, Level.WARNING,
+        "K8s auto-join: no existing cluster found, starting as new cluster. "
+            + "If other nodes exist but are unreachable, this may create a split-brain. Verify network connectivity");
+  }
+
+  boolean hasExistingRaftStorage() {
+    final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
+    if (!storageDir.exists())
+      return false;
+    final File[] subdirs = storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found"));
+    return subdirs != null && subdirs.length > 0;
   }
 
   /**

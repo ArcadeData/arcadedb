@@ -83,6 +83,15 @@ public class RaftHAPlugin implements HAServerPlugin {
   @Override
   public void stopService() {
     if (raftHAServer != null) {
+      // K8s auto-leave: gracefully remove self from cluster on shutdown
+      if (configuration != null && configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
+        try {
+          raftHAServer.leaveCluster();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "K8s auto-leave failed (best-effort): %s", e.getMessage());
+        }
+      }
       raftHAServer.stop();
       raftHAServer = null;
     }
@@ -105,6 +114,13 @@ public class RaftHAPlugin implements HAServerPlugin {
     LogManager.instance().log(this, Level.INFO, "Raft cluster status endpoint registered at /api/v1/cluster");
     routes.addPrefixPath("/api/v1/ha/snapshot/", new SnapshotHttpHandler(httpServer));
     LogManager.instance().log(this, Level.INFO, "Raft snapshot endpoint registered at /api/v1/ha/snapshot/{database}");
+    routes.addExactPath("/api/v1/cluster/peer", new PostAddPeerHandler(httpServer, this));
+    routes.addPrefixPath("/api/v1/cluster/peer/", new DeletePeerHandler(httpServer, this));
+    routes.addExactPath("/api/v1/cluster/leader", new PostTransferLeaderHandler(httpServer, this));
+    routes.addExactPath("/api/v1/cluster/stepdown", new PostStepDownHandler(httpServer, this));
+    routes.addExactPath("/api/v1/cluster/leave", new PostLeaveHandler(httpServer, this));
+    routes.addPrefixPath("/api/v1/cluster/verify/", new PostVerifyDatabaseHandler(httpServer, this));
+    LogManager.instance().log(this, Level.INFO, "Raft cluster management endpoints registered");
   }
 
   @Override
@@ -188,6 +204,41 @@ public class RaftHAPlugin implements HAServerPlugin {
   public void disconnectCluster() {
     if (raftHAServer != null)
       raftHAServer.stop();
+  }
+
+  @Override
+  public void addPeer(final String peerId, final String address) {
+    if (raftHAServer == null)
+      throw new RuntimeException("Raft HA server not started");
+    raftHAServer.addPeer(peerId, address);
+  }
+
+  @Override
+  public void removePeer(final String peerId) {
+    if (raftHAServer == null)
+      throw new RuntimeException("Raft HA server not started");
+    raftHAServer.removePeer(peerId);
+  }
+
+  @Override
+  public void transferLeadership(final String targetPeerId, final long timeoutMs) {
+    if (raftHAServer == null)
+      throw new RuntimeException("Raft HA server not started");
+    raftHAServer.transferLeadership(targetPeerId, timeoutMs);
+  }
+
+  @Override
+  public void stepDown() {
+    if (raftHAServer == null)
+      throw new RuntimeException("Raft HA server not started");
+    raftHAServer.stepDown();
+  }
+
+  @Override
+  public void leaveCluster() {
+    if (raftHAServer == null)
+      throw new RuntimeException("Raft HA server not started");
+    raftHAServer.leaveCluster();
   }
 
   private boolean isRaftEnabled() {

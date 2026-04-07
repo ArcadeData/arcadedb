@@ -554,6 +554,11 @@ public enum GlobalConfiguration {
       "When running inside Kubernetes use this suffix to reach the other servers. Example: arcadedb.default.svc.cluster.local",
       String.class, ""),
 
+  HA_READ_CONSISTENCY("arcadedb.ha.readConsistency", SCOPE.SERVER,
+      "Default read consistency for follower reads: eventual, read_your_writes, linearizable",
+      String.class, "read_your_writes",
+      Set.of((Object[]) new String[] { "eventual", "read_your_writes", "linearizable" })),
+
   // RAFT HA
   HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
       "Raft log index gap threshold for replication lag warnings. When a replica falls behind by more than this many entries, a warning is logged",

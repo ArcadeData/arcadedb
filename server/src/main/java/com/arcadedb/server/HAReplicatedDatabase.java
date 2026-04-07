@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.database.Database;
+
 /**
  * Common interface for replicated database wrappers. Allows server-layer code to interact
  * with the replicated database abstraction without knowing which concrete HA implementation
@@ -32,4 +34,27 @@ public interface HAReplicatedDatabase {
   boolean isLeader();
 
   String getLeaderHttpAddress();
+
+  /**
+   * Sets the read consistency context for the current thread before a query.
+   * Implementations use this to wait for replication to catch up before reading.
+   */
+  default void setReadConsistencyContext(final Database.READ_CONSISTENCY consistency, final long readAfterIndex) {
+    // No-op by default; overridden by HA implementations that support read consistency
+  }
+
+  /**
+   * Clears the read consistency context after a query completes.
+   */
+  default void clearReadConsistencyContext() {
+    // No-op by default
+  }
+
+  /**
+   * Returns the last applied Raft index, or -1 if not available.
+   * Used to set the commit index bookmark header in write responses.
+   */
+  default long getLastAppliedIndex() {
+    return -1;
+  }
 }

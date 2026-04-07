@@ -79,6 +79,44 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
 
+  public record ReadConsistencyContext(Database.READ_CONSISTENCY consistency, long readAfterIndex) {
+  }
+
+  private static final ThreadLocal<ReadConsistencyContext> READ_CONSISTENCY_CONTEXT = new ThreadLocal<>();
+
+  public static ReadConsistencyContext getReadConsistencyContext() {
+    return READ_CONSISTENCY_CONTEXT.get();
+  }
+
+  /**
+   * Static helper for setting the read consistency context from tests or non-instance contexts.
+   */
+  static void applyReadConsistencyContext(final Database.READ_CONSISTENCY consistency, final long readAfterIndex) {
+    READ_CONSISTENCY_CONTEXT.set(new ReadConsistencyContext(consistency, readAfterIndex));
+  }
+
+  /**
+   * Static helper for clearing the read consistency context from tests or non-instance contexts.
+   */
+  static void removeReadConsistencyContext() {
+    READ_CONSISTENCY_CONTEXT.remove();
+  }
+
+  @Override
+  public void setReadConsistencyContext(final Database.READ_CONSISTENCY consistency, final long readAfterIndex) {
+    READ_CONSISTENCY_CONTEXT.set(new ReadConsistencyContext(consistency, readAfterIndex));
+  }
+
+  @Override
+  public void clearReadConsistencyContext() {
+    READ_CONSISTENCY_CONTEXT.remove();
+  }
+
+  @Override
+  public long getLastAppliedIndex() {
+    return raftHAServer != null ? raftHAServer.getLastAppliedIndex() : -1;
+  }
+
   private final ArcadeDBServer server;
   private final LocalDatabase  proxied;
   private final RaftHAServer   raftHAServer;
@@ -670,17 +708,46 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public ResultSet query(final String language, final String query) {
+    waitForReadConsistency();
     return proxied.query(language, query);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Object... args) {
+    waitForReadConsistency();
     return proxied.query(language, query, args);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> args) {
+    waitForReadConsistency();
     return proxied.query(language, query, args);
+  }
+
+  private void waitForReadConsistency() {
+    if (isLeader())
+      return;
+
+    if (raftHAServer == null)
+      return;
+
+    final ReadConsistencyContext ctx = READ_CONSISTENCY_CONTEXT.get();
+    if (ctx == null)
+      return;
+
+    final Database.READ_CONSISTENCY consistency = ctx.consistency();
+    if (consistency == null || consistency == Database.READ_CONSISTENCY.EVENTUAL)
+      return;
+
+    if (consistency == Database.READ_CONSISTENCY.READ_YOUR_WRITES) {
+      if (ctx.readAfterIndex() >= 0)
+        raftHAServer.waitForAppliedIndex(ctx.readAfterIndex());
+    } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
+      if (ctx.readAfterIndex() >= 0)
+        raftHAServer.waitForAppliedIndex(ctx.readAfterIndex());
+      else
+        raftHAServer.waitForLocalApply();
+    }
   }
 
   @Deprecated

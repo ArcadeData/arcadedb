@@ -81,4 +81,39 @@ public interface HAServerPlugin extends ServerPlugin {
    * Disconnects this node from the cluster (closes Raft server and client).
    */
   void disconnectCluster();
+
+  /**
+   * Adds a new peer to the cluster at runtime.
+   */
+  default void addPeer(final String peerId, final String address) {
+    throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
+  }
+
+  /**
+   * Removes a peer from the cluster at runtime.
+   */
+  default void removePeer(final String peerId) {
+    throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
+  }
+
+  /**
+   * Transfers leadership to the specified peer.
+   */
+  default void transferLeadership(final String targetPeerId, final long timeoutMs) {
+    throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
+  }
+
+  /**
+   * Steps down from leadership, transferring to any available peer.
+   */
+  default void stepDown() {
+    throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
+  }
+
+  /**
+   * Gracefully leaves the cluster, transferring leadership first if this node is leader.
+   */
+  default void leaveCluster() {
+    throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
+  }
 }

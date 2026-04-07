@@ -43,6 +43,10 @@ public interface Database extends BasicDatabase {
     READ_COMMITTED, REPEATABLE_READ
   }
 
+  enum READ_CONSISTENCY {
+    EVENTUAL, READ_YOUR_WRITES, LINEARIZABLE
+  }
+
   ContextConfiguration getConfiguration();
 
   ComponentFile.MODE getMode();

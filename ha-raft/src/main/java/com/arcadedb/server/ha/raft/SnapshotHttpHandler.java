@@ -23,6 +23,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpHandler;
@@ -36,6 +37,7 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -73,6 +75,14 @@ public class SnapshotHttpHandler implements HttpHandler {
     // Extract database name from the path: /api/v1/ha/snapshot/{database}
     final String relativePath = exchange.getRelativePath();
     final String databaseName = relativePath.startsWith("/") ? relativePath.substring(1) : relativePath;
+
+    // Check for checksums sub-path: /api/v1/ha/snapshot/{database}/checksums
+    if (databaseName.endsWith("/checksums")) {
+      final String dbName = databaseName.substring(0, databaseName.length() - "/checksums".length());
+      handleChecksums(exchange, dbName);
+      return;
+    }
+
     if (databaseName.isEmpty()) {
       exchange.setStatusCode(400);
       exchange.getResponseSender().send("Missing database name in path");
@@ -123,6 +133,26 @@ public class SnapshotHttpHandler implements HttpHandler {
       });
       return null;
     });
+  }
+
+  private void handleChecksums(final HttpServerExchange exchange, final String databaseName) throws Exception {
+    final var server = httpServer.getServer();
+    if (!server.existsDatabase(databaseName)) {
+      exchange.setStatusCode(404);
+      exchange.getResponseSender().send("Database '" + databaseName + "' not found");
+      return;
+    }
+
+    final DatabaseInternal db = server.getDatabase(databaseName);
+    final File dbDir = new File(db.getDatabasePath());
+
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(dbDir);
+    final JSONObject response = new JSONObject();
+    for (final var entry : checksums.entrySet())
+      response.put(entry.getKey(), entry.getValue());
+
+    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+    exchange.getResponseSender().send(response.toString());
   }
 
   private ServerSecurityUser authenticate(final HttpServerExchange exchange) {

@@ -117,6 +117,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       lastAppliedIndex.set(termIndex.getIndex());
       updateLastAppliedTermIndex(termIndex.getTerm(), termIndex.getIndex());
+      // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
+      if (raftHAServer != null)
+        raftHAServer.notifyApplied();
       return CompletableFuture.completedFuture(Message.valueOf("OK"));
 
     } catch (final Exception e) {
@@ -172,6 +175,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } else {
       LogManager.instance().log(this, Level.INFO, "This node is now REPLICA (leader: %s)", leaderName);
       raftHAServer.stopLagMonitor();
+    }
+
+    // Wake up any threads waiting for leadership change (e.g. leaveCluster)
+    final Object notifier = raftHAServer.getLeaderChangeNotifier();
+    synchronized (notifier) {
+      notifier.notifyAll();
     }
   }
 

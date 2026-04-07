@@ -78,6 +78,9 @@ These features exist on both sides with equivalent implementations:
 | Configurable Ratis tuning | Log segment size, append buffer size, write buffer all configurable |
 | NIO zip-slip protection | `Path.normalize().toAbsolutePath().startsWith()` for snapshot extraction |
 | WAL deletion logging | Warning logged when stale `.wal` file deletion fails |
+| Dynamic membership API | `addPeer()`, `removePeer()`, `transferLeadership()`, `stepDown()`, `leaveCluster()` with REST endpoints |
+| K8s auto-join | `tryAutoJoinCluster()` on startup via Ratis AdminApi, `leaveCluster()` on K8s shutdown |
+| Read consistency modes | EVENTUAL, READ_YOUR_WRITES, LINEARIZABLE with wait-for-apply notification pattern |
 
 ---
 
@@ -140,9 +143,6 @@ These features exist on both sides with equivalent implementations:
 |---------|-------------|
 | `TRANSACTION_FORWARD` entry type | Raft-native write forwarding with index key changes for constraint validation (currently unused due to page visibility issue) |
 | Command forwarding via `query()` | Forwarded commands execute on leader's state machine (currently unused in favor of HTTP proxy) |
-| K8s auto-join | `tryAutoJoinCluster()` via Ratis AdminApi for StatefulSet scale-up |
-| Dynamic membership | `addPeer()`, `removePeer()`, `transferLeadership()` |
-| applyNotifier | Wait-for-apply without polling for READ_YOUR_WRITES consistency |
 | BOLT + TLS support | `BOLT_SSL` config (DISABLED/OPTIONAL/REQUIRED) |
 
 ---
@@ -179,22 +179,20 @@ Features from `apache-ratis` that could be added to `ha-redesign` in future iter
 
 | Item | Effort | Reason |
 |------|--------|--------|
-| Dynamic membership API | Medium | `addPeer()`, `removePeer()`, `transferLeadership()` for elastic clusters |
-| K8s auto-join | Medium | Automatic cluster discovery for StatefulSet scaling |
-| applyNotifier pattern | Medium | Better READ_YOUR_WRITES consistency if that feature is added |
 | TRANSACTION_FORWARD | Large | More efficient follower writes (noted as having page visibility issues, currently unused on apache-ratis) |
 
 ---
 
 ## 9. Summary
 
-After two rounds of porting, `ha-redesign` now includes all production-relevant features from `apache-ratis`:
+After three rounds of porting, `ha-redesign` now includes all production-relevant features from `apache-ratis`:
 
 - **Performance:** Group committer with batched Raft writes, LZ4 WAL compression, configurable Ratis tuning
 - **Correctness:** ALL quorum race fix, snapshot-based resync for lagging replicas, NIO zip-slip protection
 - **Security:** PBKDF2 cluster token derivation, timing-safe token comparison, cluster token header auth for snapshots
 - **Operability:** HALog with cached verbosity levels, configurable election timeouts, WAL deletion logging, Studio cluster UI
+- **Cluster Management:** Dynamic membership API (addPeer/removePeer/transferLeadership/stepDown/leaveCluster with REST endpoints), K8s auto-join discovery, multiple read consistency modes (EVENTUAL, READ_YOUR_WRITES, LINEARIZABLE)
 
-The only remaining `apache-ratis`-exclusive features are infrastructure-level (K8s auto-join, dynamic membership) and an experimental write-forwarding mechanism (`TRANSACTION_FORWARD`) that is currently unused due to a page visibility issue.
+The only remaining `apache-ratis`-exclusive features are an experimental write-forwarding mechanism (`TRANSACTION_FORWARD`) that is currently unused due to a page visibility issue, and BOLT with TLS support.
 
-`ha-redesign` is the production-ready choice: modular architecture, 40-file test suite with chaos engineering, safe rollout via `HA_IMPLEMENTATION` toggle, and now feature-complete with all security and performance hardening from `apache-ratis`.
+`ha-redesign` is the production-ready choice: modular architecture, 40-file test suite with chaos engineering, safe rollout via `HA_IMPLEMENTATION` toggle, and now feature-complete with all security, performance, and cluster management features from `apache-ratis`.
