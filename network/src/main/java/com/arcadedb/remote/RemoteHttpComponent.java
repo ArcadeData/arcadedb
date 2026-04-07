@@ -39,9 +39,7 @@ import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
-import java.net.Authenticator;
 import java.net.ConnectException;
-import java.net.PasswordAuthentication;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -126,12 +124,6 @@ public class RemoteHttpComponent extends RWLockContext {
     httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(60))
         .version(HttpClient.Version.HTTP_2)
-        .authenticator(new Authenticator() {
-          @Override
-          protected PasswordAuthentication getPasswordAuthentication() {
-            return new PasswordAuthentication(userName, userPassword.toCharArray());
-          }
-        })
         .build();
 
     requestClusterConfiguration();
