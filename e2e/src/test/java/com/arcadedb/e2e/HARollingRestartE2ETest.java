@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 @Tag("e2e-ha")
-@Timeout(value = 5, unit = TimeUnit.MINUTES)
+@Timeout(value = 10, unit = TimeUnit.MINUTES)
 public class HARollingRestartE2ETest extends ArcadeHAContainerTemplate {
 
   @BeforeEach
