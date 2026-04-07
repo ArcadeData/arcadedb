@@ -154,6 +154,22 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
         GlobalConfiguration.SERVER_MODE.getValueAsString(), getAllPluginNames());
 
+    // IN PRODUCTION MODE, ENSURE WAL FLUSH IS ENABLED FOR DURABILITY
+    if ("production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
+      if (!GlobalConfiguration.TX_WAL_FLUSH.isChanged()) {
+        GlobalConfiguration.TX_WAL_FLUSH.setValue(1);
+        LogManager.instance().log(this, Level.INFO,
+            "Production mode: WAL flush automatically set to 1 (flush without metadata) for durability. "
+                + "Set arcadedb.txWalFlush=0 explicitly to disable or =2 for full fsync");
+      } else if (GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger() == 0) {
+        LogManager.instance().log(this, Level.WARNING,
+            "WAL flush is explicitly disabled (arcadedb.txWalFlush=0) in production mode. "
+                + "Committed transactions may be lost on power failure or OS crash "
+                + "unless your storage has battery-backed write cache or power-loss protection. "
+                + "Set arcadedb.txWalFlush=1 or =2 for durability on standard hardware");
+      }
+    }
+
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
       Metrics.addRegistry(new SimpleMeterRegistry());
