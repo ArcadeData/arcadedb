@@ -29,6 +29,7 @@ import com.arcadedb.server.ReplicationCallback;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
+import org.apache.ratis.retry.ExponentialBackoffRetry;
 import org.apache.ratis.grpc.GrpcFactory;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -213,6 +214,10 @@ public class RaftHAServer {
       raftClient = RaftClient.newBuilder()
           .setRaftGroup(raftGroup)
           .setProperties(properties)
+          .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
+              .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
+              .setMaxSleepTime(TimeDuration.valueOf(5, TimeUnit.SECONDS))
+              .build())
           .build();
 
       // In K8s mode: if this is a new server (no existing storage) and other servers might already
@@ -239,6 +244,14 @@ public class RaftHAServer {
    * If no existing cluster is found (fresh deployment), this is a no-op.
    */
   private void tryAutoJoinCluster() {
+    // Randomized jitter (0-3s) to prevent thundering herd when multiple pods start simultaneously
+    // (e.g. K8s Parallel pod management policy or mass restart).
+    final long jitterMs = Math.abs(localPeerId.hashCode() % 3000L);
+    if (jitterMs > 0) {
+      HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
+      try { Thread.sleep(jitterMs); } catch (final InterruptedException e) { Thread.currentThread().interrupt(); return; }
+    }
+
     HALog.log(this, HALog.BASIC, "K8s auto-join: attempting to join existing cluster...");
 
     // Try each peer to find one that's already running
@@ -807,6 +820,10 @@ public class RaftHAServer {
     raftClient = RaftClient.newBuilder()
         .setRaftGroup(raftGroup)
         .setProperties(raftProperties)
+        .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
+            .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
+            .setMaxSleepTime(TimeDuration.valueOf(5, TimeUnit.SECONDS))
+            .build())
         .build();
     HALog.log(this, HALog.BASIC, "RaftClient refreshed with fresh gRPC channels after leader change");
   }
@@ -927,6 +944,27 @@ public class RaftHAServer {
     }
   }
 
+  /**
+   * Steps down from leadership by transferring to any available peer.
+   * If no peer is available or the transfer fails, logs at SEVERE but does not throw.
+   */
+  public void stepDown() {
+    final String leaderName = getLeaderName();
+    for (final var peer : getRaftGroup().getPeers()) {
+      if (!peer.getId().toString().equals(leaderName)) {
+        try {
+          transferLeadership(peer.getId().toString(), 10_000);
+          return;
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to step down (transfer to %s): %s", peer.getId(), e.getMessage());
+        }
+      }
+    }
+    LogManager.instance().log(this, Level.SEVERE,
+        "Cannot step down: no other peer available for leadership transfer");
+  }
+
   // -- Snapshot --
 
   /**
@@ -1008,6 +1046,20 @@ public class RaftHAServer {
     // Note: Ratis uses MAJORITY consensus by default.
     // For ALL quorum mode, we use the Watch API after each write to wait for ALL replicas.
     // See sendToRaft() for the ALL quorum implementation.
+
+    // Server-side RPC request timeout: how long the leader waits for follower AppendEntries responses.
+    // Generous value allows gRPC channels to recover after network partitions.
+    RaftServerConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
+
+    // Slowness timeout: how long before marking a follower as slow. Must survive partitions.
+    RaftServerConfigKeys.Rpc.setSlownessTimeout(properties, TimeDuration.valueOf(300, TimeUnit.SECONDS));
+
+    // Close threshold: how long before the server closes a follower's connection.
+    // Set high to allow recovery after long network partitions without losing the peer.
+    RaftServerConfigKeys.setCloseThreshold(properties, TimeDuration.valueOf(300, TimeUnit.SECONDS));
+
+    // gRPC flow control window: larger window helps with catch-up replication after partitions
+    GrpcConfigKeys.setFlowControlWindow(properties, SizeInBytes.valueOf("4MB"));
 
     // Client request timeout: bounds how long the Ratis client waits for a single RPC.
     // Without this, the client retries indefinitely when the majority is unreachable.

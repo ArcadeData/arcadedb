@@ -28,6 +28,7 @@ This change is **transparent to users** - the HTTP API, database API, query lang
 - `ReplicatedDatabase.java` - rewritten to use Ratis (same class name for API compatibility)
 - `HALog.java` - verbose logging utility with cached config level (`arcadedb.ha.logVerbose=0/1/2/3`)
 - `SnapshotHttpHandler.java` - HTTP endpoint for database snapshot serving (cluster token + Basic auth)
+- Log purge configuration: `arcadedb.ha.logPurgeGap` and `arcadedb.ha.logPurgeUptoSnapshot` for controlling how aggressively old Raft log segments are deleted after snapshots. Required for reliable snapshot-based catch-up of lagging followers
 - Studio Cluster dashboard (Overview/Metrics/Management tabs)
 
 ## Advantages of Using Apache Ratis
@@ -127,6 +128,8 @@ One per server, shared across all databases. Survives restarts for automatic cat
 
 ## Configuration
 
+### Quick Start
+
 ```properties
 # Enable HA
 arcadedb.ha.enabled=true
@@ -167,6 +170,12 @@ arcadedb.ha.snapshotThreshold=100000
 # Raft log segment max size
 arcadedb.ha.logSegmentSize=64MB
 
+# Log purging: controls how aggressively old Raft log segments are deleted after snapshots.
+# purgeGap = gap between last applied index and purge index (lower = more aggressive)
+# purgeUptoSnapshot = when true, purges log entries up to the latest snapshot index
+arcadedb.ha.logPurgeGap=1024
+arcadedb.ha.logPurgeUptoSnapshot=false
+
 # AppendEntries batch byte limit for follower replication
 arcadedb.ha.appendBufferSize=4MB
 
@@ -176,6 +185,82 @@ arcadedb.ha.groupCommitBatchSize=500
 # Replication lag warning threshold (Raft log index gap). 0 = disabled
 arcadedb.ha.replicationLagWarning=1000
 ```
+
+### GlobalConfiguration Reference
+
+Complete reference of all `HA_*` entries in `GlobalConfiguration.java`. All settings have scope `SERVER` and are set via Java system properties (e.g. `-Darcadedb.ha.enabled=true`).
+
+#### Cluster Setup
+
+| Setting | Property | Type | Default | Description |
+|---|---|---|---|---|
+| `HA_ENABLED` | `arcadedb.ha.enabled` | Boolean | `false` | Enables HA for this server |
+| `HA_CLUSTER_NAME` | `arcadedb.ha.clusterName` | String | `arcadedb` | Cluster name. Useful when running multiple clusters in the same network |
+| `HA_SERVER_LIST` | `arcadedb.ha.serverList` | String | (empty) | Comma-separated list of `host:raftPort` or `host:raftPort:httpPort` entries |
+| `HA_SERVER_ROLE` | `arcadedb.ha.serverRole` | String | `any` | Server role: `any` (can be leader or follower) or `replica` (follower only). Values: `any`, `replica` |
+
+#### Quorum and Consistency
+
+| Setting | Property | Type | Default | Description |
+|---|---|---|---|---|
+| `HA_QUORUM` | `arcadedb.ha.quorum` | String | `majority` | Write quorum: `majority` or `all` |
+| `HA_QUORUM_TIMEOUT` | `arcadedb.ha.quorumTimeout` | Long | `10000` | Timeout in ms waiting for quorum acknowledgment |
+| `HA_READ_CONSISTENCY` | `arcadedb.ha.readConsistency` | String | `read_your_writes` | Follower read consistency: `eventual` (read locally, may be stale), `read_your_writes` (wait for client's last write), `linearizable` (wait for all committed writes) |
+
+#### Election and Timeouts
+
+| Setting | Property | Type | Default | Description |
+|---|---|---|---|---|
+| `HA_ELECTION_TIMEOUT_MIN` | `arcadedb.ha.electionTimeoutMin` | Integer | `1500` | Minimum election timeout (ms). Increase for WAN clusters |
+| `HA_ELECTION_TIMEOUT_MAX` | `arcadedb.ha.electionTimeoutMax` | Integer | `3000` | Maximum election timeout (ms). Increase for WAN clusters |
+| `HA_PROXY_READ_TIMEOUT` | `arcadedb.ha.proxyReadTimeout` | Integer | `30000` | Read timeout (ms) when proxying requests from followers to leader. Increase for long-running queries |
+
+#### Raft Log and Snapshots
+
+| Setting | Property | Type | Default | Description |
+|---|---|---|---|---|
+| `HA_SNAPSHOT_THRESHOLD` | `arcadedb.ha.snapshotThreshold` | Long | `100000` | Number of Raft log entries before auto-triggering a snapshot |
+| `HA_LOG_SEGMENT_SIZE` | `arcadedb.ha.logSegmentSize` | String | `64MB` | Maximum Raft log segment size (e.g. `64MB`, `128MB`) |
+| `HA_LOG_PURGE_GAP` | `arcadedb.ha.logPurgeGap` | Integer | `1024` | Gap between last applied index and purge index. Lower values free disk faster but leave less room for slow followers to catch up via log replay |
+| `HA_LOG_PURGE_UPTO_SNAPSHOT` | `arcadedb.ha.logPurgeUptoSnapshot` | Boolean | `false` | When true, purges Raft log entries up to the latest snapshot index. Combined with a low `logPurgeGap`, forces lagging followers to catch up via snapshot download instead of log replay |
+| `HA_APPEND_BUFFER_SIZE` | `arcadedb.ha.appendBufferSize` | String | `4MB` | AppendEntries batch byte limit per gRPC call to followers |
+
+#### Performance Tuning
+
+| Setting | Property | Type | Default | Description |
+|---|---|---|---|---|
+| `HA_GROUP_COMMIT_BATCH_SIZE` | `arcadedb.ha.groupCommitBatchSize` | Integer | `500` | Maximum transactions batched in a single Raft round-trip. Higher values improve throughput under concurrent load |
+| `HA_REPLICATION_QUEUE_SIZE` | `arcadedb.ha.replicationQueueSize` | Integer | `512` | Queue size for replicating messages between servers |
+| `HA_REPLICATION_FILE_MAXSIZE` | `arcadedb.ha.replicationFileMaxSize` | Long | `1073741824` | Maximum file size (bytes) for replication messages. Default 1GB |
+| `HA_REPLICATION_CHUNK_MAXSIZE` | `arcadedb.ha.replicationChunkMaxSize` | Integer | `16777216` | Maximum channel chunk size (bytes) for replication. Default 16MB |
+
+#### Security and Auth
+
+| Setting | Property | Type | Default | Description |
+|---|---|---|---|---|
+| `HA_CLUSTER_TOKEN` | `arcadedb.ha.clusterToken` | String | (empty) | Shared secret for inter-node HTTP forwarding and snapshot auth. If empty, auto-derived from SHA-256 of cluster name + root password |
+
+#### Networking
+
+| Setting | Property | Type | Default | Description |
+|---|---|---|---|---|
+| `HA_REPLICATION_INCOMING_HOST` | `arcadedb.ha.replicationIncomingHost` | String | `0.0.0.0` | TCP/IP host for incoming replication connections |
+| `HA_REPLICATION_INCOMING_PORTS` | `arcadedb.ha.replicationIncomingPorts` | String | `2424-2433` | TCP/IP port range for incoming replication connections |
+
+#### Monitoring and Debugging
+
+| Setting | Property | Type | Default | Description |
+|---|---|---|---|---|
+| `HA_LOG_VERBOSE` | `arcadedb.ha.logVerbose` | Integer | `0` | Verbose logging: 0=off, 1=basic (elections, peers), 2=detailed (commands, WAL), 3=trace (all state machine ops) |
+| `HA_REPLICATION_LAG_WARNING` | `arcadedb.ha.replicationLagWarning` | Integer | `1000` | Raft log index gap threshold for replication lag warnings. 0 = disabled |
+| `HA_ERROR_RETRIES` | `arcadedb.ha.errorRetries` | Integer | `0` | Automatic retries on IO errors. 0 = retry against all configured servers |
+
+#### Kubernetes
+
+| Setting | Property | Type | Default | Description |
+|---|---|---|---|---|
+| `HA_K8S` | `arcadedb.ha.k8s` | Boolean | `false` | Enable Kubernetes mode (auto-join, preStop hook) |
+| `HA_K8S_DNS_SUFFIX` | `arcadedb.ha.k8sSuffix` | String | (empty) | DNS suffix for peer discovery (e.g. `arcadedb.default.svc.cluster.local`) |
 
 ## Kubernetes Support
 
@@ -251,7 +336,7 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 
 ## Tests
 
-### Passing Tests (36 total: 19 existing + 17 comprehensive)
+### Passing Tests (42 total: 19 existing + 17 comprehensive + 6 e2e)
 
 #### Core Tests
 | Test | Description | Servers | Status |
@@ -303,6 +388,16 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 | `test16_mixedReadWriteWorkload` | Concurrent reads on follower + writes on leader | 3 | PASS |
 | `test17_rollingUpgradeSimulation` | Stop/restart each server one by one, verify data survives | 3 | PASS |
 
+#### E2E Tests (Docker/TestContainers)
+| Test | Description | Servers | Status |
+|---|---|---|---|
+| `HARollingRestartE2ETest` | Rolling restart with continuous writes, verify zero data loss | 3 | PASS |
+| `HANetworkPartitionE2ETest` | Follower network disconnect/reconnect, catch-up via Raft log replay | 3 | PASS |
+| `HASnapshotCatchUpE2ETest` | Follower lags behind log purge boundary, catches up via snapshot download | 3 | PASS |
+| `HALeaderPartitionE2ETest` | Leader network-partitioned, majority elects new leader, old leader reconnects and catches up | 3 | PASS |
+| `HAColdStartE2ETest` | All 3 nodes stopped, restarted from cold, Ratis log recovery + data intact + index survives | 3 | PASS |
+| `HAQuorumLossRecoveryE2ETest` | Stop 2 of 3 nodes, writes fail, restart both, cluster recovers and accepts writes | 3 | PASS |
+
 ### Known Limitations
 - **State machine command forwarding**: The `query()` path for forwarding write commands to the leader has a page visibility issue. Currently using HTTP proxy fallback which works correctly.
 
@@ -318,6 +413,19 @@ All HA tests pass. No disabled test methods remain.
 
 ### Resolved Issues
 - **Vector index replication**: Fixed 1-byte parsing misalignment in `LSMVectorIndex.applyReplicatedPageUpdate()` - the `quantization_type` byte (always written after `deleted` flag) was not being read, causing cumulative offset drift when parsing entries on followers.
+
+### TODO: E2E Tests
+These tests exercise full cluster scenarios using Docker containers (TestContainers). Each test is in `e2e/src/test/java/com/arcadedb/e2e/` and tagged `@Tag("e2e-ha")`.
+
+| # | Test | Description | Key scenario | Status |
+|---|---|---|---|---|
+| 1 | `HALeaderPartitionE2ETest` | Leader gets network-partitioned. Majority elects new leader, accepts writes. Old leader reconnects, steps down, catches up | Leader stepdown + follower resync | DONE |
+| 2 | `HAMultiDatabaseSnapshotE2ETest` | Cluster with 2-3 databases. Follower lags behind, snapshot installs all databases. Verify no partial failures | `notifyInstallSnapshotFromLeader` loops over all DBs | TODO |
+| 3 | `HASnapshotDuringWritesE2ETest` | Follower reconnects while writes are actively happening on the leader. Verify snapshot install + concurrent Raft log apply don't conflict | Snapshot + concurrent writes | TODO |
+| 4 | `HAColdStartE2ETest` | Write data, stop all 3 nodes, start all 3 from cold. Verify Ratis log recovery from disk + leader re-election + data intact | Full cluster restart from persisted state | DONE |
+| 5 | `HAQuorumLossRecoveryE2ETest` | Stop 2 of 3 nodes (quorum lost). Writes must fail. Restart both nodes. Cluster recovers, writes succeed again | Disaster recovery | DONE |
+| 6 | `HADynamicDatabaseE2ETest` | Create a database on the leader after cluster formation. Verify schema + data replicate to followers. Then lag a follower, verify snapshot includes the new database | Post-formation DB creation + snapshot | TODO |
+| 7 | `HALargeDataSnapshotE2ETest` | Insert large records (BLOBs, many properties) to exercise the ZIP streaming path with realistic data sizes | Snapshot HTTP streaming under load | TODO |
 
 ### Future Features
 - **State machine command forwarding**: Fix the `query()` path page visibility issue to eliminate HTTP proxy dependency for command forwarding. Currently write commands on non-leader nodes are forwarded via HTTP proxy which works correctly but adds latency.

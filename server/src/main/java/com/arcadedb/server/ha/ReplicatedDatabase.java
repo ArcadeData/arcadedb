@@ -150,7 +150,17 @@ public class ReplicatedDatabase implements DatabaseInternal {
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
             "Phase 2 commit failed AFTER successful Raft replication (db=%s). "
-                + "Leader page cache may be stale until restart. Error: %s", getName(), e.getMessage());
+                + "Stepping down to prevent stale reads. Error: %s", getName(), e.getMessage());
+        // Step down so a follower with correct state takes over.
+        // This node will self-heal on restart via Raft log replay.
+        try {
+          final RaftHAServer raftHA = server.getHA();
+          if (raftHA != null && raftHA.isLeader())
+            raftHA.stepDown();
+        } catch (final Exception stepDownEx) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to step down after phase 2 failure (db=%s). Manual restart required.", getName());
+        }
         throw e;
       } finally {
         current.popIfNotLastTransaction();

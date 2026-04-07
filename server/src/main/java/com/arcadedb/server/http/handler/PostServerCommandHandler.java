@@ -916,17 +916,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (raftHA == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
 
-    // Find the current leader and transfer to a random non-leader peer.
-    // Works from any server - Ratis client auto-routes to the leader.
-    final String leaderName = raftHA.getLeaderName();
-    for (final var peer : raftHA.getRaftGroup().getPeers()) {
-      if (!peer.getId().toString().equals(leaderName)) {
-        raftHA.transferLeadership(peer.getId().toString(), 30_000);
-        response.put("result", "Leadership transfer initiated from " + leaderName + " to " + peer.getId());
-        return new ExecutionResponse(200, response.toString());
-      }
-    }
-    return new ExecutionResponse(400, "{ \"error\" : \"No other peer available for leadership transfer\"}");
+    raftHA.stepDown();
+    response.put("result", "Leadership step-down initiated");
+    return new ExecutionResponse(200, response.toString());
   }
 
   private ExecutionResponse haLeave(final JSONObject response) {
