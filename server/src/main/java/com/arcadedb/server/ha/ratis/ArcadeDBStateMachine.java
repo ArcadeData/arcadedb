@@ -91,8 +91,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private final AtomicBoolean             catchingUp       = new AtomicBoolean(false);
   /** Set by pause(), cleared by reinitialize(). Signals that Ratis is installing a snapshot via chunks. */
   private volatile boolean                snapshotBeingInstalled = false;
-  /** Set by reinitialize() when a snapshot gap is detected, cleared after download. */
-  private volatile boolean                needsSnapshotDownload  = false;
+  /** Set by reinitialize() when a snapshot gap is detected, cleared by notifyLeaderChanged() via compareAndSet. */
+  private final AtomicBoolean             needsSnapshotDownload  = new AtomicBoolean(false);
 
   public ArcadeDBStateMachine(final ArcadeDBServer server) {
     this.server = server;
@@ -131,7 +131,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         LogManager.instance().log(this, Level.INFO,
             "Snapshot index %d is ahead of persisted applied index %d, will download from leader when available",
             snapshotIndex, persistedApplied);
-        needsSnapshotDownload = true;
+        needsSnapshotDownload.set(true);
       }
 
       lastAppliedIndex.set(snapshotIndex);
@@ -832,8 +832,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // Threading safety: Ratis calls notifyLeaderChanged() from ServerState.setLeader() which
     // uses AtomicReference (no synchronized block). The download runs on a dedicated thread
     // and only synchronizes on ArcadeDBServer.databases, never on Ratis internals.
-    if (needsSnapshotDownload) {
-      needsSnapshotDownload = false;
+    if (needsSnapshotDownload.compareAndSet(true, false)) {
       new Thread(() -> {
         try {
           Thread.sleep(2000); // Wait for the leader's HTTP server to be ready
