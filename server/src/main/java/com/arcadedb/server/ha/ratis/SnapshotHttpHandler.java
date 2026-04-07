@@ -74,7 +74,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       LogManager.instance().log(this, Level.SEVERE, "Error in snapshot handler: %s", e, e.getMessage());
       if (!exchange.isResponseStarted()) {
         exchange.setStatusCode(500);
-        exchange.getResponseSender().send("Internal error: " + e.getMessage());
+        exchange.getResponseSender().send("Internal server error");
       }
     }
   }
