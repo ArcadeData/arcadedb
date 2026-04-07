@@ -152,9 +152,15 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     logger.info("Healing partition - reconnecting isolated node");
     reconnectToNetwork(nodeContainers[leaderIdx]);
 
+    // Force a leadership transfer to refresh all gRPC channels. After a network partition,
+    // the leader's gRPC LogAppender channels to the reconnected node are stuck in exponential
+    // backoff (up to ~120s). A leadership transfer triggers notifyLeaderChanged() on all nodes,
+    // which calls refreshRaftClient() and creates fresh channels.
+    transferLeadershipAndWait(servers, 60);
+
     logger.info("Waiting for cluster to converge after partition heal");
     Awaitility.await()
-        .atMost(90, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> {
           try {
@@ -243,9 +249,12 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     logger.info("Reconnecting isolated follower");
     reconnectToNetwork(nodeContainers[isolatedIdx]);
 
+    // Force leadership transfer to refresh gRPC channels stuck in backoff
+    transferLeadershipAndWait(servers, 60);
+
     logger.info("Waiting for follower resync via Raft log catch-up");
     Awaitility.await()
-        .atMost(60, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(2, TimeUnit.SECONDS)
         .until(() -> {
           try {

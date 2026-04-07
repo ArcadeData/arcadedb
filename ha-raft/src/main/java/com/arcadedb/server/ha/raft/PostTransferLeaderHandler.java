@@ -47,11 +47,18 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
 
     final String peerId = payload.getString("peerId", "");
-    if (peerId.isEmpty())
-      return new ExecutionResponse(400,
-          new JSONObject().put("error", "Missing required field: peerId").toString());
-
     final long timeoutMs = payload.getLong("timeoutMs", 30_000);
+
+    if (peerId.isEmpty()) {
+      // Transfer to any peer (Ratis picks the best candidate)
+      final boolean success = raftHAServer.transferLeadership(timeoutMs);
+      if (success)
+        return new ExecutionResponse(200,
+            new JSONObject().put("result", "Leadership transferred").toString());
+      return new ExecutionResponse(500,
+          new JSONObject().put("error", "Leadership transfer failed").toString());
+    }
+
     raftHAServer.transferLeadership(peerId, timeoutMs);
     return new ExecutionResponse(200,
         new JSONObject().put("result", "Leadership transferred to " + peerId).toString());

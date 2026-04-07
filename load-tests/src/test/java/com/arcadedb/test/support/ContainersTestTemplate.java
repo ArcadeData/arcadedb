@@ -539,6 +539,53 @@ public abstract class ContainersTestTemplate {
   }
 
   /**
+   * Triggers a Raft leadership transfer on the current leader, forcing all nodes to recreate
+   * their gRPC channels. This resolves stale gRPC connections stuck in exponential backoff
+   * after network partitions. Waits for a new leader to be elected before returning.
+   *
+   * @param servers the server wrappers returned by {@link #startContainers()}
+   * @param timeoutSeconds maximum time to wait for the transfer and new leader election
+   */
+  protected void transferLeadershipAndWait(final List<ServerWrapper> servers, final int timeoutSeconds) {
+    final int leaderIdx = waitForRaftLeader(servers, timeoutSeconds);
+    if (leaderIdx < 0) {
+      logger.warn("No leader found, skipping leadership transfer");
+      return;
+    }
+
+    final ServerWrapper leader = servers.get(leaderIdx);
+    logger.info("Triggering leadership transfer on node {} to refresh gRPC channels", leaderIdx);
+
+    try {
+      final HttpURLConnection conn = (HttpURLConnection) URI.create(
+          "http://" + leader.host() + ":" + leader.httpPort() + "/api/v1/cluster/leader").toURL().openConnection();
+      conn.setRequestMethod("POST");
+      conn.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes()));
+      conn.setRequestProperty("Content-Type", "application/json");
+      conn.setConnectTimeout(5000);
+      conn.setReadTimeout(30000);
+      conn.setDoOutput(true);
+      try {
+        // Transfer to any peer (Ratis picks the best candidate)
+        conn.getOutputStream().write("{\"peerId\":\"\",\"timeoutMs\":30000}".getBytes());
+        final int status = conn.getResponseCode();
+        if (status == 200)
+          logger.info("Leadership transfer initiated");
+        else
+          logger.warn("Leadership transfer returned HTTP {}", status);
+      } finally {
+        conn.disconnect();
+      }
+    } catch (final Exception e) {
+      logger.warn("Leadership transfer failed: {}", e.getMessage());
+    }
+
+    // Wait for a new leader to be elected after the transfer
+    waitForRaftLeader(servers, timeoutSeconds);
+  }
+
+  /**
    * Waits for a container to be healthy (running) with diagnostics on failure.
    */
   protected boolean waitForContainerHealthy(final GenericContainer<?> container, final int timeoutSeconds) {

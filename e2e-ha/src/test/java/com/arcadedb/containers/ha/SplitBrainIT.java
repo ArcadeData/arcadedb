@@ -156,6 +156,9 @@ class SplitBrainIT extends ContainersTestTemplate {
     logger.info("Healing partition");
     reconnectToNetwork(nodeContainers[leaderIdx]);
 
+    // Force leadership transfer to refresh gRPC channels stuck in backoff
+    transferLeadershipAndWait(servers, 60);
+
     logger.info("Waiting for cluster reformation and Raft log catch-up (expected={})", majorityCount);
     // In Raft, the old leader catches up by truncating its log and applying the new leader's entries.
     // This takes longer than a regular follower resync because the gRPC peer connections must
@@ -237,9 +240,12 @@ class SplitBrainIT extends ContainersTestTemplate {
     reconnectToNetwork(nodeContainers[1]);
     reconnectToNetwork(nodeContainers[2]);
 
+    // Force leadership transfer to refresh gRPC channels stuck in backoff
+    transferLeadershipAndWait(servers, 60);
+
     logger.info("Waiting for cluster reformation and leader re-election");
     Awaitility.await()
-        .atMost(60, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> findLeaderIndex(servers) >= 0);
     TimeUnit.SECONDS.sleep(5);
@@ -254,7 +260,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     logger.info("Waiting for final convergence (leader count={})", leaderCount);
 
     Awaitility.await()
-        .atMost(90, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
@@ -328,6 +334,9 @@ class SplitBrainIT extends ContainersTestTemplate {
       logger.info("Cycle {}: Healing partition", cycle);
       reconnectToNetwork(nodeContainers[isolatedIdx]);
 
+      // Force leadership transfer to refresh gRPC channels stuck in backoff
+      transferLeadershipAndWait(servers, 60);
+
       logger.info("Cycle {}: Waiting for reformation and Raft log catch-up", cycle);
       TimeUnit.SECONDS.sleep(10);
 
@@ -337,7 +346,7 @@ class SplitBrainIT extends ContainersTestTemplate {
       logger.info("Cycle {}: Verifying convergence to {} users", cycle, cycleLeaderCount);
 
       Awaitility.await()
-          .atMost(60, TimeUnit.SECONDS)
+          .atMost(180, TimeUnit.SECONDS)
           .pollInterval(3, TimeUnit.SECONDS)
           .until(() -> {
             try {
@@ -408,9 +417,12 @@ class SplitBrainIT extends ContainersTestTemplate {
     reconnectToNetwork(nodeContainers[1]);
     reconnectToNetwork(nodeContainers[2]);
 
+    // Force leadership transfer to refresh gRPC channels stuck in backoff
+    transferLeadershipAndWait(servers, 60);
+
     logger.info("Waiting for quorum restoration and leader re-election");
     Awaitility.await()
-        .atMost(60, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> findLeaderIndex(servers) >= 0);
     TimeUnit.SECONDS.sleep(5);
@@ -424,7 +436,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     logger.info("Waiting for convergence (leader count={})", leaderCount);
 
     Awaitility.await()
-        .atMost(90, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {

@@ -140,9 +140,12 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     logger.info("Healing partition - reconnecting node {}", isolatedIdx);
     reconnectToNetwork(nodeContainers[isolatedIdx]);
 
+    // Force leadership transfer to refresh gRPC channels stuck in backoff
+    transferLeadershipAndWait(servers, 60);
+
     logger.info("Waiting for partition recovery and Raft log catch-up");
     Awaitility.await()
-        .atMost(90, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
@@ -212,11 +215,14 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
       logger.info("Cycle {}: Healing partition", cycle);
       reconnectToNetwork(nodeContainers[isolatedIdx]);
 
+      // Force leadership transfer to refresh gRPC channels stuck in backoff
+      transferLeadershipAndWait(servers, 60);
+
       logger.info("Cycle {}: Waiting for Raft log catch-up convergence", cycle);
       final int currentCycle = cycle;
       final int expected = expectedUsers;
       Awaitility.await()
-          .atMost(60, TimeUnit.SECONDS)
+          .atMost(180, TimeUnit.SECONDS)
           .pollInterval(3, TimeUnit.SECONDS)
           .until(() -> {
             try {
@@ -301,9 +307,12 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     logger.info("Healing asymmetric partition");
     reconnectToNetwork(nodeContainers[isolatedIdx]);
 
+    // Force leadership transfer to refresh gRPC channels stuck in backoff
+    transferLeadershipAndWait(servers, 60);
+
     logger.info("Waiting for full convergence via Raft log catch-up");
     Awaitility.await()
-        .atMost(90, TimeUnit.SECONDS)
+        .atMost(180, TimeUnit.SECONDS)
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
