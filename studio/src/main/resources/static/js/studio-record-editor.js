@@ -3,6 +3,7 @@ var globalRecordEditorState = {
   rid: null,
   type: null,
   properties: {},
+  originalProperties: {},
   source: null
 };
 
@@ -11,6 +12,7 @@ function openRecordEditor(rid, type, properties, source) {
   globalRecordEditorState.rid = rid;
   globalRecordEditorState.type = type;
   globalRecordEditorState.properties = properties || {};
+  globalRecordEditorState.originalProperties = JSON.parse(JSON.stringify(globalRecordEditorState.properties));
   globalRecordEditorState.source = source;
 
   renderRecordEditorContent();
@@ -314,7 +316,9 @@ function bindGraphAppearanceEvents(type) {
 function saveRecordEditor() {
   var rid = globalRecordEditorState.rid;
   var setParts = [];
+  var removeParts = [];
 
+  // Collect field changes (SET)
   $(getRecordEditorTarget() + " .record-editor-field").each(function () {
     if ($(this).prop("disabled"))
       return;
@@ -348,12 +352,25 @@ function saveRecordEditor() {
     setParts.push("`" + prop + "` = " + sqlValue);
   });
 
-  if (setParts.length === 0) {
+  // Collect deleted properties (REMOVE)
+  var orig = globalRecordEditorState.originalProperties;
+  var curr = globalRecordEditorState.properties;
+  for (var p in orig) {
+    if (!curr.hasOwnProperty(p))
+      removeParts.push("`" + p + "`");
+  }
+
+  if (setParts.length === 0 && removeParts.length === 0) {
     globalNotify("Info", "No changes to save", "warning");
     return;
   }
 
-  var sql = "UPDATE " + rid + " SET " + setParts.join(", ");
+  var sql = "UPDATE " + rid;
+  if (setParts.length > 0)
+    sql += " SET " + setParts.join(", ");
+  if (removeParts.length > 0)
+    sql += " REMOVE " + removeParts.join(", ");
+
   var database = escapeHtml(getCurrentDatabase());
 
   $.ajax({
@@ -365,7 +382,7 @@ function saveRecordEditor() {
     }
   })
   .done(function () {
-    globalNotify("Success", "Record updated", "success");
+    globalNotify("Success", "Record updated", "success", 1000);
     cancelRecordEditor();
   })
   .fail(function (jqXHR) {
@@ -460,55 +477,41 @@ function deleteRecord() {
 }
 
 function addPropertyToRecord() {
-  Swal.fire({
-    title: "Add Property",
-    input: "text",
-    inputLabel: "Property name",
-    inputPlaceholder: "Enter property name",
-    showCancelButton: true,
-    confirmButtonText: "Add",
-    inputValidator: function (value) {
-      if (!value || !value.trim())
-        return "Property name is required";
-      if (globalRecordEditorState.properties.hasOwnProperty(value.trim()))
-        return "Property already exists";
+  var html = "<div class='mb-3'>";
+  html += "<label class='form-label'>Property name</label>";
+  html += "<input type='text' class='form-control' id='newPropertyName' placeholder='Enter property name' />";
+  html += "</div>";
+
+  globalPrompt("Add Property", html, "Add", function (values) {
+    var propName = (values["newPropertyName"] || "").trim();
+    if (!propName) {
+      globalNotify("Error", "Property name is required", "danger");
+      return;
     }
-  }).then(function (result) {
-    if (result.isConfirmed) {
-      var propName = result.value.trim();
-      globalRecordEditorState.properties[propName] = "";
-      renderRecordEditorContent();
-      // Focus the new field
-      $(getRecordEditorTarget() + " .record-editor-field[data-prop='" + propName + "']").focus();
+    if (globalRecordEditorState.properties.hasOwnProperty(propName)) {
+      globalNotify("Error", "Property already exists", "danger");
+      return;
     }
+    globalRecordEditorState.properties[propName] = "";
+    renderRecordEditorContent();
+    $(getRecordEditorTarget() + " .record-editor-field[data-prop='" + propName + "']").focus();
+  });
+}
+
+function syncRecordEditorFields() {
+  $(getRecordEditorTarget() + " .record-editor-field").each(function () {
+    if ($(this).prop("disabled"))
+      return;
+    var prop = $(this).data("prop");
+    var current = $(this).val();
+    globalRecordEditorState.properties[prop] = current;
   });
 }
 
 function deletePropertyFromRecord(propName) {
-  var rid = globalRecordEditorState.rid;
-  var database = escapeHtml(getCurrentDatabase());
-  var sql = "UPDATE " + rid + " REMOVE `" + propName + "`";
-
-  globalConfirm("Remove Property", "Remove property '" + escapeHtml(propName) + "' from record " + rid + "?", "warning",
-    function () {
-      $.ajax({
-        type: "POST",
-        url: "api/v1/command/" + database,
-        data: JSON.stringify({ language: "sql", command: sql }),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", globalCredentials);
-        }
-      })
-      .done(function () {
-        globalNotify("Success", "Property removed", "success");
-        delete globalRecordEditorState.properties[propName];
-        renderRecordEditorContent();
-      })
-      .fail(function (jqXHR) {
-        globalNotify("Error", escapeHtml(jqXHR.responseText), "danger");
-      });
-    }
-  );
+  syncRecordEditorFields();
+  delete globalRecordEditorState.properties[propName];
+  renderRecordEditorContent();
 }
 
 function showRecordInGraph() {

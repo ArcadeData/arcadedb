@@ -101,11 +101,11 @@
       function processNotificationQueue() {
         while (notificationQueue.length > 0 && isToastReady) {
           var n = notificationQueue.shift();
-          showNotification(n.title, n.message, n.type);
+          showNotification(n.title, n.message, n.type, n.delay);
         }
       }
 
-      function showNotification(title, message, type) {
+      function showNotification(title, message, type, delay) {
         var container = document.getElementById('toastContainer');
         if (!container) return;
 
@@ -125,17 +125,17 @@
           '<div class="toast-body">' + (message || '') + '</div>';
 
         container.appendChild(toastEl);
-        var toast = new bootstrap.Toast(toastEl, { delay: 3500 });
+        var toast = new bootstrap.Toast(toastEl, { delay: delay || 3500 });
         toast.show();
         toastEl.addEventListener('hidden.bs.toast', function() { toastEl.remove(); });
       }
 
-      function globalNotify(title, message, type) {
+      function globalNotify(title, message, type, delay) {
         if (!isToastReady) {
-          notificationQueue.push({ title: title, message: message, type: type });
+          notificationQueue.push({ title: title, message: message, type: type, delay: delay });
           return;
         }
-        showNotification(title, message, type);
+        showNotification(title, message, type, delay);
       }
     </script>
 
