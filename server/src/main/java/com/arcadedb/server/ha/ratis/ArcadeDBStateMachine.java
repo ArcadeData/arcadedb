@@ -52,6 +52,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -191,18 +192,18 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
         entry.databaseName(), entry.walBuffer() != null ? entry.walBuffer().size() : 0,
         entry.bucketRecordDelta().size(), entry.schemaJson() != null);
 
-    // Follower path: apply schema changes first (if any)
-    if (entry.schemaJson() != null) {
+    // Phase 1: Create physical files first - WAL pages may reference new file IDs.
+    // This must happen before WAL apply so that page writes find the target files.
+    if (entry.filesToAdd() != null && !entry.filesToAdd().isEmpty()) {
       try {
-        applySchemaChanges(db, entry.schemaJson(), entry.filesToAdd(), entry.filesToRemove());
-        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, false);
+        createNewFiles(db, entry.filesToAdd());
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error applying schema changes from Raft log", e);
-        throw new ReplicationException("Error applying schema changes from Raft log", e);
+        LogManager.instance().log(this, Level.SEVERE, "Error creating files from Raft log", e);
+        throw new ReplicationException("Error creating files from Raft log", e);
       }
     }
 
-    // Apply WAL page changes (if any - schema-only entries have empty WAL buffer)
+    // Phase 2: Apply WAL page changes (if any - schema-only entries have empty WAL buffer)
     if (entry.walBuffer() != null && entry.walBuffer().size() > 0) {
       final WALFile.WALTransaction walTx = parseWalTransaction(entry.walBuffer());
 
@@ -212,8 +213,20 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
     }
 
-    if (entry.schemaJson() != null)
-      db.getSchema().getEmbedded().initComponents();
+    // Phase 3: Finalize schema - update metadata and remove dropped files AFTER WAL is safely applied.
+    // This ordering ensures a WAL failure leaves only orphan empty files (harmless, cleaned up by snapshot)
+    // rather than schema-ahead-of-data inconsistency.
+    if (entry.schemaJson() != null) {
+      try {
+        removeDroppedFiles(db, entry.filesToRemove());
+        updateSchemaMetadata(db, entry.schemaJson());
+        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, false);
+        db.getSchema().getEmbedded().initComponents();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error applying schema changes from Raft log", e);
+        throw new ReplicationException("Error applying schema changes from Raft log", e);
+      }
+    }
 
     // Fire REPLICA_MSG_RECEIVED callback for test infrastructure
     fireCallback(ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED, entry.databaseName());
@@ -259,23 +272,25 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
 
   // -- Schema Changes --
 
-  private void applySchemaChanges(final DatabaseInternal db, final String schemaJson, final Map<Integer, String> filesToAdd,
-      final Map<Integer, String> filesToRemove) throws IOException {
+  private void createNewFiles(final DatabaseInternal db, final Map<Integer, String> filesToAdd) throws IOException {
     final String databasePath = db.getDatabasePath();
-
     DatabaseContext.INSTANCE.init(db);
+    for (final Map.Entry<Integer, String> entry : filesToAdd.entrySet())
+      db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + File.separator + entry.getValue());
+  }
 
-    if (filesToAdd != null)
-      for (final Map.Entry<Integer, String> entry : filesToAdd.entrySet())
-        db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + File.separator + entry.getValue());
+  private void removeDroppedFiles(final DatabaseInternal db, final Map<Integer, String> filesToRemove) throws IOException {
+    if (filesToRemove == null || filesToRemove.isEmpty())
+      return;
+    DatabaseContext.INSTANCE.init(db);
+    for (final Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {
+      db.getPageManager().deleteFile(db, entry.getKey());
+      db.getFileManager().dropFile(entry.getKey());
+      db.getSchema().getEmbedded().removeFile(entry.getKey());
+    }
+  }
 
-    if (filesToRemove != null)
-      for (final Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {
-        db.getPageManager().deleteFile(db, entry.getKey());
-        db.getFileManager().dropFile(entry.getKey());
-        db.getSchema().getEmbedded().removeFile(entry.getKey());
-      }
-
+  private void updateSchemaMetadata(final DatabaseInternal db, final String schemaJson) throws IOException {
     if (schemaJson != null && !schemaJson.isEmpty())
       db.getSchema().getEmbedded().update(new JSONObject(schemaJson));
   }
@@ -390,6 +405,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
    * Downloads a database snapshot (ZIP) from the leader's HTTP endpoint and replaces local files.
    * The snapshot contains only data files and schema configuration, NOT WAL files.
    * After installation, Ratis replays log entries from the snapshot point.
+   * <p>
+   * Extraction happens to a temp directory first. The database directory is only replaced after
+   * the full download and extraction succeeds, preventing partial-failure corruption.
    */
   private void installDatabaseSnapshot(final DatabaseInternal db, final String leaderHttpAddr,
       final String databaseName) throws IOException {
@@ -413,50 +431,89 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     if (raftHA != null && raftHA.getClusterToken() != null)
       connection.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
 
+    final String databasePath = db.getDatabasePath();
+    final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
+    final Path tempDir = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-tmp");
+    final Path backupDir = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-old");
+
     try {
       final int responseCode = connection.getResponseCode();
       if (responseCode != 200)
         throw new ReplicationException(
             "Failed to download snapshot from " + snapshotUrl + ": HTTP " + responseCode);
 
-      // Close the database before replacing files
-      final String databasePath = db.getDatabasePath();
-      db.close();
+      // Clean up leftover temp/backup dirs from previous failed attempts
+      deleteDirectoryQuietly(tempDir);
+      deleteDirectoryQuietly(backupDir);
 
-      // Extract the ZIP to the database directory, overwriting existing files
-      final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
+      Files.createDirectories(tempDir);
+
+      // Phase 1: Extract to temp directory (database stays open and operational)
       try (final ZipInputStream zipIn = new ZipInputStream(connection.getInputStream())) {
         ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {
-          final File targetFile = new File(databasePath, zipEntry.getName());
+          final Path targetFile = tempDir.resolve(zipEntry.getName()).normalize();
 
-          // Security: prevent zip slip (lexical check - both sides normalized the same way)
-          if (!targetFile.toPath().normalize().toAbsolutePath().startsWith(dbPath))
+          // Security: prevent zip slip
+          if (!targetFile.startsWith(tempDir))
             throw new ReplicationException("Zip slip detected in snapshot: " + zipEntry.getName());
 
-          LogManager.instance().log(this, Level.FINE, "Extracting snapshot file: %s", targetFile.getName());
+          LogManager.instance().log(this, Level.FINE, "Extracting snapshot file: %s", zipEntry.getName());
 
-          try (final FileOutputStream fos = new FileOutputStream(targetFile)) {
+          try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile())) {
             copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName()); // 10 GB per entry
           }
           zipIn.closeEntry();
         }
+      } catch (final Exception e) {
+        // Extraction failed - clean up temp dir and leave database untouched
+        deleteDirectoryQuietly(tempDir);
+        throw e;
       }
 
-      // Delete WAL files - they are stale after snapshot installation
-      final File dbDir = new File(databasePath);
-      final File[] walFiles = dbDir.listFiles((dir, name) -> name.endsWith(".wal"));
-      if (walFiles != null)
-        for (final File walFile : walFiles)
-          if (!walFile.delete())
-            LogManager.instance().log(this, Level.WARNING, "Failed to delete stale WAL file: %s", walFile.getName());
+      // Phase 2: Close database and swap directories atomically
+      db.close();
 
-      LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
+      try {
+        // Move current database dir out of the way
+        Files.move(dbPath, backupDir);
+
+        // Move fully-extracted temp dir into place
+        Files.move(tempDir, dbPath);
+
+        // Delete WAL files from the new database dir - they are stale after snapshot installation
+        final File[] walFiles = dbPath.toFile().listFiles((dir, name) -> name.endsWith(".wal"));
+        if (walFiles != null)
+          for (final File walFile : walFiles)
+            if (!walFile.delete())
+              LogManager.instance().log(this, Level.WARNING, "Failed to delete stale WAL file: %s", walFile.getName());
+
+        // Clean up the backup
+        deleteDirectoryQuietly(backupDir);
+
+        LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
+
+      } catch (final Exception e) {
+        // Swap failed - try to restore original database
+        LogManager.instance().log(this, Level.SEVERE, "Snapshot swap failed for '%s', attempting rollback...", databaseName);
+        try {
+          if (Files.exists(backupDir)) {
+            deleteDirectoryQuietly(dbPath);   // remove partial move if any
+            Files.move(backupDir, dbPath);
+          }
+        } catch (final Exception rollbackEx) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "CRITICAL: Failed to rollback snapshot swap for '%s'. Database may be unavailable. Error: %s",
+              databaseName, rollbackEx.getMessage());
+        }
+        deleteDirectoryQuietly(tempDir);
+        throw new ReplicationException("Snapshot installation failed during directory swap", e);
+      }
 
     } finally {
       connection.disconnect();
-      // Ensure database is re-opened even if extraction failed, so it doesn't remain permanently closed.
-      // If reopening also fails, the database is effectively unavailable and subsequent Raft applies will
+      // Ensure database is re-opened, whether we swapped successfully or rolled back.
+      // If reopening fails, the database is effectively unavailable and subsequent Raft applies will
       // cascade-fail. Log at SEVERE so operators can investigate and restart the node.
       try {
         server.getDatabase(databaseName);
@@ -466,6 +523,21 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
                 + "This node may need to be restarted to recover. Error: %s",
             databaseName, e.getMessage());
       }
+    }
+  }
+
+  private static void deleteDirectoryQuietly(final Path dir) {
+    if (!Files.exists(dir))
+      return;
+    try {
+      final File[] files = dir.toFile().listFiles();
+      if (files != null)
+        for (final File f : files)
+          f.delete();
+      Files.delete(dir);
+    } catch (final IOException e) {
+      LogManager.instance().log(ArcadeDBStateMachine.class, Level.WARNING,
+          "Failed to clean up directory: %s (%s)", dir, e.getMessage());
     }
   }
 

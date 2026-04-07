@@ -177,36 +177,45 @@ public class RaftGroupCommitter {
       futures.add(client.async().send(msg));
     }
 
-    // Wait for all replies
+    // Collect send results. For ALL quorum, issue watch futures in parallel during this pass.
+    final boolean allQuorum = haServer.getQuorum() == RaftHAServer.Quorum.ALL;
+    final List<CompletableFuture<RaftClientReply>> watchFutures = allQuorum ? new ArrayList<>(batch.size()) : null;
+
     for (int i = 0; i < batch.size(); i++) {
       try {
         final RaftClientReply reply = futures.get(i).get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
         if (!reply.isSuccess()) {
           final String err = reply.getException() != null ? reply.getException().getMessage() : "replication failed";
           batch.get(i).future.complete(new QuorumNotReachedException("Raft replication failed: " + err));
+          if (allQuorum)
+            watchFutures.add(null);
           continue;
         }
 
-        // Handle ALL quorum if needed - must complete BEFORE marking success
-        if (haServer.getQuorum() == RaftHAServer.Quorum.ALL) {
-          try {
-            final RaftClientReply watchReply = client.async()
-                .watch(reply.getLogIndex(), RaftProtos.ReplicationLevel.ALL_COMMITTED)
-                .get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
-            if (!watchReply.isSuccess()) {
-              batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum not reached"));
-              continue;
-            }
-          } catch (final Exception e) {
-            batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum watch failed: " + e.getMessage()));
-            continue;
-          }
-        }
-
-        batch.get(i).future.complete(null); // success
+        if (allQuorum)
+          watchFutures.add(client.async().watch(reply.getLogIndex(), RaftProtos.ReplicationLevel.ALL_COMMITTED));
+        else
+          batch.get(i).future.complete(null); // success for MAJORITY
 
       } catch (final Exception e) {
         batch.get(i).future.complete(new QuorumNotReachedException("Group commit entry failed: " + e.getMessage()));
+        if (allQuorum)
+          watchFutures.add(null);
+      }
+    }
+
+    // For ALL quorum: all watch RPCs are already in flight, now collect results
+    if (allQuorum) {
+      for (int i = 0; i < batch.size(); i++) {
+        if (batch.get(i).future.isDone())
+          continue; // already failed in send phase
+
+        try {
+          final RaftClientReply watchReply = watchFutures.get(i).get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
+          batch.get(i).future.complete(watchReply.isSuccess() ? null : new QuorumNotReachedException("ALL quorum not reached"));
+        } catch (final Exception e) {
+          batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum watch failed: " + e.getMessage()));
+        }
       }
     }
 

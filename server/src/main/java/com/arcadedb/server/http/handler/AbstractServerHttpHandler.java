@@ -39,7 +39,6 @@ import io.undertow.util.StatusCodes;
 
 import java.net.HttpURLConnection;
 import java.net.URI;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
@@ -391,8 +390,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
     try (final var in = status < 400 ? conn.getInputStream() : conn.getErrorStream()) {
       if (in != null) {
-        final byte[] body = in.readAllBytes();
-        exchange.getResponseSender().send(ByteBuffer.wrap(body));
+        exchange.startBlocking();
+        try (final var out = exchange.getOutputStream()) {
+          in.transferTo(out);
+        }
       }
     } finally {
       conn.disconnect();

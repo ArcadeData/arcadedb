@@ -34,9 +34,12 @@ import java.util.logging.Level;
  */
 public class ClusterMonitor {
 
+  private static final long                     LAG_WARN_INTERVAL_MS = 60_000;
+
   private final long                            lagWarningThreshold;
   private volatile long                         leaderCommitIndex;
-  private final ConcurrentHashMap<String, Long> replicaMatchIndexes = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, Long> replicaMatchIndexes  = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, Long> replicaLastWarnTime  = new ConcurrentHashMap<>();
 
   public ClusterMonitor(final long lagWarningThreshold) {
     this.lagWarningThreshold = lagWarningThreshold;
@@ -49,9 +52,19 @@ public class ClusterMonitor {
   public void updateReplicaMatchIndex(final String replicaId, final long matchIndex) {
     replicaMatchIndexes.put(replicaId, matchIndex);
     final long lag = leaderCommitIndex - matchIndex;
-    if (lagWarningThreshold > 0 && lag > lagWarningThreshold)
-      LogManager.instance().log(this, Level.WARNING,
-          "Replica '%s' is lagging behind by %d entries (threshold: %d)", replicaId, lag, lagWarningThreshold);
+
+    if (lagWarningThreshold > 0 && lag > lagWarningThreshold) {
+      // Debounce: warn at most once per interval per replica
+      final long now = System.currentTimeMillis();
+      final Long lastWarn = replicaLastWarnTime.get(replicaId);
+      if (lastWarn == null || now - lastWarn >= LAG_WARN_INTERVAL_MS) {
+        replicaLastWarnTime.put(replicaId, now);
+        LogManager.instance().log(this, Level.WARNING,
+            "Replica '%s' is lagging behind by %d entries (threshold: %d)", replicaId, lag, lagWarningThreshold);
+      }
+    } else if (replicaLastWarnTime.remove(replicaId) != null)
+      LogManager.instance().log(this, Level.INFO,
+          "Replica '%s' caught up (lag: %d, threshold: %d)", replicaId, lag, lagWarningThreshold);
   }
 
   public Map<String, Long> getReplicaLags() {

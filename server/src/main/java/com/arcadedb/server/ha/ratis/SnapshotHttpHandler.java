@@ -33,6 +33,7 @@ import io.undertow.util.Headers;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
@@ -73,6 +74,13 @@ public class SnapshotHttpHandler implements HttpHandler {
       exchange.setStatusCode(401);
       exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic realm=\"ArcadeDB\"");
       exchange.getResponseSender().send("Unauthorized");
+      return;
+    }
+
+    // Only root user can download database snapshots
+    if (!"root".equals(user.getName())) {
+      exchange.setStatusCode(403);
+      exchange.getResponseSender().send("Forbidden: only root user can download database snapshots");
       return;
     }
 
@@ -183,8 +191,8 @@ public class SnapshotHttpHandler implements HttpHandler {
     if (!inputFile.exists())
       return;
 
-    // Security: verify the file is not a symlink pointing outside the database directory
-    if (!inputFile.getCanonicalPath().equals(inputFile.getAbsolutePath())) {
+    // Security: skip symlinks to prevent path traversal via crafted symlinks
+    if (Files.isSymbolicLink(inputFile.toPath())) {
       LogManager.instance().log(this, Level.WARNING, "Skipping symlinked file in snapshot: %s", inputFile.getAbsolutePath());
       return;
     }

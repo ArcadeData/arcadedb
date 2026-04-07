@@ -1077,28 +1077,58 @@ public class RaftHAServer {
 
   /**
    * Resolves which peer in the list corresponds to this server instance.
-   * Matches by the configured server address (HA_REPLICATION_INCOMING_HOST:port).
+   * Matching order:
+   * 1. Exact peer ID match using incoming host + port (e.g., "myhost_2424")
+   * 2. Server name match (e.g., server name "arcadedb-0" matches peer "arcadedb-0_2424")
+   * 3. Hostname match via InetAddress.getLocalHost()
+   * 4. Port-only match (only if a single peer uses this port, to avoid ambiguity)
    */
   private RaftPeerId resolveLocalPeerId(final List<RaftPeer> peers) {
     final String localHost = configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST);
     final String localPorts = configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS);
     final int localPort = parseFirstPort(localPorts);
 
-    // Peer ID format is host_port (underscore, not colon, for JMX compatibility)
-    final String localPeerId = localHost + "_" + localPort;
+    // 1. Exact match: peer ID = incomingHost_port
+    final String exactId = localHost + "_" + localPort;
     for (final RaftPeer peer : peers)
-      if (peer.getId().toString().equals(localPeerId))
+      if (peer.getId().toString().equals(exactId))
         return peer.getId();
 
-    // Fallback: match by port only (useful for localhost testing)
-    for (final RaftPeer peer : peers) {
-      final String address = peer.getAddress();
-      if (address != null && address.endsWith(":" + localPort))
-        return peer.getId();
+    // 2. Match by server name (e.g., "-Darcadedb.server.name=arcadedb-0" matches peer "arcadedb-0_2424")
+    final String serverName = server.getServerName();
+    if (serverName != null && !serverName.isEmpty()) {
+      final String serverNameId = serverName + "_" + localPort;
+      for (final RaftPeer peer : peers)
+        if (peer.getId().toString().equals(serverNameId))
+          return peer.getId();
     }
 
+    // 3. Match by hostname
+    try {
+      final String hostname = java.net.InetAddress.getLocalHost().getHostName();
+      final String hostnameId = hostname + "_" + localPort;
+      for (final RaftPeer peer : peers)
+        if (peer.getId().toString().equals(hostnameId))
+          return peer.getId();
+    } catch (final java.net.UnknownHostException ignored) {
+    }
+
+    // 4. Fallback: match by port only if unambiguous (useful for single-host testing)
+    RaftPeerId portMatch = null;
+    int portMatchCount = 0;
+    for (final RaftPeer peer : peers) {
+      final String address = peer.getAddress();
+      if (address != null && address.endsWith(":" + localPort)) {
+        portMatch = peer.getId();
+        portMatchCount++;
+      }
+    }
+    if (portMatchCount == 1)
+      return portMatch;
+
     throw new ConfigurationException(
-        "Cannot find local server in HA_SERVER_LIST. Local address: " + localHost + ":" + localPort + ", server list: " + peers);
+        "Cannot find local server in HA_SERVER_LIST. serverName=" + serverName + ", localAddress=" + localHost + ":" + localPort
+            + ", server list: " + peers);
   }
 
   private int resolveLocalPort() {
