@@ -537,8 +537,8 @@ public enum GlobalConfiguration {
       String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
-      "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority", String.class, "majority",
-      Set.of("none", "one", "two", "three", "majority", "all")),
+      "Default quorum: 'majority' or 'all' servers. Default is majority", String.class, "majority",
+      Set.of("majority", "all")),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 

@@ -27,7 +27,6 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
-import com.arcadedb.server.ha.ratis.RaftHAServer;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
@@ -53,9 +52,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Tag("IntegrationTest")
 class RaftReplicationIT {
 
-  private static final int    SERVER_COUNT  = 3;
-  private static final String DATABASE_NAME = "raft-test-db";
-  private static final int    BASE_HA_PORT  = 22424;
+  private static final int    SERVER_COUNT   = 3;
+  private static final String DATABASE_NAME  = "raft-test-db";
+  private static final int    BASE_HA_PORT   = 22424;
   private static final int    BASE_HTTP_PORT = 22480;
 
   private ArcadeDBServer[] servers;
@@ -139,7 +138,11 @@ class RaftReplicationIT {
           }
 
     // Allow ports to be released
-    try { Thread.sleep(2000); } catch (final InterruptedException e) { Thread.currentThread().interrupt(); }
+    try {
+      Thread.sleep(2000);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
 
     for (int i = 0; i < SERVER_COUNT; i++)
       FileUtils.deleteRecursively(new File("./target/raft-databases" + i));
@@ -160,7 +163,7 @@ class RaftReplicationIT {
     // Verify exactly one Ratis leader exists
     int leaderCount = 0;
     for (final ArcadeDBServer server : servers)
-      if (server.getHA != null && server.getHA.isLeader())
+      if (server.getHA() != null && server.getHA().isLeader())
         leaderCount++;
 
     assertThat(leaderCount).isEqualTo(1);
@@ -171,7 +174,7 @@ class RaftReplicationIT {
     // Find the leader server
     ArcadeDBServer leader = null;
     for (final ArcadeDBServer server : servers)
-      if (server.getHA != null && server.getHA.isLeader()) {
+      if (server.getHA() != null && server.getHA().isLeader()) {
         leader = server;
         break;
       }
@@ -216,7 +219,7 @@ class RaftReplicationIT {
     // Find a follower server (not the leader)
     ArcadeDBServer follower = null;
     for (final ArcadeDBServer server : servers)
-      if (server.getHA != null && !server.getHA.isLeader()) {
+      if (server.getHA() != null && !server.getHA().isLeader()) {
         follower = server;
         break;
       }
@@ -254,7 +257,7 @@ class RaftReplicationIT {
     // Verify exactly one leader
     long leaderCount = 0;
     for (final ArcadeDBServer server : servers)
-      if (server.getHA.isLeader())
+      if (server.getHA().isLeader())
         leaderCount++;
     assertThat(leaderCount).isEqualTo(1);
   }
@@ -271,7 +274,7 @@ class RaftReplicationIT {
 
     // Verify replica addresses are populated
     for (final ArcadeDBServer server : servers) {
-      final String replicas = server.getHA.getReplicaAddresses();
+      final String replicas = server.getHA().getReplicaAddresses();
       assertThat(replicas).isNotEmpty();
     }
   }
@@ -286,7 +289,7 @@ class RaftReplicationIT {
         .pollInterval(500, TimeUnit.MILLISECONDS)
         .until(() -> {
           for (final ArcadeDBServer server : servers)
-            if (server.getHA != null && server.getHA.isLeader())
+            if (server.getHA() != null && server.getHA().isLeader())
               return true;
           return false;
         });

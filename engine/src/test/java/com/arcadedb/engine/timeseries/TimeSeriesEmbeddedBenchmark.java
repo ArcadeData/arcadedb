@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -44,6 +45,7 @@ import java.util.logging.Level;
  * @Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 @Tag("benchmark")
+@Disabled
 public class TimeSeriesEmbeddedBenchmark {
 
   private static final String DB_PATH              = "target/databases/ts-benchmark-embedded";

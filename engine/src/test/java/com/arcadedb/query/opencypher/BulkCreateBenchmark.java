@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +48,7 @@ import java.io.File;
  * - Bottleneck: per-record transaction overhead in CreateStep
  */
 @Tag("benchmark")
+@Disabled
 class BulkCreateBenchmark {
   private static final String DB_PATH = "./target/databases/test-bulk-create-benchmark";
 

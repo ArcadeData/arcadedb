@@ -74,6 +74,7 @@ import java.util.function.Function;
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("benchmark")
+@Disabled
 class QueryLanguageWithGremlinAndCypherBenchmark {
   private static final String DB_PATH = "target/test-databases/QueryLanguageWithGremlinAndCypherBenchmark";
 

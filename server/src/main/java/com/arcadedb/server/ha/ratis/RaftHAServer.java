@@ -165,8 +165,6 @@ public class RaftHAServer {
     } catch (final Exception e) {
       throw new RuntimeException("Failed to derive cluster token", e);
     }
-    // Write the derived token back to configuration so all components use the same value.
-    configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, this.clusterToken);
     LogManager.instance().log(this, Level.WARNING,
         "Using auto-derived cluster token. Changing root password does NOT rotate this token. "
             + "To explicitly rotate, set arcadedb.ha.clusterToken=<new-value> and restart all nodes");

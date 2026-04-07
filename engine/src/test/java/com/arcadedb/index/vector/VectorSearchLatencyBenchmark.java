@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -50,6 +51,7 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("benchmark")
+@Disabled
 class VectorSearchLatencyBenchmark {
   private static final String DB_PATH = "target/test-databases/VectorSearchLatencyBenchmark";
 

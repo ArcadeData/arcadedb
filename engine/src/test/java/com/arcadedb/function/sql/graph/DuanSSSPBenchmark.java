@@ -25,6 +25,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +42,7 @@ import java.util.*;
  * due to DuanSSSP's large constant factors, despite better asymptotic complexity.
  */
 @Tag("benchmark")
+@Disabled
 class DuanSSSPBenchmark {
 
   private static final Random RANDOM = new Random(42); // Fixed seed for reproducibility

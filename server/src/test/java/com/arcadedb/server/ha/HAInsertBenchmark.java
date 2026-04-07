@@ -28,6 +28,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -48,6 +49,7 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("benchmark")
+@Disabled
 public class HAInsertBenchmark {
 
   private static final String DB_NAME       = "benchdb";

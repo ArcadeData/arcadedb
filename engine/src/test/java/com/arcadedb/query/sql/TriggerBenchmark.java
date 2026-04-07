@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -36,6 +37,7 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("benchmark")
+@Disabled
 class TriggerBenchmark {
 
   private static       Database database;

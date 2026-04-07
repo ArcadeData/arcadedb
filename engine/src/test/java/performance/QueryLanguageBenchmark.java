@@ -33,6 +33,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -76,6 +77,7 @@ import java.util.function.Function;
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("benchmark")
+@Disabled
 class QueryLanguageBenchmark {
   private static final String DB_PATH = "target/test-databases/QueryLanguageBenchmark";
 

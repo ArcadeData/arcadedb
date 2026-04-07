@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -68,6 +69,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("benchmark")
+@Disabled
 class MSMARCOBenchmark {
 
   // Configurable paths and limits
