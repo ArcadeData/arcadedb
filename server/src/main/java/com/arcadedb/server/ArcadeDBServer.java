@@ -152,7 +152,9 @@ public class ArcadeDBServer {
     pluginManager.discoverPlugins();
 
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
-        GlobalConfiguration.SERVER_MODE.getValueAsString(), getAllPluginNames());
+        GlobalConfiguration.SERVER_MODE.getValueAsString(),
+        pluginManager != null && !pluginManager.getPluginNames().isEmpty() ?
+            pluginManager.getPluginNames() : getAllPluginNames());
 
     // IN PRODUCTION MODE, APPLY SAFE DEFAULTS
     if ("production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {

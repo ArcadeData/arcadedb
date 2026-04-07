@@ -35,6 +35,11 @@ public class BoltProtocolPlugin implements ServerPlugin {
   private int                 port;
 
   @Override
+  public String getName() {
+    return "Neo4j-Bolt";
+  }
+
+  @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
     this.host = configuration.getValueAsString(GlobalConfiguration.BOLT_HOST);
