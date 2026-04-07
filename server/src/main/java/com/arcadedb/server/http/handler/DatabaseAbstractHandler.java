@@ -103,11 +103,11 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
     final int retries = payload != null && !payload.isNull("retries") ? payload.getInt("retries") : 1;
 
-    // Set read consistency context from HTTP headers for HA follower reads
-    setReadConsistencyFromHeaders(exchange);
-
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
+      // Set read consistency context from HTTP headers for HA follower reads.
+      // Must be inside the try block so the finally always clears the ThreadLocal.
+      setReadConsistencyFromHeaders(exchange);
       boolean finalAtomicTransaction = atomicTransaction;
       if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
