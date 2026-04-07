@@ -2687,7 +2687,24 @@ div.dt-search {
   color: var(--text-primary);
   border: 1px solid var(--border-ddd);
   font-size: 0.84rem;
-  margin-bottom: 10px;
+  margin-bottom: 0;
+}
+
+.record-editor-prop-row {
+  margin-bottom: 8px;
+}
+
+.record-editor-delete-prop {
+  padding: 0 4px;
+  line-height: 1;
+  font-size: 0.7rem;
+  color: var(--text-faint);
+  border: none;
+  background: none;
+}
+
+.record-editor-delete-prop:hover {
+  color: var(--bs-danger, #dc3545);
 }
 
 .record-editor-fields .form-control:focus {
