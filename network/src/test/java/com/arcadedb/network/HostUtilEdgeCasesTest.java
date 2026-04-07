@@ -81,4 +81,34 @@ class HostUtilEdgeCasesTest {
     assertThat(parts[0]).isEqualTo("2001:db8:85a3:0:0:8a2e:370:7334");
     assertThat(parts[1]).isEqualTo(HostUtil.HA_DEFAULT_PORT);
   }
+
+  // -- Bracketed IPv6 (RFC 3986) --
+
+  @Test
+  void bracketedIPv6NoPort() {
+    final String[] parts = HostUtil.parseHostAddress("[::1]", HostUtil.CLIENT_DEFAULT_PORT);
+    assertThat(parts[0]).isEqualTo("::1");
+    assertThat(parts[1]).isEqualTo(HostUtil.CLIENT_DEFAULT_PORT);
+  }
+
+  @Test
+  void bracketedIPv6WithPort() {
+    final String[] parts = HostUtil.parseHostAddress("[::1]:2480", HostUtil.CLIENT_DEFAULT_PORT);
+    assertThat(parts[0]).isEqualTo("::1");
+    assertThat(parts[1]).isEqualTo("2480");
+  }
+
+  @Test
+  void bracketedIPv6FullWithPort() {
+    final String[] parts = HostUtil.parseHostAddress("[2001:db8::1]:8080", HostUtil.CLIENT_DEFAULT_PORT);
+    assertThat(parts[0]).isEqualTo("2001:db8::1");
+    assertThat(parts[1]).isEqualTo("8080");
+  }
+
+  @Test
+  void bracketedIPv6FullNoPort() {
+    final String[] parts = HostUtil.parseHostAddress("[2001:db8:85a3:0:0:8a2e:370:7334]", HostUtil.CLIENT_DEFAULT_PORT);
+    assertThat(parts[0]).isEqualTo("2001:db8:85a3:0:0:8a2e:370:7334");
+    assertThat(parts[1]).isEqualTo(HostUtil.CLIENT_DEFAULT_PORT);
+  }
 }

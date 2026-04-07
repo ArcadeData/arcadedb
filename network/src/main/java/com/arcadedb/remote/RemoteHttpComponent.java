@@ -420,6 +420,8 @@ public class RemoteHttpComponent extends RWLockContext {
       replicaServerList.clear();
 
       if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
+        // Comma-split is IPv6-safe: IPv6 addresses never contain commas.
+        // Bracketed notation ([::1]:port) and fully-expanded forms are both handled by HostUtil.parseHostAddress.
         final String[] serverEntries = cfgReplicaServers.split(",");
         for (final String serverEntry : serverEntries) {
           try {
