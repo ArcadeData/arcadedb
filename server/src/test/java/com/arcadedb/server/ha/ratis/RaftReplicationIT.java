@@ -279,9 +279,7 @@ class RaftReplicationIT {
     }
   }
 
-  // testSnapshotEndpoint: The SnapshotHttpHandler is functional but requires auth integration
-  // for HTTP testing. The snapshot installation flow is tested indirectly when Ratis triggers
-  // notifyInstallSnapshotFromLeader() on a lagging follower.
+  // Snapshot-based catch-up is tested end-to-end in HASnapshotCatchUpE2ETest (e2e module).
 
   private void waitForRatisLeader() {
     Awaitility.await()

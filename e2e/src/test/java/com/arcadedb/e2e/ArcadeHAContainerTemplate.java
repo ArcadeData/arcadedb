@@ -57,25 +57,35 @@ public abstract class ArcadeHAContainerTemplate {
    * Creates a cluster of the specified size.
    */
   protected void startCluster(final int size) {
+    startCluster(size, "");
+  }
+
+  /**
+   * Creates a cluster of the specified size with additional JAVA_OPTS.
+   */
+  protected void startCluster(final int size, final String extraJavaOpts) {
     final String serverList = buildServerList(size);
 
     for (int i = 0; i < size; i++) {
       final String alias = "arcadedb-" + i;
+      String javaOpts = "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD
+          + " -Darcadedb.ha.enabled=true"
+          + " -Darcadedb.ha.serverList=" + serverList
+          + " -Darcadedb.ha.clusterName=e2e-test"
+          + " -Darcadedb.ha.quorum=majority"
+          + " -Darcadedb.server.name=" + alias
+          + " -Darcadedb.ha.replicationIncomingHost=0.0.0.0"
+          + " -Darcadedb.server.defaultDatabases=" + DATABASE_NAME + "[root]";
+
+      if (extraJavaOpts != null && !extraJavaOpts.isEmpty())
+        javaOpts += " " + extraJavaOpts;
+
       final GenericContainer<?> container = new GenericContainer<>("arcadedata/arcadedb:latest")
           .withNetwork(network)
           .withNetworkAliases(alias)
           .withExposedPorts(HTTP_PORT, RAFT_PORT)
           .withStartupTimeout(Duration.ofSeconds(120))
-          .withEnv("JAVA_OPTS",
-              "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD
-                  + " -Darcadedb.ha.enabled=true"
-                  + " -Darcadedb.ha.serverList=" + serverList
-                  + " -Darcadedb.ha.clusterName=e2e-test"
-                  + " -Darcadedb.ha.quorum=majority"
-                  + " -Darcadedb.server.name=" + alias
-                  + " -Darcadedb.ha.replicationIncomingHost=0.0.0.0"
-                  + " -Darcadedb.server.defaultDatabases=" + DATABASE_NAME + "[root]"
-          )
+          .withEnv("JAVA_OPTS", javaOpts)
           .waitingFor(Wait.forHttp("/api/v1/ready").forPort(HTTP_PORT).forStatusCode(204));
 
       container.start();
