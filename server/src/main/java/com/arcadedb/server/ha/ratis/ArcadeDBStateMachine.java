@@ -64,6 +64,9 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -93,6 +96,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private volatile boolean                snapshotBeingInstalled = false;
   /** Set by reinitialize() when a snapshot gap is detected, cleared by notifyLeaderChanged() via compareAndSet. */
   private final AtomicBoolean             needsSnapshotDownload  = new AtomicBoolean(false);
+  /** Executor for async lifecycle tasks (snapshot download, Ratis restart) so they can be awaited on close. */
+  private final ExecutorService           lifecycleExecutor      = Executors.newSingleThreadExecutor(
+      r -> { final Thread t = new Thread(r, "arcadedb-sm-lifecycle"); t.setDaemon(true); return t; });
 
   public ArcadeDBStateMachine(final ArcadeDBServer server) {
     this.server = server;
@@ -104,6 +110,18 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     storage.init(raftStorage);
     reinitialize();
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Raft state machine initialized (groupId=%s)", groupId);
+  }
+
+  @Override
+  public void close() throws IOException {
+    lifecycleExecutor.shutdownNow();
+    try {
+      if (!lifecycleExecutor.awaitTermination(10, TimeUnit.SECONDS))
+        LogManager.instance().log(this, Level.WARNING, "Lifecycle executor did not terminate within 10 seconds");
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    super.close();
   }
 
   @Override
@@ -312,7 +330,15 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     LogManager.instance().log(this, Level.FINE, "Applying forwarded Raft tx %d (modifiedPages=%d, db=%s)...",
         walTx.txId, walTx.pages.length, entry.databaseName());
 
-    db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
+    try {
+      db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
+    } catch (final java.util.ConcurrentModificationException | com.arcadedb.exception.ConcurrentModificationException e) {
+      // After a cold restart or snapshot installation, Ratis may replay entries that were already
+      // applied to the database. The page version check in applyChanges() detects this as a
+      // ConcurrentModificationException. This is safe to skip - same guard as applyTransactionEntry().
+      HALog.log(this, HALog.BASIC, "Skipping already-applied forwarded WAL entry (db=%s, txId=%d): %s",
+          entry.databaseName(), walTx.txId, e.getMessage());
+    }
   }
 
   private void applyCreateDatabase(final byte[] data) {
@@ -608,9 +634,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       // If we crash after this point, recoverPendingSnapshotSwaps() will finish the job.
       Files.writeString(markerFile, databaseName);
 
-      // Move current database dir out of the way
-      if (Files.exists(dbPath))
+      // Move current database dir out of the way.
+      // Delete stale backup from a previous failed swap to avoid FileAlreadyExistsException.
+      if (Files.exists(dbPath)) {
+        FileUtils.deleteRecursively(backupDir.toFile());
         Files.move(dbPath, backupDir);
+      }
 
       // Move fully-extracted temp dir into place
       Files.move(tempDir, dbPath);
@@ -847,7 +876,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // uses AtomicReference (no synchronized block). The download runs on a dedicated thread
     // and only synchronizes on ArcadeDBServer.databases, never on Ratis internals.
     if (needsSnapshotDownload.compareAndSet(true, false)) {
-      new Thread(() -> {
+      lifecycleExecutor.submit(() -> {
         try {
           Thread.sleep(2000); // Wait for the leader's HTTP server to be ready
           installDatabasesFromLeader();
@@ -855,7 +884,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
           LogManager.instance().log(this, Level.SEVERE,
               "Failed to download databases after leader discovery: %s", e.getMessage());
         }
-      }, "snapshot-download").start();
+      });
     }
 
     // Refresh gRPC channels to force fresh DNS resolution after potential network partition
@@ -898,7 +927,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // If the server is still supposed to be running (not in SHUTTING_DOWN), the Ratis server
     // closed due to an error (e.g., network partition). Schedule a restart after close completes.
     if (server.getStatus() == ArcadeDBServer.STATUS.ONLINE) {
-      new Thread(() -> {
+      lifecycleExecutor.submit(() -> {
         try {
           Thread.sleep(2000); // Wait for Ratis close to complete
           final RaftHAServer raftHA = server.getHA();
@@ -907,7 +936,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Failed to restart Ratis after shutdown: %s", e.getMessage());
         }
-      }, "ratis-restart").start();
+      });
     }
   }
 
@@ -937,6 +966,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
   static WALFile.WALTransaction parseWalTransaction(final Binary buffer) {
     final WALFile.WALTransaction tx = new WALFile.WALTransaction();
+
+    // Minimum header: txId(8) + timestamp(8) + pages(4) + segmentSize(4) = 24 bytes
+    final int headerSize = 2 * Binary.LONG_SERIALIZED_SIZE + 2 * Binary.INT_SERIALIZED_SIZE;
+    if (buffer.size() < headerSize)
+      throw new ReplicationException(
+          "Replicated transaction buffer is truncated: expected at least " + headerSize + " header bytes, got " + buffer.size());
 
     int pos = 0;
     tx.txId = buffer.getLong(pos);
@@ -990,6 +1025,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       buffer.getByteArray(pos, pageData, 0, deltaSize);
       pos += deltaSize;
     }
+
+    // Trailing footer: segmentSize(4) + magicNumber(8)
+    final int footerSize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
+    if (pos + footerSize > buffer.size())
+      throw new ReplicationException(
+          "Replicated transaction buffer is truncated: expected " + footerSize + " footer bytes at position " + pos + ", buffer size " + buffer.size());
 
     final int trailingSegmentSize = buffer.getInt(pos);
     pos += Binary.INT_SERIALIZED_SIZE;

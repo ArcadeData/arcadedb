@@ -419,7 +419,7 @@ public class RaftLogEntry {
       case 4 -> Double.longBitsToDouble(stream.getLong());
       case 5 -> Float.intBitsToFloat(stream.getInt());
       case 6 -> stream.getByte() == 1;
-      default -> null;
+      default -> throw new IllegalStateException("Unknown value type: " + type);
     };
   }
 

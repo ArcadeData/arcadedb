@@ -18,6 +18,7 @@
  */
 package com.arcadedb.e2e;
 
+import com.arcadedb.serializer.json.JSONObject;
 import com.github.dockerjava.api.DockerClient;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
@@ -90,7 +91,9 @@ public class HAColdStartE2ETest extends ArcadeHAContainerTemplate {
     for (final var t : restartThreads)
       t.join(30_000);
 
-    // 3. Wait for ALL nodes to become healthy
+    // 3. Wait for ALL nodes to become healthy.
+    // After docker restart, port mappings change. Query the actual port from Docker
+    // instead of using TestContainers' cached getMappedPort().
     Awaitility.await()
         .atMost(90, TimeUnit.SECONDS)
         .pollInterval(2, TimeUnit.SECONDS)
@@ -98,14 +101,20 @@ public class HAColdStartE2ETest extends ArcadeHAContainerTemplate {
           int readyCount = 0;
           for (final GenericContainer<?> c : containers) {
             try {
-              // Check container is actually running at Docker level
               final var inspect = dockerClient.inspectContainerCmd(c.getContainerId()).exec();
               if (!Boolean.TRUE.equals(inspect.getState().getRunning()))
                 continue;
 
+              // Get the actual port binding from Docker (not the cached TestContainers value)
+              final var bindings = inspect.getNetworkSettings().getPorts().getBindings();
+              final var httpBindings = bindings.get(new com.github.dockerjava.api.model.ExposedPort(HTTP_PORT));
+              if (httpBindings == null || httpBindings.length == 0)
+                continue;
+              final int actualPort = Integer.parseInt(httpBindings[0].getHostPortSpec());
+
               final var response = httpClient.send(
                   HttpRequest.newBuilder()
-                      .uri(URI.create("http://" + c.getHost() + ":" + c.getMappedPort(HTTP_PORT) + "/api/v1/ready"))
+                      .uri(URI.create("http://" + c.getHost() + ":" + actualPort + "/api/v1/ready"))
                       .GET().build(),
                   HttpResponse.BodyHandlers.ofString());
               if (response.statusCode() == 204)
@@ -115,34 +124,111 @@ public class HAColdStartE2ETest extends ArcadeHAContainerTemplate {
           return readyCount == containers.size();
         });
 
-    // 4. Wait for leader election after cold start
-    waitForLeader();
+    // 4. Wait for leader election after cold start (also needs actual ports)
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> {
+          for (final GenericContainer<?> c : containers) {
+            try {
+              final int port = getActualPort(dockerClient, c);
+              if (port <= 0) continue;
+              final var response = httpClient.send(
+                  HttpRequest.newBuilder()
+                      .uri(URI.create("http://" + c.getHost() + ":" + port + "/api/v1/server?mode=cluster"))
+                      .header("Authorization", basicAuth())
+                      .GET().build(),
+                  HttpResponse.BodyHandlers.ofString());
+              if (response.statusCode() == 200 && response.body().contains("\"isLeader\":true"))
+                return true;
+            } catch (final Exception ignored) {}
+          }
+          return false;
+        });
 
-    // 5. Verify all data survived the full cluster restart
-    for (final GenericContainer<?> c : containers)
-      assertThat(httpCount(c, "Invoice")).as("Node should have all 50 invoices after cold start").isEqualTo(50);
+    // 5. Verify all data survived the full cluster restart (using actual ports after restart)
+    for (final GenericContainer<?> c : containers) {
+      final int port = getActualPort(dockerClient, c);
+      assertThat(countViaPort(c, port, "Invoice"))
+          .as("Node should have all 50 invoices after cold start").isEqualTo(50);
+    }
 
-    // 6. Verify the cluster is fully functional - write more data
-    final GenericContainer<?> newLeader = findLeader();
+    // 6. Verify the cluster is fully functional - write more data on the leader
+    int leaderPort = -1;
+    GenericContainer<?> newLeader = null;
+    for (final GenericContainer<?> c : containers) {
+      final int port = getActualPort(dockerClient, c);
+      try {
+        final var resp = httpClient.send(
+            HttpRequest.newBuilder()
+                .uri(URI.create("http://" + c.getHost() + ":" + port + "/api/v1/server?mode=cluster"))
+                .header("Authorization", basicAuth()).GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+        if (resp.body().contains("\"isLeader\":true")) {
+          newLeader = c;
+          leaderPort = port;
+          break;
+        }
+      } catch (final Exception ignored) {}
+    }
     assertThat(newLeader).isNotNull();
 
     for (int i = 50; i < 60; i++)
-      httpCommand(newLeader, "SQL", "INSERT INTO Invoice CONTENT {\"number\":\"INV-" + String.format("%04d", i)
-          + "\",\"amount\":" + (i * 99.5) + ",\"phase\":\"after-restart\"}");
+      commandViaPort(newLeader, leaderPort, "SQL",
+          "INSERT INTO Invoice CONTENT {\"number\":\"INV-" + String.format("%04d", i)
+              + "\",\"amount\":" + (i * 99.5) + ",\"phase\":\"after-restart\"}");
 
     // Verify new data replicates to all nodes
     Awaitility.await().atMost(15, TimeUnit.SECONDS).untilAsserted(() -> {
-      for (final GenericContainer<?> c : containers)
-        assertThat(httpCount(c, "Invoice")).isEqualTo(60);
+      for (final GenericContainer<?> c : containers) {
+        final int port = getActualPort(dockerClient, c);
+        assertThat(countViaPort(c, port, "Invoice")).isEqualTo(60);
+      }
     });
 
     // 7. Verify the unique index survived - duplicate should be rejected
+    final int lp = leaderPort;
+    final GenericContainer<?> nl = newLeader;
     try {
-      httpCommand(newLeader, "SQL", "INSERT INTO Invoice CONTENT {\"number\":\"INV-0001\",\"amount\":0.0}");
+      commandViaPort(nl, lp, "SQL", "INSERT INTO Invoice CONTENT {\"number\":\"INV-0001\",\"amount\":0.0}");
       assertThat(false).as("Duplicate index key should have been rejected").isTrue();
     } catch (final Exception e) {
-      // Expected: unique index violation
       assertThat(e.getMessage().toLowerCase()).contains("duplicate");
+    }
+  }
+
+  private int getActualPort(final DockerClient dc, final GenericContainer<?> c) {
+    try {
+      final var inspect = dc.inspectContainerCmd(c.getContainerId()).exec();
+      final var bindings = inspect.getNetworkSettings().getPorts().getBindings();
+      final var httpBindings = bindings.get(new com.github.dockerjava.api.model.ExposedPort(HTTP_PORT));
+      if (httpBindings != null && httpBindings.length > 0)
+        return Integer.parseInt(httpBindings[0].getHostPortSpec());
+    } catch (final Exception ignored) {}
+    return c.getMappedPort(HTTP_PORT); // fallback to cached
+  }
+
+  private JSONObject commandViaPort(final GenericContainer<?> c, final int port,
+      final String language, final String command) throws Exception {
+    final JSONObject body = new JSONObject().put("language", language).put("command", command);
+    final var response = httpClient.send(
+        HttpRequest.newBuilder()
+            .uri(URI.create("http://" + c.getHost() + ":" + port + "/api/v1/command/" + DATABASE_NAME))
+            .header("Authorization", basicAuth())
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build(),
+        HttpResponse.BodyHandlers.ofString());
+    if (response.statusCode() != 200)
+      throw new RuntimeException("HTTP " + response.statusCode() + ": " + response.body());
+    return new JSONObject(response.body());
+  }
+
+  private long countViaPort(final GenericContainer<?> c, final int port, final String typeName) {
+    try {
+      final JSONObject result = commandViaPort(c, port, "SQL", "SELECT count(*) as cnt FROM " + typeName);
+      return result.getJSONArray("result").getJSONObject(0).getLong("cnt");
+    } catch (final Exception e) {
+      return -1;
     }
   }
 }

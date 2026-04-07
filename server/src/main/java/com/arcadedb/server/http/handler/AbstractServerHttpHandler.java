@@ -358,11 +358,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       else {
         // No Authorization header - this is a multi-hop proxy where the original request
         // was authenticated via cluster token + forwarded user. Preserve the forwarded user
-        // from the incoming request to avoid privilege escalation to root.
-        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+        // from the incoming request. Reject if no forwarded user is present to prevent
+        // unauthenticated requests from gaining root privileges.
         final var forwardedUser = exchange.getRequestHeaders().get(HEADER_FORWARDED_USER);
-        conn.setRequestProperty(HEADER_FORWARDED_USER,
-            forwardedUser != null && !forwardedUser.isEmpty() ? forwardedUser.getFirst() : "root");
+        if (forwardedUser == null || forwardedUser.isEmpty()) {
+          conn.disconnect();
+          sendErrorResponse(exchange, 401, "No authentication credentials provided", null, null);
+          return;
+        }
+        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+        conn.setRequestProperty(HEADER_FORWARDED_USER, forwardedUser.getFirst());
       }
     } else if (authHeader != null && !authHeader.isEmpty())
       conn.setRequestProperty("Authorization", authHeader.getFirst());

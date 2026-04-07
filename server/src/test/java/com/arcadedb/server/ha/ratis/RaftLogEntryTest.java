@@ -212,6 +212,24 @@ class RaftLogEntryTest {
   }
 
   @Test
+  void testParseWalTransactionRejectsTruncatedHeader() {
+    // A buffer with only 10 bytes is too short for the 24-byte header
+    // (txId:8 + timestamp:8 + pageCount:4 + segmentSize:4)
+    final Binary truncated = new Binary(new byte[10]);
+    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(truncated))
+        .isInstanceOf(ReplicationException.class)
+        .hasMessageContaining("truncated");
+  }
+
+  @Test
+  void testParseWalTransactionRejectsEmptyBuffer() {
+    final Binary empty = new Binary(new byte[0]);
+    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(empty))
+        .isInstanceOf(ReplicationException.class)
+        .hasMessageContaining("truncated");
+  }
+
+  @Test
   void testParseWalTransactionRejectsTruncatedPageHeader() {
     // Build a valid WAL buffer with 1 page, then truncate it mid-page-header so only
     // partial fixed fields are present. The bounds check must catch this before reading.
