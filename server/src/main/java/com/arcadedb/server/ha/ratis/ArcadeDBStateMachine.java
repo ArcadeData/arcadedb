@@ -597,7 +597,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
     // Phase 2: Close database and swap directories using a crash-safe marker file.
     // The marker ensures recovery can complete or rollback the swap if the process crashes.
-    db.close();
+    // Close the underlying LocalDatabase directly - ServerDatabase.close() throws
+    // UnsupportedOperationException because server-managed databases are shared.
+    db.getEmbedded().close();
 
     final Path markerFile = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-pending");
 
@@ -955,7 +957,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     tx.pages = new WALFile.WALPage[pages];
 
     for (int i = 0; i < pages; ++i) {
-      if (pos > buffer.size())
+      // Validate that the 4 fixed-size header fields (fileId, pageNumber, changesFrom, changesTo) fit
+      if (pos + 4 * Binary.INT_SERIALIZED_SIZE > buffer.size())
         throw new ReplicationException("Replicated transaction buffer is corrupted");
 
       tx.pages[i] = new WALFile.WALPage();
@@ -972,6 +975,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       if (deltaSize <= 0)
         throw new ReplicationException(
             "Invalid delta range in replicated transaction: changesFrom=" + tx.pages[i].changesFrom + " changesTo=" + tx.pages[i].changesTo);
+
+      // Validate that the remaining 2 fixed fields + delta bytes fit before reading them
+      if (pos + 2 * Binary.INT_SERIALIZED_SIZE + deltaSize > buffer.size())
+        throw new ReplicationException("Replicated transaction buffer is corrupted");
 
       tx.pages[i].currentPageVersion = buffer.getInt(pos);
       pos += Binary.INT_SERIALIZED_SIZE;

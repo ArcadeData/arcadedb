@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.ratis;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.server.ha.ReplicationException;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
@@ -210,6 +211,56 @@ class RaftLogEntryTest {
         .hasMessageContaining("exceeds");
   }
 
+  @Test
+  void testParseWalTransactionRejectsTruncatedPageHeader() {
+    // Build a valid WAL buffer with 1 page, then truncate it mid-page-header so only
+    // partial fixed fields are present. The bounds check must catch this before reading.
+    final Binary full = createTestWalBufferWithOnePage(1L, 100L, 0, 10, 19);
+    final int headerEnd = Binary.LONG_SERIALIZED_SIZE  // txId
+        + Binary.LONG_SERIALIZED_SIZE                  // timestamp
+        + Binary.INT_SERIALIZED_SIZE                   // pageCount
+        + Binary.INT_SERIALIZED_SIZE;                  // segmentSize
+
+    // Truncate after only 2 of the 4 page-header ints (fileId + pageNumber = 8 bytes)
+    final Binary truncated = sliceBuffer(full, headerEnd + 8);
+
+    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(truncated))
+        .isInstanceOf(ReplicationException.class)
+        .hasMessageContaining("corrupted");
+  }
+
+  @Test
+  void testParseWalTransactionRejectsTruncatedPageDelta() {
+    // Build a valid WAL buffer with 1 page (delta = 10 bytes), then truncate it after
+    // the 6 fixed ints but before all delta bytes are present.
+    final Binary full = createTestWalBufferWithOnePage(1L, 100L, 0, 10, 19);
+    final int headerEnd = Binary.LONG_SERIALIZED_SIZE  // txId
+        + Binary.LONG_SERIALIZED_SIZE                  // timestamp
+        + Binary.INT_SERIALIZED_SIZE                   // pageCount
+        + Binary.INT_SERIALIZED_SIZE;                  // segmentSize
+
+    // Include all 6 ints (24 bytes) but only 3 of the 10 delta bytes
+    final Binary truncated = sliceBuffer(full, headerEnd + 6 * Binary.INT_SERIALIZED_SIZE + 3);
+
+    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(truncated))
+        .isInstanceOf(ReplicationException.class)
+        .hasMessageContaining("corrupted");
+  }
+
+  @Test
+  void testParseWalTransactionWithValidPage() {
+    // Verify a well-formed single-page buffer parses correctly
+    final Binary buffer = createTestWalBufferWithOnePage(42L, 999L, 5, 100, 109);
+
+    final WALFile.WALTransaction tx = ArcadeDBStateMachine.parseWalTransaction(buffer);
+    assertThat(tx.txId).isEqualTo(42L);
+    assertThat(tx.timestamp).isEqualTo(999L);
+    assertThat(tx.pages.length).isEqualTo(1);
+    assertThat(tx.pages[0].fileId).isEqualTo(5);
+    assertThat(tx.pages[0].changesFrom).isEqualTo(100);
+    assertThat(tx.pages[0].changesTo).isEqualTo(109);
+  }
+
   /**
    * Creates a minimal valid WAL transaction buffer with the expected format:
    * [txId:8][timestamp:8][pageCount:4][segmentSize:4][...pages...][segmentSize:4][magicNumber:8]
@@ -236,5 +287,53 @@ class RaftLogEntryTest {
 
     buffer.flip();
     return buffer;
+  }
+
+  /**
+   * Creates a valid WAL buffer containing exactly one page.
+   * Per-page format: [fileId:4][pageNumber:4][changesFrom:4][changesTo:4][pageVersion:4][pageSize:4][delta bytes]
+   */
+  private Binary createTestWalBufferWithOnePage(final long txId, final long timestamp, final int fileId, final int changesFrom,
+      final int changesTo) {
+    final int deltaSize = changesTo - changesFrom + 1;
+    final int pageDataSize = 6 * Binary.INT_SERIALIZED_SIZE + deltaSize;
+    final int segmentSize = pageDataSize;
+
+    final int totalSize = Binary.LONG_SERIALIZED_SIZE    // txId
+        + Binary.LONG_SERIALIZED_SIZE                    // timestamp
+        + Binary.INT_SERIALIZED_SIZE                     // page count
+        + Binary.INT_SERIALIZED_SIZE                     // segment size
+        + segmentSize                                    // pages data
+        + Binary.INT_SERIALIZED_SIZE                     // trailing segment size
+        + Binary.LONG_SERIALIZED_SIZE;                   // magic number
+
+    final Binary buffer = new Binary(totalSize);
+    buffer.putLong(txId);
+    buffer.putLong(timestamp);
+    buffer.putInt(1);            // pageCount
+    buffer.putInt(segmentSize);
+
+    // Page data
+    buffer.putInt(fileId);
+    buffer.putInt(0);            // pageNumber
+    buffer.putInt(changesFrom);
+    buffer.putInt(changesTo);
+    buffer.putInt(1);            // currentPageVersion
+    buffer.putInt(1024);         // currentPageSize
+    buffer.putByteArray(new byte[deltaSize]);
+
+    buffer.putInt(segmentSize);
+    buffer.putLong(WALFile.MAGIC_NUMBER);
+
+    buffer.flip();
+    return buffer;
+  }
+
+  /** Returns a new Binary containing only the first {@code length} bytes of {@code source}. */
+  private Binary sliceBuffer(final Binary source, final int length) {
+    final byte[] data = new byte[length];
+    source.getByteBuffer().position(0);
+    source.getByteBuffer().get(data, 0, length);
+    return new Binary(data);
   }
 }
