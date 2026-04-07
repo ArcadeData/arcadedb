@@ -639,11 +639,13 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       FileUtils.deleteRecursively(tempDir.toFile());
       throw new ReplicationException("Snapshot installation failed during directory swap", e);
     } finally {
-      // Ensure database is re-opened, whether we swapped successfully or rolled back.
-      // If reopening fails, the database is effectively unavailable and subsequent Raft applies will
-      // cascade-fail. Log at SEVERE so operators can investigate and restart the node.
+      // Force the server to drop the old (now-stale) database reference and reopen from the
+      // swapped directory. Without this, server.getDatabase() returns the cached instance that
+      // points to the old (deleted) data files.
       try {
+        server.removeDatabase(databaseName);
         server.getDatabase(databaseName);
+        LogManager.instance().log(this, Level.INFO, "Database '%s' reopened after snapshot installation", databaseName);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
             "CRITICAL: Failed to reopen database '%s' after snapshot installation. "
@@ -778,9 +780,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       try {
         if (Files.exists(snapshotPath)) {
           // Temp snapshot exists - complete the swap
-          if (Files.exists(livePath))
-            // Live path still there (crash before move-away), move it to backup first
+          if (Files.exists(livePath)) {
+            // Live path still there (crash before move-away), move it to backup first.
+            // Delete stale backup from a previous partial recovery if present
+            FileUtils.deleteRecursively(backupPath.toFile());
             Files.move(livePath, backupPath);
+          }
 
           Files.move(snapshotPath, livePath);
           deleteStaleWalFiles(livePath);

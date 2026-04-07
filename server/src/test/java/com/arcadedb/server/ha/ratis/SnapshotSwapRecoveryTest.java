@@ -270,13 +270,12 @@ class SnapshotSwapRecoveryTest {
   }
 
   /**
-   * If recovery hits an IOException (e.g., Files.move fails because the backup path already
-   * exists as a non-empty directory), the marker file must be preserved so the next startup
-   * can retry recovery. Deleting it would leave the database in an unknown state with no
-   * signal that recovery is still needed.
+   * If a stale backup directory exists from a previous partial recovery, the recovery should
+   * clean it up before moving the live path to the backup location, completing the swap
+   * successfully.
    */
   @Test
-  void testMarkerPreservedOnRecoveryFailure() throws IOException {
+  void testRecoverWithStaleBackupDirectory() throws IOException {
     final Path dbDir = tempDir.resolve("databases");
     Files.createDirectories(dbDir);
 
@@ -292,8 +291,7 @@ class SnapshotSwapRecoveryTest {
     Files.createDirectories(snapshotPath);
     Files.writeString(snapshotPath.resolve("new-data.dat"), "new data");
 
-    // Backup path already exists as a non-empty directory - Files.move(livePath, backupPath)
-    // will throw FileAlreadyExistsException because the target is a non-empty directory
+    // Stale backup from a previous partial recovery
     Files.createDirectories(backupPath);
     Files.writeString(backupPath.resolve("stale.dat"), "stale");
 
@@ -301,13 +299,18 @@ class SnapshotSwapRecoveryTest {
     final Path markerPath = dbDir.resolve("testdb.snapshot-pending");
     Files.writeString(markerPath, "testdb");
 
-    // Recovery should not throw (it catches IOException internally)
+    // Recovery should succeed despite the stale backup
     ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
 
-    // The marker must be preserved for retry on next startup
-    assertThat(markerPath).exists();
-
-    // The live path should still exist (move failed before it was removed)
+    // The snapshot should now be in the live path
     assertThat(livePath).exists();
+    assertThat(livePath.resolve("new-data.dat")).exists();
+    assertThat(Files.readString(livePath.resolve("new-data.dat"))).isEqualTo("new data");
+
+    // Old data should be gone
+    assertThat(livePath.resolve("data.dat")).doesNotExist();
+    assertThat(backupPath).doesNotExist();
+    assertThat(snapshotPath).doesNotExist();
+    assertThat(markerPath).doesNotExist();
   }
 }
