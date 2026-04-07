@@ -215,6 +215,11 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     if (entry.filesToAdd() != null && !entry.filesToAdd().isEmpty()) {
       try {
         createNewFiles(db, entry.filesToAdd());
+        // Rebuild schema file list so getFileById() works during WAL apply (Phase 2).
+        // Without this, getFileById() throws SchemaException for new file IDs that exist
+        // in FileManager but not yet in LocalSchema.files.
+        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, false);
+        db.getSchema().getEmbedded().initComponents();
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error creating files from Raft log", e);
         throw new ReplicationException("Error creating files from Raft log", e);

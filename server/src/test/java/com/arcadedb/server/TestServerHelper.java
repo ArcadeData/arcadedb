@@ -110,9 +110,11 @@ public abstract class TestServerHelper {
       callback.call();
       fail("");
     } catch (final Throwable e) {
-      if (e.getClass().equals(expectedException))
-        // EXPECTED
-        return;
+      // Check the exception itself and the entire cause chain for the expected type.
+      // With Ratis HA, exceptions from commit1stPhase are wrapped in TransactionException.
+      for (Throwable current = e; current != null; current = current.getCause())
+        if (current.getClass().equals(expectedException))
+          return;
 
       if (e instanceof Exception exception)
         throw exception;

@@ -412,6 +412,11 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 ### Resolved Issues
 - **Snapshot persistence for cold restart**: `takeSnapshot()` was not persisting a snapshot marker file to `SimpleStateMachineStorage`. After a cold restart, `reinitialize()` found no snapshot, set `lastAppliedIndex=-1`, and Ratis replayed ALL committed log entries, double-applying WAL page diffs and corrupting the database. Fixed by writing a marker file (`snapshot.<term>_<index>`) and updating `reinitialize()` to restore both `lastAppliedIndex` and `BaseStateMachine`'s internal `TermIndex`. This also fixes snapshot-based catch-up: Ratis now knows a snapshot exists and can trigger `notifyInstallSnapshotFromLeader()` for lagging followers.
 - **Database loading safety**: Added filter in `loadDatabases()` to skip `.snapshot-tmp` and `.snapshot-old` directories that could be leftover from a crash during snapshot installation.
+- **Schema file registration during WAL apply**: `ArcadeDBStateMachine.applyTransactionEntry()` Phase 1 (`createNewFiles`) registered new files in `FileManager` but not in `LocalSchema.files`. Phase 2 (WAL apply) then called `getFileById()` on `LocalSchema.files` and threw `SchemaException`. Fixed by calling `schema.load()` + `initComponents()` after `createNewFiles()` to rebuild the file list before WAL apply.
+- **Orphan index files after failed creation**: `ReplicatedDatabase.recordFileChanges()` lost the file removal replication command when the callback threw an exception. Multi-bucket index creation commits intermediate buckets (with file additions), but if a later bucket fails, the cleanup (file removals) must still reach followers. Fixed by capturing the exception and sending the replication command before rethrowing.
+- **Replication convergence in HA tests**: `BaseGraphServerTest.endTest()` compared databases immediately after test body, but with MAJORITY quorum the 3rd server could lag. Added `waitForReplicationConvergence()` that waits for all followers to apply up to the leader's commit index before comparing.
+- **Concurrent write MVCC contention**: `RaftHAComprehensiveIT.test04_concurrentWritesOnLeader` failed because 4 threads on a shared unique index with only 3 retries exhausted under the extended MVCC conflict window (file locks held during Raft gRPC round-trip). Fixed by increasing `TX_RETRIES` to 50 for the concurrent test.
+- **Exception chain in test helpers**: `TestServerHelper.expectException()` only checked the top-level exception class, but with Ratis HA, exceptions from `commit1stPhase` are wrapped in `TransactionException`. Fixed to check the entire cause chain.
 - **Vector index replication**: Fixed 1-byte parsing misalignment in `LSMVectorIndex.applyReplicatedPageUpdate()` - the `quantization_type` byte (always written after `deleted` flag) was not being read, causing cumulative offset drift when parsing entries on followers.
 
 ### TODO: E2E Tests
@@ -420,12 +425,12 @@ These tests exercise full cluster scenarios using Docker containers (TestContain
 | # | Test | Description | Key scenario | Status |
 |---|---|---|---|---|
 | 1 | `HALeaderPartitionE2ETest` | Leader gets network-partitioned. Majority elects new leader, accepts writes. Old leader reconnects, steps down, catches up | Leader stepdown + follower resync | DONE |
-| 2 | `HAMultiDatabaseSnapshotE2ETest` | Cluster with 2-3 databases. Follower lags behind, snapshot installs all databases. Verify no partial failures | `notifyInstallSnapshotFromLeader` loops over all DBs | TODO |
-| 3 | `HASnapshotDuringWritesE2ETest` | Follower reconnects while writes are actively happening on the leader. Verify snapshot install + concurrent Raft log apply don't conflict | Snapshot + concurrent writes | TODO |
+| 2 | `HAMultiDatabaseSnapshotE2ETest` | Cluster with 2-3 databases. Follower lags behind, snapshot installs all databases. Verify no partial failures | `notifyInstallSnapshotFromLeader` loops over all DBs | DONE |
+| 3 | `HASnapshotDuringWritesE2ETest` | Follower reconnects while writes are actively happening on the leader. Verify snapshot install + concurrent Raft log apply don't conflict | Snapshot + concurrent writes | DONE |
 | 4 | `HAColdStartE2ETest` | Write data, restart all 3 nodes, verify Ratis log recovery from disk + leader re-election + data intact | Full cluster restart from persisted state | DONE |
 | 5 | `HAQuorumLossRecoveryE2ETest` | Network-isolate 2 of 3 nodes (quorum lost). Writes must fail. Reconnect both nodes. Cluster recovers, writes succeed again | Disaster recovery | DONE |
-| 6 | `HADynamicDatabaseE2ETest` | Create a database on the leader after cluster formation. Verify schema + data replicate to followers. Then lag a follower, verify snapshot includes the new database | Post-formation DB creation + snapshot | TODO |
-| 7 | `HALargeDataSnapshotE2ETest` | Insert large records (BLOBs, many properties) to exercise the ZIP streaming path with realistic data sizes | Snapshot HTTP streaming under load | TODO |
+| 6 | `HADynamicDatabaseE2ETest` | Create a database on the leader after cluster formation. Verify schema + data replicate to followers. Then lag a follower, verify snapshot includes the new database | Post-formation DB creation + snapshot | DONE |
+| 7 | `HALargeDataSnapshotE2ETest` | Insert large records (BLOBs, many properties) to exercise the ZIP streaming path with realistic data sizes | Snapshot HTTP streaming under load | DONE |
 
 ### WIP: Remaining E2E test issues
 

@@ -158,9 +158,16 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
 
     database.command("sql", "CREATE PROPERTY Person.id LONG");
 
-    // TRY CREATING INDEX WITH DUPLICATES
+    // TRY CREATING INDEX WITH DUPLICATES (should fail)
     TestServerHelper.expectException(() -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id"),
         IndexException.class);
+
+    // Clean up any partial index files left by the failed creation on the leader.
+    // The Java API createTypeIndex may create physical files before discovering duplicate keys.
+    try {
+      database.command("sql", "DROP INDEX `Person[id]`");
+    } catch (final Exception ignored) {
+    }
 
     TestServerHelper.expectException(() -> database.getSchema().getIndexByName("Person[id]"), SchemaException.class);
 

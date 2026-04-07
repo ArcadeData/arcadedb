@@ -854,6 +854,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
     final AtomicReference<Object> result = new AtomicReference<>();
     final AtomicReference<DatabaseChangeStructureRequest> replicationCommand = new AtomicReference<>();
+    final AtomicReference<RuntimeException> callbackException = new AtomicReference<>();
 
     proxied.executeInWriteLock(() -> {
       if (!isLeader())
@@ -869,19 +870,30 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
       try {
         result.set(callback.call());
-        return null;
+      } catch (final RuntimeException e) {
+        // Capture the exception but don't rethrow yet - we need to send the replication
+        // command first. Multi-bucket index creation may have already replicated partial
+        // file additions (via intermediate commits). The finally block captures file
+        // removals that must be sent to followers to prevent orphan files.
+        callbackException.set(e);
       } finally {
         replicationCommand.set(getChangeStructure(schemaVersionBefore));
         proxied.getFileManager().stopRecordingChanges();
       }
+      return null;
     });
 
     // SEND THE REPLICATION COMMAND OUTSIDE THE WRITE LOCK to avoid blocking all readers/writers
-    // during the Raft quorum round-trip (network I/O)
+    // during the Raft quorum round-trip (network I/O).
+    // This runs even when the callback failed - cleanup commands (file removals) must reach
+    // followers to prevent orphan files from partially-replicated multi-step schema changes.
     final DatabaseChangeStructureRequest command = replicationCommand.get();
     if (command != null)
       raftHA.replicateTransaction(getName(), Map.of(), new Binary(0), command.getSchemaJson(), command.getFilesToAdd(),
           command.getFilesToRemove());
+
+    if (callbackException.get() != null)
+      throw callbackException.get();
 
     return (RET) result.get();
   }

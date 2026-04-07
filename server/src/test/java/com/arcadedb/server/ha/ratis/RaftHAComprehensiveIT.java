@@ -275,6 +275,11 @@ class RaftHAComprehensiveIT {
     final CountDownLatch latch = new CountDownLatch(threads);
     final AtomicInteger errors = new AtomicInteger();
 
+    // Increase retries: concurrent writes on a shared unique index with Raft replication
+    // cause extended MVCC conflict windows (file locks held during gRPC round-trip).
+    final int previousRetries = GlobalConfiguration.TX_RETRIES.getValueAsInteger();
+    GlobalConfiguration.TX_RETRIES.setValue(50);
+
     for (int t = 0; t < threads; t++) {
       final int threadId = t;
       new Thread(() -> {
@@ -296,6 +301,7 @@ class RaftHAComprehensiveIT {
     }
 
     assertThat(latch.await(60, TimeUnit.SECONDS)).isTrue();
+    GlobalConfiguration.TX_RETRIES.setValue(previousRetries);
     assertThat(errors.get()).isZero();
 
     CodeUtils.sleep(5000);

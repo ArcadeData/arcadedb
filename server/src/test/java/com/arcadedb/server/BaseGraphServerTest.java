@@ -193,6 +193,34 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     root = v1.getIdentity();
   }
 
+  /**
+   * Waits until all followers have applied up to the leader's commit index.
+   * This ensures all data is fully replicated before comparing databases in endTest().
+   */
+  protected void waitForReplicationConvergence() {
+    if (servers == null || getServerCount() <= 1)
+      return;
+
+    final ArcadeDBServer leader = getLeaderServer();
+    if (leader == null || leader.getHA() == null)
+      return;
+
+    try {
+      final long leaderCommit = leader.getHA().getCommitIndex();
+      if (leaderCommit <= 0)
+        return;
+
+      for (int i = 0; i < getServerCount(); i++) {
+        final ArcadeDBServer s = getServer(i);
+        if (s != null && s != leader && s.isStarted() && s.getHA() != null)
+          Awaitility.await().atMost(30, TimeUnit.SECONDS)
+              .until(() -> s.getHA().getLastAppliedIndex() >= leaderCommit);
+      }
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Timeout waiting for replication convergence: %s", e.getMessage());
+    }
+  }
+
   protected void waitForReplicationIsCompleted(final int serverNumber) {
     // With Ratis, replication is handled internally. Wait for followers to apply up to the leader's commit index.
     final ArcadeDBServer leader = getLeaderServer();
@@ -232,6 +260,10 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         testLog("Wait a bit until realignment is completed");
         waitAllReplicasAreConnected();
       }
+
+      // Always wait for all followers to catch up before comparing databases.
+      // With MAJORITY quorum, 1 server can lag behind after the last write.
+      waitForReplicationConvergence();
     } finally {
       try {
         LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
