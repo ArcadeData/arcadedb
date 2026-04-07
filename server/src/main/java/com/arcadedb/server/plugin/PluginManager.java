@@ -93,21 +93,18 @@ public class PluginManager {
 
     for (ServerPlugin pluginInstance : serviceLoader) {
       final String name = pluginInstance.getName();
-      if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getSimpleName())
-          || configuredPlugins.contains(pluginInstance.getClass().getName())) {
-        // Register the plugin
-        final boolean configured =
-            configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getName());
-        final boolean isRaftPlugin = autoDiscoverRaft && "RaftHAPlugin".equals(name);
+      final boolean configured = configuredPlugins.contains(name)
+          || configuredPlugins.contains(pluginInstance.getClass().getSimpleName())
+          || configuredPlugins.contains(pluginInstance.getClass().getName());
+      final boolean isRaftPlugin = autoDiscoverRaft && "RaftHAPlugin".equals(name);
 
-        if (configured || isRaftPlugin) {
-          final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
-          descriptor.setPluginInstance(pluginInstance);
-          plugins.put(name, descriptor);
+      if (configured || isRaftPlugin) {
+        final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
+        descriptor.setPluginInstance(pluginInstance);
+        plugins.put(name, descriptor);
 
-          LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s%s",
-              name, isRaftPlugin && !configured ? " (auto-discovered for Raft HA)" : "");
-        }
+        LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s%s",
+            name, isRaftPlugin && !configured ? " (auto-discovered for Raft HA)" : "");
       }
     }
   }
