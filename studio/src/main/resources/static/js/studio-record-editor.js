@@ -56,7 +56,12 @@ function renderRecordEditorContent() {
     var isMetadata = p.charAt(0) === "@";
     var isBinary = (!isComplex && typeof displayValue === "string" && /^\[B@[0-9a-fA-F]+$/.test(displayValue));
 
-    html += "<label class='form-label'>" + escapeHtml(p) + "</label>";
+    html += "<div class='record-editor-prop-row'>";
+    html += "<div class='d-flex align-items-center justify-content-between'>";
+    html += "<label class='form-label mb-0'>" + escapeHtml(p) + "</label>";
+    if (!isMetadata && !isBinary)
+      html += "<button class='btn btn-sm record-editor-delete-prop' onclick='deletePropertyFromRecord(\"" + escapeHtml(p).replace(/"/g, "&quot;") + "\")' title='Remove property'><i class='fa fa-times'></i></button>";
+    html += "</div>";
     if (isBinary) {
       var sizeInfo = properties["contentLength"] || properties[p + "Length"] || "";
       var sizeLabel = sizeInfo ? " (" + Number(sizeInfo).toLocaleString() + " bytes)" : "";
@@ -65,7 +70,9 @@ function renderRecordEditorContent() {
       html += "<textarea class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' data-original='" + escapeHtml(displayValue) + "' rows='3'" + (isMetadata ? " disabled" : "") + ">" + escapeHtml(displayValue) + "</textarea>";
     else
       html += "<input type='text' class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' data-original='" + escapeHtml(displayValue) + "' value='" + escapeHtml(displayValue) + "'" + (isMetadata ? " disabled" : "") + " />";
+    html += "</div>";
   }
+  html += "<button class='btn btn-sm btn-outline-secondary w-100 mt-1' onclick='addPropertyToRecord()'><i class='fa fa-plus'></i> Add Property</button>";
   html += "</div>";
 
   // Action buttons
@@ -359,7 +366,7 @@ function saveRecordEditor() {
   })
   .done(function () {
     globalNotify("Success", "Record updated", "success");
-    refreshRecordAfterSave();
+    cancelRecordEditor();
   })
   .fail(function (jqXHR) {
     globalNotify("Error", escapeHtml(jqXHR.responseText), "danger");
@@ -444,6 +451,58 @@ function deleteRecord() {
           hideTableRecordEditor();
         else
           hideGraphRecordEditor();
+      })
+      .fail(function (jqXHR) {
+        globalNotify("Error", escapeHtml(jqXHR.responseText), "danger");
+      });
+    }
+  );
+}
+
+function addPropertyToRecord() {
+  Swal.fire({
+    title: "Add Property",
+    input: "text",
+    inputLabel: "Property name",
+    inputPlaceholder: "Enter property name",
+    showCancelButton: true,
+    confirmButtonText: "Add",
+    inputValidator: function (value) {
+      if (!value || !value.trim())
+        return "Property name is required";
+      if (globalRecordEditorState.properties.hasOwnProperty(value.trim()))
+        return "Property already exists";
+    }
+  }).then(function (result) {
+    if (result.isConfirmed) {
+      var propName = result.value.trim();
+      globalRecordEditorState.properties[propName] = "";
+      renderRecordEditorContent();
+      // Focus the new field
+      $(getRecordEditorTarget() + " .record-editor-field[data-prop='" + propName + "']").focus();
+    }
+  });
+}
+
+function deletePropertyFromRecord(propName) {
+  var rid = globalRecordEditorState.rid;
+  var database = escapeHtml(getCurrentDatabase());
+  var sql = "UPDATE " + rid + " REMOVE `" + propName + "`";
+
+  globalConfirm("Remove Property", "Remove property '" + escapeHtml(propName) + "' from record " + rid + "?", "warning",
+    function () {
+      $.ajax({
+        type: "POST",
+        url: "api/v1/command/" + database,
+        data: JSON.stringify({ language: "sql", command: sql }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        }
+      })
+      .done(function () {
+        globalNotify("Success", "Property removed", "success");
+        delete globalRecordEditorState.properties[propName];
+        renderRecordEditorContent();
       })
       .fail(function (jqXHR) {
         globalNotify("Error", escapeHtml(jqXHR.responseText), "danger");
