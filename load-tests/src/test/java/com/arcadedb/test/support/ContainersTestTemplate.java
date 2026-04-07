@@ -184,14 +184,22 @@ public abstract class ContainersTestTemplate {
 
   /**
    * Reconnects a container to the Docker network after a partition.
+   * Restores the container's network aliases so that other containers can resolve its hostname.
+   * Without aliases, Docker DNS within the network cannot resolve the container's name,
+   * permanently breaking Raft gRPC connections between peers.
    */
   protected void reconnectToNetwork(final GenericContainer<?> container) {
     final String containerId = container.getContainerId();
     final String networkId = network.getId();
     logger.info("Reconnecting container {} to network {}", container.getContainerName(), networkId);
+
+    final com.github.dockerjava.api.model.ContainerNetwork containerNetwork =
+        new com.github.dockerjava.api.model.ContainerNetwork().withAliases(container.getNetworkAliases());
+
     container.getDockerClient().connectToNetworkCmd()
         .withContainerId(containerId)
         .withNetworkId(networkId)
+        .withContainerNetwork(containerNetwork)
         .exec();
   }
 
