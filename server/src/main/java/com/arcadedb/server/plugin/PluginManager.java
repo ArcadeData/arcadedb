@@ -53,11 +53,13 @@ public class PluginManager {
   private final Map<String, PluginDescriptor>      plugins        = new LinkedHashMap<>();
   private final Map<ClassLoader, PluginDescriptor> classLoaderMap = new ConcurrentHashMap<>();
   private final Set<String>                        configuredPlugins;
+  private final Set<String>                        configuredPluginNames;
 
   public PluginManager(final ArcadeDBServer server, final ContextConfiguration configuration) {
     this.server = server;
     this.configuration = configuration;
     this.pluginsDirectory = server.getRootPath() + File.separator + "lib" + File.separator + "plugins";
+    configuredPluginNames = new HashSet<>();
     configuredPlugins = getConfiguredPlugins();
   }
 
@@ -70,6 +72,7 @@ public class PluginManager {
         final String[] pluginPair = p.split(":");
 
         final String pluginName = pluginPair[0];
+        configuredPluginNames.add(pluginName);
         configuredPlugins.add(pluginName);
         final String pluginClass = pluginPair.length > 1 ? pluginPair[1] : pluginPair[0];
         configuredPlugins.add(pluginClass);
@@ -82,8 +85,9 @@ public class PluginManager {
     final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, getClass().getClassLoader());
 
     for (ServerPlugin pluginInstance : serviceLoader) {
-      String name = pluginInstance.getClass().getSimpleName();
-      if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getName())) {
+      final String name = pluginInstance.getName();
+      if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getSimpleName())
+          || configuredPlugins.contains(pluginInstance.getClass().getName())) {
         // Register the plugin
         final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
         descriptor.setPluginInstance(pluginInstance);
@@ -118,6 +122,25 @@ public class PluginManager {
         loadPlugin(pluginJar);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Failed to load plugin from: %s", e, pluginJar.getAbsolutePath());
+      }
+    }
+
+    // Warn about configured plugins that were not discovered
+    for (final String name : configuredPluginNames) {
+      if (!plugins.containsKey(name)) {
+        boolean found = false;
+        for (final PluginDescriptor desc : plugins.values()) {
+          final ServerPlugin instance = desc.getPluginInstance();
+          if (instance != null && (name.equals(instance.getName()) || name.equals(instance.getClass().getSimpleName())
+              || name.equals(instance.getClass().getName()))) {
+            found = true;
+            break;
+          }
+        }
+        if (!found)
+          LogManager.instance().log(this, Level.WARNING,
+              "Configured plugin '%s' was not found. Check that the plugin JAR is in the plugins directory or "
+                  + "the correct class name is specified in the configuration", name);
       }
     }
   }
