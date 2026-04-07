@@ -144,15 +144,26 @@ public class SnapshotHttpHandler implements HttpHandler {
     }
 
     final DatabaseInternal db = server.getDatabase(databaseName);
-    final File dbDir = new File(db.getDatabasePath());
 
-    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(dbDir);
-    final JSONObject response = new JSONObject();
-    for (final var entry : checksums.entrySet())
-      response.put(entry.getKey(), entry.getValue());
+    // Flush pages and hold a read lock to ensure a consistent point-in-time view of database files
+    db.executeInReadLock(() -> {
+      db.getPageManager().suspendFlushAndExecute(db, () -> {
+        try {
+          final File dbDir = new File(db.getDatabasePath());
+          final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(dbDir);
+          final JSONObject response = new JSONObject();
+          for (final var entry : checksums.entrySet())
+            response.put(entry.getKey(), entry.getValue());
 
-    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-    exchange.getResponseSender().send(response.toString());
+          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+          exchange.getResponseSender().send(response.toString());
+        } catch (final Exception e) {
+          exchange.setStatusCode(500);
+          exchange.getResponseSender().send("Error computing checksums: " + e.getMessage());
+        }
+      });
+      return null;
+    });
   }
 
   private ServerSecurityUser authenticate(final HttpServerExchange exchange) {

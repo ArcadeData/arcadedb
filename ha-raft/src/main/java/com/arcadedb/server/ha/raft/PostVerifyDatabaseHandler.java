@@ -44,6 +44,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
+  @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
@@ -62,8 +67,19 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
     try {
       final var db = httpServer.getServer().getDatabase(databaseName);
-      final File dbDir = new File(db.getDatabasePath());
-      final Map<String, Long> localChecksums = SnapshotManager.computeFileChecksums(dbDir);
+
+      // Flush pages and hold a read lock to ensure a consistent point-in-time view of database files
+      final Map<String, Long> localChecksums = db.executeInReadLock(() -> {
+        final java.util.concurrent.atomic.AtomicReference<Map<String, Long>> ref = new java.util.concurrent.atomic.AtomicReference<>();
+        db.getPageManager().suspendFlushAndExecute(db, () -> {
+          try {
+            ref.set(SnapshotManager.computeFileChecksums(new File(db.getDatabasePath())));
+          } catch (final Exception e) {
+            throw new RuntimeException(e);
+          }
+        });
+        return ref.get();
+      });
 
       final JSONObject result = new JSONObject();
       result.put("database", databaseName);

@@ -57,13 +57,18 @@ public final class SnapshotManager {
 
     final byte[] buffer = new byte[8192];
     for (final File file : files) {
+      final String name = file.getName();
+      // Skip transient files that differ between nodes: WAL logs, schema backups, lock files
+      if (name.endsWith(".wal") || name.endsWith(".prev.json") || name.endsWith(".lock"))
+        continue;
+
       final CRC32 crc = new CRC32();
       try (final FileInputStream fis = new FileInputStream(file)) {
         int bytesRead;
         while ((bytesRead = fis.read(buffer)) != -1)
           crc.update(buffer, 0, bytesRead);
       }
-      checksums.put(file.getName(), crc.getValue());
+      checksums.put(name, crc.getValue());
     }
 
     return checksums;

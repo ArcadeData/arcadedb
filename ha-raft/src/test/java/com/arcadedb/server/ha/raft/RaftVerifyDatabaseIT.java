@@ -69,7 +69,9 @@ class RaftVerifyDatabaseIT extends BaseRaftHATest {
 
     for (int i = 0; i < nodes.length(); i++) {
       final JSONObject node = nodes.getJSONObject(i);
-      assertThat(node.getBoolean("match")).isTrue();
+      assertThat(node.getBoolean("match"))
+          .as("Checksum mismatch on node %s: %s", node.getString("peerId", ""), node)
+          .isTrue();
     }
 
     conn.disconnect();
