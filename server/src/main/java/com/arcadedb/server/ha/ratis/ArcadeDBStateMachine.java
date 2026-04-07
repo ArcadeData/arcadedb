@@ -175,6 +175,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         case TRANSACTION -> applyTransactionEntry(data);
         case TRANSACTION_FORWARD -> applyTransactionForwardEntry(data);
         case CREATE_DATABASE -> applyCreateDatabase(data);
+        case COMMAND_FORWARD -> LogManager.instance().log(this, Level.WARNING,
+            "Unexpected COMMAND_FORWARD in Raft log at index %d - this entry type should use query(), not send()", index);
       }
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
@@ -289,12 +291,17 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     fireCallback(ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED, entry.databaseName());
   }
 
-  // WARNING: This path only applies WAL page changes. It does NOT handle schema changes
-  // (filesToAdd, filesToRemove, schemaJson). Activating forwardTransaction() for schema-modifying
-  // operations will cause silent schema divergence across nodes. If this path is ever used in
-  // production, it must be extended to match applyTransactionEntry()'s three-phase apply logic.
+  // This path only applies WAL page changes. It does NOT handle schema changes
+  // (filesToAdd, filesToRemove, schemaJson) because TransactionForwardEntry does not carry them.
+  // If this path is ever used in production for schema-modifying transactions, it must be
+  // extended to match applyTransactionEntry()'s three-phase apply logic.
   private void applyTransactionForwardEntry(final byte[] data) {
     final RaftLogEntry.TransactionForwardEntry entry = RaftLogEntry.deserializeTransactionForward(data);
+
+    if (entry.walBuffer() == null || entry.walBuffer().size() == 0)
+      throw new ReplicationException(
+          "TRANSACTION_FORWARD with empty WAL buffer: this path does not support schema-only operations. "
+              + "Use TRANSACTION entries (via replicateTransaction) for schema changes. db=" + entry.databaseName());
 
     final DatabaseInternal db = server.getDatabase(entry.databaseName());
     if (db == null || !db.isOpen())

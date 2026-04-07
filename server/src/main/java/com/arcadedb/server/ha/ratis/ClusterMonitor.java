@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.ratis;
 import com.arcadedb.log.LogManager;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -71,7 +72,7 @@ public class ClusterMonitor {
     if (replicaMatchIndexes.isEmpty())
       return Collections.emptyMap();
     final long currentCommitIndex = leaderCommitIndex;
-    final Map<String, Long> lags = new java.util.HashMap<>(replicaMatchIndexes.size());
+    final Map<String, Long> lags = new HashMap<>(replicaMatchIndexes.size());
     for (final var entry : replicaMatchIndexes.entrySet())
       lags.put(entry.getKey(), currentCommitIndex - entry.getValue());
     return Collections.unmodifiableMap(lags);
