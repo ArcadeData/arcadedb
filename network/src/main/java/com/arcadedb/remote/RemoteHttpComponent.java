@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseStats;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -202,8 +201,11 @@ public class RemoteHttpComponent extends RWLockContext {
     if (maxRetry < 1)
       maxRetry = 1;
 
-    Pair<String, Integer> connectToServer =
-        leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
+    Pair<String, Integer> connectToServer;
+    if (connectionStrategy == CONNECTION_STRATEGY.FIXED)
+      connectToServer = new Pair<>(originalServer, originalPort);
+    else
+      connectToServer = leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
     String server = null;
 
@@ -363,7 +365,15 @@ public class RemoteHttpComponent extends RWLockContext {
     } catch (final SecurityException e) {
       throw e;
     } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on connecting to the server", e);
+      // Fall back to the original server when the cluster configuration is unavailable.
+      // This allows the client to work against any reachable node without requiring
+      // the full cluster topology (which may contain internal addresses unreachable from the client).
+      LogManager.instance()
+          .log(this, Level.WARNING, "Unable to fetch cluster configuration from %s:%d, using direct connection (%s)",
+              null, currentServer, currentPort, e.getMessage());
+      leaderServer = new Pair<>(originalServer, originalPort);
+      replicaServerList.clear();
+      return;
     }
 
     try {
@@ -408,7 +418,13 @@ public class RemoteHttpComponent extends RWLockContext {
     } catch (final SecurityException e) {
       throw e;
     } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on requesting cluster configuration", e);
+      // Cluster configuration response was malformed or contained unresolvable addresses.
+      // Fall back to direct connection.
+      LogManager.instance()
+          .log(this, Level.WARNING, "Unable to parse cluster configuration, using direct connection (%s)",
+              null, e.getMessage());
+      leaderServer = new Pair<>(originalServer, originalPort);
+      replicaServerList.clear();
     }
   }
 
