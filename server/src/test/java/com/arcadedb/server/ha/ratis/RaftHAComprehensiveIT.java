@@ -126,8 +126,8 @@ class RaftHAComprehensiveIT {
       );
     }
 
-    // Wait for replication
-    CodeUtils.sleep(5000);
+    // Wait for replication convergence
+    waitForReplication();
 
     // Verify exact count on ALL servers
     for (final ArcadeDBServer s : servers) {
@@ -237,7 +237,7 @@ class RaftHAComprehensiveIT {
 
     // Wait for leader election
     waitForLeader();
-    CodeUtils.sleep(5000);
+    waitForReplication();
 
     // Verify data survived
     for (final ArcadeDBServer s : servers) {
@@ -304,7 +304,7 @@ class RaftHAComprehensiveIT {
     GlobalConfiguration.TX_RETRIES.setValue(previousRetries);
     assertThat(errors.get()).isZero();
 
-    CodeUtils.sleep(5000);
+    waitForReplication();
 
     final int expected = threads * recordsPerThread;
     for (final ArcadeDBServer s : servers) {
@@ -953,13 +953,33 @@ class RaftHAComprehensiveIT {
 
   private void waitForLeader() {
     Awaitility.await()
-        .atMost(15, TimeUnit.SECONDS)
+        .atMost(30, TimeUnit.SECONDS)
         .pollInterval(500, TimeUnit.MILLISECONDS)
         .until(() -> {
           for (final ArcadeDBServer s : servers)
             if (s != null && s.isStarted() && s.getHA() != null && s.getHA().isLeader())
               return true;
           return false;
+        });
+  }
+
+  /** Waits for all followers to apply up to the leader's commit index. */
+  private void waitForReplication() {
+    final ArcadeDBServer leader = findLeader();
+    if (leader == null || leader.getHA() == null)
+      return;
+    final long commitIndex = leader.getHA().getCommitIndex();
+    if (commitIndex <= 0)
+      return;
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (final ArcadeDBServer s : servers)
+            if (s != null && s != leader && s.isStarted() && s.getHA() != null
+                && s.getHA().getLastAppliedIndex() < commitIndex)
+              return false;
+          return true;
         });
   }
 

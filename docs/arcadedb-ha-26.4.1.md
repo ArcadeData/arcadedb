@@ -336,111 +336,127 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 
 ## Tests
 
-### Passing Tests (42 total: 19 existing + 17 comprehensive + 6 e2e)
+### Non-E2E Tests (server module, 30 classes, ~80 individual tests)
+
+All pass when run individually. Port conflicts occur when multiple HA test classes run in the same JVM session (not a real failure).
 
 #### Core Tests
-| Test | Description | Servers | Status |
-|---|---|---|---|
-| `RaftLogEntryTest` (4) | Binary serialization round-trip | N/A | PASS |
-| `RaftHAServerIT` (3) | Raw Ratis consensus: election, replication | 3 | PASS |
+| Test | Tests | Description |
+|---|---|---|
+| `RaftLogEntryTest` | 12 | Binary serialization round-trip |
+| `SnapshotSwapRecoveryTest` | 8 | Crash recovery during snapshot directory swap |
+| `ClusterMonitorTest` | 5 | Replication lag monitoring |
+| `RaftHAServerIT` | 3 | Raw Ratis consensus: election, replication |
+| `RaftReplicationIT` | 5 | WAL replication via Ratis |
 
-#### HTTP API Tests
-| Test | Description | Servers | Status |
-|---|---|---|---|
-| `HTTP2ServersIT.serverInfo` | Cluster status API | 2 | PASS |
-| `HTTP2ServersIT.propagationOfSchema` | Schema DDL replication | 2 | PASS |
-| `HTTP2ServersIT.checkQuery` | Query execution across servers | 2 | PASS |
-| `HTTP2ServersIT.checkDeleteGraphElements` | Cross-server CRUD with edges | 2 | PASS |
-| `HTTP2ServersIT.verifyDatabase` | `ha verify database` command | 2 | PASS |
-| `HTTP2ServersIT.hAConfiguration` | RemoteDatabase cluster config | 2 | PASS |
+#### Comprehensive Tests (`RaftHAComprehensiveIT`, 17 tests, 3 servers)
+| Test | Description |
+|---|---|
+| `test01_dataConsistencyUnderLoad` | 1000 records, verify count & content on all nodes |
+| `test02_followerRestartAndCatchUp` | Stop follower, write 100 records, restart, verify catch-up |
+| `test03_fullClusterRestart` | Write data, stop all 3, restart all 3, verify data survives |
+| `test04_concurrentWritesOnLeader` | 4 threads x 100 records with TX_RETRIES=50 for MVCC contention |
+| `test05_schemaChangesDuringWrites` | CREATE TYPE while data exists, verify propagation |
+| `test06_indexConsistency` | Unique index enforcement across cluster |
+| `test07_queryRoutingCorrectness` | SELECT local, INSERT rejected on follower |
+| `test08_largeTransaction` | Single tx with 500 records, verify replication |
+| `test09_rapidLeaderTransfers` | 5 rapid leadership transfers, verify stability |
+| `test10_singleServerHAMode` | HA with 1 node, verify reads work, writes fail quorum |
+| `test11_writeToFollowerViaHttpProxy` | 100 writes via HTTP to follower, proxied to leader |
+| `test12_leaderElectionDuringTransaction` | Uncommitted tx on leader, kill leader, verify rollback (ACID) |
+| `test13_concurrentWritesViaProxy` | 3 servers x 30 writes via HTTP simultaneously |
+| `test14_writesDuringSlowFollower` | Stop 1 follower, writes continue (majority), restart, catch-up |
+| `test15_veryLargeTransaction` | 2000 records x 500 bytes in single tx (~1MB+ WAL) |
+| `test16_mixedReadWriteWorkload` | Concurrent reads on follower + writes on leader |
+| `test17_rollingUpgradeSimulation` | Stop/restart each server one by one, verify data survives |
 
-#### Failover Tests
-| Test | Description | Servers | Status |
-|---|---|---|---|
-| `ReplicationServerLeaderDownIT` | Leader stop, new election, writes continue | 3 | PASS |
-| `ReplicationServerLeaderChanges3TimesIT` | 3 leader kill/restart cycles | 3 | PASS |
-| `HASplitBrainIT` | 5-node cluster, stop 2 minority, verify majority works, restart | 5 | PASS |
+#### HTTP API & Failover Tests
+| Test | Tests | Description |
+|---|---|---|
+| `HTTP2ServersIT` | 6 | Cluster status, schema DDL, queries, CRUD, verify, config |
+| `HTTP2ServersCreateReplicatedDatabaseIT` | 1 | Create database via HTTP, replicate schema + data |
+| `ReplicationServerLeaderDownIT` | 1 | Leader stop, new election, writes continue |
+| `ReplicationServerLeaderDownNoTransactionsToForwardIT` | 2 | Leader down with no pending forwards |
+| `ReplicationServerLeaderChanges3TimesIT` | 1 | 3 leader kill/restart cycles |
+| `HASplitBrainIT` | 1 | 5-node cluster, stop 2 minority, verify majority works |
+| `HAConfigurationIT` | 1 | Invalid server list rejection |
+| `ServerDatabaseBackupIT` | 2 | SQL backup on HA cluster |
+| `ReplicationServerWriteAgainstReplicaIT` | 2 | Write forwarding from follower to leader |
+| `ReplicationChangeSchemaIT` | 2 | Schema DDL replication |
+| `ReadConsistencyIT` | 3 | EVENTUAL, READ_YOUR_WRITES, LINEARIZABLE consistency |
+| `ReplicationServerReplicaHotResyncIT` | 1 | Hot resync detection callback |
+| `ClusterTokenAuthIT` | 5 | Cluster token auth, inter-node forwarding |
+| `ReplicationServerQuorumMajorityIT` | 1 | MAJORITY quorum |
+| `ReplicationServerQuorumAllIT` | 1 | ALL quorum |
+| `ReplicationServerQuorumMajority1ServerOutIT` | 1 | MAJORITY with 1 server down |
+| `ReplicationServerQuorumMajority2ServersOutIT` | 1 | MAJORITY with 2 servers down (quorum lost) |
+| `ReplicationServerFixedClientConnectionIT` | 1 | Fixed client connection to specific server |
+| `ReplicationMaterializedViewIT` | 2 | Materialized view replication |
+| `IndexCompactionReplicationIT` | 4 | Index compaction + replication |
+| `IndexOperations3ServersIT` | 4 | Index create/rebuild/drop across 3 servers |
+| `ServerDatabaseSqlScriptIT` | 1 | SQL script execution on HA cluster |
+| `HARandomCrashIT` | 1 | Random server crash during writes |
+| `HTTPGraphConcurrentIT` | 1 | Concurrent graph operations via HTTP |
 
-#### Configuration & Operations Tests
-| Test | Description | Servers | Status |
-|---|---|---|---|
-| `HAConfigurationIT` | Invalid server list rejection | 3 | PASS |
-| `ServerDatabaseBackupIT` (2) | SQL backup on HA cluster | 3 | PASS |
+#### Not Applicable
+| Test | Reason |
+|---|---|
+| `ReplicationServerIT` | Abstract base class, no tests |
+| `HAInsertBenchmark` | `@Disabled` - benchmark, not a functional test |
+| `ReplicationServerQuorumNoneIT` | Removed - Ratis doesn't support "none" quorum |
 
-#### Comprehensive Tests (new)
-| Test | Description | Servers | Status |
-|---|---|---|---|
-| `test01_dataConsistencyUnderLoad` | 1000 records, verify count & content on all nodes | 3 | PASS |
-| `test02_followerRestartAndCatchUp` | Stop follower, write 100 records, restart, verify catch-up | 3 | PASS |
-| `test03_fullClusterRestart` | Write data, stop all 3, restart all 3, verify data survives | 3 | PASS |
-| `test04_concurrentWritesOnLeader` | 4 threads x 100 records, verify consistency | 3 | PASS |
-| `test05_schemaChangesDuringWrites` | CREATE TYPE while data exists, verify propagation | 3 | PASS |
-| `test06_indexConsistency` | Unique index enforcement across cluster | 3 | PASS |
-| `test07_queryRoutingCorrectness` | SELECT local, INSERT rejected on follower | 3 | PASS |
-| `test08_largeTransaction` | Single tx with 500 records, verify replication | 3 | PASS |
-| `test09_rapidLeaderTransfers` | 5 rapid leadership transfers, verify stability | 3 | PASS |
-| `test10_singleServerHAMode` | HA with 1 node, verify reads work, writes fail quorum | 3->1 | PASS |
-| `test11_writeToFollowerViaHttpProxy` | 100 writes via HTTP to follower, proxied to leader | 3 | PASS |
-| `test12_leaderElectionDuringTransaction` | Uncommitted tx on leader, kill leader, verify rollback (ACID) | 3 | PASS |
-| `test13_concurrentWritesViaProxy` | 3 servers x 30 writes via HTTP simultaneously | 3 | PASS |
-| `test14_writesDuringSlowFollower` | Stop 1 follower, writes continue (majority), restart, catch-up | 3 | PASS |
-| `test15_veryLargeTransaction` | 2000 records x 500 bytes in single tx (~1MB+ WAL) | 3 | PASS |
-| `test16_mixedReadWriteWorkload` | Concurrent reads on follower + writes on leader | 3 | PASS |
-| `test17_rollingUpgradeSimulation` | Stop/restart each server one by one, verify data survives | 3 | PASS |
+### E2E Tests (Docker/TestContainers, 13 classes)
 
-#### E2E Tests (Docker/TestContainers)
-| Test | Description | Servers | Status |
-|---|---|---|---|
-| `HAReplicationE2ETest` (3) | Basic replication, leader failover, follower proxy | 3 | PASS (22s) |
-| `HANetworkPartitionE2ETest` | Follower network disconnect/reconnect, catch-up via Raft log replay | 3 | PASS (8s) |
-| `HAQuorumLossRecoveryE2ETest` | Network-isolate 2 of 3 nodes, writes fail, reconnect both, cluster recovers | 3 | PASS (20s) |
-| `HALeaderPartitionE2ETest` | Leader network-partitioned, majority elects new leader, old leader reconnects and catches up | 3 | PASS (27s) |
-| `HARollingRestartE2ETest` | Rolling network-isolation with writes on survivors, each node catches up | 3 | WIP |
-| `HAColdStartE2ETest` | All 3 nodes restarted via docker restart, Ratis log recovery + data intact + index survives | 3 | DONE |
-| `HASnapshotCatchUpE2ETest` | Follower lags behind log purge boundary, catches up via snapshot download | 3 | DONE |
+#### Passing (10 tests)
+| Test | Description | Servers |
+|---|---|---|
+| `HAReplicationE2ETest` (3) | Basic replication, leader failover, follower proxy | 3 |
+| `HANetworkPartitionE2ETest` | Follower network disconnect/reconnect, catch-up via Raft log replay | 3 |
+| `HAQuorumLossRecoveryE2ETest` | Network-isolate 2 of 3 nodes, writes fail, reconnect both, cluster recovers | 3 |
+| `HALeaderPartitionE2ETest` | Leader network-partitioned, majority elects new leader, old leader reconnects | 3 |
+| `HAColdStartE2ETest` | All 3 nodes restarted via docker restart, Ratis log recovery + data intact + index survives | 3 |
+| `HASnapshotCatchUpE2ETest` | Follower lags behind log purge boundary, catches up via snapshot HTTP download | 3 |
+| `HAMultiDatabaseSnapshotE2ETest` | 2 databases, follower partitioned, snapshot installs both, all nodes converge | 3 |
+| `HASnapshotDuringWritesE2ETest` | Follower reconnects while concurrent writes active on leader | 3 |
+| `HADynamicDatabaseE2ETest` | Create database after cluster formation, verify schema + data replicate | 3 |
+| `HALargeDataSnapshotE2ETest` | Large records (500+ bytes per field), snapshot streaming via HTTP ZIP | 3 |
+
+#### WIP (1 test)
+| Test | Description | Issue |
+|---|---|---|
+| `HARollingRestartE2ETest` | Rolling network-isolation with writes on survivors | 10min timeout. 3 sequential disconnect/reconnect cycles each trigger Ratis restart + snapshot download. Needs investigation into cumulative latency. |
+
+#### Infrastructure Issues (2 tests)
+| Test | Description | Issue |
+|---|---|---|
+| `HAPacketLossE2ETest` | Packet loss via Toxiproxy | Raft leader election never completes through Toxiproxy. The Toxiproxy TCP proxy may not handle Ratis gRPC bidirectional streaming correctly, or the proxy routing topology prevents Raft quorum formation. Tests were refactored to use direct HTTP instead of `RemoteDatabase` (which followed cluster redirects to unreachable internal Docker addresses), but the underlying Raft routing issue remains. |
+| `HANetworkDelayE2ETest` | Network latency via Toxiproxy | Same Toxiproxy Raft routing issue as PacketLoss. |
 
 ### Known Limitations
 - **State machine command forwarding**: The `query()` path for forwarding write commands to the leader has a page visibility issue. Currently using HTTP proxy fallback which works correctly.
 
-### Removed Tests (not applicable to Ratis)
-| Test | Reason |
-|---|---|
-| `ReplicationServerQuorumNoneIT` | Ratis doesn't support "none" quorum - only MAJORITY and ALL |
-
 ## TODO
 
 ### Resolved Issues
-- **Snapshot persistence for cold restart**: `takeSnapshot()` was not persisting a snapshot marker file to `SimpleStateMachineStorage`. After a cold restart, `reinitialize()` found no snapshot, set `lastAppliedIndex=-1`, and Ratis replayed ALL committed log entries, double-applying WAL page diffs and corrupting the database. Fixed by writing a marker file (`snapshot.<term>_<index>`) and updating `reinitialize()` to restore both `lastAppliedIndex` and `BaseStateMachine`'s internal `TermIndex`. This also fixes snapshot-based catch-up: Ratis now knows a snapshot exists and can trigger `notifyInstallSnapshotFromLeader()` for lagging followers.
-- **Database loading safety**: Added filter in `loadDatabases()` to skip `.snapshot-tmp` and `.snapshot-old` directories that could be leftover from a crash during snapshot installation.
-- **Schema file registration during WAL apply**: `ArcadeDBStateMachine.applyTransactionEntry()` Phase 1 (`createNewFiles`) registered new files in `FileManager` but not in `LocalSchema.files`. Phase 2 (WAL apply) then called `getFileById()` on `LocalSchema.files` and threw `SchemaException`. Fixed by calling `schema.load()` + `initComponents()` after `createNewFiles()` to rebuild the file list before WAL apply.
-- **Orphan index files after failed creation**: `ReplicatedDatabase.recordFileChanges()` lost the file removal replication command when the callback threw an exception. Multi-bucket index creation commits intermediate buckets (with file additions), but if a later bucket fails, the cleanup (file removals) must still reach followers. Fixed by capturing the exception and sending the replication command before rethrowing.
-- **Replication convergence in HA tests**: `BaseGraphServerTest.endTest()` compared databases immediately after test body, but with MAJORITY quorum the 3rd server could lag. Added `waitForReplicationConvergence()` that waits for all followers to apply up to the leader's commit index before comparing.
-- **Concurrent write MVCC contention**: `RaftHAComprehensiveIT.test04_concurrentWritesOnLeader` failed because 4 threads on a shared unique index with only 3 retries exhausted under the extended MVCC conflict window (file locks held during Raft gRPC round-trip). Fixed by increasing `TX_RETRIES` to 50 for the concurrent test.
-- **Exception chain in test helpers**: `TestServerHelper.expectException()` only checked the top-level exception class, but with Ratis HA, exceptions from `commit1stPhase` are wrapped in `TransactionException`. Fixed to check the entire cause chain.
-- **Vector index replication**: Fixed 1-byte parsing misalignment in `LSMVectorIndex.applyReplicatedPageUpdate()` - the `quantization_type` byte (always written after `deleted` flag) was not being read, causing cumulative offset drift when parsing entries on followers.
-
-### TODO: E2E Tests
-These tests exercise full cluster scenarios using Docker containers (TestContainers). Each test is in `e2e/src/test/java/com/arcadedb/e2e/` and tagged `@Tag("e2e-ha")`.
-
-| # | Test | Description | Key scenario | Status |
-|---|---|---|---|---|
-| 1 | `HALeaderPartitionE2ETest` | Leader gets network-partitioned. Majority elects new leader, accepts writes. Old leader reconnects, steps down, catches up | Leader stepdown + follower resync | DONE |
-| 2 | `HAMultiDatabaseSnapshotE2ETest` | Cluster with 2-3 databases. Follower lags behind, snapshot installs all databases. Verify no partial failures | `notifyInstallSnapshotFromLeader` loops over all DBs | DONE |
-| 3 | `HASnapshotDuringWritesE2ETest` | Follower reconnects while writes are actively happening on the leader. Verify snapshot install + concurrent Raft log apply don't conflict | Snapshot + concurrent writes | DONE |
-| 4 | `HAColdStartE2ETest` | Write data, restart all 3 nodes, verify Ratis log recovery from disk + leader re-election + data intact | Full cluster restart from persisted state | DONE |
-| 5 | `HAQuorumLossRecoveryE2ETest` | Network-isolate 2 of 3 nodes (quorum lost). Writes must fail. Reconnect both nodes. Cluster recovers, writes succeed again | Disaster recovery | DONE |
-| 6 | `HADynamicDatabaseE2ETest` | Create a database on the leader after cluster formation. Verify schema + data replicate to followers. Then lag a follower, verify snapshot includes the new database | Post-formation DB creation + snapshot | DONE |
-| 7 | `HALargeDataSnapshotE2ETest` | Insert large records (BLOBs, many properties) to exercise the ZIP streaming path with realistic data sizes | Snapshot HTTP streaming under load | DONE |
-
-### WIP: Remaining E2E test issues
-
-**`HARollingRestartE2ETest`**: Times out at 5 min. Three sequential disconnect/write/reconnect cycles accumulate latency (election ~5s + gRPC reconnection ~10s + catch-up per cycle). Needs investigation into whether iterations compound or if there's a specific failure point.
+- **Snapshot persistence for cold restart**: `takeSnapshot()` was not persisting a snapshot marker file to `SimpleStateMachineStorage`. After a cold restart, `reinitialize()` found no snapshot, set `lastAppliedIndex=-1`, and Ratis replayed ALL committed log entries. Fixed by writing a marker file (`snapshot.<term>_<index>`) with MD5, updating `reinitialize()` to restore `lastAppliedIndex` and `BaseStateMachine`'s `TermIndex`, and taking a snapshot on clean shutdown.
+- **Snapshot installation (chunk-based)**: Changed from notification mode (`installSnapshotEnabled=false`, which the default `LogAppender` doesn't support) to chunk mode (`installSnapshotEnabled=true`). The leader sends the marker file via Ratis chunks. The follower detects the gap between snapshot index and persisted applied index, defers HTTP download to `notifyLeaderChanged()`, then downloads the full database ZIP from the leader. Set `Snapshot.creationGap=0` to allow frequent snapshots.
+- **Ratis server restart after partition**: Docker network disconnect causes the Ratis `RaftServerImpl` to enter CLOSED state. Added `EventApi` implementation and a health monitor thread (3s interval) that detects CLOSED state and restarts the Ratis server with a fresh state machine in RECOVER mode. Set `slownessTimeout=300s` and `closeThreshold=600s` for additional tolerance.
+- **ServerDatabase close during snapshot**: `installDatabaseSnapshot()` called `db.close()` which threw `UnsupportedOperationException` (server-managed databases are shared). Fixed to use `db.getEmbedded().close()` to close the underlying `LocalDatabase` directly, then `removeDatabase()` + `getDatabase()` to force a fresh reopen from the swapped directory.
+- **SnapshotHttpHandler path parameter NPE**: After `exchange.dispatch()`, Undertow path parameters can be null. Added fallback to extract the database name from the URL path. Also fixed `LocalDatabase` unwrap chain (`ServerDatabase` -> `ReplicatedDatabase` -> `LocalDatabase`).
+- **ColdStart stale port mappings**: After `docker restart`, Docker assigns new host port mappings but TestContainers caches the old values. Fixed `HAColdStartE2ETest` to query actual ports from Docker inspect API for all post-restart operations.
+- **ConcurrentModificationException during replay**: After cold restart or snapshot installation, Ratis may replay entries already applied to the database. The page version check throws `ConcurrentModificationException`. Fixed to catch both `java.util.ConcurrentModificationException` and `com.arcadedb.exception.ConcurrentModificationException` and skip already-applied entries.
+- **Database loading safety**: Added filter in `loadDatabases()` to skip `.snapshot-tmp` and `.snapshot-old` directories leftover from crash during snapshot installation.
+- **Schema file registration during WAL apply**: `createNewFiles()` registered files in `FileManager` but not in `LocalSchema.files`. Fixed by calling `schema.load()` + `initComponents()` after `createNewFiles()` to rebuild the file list before WAL apply.
+- **Orphan index files after failed creation**: `ReplicatedDatabase.recordFileChanges()` lost file removal replication commands on exception. Fixed by capturing the exception, sending the replication command (with file removals), then rethrowing.
+- **Replication convergence in HA tests**: Added `waitForReplicationConvergence()` in `BaseGraphServerTest.endTest()` to wait for all followers to apply up to the leader's commit index before comparing databases.
+- **Concurrent write MVCC contention**: Increased `TX_RETRIES` to 50 for `test04_concurrentWritesOnLeader` to handle extended MVCC conflict window (file locks held during Raft gRPC round-trip).
+- **Exception chain in test helpers**: `TestServerHelper.expectException()` now checks the entire cause chain, not just the top-level exception class.
+- **Vector index replication**: Fixed 1-byte parsing misalignment in `LSMVectorIndex.applyReplicatedPageUpdate()`.
 
 ### Resolved issues during E2E testing
-
-- **Docker network alias loss**: Docker does NOT preserve network aliases after `disconnect`/`connect`. Fixed by passing the alias explicitly via `ContainerNetwork.withAliases()` in `reconnectToNetwork()`. This was the root cause of the "old leader doesn't catch up" failures.
+- **Docker network alias loss**: Docker does NOT preserve network aliases after `disconnect`/`connect`. Fixed by passing the alias explicitly via `ContainerNetwork.withAliases()` in `reconnectToNetwork()`.
 - **Peer ID collision**: `resolveLocalPeerId()` matched on `HA_REPLICATION_INCOMING_HOST` (`0.0.0.0`) + port, causing all nodes to get the same peer ID. Fixed by matching on server name, hostname, or unambiguous port.
-- **gRPC reconnection tuning**: Added `ExponentialBackoffRetry` on RaftClient, `slownessTimeout=300s`, `closeThreshold=300s`, `flowControlWindow=4MB` for robust partition recovery.
+- **gRPC reconnection tuning**: Added `ExponentialBackoffRetry` on RaftClient, `slownessTimeout=300s`, `closeThreshold=600s`, `flowControlWindow=4MB` for robust partition recovery.
 - **HTTP API params**: E2E tests use direct HTTP with `INSERT ... CONTENT {}` syntax (not `RemoteDatabase`) to avoid cluster address discovery issues in Docker.
 
 ### Future Features

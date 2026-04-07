@@ -18,7 +18,7 @@
  */
 package com.arcadedb.e2e;
 
-import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.serializer.json.JSONObject;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
@@ -28,8 +28,13 @@ import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -140,12 +145,12 @@ public abstract class ArcadeHAToxiproxyTemplate {
       containers.add(container);
     }
 
-    // Wait for leader election
-    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+    // Wait for a write to succeed on any node (proves leader is elected and quorum is reachable).
+    // With Toxiproxy proxying Raft traffic, leader election takes longer than direct connections.
+    Awaitility.await().atMost(120, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
       for (final GenericContainer<?> c : containers) {
-        try (final RemoteDatabase db = createRemoteDatabase(c)) {
-          // A simple query succeeding means the cluster is up
-          db.query("SQL", "SELECT 1");
+        try {
+          httpCommand(c, "SQL", "SELECT 1");
           return true;
         } catch (final Exception ignored) {}
       }
@@ -190,8 +195,55 @@ public abstract class ArcadeHAToxiproxyTemplate {
     }
   }
 
-  protected RemoteDatabase createRemoteDatabase(final GenericContainer<?> container) {
-    return new RemoteDatabase(container.getHost(), container.getMappedPort(HTTP_PORT),
-        DATABASE_NAME, "root", ROOT_PASSWORD);
+  /**
+   * Finds the container that is the current leader.
+   */
+  protected GenericContainer<?> findLeader() {
+    for (final GenericContainer<?> c : containers) {
+      try {
+        final var response = httpClient.send(
+            HttpRequest.newBuilder()
+                .uri(URI.create("http://" + c.getHost() + ":" + c.getMappedPort(HTTP_PORT) + "/api/v1/server?mode=cluster"))
+                .header("Authorization", basicAuth()).GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() == 200 && response.body().contains("\"isLeader\":true"))
+          return c;
+      } catch (final Exception ignored) {}
+    }
+    return null;
+  }
+
+  // -- Direct HTTP methods (avoid RemoteDatabase cluster redirect to internal Docker addresses) --
+
+  protected final HttpClient httpClient = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(10)).build();
+
+  protected JSONObject httpCommand(final GenericContainer<?> container, final String language,
+      final String command) throws Exception {
+    final String url = "http://" + container.getHost() + ":" + container.getMappedPort(HTTP_PORT)
+        + "/api/v1/command/" + DATABASE_NAME;
+    final JSONObject body = new JSONObject().put("language", language).put("command", command);
+    final HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .header("Authorization", basicAuth())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
+    final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    if (response.statusCode() != 200)
+      throw new RuntimeException("HTTP " + response.statusCode() + ": " + response.body());
+    return new JSONObject(response.body());
+  }
+
+  protected long httpCount(final GenericContainer<?> container, final String typeName) {
+    try {
+      final JSONObject result = httpCommand(container, "SQL", "SELECT count(*) as cnt FROM " + typeName);
+      return result.getJSONArray("result").getJSONObject(0).getLong("cnt");
+    } catch (final Exception e) {
+      return -1;
+    }
+  }
+
+  protected String basicAuth() {
+    return "Basic " + Base64.getEncoder().encodeToString(("root:" + ROOT_PASSWORD).getBytes());
   }
 }

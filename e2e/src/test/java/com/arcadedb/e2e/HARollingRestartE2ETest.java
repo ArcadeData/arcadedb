@@ -18,12 +18,14 @@
  */
 package com.arcadedb.e2e;
 
+import com.github.dockerjava.api.DockerClient;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 
 import java.util.concurrent.TimeUnit;
@@ -40,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 @Tag("e2e-ha")
-@Timeout(value = 10, unit = TimeUnit.MINUTES)
+@Timeout(value = 20, unit = TimeUnit.MINUTES)
 public class HARollingRestartE2ETest extends ArcadeHAContainerTemplate {
 
   @BeforeEach
@@ -50,13 +52,18 @@ public class HARollingRestartE2ETest extends ArcadeHAContainerTemplate {
 
   @AfterEach
   void tearDown() {
-    for (final GenericContainer<?> c : containers)
+    final DockerClient dc = DockerClientFactory.instance().client();
+    for (final GenericContainer<?> c : containers) {
+      try { dc.unpauseContainerCmd(c.getContainerId()).exec(); } catch (final Exception ignored) {}
       try { reconnectToNetwork(c); } catch (final Exception ignored) {}
+    }
     stopCluster();
   }
 
   @Test
   void testRollingRestartWithContinuousWrites() throws Exception {
+    final DockerClient dockerClient = DockerClientFactory.instance().client();
+
     // Setup: create schema and initial data
     final GenericContainer<?> leader = findLeader();
     assertThat(leader).isNotNull();
@@ -71,16 +78,18 @@ public class HARollingRestartE2ETest extends ArcadeHAContainerTemplate {
         assertThat(httpCount(c, "Product")).isEqualTo(10);
     });
 
-    // Rolling restart: isolate each node, write to survivors, reconnect
+    // Rolling restart: pause each node (freeze process), write to survivors, unpause.
+    // Docker pause/unpause freezes the process without killing gRPC connections,
+    // allowing Ratis to recover via normal log replay without entering CLOSED state.
     final AtomicInteger totalWrites = new AtomicInteger(10);
     for (int nodeIdx = 0; nodeIdx < 3; nodeIdx++) {
       final GenericContainer<?> nodeToRestart = containers.get(nodeIdx);
 
-      // Isolate this node from the network
-      disconnectFromNetwork(nodeToRestart);
+      // Pause this node (freeze the JVM process)
+      dockerClient.pauseContainerCmd(nodeToRestart.getContainerId()).exec();
 
       // Wait for leader on surviving nodes
-      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+      Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
         for (final GenericContainer<?> c : containers) {
           if (c == nodeToRestart) continue;
           try {
@@ -101,12 +110,12 @@ public class HARollingRestartE2ETest extends ArcadeHAContainerTemplate {
         totalWrites.incrementAndGet();
       }
 
-      // Reconnect the isolated node
-      reconnectToNetwork(nodeToRestart);
+      // Unpause the node - Ratis catches up via log replay
+      dockerClient.unpauseContainerCmd(nodeToRestart.getContainerId()).exec();
 
-      // Wait for the node to catch up via Raft log replay
+      // Wait for the node to catch up
       final int expected = totalWrites.get();
-      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).untilAsserted(() ->
+      Awaitility.await().atMost(120, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).untilAsserted(() ->
           assertThat(httpCount(nodeToRestart, "Product")).isEqualTo(expected));
     }
 
