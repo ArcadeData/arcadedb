@@ -343,7 +343,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
           .pollInterval(500, TimeUnit.MILLISECONDS)
           .until(() -> {
             for (int i = 0; i < serverCount; ++i) {
-              if (getServerRole(i) == "any") {
+              if ("any".equals(getServerRole(i))) {
                 // ONLY FOR CANDIDATE LEADERS
                 if (servers[i].getHA() != null) {
                   if (servers[i].getHA().isLeader()) {
@@ -363,7 +363,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     } catch (ConditionTimeoutException e) {
       int lastTotalConnectedReplica = 0;
       for (int i = 0; i < serverCount; ++i) {
-        if (getServerRole(i) == "any" && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
+        if ("any".equals(getServerRole(i)) && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
           lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
           break;
         }
@@ -380,7 +380,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     int lastTotalConnectedReplica;
 
     for (int i = 0; i < serverCount; ++i) {
-      if (getServerRole(i) == "any") {
+      if ("any".equals(getServerRole(i))) {
         // ONLY FOR CANDIDATE LEADERS
         if (servers[i].getHA() != null) {
           if (servers[i].getHA().isLeader()) {

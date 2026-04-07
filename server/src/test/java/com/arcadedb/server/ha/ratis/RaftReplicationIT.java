@@ -160,7 +160,7 @@ class RaftReplicationIT {
     // Verify exactly one Ratis leader exists
     int leaderCount = 0;
     for (final ArcadeDBServer server : servers)
-      if (server.getRaftHA() != null && server.getRaftHA().isLeader())
+      if (server.getHA != null && server.getHA.isLeader())
         leaderCount++;
 
     assertThat(leaderCount).isEqualTo(1);
@@ -171,7 +171,7 @@ class RaftReplicationIT {
     // Find the leader server
     ArcadeDBServer leader = null;
     for (final ArcadeDBServer server : servers)
-      if (server.getRaftHA() != null && server.getRaftHA().isLeader()) {
+      if (server.getHA != null && server.getHA.isLeader()) {
         leader = server;
         break;
       }
@@ -216,7 +216,7 @@ class RaftReplicationIT {
     // Find a follower server (not the leader)
     ArcadeDBServer follower = null;
     for (final ArcadeDBServer server : servers)
-      if (server.getRaftHA() != null && !server.getRaftHA().isLeader()) {
+      if (server.getHA != null && !server.getHA.isLeader()) {
         follower = server;
         break;
       }
@@ -243,7 +243,7 @@ class RaftReplicationIT {
   void testClusterStatus() {
     // Verify cluster status API
     for (final ArcadeDBServer server : servers) {
-      final RaftHAServer raftHA = server.getRaftHA();
+      final RaftHAServer raftHA = server.getHA();
       assertThat(raftHA).isNotNull();
       assertThat(raftHA.getClusterName()).isEqualTo("raft-test-cluster");
       assertThat(raftHA.getConfiguredServers()).isEqualTo(3);
@@ -254,7 +254,7 @@ class RaftReplicationIT {
     // Verify exactly one leader
     long leaderCount = 0;
     for (final ArcadeDBServer server : servers)
-      if (server.getRaftHA().isLeader())
+      if (server.getHA.isLeader())
         leaderCount++;
     assertThat(leaderCount).isEqualTo(1);
   }
@@ -263,7 +263,7 @@ class RaftReplicationIT {
   void testPeerHTTPAddresses() {
     // Verify each peer has a resolvable HTTP address
     for (final ArcadeDBServer server : servers) {
-      final RaftHAServer raftHA = server.getRaftHA();
+      final RaftHAServer raftHA = server.getHA();
       final String leaderAddr = raftHA.getLeaderHTTPAddress();
       assertThat(leaderAddr).isNotNull();
       assertThat(leaderAddr).contains("localhost:");
@@ -271,7 +271,7 @@ class RaftReplicationIT {
 
     // Verify replica addresses are populated
     for (final ArcadeDBServer server : servers) {
-      final String replicas = server.getRaftHA().getReplicaAddresses();
+      final String replicas = server.getHA.getReplicaAddresses();
       assertThat(replicas).isNotEmpty();
     }
   }
@@ -286,7 +286,7 @@ class RaftReplicationIT {
         .pollInterval(500, TimeUnit.MILLISECONDS)
         .until(() -> {
           for (final ArcadeDBServer server : servers)
-            if (server.getRaftHA() != null && server.getRaftHA().isLeader())
+            if (server.getHA != null && server.getHA.isLeader())
               return true;
           return false;
         });

@@ -61,14 +61,22 @@ public final class HALog {
     return getLevel() >= level;
   }
 
+  private static Level toJavaLevel(final int level) {
+    return switch (level) {
+      case BASIC -> Level.INFO;
+      case DETAILED -> Level.FINE;
+      default -> Level.FINER;
+    };
+  }
+
   public static void log(final Object caller, final int level, final String message, final Object... args) {
     if (getLevel() >= level)
-      LogManager.instance().log(caller, Level.INFO, "[HA-" + level + "] " + message, null, args);
+      LogManager.instance().log(caller, toJavaLevel(level), "[HA-" + level + "] " + message, null, args);
   }
 
   public static void log(final Object caller, final int level, final String message, final Throwable exception,
       final Object... args) {
     if (getLevel() >= level)
-      LogManager.instance().log(caller, Level.INFO, "[HA-" + level + "] " + message, exception, args);
+      LogManager.instance().log(caller, toJavaLevel(level), "[HA-" + level + "] " + message, exception, args);
   }
 }

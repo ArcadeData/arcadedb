@@ -560,6 +560,10 @@ public enum GlobalConfiguration {
   HA_GROUP_COMMIT_BATCH_SIZE("arcadedb.ha.groupCommitBatchSize", SCOPE.SERVER,
       "Maximum number of transactions batched in a single Raft round-trip", Integer.class, 500),
 
+  HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
+      "Read timeout in milliseconds when proxying requests from followers to the leader. Increase for long-running queries",
+      Integer.class, 30_000),
+
   HA_REPLICATION_QUEUE_SIZE("arcadedb.ha.replicationQueueSize", SCOPE.SERVER, "Queue size for replicating messages between servers",
       Integer.class, 512),
 

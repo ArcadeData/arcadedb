@@ -235,7 +235,7 @@ public class HttpServer implements ServerPlugin {
     );
 
     // Ratis HA snapshot endpoint (serves database files as ZIP for follower resync)
-    if (server.getRaftHA() != null)
+    if (server.getHA() != null)
       basicRoutes.get("/ha/snapshot/{database}", new com.arcadedb.server.ha.ratis.SnapshotHttpHandler(this));
 
     // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling

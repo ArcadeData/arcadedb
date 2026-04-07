@@ -445,7 +445,9 @@ public class RaftHAServer {
   }
 
   /**
-   * Forwards a transaction from a non-leader node through the Raft cluster.
+   * Reserved for future use: forwards a transaction from a non-leader node through the Raft cluster.
+   * Currently not called from production code - followers use HTTP proxy forwarding via
+   * {@code ServerIsNotTheLeaderException} instead. Kept as public API for future direct WAL forwarding.
    *
    * @param databaseName      target database
    * @param bucketRecordDelta per-bucket record count changes

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.ratis;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.database.DatabaseContext;
@@ -252,7 +253,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
   }
 
   private boolean isCurrentNodeLeader() {
-    final RaftHAServer raftHA = server.getRaftHA();
+    final RaftHAServer raftHA = server.getHA();
     return raftHA != null && raftHA.isLeader();
   }
 
@@ -356,7 +357,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
     return CompletableFuture.supplyAsync(() -> {
       try {
         // Resolve the leader's HTTP address for snapshot download
-        final RaftHAServer raftHA = server.getRaftHA();
+        final RaftHAServer raftHA = server.getHA();
         final RaftPeerId leaderId = RaftPeerId.valueOf(
             roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
         final String leaderHttpAddr = raftHA.getPeerHTTPAddress(leaderId);
@@ -392,7 +393,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
    */
   private void installDatabaseSnapshot(final DatabaseInternal db, final String leaderHttpAddr,
       final String databaseName) throws IOException {
-    final String snapshotUrl = "http://" + leaderHttpAddr + "/api/v1/ha/snapshot/" + databaseName;
+    final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final String snapshotUrl = (useSsl ? "https" : "http") + "://" + leaderHttpAddr + "/api/v1/ha/snapshot/" + databaseName;
 
     LogManager.instance().log(this, Level.INFO, "Downloading database snapshot from %s...", snapshotUrl);
 
@@ -453,11 +455,15 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
 
     } finally {
       connection.disconnect();
-      // Ensure database is re-opened even if extraction failed, so it doesn't remain permanently closed
+      // Ensure database is re-opened even if extraction failed, so it doesn't remain permanently closed.
+      // If reopening also fails, the database is effectively unavailable and subsequent Raft applies will
+      // cascade-fail. Log at SEVERE so operators can investigate and restart the node.
       try {
         server.getDatabase(databaseName);
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Failed to reopen database '%s' after snapshot installation: %s",
+        LogManager.instance().log(this, Level.SEVERE,
+            "CRITICAL: Failed to reopen database '%s' after snapshot installation. "
+                + "This node may need to be restarted to recover. Error: %s",
             databaseName, e.getMessage());
       }
     }
@@ -584,7 +590,13 @@ public class ArcadeDBStateMachine extends BaseStateMachine {
       pos += deltaSize;
     }
 
-    final long magicNumber = buffer.getLong(pos + Binary.INT_SERIALIZED_SIZE);
+    final int trailingSegmentSize = buffer.getInt(pos);
+    pos += Binary.INT_SERIALIZED_SIZE;
+    if (trailingSegmentSize != segmentSize)
+      throw new ReplicationException(
+          "Replicated transaction buffer is corrupted (trailing segment size " + trailingSegmentSize + " != leading " + segmentSize + ")");
+
+    final long magicNumber = buffer.getLong(pos);
     if (magicNumber != WALFile.MAGIC_NUMBER)
       throw new ReplicationException("Replicated transaction buffer is corrupted (bad magic number)");
 

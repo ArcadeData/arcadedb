@@ -127,11 +127,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       createUser(extractTarget(command, CREATE_USER));
     else if (command_lc.startsWith(DROP_USER))
       dropUser(extractTarget(command, DROP_USER));
-    else if (command_lc.startsWith(CONNECT_CLUSTER)) {
-      if (!connectCluster(extractTarget(command, CONNECT_CLUSTER), exchange))
-        return null;
-    } else if (command_lc.equals(DISCONNECT_CLUSTER))
-      disconnectCluster();
+    else if (command_lc.startsWith(CONNECT_CLUSTER))
+      return connectCluster();
+    else if (command_lc.equals(DISCONNECT_CLUSTER))
+      return disconnectCluster();
     else if (command_lc.startsWith(SET_DATABASE_SETTING))
       setDatabaseSetting(extractTarget(command, SET_DATABASE_SETTING));
     else if (command_lc.startsWith(SET_SERVER_SETTING))
@@ -503,18 +502,16 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       throw new IllegalArgumentException("User '" + userName + "' not found on server");
   }
 
-  private boolean connectCluster(final String serverAddress, final HttpServerExchange exchange) {
+  private ExecutionResponse connectCluster() {
     Metrics.counter("http.connect-cluster").increment();
-    // With Ratis, cluster membership is managed via 'ha add peer' / 'ha remove peer' commands
-    throw new IllegalArgumentException(
-        "Use 'ha add peer <id> <address>' to manage cluster membership with Ratis HA");
+    return new ExecutionResponse(400,
+        "{ \"error\" : \"Use 'ha add peer <id> <address>' to manage cluster membership with Ratis HA\"}");
   }
 
-  private void disconnectCluster() {
+  private ExecutionResponse disconnectCluster() {
     Metrics.counter("http.server-disconnect").increment();
-    // With Ratis, the server can be removed via 'ha remove peer'
-    throw new IllegalArgumentException(
-        "Use 'ha remove peer <id>' to manage cluster membership with Ratis HA");
+    return new ExecutionResponse(400,
+        "{ \"error\" : \"Use 'ha remove peer <id>' to manage cluster membership with Ratis HA\"}");
   }
 
   private void setDatabaseSetting(final String triple) throws IOException {
@@ -874,7 +871,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private ExecutionResponse haAddPeer(final String target, final JSONObject response) {
-    final var raftHA = httpServer.getServer().getRaftHA();
+    final var raftHA = httpServer.getServer().getHA();
     if (raftHA == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
 
@@ -889,7 +886,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private ExecutionResponse haRemovePeer(final String target, final JSONObject response) {
-    final var raftHA = httpServer.getServer().getRaftHA();
+    final var raftHA = httpServer.getServer().getHA();
     if (raftHA == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
 
@@ -902,7 +899,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private ExecutionResponse haTransferLeader(final String target, final JSONObject response) {
-    final var raftHA = httpServer.getServer().getRaftHA();
+    final var raftHA = httpServer.getServer().getHA();
     if (raftHA == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
 
@@ -915,7 +912,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private ExecutionResponse haStepDown(final JSONObject response) {
-    final var raftHA = httpServer.getServer().getRaftHA();
+    final var raftHA = httpServer.getServer().getHA();
     if (raftHA == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
 
@@ -933,7 +930,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private ExecutionResponse haLeave(final JSONObject response) {
-    final var raftHA = httpServer.getServer().getRaftHA();
+    final var raftHA = httpServer.getServer().getHA();
     if (raftHA == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
 
@@ -951,7 +948,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * Returns per-peer checksum comparison: which files match and which differ.
    */
   private ExecutionResponse haVerifyDatabase(final String databaseName, final JSONObject response) {
-    final var raftHA = httpServer.getServer().getRaftHA();
+    final var raftHA = httpServer.getServer().getHA();
     if (raftHA == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Ratis HA is not enabled\"}");
 
@@ -1016,7 +1013,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
       try {
         final String peerHttpAddr = raftHA.getPeerHTTPAddress(peer.getId());
-        final String url = "http://" + peerHttpAddr + "/api/v1/server";
+        final boolean useSsl = httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+        final String url = (useSsl ? "https" : "http") + "://" + peerHttpAddr + "/api/v1/server";
 
         final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
         try {
@@ -1025,7 +1023,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
           conn.setConnectTimeout(PEER_CONNECT_TIMEOUT_MS);
           conn.setReadTimeout(PEER_READ_TIMEOUT_MS);
 
-          // Use cluster token for inter-node auth (admin-only operation, root is appropriate)
+          // Use cluster token for inter-node auth. The original request already passed
+          // checkRootUser() (line 114), so forwarding as root is safe - only admin users
+          // can reach this code path. The cluster token authenticates the inter-node request.
           if (raftHA.getClusterToken() != null) {
             conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
             conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");

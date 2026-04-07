@@ -123,7 +123,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // No database lock is needed - we only send captured bytes over gRPC.
     // If this fails (quorum not reached), phase 2 never executes -> no local writes -> no divergence.
     try {
-      final RaftHAServer raftHA = server.getRaftHA();
+      final RaftHAServer raftHA = server.getHA();
       HALog.log(this, HALog.DETAILED, "Replicating WAL via Ratis: db=%s, walSize=%d, deltaSize=%d, schema=%s",
           getName(), payload.bufferChanges.size(), payload.delta.size(), payload.schemaJson != null);
       raftHA.replicateTransaction(getName(), payload.delta, payload.bufferChanges,
@@ -718,7 +718,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     if (isLeader())
       return;
 
-    final var raftHA = server.getRaftHA();
+    final var raftHA = server.getHA();
     if (raftHA == null)
       return;
 
@@ -835,7 +835,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
-    final RaftHAServer raftHA = server.getRaftHA();
+    final RaftHAServer raftHA = server.getHA();
 
     final AtomicReference<Object> result = new AtomicReference<>();
     final AtomicReference<DatabaseChangeStructureRequest> replicationCommand = new AtomicReference<>();
@@ -892,7 +892,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   public RaftHAServer.Quorum getQuorum() {
-    final RaftHAServer raftHA = server.getRaftHA();
+    final RaftHAServer raftHA = server.getHA();
     return raftHA != null ? raftHA.getQuorum() : RaftHAServer.Quorum.MAJORITY;
   }
 
@@ -945,12 +945,12 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   protected boolean isLeader() {
-    final RaftHAServer raftHA = server.getRaftHA();
+    final RaftHAServer raftHA = server.getHA();
     return raftHA != null && raftHA.isLeader();
   }
 
   private String getLeaderHTTPAddress() {
-    final RaftHAServer raftHA = server.getRaftHA();
+    final RaftHAServer raftHA = server.getHA();
     return raftHA != null ? raftHA.getLeaderHTTPAddress() : null;
   }
 }

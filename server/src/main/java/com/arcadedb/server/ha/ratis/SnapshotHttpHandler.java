@@ -151,6 +151,10 @@ public class SnapshotHttpHandler implements HttpHandler {
         }
         return rootUser;
       }
+      // Invalid cluster token: reject immediately, do not fall through to Basic auth
+      LogManager.instance().log(this, Level.WARNING, "Invalid cluster token received from %s",
+          exchange.getSourceAddress());
+      return null;
     }
 
     // Basic auth

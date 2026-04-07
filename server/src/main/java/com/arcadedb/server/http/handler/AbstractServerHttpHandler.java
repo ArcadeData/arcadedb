@@ -53,7 +53,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String HEADER_CLUSTER_TOKEN     = "X-ArcadeDB-Cluster-Token";
   private static final String HEADER_FORWARDED_USER    = "X-ArcadeDB-Forwarded-User";
   private static final int    PROXY_CONNECT_TIMEOUT_MS = 5_000;
-  private static final int    PROXY_READ_TIMEOUT_MS    = 30_000;
   private static final io.undertow.util.AttachmentKey<String> RAW_PAYLOAD_KEY = io.undertow.util.AttachmentKey.create(String.class);
   static final io.undertow.util.AttachmentKey<String> BASIC_AUTH_KEY = io.undertow.util.AttachmentKey.create(String.class);
   protected final HttpServer httpServer;
@@ -325,14 +324,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private void proxyToLeader(final HttpServerExchange exchange, final String leaderAddr) throws Exception {
     final String path = exchange.getRequestPath();
     final String query = exchange.getQueryString();
-    final String targetUrl = "http://" + leaderAddr + path + (query != null && !query.isEmpty() ? "?" + query : "");
+    final String protocol = httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL) ? "https" : "http";
+    final String targetUrl = protocol + "://" + leaderAddr + path + (query != null && !query.isEmpty() ? "?" + query : "");
 
     LogManager.instance().log(this, Level.FINE, "Proxying request to leader: %s", targetUrl);
 
     final HttpURLConnection conn = (HttpURLConnection) new URI(targetUrl).toURL().openConnection();
     conn.setRequestMethod(exchange.getRequestMethod().toString());
     conn.setConnectTimeout(PROXY_CONNECT_TIMEOUT_MS);
-    conn.setReadTimeout(PROXY_READ_TIMEOUT_MS);
+    conn.setReadTimeout(httpServer.getServer().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.HA_PROXY_READ_TIMEOUT));
 
     // Forward auth using cluster token for inter-node identity.
     // The cluster token is a shared secret derived from the cluster name + root password.
