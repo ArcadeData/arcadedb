@@ -114,7 +114,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE) ||
         command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
         command_lc.startsWith(RESTORE_DATABASE) || command_lc.startsWith(IMPORT_DATABASE)) {
-      final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload);
+      final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload, user);
       if (forwarded != null)
         return forwarded;
     }
@@ -867,8 +867,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * If this node is an HA replica, forwards the server command to the leader and returns its response.
    * Returns null if this node is the leader or HA is not enabled (caller should execute locally).
    */
-  private ExecutionResponse forwardToLeaderIfReplica(final HttpServerExchange exchange, final JSONObject payload)
-      throws IOException {
+  private ExecutionResponse forwardToLeaderIfReplica(final HttpServerExchange exchange, final JSONObject payload,
+      final ServerSecurityUser user) throws IOException {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha == null || ha.isLeader())
       return null;
@@ -881,16 +881,22 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final String authHeader = authValues != null ? authValues.getFirst() : null;
     final String clusterToken = httpServer.getServer().getConfiguration()
         .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+    final String userName = user != null ? user.getName() : null;
 
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/server"))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()));
 
-    if (authHeader != null)
+    if (authHeader != null && !authHeader.startsWith("Bearer AU-"))
       builder.header("Authorization", authHeader);
-    if (clusterToken != null && !clusterToken.isBlank())
+    if (clusterToken != null && !clusterToken.isBlank()) {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+      if (userName != null)
+        builder.header("X-ArcadeDB-Forwarded-User", userName);
+    } else if (authHeader != null) {
+      builder.header("Authorization", authHeader);
+    }
 
     try {
       final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
