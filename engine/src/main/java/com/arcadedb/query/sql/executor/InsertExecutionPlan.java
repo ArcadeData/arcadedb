@@ -33,7 +33,8 @@ import static com.arcadedb.query.sql.executor.AbstractExecutionStep.DEFAULT_FETC
  */
 public class InsertExecutionPlan extends SelectExecutionPlan {
   final List<Result> result = new ArrayList<>();
-  int next = 0;
+  int     next     = 0;
+  boolean executed = false;
 
   public InsertExecutionPlan(final CommandContext context) {
     super(context, 0);
@@ -41,6 +42,10 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
 
   @Override
   public ResultSet fetchNext(final int n) {
+    if (!executed) {
+      executed = true;
+      executeInternal();
+    }
     if (next >= result.size())
       return new InternalResultSet();//empty
 
@@ -53,6 +58,7 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
   public void reset(final CommandContext context) {
     result.clear();
     next = 0;
+    executed = false;
     super.reset(context);
     executeInternal();
   }

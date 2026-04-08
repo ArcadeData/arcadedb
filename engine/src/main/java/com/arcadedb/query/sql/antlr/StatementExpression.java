@@ -23,7 +23,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BaseIdentifier;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.SubQueryCollector;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -33,7 +36,7 @@ import java.util.List;
  * Used for nested statements in expressions: INSERT INTO foo SET x = (INSERT INTO bar SET y = 1)
  */
 public class StatementExpression extends BaseExpression {
-  private final Statement statement;
+  private Statement statement;
 
   public StatementExpression(final Statement statement) {
     super(-1);
@@ -42,6 +45,9 @@ public class StatementExpression extends BaseExpression {
 
   @Override
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
+    if (statement == null)
+      return super.execute(currentRecord, context);
+
     Object result = executeStatement(context);
 
     // Apply modifier if present (e.g., (INSERT ...).name or (INSERT ...)[0])
@@ -53,6 +59,9 @@ public class StatementExpression extends BaseExpression {
 
   @Override
   public Object execute(final Result currentRecord, final CommandContext context) {
+    if (statement == null)
+      return super.execute(currentRecord, context);
+
     Object result = executeStatement(context);
 
     // Apply modifier if present (e.g., (INSERT ...).name or (INSERT ...)[0])
@@ -60,6 +69,15 @@ public class StatementExpression extends BaseExpression {
       result = modifier.execute(currentRecord, result, context);
 
     return result;
+  }
+
+  @Override
+  public void extractSubQueries(final SubQueryCollector collector) {
+    if (statement != null) {
+      final Identifier alias = collector.addStatement(statement);
+      identifier = new BaseIdentifier(alias);
+      statement = null;
+    }
   }
 
   private Object executeStatement(final CommandContext context) {
@@ -79,6 +97,10 @@ public class StatementExpression extends BaseExpression {
 
   @Override
   public void toString(final java.util.Map<String, Object> params, final StringBuilder builder) {
+    if (statement == null) {
+      super.toString(params, builder);
+      return;
+    }
     builder.append("(");
     statement.toString(params, builder);
     builder.append(")");
@@ -88,6 +110,8 @@ public class StatementExpression extends BaseExpression {
 
   @Override
   public String toString() {
+    if (statement == null)
+      return super.toString();
     final StringBuilder sb = new StringBuilder();
     sb.append("(").append(statement.toString()).append(")");
     if (modifier != null)

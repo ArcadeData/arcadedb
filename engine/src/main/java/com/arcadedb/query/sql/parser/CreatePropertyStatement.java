@@ -71,12 +71,11 @@ public class CreatePropertyStatement extends DDLStatement {
     if (typez == null)
       throw new CommandExecutionException("Type '" + typeName.getStringValue() + "' not found");
 
-    if (typez.existsProperty(propertyName.getStringValue())) {
-      if (ifNotExists)
+    if (ifNotExists) {
+      if (typez.existsPolymorphicProperty(propertyName.getStringValue()))
         return;
-
+    } else if (typez.existsProperty(propertyName.getStringValue()))
       throw new CommandExecutionException("Property '" + typeName.getStringValue() + "." + propertyName.getStringValue() + "' already exists");
-    }
 
     final Type type = Type.valueOf(propertyType.getStringValue().toUpperCase(Locale.ENGLISH));
 

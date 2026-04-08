@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 
@@ -82,6 +83,16 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
                 nextItem = new UpdatableResult(((Document) element.getRecord()).modify());
               }
               break;
+            }
+
+            // Handle projected results containing a RID (e.g. from INSERT ... RETURN @rid)
+            final Object ridValue = nextItem.getProperty("@rid");
+            if (ridValue instanceof Identifiable identifiable) {
+              final Record record = identifiable.getRecord();
+              if (record instanceof Document doc) {
+                nextItem = new UpdatableResult(doc.modify());
+                break;
+              }
             }
 
             nextItem = null;
