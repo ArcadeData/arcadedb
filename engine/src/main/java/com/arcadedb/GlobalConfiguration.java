@@ -564,6 +564,13 @@ public enum GlobalConfiguration {
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
       "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),
 
+  HA_WRITE_BUFFER_SIZE("arcadedb.ha.writeBufferSize", SCOPE.SERVER,
+      "Raft log write buffer size. Must be >= appendBufferSize + 8 bytes (e.g. '8MB')", String.class, "8MB"),
+
+  HA_GRPC_FLOW_CONTROL_WINDOW("arcadedb.ha.grpcFlowControlWindow", SCOPE.SERVER,
+      "gRPC flow control window for Raft replication. Larger values help catch-up replication after partitions (e.g. '4MB')",
+      String.class, "4MB"),
+
   HA_GROUP_COMMIT_BATCH_SIZE("arcadedb.ha.groupCommitBatchSize", SCOPE.SERVER,
       "Maximum number of transactions batched in a single Raft round-trip", Integer.class, 500),
 

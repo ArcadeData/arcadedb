@@ -221,6 +221,10 @@ public class RaftHAServer {
           "Inter-node snapshot and proxy traffic uses plain HTTP. Cluster token and database data are transmitted " +
               "unencrypted. Deploy behind a secure network or VPN for production use");
 
+    // Derive the cluster token eagerly at startup rather than lazily on the first request.
+    // PBKDF2 with 100k iterations is expensive and would block a request thread.
+    initClusterToken();
+
     try {
       stateMachine = new ArcadeDBStateMachine(server);
 
@@ -272,6 +276,17 @@ public class RaftHAServer {
 
     } catch (final IOException e) {
       throw new ConfigurationException("Failed to start Ratis HA service", e);
+    }
+  }
+
+  /** Returns the lifecycle state of the Ratis server (RUNNING, CLOSING, CLOSED, etc.). */
+  public org.apache.ratis.util.LifeCycle.State getRaftLifeCycleState() {
+    if (raftServer == null)
+      return org.apache.ratis.util.LifeCycle.State.CLOSED;
+    try {
+      return raftServer.getDivision(raftGroup.getGroupId()).getInfo().getLifeCycleState();
+    } catch (final Exception e) {
+      return raftServer.getLifeCycleState();
     }
   }
 
@@ -1391,20 +1406,22 @@ public class RaftHAServer {
     final boolean purgeUptoSnapshot = configuration.getValueAsBoolean(GlobalConfiguration.HA_LOG_PURGE_UPTO_SNAPSHOT);
     RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, purgeUptoSnapshot);
 
-    // Partition tolerance: prevent Ratis from closing the server during network partitions.
-    // slownessTimeout: how long a peer can be unresponsive before being marked slow (default 120s).
-    // closeThreshold: how long before the server closes itself when isolated (default 300s).
-    // High values ensure the server survives partitions and can recover when the network is restored.
-    RaftServerConfigKeys.Rpc.setSlownessTimeout(properties, TimeDuration.valueOf(300, TimeUnit.SECONDS));
-    RaftServerConfigKeys.setCloseThreshold(properties, TimeDuration.valueOf(600, TimeUnit.SECONDS));
-
-    // Write buffer (must be >= appender buffer byte-limit + 8)
-    RaftServerConfigKeys.Log.setWriteBufferSize(properties, SizeInBytes.valueOf("8MB"));
-
     // AppendEntries batching: allow multiple log entries in a single gRPC call to followers.
     // Combined with the group committer, this allows many transactions to be replicated in one round-trip.
     final String appendBufferSize = configuration.getValueAsString(GlobalConfiguration.HA_APPEND_BUFFER_SIZE);
     RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf(appendBufferSize));
+
+    // Write buffer (must be >= appender buffer byte-limit + 8)
+    final long appendBytes = SizeInBytes.valueOf(appendBufferSize).getSize();
+    final long minWriteBuffer = appendBytes + 8;
+    SizeInBytes writeBuffer = SizeInBytes.valueOf(configuration.getValueAsString(GlobalConfiguration.HA_WRITE_BUFFER_SIZE));
+    if (writeBuffer.getSize() < minWriteBuffer) {
+      LogManager.instance().log(this, Level.WARNING,
+          "ha.writeBufferSize (%s) is smaller than appendBufferSize + 8 (%d bytes). Adjusting to %d bytes",
+          writeBuffer, minWriteBuffer, minWriteBuffer);
+      writeBuffer = SizeInBytes.valueOf(minWriteBuffer);
+    }
+    RaftServerConfigKeys.Log.setWriteBufferSize(properties, writeBuffer);
     RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, 256);
 
     // Leader lease: enables consistent reads from the leader without a round-trip to followers.
@@ -1429,7 +1446,8 @@ public class RaftHAServer {
     RaftServerConfigKeys.setCloseThreshold(properties, TimeDuration.valueOf(300, TimeUnit.SECONDS));
 
     // gRPC flow control window: larger window helps with catch-up replication after partitions
-    GrpcConfigKeys.setFlowControlWindow(properties, SizeInBytes.valueOf("4MB"));
+    final String flowControlWindow = configuration.getValueAsString(GlobalConfiguration.HA_GRPC_FLOW_CONTROL_WINDOW);
+    GrpcConfigKeys.setFlowControlWindow(properties, SizeInBytes.valueOf(flowControlWindow));
 
     // Client request timeout: bounds how long the Ratis client waits for a single RPC.
     // Without this, the client retries indefinitely when the majority is unreachable.

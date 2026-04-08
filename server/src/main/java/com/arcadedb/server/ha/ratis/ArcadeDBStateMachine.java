@@ -92,8 +92,6 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private volatile long                   startTime        = System.currentTimeMillis();
   /** True when this follower is replaying log entries to catch up after being behind. */
   private final AtomicBoolean             catchingUp       = new AtomicBoolean(false);
-  /** Set by pause(), cleared by reinitialize(). Signals that Ratis is installing a snapshot via chunks. */
-  private volatile boolean                snapshotBeingInstalled = false;
   /** Set by reinitialize() when a snapshot gap is detected, cleared by notifyLeaderChanged() via compareAndSet. */
   private final AtomicBoolean             needsSnapshotDownload  = new AtomicBoolean(false);
   /** Executor for async lifecycle tasks (snapshot download, Ratis restart) so they can be awaited on close. */
@@ -126,9 +124,6 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
   @Override
   public void pause() {
-    // Ratis calls pause() before installing a snapshot via chunks.
-    // We use this flag to detect chunk-based installation in reinitialize().
-    snapshotBeingInstalled = true;
     LogManager.instance().log(this, Level.INFO, "State machine paused for snapshot installation");
   }
 
@@ -860,7 +855,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     if (needsSnapshotDownload.compareAndSet(true, false)) {
       lifecycleExecutor.submit(() -> {
         try {
-          Thread.sleep(2000); // Wait for the leader's HTTP server to be ready
+          // No artificial delay needed: downloadSnapshotWithRetry() handles leader
+          // unavailability with retries and exponential backoff (5s/10s/20s).
           installDatabasesFromLeader();
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE,
@@ -911,10 +907,18 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     if (server.getStatus() == ArcadeDBServer.STATUS.ONLINE) {
       lifecycleExecutor.submit(() -> {
         try {
-          Thread.sleep(2000); // Wait for Ratis close to complete
+          // Poll until Ratis reaches CLOSED state (or timeout after 10s).
+          // restartRatisIfNeeded() handles both CLOSING and CLOSED, but restarting while
+          // still CLOSING can race with the close. Waiting for CLOSED is safer.
           final RaftHAServer raftHA = server.getHA();
-          if (raftHA != null)
+          if (raftHA != null) {
+            for (int i = 0; i < 50; i++) {
+              if (raftHA.getRaftLifeCycleState() == org.apache.ratis.util.LifeCycle.State.CLOSED)
+                break;
+              Thread.sleep(200);
+            }
             raftHA.restartRatisIfNeeded();
+          }
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Failed to restart Ratis after shutdown: %s", e.getMessage());
         }
