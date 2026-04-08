@@ -47,7 +47,8 @@ public class HARollingRestartE2ETest extends ArcadeHAContainerTemplate {
 
   @BeforeEach
   void setUp() {
-    startCluster(3);
+    // Longer quorum timeout for pause/unpause cycles where the leader changes
+    startCluster(3, "-Darcadedb.ha.quorumTimeout=30000");
   }
 
   @AfterEach
@@ -83,15 +84,16 @@ public class HARollingRestartE2ETest extends ArcadeHAContainerTemplate {
     // allowing Ratis to recover via normal log replay without entering CLOSED state.
     final AtomicInteger totalWrites = new AtomicInteger(10);
     for (int nodeIdx = 0; nodeIdx < 3; nodeIdx++) {
-      final GenericContainer<?> nodeToRestart = containers.get(nodeIdx);
+      final GenericContainer<?> pausedNode = containers.get(nodeIdx);
 
       // Pause this node (freeze the JVM process)
-      dockerClient.pauseContainerCmd(nodeToRestart.getContainerId()).exec();
+      dockerClient.pauseContainerCmd(pausedNode.getContainerId()).exec();
 
-      // Wait for leader on surviving nodes
+      // Find leader among surviving (non-paused) nodes only.
+      // HTTP to a paused container hangs, so we must skip it.
       Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
         for (final GenericContainer<?> c : containers) {
-          if (c == nodeToRestart) continue;
+          if (c == pausedNode) continue;
           try {
             if (getClusterInfo(c).getBoolean("isLeader"))
               return true;
@@ -100,10 +102,20 @@ public class HARollingRestartE2ETest extends ArcadeHAContainerTemplate {
         return false;
       });
 
-      // Write to a surviving leader
-      final GenericContainer<?> survivor = findLeader();
-      assertThat(survivor).isNotNull();
+      // Find which surviving node is the leader
+      GenericContainer<?> survivor = null;
+      for (final GenericContainer<?> c : containers) {
+        if (c == pausedNode) continue;
+        try {
+          if (getClusterInfo(c).getBoolean("isLeader")) {
+            survivor = c;
+            break;
+          }
+        } catch (final Exception ignored) {}
+      }
+      assertThat(survivor).as("Should find a leader among surviving nodes").isNotNull();
 
+      // Write to the surviving leader
       for (int i = 0; i < 5; i++) {
         httpCommand(survivor, "SQL", "INSERT INTO Product CONTENT {\"name\":\"restart-" + nodeIdx + "-" + i
             + "\",\"batch\":\"phase" + (nodeIdx + 1) + "\"}");
@@ -111,12 +123,12 @@ public class HARollingRestartE2ETest extends ArcadeHAContainerTemplate {
       }
 
       // Unpause the node - Ratis catches up via log replay
-      dockerClient.unpauseContainerCmd(nodeToRestart.getContainerId()).exec();
+      dockerClient.unpauseContainerCmd(pausedNode.getContainerId()).exec();
 
       // Wait for the node to catch up
       final int expected = totalWrites.get();
-      Awaitility.await().atMost(120, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).untilAsserted(() ->
-          assertThat(httpCount(nodeToRestart, "Product")).isEqualTo(expected));
+      Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).untilAsserted(() ->
+          assertThat(httpCount(pausedNode, "Product")).isEqualTo(expected));
     }
 
     // Final verification: all nodes have all data
