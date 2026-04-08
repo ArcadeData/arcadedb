@@ -172,6 +172,10 @@ public class GraphQLResultSet implements ResultSet {
 
       Object projectionValue = current.getProperty(projName);
 
+      if (projectionValue == null && current.getElement().isPresent())
+        // PROPERTY NOT FOUND IN PROJECTION, TRY DIRECTLY FROM THE ELEMENT (E.G. CYPHER RETURN)
+        projectionValue = current.getElement().get().get(projName);
+
       if (projectionValue == null) {
         // TRY THE FIELD FIRST
         projectionValue = evaluateDirectives(current, entry.field);

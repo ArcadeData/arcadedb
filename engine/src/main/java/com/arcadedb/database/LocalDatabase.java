@@ -51,10 +51,10 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
-import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
@@ -133,9 +133,10 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LocalDatabase extends RWLockContext implements DatabaseInternal {
-  public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
-  public static final  int                                       MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
-  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(
+  public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
+  public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
+
+  private static final Set<String> SUPPORTED_FILE_EXT = Set.of(
       Dictionary.DICT_EXT,
       LocalBucket.BUCKET_EXT,
       LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT,
@@ -147,57 +148,50 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       TimeSeriesBucket.BUCKET_EXT,
       HashIndexBucket.UNIQUE_INDEX_EXT,
       HashIndexBucket.NOTUNIQUE_INDEX_EXT);
-  public final         AtomicLong                                indexCompactions                     =
-      new AtomicLong();
-  protected final      String                                    name;
-  protected final      ComponentFile.MODE                        mode;
-  protected final      ContextConfiguration                      configuration;
-  protected final      String                                    databasePath;
-  protected final      BinarySerializer                          serializer;
-  protected final      RecordFactory                             recordFactory                        =
-      new RecordFactory();
-  protected final      GraphEngine                               graphEngine;
-  protected final      WALFileFactory                            walFactory;
-  protected final      DocumentIndexer                           indexer;
-  protected final      DatabaseStats                             stats                                =
-      new DatabaseStats();
-  protected            FileManager                               fileManager;
-  protected            LocalSchema                               schema;
-  protected            TransactionManager                        transactionManager;
-  protected volatile   DatabaseAsyncExecutorImpl                 async                                = null;
-  protected final      Lock                                      asyncLock                            =
-      new ReentrantLock();
-  protected            boolean                                   autoTransaction                      = false;
-  protected volatile   boolean                                   open                                 = false;
-  private              boolean                                   readYourWrites                       = true;
-  private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
-  private final        StatementCache                            statementCache;
-  private final        ExecutionPlanCache                        executionPlanCache;
-  private final        CypherStatementCache                      cypherStatementCache;
-  private final        CypherPlanCache                           cypherPlanCache;
-  private final        File                                      configurationFile;
-  private              DatabaseInternal                          wrappedDatabaseInstance              = this;
-  private final        SecurityManager                           security;
-  private final        Map<String, Object>                       wrappers                             = new HashMap<>();
-  private              File                                      lockFile;
-  private              RandomAccessFile                          lockFileIO;
-  private              FileChannel                               lockFileIOChannel;
-  private              FileLock                                  lockFileLock;
-  private final        RecordEventsRegistry                      events                               =
-      new RecordEventsRegistry();
-  private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 =
-      new ConcurrentHashMap<>();
-  private final        ConcurrentHashMap<String, Object>         globalVariables                      =
-      new ConcurrentHashMap<>();
-  private              TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel            =
-      TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
-  private              long                                      openedOn;
-  private              long                                      lastUpdatedOn;
-  private              long                                      lastUsedOn;
-  private              int                                       cachedHashCode                       = 0;
+
+  public final       AtomicLong                                indexCompactions          = new AtomicLong();
+  protected final    String                                    name;
+  protected final    ComponentFile.MODE                        mode;
+  protected final    ContextConfiguration                      configuration;
+  protected final    String                                    databasePath;
+  protected final    BinarySerializer                          serializer;
+  protected final    RecordFactory                             recordFactory             = new RecordFactory();
+  protected final    GraphEngine                               graphEngine;
+  protected final    WALFileFactory                            walFactory;
+  protected final    DocumentIndexer                           indexer;
+  protected final    DatabaseStats                             stats                     = new DatabaseStats();
+  protected          FileManager                               fileManager;
+  protected          LocalSchema                               schema;
+  protected          TransactionManager                        transactionManager;
+  protected volatile DatabaseAsyncExecutorImpl                 async                     = null;
+  protected final    Lock                                      asyncLock                 = new ReentrantLock();
+  protected          boolean                                   autoTransaction           = false;
+  protected volatile boolean                                   open                      = false;
+  private            boolean                                   readYourWrites            = true;
+  private final      Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
+  private final      StatementCache                            statementCache;
+  private final      ExecutionPlanCache                        executionPlanCache;
+  private final      CypherStatementCache                      cypherStatementCache;
+  private final      CypherPlanCache                           cypherPlanCache;
+  private final      File                                      configurationFile;
+  private            DatabaseInternal                          wrappedDatabaseInstance   = this;
+  private final      SecurityManager                           security;
+  private final      Map<String, Object>                       wrappers                  = new HashMap<>();
+  private            File                                      lockFile;
+  private            RandomAccessFile                          lockFileIO;
+  private            FileChannel                               lockFileIOChannel;
+  private            FileLock                                  lockFileLock;
+  private final      RecordEventsRegistry                      events                    = new RecordEventsRegistry();
+  private final      ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines      = new ConcurrentHashMap<>();
+  private final      ConcurrentHashMap<String, Object>         globalVariables           = new ConcurrentHashMap<>();
+  private            TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel = TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private            long                                      openedOn;
+  private            long                                      lastUpdatedOn;
+  private            long                                      lastUsedOn;
+  private            int                                       cachedHashCode            = 0;
 
   protected LocalDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration,
-                          final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
+      final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
     try {
       this.mode = mode;
       this.configuration = configuration;
@@ -600,7 +594,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback,
-                       final ErrorRecordCallback errorRecordCallback) {
+      final ErrorRecordCallback errorRecordCallback) {
     stats.scanType.incrementAndGet();
 
     executeInReadLock(() -> {
@@ -643,7 +637,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void scanBucket(final String bucketName, final RecordCallback callback,
-                         final ErrorRecordCallback errorRecordCallback) {
+      final ErrorRecordCallback errorRecordCallback) {
     stats.scanBucket.incrementAndGet();
 
     executeInReadLock(() -> {
@@ -826,7 +820,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public IndexCursor lookupByKey(final String type, final String keyName, final Object keyValue) {
-    return lookupByKey(type, new String[]{keyName}, new Object[]{keyValue});
+    return lookupByKey(type, new String[] { keyName }, new Object[] { keyValue });
   }
 
   @Override
@@ -1191,8 +1185,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, int attempts,
-                             final OkCallback ok,
-                             final ErrorCallback error) {
+      final OkCallback ok,
+      final ErrorCallback error) {
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
 
@@ -1319,11 +1313,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames,
-                            final Object[] sourceVertexKeyValues, final String destinationVertexType,
-                            final String[] destinationVertexKeyNames,
-                            final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
-                            final String edgeType,
-                            final boolean bidirectional, final Object... properties) {
+      final Object[] sourceVertexKeyValues, final String destinationVertexType,
+      final String[] destinationVertexKeyNames,
+      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
+      final String edgeType,
+      final boolean bidirectional, final Object... properties) {
     if (sourceVertexKeyNames == null)
       throw new IllegalArgumentException("Source vertex key is null");
 
@@ -1375,10 +1369,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Deprecated
   public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType,
-                            final String[] destinationVertexKeyNames,
-                            final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
-                            final String edgeType,
-                            final boolean bidirectional, final Object... properties) {
+      final String[] destinationVertexKeyNames,
+      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
+      final String edgeType,
+      final boolean bidirectional, final Object... properties) {
     if (!bidirectional && ((EdgeType) schema.getType(edgeType)).isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
 
@@ -1387,10 +1381,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType,
-                            final String[] destinationVertexKeyNames,
-                            final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
-                            final String edgeType,
-                            final Object... properties) {
+      final String[] destinationVertexKeyNames,
+      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
+      final String edgeType,
+      final Object... properties) {
     if (sourceVertex == null)
       throw new IllegalArgumentException("Source vertex is null");
 
@@ -1501,7 +1495,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
-                           final Object... parameters) {
+      final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     return getQueryEngine(language).command(query, configuration, parameters);
@@ -1514,7 +1508,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
-                           final Map<String, Object> parameters) {
+      final Map<String, Object> parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     return getQueryEngine(language).command(query, configuration, parameters);
