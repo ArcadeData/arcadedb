@@ -71,6 +71,17 @@ import java.util.logging.Level;
  * On replicas, the transaction is forwarded to the leader via the Raft client.
  */
 public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDatabase {
+  /**
+   * Carries transaction state between Phase 1 (WAL capture under lock) and
+   * Replication (without lock) and Phase 2 (local apply under lock).
+   */
+  private record ReplicationPayload(
+      TransactionContext tx,
+      TransactionContext.TransactionPhase1 phase1,
+      byte[] walData,
+      Map<Integer, Integer> bucketDeltas
+  ) {}
+
   // Thread-local buffers used to accumulate WAL data when commit() is called inside
   // a recordFileChanges() callback. The buffered entries are then embedded in the
   // SCHEMA_ENTRY so replicas receive them atomically with the file-creation step.
@@ -169,46 +180,81 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return;
     }
 
-    proxied.executeInReadLock(() -> {
+    // --- PHASE 1 (read lock): capture WAL bytes and delta ---
+    final ReplicationPayload payload = proxied.executeInReadLock(() -> {
       proxied.checkTransactionIsActive(false);
 
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       final TransactionContext tx = current.getLastTransaction();
       try {
-
         final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
 
-        try {
-          if (phase1 != null) {
-            final Binary bufferChanges = phase1.result;
-            final byte[] walData = bufferChanges.toByteArray();
-            final Map<Integer, Integer> bucketDeltas = tx.getBucketRecordDelta();
-            final ByteString entry = RaftLogEntryCodec.encodeTxEntry(getName(), walData, bucketDeltas);
-
-            final RaftHAServer raft = requireRaftServer();
-            raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
-
-            if (leader)
-              tx.commit2ndPhase(phase1);
-            else
-              tx.reset();
-          } else
-            tx.reset();
-        } catch (final ArcadeDBException e) {
-          rollback();
-          throw e;
-        } catch (final Exception e) {
-          rollback();
-          throw new TransactionException("Error on commit distributed transaction via Raft", e);
+        if (phase1 != null) {
+          final byte[] walData = phase1.result.toByteArray();
+          final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
+          return new ReplicationPayload(tx, phase1, walData, bucketDeltas);
         }
+
+        // Read-only transaction: nothing to replicate.
+        tx.reset();
+        current.popIfNotLastTransaction();
+        return null;
+      } catch (final NeedRetryException | TransactionException e) {
+        rollback();
+        throw e;
+      } catch (final Exception e) {
+        rollback();
+        throw new TransactionException("Error on commit distributed transaction (phase 1)", e);
+      }
+    });
+
+    // Read-only transaction: nothing more to do.
+    if (payload == null)
+      return;
+
+    // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
+    try {
+      final ByteString entry = RaftLogEntryCodec.encodeTxEntry(getName(), payload.walData(), payload.bucketDeltas());
+      final RaftHAServer raft = requireRaftServer();
+      raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
+    } catch (final ArcadeDBException e) {
+      rollback();
+      throw e;
+    } catch (final Exception e) {
+      rollback();
+      throw new TransactionException("Error on commit distributed transaction (replication)", e);
+    }
+
+    // --- PHASE 2 (read lock on leader): quorum reached, apply locally ---
+    if (!leader) {
+      payload.tx().reset();
+      final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+      ctx.popIfNotLastTransaction();
+      return;
+    }
+
+    proxied.executeInReadLock(() -> {
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+      try {
+        payload.tx().commit2ndPhase(payload.phase1());
 
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
-
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Phase 2 commit failed AFTER successful Raft replication (db=%s). "
+                + "Stepping down to prevent stale reads. Error: %s", getName(), e.getMessage());
+        try {
+          if (raftHAServer != null && raftHAServer.isLeader())
+            raftHAServer.stepDown();
+        } catch (final Exception stepDownEx) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to step down after phase 2 failure (db=%s). Manual restart required.", getName());
+        }
+        throw e;
       } finally {
         current.popIfNotLastTransaction();
       }
-
       return null;
     });
   }
