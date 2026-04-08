@@ -81,6 +81,7 @@ These features exist on both sides with equivalent implementations:
 | Dynamic membership API | `addPeer()`, `removePeer()`, `transferLeadership()`, `stepDown()`, `leaveCluster()` with REST endpoints |
 | K8s auto-join | `tryAutoJoinCluster()` on startup via Ratis AdminApi, `leaveCluster()` on K8s shutdown |
 | Read consistency modes | EVENTUAL, READ_YOUR_WRITES, LINEARIZABLE with wait-for-apply notification pattern |
+| 3-phase commit | Phase 1 (lock: capture WAL) -> Replication (no lock) -> Phase 2 (lock: apply locally). Leader steps down on Phase 2 failure |
 
 ---
 
@@ -187,7 +188,7 @@ Features from `apache-ratis` that could be added to `ha-redesign` in future iter
 
 After three rounds of porting, `ha-redesign` now includes all production-relevant features from `apache-ratis`:
 
-- **Performance:** Group committer with batched Raft writes, LZ4 WAL compression, configurable Ratis tuning
+- **Performance:** Group committer with batched Raft writes, LZ4 WAL compression, configurable Ratis tuning, 3-phase commit (lock released during Raft replication for concurrent write throughput)
 - **Correctness:** ALL quorum race fix, snapshot-based resync for lagging replicas, NIO zip-slip protection
 - **Security:** PBKDF2 cluster token derivation, timing-safe token comparison, cluster token header auth for snapshots
 - **Operability:** HALog with cached verbosity levels, configurable election timeouts, WAL deletion logging, Studio cluster UI
