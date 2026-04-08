@@ -891,7 +891,7 @@ public class RaftHAServer {
         return;
       lastClusterConfigHash = hash;
 
-      LogManager.instance().log(this, Level.INFO, "%s", output);
+      LogManager.instance().log(this, Level.WARNING, "%s", output);
 
     } catch (final Exception e) {
       // Best-effort: don't let formatting errors disrupt the cluster
