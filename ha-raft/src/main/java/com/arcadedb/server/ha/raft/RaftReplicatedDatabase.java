@@ -197,9 +197,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         // Read-only transaction: nothing to replicate.
         tx.reset();
+        if (leader && getSchema().getEmbedded().isDirty())
+          getSchema().getEmbedded().saveConfiguration();
         current.popIfNotLastTransaction();
         return null;
-      } catch (final NeedRetryException | TransactionException e) {
+      } catch (final ArcadeDBException e) {
         rollback();
         throw e;
       } catch (final Exception e) {
@@ -209,17 +211,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     });
 
     // Read-only transaction: nothing more to do.
-    if (payload == null) {
-      // Schema changes made inside a transaction() block (e.g. createVertexType()) are
-      // replicated via Raft during recordFileChanges() but LocalSchema.saveConfiguration()
-      // was blocked by the active transaction and did not persist the schema to disk on the
-      // leader. Now that the transaction context has been reset, trigger the deferred save so
-      // the leader increments versionSerial by the same amount as the replicas do in their
-      // readConfiguration() finally block.
-      if (leader && proxied.getSchema().getEmbedded().isDirty())
-        proxied.getSchema().getEmbedded().saveConfiguration();
+    if (payload == null)
       return;
-    }
 
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
     try {
