@@ -84,7 +84,9 @@ import java.util.stream.Stream;
  */
 public class RaftHAServer {
 
-  /** Quorum modes supported with Ratis. */
+  /**
+   * Quorum modes supported with Ratis.
+   */
   public enum Quorum {
     MAJORITY, ALL;
 
@@ -99,35 +101,35 @@ public class RaftHAServer {
   }
 
   // PBKDF2 parameters for cluster token derivation (initClusterToken)
-  private static final int  PBKDF2_ITERATIONS       = 100_000;
-  private static final int  PBKDF2_KEY_LENGTH_BITS   = 256;
+  private static final int PBKDF2_ITERATIONS      = 100_000;
+  private static final int PBKDF2_KEY_LENGTH_BITS = 256;
 
   // K8s auto-join parameters (tryAutoJoinCluster)
-  private static final long AUTO_JOIN_JITTER_MAX_MS  = 3000L;
+  private static final long AUTO_JOIN_JITTER_MAX_MS        = 3000L;
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MIN_SECS = 3;
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MAX_SECS = 5;
 
-  private final ArcadeDBServer              server;
-  private final ContextConfiguration       configuration;
-  private final RaftGroup                  raftGroup;
-  private final RaftPeerId                 localPeerId;
-  private final Quorum                     quorum;
-  private final long                       quorumTimeout;
-  private final Map<String, String>        peerHttpAddresses = new ConcurrentHashMap<>();
-  private volatile String                  clusterToken;
+  private final    ArcadeDBServer       server;
+  private final    ContextConfiguration configuration;
+  private final    RaftGroup            raftGroup;
+  private final    RaftPeerId           localPeerId;
+  private final    Quorum               quorum;
+  private final    long                 quorumTimeout;
+  private final    Map<String, String>  peerHttpAddresses = new ConcurrentHashMap<>();
+  private volatile String               clusterToken;
 
-  private RaftServer                       raftServer;
-  private volatile RaftClient              raftClient;
-  private RaftProperties                   raftProperties;
-  private ArcadeDBStateMachine             stateMachine;
-  private ClusterMonitor                   clusterMonitor;
-  private RaftGroupCommitter               groupCommitter;
-  private final ReentrantLock               applyLock              = new ReentrantLock();
-  private final Condition                   applyCondition         = applyLock.newCondition();
-  private final AtomicInteger               applyWaiterCount       = new AtomicInteger();
-  private final Object                     leaderChangeNotifier   = new Object();
-  private ScheduledExecutorService         lagMonitorExecutor;
-  private ScheduledExecutorService         healthMonitorExecutor;
+  private          RaftServer               raftServer;
+  private volatile RaftClient               raftClient;
+  private          RaftProperties           raftProperties;
+  private          ArcadeDBStateMachine     stateMachine;
+  private          ClusterMonitor           clusterMonitor;
+  private          RaftGroupCommitter       groupCommitter;
+  private final    ReentrantLock            applyLock            = new ReentrantLock();
+  private final    Condition                applyCondition       = applyLock.newCondition();
+  private final    AtomicInteger            applyWaiterCount     = new AtomicInteger();
+  private final    Object                   leaderChangeNotifier = new Object();
+  private          ScheduledExecutorService lagMonitorExecutor;
+  private          ScheduledExecutorService healthMonitorExecutor;
 
   public RaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     this.server = server;
@@ -208,9 +210,11 @@ public class RaftHAServer {
 
     LogManager.instance().log(this, Level.INFO, "Starting Ratis HA service (cluster=%s, peers=%s, quorum=%s)...",
         configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME), raftGroup.getPeers(), quorum);
-    LogManager.instance().log(this, Level.WARNING,
-        "Inter-node snapshot and proxy traffic uses plain HTTP. Cluster token and database data are transmitted unencrypted. "
-            + "Deploy behind a secure network or VPN for production use");
+
+    if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE)))
+      LogManager.instance().log(this, Level.WARNING,
+          "Inter-node snapshot and proxy traffic uses plain HTTP. Cluster token and database data are transmitted " +
+              "unencrypted. Deploy behind a secure network or VPN for production use");
 
     try {
       stateMachine = new ArcadeDBStateMachine(server);
@@ -242,9 +246,12 @@ public class RaftHAServer {
 
       raftServer.start();
 
-      // Create a client for submitting transactions
+      // Create a client for submitting transactions. Set leader to self since only the leader
+      // uses this client (via RaftGroupCommitter). Without this, the client picks a random peer
+      // and gets a noisy NotLeaderException on the first request before redirecting.
       raftClient = RaftClient.newBuilder()
           .setRaftGroup(raftGroup)
+          .setLeaderId(localPeerId)
           .setProperties(properties)
           .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
               .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
@@ -322,6 +329,7 @@ public class RaftHAServer {
 
       raftClient = RaftClient.newBuilder()
           .setRaftGroup(raftGroup)
+          .setLeaderId(localPeerId)
           .setProperties(raftProperties)
           .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
               .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
@@ -352,7 +360,12 @@ public class RaftHAServer {
     final long jitterMs = Math.abs(localPeerId.hashCode() % AUTO_JOIN_JITTER_MAX_MS);
     if (jitterMs > 0) {
       HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
-      try { Thread.sleep(jitterMs); } catch (final InterruptedException e) { Thread.currentThread().interrupt(); return; }
+      try {
+        Thread.sleep(jitterMs);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
     }
 
     HALog.log(this, HALog.BASIC, "K8s auto-join: attempting to join existing cluster...");
@@ -367,9 +380,12 @@ public class RaftHAServer {
         // Without explicit timeouts, a firewalled peer blocks for the full default gRPC timeout.
         final RaftProperties tempProps = new RaftProperties();
         tempProps.set("raft.server.rpc.type", "GRPC");
-        RaftServerConfigKeys.Rpc.setTimeoutMin(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MIN_SECS, TimeUnit.SECONDS));
-        RaftServerConfigKeys.Rpc.setTimeoutMax(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MAX_SECS, TimeUnit.SECONDS));
-        RaftServerConfigKeys.Rpc.setRequestTimeout(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MAX_SECS, TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setTimeoutMin(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MIN_SECS,
+            TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setTimeoutMax(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MAX_SECS,
+            TimeUnit.SECONDS));
+        RaftServerConfigKeys.Rpc.setRequestTimeout(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MAX_SECS,
+            TimeUnit.SECONDS));
 
         // Build a group with just the target peer to query it
         final RaftGroup targetGroup = RaftGroup.valueOf(raftGroup.getGroupId(), peer);
@@ -400,7 +416,10 @@ public class RaftHAServer {
                 // Find our peer definition
                 RaftPeer localPeer = null;
                 for (final RaftPeer p : raftGroup.getPeers())
-                  if (p.getId().equals(localPeerId)) { localPeer = p; break; }
+                  if (p.getId().equals(localPeerId)) {
+                    localPeer = p;
+                    break;
+                  }
 
                 if (localPeer != null) {
                   // Build the new configuration: existing peers + us
@@ -420,7 +439,8 @@ public class RaftHAServer {
                     LogManager.instance().log(this, Level.WARNING, "K8s auto-join: setConfiguration rejected: %s",
                         joinReply.getException() != null ? joinReply.getException().getMessage() : "unknown");
                   else
-                    HALog.log(this, HALog.BASIC, "K8s auto-join: successfully joined cluster with %d peers", newPeers.size());
+                    HALog.log(this, HALog.BASIC, "K8s auto-join: successfully joined cluster with %d peers",
+                        newPeers.size());
                 }
               } else {
                 HALog.log(this, HALog.BASIC, "K8s auto-join: already a member of the cluster");
@@ -468,6 +488,19 @@ public class RaftHAServer {
 
     stopHealthMonitor();
 
+    // Suppress noisy Ratis gRPC warnings during shutdown (AlreadyClosedException, CANCELLED streams).
+    // These are harmless - internal replication threads take a moment to notice the server is closed.
+    final String[] noisyLoggers = {
+        "org.apache.ratis.grpc.server.GrpcLogAppender",
+        "org.apache.ratis.grpc.server.GrpcServerProtocolService"
+    };
+    final java.util.logging.Level[] previousLevels = new java.util.logging.Level[noisyLoggers.length];
+    for (int i = 0; i < noisyLoggers.length; i++) {
+      final java.util.logging.Logger logger = java.util.logging.Logger.getLogger(noisyLoggers[i]);
+      previousLevels[i] = logger.getLevel();
+      logger.setLevel(java.util.logging.Level.SEVERE);
+    }
+
     try {
       if (raftClient != null) {
         raftClient.close();
@@ -479,6 +512,9 @@ public class RaftHAServer {
       }
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error stopping Ratis HA service", e);
+    } finally {
+      for (int i = 0; i < noisyLoggers.length; i++)
+        java.util.logging.Logger.getLogger(noisyLoggers[i]).setLevel(previousLevels[i]);
     }
   }
 
@@ -537,9 +573,12 @@ public class RaftHAServer {
 
   // -- Transaction Submission --
 
-  /** Sends a pre-serialized Raft log entry (e.g., CREATE_DATABASE) to the cluster. */
+  /**
+   * Sends a pre-serialized Raft log entry (e.g., CREATE_DATABASE) to the cluster.
+   */
   public void replicateRawEntry(final byte[] entry) {
-    HALog.log(this, HALog.BASIC, "Replicating raw entry: %d bytes, type=%d", entry.length, entry.length > 0 ? entry[0] : -1);
+    HALog.log(this, HALog.BASIC, "Replicating raw entry: %d bytes, type=%d", entry.length, entry.length > 0 ?
+        entry[0] : -1);
     sendToRaft(entry);
   }
 
@@ -564,10 +603,12 @@ public class RaftHAServer {
    * @param filesToRemove     files to remove (null if no structural change)
    */
   public void replicateTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
-      final Binary walBuffer, final String schemaJson, final Map<Integer, String> filesToAdd,
-      final Map<Integer, String> filesToRemove) {
+                                   final Binary walBuffer, final String schemaJson,
+                                   final Map<Integer, String> filesToAdd,
+                                   final Map<Integer, String> filesToRemove) {
 
-    final byte[] entry = RaftLogEntry.serializeTransaction(databaseName, bucketRecordDelta, walBuffer, schemaJson, filesToAdd,
+    final byte[] entry = RaftLogEntry.serializeTransaction(databaseName, bucketRecordDelta, walBuffer, schemaJson,
+        filesToAdd,
         filesToRemove, localPeerId.toString());
 
     HALog.log(this, HALog.TRACE, "replicateTransaction: db=%s, entrySize=%d bytes", databaseName, entry.length);
@@ -590,7 +631,8 @@ public class RaftHAServer {
 
       if (!reply.isSuccess())
         throw new QuorumNotReachedException(
-            "Raft replication failed: " + (reply.getException() != null ? reply.getException().getMessage() : "unknown error"));
+            "Raft replication failed: " + (reply.getException() != null ? reply.getException().getMessage() :
+                "unknown error"));
 
       if (quorum == Quorum.ALL) {
         final long logIndex = reply.getLogIndex();
@@ -630,7 +672,8 @@ public class RaftHAServer {
           final long remaining = deadline - System.currentTimeMillis();
           if (remaining <= 0) {
             LogManager.instance().log(this, Level.WARNING,
-                "READ_YOUR_WRITES consistency timeout: applied=%d < target=%d (consistency guarantee degraded to EVENTUAL)",
+                "READ_YOUR_WRITES consistency timeout: applied=%d < target=%d (consistency guarantee degraded to " +
+                    "EVENTUAL)",
                 getLastAppliedIndex(), targetIndex);
             return;
           }
@@ -740,7 +783,9 @@ public class RaftHAServer {
     }
   }
 
-  /** Called by ArcadeDBStateMachine after applying a log entry to wake up waiters. */
+  /**
+   * Called by ArcadeDBStateMachine after applying a log entry to wake up waiters.
+   */
   public void notifyApplied() {
     if (applyWaiterCount.get() > 0) {
       applyLock.lock();
@@ -752,7 +797,9 @@ public class RaftHAServer {
     }
   }
 
-  /** Called by ArcadeDBStateMachine when the leader changes to wake up leaveCluster(). */
+  /**
+   * Called by ArcadeDBStateMachine when the leader changes to wake up leaveCluster().
+   */
   public void notifyLeaderChanged() {
     synchronized (leaderChangeNotifier) {
       leaderChangeNotifier.notifyAll();
@@ -948,6 +995,7 @@ public class RaftHAServer {
     }
     raftClient = RaftClient.newBuilder()
         .setRaftGroup(raftGroup)
+        .setLeaderId(localPeerId)
         .setProperties(raftProperties)
         .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
             .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
@@ -1163,7 +1211,8 @@ public class RaftHAServer {
         final String derived = host + ":" + httpPort;
         LogManager.instance().log(this, Level.WARNING,
             "No explicit HTTP address for peer '%s', deriving %s using local HTTP/Raft port offset (%+d). "
-                + "If this peer uses a different port layout, specify explicit HTTP ports in HA_SERVER_LIST (format: host:raftPort:httpPort)",
+                + "If this peer uses a different port layout, specify explicit HTTP ports in HA_SERVER_LIST (format: " +
+                "host:raftPort:httpPort)",
             peerIdStr, derived, httpPortOffset);
         peerHttpAddresses.put(peerIdStr, derived);
         return derived;
@@ -1321,7 +1370,8 @@ public class RaftHAServer {
       else {
         httpAddress = host + ":" + (raftPort + httpPortOffset);
         LogManager.instance().log(this, Level.INFO,
-            "Peer '%s:%d': no explicit HTTP port in HA_SERVER_LIST, deriving HTTP address %s using local port offset (%+d). "
+            "Peer '%s:%d': no explicit HTTP port in HA_SERVER_LIST, deriving HTTP address %s using local port offset " +
+                "(%+d). "
                 + "Use format 'host:raftPort:httpPort' if peers have different port layouts",
             host, raftPort, httpAddress, httpPortOffset);
       }
@@ -1341,7 +1391,8 @@ public class RaftHAServer {
 
     if (peers.size() < 3)
       LogManager.instance().log(this, Level.WARNING,
-          "Ratis HA cluster has less than 3 peers (%d). A minimum of 3 is recommended for fault tolerance", peers.size());
+          "Ratis HA cluster has less than 3 peers (%d). A minimum of 3 is recommended for fault tolerance",
+          peers.size());
 
     return peers;
   }

@@ -81,9 +81,10 @@ import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
-  public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server" +
+  public static final  String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server" +
       "-configuration.json";
-  private final       ContextConfiguration                  configuration;
+  private static volatile boolean                            jvmMetricsBound                      = false;
+  private final        ContextConfiguration                  configuration;
   private final       String                                serverName;
   private             String                                hostAddress;
   private final       boolean                               replicationLifecycleEventsEnabled;
@@ -188,11 +189,16 @@ public class ArcadeDBServer {
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
       Metrics.addRegistry(new SimpleMeterRegistry());
 
-      new ClassLoaderMetrics().bindTo(Metrics.globalRegistry);
-      new JvmMemoryMetrics().bindTo(Metrics.globalRegistry);
-      new JvmGcMetrics().bindTo(Metrics.globalRegistry);
-      new ProcessorMetrics().bindTo(Metrics.globalRegistry);
-      new JvmThreadMetrics().bindTo(Metrics.globalRegistry);
+      // JVM metrics are process-wide, only bind once (avoids "Gauge already registered" warnings
+      // when multiple servers share the same JVM, e.g. in tests)
+      if (!jvmMetricsBound) {
+        jvmMetricsBound = true;
+        new ClassLoaderMetrics().bindTo(Metrics.globalRegistry);
+        new JvmMemoryMetrics().bindTo(Metrics.globalRegistry);
+        new JvmGcMetrics().bindTo(Metrics.globalRegistry);
+        new ProcessorMetrics().bindTo(Metrics.globalRegistry);
+        new JvmThreadMetrics().bindTo(Metrics.globalRegistry);
+      }
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {
         LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");

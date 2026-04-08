@@ -62,6 +62,28 @@ public class HAInsertBenchmark {
   private static final String ROOT_PASSWORD = StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
   @Test
+  void simpleAsync1M() throws Exception {
+    final int count = 1_000_000;
+    final ArcadeDBServer[] servers = startCluster(3);
+    try {
+      final ArcadeDBServer leader = findLeader(servers);
+      final Database db = leader.getDatabase(DB_NAME);
+      initSchema(db);
+      Thread.sleep(2000);
+
+      LogManager.instance().log(this, Level.WARNING, "Inserting %,d vertices async on 3-node cluster...", count);
+      final long start = System.nanoTime();
+      insertAsync(db, count, 0);
+      final double elapsed = (System.nanoTime() - start) / 1_000_000_000.0;
+
+      LogManager.instance().log(this, Level.WARNING, "Done: %,d vertices in %.1f seconds (%,.0f inserts/sec)",
+          count, elapsed, count / elapsed);
+    } finally {
+      stopCluster(servers);
+    }
+  }
+
+  @Test
   void runBenchmark() throws Exception {
     final StringBuilder report = new StringBuilder();
     report.append("\n");
@@ -365,11 +387,31 @@ public class HAInsertBenchmark {
       servers[i].start();
     }
 
+    // Wait until ALL servers agree on the same leader. A single node's isLeader() can be stale:
+    // it may report true right before losing an election it hasn't processed yet. Requiring
+    // unanimous agreement proves the election is truly settled across the cluster.
     final long deadline = System.currentTimeMillis() + 30_000;
     while (System.currentTimeMillis() < deadline) {
-      for (final ArcadeDBServer s : servers)
-        if (s.getHA() != null && s.getHA().isLeader())
-          return servers;
+      String agreedLeader = null;
+      boolean allAgree = true;
+
+      for (final ArcadeDBServer s : servers) {
+        final String leaderSeen = s.getHA() != null ? s.getHA().getLeaderName() : null;
+        if (leaderSeen == null) {
+          allAgree = false;
+          break;
+        }
+        if (agreedLeader == null)
+          agreedLeader = leaderSeen;
+        else if (!agreedLeader.equals(leaderSeen)) {
+          allAgree = false;
+          break;
+        }
+      }
+
+      if (allAgree && agreedLeader != null)
+        return servers;
+
       Thread.sleep(500);
     }
     throw new RuntimeException("Leader election timed out");
@@ -404,7 +446,6 @@ public class HAInsertBenchmark {
       config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "localhost");
       config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS, String.valueOf(2424 + index));
       config.setValue(GlobalConfiguration.HA_QUORUM, "MAJORITY");
-
       final StringBuilder serverList = new StringBuilder();
       for (int i = 0; i < serverCount; i++) {
         if (i > 0) serverList.append(",");
