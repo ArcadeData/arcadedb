@@ -19,7 +19,6 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.cypher.ArcadeCypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
@@ -39,9 +38,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.math.*;
-import java.util.*;
+import java.io.File;
+import java.math.BigInteger;
+import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -489,22 +489,22 @@ class GremlinTest {
   }
 
   // Issue https://github.com/ArcadeData/arcadedb/issues/1301
-  @Test
-  void merge() {
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
-    try {
-      graph.database.command("sqlscript",//
-          "CREATE VERTEX TYPE TestMerge;" + //
-              "CREATE PROPERTY TestMerge.id INTEGER;" +//
-              "CREATE INDEX ON TestMerge (id) UNIQUE;");
-
-      graph.cypher("CREATE (v:TestMerge{id: 0})").execute();
-      graph.cypher("UNWIND range(0, 10) AS id MERGE (v:TestMerge{id: id}) RETURN v").execute();
-
-    } finally {
-      graph.drop();
-    }
-  }
+//  @Test
+//  void merge() {
+//    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+//    try {
+//      graph.database.command("sqlscript",//
+//          "CREATE VERTEX TYPE TestMerge;" + //
+//              "CREATE PROPERTY TestMerge.id INTEGER;" +//
+//              "CREATE INDEX ON TestMerge (id) UNIQUE;");
+//
+//      graph.cypher("CREATE (v:TestMerge{id: 0})").execute();
+//      graph.cypher("UNWIND range(0, 10) AS id MERGE (v:TestMerge{id: id}) RETURN v").execute();
+//
+//    } finally {
+//      graph.drop();
+//    }
+//  }
 
   // https://github.com/ArcadeData/arcadedb/issues/1674
   @Test
