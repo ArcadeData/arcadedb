@@ -190,11 +190,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       HALog.log(this, HALog.TRACE, "applyTransaction: index=%d, type=%s, server=%s", index, type, server.getServerName());
 
       switch (type) {
-        case TRANSACTION -> applyTransactionEntry(data);
-        case TRANSACTION_FORWARD -> applyTransactionForwardEntry(data);
         case CREATE_DATABASE -> applyCreateDatabase(data);
         case COMMAND_FORWARD -> LogManager.instance().log(this, Level.WARNING,
             "Unexpected COMMAND_FORWARD in Raft log at index %d - this entry type should use query(), not send()", index);
+        case TRANSACTION -> applyTransactionEntry(data);
       }
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
@@ -318,38 +317,6 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
     // Fire REPLICA_MSG_RECEIVED callback for test infrastructure
     fireCallback(ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED, entry.databaseName());
-  }
-
-  // This path only applies WAL page changes. It does NOT handle schema changes
-  // (filesToAdd, filesToRemove, schemaJson) because TransactionForwardEntry does not carry them.
-  // If this path is ever used in production for schema-modifying transactions, it must be
-  // extended to match applyTransactionEntry()'s three-phase apply logic.
-  private void applyTransactionForwardEntry(final byte[] data) {
-    final RaftLogEntry.TransactionForwardEntry entry = RaftLogEntry.deserializeTransactionForward(data);
-
-    if (entry.walBuffer() == null || entry.walBuffer().size() == 0)
-      throw new ReplicationException(
-          "TRANSACTION_FORWARD with empty WAL buffer: this path does not support schema-only operations. "
-              + "Use TRANSACTION entries (via replicateTransaction) for schema changes. db=" + entry.databaseName());
-
-    final DatabaseInternal db = server.getDatabase(entry.databaseName());
-    if (db == null || !db.isOpen())
-      throw new ReplicationException("Database '" + entry.databaseName() + "' is not available");
-
-    final WALFile.WALTransaction walTx = parseWalTransaction(entry.walBuffer());
-
-    LogManager.instance().log(this, Level.FINE, "Applying forwarded Raft tx %d (modifiedPages=%d, db=%s)...",
-        walTx.txId, walTx.pages.length, entry.databaseName());
-
-    try {
-      db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
-    } catch (final java.util.ConcurrentModificationException | com.arcadedb.exception.ConcurrentModificationException e) {
-      // After a cold restart or snapshot installation, Ratis may replay entries that were already
-      // applied to the database. The page version check in applyChanges() detects this as a
-      // ConcurrentModificationException. This is safe to skip - same guard as applyTransactionEntry().
-      HALog.log(this, HALog.BASIC, "Skipping already-applied forwarded WAL entry (db=%s, txId=%d): %s",
-          entry.databaseName(), walTx.txId, e.getMessage());
-    }
   }
 
   private void applyCreateDatabase(final byte[] data) {

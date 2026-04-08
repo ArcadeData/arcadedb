@@ -42,14 +42,18 @@ import java.util.Map;
 public class RaftLogEntry {
 
   public enum EntryType {
-    /** Replicate a committed transaction (WAL page diffs + optional schema changes). */
-    TRANSACTION((byte) 1),
-    /** Forward a write from a non-leader node (includes index key changes for constraint validation). */
-    TRANSACTION_FORWARD((byte) 2),
-    /** Replicate database creation to all nodes. */
-    CREATE_DATABASE((byte) 3),
-    /** Forward a command (SQL/Cypher) to the leader via the query() path (not logged in Raft). */
-    COMMAND_FORWARD((byte) 4);
+    /**
+     * Replicate database creation to all nodes.
+     */
+    CREATE_DATABASE((byte) 1),
+    /**
+     * Forward a command (SQL/Cypher) to the leader via the query() path (not logged in Raft).
+     */
+    COMMAND_FORWARD((byte) 2),
+    /**
+     * Replicate a committed transaction (WAL page diffs + optional schema changes).
+     */
+    TRANSACTION((byte) 3);
 
     private final byte code;
 
@@ -63,10 +67,9 @@ public class RaftLogEntry {
 
     public static EntryType fromCode(final byte code) {
       return switch (code) {
-        case 1 -> TRANSACTION;
-        case 2 -> TRANSACTION_FORWARD;
-        case 3 -> CREATE_DATABASE;
-        case 4 -> COMMAND_FORWARD;
+        case 1 -> CREATE_DATABASE;
+        case 2 -> COMMAND_FORWARD;
+        case 3 -> TRANSACTION;
         default -> throw new IllegalArgumentException("Unknown RaftLogEntry type code: " + code);
       };
     }
@@ -87,8 +90,9 @@ public class RaftLogEntry {
    * @return serialized bytes
    */
   public static byte[] serializeTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
-      final Binary walBuffer, final String schemaJson, final Map<Integer, String> filesToAdd,
-      final Map<Integer, String> filesToRemove, final String originPeerId) {
+                                            final Binary walBuffer, final String schemaJson, final Map<Integer,
+          String> filesToAdd,
+                                            final Map<Integer, String> filesToRemove, final String originPeerId) {
 
     final Binary stream = new Binary(walBuffer.size() + 256);
     stream.putByte(EntryType.TRANSACTION.code());
@@ -107,34 +111,9 @@ public class RaftLogEntry {
     return toByteArray(stream);
   }
 
-  /**
-   * Serializes a transaction forward request (from a non-leader node) into a byte buffer.
-   *
-   * @param databaseName      target database
-   * @param bucketRecordDelta per-bucket record count changes
-   * @param walBuffer         the WAL changes buffer
-   * @param indexChanges      serialized index key changes for constraint validation (already compressed), or null
-   * @return serialized bytes
-   */
-  public static byte[] serializeTransactionForward(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
-      final Binary walBuffer, final byte[] indexChanges) {
-
-    final Binary stream = new Binary(walBuffer.size() + 256);
-    stream.putByte(EntryType.TRANSACTION_FORWARD.code());
-    writeCommonTransactionFields(stream, databaseName, bucketRecordDelta, walBuffer);
-
-    // Index changes (optional, for unique constraint validation on leader)
-    if (indexChanges != null) {
-      stream.putByte((byte) 1);
-      stream.putBytes(indexChanges, indexChanges.length);
-    } else
-      stream.putByte((byte) 0);
-
-    return toByteArray(stream);
-  }
-
   private static void writeCommonTransactionFields(final Binary stream, final String databaseName,
-      final Map<Integer, Integer> bucketRecordDelta, final Binary walBuffer) {
+                                                   final Map<Integer, Integer> bucketRecordDelta,
+                                                   final Binary walBuffer) {
     // Database name
     stream.putString(databaseName);
 
@@ -167,15 +146,13 @@ public class RaftLogEntry {
 
   // -- Deserialization --
 
-  /** Parsed transaction entry ready for application. */
+  /**
+   * Parsed transaction entry ready for application.
+   */
   public record TransactionEntry(String originPeerId, String databaseName, int uncompressedLength, Binary walBuffer,
-      Map<Integer, Integer> bucketRecordDelta, String schemaJson, Map<Integer, String> filesToAdd,
-      Map<Integer, String> filesToRemove) {
-  }
-
-  /** Parsed transaction forward entry. */
-  public record TransactionForwardEntry(String databaseName, int uncompressedLength, Binary walBuffer,
-      Map<Integer, Integer> bucketRecordDelta, byte[] indexChanges) {
+                                 Map<Integer, Integer> bucketRecordDelta, String schemaJson,
+                                 Map<Integer, String> filesToAdd,
+                                 Map<Integer, String> filesToRemove) {
   }
 
   public static EntryType readType(final ByteBuffer buffer) {
@@ -192,7 +169,8 @@ public class RaftLogEntry {
     final int uncompressedLength = stream.getInt();
     if (uncompressedLength < 0 || uncompressedLength > MAX_UNCOMPRESSED_SIZE)
       throw new IllegalArgumentException("Invalid WAL uncompressed length: " + uncompressedLength);
-    final Binary walBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), uncompressedLength);
+    final Binary walBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()),
+        uncompressedLength);
 
     final int deltaSize = stream.getInt();
     if (deltaSize < 0 || deltaSize > MAX_DELTA_SIZE)
@@ -211,33 +189,9 @@ public class RaftLogEntry {
       filesToRemove = readFileMap(stream);
     }
 
-    return new TransactionEntry(originPeerId, databaseName, uncompressedLength, walBuffer, bucketRecordDelta, schemaJson, filesToAdd,
+    return new TransactionEntry(originPeerId, databaseName, uncompressedLength, walBuffer, bucketRecordDelta,
+        schemaJson, filesToAdd,
         filesToRemove);
-  }
-
-  public static TransactionForwardEntry deserializeTransactionForward(final byte[] data) {
-    final Binary stream = new Binary(data);
-    stream.getByte(); // skip type marker
-
-    final String databaseName = readBoundedString(stream);
-
-    final int uncompressedLength = stream.getInt();
-    if (uncompressedLength < 0 || uncompressedLength > MAX_UNCOMPRESSED_SIZE)
-      throw new IllegalArgumentException("Invalid WAL uncompressed length: " + uncompressedLength);
-    final Binary walBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), uncompressedLength);
-
-    final int deltaSize = stream.getInt();
-    if (deltaSize < 0 || deltaSize > MAX_DELTA_SIZE)
-      throw new IllegalArgumentException("Invalid bucket delta size: " + deltaSize);
-    final Map<Integer, Integer> bucketRecordDelta = new HashMap<>(deltaSize);
-    for (int i = 0; i < deltaSize; i++)
-      bucketRecordDelta.put(stream.getInt(), stream.getInt());
-
-    byte[] indexChanges = null;
-    if (stream.getByte() == 1)
-      indexChanges = stream.getBytes();
-
-    return new TransactionForwardEntry(databaseName, uncompressedLength, walBuffer, bucketRecordDelta, indexChanges);
   }
 
   // -- Command forwarding (via Ratis query(), not logged) --
@@ -245,7 +199,9 @@ public class RaftLogEntry {
   /** Serializes a command forward request for execution on the leader via the state machine query() path. */
   // -- CREATE_DATABASE serialization --
 
-  /** Parsed CREATE_DATABASE entry. */
+  /**
+   * Parsed CREATE_DATABASE entry.
+   */
   public record CreateDatabaseEntry(String originPeerId, String databaseName) {
   }
 
@@ -269,7 +225,7 @@ public class RaftLogEntry {
   // -- COMMAND_FORWARD serialization --
 
   public static byte[] serializeCommandForward(final String databaseName, final String language, final String command,
-      final Map<String, Object> namedParams, final Object[] positionalParams) {
+                                               final Map<String, Object> namedParams, final Object[] positionalParams) {
     final Binary stream = new Binary(256);
     stream.putByte(EntryType.COMMAND_FORWARD.code()); // Command forward marker
     stream.putString(databaseName);
@@ -300,9 +256,11 @@ public class RaftLogEntry {
     return result;
   }
 
-  /** Parsed command forward request. */
+  /**
+   * Parsed command forward request.
+   */
   public record CommandForwardEntry(String databaseName, String language, String command,
-      Map<String, Object> namedParams, Object[] positionalParams) {
+                                    Map<String, Object> namedParams, Object[] positionalParams) {
   }
 
   public static CommandForwardEntry deserializeCommandForward(final byte[] data) {
@@ -336,7 +294,9 @@ public class RaftLogEntry {
     return new CommandForwardEntry(databaseName, language, command, namedParams, positionalParams);
   }
 
-  /** Serializes a command result (ResultSet) into a binary format. */
+  /**
+   * Serializes a command result (ResultSet) into a binary format.
+   */
   public static byte[] serializeCommandResult(final com.arcadedb.query.sql.executor.ResultSet rs) {
     final Binary stream = new Binary(1024);
     stream.putByte((byte) 'R'); // Result marker
@@ -358,7 +318,9 @@ public class RaftLogEntry {
     return result;
   }
 
-  /** Deserializes a command result from binary format into a list of property maps. */
+  /**
+   * Deserializes a command result from binary format into a list of property maps.
+   */
   public static List<Map<String, Object>> deserializeCommandResult(final byte[] data) {
     final Binary stream = new Binary(data);
     stream.getByte(); // skip marker

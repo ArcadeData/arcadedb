@@ -574,28 +574,6 @@ public class RaftHAServer {
     sendToRaft(entry);
   }
 
-  /**
-   * Reserved for future use: forwards a transaction from a non-leader node through the Raft cluster.
-   * Currently not called from production code - followers use HTTP proxy forwarding via
-   * {@code ServerIsNotTheLeaderException} instead. Kept as public API for future direct WAL forwarding.
-   * <p>
-   * WARNING: The corresponding apply path ({@code applyTransactionForwardEntry}) only handles WAL
-   * page changes. It does NOT propagate schema changes (filesToAdd, filesToRemove, schemaJson).
-   * Using this for schema-modifying transactions will cause silent schema divergence across nodes.
-   *
-   * @param databaseName      target database
-   * @param bucketRecordDelta per-bucket record count changes
-   * @param walBuffer         WAL changes buffer
-   * @param indexChanges      serialized index key changes for constraint validation, or null
-   */
-  public void forwardTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
-      final Binary walBuffer, final byte[] indexChanges) {
-
-    final byte[] entry = RaftLogEntry.serializeTransactionForward(databaseName, bucketRecordDelta, walBuffer, indexChanges);
-
-    sendToRaft(entry);
-  }
-
   private void sendToRaft(final byte[] entry) {
     HALog.log(this, HALog.TRACE, "Sending %d bytes to Raft cluster (isLeader=%s)...", entry.length, isLeader());
 

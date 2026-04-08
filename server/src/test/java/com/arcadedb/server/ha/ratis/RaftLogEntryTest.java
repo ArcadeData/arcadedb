@@ -105,46 +105,6 @@ class RaftLogEntryTest {
   }
 
   @Test
-  void testTransactionForwardSerializationRoundTrip() {
-    final Binary walBuffer = createTestWalBuffer(77L, 5555L, 0);
-
-    final Map<Integer, Integer> bucketDelta = new HashMap<>();
-    bucketDelta.put(3, 10);
-
-    final byte[] indexChanges = new byte[] { 1, 2, 3, 4, 5 };
-
-    // Serialize
-    final byte[] serialized = RaftLogEntry.serializeTransactionForward("forwardDb", bucketDelta, walBuffer, indexChanges);
-
-    // Verify type marker
-    assertThat(RaftLogEntry.readType(ByteBuffer.wrap(serialized))).isEqualTo(RaftLogEntry.EntryType.TRANSACTION_FORWARD);
-
-    // Deserialize
-    final RaftLogEntry.TransactionForwardEntry entry = RaftLogEntry.deserializeTransactionForward(serialized);
-
-    assertThat(entry.databaseName()).isEqualTo("forwardDb");
-    assertThat(entry.bucketRecordDelta()).hasSize(1);
-    assertThat(entry.bucketRecordDelta().get(3)).isEqualTo(10);
-    assertThat(entry.indexChanges()).isEqualTo(indexChanges);
-  }
-
-  @Test
-  void testTransactionForwardWithoutIndexChanges() {
-    final Binary walBuffer = createTestWalBuffer(88L, 6666L, 0);
-
-    final Map<Integer, Integer> bucketDelta = new HashMap<>();
-
-    // Serialize without index changes
-    final byte[] serialized = RaftLogEntry.serializeTransactionForward("db", bucketDelta, walBuffer, null);
-
-    // Deserialize
-    final RaftLogEntry.TransactionForwardEntry entry = RaftLogEntry.deserializeTransactionForward(serialized);
-
-    assertThat(entry.databaseName()).isEqualTo("db");
-    assertThat(entry.indexChanges()).isNull();
-  }
-
-  @Test
   void testCreateDatabaseSerializationRoundTrip() {
     final byte[] serialized = RaftLogEntry.serializeCreateDatabase("newDb", "leader-node");
 
