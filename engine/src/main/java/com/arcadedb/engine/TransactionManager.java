@@ -366,7 +366,7 @@ public class TransactionManager {
 
         database.getPageManager().removePageFromCache(modifiedPage.pageId);
 
-        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(txPage.fileId);
+        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(txPage.fileId);
         if (component != null) {
           component.updatePageCount(modifiedPage.pageId.getPageNumber() + 1);
 

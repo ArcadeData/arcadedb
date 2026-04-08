@@ -20,6 +20,9 @@ package com.arcadedb.server.ha.ratis;
 
 import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.database.Binary;
+import com.arcadedb.log.LogManager;
+
+import java.util.logging.Level;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -365,7 +368,9 @@ public class RaftLogEntry {
       stream.putByte((byte) 6);
       stream.putByte((byte) (b ? 1 : 0));
     } else {
-      // Fallback: serialize as string
+      // Fallback: serialize as string - the caller will get back a String instead of the original type.
+      LogManager.instance().log(RaftLogEntry.class, Level.WARNING,
+          "writeValue: unsupported type '%s' for value '%s', falling back to toString()", value.getClass().getName(), value);
       stream.putByte((byte) 1);
       stream.putString(value.toString());
     }

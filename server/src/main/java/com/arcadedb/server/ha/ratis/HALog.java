@@ -38,11 +38,22 @@ public final class HALog {
   /** Level 3: every state machine operation, entry parsing, serialization */
   public static final int TRACE = 3;
 
+  /** Cached log level - avoids reading GlobalConfiguration on every call in the hot path. */
+  private static volatile int cachedLevel = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
+
   private HALog() {
   }
 
+  /**
+   * Refreshes the cached log level from GlobalConfiguration. Call this after changing
+   * {@code arcadedb.ha.logVerbose} at runtime.
+   */
+  public static void refreshLevel() {
+    cachedLevel = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
+  }
+
   private static int getLevel() {
-    return GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
+    return cachedLevel;
   }
 
   public static boolean isEnabled(final int level) {

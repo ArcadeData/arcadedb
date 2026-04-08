@@ -206,9 +206,11 @@ public class RaftHAServer {
     } catch (final Exception e) {
       throw new RuntimeException("Failed to derive cluster token", e);
     }
-    LogManager.instance().log(this, Level.WARNING,
-        "Using auto-derived cluster token. Changing root password does NOT rotate this token. "
-            + "To explicitly rotate, set arcadedb.ha.clusterToken=<new-value> and restart all nodes");
+
+    if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE)))
+      LogManager.instance().log(this, Level.WARNING,
+          "Using auto-derived cluster token. Changing root password does NOT rotate this token. "
+              + "To explicitly rotate, set arcadedb.ha.clusterToken=<new-value> and restart all nodes");
   }
 
   public void startService() {
@@ -279,7 +281,9 @@ public class RaftHAServer {
     }
   }
 
-  /** Returns the lifecycle state of the Ratis server (RUNNING, CLOSING, CLOSED, etc.). */
+  /**
+   * Returns the lifecycle state of the Ratis server (RUNNING, CLOSING, CLOSED, etc.).
+   */
   public org.apache.ratis.util.LifeCycle.State getRaftLifeCycleState() {
     if (raftServer == null)
       return org.apache.ratis.util.LifeCycle.State.CLOSED;
@@ -589,7 +593,14 @@ public class RaftHAServer {
    * Submits a transaction to the Raft cluster. The entry is replicated to all nodes and applied
    * via ArcadeDBStateMachine.applyTransaction() on each node.
    * <p>
-   * <b>Timeout semantics:</b> If this method throws {@link QuorumNotReachedException} due to a timeout,
+   * <b>Timeout semantics:</b> When using the group committer, the effective timeout can be up to
+   * 2x {@code arcadedb.ha.quorumTimeout}. The first timeout covers queue waiting and Raft dispatch;
+   * if the entry has already been dispatched to Raft when the first timeout expires, a second full
+   * timeout is used to await the Raft reply (to prevent phantom commits where followers apply
+   * the entry but the leader never calls commit2ndPhase). Operators setting
+   * {@code arcadedb.ha.quorumTimeout} should account for this 2x upper bound.
+   * <p>
+   * If this method throws {@link QuorumNotReachedException} due to a timeout,
    * the outcome is ambiguous - the transaction may or may not have been committed by the cluster.
    * The caller (ReplicatedDatabase) has already completed commit1stPhase locally, so:
    * <ul>
@@ -832,7 +843,7 @@ public class RaftHAServer {
         final String peerId = (String) f.get("peerId");
         final long matchIndex = (Long) f.get("matchIndex");
         final long lastRpcMs = (Long) f.get("lastRpcElapsedMs");
-        followerState.put(peerId, new long[] { matchIndex, lastRpcMs });
+        followerState.put(peerId, new long[]{matchIndex, lastRpcMs});
       }
 
       // Build table rows
@@ -853,17 +864,18 @@ public class RaftHAServer {
             // Only show latency when there's active replication traffic (recent RPC).
             // During idle periods lastRpcElapsedMs just reflects time since last heartbeat.
             final long elapsedMs = state[1];
-            final long heartbeatInterval = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN) / 2;
+            final long heartbeatInterval =
+                configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN) / 2;
             if (elapsedMs <= heartbeatInterval)
               latencyStr = elapsedMs + " ms";
           }
         }
 
-        rows.add(new String[] { peerId, address, role, lagStr, latencyStr });
+        rows.add(new String[]{peerId, address, role, lagStr, latencyStr});
       }
 
       // Calculate column widths
-      final String[] headers = { "SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY" };
+      final String[] headers = {"SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY"};
       final int[] widths = new int[headers.length];
       for (int i = 0; i < headers.length; i++)
         widths[i] = headers[i].length();
@@ -1414,7 +1426,8 @@ public class RaftHAServer {
     // Write buffer (must be >= appender buffer byte-limit + 8)
     final long appendBytes = SizeInBytes.valueOf(appendBufferSize).getSize();
     final long minWriteBuffer = appendBytes + 8;
-    SizeInBytes writeBuffer = SizeInBytes.valueOf(configuration.getValueAsString(GlobalConfiguration.HA_WRITE_BUFFER_SIZE));
+    SizeInBytes writeBuffer =
+        SizeInBytes.valueOf(configuration.getValueAsString(GlobalConfiguration.HA_WRITE_BUFFER_SIZE));
     if (writeBuffer.getSize() < minWriteBuffer) {
       LogManager.instance().log(this, Level.WARNING,
           "ha.writeBufferSize (%s) is smaller than appendBufferSize + 8 (%d bytes). Adjusting to %d bytes",

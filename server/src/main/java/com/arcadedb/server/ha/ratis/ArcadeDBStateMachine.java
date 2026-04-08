@@ -84,6 +84,15 @@ import java.util.zip.ZipInputStream;
  */
 public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache.ratis.statemachine.StateMachine.EventApi {
 
+  /**
+   * Tolerance for the snapshot gap check in {@link #reinitialize()}. During normal shutdown the
+   * persisted applied index may lag a few entries behind the snapshot index because
+   * {@link #takeSnapshot()} and {@link #persistAppliedIndex(long)} are not atomic with respect
+   * to each other. A small gap (within this tolerance) is harmless and does not indicate missing
+   * data, so we avoid an unnecessary full snapshot download on restart.
+   */
+  private static final long SNAPSHOT_GAP_TOLERANCE = 10;
+
   private final ArcadeDBServer            server;
   private final SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final AtomicLong                lastAppliedIndex = new AtomicLong(-1);
@@ -140,7 +149,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       // The download is deferred to notifyLeaderChanged() because during reinitialize()
       // the Ratis server hasn't joined the cluster yet and the leader is unknown.
       final long persistedApplied = readPersistedAppliedIndex();
-      if (persistedApplied >= 0 && snapshotIndex > persistedApplied + 10) {
+      if (persistedApplied >= 0 && snapshotIndex > persistedApplied + SNAPSHOT_GAP_TOLERANCE) {
         LogManager.instance().log(this, Level.INFO,
             "Snapshot index %d is ahead of persisted applied index %d, will download from leader when available",
             snapshotIndex, persistedApplied);
@@ -261,27 +270,26 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         entry.databaseName(), entry.walBuffer() != null ? entry.walBuffer().size() : 0,
         entry.bucketRecordDelta().size(), entry.schemaJson() != null);
 
+    boolean needsSchemaReload = false;
+
     // Phase 1: Create physical files first - WAL pages may reference new file IDs.
     // This must happen before WAL apply so that page writes find the target files.
+    // Schema reload is deferred to after all phases to avoid a window where schema
+    // is ahead of WAL data for concurrent readers.
     if (entry.filesToAdd() != null && !entry.filesToAdd().isEmpty()) {
       try {
         createNewFiles(db, entry.filesToAdd());
-        // Rebuild schema file list so getFileById() works during WAL apply (Phase 2).
-        // Without this, getFileById() throws SchemaException for new file IDs that exist
-        // in FileManager but not yet in LocalSchema.files.
-        // NOTE: this reloads the entire schema from disk. Under bulk-load workloads that create
-        // many files (e.g. lots of new edge types or buckets), this could become a bottleneck.
-        // An incremental approach (registering only the new files into LocalSchema) would be
-        // faster but requires LocalSchema to expose a per-file registration API.
-        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, false);
-        db.getSchema().getEmbedded().initComponents();
+        needsSchemaReload = true;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error creating files from Raft log", e);
         throw new ReplicationException("Error creating files from Raft log", e);
       }
     }
 
-    // Phase 2: Apply WAL page changes (if any - schema-only entries have empty WAL buffer)
+    // Phase 2: Apply WAL page changes (if any - schema-only entries have empty WAL buffer).
+    // New file IDs are already registered in FileManager (Phase 1) so page writes succeed.
+    // Schema component lookups (for page count / vector index updates) gracefully handle
+    // missing entries via getFileByIdIfExists(), and will be correct after the final reload.
     if (entry.walBuffer() != null && entry.walBuffer().size() > 0) {
       final WALFile.WALTransaction walTx = parseWalTransaction(entry.walBuffer());
 
@@ -306,11 +314,23 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       try {
         removeDroppedFiles(db, entry.filesToRemove());
         updateSchemaMetadata(db, entry.schemaJson());
-        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, false);
-        db.getSchema().getEmbedded().initComponents();
+        needsSchemaReload = true;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error applying schema changes from Raft log", e);
         throw new ReplicationException("Error applying schema changes from Raft log", e);
+      }
+    }
+
+    // Single schema reload after all phases complete. This avoids:
+    // 1. Double reload when a transaction has both new files and schema changes
+    // 2. A window where schema is ahead of WAL data for concurrent readers
+    if (needsSchemaReload) {
+      try {
+        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, false);
+        db.getSchema().getEmbedded().initComponents();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error reloading schema after Raft log apply", e);
+        throw new ReplicationException("Error reloading schema after Raft log apply", e);
       }
     }
 
@@ -741,8 +761,13 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
           LogManager.instance().log(this, Level.FINE, "Extracting snapshot file: %s", zipEntry.getName());
 
-          try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile())) {
-            copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName()); // 10 GB per entry
+          if (zipEntry.isDirectory()) {
+            Files.createDirectories(targetFile);
+          } else {
+            Files.createDirectories(targetFile.getParent());
+            try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile())) {
+              copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName()); // 10 GB per entry
+            }
           }
           zipIn.closeEntry();
         }
