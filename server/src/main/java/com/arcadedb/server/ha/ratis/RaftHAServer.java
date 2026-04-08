@@ -190,6 +190,10 @@ public class RaftHAServer {
     }
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    if (rootPassword == null || rootPassword.isEmpty())
+      LogManager.instance().log(this, Level.WARNING,
+          "Root password is not set - auto-derived cluster token will be weak. "
+              + "Set arcadedb.server.rootPassword or arcadedb.ha.clusterToken for production deployments");
     final String password = clusterName + ":" + (rootPassword != null ? rootPassword : "");
     try {
       final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
@@ -250,15 +254,7 @@ public class RaftHAServer {
       // Create a client for submitting transactions. Set leader to self since only the leader
       // uses this client (via RaftGroupCommitter). Without this, the client picks a random peer
       // and gets a noisy NotLeaderException on the first request before redirecting.
-      raftClient = RaftClient.newBuilder()
-          .setRaftGroup(raftGroup)
-          .setLeaderId(localPeerId)
-          .setProperties(properties)
-          .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
-              .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
-              .setMaxSleepTime(TimeDuration.valueOf(5, TimeUnit.SECONDS))
-              .build())
-          .build();
+      raftClient = buildRaftClient();
 
       // In K8s mode: if this is a new server (no existing storage) and other servers might already
       // be running, try to add ourselves to the existing cluster via AdminApi.
@@ -328,15 +324,7 @@ public class RaftHAServer {
 
       raftServer.start();
 
-      raftClient = RaftClient.newBuilder()
-          .setRaftGroup(raftGroup)
-          .setLeaderId(localPeerId)
-          .setProperties(raftProperties)
-          .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
-              .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
-              .setMaxSleepTime(TimeDuration.valueOf(5, TimeUnit.SECONDS))
-              .build())
-          .build();
+      raftClient = buildRaftClient();
 
       LogManager.instance().log(this, Level.INFO, "Ratis server restarted successfully after partition recovery");
 
@@ -481,13 +469,12 @@ public class RaftHAServer {
     if (groupCommitter != null)
       groupCommitter.stop();
     stopLagMonitor();
+    stopHealthMonitor();
 
     // In K8s mode, automatically remove this peer from the Raft cluster before stopping.
     // This ensures clean scale-down without orphaned peers in the cluster configuration.
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
       leaveCluster();
-
-    stopHealthMonitor();
 
     // Suppress noisy Ratis gRPC warnings during shutdown (AlreadyClosedException, CANCELLED streams).
     // These are harmless - internal replication threads take a moment to notice the server is closed.
@@ -1100,7 +1087,17 @@ public class RaftHAServer {
         LogManager.instance().log(this, Level.WARNING, "Error closing stale RaftClient during refresh", e);
       }
     }
-    raftClient = RaftClient.newBuilder()
+    try {
+      raftClient = buildRaftClient();
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error creating RaftClient during refresh", e);
+      return;
+    }
+    HALog.log(this, HALog.BASIC, "RaftClient refreshed with fresh gRPC channels after leader change");
+  }
+
+  private RaftClient buildRaftClient() throws IOException {
+    return RaftClient.newBuilder()
         .setRaftGroup(raftGroup)
         .setLeaderId(localPeerId)
         .setProperties(raftProperties)
@@ -1109,7 +1106,6 @@ public class RaftHAServer {
             .setMaxSleepTime(TimeDuration.valueOf(5, TimeUnit.SECONDS))
             .build())
         .build();
-    HALog.log(this, HALog.BASIC, "RaftClient refreshed with fresh gRPC channels after leader change");
   }
 
   // -- Cluster Token --

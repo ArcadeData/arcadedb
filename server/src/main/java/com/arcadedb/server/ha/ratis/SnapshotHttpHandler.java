@@ -115,6 +115,15 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
+    // Defence-in-depth: reject names that could be used for path traversal or header injection.
+    // The actual lookup is registry-based, but we validate early to be safe.
+    if (databaseName.contains("/") || databaseName.contains("\\") || databaseName.contains("..")
+        || databaseName.indexOf('\0') >= 0) {
+      exchange.setStatusCode(400);
+      exchange.getResponseSender().send("Invalid database name");
+      return;
+    }
+
     final var server = httpServer.getServer();
 
     if (!server.existsDatabase(databaseName)) {

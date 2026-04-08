@@ -116,7 +116,14 @@ public class RaftGroupCommitter {
   public void stop() {
     running = false;
     flusher.interrupt();
-    // Fail any remaining entries
+    // Wait for the flusher to finish any in-flight batch so dispatched entries are completed
+    // before stopService() closes the Raft client/server.
+    try {
+      flusher.join(haServer.getQuorumTimeout());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    // Fail any entries still in the queue (not yet dispatched)
     PendingEntry pending;
     while ((pending = queue.poll()) != null)
       pending.future.complete(new QuorumNotReachedException("Group committer shutting down"));

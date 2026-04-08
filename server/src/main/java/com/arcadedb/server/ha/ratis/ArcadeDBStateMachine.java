@@ -274,6 +274,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         // Rebuild schema file list so getFileById() works during WAL apply (Phase 2).
         // Without this, getFileById() throws SchemaException for new file IDs that exist
         // in FileManager but not yet in LocalSchema.files.
+        // NOTE: this reloads the entire schema from disk. Under bulk-load workloads that create
+        // many files (e.g. lots of new edge types or buckets), this could become a bottleneck.
+        // An incremental approach (registering only the new files into LocalSchema) would be
+        // faster but requires LocalSchema to expose a per-file registration API.
         db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, false);
         db.getSchema().getEmbedded().initComponents();
       } catch (final Exception e) {
@@ -291,7 +295,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
       try {
         db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
-      } catch (final java.util.ConcurrentModificationException | com.arcadedb.exception.ConcurrentModificationException e) {
+      } catch (final com.arcadedb.exception.ConcurrentModificationException e) {
         // After a cold restart or snapshot installation, Ratis may replay entries that were already
         // applied to the database (via WAL recovery or prior commit). The page version check in
         // applyChanges() detects this as a ConcurrentModificationException. This is safe to skip.
