@@ -197,3 +197,76 @@ After three rounds of porting, `ha-redesign` now includes all production-relevan
 The only remaining `apache-ratis`-exclusive features are an experimental write-forwarding mechanism (`TRANSACTION_FORWARD`) that is currently unused due to a page visibility issue, and BOLT with TLS support.
 
 `ha-redesign` is the production-ready choice: modular architecture, 40-file test suite with chaos engineering, safe rollout via `HA_IMPLEMENTATION` toggle, and now feature-complete with all security, performance, and cluster management features from `apache-ratis`.
+
+
+## 10. Benchmark Results
+
+ArcadeDB Raft HA Insert Benchmark
+
+Sync:  5,000 records (batch 100/tx)  |  Async: 100,000 records (8 threads)
+
+1 server (no HA) - embedded
+-------------------------------------------------------
+    Ops:        50 operations (1 thread)
+    Throughput: 1,073 ops/sec
+    Avg:        932 us  |  Median: 840 us
+    Min:        614 us  |  P95:    1,417 us
+    P99:        2,764 us  |  Max:    2,764 us
+
+3 servers (Raft HA) - embedded on leader
+-------------------------------------------------------
+    Ops:        50 operations (1 thread)
+    Throughput: 67 ops/sec
+    Avg:        15,033 us  |  Median: 15,010 us
+    Min:        10,974 us  |  P95:    21,761 us
+    P99:        23,951 us  |  Max:    23,951 us
+
+5 servers (Raft HA) - embedded on leader
+-------------------------------------------------------
+    Ops:        50 operations (1 thread)
+    Throughput: 69 ops/sec
+    Avg:        14,539 us  |  Median: 14,820 us
+    Min:        9,411 us  |  P95:    20,014 us
+    P99:        22,106 us  |  Max:    22,106 us
+
+3 servers (Raft HA) - remote via follower proxy
+-------------------------------------------------------
+    Ops:        5,000 operations (1 thread)
+    Throughput: 87 ops/sec
+    Avg:        11,555 us  |  Median: 11,430 us
+    Min:        3,716 us  |  P95:    15,791 us
+    P99:        19,943 us  |  Max:    38,777 us
+
+3 servers (Raft HA) - concurrent (3 threads)
+-------------------------------------------------------
+    Ops:        4,998 operations (3 threads)
+    Throughput: 96 ops/sec
+    Avg:        31,321 us  |  Median: 30,516 us
+    Min:        11,922 us  |  P95:    42,913 us
+    P99:        52,618 us  |  Max:    144,822 us
+
+5 servers (Raft HA) - concurrent (5 threads)
+-------------------------------------------------------
+    Ops:        5,000 operations (5 threads)
+    Throughput: 117 ops/sec
+    Avg:        42,356 us  |  Median: 42,212 us
+    Min:        10,499 us  |  P95:    57,886 us
+    P99:        67,147 us  |  Max:    141,147 us
+
+1 server (no HA) - async
+-------------------------------------------------------
+    Ops:        100,000 records (8 async threads, commitEvery=5000)
+    Throughput: 423,500 inserts/sec
+    Elapsed:    0.2 seconds
+
+3 servers (Raft HA) - async on leader
+-------------------------------------------------------
+    Ops:        100,000 records (8 async threads, commitEvery=5000)
+    Throughput: 278,048 inserts/sec
+    Elapsed:    0.4 seconds
+
+5 servers (Raft HA) - async on leader
+-------------------------------------------------------
+    Ops:        100,000 records (8 async threads, commitEvery=5000)
+    Throughput: 313,998 inserts/sec
+    Elapsed:    0.3 seconds
