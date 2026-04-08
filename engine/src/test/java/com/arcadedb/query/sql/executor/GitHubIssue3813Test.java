@@ -106,4 +106,41 @@ public class GitHubIssue3813Test extends TestHelper {
     assertThat((int) check.next().getProperty("b")).isEqualTo(3);
     assertThat(check.hasNext()).isFalse();
   }
+
+  /**
+   * UPDATE Doc SET b = 3 WHERE @rid = (INSERT INTO Doc RETURN @rid).@rid[0]
+   * The INSERT subquery in WHERE clause should resolve to a RID for comparison.
+   */
+  @Test
+  void updateWhereRidEqualsSubqueryExpression() {
+    final ResultSet result = database.command("sql",
+        "UPDATE Doc SET b = 3 WHERE @rid = (INSERT INTO Doc RETURN @rid).@rid[0]");
+    assertThat(result.hasNext()).isTrue();
+    assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
+
+    final ResultSet check = database.query("sql", "SELECT FROM Doc WHERE b = 3");
+    assertThat(check.hasNext()).isTrue();
+    assertThat((int) check.next().getProperty("b")).isEqualTo(3);
+    assertThat(check.hasNext()).isFalse();
+  }
+
+  /**
+   * DELETE FROM Doc WHERE @rid = (INSERT INTO Doc RETURN @rid).@rid[0]
+   * The INSERT subquery in WHERE clause should resolve to a RID for comparison in DELETE.
+   */
+  @Test
+  void deleteWhereRidEqualsSubqueryExpression() {
+    // First insert a record
+    database.command("sql", "INSERT INTO Doc SET a = 1");
+    final long countBefore = database.countType("Doc", true);
+
+    // DELETE the record that was just inserted via subquery expression
+    final ResultSet result = database.command("sql",
+        "DELETE FROM Doc WHERE @rid = (INSERT INTO Doc RETURN @rid).@rid[0]");
+    assertThat(result.hasNext()).isTrue();
+    assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
+
+    // Count should be same as before (inserted 1 then deleted the new one)
+    assertThat(database.countType("Doc", true)).isEqualTo(countBefore);
+  }
 }

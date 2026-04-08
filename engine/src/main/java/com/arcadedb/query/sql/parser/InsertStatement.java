@@ -88,6 +88,11 @@ public class InsertStatement extends Statement {
   }
 
   @Override
+  public boolean refersToParent() {
+    return false;
+  }
+
+  @Override
   public InsertStatement copy() {
     final InsertStatement result = new InsertStatement(-1);
     result.targetType = targetType == null ? null : targetType.copy();
