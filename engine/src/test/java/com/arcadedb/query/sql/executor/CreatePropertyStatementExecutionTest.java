@@ -186,6 +186,22 @@ class CreatePropertyStatementExecutionTest extends TestHelper {
     assertThat(nameProperty.getType()).isEqualTo(Type.STRING);
   }
 
+  // https://github.com/ArcadeData/arcadedb/issues/3812
+  @Test
+  void ifNotExistsChecksSuperTypes() {
+    database.command("sql", "CREATE document type testParentType").close();
+    database.command("sql", "CREATE property testParentType.sharedProp STRING").close();
+    database.command("sql", "CREATE document type testChildType extends testParentType").close();
+
+    // IF NOT EXISTS on child should silently succeed when property is defined in super type
+    database.command("sql", "CREATE property testChildType.sharedProp IF NOT EXISTS STRING").close();
+
+    // property should still only exist on the parent, not duplicated on the child
+    assertThat(database.getSchema().getType("testParentType").existsProperty("sharedProp")).isTrue();
+    assertThat(database.getSchema().getType("testChildType").existsProperty("sharedProp")).isFalse();
+    assertThat(database.getSchema().getType("testChildType").existsPolymorphicProperty("sharedProp")).isTrue();
+  }
+
   @Test
   void createHiddenProperty() {
     // due to https://github.com/ArcadeData/arcadedb/issues/2378 hidden properties are supported in thhe schema, but not in the
