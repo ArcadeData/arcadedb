@@ -1123,8 +1123,23 @@ public class SelectExecutionPlanner {
     } else if (target.getIdentifier() != null && target.getModifier() != null) {
 
       final List<RID> rids = new ArrayList<>();
-      final String targetStr = target.toString();
-      final Object variableValue = context.getVariablePath(targetStr);
+      Object variableValue;
+      final String identifierValue = target.getIdentifier().getStringValue();
+      if (identifierValue.startsWith("$")) {
+        // Resolve the variable first, then apply modifiers
+        variableValue = context.getVariable(identifierValue);
+        if (variableValue != null) {
+          variableValue = target.getModifier().execute((Result) null, variableValue, context);
+        } else {
+          // Variable not available at plan creation time (e.g., script LET variable).
+          // Defer resolution to execution time.
+          info.fetchExecutionPlan.chain(new FetchFromVariableStep(identifierValue, target.getModifier(), context));
+          return;
+        }
+      } else {
+        final String targetStr = target.toString();
+        variableValue = context.getVariablePath(targetStr);
+      }
       if (variableValue != null) {
         // Handle single Result object (e.g., from $parent.$current)
         if (variableValue instanceof Result resultVal) {
