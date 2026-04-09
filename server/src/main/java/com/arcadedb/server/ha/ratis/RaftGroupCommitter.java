@@ -223,8 +223,12 @@ public class RaftGroupCommitter {
         if (batch.get(i).future.isDone())
           continue; // already failed in send phase
 
+        final CompletableFuture<RaftClientReply> watchFuture = watchFutures.get(i);
+        if (watchFuture == null)
+          continue; // send failed, already completed with error
+
         try {
-          final RaftClientReply watchReply = watchFutures.get(i).get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
+          final RaftClientReply watchReply = watchFuture.get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
           batch.get(i).future.complete(watchReply.isSuccess() ? null : new QuorumNotReachedException("ALL quorum not reached"));
         } catch (final Exception e) {
           batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum watch failed: " + e.getMessage()));

@@ -80,6 +80,9 @@ public class RaftLogEntry {
    * @param filesToRemove     optional files to remove (null if no structural change)
    * @param originPeerId      the peer ID of the node that originated this transaction
    * @return serialized bytes
+   *
+   * <p><b>Note:</b> {@code walBuffer} is rewound and fully consumed by this method.
+   * The caller must not read from it after this call returns.
    */
   public static byte[] serializeTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
                                             final Binary walBuffer, final String schemaJson, final Map<Integer,
@@ -109,7 +112,7 @@ public class RaftLogEntry {
     // Database name
     stream.putString(databaseName);
 
-    // WAL changes (compressed)
+    // WAL changes (compressed). Rewind mutates the caller's buffer position (intentional, see Javadoc).
     walBuffer.rewind();
     final int uncompressedLength = walBuffer.size();
     final Binary compressed = CompressionFactory.getDefault().compress(walBuffer);
@@ -186,9 +189,6 @@ public class RaftLogEntry {
         filesToRemove);
   }
 
-  // -- Command forwarding (via Ratis query(), not logged) --
-
-  /** Serializes a command forward request for execution on the leader via the state machine query() path. */
   // -- CREATE_DATABASE serialization --
 
   /**

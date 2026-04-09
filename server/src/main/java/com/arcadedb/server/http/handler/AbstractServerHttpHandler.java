@@ -41,6 +41,7 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.util.Deque;
 import java.util.concurrent.atomic.AtomicReference;
@@ -435,7 +436,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final String expectedToken = raftHA != null ? raftHA.getClusterToken() : null;
 
     if (providedToken == null || expectedToken == null || expectedToken.isEmpty()
-        || !MessageDigest.isEqual(expectedToken.getBytes(StandardCharsets.UTF_8), providedToken.getBytes(StandardCharsets.UTF_8))) {
+        || !constantTimeTokenEquals(expectedToken, providedToken)) {
       sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
       return null;
     }
@@ -549,5 +550,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     }
 
     exchange.getResponseSender().send(error2json(errorMessage, detail, e, exceptionArgs, null));
+  }
+
+  private static boolean constantTimeTokenEquals(final String expected, final String provided) {
+    try {
+      final MessageDigest sha = MessageDigest.getInstance("SHA-256");
+      final byte[] a = sha.digest(expected.getBytes(StandardCharsets.UTF_8));
+      sha.reset();
+      final byte[] b = sha.digest(provided.getBytes(StandardCharsets.UTF_8));
+      return MessageDigest.isEqual(a, b);
+    } catch (final NoSuchAlgorithmException e) {
+      throw new RuntimeException("SHA-256 not available", e);
+    }
   }
 }

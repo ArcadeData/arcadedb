@@ -39,6 +39,7 @@ import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.SetConfigurationRequest;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
@@ -60,6 +61,7 @@ import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -106,7 +108,8 @@ public class RaftHAServer {
   private static final int PBKDF2_ITERATIONS      = 100_000;
   private static final int PBKDF2_KEY_LENGTH_BITS = 256;
 
-  // K8s auto-join parameters (tryAutoJoinCluster)
+  // K8s auto-join parameters (tryAutoJoinCluster). Jitter is kept as a secondary mitigation
+  // even though Mode.ADD is atomic, to avoid thundering-herd probe storms against the leader.
   private static final long AUTO_JOIN_JITTER_MAX_MS        = 3000L;
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MIN_SECS = 3;
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MAX_SECS = 5;
@@ -117,7 +120,8 @@ public class RaftHAServer {
   private final    RaftPeerId           localPeerId;
   private final    Quorum               quorum;
   private final    long                 quorumTimeout;
-  private final    Map<String, String>  peerHttpAddresses = new ConcurrentHashMap<>();
+  private final    Map<String, String>  peerHttpAddresses        = new ConcurrentHashMap<>();
+  private final    Set<String>          derivedAddressWarned     = ConcurrentHashMap.newKeySet();
   private volatile String               clusterToken;
 
   private          RaftServer               raftServer;
@@ -226,10 +230,11 @@ public class RaftHAServer {
     LogManager.instance().log(this, Level.INFO, "Starting Ratis HA service (cluster=%s, peers=%s, quorum=%s)...",
         configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME), raftGroup.getPeers(), quorum);
 
-    if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE)))
+    if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE))
+        && !configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
       LogManager.instance().log(this, Level.WARNING,
-          "Inter-node snapshot and proxy traffic uses plain HTTP. Cluster token and database data are transmitted " +
-              "unencrypted. Deploy behind a secure network or VPN for production use");
+          "Inter-node snapshot and proxy traffic uses plain HTTP. Cluster token and database data are transmitted "
+              + "unencrypted. Set arcadedb.ssl.enabled=true or deploy behind a secure network (VPN, private subnet)");
 
     // Derive the cluster token eagerly at startup rather than lazily on the first request.
     // PBKDF2 with 100k iterations is expensive and would block a request thread.
@@ -378,9 +383,8 @@ public class RaftHAServer {
    * leader via normal Raft consensus once a majority becomes reachable.
    */
   private void tryAutoJoinCluster() {
-    // Randomized jitter (0-3s) to prevent thundering herd when multiple pods start simultaneously
-    // (e.g. K8s Parallel pod management policy or mass restart) and all try setConfiguration()
-    // at the same time during scale-up.
+    // Randomized jitter (0-3s) to spread probe traffic when multiple pods start simultaneously
+    // (e.g. K8s Parallel pod management policy or mass restart).
     final long jitterMs = Math.abs(localPeerId.hashCode() % AUTO_JOIN_JITTER_MAX_MS);
     if (jitterMs > 0) {
       HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
@@ -446,25 +450,21 @@ public class RaftHAServer {
                   }
 
                 if (localPeer != null) {
-                  // Build the new configuration: existing peers + us
-                  final List<RaftPeer> newPeers = new ArrayList<>();
-                  for (final var existingPeer : conf.getPeersList()) {
-                    final String existingId = existingPeer.getId().toStringUtf8();
-                    for (final RaftPeer p : raftGroup.getPeers())
-                      if (p.getId().toString().equals(existingId)) {
-                        newPeers.add(p);
-                        break;
-                      }
-                  }
-                  newPeers.add(localPeer);
+                  // Use Mode.ADD for atomic single-peer addition. Unlike setConfiguration()
+                  // which replaces the entire membership list (last-write-wins race if multiple
+                  // pods call it concurrently), Mode.ADD atomically appends one peer to whatever
+                  // the current configuration is, so concurrent joins from different pods are safe.
+                  final SetConfigurationRequest.Arguments addArgs = SetConfigurationRequest.Arguments.newBuilder()
+                      .setServersInNewConf(List.of(localPeer))
+                      .setMode(SetConfigurationRequest.Mode.ADD)
+                      .build();
 
-                  final RaftClientReply joinReply = tempClient.admin().setConfiguration(newPeers);
+                  final RaftClientReply joinReply = tempClient.admin().setConfiguration(addArgs);
                   if (!joinReply.isSuccess())
-                    LogManager.instance().log(this, Level.WARNING, "K8s auto-join: setConfiguration rejected: %s",
+                    LogManager.instance().log(this, Level.WARNING, "K8s auto-join: add peer rejected: %s",
                         joinReply.getException() != null ? joinReply.getException().getMessage() : "unknown");
                   else
-                    HALog.log(this, HALog.BASIC, "K8s auto-join: successfully joined cluster with %d peers",
-                        newPeers.size());
+                    HALog.log(this, HALog.BASIC, "K8s auto-join: successfully joined cluster via atomic add");
                 }
               } else {
                 HALog.log(this, HALog.BASIC, "K8s auto-join: already a member of the cluster");
@@ -1352,11 +1352,12 @@ public class RaftHAServer {
         .setAddress(address)
         .build();
 
-    final List<RaftPeer> newPeers = new ArrayList<>(getLivePeers());
-    newPeers.add(newPeer);
-
     try {
-      final RaftClientReply reply = raftClient.admin().setConfiguration(newPeers);
+      final SetConfigurationRequest.Arguments addArgs = SetConfigurationRequest.Arguments.newBuilder()
+          .setServersInNewConf(List.of(newPeer))
+          .setMode(SetConfigurationRequest.Mode.ADD)
+          .build();
+      final RaftClientReply reply = raftClient.admin().setConfiguration(addArgs);
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
 
@@ -1390,16 +1391,26 @@ public class RaftHAServer {
    */
   public void removePeer(final String peerId) {
     final Collection<RaftPeer> livePeers = getLivePeers();
+    final List<RaftPeer> currentPeers = new ArrayList<>();
     final List<RaftPeer> newPeers = new ArrayList<>();
-    for (final RaftPeer peer : livePeers)
+    for (final RaftPeer peer : livePeers) {
+      currentPeers.add(peer);
       if (!peer.getId().toString().equals(peerId))
         newPeers.add(peer);
+    }
 
     if (newPeers.size() == livePeers.size())
       throw new ConfigurationException("Peer " + peerId + " not found in cluster");
 
     try {
-      final RaftClientReply reply = raftClient.admin().setConfiguration(newPeers);
+      // Use COMPARE_AND_SET to ensure no concurrent membership change happened between
+      // reading livePeers and applying the removal.
+      final SetConfigurationRequest.Arguments removeArgs = SetConfigurationRequest.Arguments.newBuilder()
+          .setServersInCurrentConf(currentPeers)
+          .setServersInNewConf(newPeers)
+          .setMode(SetConfigurationRequest.Mode.COMPARE_AND_SET)
+          .build();
+      final RaftClientReply reply = raftClient.admin().setConfiguration(removeArgs);
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to remove peer " + peerId + ": " + reply.getException());
       LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
@@ -1455,6 +1466,7 @@ public class RaftHAServer {
    * Returns the HTTP address of a peer given its Raft peer ID.
    * If no explicit mapping exists (e.g., peer added dynamically), derives the HTTP address
    * from the peer ID (host_raftPort) using the configured HTTP/Raft port offset.
+   * Derived addresses are NOT cached so that a wrong derivation does not persist permanently.
    */
   public String getPeerHTTPAddress(final RaftPeerId peerId) {
     final String httpAddr = peerHttpAddresses.get(peerId.toString());
@@ -1464,6 +1476,7 @@ public class RaftHAServer {
     // Derive HTTP address from peer ID format "host_raftPort" using port offset.
     // This assumes all nodes use the same HTTP-to-Raft port gap as this node,
     // which may be wrong if remote nodes use different port configurations.
+    // Deliberately not cached: if the derivation is wrong, at least it won't stick forever.
     final String peerIdStr = peerId.toString();
     final int lastUnderscore = peerIdStr.lastIndexOf('_');
     if (lastUnderscore > 0 && lastUnderscore < peerIdStr.length() - 1) {
@@ -1473,12 +1486,12 @@ public class RaftHAServer {
         final int httpPortOffset = getHttpPortOffset();
         final int httpPort = raftPort + httpPortOffset;
         final String derived = host + ":" + httpPort;
-        LogManager.instance().log(this, Level.WARNING,
-            "No explicit HTTP address for peer '%s', deriving %s using local HTTP/Raft port offset (%+d). "
-                + "If this peer uses a different port layout, specify explicit HTTP ports in HA_SERVER_LIST (format: " +
-                "host:raftPort:httpPort)",
-            peerIdStr, derived, httpPortOffset);
-        peerHttpAddresses.put(peerIdStr, derived);
+        if (derivedAddressWarned.add(peerIdStr))
+          LogManager.instance().log(this, Level.WARNING,
+              "No explicit HTTP address for peer '%s', deriving %s using local HTTP/Raft port offset (%+d). "
+                  + "If this peer uses a different port layout, specify explicit HTTP ports in HA_SERVER_LIST (format: "
+                  + "host:raftPort:httpPort)",
+              peerIdStr, derived, httpPortOffset);
         return derived;
       } catch (final NumberFormatException ignored) {
         // Fall through to return peer ID as-is
@@ -1534,7 +1547,7 @@ public class RaftHAServer {
 
     // Snapshot: chunk mode (Ratis sends the marker file, ArcadeDB downloads the actual database via HTTP).
     // The default LogAppender only supports chunk-based transfer, not notification mode.
-    // When the follower receives the marker, pause() + reinitialize() triggers the HTTP download.
+    // When the follower receives the marker, reinitialize() detects the index gap and triggers the HTTP download.
     RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, true);
     final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD);
     RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, true);

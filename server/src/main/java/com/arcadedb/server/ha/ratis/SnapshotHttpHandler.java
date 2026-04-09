@@ -33,10 +33,14 @@ import io.undertow.util.Headers;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.concurrent.Semaphore;
 import java.util.logging.Level;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -54,6 +58,11 @@ import java.util.zip.ZipOutputStream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SnapshotHttpHandler implements HttpHandler {
+
+  // Limit concurrent snapshot downloads to prevent NIC saturation and read-lock stacking
+  // during mass follower restarts. Excess requests get HTTP 503 so followers retry with backoff.
+  private static final int       MAX_CONCURRENT_SNAPSHOTS = 2;
+  private final        Semaphore snapshotSemaphore        = new Semaphore(MAX_CONCURRENT_SNAPSHOTS);
 
   private final HttpServer httpServer;
 
@@ -132,6 +141,18 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
+    if (!snapshotSemaphore.tryAcquire()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Snapshot download rejected for '%s': %d concurrent downloads already in progress",
+          databaseName, MAX_CONCURRENT_SNAPSHOTS);
+      exchange.setStatusCode(503);
+      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
+      exchange.getResponseSender().send("Too many concurrent snapshot downloads, retry later");
+      return;
+    }
+
+    try {
+
     LogManager.instance().log(this, Level.INFO, "Serving database snapshot for '%s'...", databaseName);
 
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
@@ -188,6 +209,10 @@ public class SnapshotHttpHandler implements HttpHandler {
       });
       return null;
     });
+
+    } finally {
+      snapshotSemaphore.release();
+    }
   }
 
   private ServerSecurityUser authenticate(final HttpServerExchange exchange) {
@@ -195,11 +220,10 @@ public class SnapshotHttpHandler implements HttpHandler {
     final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
     if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
       final var raftHA = httpServer.getServer().getHA();
-      // Constant-time comparison to prevent timing attacks (token is hex-encoded PBKDF2 output)
-      if (raftHA != null && raftHA.getClusterToken() != null
-          && java.security.MessageDigest.isEqual(
-              raftHA.getClusterToken().getBytes(java.nio.charset.StandardCharsets.UTF_8),
-              clusterTokenHeader.getFirst().getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+      // Constant-time comparison to prevent timing attacks. Hashing both sides with SHA-256
+      // guarantees equal-length arrays, avoiding MessageDigest.isEqual's length short-circuit.
+      if (raftHA != null && raftHA.getClusterToken() != null && constantTimeTokenEquals(
+          raftHA.getClusterToken(), clusterTokenHeader.getFirst())) {
         final ServerSecurityUser rootUser = httpServer.getServer().getSecurity().getUser("root");
         if (rootUser == null) {
           LogManager.instance().log(this, Level.SEVERE, "Cluster token valid but 'root' user not found");
@@ -253,5 +277,17 @@ public class SnapshotHttpHandler implements HttpHandler {
     }
 
     zipOut.closeEntry();
+  }
+
+  private static boolean constantTimeTokenEquals(final String expected, final String provided) {
+    try {
+      final MessageDigest sha = MessageDigest.getInstance("SHA-256");
+      final byte[] a = sha.digest(expected.getBytes(StandardCharsets.UTF_8));
+      sha.reset();
+      final byte[] b = sha.digest(provided.getBytes(StandardCharsets.UTF_8));
+      return MessageDigest.isEqual(a, b);
+    } catch (final NoSuchAlgorithmException e) {
+      throw new RuntimeException("SHA-256 not available", e);
+    }
   }
 }

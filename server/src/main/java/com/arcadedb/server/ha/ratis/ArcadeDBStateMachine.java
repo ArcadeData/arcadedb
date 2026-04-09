@@ -135,9 +135,15 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     super.close();
   }
 
+  /**
+   * Called by Ratis before snapshot installation. Intentionally a no-op: we do not need to block
+   * applyTransaction() here because the actual snapshot install (HTTP download + directory swap)
+   * is deferred to notifyLeaderChanged() and uses a crash-safe marker file, not in-memory state.
+   * The gap detection in {@link #reinitialize()} handles the trigger.
+   */
   @Override
   public void pause() {
-    LogManager.instance().log(this, Level.INFO, "State machine paused for snapshot installation");
+    LogManager.instance().log(this, Level.INFO, "State machine paused by Ratis for snapshot installation");
   }
 
   @Override
@@ -469,7 +475,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
   /**
    * Downloads all databases from the leader via HTTP. Called during chunk-based snapshot
-   * installation (installSnapshotEnabled=true) when reinitialize() detects the pause() flag.
+   * installation (installSnapshotEnabled=true) when reinitialize() detects a gap between
+   * the snapshot index and persisted applied index (see {@link #needsSnapshotDownload}).
    * The Ratis snapshot only contains a marker file; the actual database data is transferred via HTTP.
    */
   private void installDatabasesFromLeader() throws IOException {
