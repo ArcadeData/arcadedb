@@ -147,7 +147,11 @@ public class SnapshotHttpHandler implements HttpHandler {
     DatabaseInternal unwrapped = db.getEmbedded();
     if (unwrapped != null && !(unwrapped instanceof LocalDatabase))
       unwrapped = unwrapped.getEmbedded();
-    final LocalDatabase localDb = (LocalDatabase) unwrapped;
+    if (!(unwrapped instanceof final LocalDatabase localDb)) {
+      exchange.setStatusCode(500);
+      exchange.getResponseSender().send("Cannot access local database for snapshot: " + databaseName);
+      return;
+    }
 
     localDb.executeInReadLock(() -> {
       localDb.getPageManager().suspendFlushAndExecute(localDb, () -> {
@@ -163,9 +167,16 @@ public class SnapshotHttpHandler implements HttpHandler {
             addFileToZip(zipOut, schemaFile);
 
           final Collection<ComponentFile> files = localDb.getFileManager().getFiles();
-          for (final ComponentFile file : new ArrayList<>(files))
-            if (file != null)
-              addFileToZip(zipOut, file.getOSFile());
+          for (final ComponentFile file : new ArrayList<>(files)) {
+            if (file == null)
+              continue;
+            // Only include known data files. Skip lock files, temp files, WAL files, etc.
+            // that might be added to the FileManager in the future.
+            final String name = file.getOSFile().getName();
+            if (name.endsWith(".lock") || name.endsWith(".tmp") || name.endsWith(".wal") || name.endsWith(".pid"))
+              continue;
+            addFileToZip(zipOut, file.getOSFile());
+          }
 
           zipOut.finish();
           LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' sent successfully", databaseName);

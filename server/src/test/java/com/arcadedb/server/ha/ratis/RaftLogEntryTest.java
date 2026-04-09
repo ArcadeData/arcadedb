@@ -149,29 +149,6 @@ class RaftLogEntryTest {
   }
 
   @Test
-  void testDeserializeCommandForwardRejectsCorruptedStringLength() {
-    // Craft a COMMAND_FORWARD entry with a bogus database name length
-    final Binary stream = new Binary(64);
-    stream.putByte(RaftLogEntry.EntryType.COMMAND_FORWARD.code());
-
-    // Write a varint length of 500_000_000 for the database name
-    // 500_000_000 = 0x1DCD6500
-    stream.putByte((byte) 0x80);
-    stream.putByte((byte) 0xCA);
-    stream.putByte((byte) 0xB5);
-    stream.putByte((byte) 0xEE);
-    stream.putByte((byte) 0x01);
-
-    stream.flip();
-    final byte[] data = new byte[stream.size()];
-    stream.getByteBuffer().get(data);
-
-    assertThatThrownBy(() -> RaftLogEntry.deserializeCommandForward(data))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("exceeds");
-  }
-
-  @Test
   void testParseWalTransactionRejectsTruncatedHeader() {
     // A buffer with only 10 bytes is too short for the 24-byte header
     // (txId:8 + timestamp:8 + pageCount:4 + segmentSize:4)

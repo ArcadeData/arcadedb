@@ -99,4 +99,27 @@ class RaftHAServerAddressParsingTest {
     assertThatThrownBy(() -> RaftHAServer.parseHostPort("[::1:2424"))
         .isInstanceOf(ConfigurationException.class);
   }
+
+  @Test
+  void parseHostPortRejectsBareIPv6LinkLocal() {
+    // fe80::1:2424 has 4 colons and no dots - correctly detected as bare IPv6
+    assertThatThrownBy(() -> RaftHAServer.parseHostPort("fe80::1:2424"))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("IPv6");
+  }
+
+  @Test
+  void parseHostPortRejectsBareIPv6FullAddress() {
+    // 2001:db8::1:2424 - full IPv6 without brackets
+    assertThatThrownBy(() -> RaftHAServer.parseHostPort("2001:db8::1:2424"))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("IPv6");
+  }
+
+  @Test
+  void parseHostPortAcceptsBracketedLinkLocal() {
+    final String[] result = RaftHAServer.parseHostPort("[fe80::1]:2424");
+    assertThat(result[0]).isEqualTo("[fe80::1]");
+    assertThat(result[1]).isEqualTo("2424");
+  }
 }

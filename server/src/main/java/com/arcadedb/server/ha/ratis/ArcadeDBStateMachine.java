@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.ratis;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
@@ -200,8 +199,6 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
       switch (type) {
         case CREATE_DATABASE -> applyCreateDatabase(data);
-        case COMMAND_FORWARD -> LogManager.instance().log(this, Level.WARNING,
-            "Unexpected COMMAND_FORWARD in Raft log at index %d - this entry type should use query(), not send()", index);
         case TRANSACTION -> applyTransactionEntry(data);
         default -> throw new IllegalArgumentException("Unknown Raft log entry type: " + type + " at index " + index);
       }
@@ -400,72 +397,6 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private void updateSchemaMetadata(final DatabaseInternal db, final String schemaJson) throws IOException {
     if (schemaJson != null && !schemaJson.isEmpty())
       db.getSchema().getEmbedded().update(new JSONObject(schemaJson));
-  }
-
-  // -- Command Forwarding via query() --
-  // NOTE: The HTTP proxy in AbstractServerHttpHandler is the primary forwarding path for follower writes.
-  // This Ratis query() path exists as a secondary mechanism but is currently not invoked by the HTTP layer.
-  // It is retained for potential future use (e.g., direct Ratis client forwarding without HTTP).
-
-  @Override
-  public CompletableFuture<Message> query(final Message request) {
-    final ByteBuffer buf = request.getContent().asReadOnlyByteBuffer();
-    final byte[] data = new byte[buf.remaining()];
-    buf.get(data);
-    if (data.length > 0 && data[0] == RaftLogEntry.EntryType.COMMAND_FORWARD.code())
-      return executeForwardedCommand(data);
-    return CompletableFuture.completedFuture(Message.EMPTY);
-  }
-
-  private CompletableFuture<Message> executeForwardedCommand(final byte[] data) {
-    try {
-      final RaftLogEntry.CommandForwardEntry entry = RaftLogEntry.deserializeCommandForward(data);
-
-      LogManager.instance().log(this, Level.FINE, "Executing forwarded command on leader: %s %s (db=%s)",
-          entry.language(), entry.command(), entry.databaseName());
-
-      final DatabaseInternal db = server.getDatabase(entry.databaseName());
-      if (db == null)
-        throw new ReplicationException("Database '" + entry.databaseName() + "' not found for forwarded command");
-      DatabaseContext.INSTANCE.init(db);
-
-      HALog.log(this, HALog.DETAILED, "Executing forwarded command on leader: %s %s (db=%s, isLeader=%s)",
-          entry.language(), entry.command(), entry.databaseName(), isCurrentNodeLeader());
-
-      // Apply a timeout to prevent slow forwarded queries from starving the Ratis
-      // query thread pool. Use the database command timeout if set, otherwise the HA quorum timeout.
-      final long dbTimeout = db.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
-      final long haTimeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
-      final long timeout = dbTimeout > 0 ? dbTimeout : haTimeout;
-
-      final var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-        DatabaseContext.INSTANCE.init(db);
-        if (entry.namedParams() != null)
-          return db.command(entry.language(), entry.command(), entry.namedParams());
-        else if (entry.positionalParams() != null)
-          return db.command(entry.language(), entry.command(), entry.positionalParams());
-        else
-          return db.command(entry.language(), entry.command());
-      });
-
-      final ResultSet rs = future.get(timeout, java.util.concurrent.TimeUnit.MILLISECONDS);
-      final byte[] resultBytes = RaftLogEntry.serializeCommandResult(rs);
-      return CompletableFuture.completedFuture(Message.valueOf(
-          ByteString.copyFrom(resultBytes)));
-
-    } catch (final java.util.concurrent.TimeoutException e) {
-      LogManager.instance().log(this, Level.WARNING, "Forwarded command timed out");
-      final byte[] errBytes = ("EForwarded command timed out").getBytes(StandardCharsets.UTF_8);
-      return CompletableFuture.completedFuture(Message.valueOf(
-          ByteString.copyFrom(errBytes)));
-    } catch (final Exception e) {
-      final Throwable cause = e instanceof java.util.concurrent.ExecutionException ? e.getCause() : e;
-      LogManager.instance().log(this, Level.SEVERE, "Error executing forwarded command", cause);
-      final String errMsg = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
-      final byte[] errBytes = ("E" + errMsg).getBytes(StandardCharsets.UTF_8);
-      return CompletableFuture.completedFuture(Message.valueOf(
-          ByteString.copyFrom(errBytes)));
-    }
   }
 
   // -- Snapshots --
@@ -964,25 +895,29 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
     // If the server is still supposed to be running (not in SHUTTING_DOWN), the Ratis server
     // closed due to an error (e.g., network partition). Schedule a restart after close completes.
+    // This runs on a dedicated daemon thread (not the lifecycleExecutor) to avoid blocking
+    // snapshot downloads and other lifecycle tasks during the wait.
     if (server.getStatus() == ArcadeDBServer.STATUS.ONLINE) {
-      lifecycleExecutor.submit(() -> {
+      final Thread restartThread = new Thread(() -> {
         try {
-          // Poll until Ratis reaches CLOSED state (or timeout after 10s).
-          // restartRatisIfNeeded() handles both CLOSING and CLOSED, but restarting while
-          // still CLOSING can race with the close. Waiting for CLOSED is safer.
           final RaftHAServer raftHA = server.getHA();
           if (raftHA != null) {
-            for (int i = 0; i < 50; i++) {
-              if (raftHA.getRaftLifeCycleState() == org.apache.ratis.util.LifeCycle.State.CLOSED)
-                break;
-              Thread.sleep(200);
-            }
+            // Wait for Ratis to reach CLOSED state before restarting.
+            // restartRatisIfNeeded() checks the state and only restarts if CLOSED/CLOSING.
+            final long deadline = System.currentTimeMillis() + 10_000;
+            while (raftHA.getRaftLifeCycleState() != org.apache.ratis.util.LifeCycle.State.CLOSED
+                && System.currentTimeMillis() < deadline)
+              Thread.sleep(100);
             raftHA.restartRatisIfNeeded();
           }
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Failed to restart Ratis after shutdown: %s", e.getMessage());
         }
-      });
+      }, "arcadedb-ratis-restart");
+      restartThread.setDaemon(true);
+      restartThread.start();
     }
   }
 

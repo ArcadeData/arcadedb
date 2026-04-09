@@ -20,15 +20,9 @@ package com.arcadedb.server.ha.ratis;
 
 import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.database.Binary;
-import com.arcadedb.log.LogManager;
-
-import java.util.logging.Level;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -50,10 +44,6 @@ public class RaftLogEntry {
      */
     CREATE_DATABASE((byte) 1),
     /**
-     * Forward a command (SQL/Cypher) to the leader via the query() path (not logged in Raft).
-     */
-    COMMAND_FORWARD((byte) 2),
-    /**
      * Replicate a committed transaction (WAL page diffs + optional schema changes).
      */
     TRANSACTION((byte) 3);
@@ -71,7 +61,6 @@ public class RaftLogEntry {
     public static EntryType fromCode(final byte code) {
       return switch (code) {
         case 1 -> CREATE_DATABASE;
-        case 2 -> COMMAND_FORWARD;
         case 3 -> TRANSACTION;
         default -> throw new IllegalArgumentException("Unknown RaftLogEntry type code: " + code);
       };
@@ -225,170 +214,6 @@ public class RaftLogEntry {
     return new CreateDatabaseEntry(originPeerId, databaseName);
   }
 
-  // -- COMMAND_FORWARD serialization --
-
-  public static byte[] serializeCommandForward(final String databaseName, final String language, final String command,
-                                               final Map<String, Object> namedParams, final Object[] positionalParams) {
-    final Binary stream = new Binary(256);
-    stream.putByte(EntryType.COMMAND_FORWARD.code()); // Command forward marker
-    stream.putString(databaseName);
-    stream.putString(language);
-    stream.putString(command);
-
-    // Named params as binary key-value pairs
-    if (namedParams != null && !namedParams.isEmpty()) {
-      stream.putInt(namedParams.size());
-      for (final Map.Entry<String, Object> entry : namedParams.entrySet()) {
-        stream.putString(entry.getKey());
-        writeValue(stream, entry.getValue());
-      }
-    } else
-      stream.putInt(0);
-
-    // Positional params as binary values
-    if (positionalParams != null && positionalParams.length > 0) {
-      stream.putInt(positionalParams.length);
-      for (final Object p : positionalParams)
-        writeValue(stream, p);
-    } else
-      stream.putInt(0);
-
-    stream.flip();
-    final byte[] result = new byte[stream.size()];
-    stream.getByteBuffer().get(result);
-    return result;
-  }
-
-  /**
-   * Parsed command forward request.
-   */
-  public record CommandForwardEntry(String databaseName, String language, String command,
-                                    Map<String, Object> namedParams, Object[] positionalParams) {
-  }
-
-  public static CommandForwardEntry deserializeCommandForward(final byte[] data) {
-    final Binary stream = new Binary(data);
-    stream.getByte(); // skip marker
-
-    final String databaseName = readBoundedString(stream);
-    final String language = readBoundedString(stream);
-    final String command = readBoundedString(stream);
-
-    final int namedCount = stream.getInt();
-    if (namedCount < 0 || namedCount > MAX_DELTA_SIZE)
-      throw new IllegalArgumentException("Invalid named param count: " + namedCount);
-    Map<String, Object> namedParams = null;
-    if (namedCount > 0) {
-      namedParams = new LinkedHashMap<>(namedCount);
-      for (int i = 0; i < namedCount; i++)
-        namedParams.put(readBoundedString(stream), readValue(stream));
-    }
-
-    final int positionalCount = stream.getInt();
-    if (positionalCount < 0 || positionalCount > MAX_DELTA_SIZE)
-      throw new IllegalArgumentException("Invalid positional param count: " + positionalCount);
-    Object[] positionalParams = null;
-    if (positionalCount > 0) {
-      positionalParams = new Object[positionalCount];
-      for (int i = 0; i < positionalCount; i++)
-        positionalParams[i] = readValue(stream);
-    }
-
-    return new CommandForwardEntry(databaseName, language, command, namedParams, positionalParams);
-  }
-
-  /**
-   * Serializes a command result (ResultSet) into a binary format.
-   */
-  public static byte[] serializeCommandResult(final com.arcadedb.query.sql.executor.ResultSet rs) {
-    final Binary stream = new Binary(1024);
-    stream.putByte((byte) 'R'); // Result marker
-    // Collect all results first (ResultSet is consumed once)
-    final List<Map<String, Object>> rows = new ArrayList<>();
-    while (rs.hasNext())
-      rows.add(rs.next().toMap());
-    stream.putInt(rows.size());
-    for (final Map<String, Object> row : rows) {
-      stream.putInt(row.size());
-      for (final Map.Entry<String, Object> entry : row.entrySet()) {
-        stream.putString(entry.getKey());
-        writeValue(stream, entry.getValue());
-      }
-    }
-    stream.flip();
-    final byte[] result = new byte[stream.size()];
-    stream.getByteBuffer().get(result);
-    return result;
-  }
-
-  /**
-   * Deserializes a command result from binary format into a list of property maps.
-   */
-  public static List<Map<String, Object>> deserializeCommandResult(final byte[] data) {
-    final Binary stream = new Binary(data);
-    stream.getByte(); // skip marker
-    final int rowCount = stream.getInt();
-    if (rowCount < 0 || rowCount > MAX_DELTA_SIZE)
-      throw new IllegalArgumentException("Invalid row count: " + rowCount);
-    final List<Map<String, Object>> rows = new ArrayList<>(rowCount);
-    for (int r = 0; r < rowCount; r++) {
-      final int propCount = stream.getInt();
-      if (propCount < 0 || propCount > MAX_DELTA_SIZE)
-        throw new IllegalArgumentException("Invalid property count: " + propCount);
-      final Map<String, Object> row = new LinkedHashMap<>(propCount);
-      for (int p = 0; p < propCount; p++) {
-        final String key = readBoundedString(stream);
-        final Object value = readValue(stream);
-        row.put(key, value);
-      }
-      rows.add(row);
-    }
-    return rows;
-  }
-
-  private static void writeValue(final Binary stream, final Object value) {
-    if (value == null) {
-      stream.putByte((byte) 0);
-    } else if (value instanceof String s) {
-      stream.putByte((byte) 1);
-      stream.putString(s);
-    } else if (value instanceof Integer i) {
-      stream.putByte((byte) 2);
-      stream.putInt(i);
-    } else if (value instanceof Long l) {
-      stream.putByte((byte) 3);
-      stream.putLong(l);
-    } else if (value instanceof Double d) {
-      stream.putByte((byte) 4);
-      stream.putLong(Double.doubleToLongBits(d));
-    } else if (value instanceof Float f) {
-      stream.putByte((byte) 5);
-      stream.putInt(Float.floatToIntBits(f));
-    } else if (value instanceof Boolean b) {
-      stream.putByte((byte) 6);
-      stream.putByte((byte) (b ? 1 : 0));
-    } else {
-      // Fallback: serialize as string - the caller will get back a String instead of the original type.
-      LogManager.instance().log(RaftLogEntry.class, Level.WARNING,
-          "writeValue: unsupported type '%s' for value '%s', falling back to toString()", value.getClass().getName(), value);
-      stream.putByte((byte) 1);
-      stream.putString(value.toString());
-    }
-  }
-
-  private static Object readValue(final Binary stream) {
-    final byte type = stream.getByte();
-    return switch (type) {
-      case 0 -> null;
-      case 1 -> readBoundedString(stream);
-      case 2 -> stream.getInt();
-      case 3 -> stream.getLong();
-      case 4 -> Double.longBitsToDouble(stream.getLong());
-      case 5 -> Float.intBitsToFloat(stream.getInt());
-      case 6 -> stream.getByte() == 1;
-      default -> throw new IllegalStateException("Unknown value type: " + type);
-    };
-  }
 
   // -- Internal helpers --
 
