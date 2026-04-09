@@ -88,6 +88,14 @@ public class RaftHAInsertBenchmark {
 
     report.append("=".repeat(90)).append("\n");
     LogManager.instance().log(this, Level.WARNING, report.toString());
+
+    final File reportDir = new File("./target/reports");
+    reportDir.mkdirs();
+    final File reportFile = new File(reportDir, "RaftHAInsertBenchmark.txt");
+    try (final java.io.FileWriter fw = new java.io.FileWriter(reportFile)) {
+      fw.write(report.toString());
+    }
+    LogManager.instance().log(this, Level.INFO, "Benchmark report written to %s", reportFile.getAbsolutePath());
   }
 
   // ---------------------------------------------------------------------------
