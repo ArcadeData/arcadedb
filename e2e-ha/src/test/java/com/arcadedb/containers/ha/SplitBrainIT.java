@@ -117,7 +117,8 @@ class SplitBrainIT extends ContainersTestTemplate {
     disconnectFromNetwork(nodeContainers[leaderIdx]);
 
     logger.info("Waiting for Raft leader step-down in minority and new election in majority");
-    TimeUnit.SECONDS.sleep(15);
+    final List<ServerWrapper> majorityServers = List.of(servers.get(survivor1), servers.get(survivor2));
+    waitForRaftLeader(majorityServers, 60);
 
     logger.info("Writing to majority partition (nodes {} and {}) - should succeed with new leader", survivor1, survivor2);
     dbs[survivor1].addUserAndPhotos(10, 10);
@@ -223,7 +224,10 @@ class SplitBrainIT extends ContainersTestTemplate {
     disconnectFromNetwork(nodeContainers[2]);
 
     logger.info("Waiting for complete partition detection and Raft leader step-down");
-    TimeUnit.SECONDS.sleep(15);
+    Awaitility.await()
+        .atMost(60, TimeUnit.SECONDS)
+        .pollInterval(2, TimeUnit.SECONDS)
+        .until(() -> findLeaderIndex(servers) < 0);
 
     // Note: addUserAndPhotos swallows all exceptions internally, so try-catch here cannot detect
     // Raft rejections. These writes are informational — Raft will reject them without quorum.
@@ -326,7 +330,9 @@ class SplitBrainIT extends ContainersTestTemplate {
       logger.info("Cycle {}: Creating partition", cycle);
       disconnectFromNetwork(nodeContainers[isolatedIdx]);
 
-      TimeUnit.SECONDS.sleep(10);
+      final int otherFollower = (currentLeader + 2) % 3;
+      logger.info("Cycle {}: Waiting for leader on majority", cycle);
+      waitForRaftLeader(List.of(servers.get(currentLeader), servers.get(otherFollower)), 60);
 
       logger.info("Cycle {}: Writing to majority partition via leader node {}", cycle, currentLeader);
       dbs[currentLeader].addUserAndPhotos(5, 10);
@@ -406,7 +412,10 @@ class SplitBrainIT extends ContainersTestTemplate {
     disconnectFromNetwork(nodeContainers[2]);
 
     logger.info("Waiting for Raft leader step-down due to quorum loss");
-    TimeUnit.SECONDS.sleep(15);
+    Awaitility.await()
+        .atMost(60, TimeUnit.SECONDS)
+        .pollInterval(2, TimeUnit.SECONDS)
+        .until(() -> findLeaderIndex(servers) < 0);
 
     // Note: addUserAndPhotos swallows all exceptions, so we cannot detect Raft rejections here.
     logger.info("Attempting write without quorum (should be rejected by Raft - leader stepped down)");
