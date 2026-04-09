@@ -80,18 +80,18 @@ class NetworkPartitionIT extends ContainersTestTemplate {
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test leader partition: isolate leader from cluster, verify new election in majority")
   void testLeaderPartitionWithQuorum() throws InterruptedException {
-    logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
+    logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
+    final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createPersistentArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
-    final List<ServerWrapper> servers = startCluster();
+    List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
-    final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
-    final DatabaseWrapper[] dbs = { db0, db1, db2 };
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
+    DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
+    DatabaseWrapper[] dbs = { db0, db1, db2 };
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and schema");
@@ -152,14 +152,19 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     final long majorityCount = dbs[survivor1].countUsers();
     logger.info("Majority partition count: {}", majorityCount);
 
-    logger.info("Healing partition - reconnecting isolated node");
+    // After a Docker network partition, gRPC channels between peers are stuck in
+    // exponential backoff (up to ~120s). Simply reconnecting the network does not
+    // reset these channels. Restart the isolated node to force fresh connections.
+    logger.info("Healing partition: reconnecting and restarting isolated node {}", leaderIdx);
     reconnectToNetwork(nodeContainers[leaderIdx]);
+    dbs[leaderIdx].close();
+    nodeContainers[leaderIdx].stop();
+    nodeContainers[leaderIdx].start();
+    waitForContainerHealthy(nodeContainers[leaderIdx], 90);
 
-    // Force a leadership transfer to refresh all gRPC channels. After a network partition,
-    // the leader's gRPC LogAppender channels to the reconnected node are stuck in exponential
-    // backoff (up to ~120s). A leadership transfer triggers notifyLeaderChanged() on all nodes,
-    // which calls refreshRaftClient() and creates fresh channels.
-    transferLeadershipAndWait(servers, 60);
+    // Recreate wrapper with new mapped ports after restart
+    final ServerWrapper restartedServer = new ServerWrapper(nodeContainers[leaderIdx]);
+    final DatabaseWrapper dbRestarted = new DatabaseWrapper(restartedServer, idSupplier, wordSupplier);
 
     logger.info("Waiting for cluster to converge after partition heal (expected={})", majorityCount);
     Awaitility.await()
@@ -167,12 +172,12 @@ class NetworkPartitionIT extends ContainersTestTemplate {
         .pollInterval(3, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            final long users0 = db0.countUsers();
-            final long users1 = db1.countUsers();
-            final long users2 = db2.countUsers();
-            logger.info("Convergence check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
-                users0, users1, users2, majorityCount);
-            return users0 == majorityCount && users1 == majorityCount && users2 == majorityCount;
+            final long usersRestarted = dbRestarted.countUsers();
+            final long usersS1 = dbs[survivor1].countUsers();
+            final long usersS2 = dbs[survivor2].countUsers();
+            logger.info("Convergence check: restarted={}, survivor1={}, survivor2={} (expected={})",
+                usersRestarted, usersS1, usersS2, majorityCount);
+            return usersRestarted == majorityCount && usersS1 == majorityCount && usersS2 == majorityCount;
           } catch (final Exception e) {
             logger.warn("Convergence check failed: {}", e.getMessage());
             return false;
@@ -180,30 +185,30 @@ class NetworkPartitionIT extends ContainersTestTemplate {
         });
 
     logger.info("Verifying final consistency across all nodes");
-    db0.assertThatUserCountIs((int) majorityCount);
-    db1.assertThatUserCountIs((int) majorityCount);
-    db2.assertThatUserCountIs((int) majorityCount);
+    dbs[survivor1].assertThatUserCountIs((int) majorityCount);
+    dbs[survivor2].assertThatUserCountIs((int) majorityCount);
+    dbRestarted.assertThatUserCountIs((int) majorityCount);
 
-    db0.close();
-    db1.close();
-    db2.close();
+    dbRestarted.close();
+    dbs[survivor1].close();
+    dbs[survivor2].close();
   }
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test single follower partition: one follower isolated, cluster continues")
   void testSingleFollowerPartition() throws InterruptedException {
-    logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
+    logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
+    final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createPersistentArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
-    final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
+    DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
@@ -254,11 +259,17 @@ class NetworkPartitionIT extends ContainersTestTemplate {
         });
     final long majorityCount = dbs[leaderIdx].countUsers();
 
-    logger.info("Reconnecting isolated follower");
+    // After a Docker network partition, gRPC channels are stuck in exponential backoff.
+    // Restart the isolated node to force fresh connections.
+    logger.info("Healing partition: reconnecting and restarting isolated node {}", isolatedIdx);
     reconnectToNetwork(nodeContainers[isolatedIdx]);
+    dbs[isolatedIdx].close();
+    nodeContainers[isolatedIdx].stop();
+    nodeContainers[isolatedIdx].start();
+    waitForContainerHealthy(nodeContainers[isolatedIdx], 90);
 
-    // Force leadership transfer to refresh gRPC channels stuck in backoff
-    transferLeadershipAndWait(servers, 60);
+    final ServerWrapper restartedServer = new ServerWrapper(nodeContainers[isolatedIdx]);
+    final DatabaseWrapper dbRestarted = new DatabaseWrapper(restartedServer, idSupplier, wordSupplier);
 
     logger.info("Waiting for follower resync via Raft log catch-up (expected={})", majorityCount);
     Awaitility.await()
@@ -266,8 +277,8 @@ class NetworkPartitionIT extends ContainersTestTemplate {
         .pollInterval(2, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            final long users = dbs[isolatedIdx].countUsers();
-            logger.info("Resync check: isolated node={} (expected={})", users, majorityCount);
+            final long users = dbRestarted.countUsers();
+            logger.info("Resync check: restarted node={} (expected={})", users, majorityCount);
             return users == majorityCount;
           } catch (final Exception e) {
             logger.warn("Resync check failed: {}", e.getMessage());
@@ -276,30 +287,30 @@ class NetworkPartitionIT extends ContainersTestTemplate {
         });
 
     logger.info("Verifying final consistency");
-    db0.assertThatUserCountIs((int) majorityCount);
-    db1.assertThatUserCountIs((int) majorityCount);
-    db2.assertThatUserCountIs((int) majorityCount);
+    dbs[leaderIdx].assertThatUserCountIs((int) majorityCount);
+    dbs[otherIdx].assertThatUserCountIs((int) majorityCount);
+    dbRestarted.assertThatUserCountIs((int) majorityCount);
 
-    db0.close();
-    db1.close();
-    db2.close();
+    dbs[leaderIdx].close();
+    dbs[otherIdx].close();
+    dbRestarted.close();
   }
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test no-quorum partition: cluster cannot accept writes when quorum is lost")
   void testNoQuorumScenario() throws Exception {
-    logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
+    logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
+    final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createPersistentArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
-    final List<ServerWrapper> servers = startCluster();
+    List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
-    final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
+    DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
@@ -324,10 +335,11 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     disconnectFromNetwork(nodeContainers[2]);
 
     logger.info("Waiting for Raft leader step-down due to quorum loss");
+    final List<ServerWrapper> initialServers = servers;
     Awaitility.await()
         .atMost(60, TimeUnit.SECONDS)
         .pollInterval(2, TimeUnit.SECONDS)
-        .until(() -> findLeaderIndex(servers) < 0);
+        .until(() -> findLeaderIndex(initialServers) < 0);
 
     // Verify that a write is rejected during no-quorum.
     // We use a plain INSERT (no LOCK TYPE) so the command fails at the Raft layer
@@ -343,43 +355,58 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     }
     assertThat(writeFailed).as("Write must be rejected when quorum is lost").isTrue();
 
-    logger.info("Reconnecting nodes to restore quorum");
+    // After Docker network disconnect, gRPC channels on ALL nodes are stuck in exponential
+    // backoff. Reconnect network, then restart all nodes to force fresh connections.
+    logger.info("Reconnecting nodes and restarting to force fresh gRPC connections");
     reconnectToNetwork(nodeContainers[1]);
     reconnectToNetwork(nodeContainers[2]);
-
-    logger.info("Waiting for Raft leader re-election after quorum restoration");
-    Awaitility.await()
-        .atMost(90, TimeUnit.SECONDS)
-        .pollInterval(3, TimeUnit.SECONDS)
-        .until(() -> findLeaderIndex(servers) >= 0);
-
-    // Allow extra time for all peers to fully re-establish Raft gRPC connections
-    // after the severe partition (all nodes were effectively isolated)
-    TimeUnit.SECONDS.sleep(10);
-
-    // Verify the count stayed at 10 — no writes succeeded during the no-quorum period.
-    logger.info("Verifying no data was committed during no-quorum period (expected 10 users on all nodes)");
-    Awaitility.await()
-        .atMost(90, TimeUnit.SECONDS)
-        .pollInterval(3, TimeUnit.SECONDS)
-        .until(() -> {
-          final long[] counts = new long[3];
-          boolean allOk = true;
-          for (int i = 0; i < 3; i++) {
-            try {
-              counts[i] = countUsersViaHttp(servers.get(i));
-            } catch (final Exception e) {
-              logger.warn("Recovery check node {}: {}", i, e.getMessage());
-              counts[i] = -1;
-              allOk = false;
-            }
-          }
-          logger.info("Recovery check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={}", counts[0], counts[1], counts[2]);
-          return allOk && counts[0] == 10 && counts[1] == 10 && counts[2] == 10;
-        });
 
     db0.close();
     db1.close();
     db2.close();
+
+    // Restart all nodes to clear stale gRPC state
+    for (final GenericContainer<?> c : nodeContainers) {
+      c.stop();
+      c.start();
+    }
+    for (final GenericContainer<?> c : nodeContainers)
+      waitForContainerHealthy(c, 90);
+
+    // Recreate wrappers with new mapped ports
+    final ServerWrapper s0 = new ServerWrapper(arcade0);
+    final ServerWrapper s1 = new ServerWrapper(arcade1);
+    final ServerWrapper s2 = new ServerWrapper(arcade2);
+    final List<ServerWrapper> restartedServers = List.of(s0, s1, s2);
+    servers = restartedServers;
+
+    logger.info("Waiting for Raft leader re-election after full restart");
+    waitForRaftLeader(restartedServers, 90);
+
+    final DatabaseWrapper db0r = new DatabaseWrapper(s0, idSupplier, wordSupplier);
+    final DatabaseWrapper db1r = new DatabaseWrapper(s1, idSupplier, wordSupplier);
+    final DatabaseWrapper db2r = new DatabaseWrapper(s2, idSupplier, wordSupplier);
+
+    // Verify the count stayed at 10 - no writes succeeded during the no-quorum period.
+    logger.info("Verifying no data was committed during no-quorum period (expected 10 users on all nodes)");
+    Awaitility.await()
+        .atMost(120, TimeUnit.SECONDS)
+        .pollInterval(3, TimeUnit.SECONDS)
+        .until(() -> {
+          try {
+            final long users0 = db0r.countUsers();
+            final long users1 = db1r.countUsers();
+            final long users2 = db2r.countUsers();
+            logger.info("Recovery check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={}", users0, users1, users2);
+            return users0 == 10 && users1 == 10 && users2 == 10;
+          } catch (final Exception e) {
+            logger.warn("Recovery check failed: {}", e.getMessage());
+            return false;
+          }
+        });
+
+    db0r.close();
+    db1r.close();
+    db2r.close();
   }
 }

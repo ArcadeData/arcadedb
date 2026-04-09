@@ -81,17 +81,17 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test partition recovery: 2+1 split, heal partition, verify Raft log catch-up")
   void testPartitionRecovery() throws InterruptedException {
-    logger.info("Creating 3-node Raft HA cluster with majority quorum");
-    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
+    logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
+    final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createPersistentArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
-    final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
+    DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
@@ -140,11 +140,19 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     // Note: we do not assert on the isolated node here — its Docker network is disconnected,
     // so host-to-container HTTP via the mapped port may be unreachable.
 
-    logger.info("Healing partition - reconnecting node {}", isolatedIdx);
+    // After a Docker network partition, gRPC channels between peers are stuck in
+    // exponential backoff (up to ~120s). Simply reconnecting the network does not
+    // reset these channels. Restart the isolated node to force fresh connections.
+    logger.info("Healing partition: reconnecting and restarting isolated node {}", isolatedIdx);
     reconnectToNetwork(nodeContainers[isolatedIdx]);
+    dbs[isolatedIdx].close();
+    nodeContainers[isolatedIdx].stop();
+    nodeContainers[isolatedIdx].start();
+    waitForContainerHealthy(nodeContainers[isolatedIdx], 90);
 
-    // Force leadership transfer to refresh gRPC channels stuck in backoff
-    transferLeadershipAndWait(servers, 60);
+    // Recreate wrapper with new mapped ports after restart
+    final ServerWrapper restartedServer = new ServerWrapper(nodeContainers[isolatedIdx]);
+    final DatabaseWrapper dbRestarted = new DatabaseWrapper(restartedServer, idSupplier, wordSupplier);
 
     logger.info("Waiting for partition recovery and Raft log catch-up (expected={})", majorityCount);
     Awaitility.await()
@@ -152,12 +160,12 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            final long users0 = db0.countUsers();
-            final long users1 = db1.countUsers();
-            final long users2 = db2.countUsers();
-            logger.info("Recovery check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
-                users0, users1, users2, majorityCount);
-            return users0 == majorityCount && users1 == majorityCount && users2 == majorityCount;
+            final long usersRestarted = dbRestarted.countUsers();
+            final long usersLeader = dbs[leaderIdx].countUsers();
+            final long usersOther = dbs[otherIdx].countUsers();
+            logger.info("Recovery check: restarted={}, leader={}, other={} (expected={})",
+                usersRestarted, usersLeader, usersOther, majorityCount);
+            return usersRestarted == majorityCount && usersLeader == majorityCount && usersOther == majorityCount;
           } catch (final Exception e) {
             logger.warn("Recovery check failed: {}", e.getMessage());
             return false;
@@ -165,30 +173,30 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
         });
 
     logger.info("Verifying final data consistency across all nodes");
-    db0.assertThatUserCountIs((int) majorityCount);
-    db1.assertThatUserCountIs((int) majorityCount);
-    db2.assertThatUserCountIs((int) majorityCount);
+    dbs[leaderIdx].assertThatUserCountIs((int) majorityCount);
+    dbs[otherIdx].assertThatUserCountIs((int) majorityCount);
+    dbRestarted.assertThatUserCountIs((int) majorityCount);
 
-    db0.close();
-    db1.close();
-    db2.close();
+    dbs[leaderIdx].close();
+    dbs[otherIdx].close();
+    dbRestarted.close();
   }
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test multiple partition cycles: repeated split and heal with Raft log catch-up")
   void testMultiplePartitionCycles() throws InterruptedException {
-    logger.info("Creating 3-node Raft HA cluster");
-    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
+    logger.info("Creating 3-node Raft HA cluster (persistent for restart)");
+    final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createPersistentArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
-    final List<ServerWrapper> servers = startCluster();
+    List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
-    final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
+    DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
@@ -214,28 +222,42 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
       logger.info("Cycle {}: Writing to majority partition via leader node {}", cycle, currentLeader);
       dbs[currentLeader].addUserAndPhotos(5, 10);
 
-      logger.info("Cycle {}: Healing partition", cycle);
+      // After a Docker network partition, gRPC channels between peers are stuck in
+      // exponential backoff. Restart the isolated node to force fresh connections.
+      logger.info("Cycle {}: Healing partition - reconnecting and restarting isolated node {}", cycle, isolatedIdx);
       reconnectToNetwork(nodeContainers[isolatedIdx]);
+      dbs[isolatedIdx].close();
+      nodeContainers[isolatedIdx].stop();
+      nodeContainers[isolatedIdx].start();
+      waitForContainerHealthy(nodeContainers[isolatedIdx], 90);
 
-      // Force leadership transfer to refresh gRPC channels stuck in backoff
-      transferLeadershipAndWait(servers, 60);
+      // Recreate wrapper and server entry with new mapped ports after restart
+      final ServerWrapper restartedServer = new ServerWrapper(nodeContainers[isolatedIdx]);
+      dbs[isolatedIdx] = new DatabaseWrapper(restartedServer, idSupplier, wordSupplier);
+      servers = List.of(
+          isolatedIdx == 0 ? restartedServer : servers.get(0),
+          isolatedIdx == 1 ? restartedServer : servers.get(1),
+          isolatedIdx == 2 ? restartedServer : servers.get(2));
 
       // Measure actual count from leader - some writes may fail during transition
       final long cycleCount = dbs[currentLeader].countUsers();
 
       logger.info("Cycle {}: Waiting for Raft log catch-up convergence (expected={})", cycle, cycleCount);
       final int currentCycle = cycle;
+      final int capturedIsolatedIdx = isolatedIdx;
+      final int capturedLeader = currentLeader;
+      final int capturedOther = (currentLeader + 2) % 3;
       Awaitility.await()
           .atMost(180, TimeUnit.SECONDS)
           .pollInterval(3, TimeUnit.SECONDS)
           .until(() -> {
             try {
-              final long users0 = db0.countUsers();
-              final long users1 = db1.countUsers();
-              final long users2 = db2.countUsers();
-              logger.info("Cycle {}: Convergence check: {} / {} / {} (expected={})",
-                  currentCycle, users0, users1, users2, cycleCount);
-              return users0 == cycleCount && users1 == cycleCount && users2 == cycleCount;
+              final long usersRestarted = dbs[capturedIsolatedIdx].countUsers();
+              final long usersLeader = dbs[capturedLeader].countUsers();
+              final long usersOther = dbs[capturedOther].countUsers();
+              logger.info("Cycle {}: Convergence check: restarted={}, leader={}, other={} (expected={})",
+                  currentCycle, usersRestarted, usersLeader, usersOther, cycleCount);
+              return usersRestarted == cycleCount && usersLeader == cycleCount && usersOther == cycleCount;
             } catch (final Exception e) {
               logger.warn("Cycle {}: Convergence check failed: {}", currentCycle, e.getMessage());
               return false;
@@ -246,24 +268,24 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     }
 
     logger.info("Verifying final consistency after {} cycles", 3);
-    final long finalCount = db0.countUsers();
-    db0.assertThatUserCountIs((int) finalCount);
-    db1.assertThatUserCountIs((int) finalCount);
-    db2.assertThatUserCountIs((int) finalCount);
+    final long finalCount = dbs[0].countUsers();
+    dbs[0].assertThatUserCountIs((int) finalCount);
+    dbs[1].assertThatUserCountIs((int) finalCount);
+    dbs[2].assertThatUserCountIs((int) finalCount);
 
-    db0.close();
-    db1.close();
-    db2.close();
+    dbs[0].close();
+    dbs[1].close();
+    dbs[2].close();
   }
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test asymmetric partition recovery: follower isolated then resyncs")
   void testAsymmetricPartitionRecovery() throws InterruptedException {
-    logger.info("Creating 3-node Raft HA cluster");
-    final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
-    final GenericContainer<?> arcade2 = createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
+    logger.info("Creating 3-node Raft HA cluster (persistent for restart)");
+    final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
+    final GenericContainer<?> arcade2 = createPersistentArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
@@ -313,11 +335,19 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     // Note: we do not assert on the isolated node here — its network is disconnected
     // from Docker, so host-to-container HTTP may be unreachable via the mapped port.
 
-    logger.info("Healing asymmetric partition");
+    // After a Docker network partition, gRPC channels between peers are stuck in
+    // exponential backoff (up to ~120s). Simply reconnecting the network does not
+    // reset these channels. Restart the isolated node to force fresh connections.
+    logger.info("Healing asymmetric partition: reconnecting and restarting isolated node {}", isolatedIdx);
     reconnectToNetwork(nodeContainers[isolatedIdx]);
+    dbs[isolatedIdx].close();
+    nodeContainers[isolatedIdx].stop();
+    nodeContainers[isolatedIdx].start();
+    waitForContainerHealthy(nodeContainers[isolatedIdx], 90);
 
-    // Force leadership transfer to refresh gRPC channels stuck in backoff
-    transferLeadershipAndWait(servers, 60);
+    // Recreate wrapper with new mapped ports after restart
+    final ServerWrapper restartedServer = new ServerWrapper(nodeContainers[isolatedIdx]);
+    final DatabaseWrapper dbRestarted = new DatabaseWrapper(restartedServer, idSupplier, wordSupplier);
 
     logger.info("Waiting for full convergence via Raft log catch-up (expected={})", majorityCount);
     Awaitility.await()
@@ -325,12 +355,12 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            final long users0 = db0.countUsers();
-            final long users1 = db1.countUsers();
-            final long users2 = db2.countUsers();
-            logger.info("Asymmetric recovery check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
-                users0, users1, users2, majorityCount);
-            return users0 == majorityCount && users1 == majorityCount && users2 == majorityCount;
+            final long usersRestarted = dbRestarted.countUsers();
+            final long usersLeader = dbs[leaderIdx].countUsers();
+            final long usersOther = dbs[otherIdx].countUsers();
+            logger.info("Asymmetric recovery check: restarted={}, leader={}, other={} (expected={})",
+                usersRestarted, usersLeader, usersOther, majorityCount);
+            return usersRestarted == majorityCount && usersLeader == majorityCount && usersOther == majorityCount;
           } catch (final Exception e) {
             logger.warn("Asymmetric recovery check failed: {}", e.getMessage());
             return false;
@@ -338,12 +368,12 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
         });
 
     logger.info("Verifying final consistency");
-    db0.assertThatUserCountIs((int) majorityCount);
-    db1.assertThatUserCountIs((int) majorityCount);
-    db2.assertThatUserCountIs((int) majorityCount);
+    dbs[leaderIdx].assertThatUserCountIs((int) majorityCount);
+    dbs[otherIdx].assertThatUserCountIs((int) majorityCount);
+    dbRestarted.assertThatUserCountIs((int) majorityCount);
 
-    db0.close();
-    db1.close();
-    db2.close();
+    dbs[leaderIdx].close();
+    dbs[otherIdx].close();
+    dbRestarted.close();
   }
 }
