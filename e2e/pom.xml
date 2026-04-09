@@ -34,7 +34,6 @@
     <logback-classic.version>1.5.32</logback-classic.version>
     <allowIncompleteProjects>true</allowIncompleteProjects>
     <assertj-db.version>3.0.2</assertj-db.version>
-    <toxi-proxy.version>2.1.11</toxi-proxy.version>
   </properties>
 
   <artifactId>arcadedb-e2e</artifactId>
@@ -96,13 +95,7 @@
       <version>${neo4j-driver.version}</version>
       <scope>test</scope>
     </dependency>
-    <dependency>
-      <groupId>eu.rekawek.toxiproxy</groupId>
-      <artifactId>toxiproxy-java</artifactId>
-      <version>${toxi-proxy.version}</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
+<dependency>
       <groupId>org.awaitility</groupId>
       <artifactId>awaitility</artifactId>
       <version>${awaitility.version}</version>
