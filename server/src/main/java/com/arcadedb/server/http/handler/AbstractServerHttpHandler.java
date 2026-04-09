@@ -342,18 +342,34 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final var authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);
     if (raftHA != null && raftHA.getClusterToken() != null) {
       final String auth = authHeader != null && !authHeader.isEmpty() ? authHeader.getFirst() : null;
-      if (auth != null && auth.startsWith("Bearer AU-")) {
-        // Session token: use cluster-internal auth headers instead
-        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+      if (auth != null && auth.startsWith(AUTHORIZATION_BEARER)) {
         final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
-        final HttpAuthSession session = httpServer.getAuthSessionManager().getSessionByToken(token);
-        if (session == null) {
-          conn.disconnect();
-          sendErrorResponse(exchange, 401, "Session expired or invalid", null, null);
-          return;
+
+        if (ApiTokenConfiguration.isApiToken(token)) {
+          // API token (at- prefix): resolve locally and forward as cluster token + user.
+          // This avoids sending long-lived API tokens in plain text over the inter-node channel.
+          try {
+            final var user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
+            conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+            conn.setRequestProperty(HEADER_FORWARDED_USER, user.getName());
+          } catch (final ServerSecurityException ex) {
+            conn.disconnect();
+            sendErrorResponse(exchange, 401, "Invalid or expired API token", null, null);
+            return;
+          }
+        } else {
+          // Session token (AU- prefix): resolve locally and forward as cluster token + user
+          final HttpAuthSession session = httpServer.getAuthSessionManager().getSessionByToken(token);
+          if (session == null) {
+            conn.disconnect();
+            sendErrorResponse(exchange, 401, "Session expired or invalid", null, null);
+            return;
+          }
+          conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+          conn.setRequestProperty(HEADER_FORWARDED_USER, session.getUser().getName());
         }
-        conn.setRequestProperty(HEADER_FORWARDED_USER, session.getUser().getName());
       } else if (auth != null)
+        // Basic auth: forward as-is (credentials are per-request, not long-lived)
         conn.setRequestProperty("Authorization", auth);
       else {
         // No Authorization header - this is a multi-hop proxy where the original request

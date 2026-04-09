@@ -134,10 +134,11 @@ public class RaftGroupCommitter {
 
     while (running) {
       try {
-        // Wait for the first entry (blocks until one arrives)
-        final PendingEntry first = queue.poll(100, TimeUnit.MILLISECONDS);
-        if (first == null)
-          continue;
+        // Block until the first entry arrives. Using take() instead of poll(100ms)
+        // eliminates up to 100ms latency for OLTP workloads with infrequent writes.
+        // The flusher wakes instantly when submitAndWait() enqueues an entry.
+        // The loop's running check is handled by interrupt() in stop().
+        final PendingEntry first = queue.take();
 
         batch.clear();
         batch.add(first);

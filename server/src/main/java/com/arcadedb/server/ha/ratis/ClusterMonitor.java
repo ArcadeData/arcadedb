@@ -78,6 +78,11 @@ public class ClusterMonitor {
     return Collections.unmodifiableMap(lags);
   }
 
+  public void removeReplica(final String replicaId) {
+    replicaMatchIndexes.remove(replicaId);
+    replicaLastWarnTime.remove(replicaId);
+  }
+
   public long getLeaderCommitIndex() {
     return leaderCommitIndex;
   }

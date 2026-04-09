@@ -26,6 +26,9 @@ import java.util.logging.Level;
 /**
  * HA verbose logging utility. Controlled by arcadedb.ha.logVerbose (0=off, 1=basic, 2=detailed, 3=trace).
  * Always-present log points that are silent by default - enable at runtime to debug cluster issues.
+ * <p>
+ * The level is cached in a volatile field and automatically refreshed every {@link #REFRESH_INTERVAL_MS}
+ * milliseconds, so runtime config changes take effect without an explicit call to {@link #refreshLevel()}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -38,21 +41,30 @@ public final class HALog {
   /** Level 3: every state machine operation, entry parsing, serialization */
   public static final int TRACE = 3;
 
-  /** Cached log level - avoids reading GlobalConfiguration on every call in the hot path. */
-  private static volatile int cachedLevel = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
+  private static final long REFRESH_INTERVAL_MS = 5_000;
+
+  private static volatile int  cachedLevel     = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
+  private static volatile long lastRefreshTime = System.currentTimeMillis();
 
   private HALog() {
   }
 
   /**
-   * Refreshes the cached log level from GlobalConfiguration. Call this after changing
-   * {@code arcadedb.ha.logVerbose} at runtime.
+   * Refreshes the cached log level from GlobalConfiguration.
    */
   public static void refreshLevel() {
     cachedLevel = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
+    lastRefreshTime = System.currentTimeMillis();
   }
 
   private static int getLevel() {
+    // Periodically re-read from GlobalConfiguration so runtime changes take effect
+    // without requiring an explicit refreshLevel() call.
+    final long now = System.currentTimeMillis();
+    if (now - lastRefreshTime > REFRESH_INTERVAL_MS) {
+      lastRefreshTime = now;
+      cachedLevel = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
+    }
     return cachedLevel;
   }
 

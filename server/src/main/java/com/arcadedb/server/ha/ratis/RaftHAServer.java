@@ -336,6 +336,14 @@ public class RaftHAServer {
       } catch (final Exception ignored) {
       }
 
+      // Close the old state machine to shut down its lifecycle executor and cancel
+      // any in-flight snapshot downloads or async tasks before replacing it.
+      final ArcadeDBStateMachine oldStateMachine = stateMachine;
+      try {
+        oldStateMachine.close();
+      } catch (final Exception ignored) {
+      }
+
       // Create a fresh state machine for the restart. The old state machine has a stale
       // lastAppliedTermIndex that conflicts with RECOVER mode's replay. The database state
       // on disk is the source of truth; the new state machine reads it from the snapshot.
@@ -730,12 +738,17 @@ public class RaftHAServer {
       return;
 
     final long deadline = System.currentTimeMillis() + quorumTimeout;
-    while (!leaderReady && System.currentTimeMillis() < deadline) {
-      try {
-        Thread.sleep(50);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return;
+    synchronized (leaderChangeNotifier) {
+      while (!leaderReady) {
+        final long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0)
+          break;
+        try {
+          leaderChangeNotifier.wait(remaining);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return;
+        }
       }
     }
     if (!leaderReady)
@@ -906,21 +919,28 @@ public class RaftHAServer {
   public void notifyLeaderChanged() {
     if (isLeader()) {
       // New leader must apply all committed entries before serving reads.
-      // Mark as not ready and schedule catch-up in the background.
+      // Mark as not ready; the catch-up runs in the background to avoid blocking
+      // the Ratis event thread (which processes heartbeats and elections).
       leaderReady = false;
-      HALog.log(this, HALog.BASIC, "This node became leader, waiting for state machine to catch up before serving reads");
-      try {
-        waitForLocalApply();
-        leaderReady = true;
-        HALog.log(this, HALog.BASIC, "Leader read barrier cleared: applied=%d >= commit=%d",
-            getLastAppliedIndex(), getCommitIndex());
-      } catch (final Exception e) {
-        // Still mark ready to avoid blocking all reads indefinitely
-        leaderReady = true;
-        LogManager.instance().log(this, Level.WARNING, "Leader read barrier wait failed: %s", e.getMessage());
-      }
+      HALog.log(this, HALog.BASIC, "This node became leader, scheduling state machine catch-up in background");
+      stateMachine.getLifecycleExecutor().submit(() -> {
+        try {
+          waitForLocalApply();
+          leaderReady = true;
+          HALog.log(this, HALog.BASIC, "Leader read barrier cleared: applied=%d >= commit=%d",
+              getLastAppliedIndex(), getCommitIndex());
+        } catch (final Exception e) {
+          leaderReady = true;
+          LogManager.instance().log(this, Level.WARNING, "Leader read barrier wait failed: %s", e.getMessage());
+        } finally {
+          // Wake up any threads blocked in waitForLeaderReady()
+          synchronized (leaderChangeNotifier) {
+            leaderChangeNotifier.notifyAll();
+          }
+        }
+      });
     } else {
-      leaderReady = true; // followers don't need this barrier
+      leaderReady = true;
     }
     synchronized (leaderChangeNotifier) {
       leaderChangeNotifier.notifyAll();
@@ -1043,23 +1063,26 @@ public class RaftHAServer {
       final var division = raftServer.getDivision(raftGroup.getGroupId());
       final var info = division.getInfo();
 
-      // Get follower peer IDs from the RoleInfoProto, which snapshots the LogAppender list once.
-      // The index arrays are derived from the same LogAppender list, so their ordering matches
-      // as long as no membership change occurs between calls.
+      // Snapshot the RoleInfoProto once - it contains peer IDs and last-RPC times
+      // from a single point in time (the protobuf is built atomically by Ratis).
       final var roleInfo = info.getRoleInfoProto();
       if (!roleInfo.hasLeaderInfo())
         return List.of();
 
       final List<RaftProtos.ServerRpcProto> followerInfos = roleInfo.getLeaderInfo().getFollowerInfoList();
+
+      // These two calls are NOT atomic with the roleInfo snapshot. A membership change
+      // between them can reorder or resize the arrays. We guard against this below.
       final long[] matchIndices = info.getFollowerMatchIndices();
       final long[] nextIndices = info.getFollowerNextIndices();
 
-      // If sizes diverge, a membership change happened between the calls - return what we can
-      // safely correlate rather than risk misattributing indices to the wrong peer.
-      final int safeSize = Math.min(followerInfos.size(), Math.min(matchIndices.length, nextIndices.length));
+      // If sizes diverge, a membership change happened between the calls.
+      // Discard the result rather than risk misattributing indices to the wrong peer.
+      if (followerInfos.size() != matchIndices.length || followerInfos.size() != nextIndices.length)
+        return List.of();
 
-      final List<Map<String, Object>> result = new ArrayList<>(safeSize);
-      for (int i = 0; i < safeSize; i++) {
+      final List<Map<String, Object>> result = new ArrayList<>(followerInfos.size());
+      for (int i = 0; i < followerInfos.size(); i++) {
         final String peerId = followerInfos.get(i).getId().getId().toStringUtf8();
         final long lastRpcElapsedMs = followerInfos.get(i).getLastRpcElapsedTimeMs();
         final Map<String, Object> state = new java.util.LinkedHashMap<>();
@@ -1070,7 +1093,9 @@ public class RaftHAServer {
         result.add(state);
       }
       return result;
-    } catch (final IOException e) {
+    } catch (final Exception e) {
+      // Catch any exception (IOException, ConcurrentModificationException, IndexOutOfBounds)
+      // from a membership change racing with the index array reads.
       return List.of();
     }
   }
@@ -1378,6 +1403,8 @@ public class RaftHAServer {
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to remove peer " + peerId + ": " + reply.getException());
       LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
+      if (clusterMonitor != null)
+        clusterMonitor.removeReplica(peerId);
     } catch (final IOException e) {
       throw new ConfigurationException("Failed to remove peer " + peerId, e);
     }

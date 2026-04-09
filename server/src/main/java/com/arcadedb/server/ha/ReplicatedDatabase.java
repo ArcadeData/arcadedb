@@ -154,8 +154,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
-            "Phase 2 commit failed AFTER successful Raft replication (db=%s). "
-                + "Stepping down to prevent stale reads. Error: %s", getName(), e.getMessage());
+            "Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). "
+                + "Followers have applied this transaction but the leader has not. "
+                + "Stepping down to prevent stale reads. Error: %s",
+            getName(), payload.tx, e.getMessage());
         // Step down so a follower with correct state takes over.
         // This node will self-heal on restart via Raft log replay.
         try {
@@ -164,7 +166,19 @@ public class ReplicatedDatabase implements DatabaseInternal {
             raftHA.stepDown();
         } catch (final Exception stepDownEx) {
           LogManager.instance().log(this, Level.SEVERE,
-              "Failed to step down after phase 2 failure (db=%s). Manual restart required.", getName());
+              "Failed to step down after phase 2 failure (db=%s, txId=%s). "
+                  + "Forcing server stop to prevent leader-follower divergence.",
+              getName(), payload.tx);
+          // If step-down fails, the leader is in an inconsistent state where
+          // followers applied the transaction but the leader did not. Force
+          // a server stop so Raft log replay corrects the state on restart.
+          try {
+            server.stop();
+          } catch (final Exception stopEx) {
+            LogManager.instance().log(this, Level.SEVERE,
+                "Server stop also failed (db=%s). Manual intervention required: %s",
+                getName(), stopEx.getMessage());
+          }
         }
         throw e;
       } finally {

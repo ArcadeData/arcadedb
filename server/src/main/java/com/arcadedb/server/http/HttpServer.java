@@ -377,6 +377,20 @@ public class HttpServer implements ServerPlugin {
     return webSocketEventBus;
   }
 
+  /**
+   * Returns the server's SSLContext built from the configured keystore and truststore,
+   * or null if SSL is not enabled. Used by snapshot downloads for inter-node HTTPS.
+   */
+  public SSLContext getSSLContext() {
+    if (!server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
+      return null;
+    try {
+      return createSSLContext();
+    } catch (final Exception e) {
+      return null;
+    }
+  }
+
   private SSLContext createSSLContext() throws Exception {
     ContextConfiguration configuration = server.getConfiguration();
 

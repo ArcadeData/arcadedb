@@ -111,6 +111,11 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     this.server = server;
   }
 
+  /** Returns the lifecycle executor for scheduling async tasks (leader catch-up, snapshot download). */
+  public ExecutorService getLifecycleExecutor() {
+    return lifecycleExecutor;
+  }
+
   @Override
   public void initialize(final RaftServer raftServer, final RaftGroupId groupId, final RaftStorage raftStorage) throws IOException {
     super.initialize(raftServer, groupId, raftStorage);
@@ -198,6 +203,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         case COMMAND_FORWARD -> LogManager.instance().log(this, Level.WARNING,
             "Unexpected COMMAND_FORWARD in Raft log at index %d - this entry type should use query(), not send()", index);
         case TRANSACTION -> applyTransactionEntry(data);
+        default -> throw new IllegalArgumentException("Unknown Raft log entry type: " + type + " at index " + index);
       }
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
@@ -397,9 +403,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   }
 
   // -- Command Forwarding via query() --
-  // Commands forwarded from followers are executed via sendReadAfterWrite() -> query().
-  // This does NOT go through the Raft log, avoiding deadlock with WAL replication inside the command.
-  // The command's side effects (WAL changes, schema changes) are replicated via separate TRANSACTION entries.
+  // NOTE: The HTTP proxy in AbstractServerHttpHandler is the primary forwarding path for follower writes.
+  // This Ratis query() path exists as a secondary mechanism but is currently not invoked by the HTTP layer.
+  // It is retained for potential future use (e.g., direct Ratis client forwarding without HTTP).
 
   @Override
   public CompletableFuture<Message> query(final Message request) {
@@ -426,21 +432,36 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       HALog.log(this, HALog.DETAILED, "Executing forwarded command on leader: %s %s (db=%s, isLeader=%s)",
           entry.language(), entry.command(), entry.databaseName(), isCurrentNodeLeader());
 
-      final ResultSet rs;
-      if (entry.namedParams() != null)
-        rs = db.command(entry.language(), entry.command(), entry.namedParams());
-      else if (entry.positionalParams() != null)
-        rs = db.command(entry.language(), entry.command(), entry.positionalParams());
-      else
-        rs = db.command(entry.language(), entry.command());
+      // Apply a timeout to prevent slow forwarded queries from starving the Ratis
+      // query thread pool. Use the database command timeout if set, otherwise the HA quorum timeout.
+      final long dbTimeout = db.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+      final long haTimeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+      final long timeout = dbTimeout > 0 ? dbTimeout : haTimeout;
 
+      final var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+        DatabaseContext.INSTANCE.init(db);
+        if (entry.namedParams() != null)
+          return db.command(entry.language(), entry.command(), entry.namedParams());
+        else if (entry.positionalParams() != null)
+          return db.command(entry.language(), entry.command(), entry.positionalParams());
+        else
+          return db.command(entry.language(), entry.command());
+      });
+
+      final ResultSet rs = future.get(timeout, java.util.concurrent.TimeUnit.MILLISECONDS);
       final byte[] resultBytes = RaftLogEntry.serializeCommandResult(rs);
       return CompletableFuture.completedFuture(Message.valueOf(
           ByteString.copyFrom(resultBytes)));
 
+    } catch (final java.util.concurrent.TimeoutException e) {
+      LogManager.instance().log(this, Level.WARNING, "Forwarded command timed out");
+      final byte[] errBytes = ("EForwarded command timed out").getBytes(StandardCharsets.UTF_8);
+      return CompletableFuture.completedFuture(Message.valueOf(
+          ByteString.copyFrom(errBytes)));
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error executing forwarded command", e);
-      final String errMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+      final Throwable cause = e instanceof java.util.concurrent.ExecutionException ? e.getCause() : e;
+      LogManager.instance().log(this, Level.SEVERE, "Error executing forwarded command", cause);
+      final String errMsg = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
       final byte[] errBytes = ("E" + errMsg).getBytes(StandardCharsets.UTF_8);
       return CompletableFuture.completedFuture(Message.valueOf(
           ByteString.copyFrom(errBytes)));
@@ -731,6 +752,20 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     } catch (final URISyntaxException e) {
       throw new IOException("Invalid snapshot URL: " + snapshotUrl, e);
     }
+
+    // When SSL is enabled, configure the connection to use the server's trust store
+    // so that self-signed certificates (e.g., from cert-manager in K8s) are accepted.
+    if (connection instanceof javax.net.ssl.HttpsURLConnection httpsConn) {
+      try {
+        final javax.net.ssl.SSLContext sslContext = server.getHttpServer().getSSLContext();
+        if (sslContext != null)
+          httpsConn.setSSLSocketFactory(sslContext.getSocketFactory());
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not configure SSL for snapshot download, using default trust store: %s", e.getMessage());
+      }
+    }
+
     connection.setRequestMethod("GET");
     connection.setConnectTimeout(30_000);
     connection.setReadTimeout(300_000); // 5 minutes for large databases
