@@ -1760,6 +1760,27 @@ public class RaftHAServer {
    *
    * @return array where [0]=host (including brackets for IPv6), [1]=first port, and optionally [2]=second port
    */
+  /**
+   * Validates that the given address is a well-formed host:port string with a port in the valid TCP range (1-65535).
+   * Call this before passing addresses to Ratis to produce clear error messages.
+   */
+  public static void validatePeerAddress(final String address) {
+    final String[] parts = parseHostPort(address);
+
+    if (parts[0].isEmpty())
+      throw new ConfigurationException("HA peer address has empty host: " + address);
+
+    final String portStr = parts[1];
+    final int port;
+    try {
+      port = Integer.parseInt(portStr);
+    } catch (final NumberFormatException e) {
+      throw new ConfigurationException("HA peer address has non-numeric port '" + portStr + "': " + address);
+    }
+    if (port < 1 || port > 65535)
+      throw new ConfigurationException("HA peer address port out of range (must be 1-65535): " + port);
+  }
+
   static String[] parseHostPort(final String address) {
     if (address == null || address.isEmpty())
       throw new ConfigurationException("HA peer address is empty");

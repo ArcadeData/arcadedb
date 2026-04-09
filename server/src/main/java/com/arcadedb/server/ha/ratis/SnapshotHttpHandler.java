@@ -164,6 +164,11 @@ public class SnapshotHttpHandler implements HttpHandler {
     exchange.startBlocking();
 
     final DatabaseInternal db = server.getDatabase(databaseName);
+    if (db == null) {
+      exchange.setStatusCode(404);
+      exchange.getResponseSender().send("Database '" + databaseName + "' was dropped during snapshot preparation");
+      return;
+    }
     // Unwrap ServerDatabase -> ReplicatedDatabase -> LocalDatabase for file access
     DatabaseInternal unwrapped = db.getEmbedded();
     if (unwrapped != null && !(unwrapped instanceof LocalDatabase))

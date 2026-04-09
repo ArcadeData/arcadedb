@@ -204,7 +204,7 @@ Complete reference of all `HA_*` entries in `GlobalConfiguration.java`. All sett
 | Setting | Property | Type | Default | Description |
 |---|---|---|---|---|
 | `HA_QUORUM` | `arcadedb.ha.quorum` | String | `majority` | Write quorum: `majority` or `all` |
-| `HA_QUORUM_TIMEOUT` | `arcadedb.ha.quorumTimeout` | Long | `10000` | Timeout in ms waiting for quorum acknowledgment |
+| `HA_QUORUM_TIMEOUT` | `arcadedb.ha.quorumTimeout` | Long | `10000` | Timeout in ms waiting for quorum acknowledgment. Also used as extended wait when an entry is already dispatched to Raft, so worst-case client latency is txTimeout + quorumTimeout |
 | `HA_READ_CONSISTENCY` | `arcadedb.ha.readConsistency` | String | `read_your_writes` | Follower read consistency: `eventual` (read locally, may be stale), `read_your_writes` (wait for client's last write), `linearizable` (wait for all committed writes) |
 
 #### Election and Timeouts
@@ -252,7 +252,7 @@ Complete reference of all `HA_*` entries in `GlobalConfiguration.java`. All sett
 | Setting | Property | Type | Default | Description |
 |---|---|---|---|---|
 | `HA_LOG_VERBOSE` | `arcadedb.ha.logVerbose` | Integer | `0` | Verbose logging: 0=off, 1=basic (elections, peers), 2=detailed (commands, WAL), 3=trace (all state machine ops) |
-| `HA_REPLICATION_LAG_WARNING` | `arcadedb.ha.replicationLagWarning` | Integer | `1000` | Raft log index gap threshold for replication lag warnings. 0 = disabled |
+| `HA_REPLICATION_LAG_WARNING` | `arcadedb.ha.replicationLagWarning` | Integer | `1000` | Raft log index gap (number of uncommitted entries) between leader and follower before emitting replication lag warnings. 0 = disabled |
 | `HA_ERROR_RETRIES` | `arcadedb.ha.errorRetries` | Integer | `0` | Automatic retries on IO errors. 0 = retry against all configured servers |
 
 #### Kubernetes
@@ -464,6 +464,16 @@ All pass when run individually. Port conflicts occur when multiple HA test class
 - **Multi-Raft groups**: One Raft group per database (currently all databases share one group). This would allow independent replication policies per database.
 - **JWT-based auth for cluster**: Replace Basic auth forwarding in HTTP proxy with stateless JWT tokens that work across servers without session affinity.
 - **Alert configuration in Studio**: Configurable thresholds for replication lag, election frequency, quorum health with notifications.
+
+## Operational Notes
+
+### Minimum cluster size for fault tolerance
+
+A 2-node Raft cluster has a quorum of 2, meaning **both** nodes must be available for the cluster to accept writes and elect a leader. If either node fails, the remaining node cannot form a quorum on its own and the cluster becomes read-only (or unavailable, depending on read consistency settings).
+
+For fault tolerance, deploy at least **3 nodes**. A 3-node cluster tolerates 1 failure, a 5-node cluster tolerates 2 failures, and so on (quorum = N/2 + 1).
+
+A 2-node cluster is useful for development, testing, or scenarios where you only need replication (not fault tolerance), but operators should be aware that losing one node in a 2-node cluster leaves a single node unable to elect a new leader.
 
 ## Comparison: `apache-ratis` vs `ha-redesign` Branch
 

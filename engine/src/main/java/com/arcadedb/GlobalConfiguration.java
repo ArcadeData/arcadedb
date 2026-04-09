@@ -520,7 +520,7 @@ public enum GlobalConfiguration {
       String.class, ""),
 
   HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
-      "Raft log index gap threshold for emitting replication lag warnings. 0 = disabled",
+      "Raft log index gap (number of uncommitted entries) between leader and follower before emitting replication lag warnings. 0 = disabled",
       Long.class, 1000L),
 
   HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
@@ -539,7 +539,11 @@ public enum GlobalConfiguration {
       "Default quorum: 'majority' or 'all' servers. Default is majority", String.class, "majority",
       Set.of("majority", "all")),
 
-  HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
+  HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER,
+      "Timeout in ms waiting for the quorum. Also used as the extended wait after the initial transaction timeout "
+          + "when an entry has already been dispatched to Raft, so the worst-case client-visible latency is "
+          + "txTimeout + quorumTimeout",
+      Long.class, 10000),
 
   HA_ELECTION_TIMEOUT_MIN("arcadedb.ha.electionTimeoutMin", SCOPE.SERVER,
       "Minimum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 1500),

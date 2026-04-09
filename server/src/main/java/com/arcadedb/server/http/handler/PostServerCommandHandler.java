@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -881,8 +882,17 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (parts.length < 2)
       return new ExecutionResponse(400, "{ \"error\" : \"Usage: ha add peer <peerId> <address>\"}");
 
-    raftHA.addPeer(parts[0], parts[1]);
-    response.put("result", "Peer " + parts[0] + " added");
+    final String peerId = parts[0];
+    final String address = parts[1];
+
+    try {
+      RaftHAServer.validatePeerAddress(address);
+    } catch (final ConfigurationException e) {
+      return new ExecutionResponse(400, "{ \"error\" : \"Invalid peer address: " + e.getMessage() + "\"}");
+    }
+
+    raftHA.addPeer(peerId, address);
+    response.put("result", "Peer " + peerId + " added");
     return new ExecutionResponse(200, response.toString());
   }
 
