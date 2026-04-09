@@ -24,7 +24,9 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.ReplicationException;
 import com.arcadedb.server.ReplicationCallback;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;
@@ -129,6 +131,12 @@ public class RaftHAServer {
   private final    AtomicInteger            applyWaiterCount     = new AtomicInteger();
   private final    Object                   leaderChangeNotifier = new Object();
   private volatile int                      lastClusterConfigHash;
+  /**
+   * Set to false when this node becomes leader, true once all committed entries
+   * have been applied to the state machine. Reads on the leader wait for this
+   * flag before returning results, preventing stale reads during leadership transitions.
+   */
+  private volatile boolean                  leaderReady          = true;
   private          ScheduledExecutorService lagMonitorExecutor;
   private          ScheduledExecutorService healthMonitorExecutor;
 
@@ -705,14 +713,95 @@ public class RaftHAServer {
   }
 
   /**
+   * Returns true if this node is the leader and has finished applying all committed
+   * entries from the previous term. During the brief window after election, this returns
+   * false until the state machine catches up.
+   */
+  public boolean isLeaderReady() {
+    return leaderReady;
+  }
+
+  /**
+   * If this node is the leader but not yet ready (catch-up in progress), blocks until ready
+   * or the quorum timeout expires. No-op if the leader is already caught up or this is a follower.
+   */
+  public void waitForLeaderReady() {
+    if (!isLeader() || leaderReady)
+      return;
+
+    final long deadline = System.currentTimeMillis() + quorumTimeout;
+    while (!leaderReady && System.currentTimeMillis() < deadline) {
+      try {
+        Thread.sleep(50);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
+    if (!leaderReady)
+      HALog.log(this, HALog.BASIC, "waitForLeaderReady timed out after %dms", quorumTimeout);
+  }
+
+  /**
+   * Ensures this leader is still the legitimate leader before serving a read,
+   * using Ratis's read index protocol (Section 6.4 of the Raft paper).
+   * <p>
+   * Fast path: if the leader lease is still valid (received heartbeat acks recently),
+   * returns immediately with no network round-trip. Slow path: sends heartbeats to
+   * a majority and waits for acknowledgment (~1 RTT).
+   * <p>
+   * Throws {@link ServerIsNotTheLeaderException} if this node is no longer the leader
+   * (e.g., after SIGSTOP/SIGCONT).
+   */
+  public void ensureLinearizableRead() {
+    if (raftClient == null)
+      throw new ServerIsNotTheLeaderException("Raft client not initialized", getLeaderHTTPAddress());
+    try {
+      final RaftClientReply reply = raftClient.async()
+          .sendReadOnly(Message.valueOf(ByteString.EMPTY))
+          .get(quorumTimeout, TimeUnit.MILLISECONDS);
+      if (!reply.isSuccess()) {
+        final var ex = reply.getException();
+        if (ex instanceof org.apache.ratis.protocol.exceptions.NotLeaderException nle) {
+          final var suggestedLeader = nle.getSuggestedLeader();
+          throw new ServerIsNotTheLeaderException("Not the leader (detected via read index)",
+              suggestedLeader != null ? peerHttpAddresses.get(suggestedLeader.getId().toString()) : null);
+        }
+        throw new ReplicationException("Linearizable read check failed: " + ex.getMessage());
+      }
+      // Reply success means the leader lease is valid and the read index is confirmed.
+      // Now wait for the local state machine to catch up to the read index.
+      final long readIndex = reply.getLogIndex();
+      if (readIndex > 0)
+        waitForAppliedIndex(readIndex);
+    } catch (final ServerIsNotTheLeaderException e) {
+      throw e;
+    } catch (final java.util.concurrent.TimeoutException e) {
+      HALog.log(this, HALog.BASIC, "ensureLinearizableRead timed out after %dms", quorumTimeout);
+      throw new ReplicationException("Linearizable read timed out after " + quorumTimeout + "ms");
+    } catch (final Exception e) {
+      if (e.getCause() instanceof org.apache.ratis.protocol.exceptions.NotLeaderException nle) {
+        final var suggestedLeader = nle.getSuggestedLeader();
+        throw new ServerIsNotTheLeaderException("Not the leader (detected via read index)",
+            suggestedLeader != null ? peerHttpAddresses.get(suggestedLeader.getId().toString()) : null);
+      }
+      throw new ReplicationException("Linearizable read check failed: " + e.getMessage());
+    }
+  }
+
+  /**
    * Waits until the local state machine has applied all committed entries.
-   * Used for LINEARIZABLE consistency: contacts the leader to get the current commit index,
-   * then waits for the local state machine to catch up.
+   * Used for leader read barrier: waits until lastAppliedIndex >= commitIndex.
+   * In steady state this is a fast no-op (already caught up).
    */
   public void waitForLocalApply() {
     try {
       final long commitIndex = getCommitIndex();
       if (commitIndex <= 0)
+        return;
+
+      // Fast path: no lock needed if already caught up (common case for steady-state leader)
+      if (getLastAppliedIndex() >= commitIndex)
         return;
 
       applyWaiterCount.incrementAndGet();
@@ -815,6 +904,24 @@ public class RaftHAServer {
    * Called by ArcadeDBStateMachine when the leader changes to wake up leaveCluster().
    */
   public void notifyLeaderChanged() {
+    if (isLeader()) {
+      // New leader must apply all committed entries before serving reads.
+      // Mark as not ready and schedule catch-up in the background.
+      leaderReady = false;
+      HALog.log(this, HALog.BASIC, "This node became leader, waiting for state machine to catch up before serving reads");
+      try {
+        waitForLocalApply();
+        leaderReady = true;
+        HALog.log(this, HALog.BASIC, "Leader read barrier cleared: applied=%d >= commit=%d",
+            getLastAppliedIndex(), getCommitIndex());
+      } catch (final Exception e) {
+        // Still mark ready to avoid blocking all reads indefinitely
+        leaderReady = true;
+        LogManager.instance().log(this, Level.WARNING, "Leader read barrier wait failed: %s", e.getMessage());
+      }
+    } else {
+      leaderReady = true; // followers don't need this barrier
+    }
     synchronized (leaderChangeNotifier) {
       leaderChangeNotifier.notifyAll();
     }

@@ -667,12 +667,12 @@ public class ReplicatedDatabase implements DatabaseInternal {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
       if (!analyzed.isIdempotent() || analyzed.isDDL())
-        // Throw ServerIsNotTheLeaderException - the HTTP proxy in AbstractServerHttpHandler
-        // catches this and forwards the request to the leader transparently
         throw new ServerIsNotTheLeaderException("Write commands must be executed on the leader server",
             getLeaderHTTPAddress());
+      waitForReadConsistency();
       return proxied.command(language, query, configuration, args);
     }
+    waitForReadConsistency();
     return proxied.command(language, query, configuration, args);
   }
 
@@ -700,6 +700,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
       if (!analyzed.isIdempotent() || analyzed.isDDL())
         throw new ServerIsNotTheLeaderException("Write commands must be executed on the leader server",
             getLeaderHTTPAddress());
+      waitForReadConsistency();
+    } else {
+      waitForReadConsistency();
     }
     return proxied.command(language, query, configuration, args);
   }
@@ -723,25 +726,43 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   /**
-   * Waits for the follower to catch up to the required consistency level before executing a read.
-   * On the leader, this is a no-op (data is always current).
+   * Waits for read consistency before executing a read.
    * <p>
-   * The consistency level and bookmark are read from the current thread's request context
-   * (set by the HTTP handler via {@link #setReadConsistencyContext}).
+   * Behavior depends on the configured consistency level:
+   * <ul>
+   *   <li><b>EVENTUAL</b>: No waiting. Reads from local state (fastest, may be stale on followers).</li>
+   *   <li><b>READ_YOUR_WRITES</b>: Followers wait until they've applied the client's last write (bookmark).
+   *       Leader waits for lastAppliedIndex >= commitIndex (fast no-op in steady state).</li>
+   *   <li><b>LINEARIZABLE</b>: Leader verifies it still holds the Raft lease via {@code sendReadOnly()}
+   *       (Raft paper Section 6.4). If the lease is valid, returns immediately (no round-trip).
+   *       If the lease expired (e.g., after SIGSTOP/SIGCONT), sends heartbeats to a majority
+   *       before serving the read. Followers wait for all committed entries to be applied.</li>
+   * </ul>
+   * The consistency level comes from the per-request HTTP header ({@code X-ArcadeDB-Read-Consistency})
+   * or the global config ({@code arcadedb.ha.readConsistency}).
    */
   private void waitForReadConsistency() {
-    if (isLeader())
-      return;
-
     final var raftHA = server.getHA();
     if (raftHA == null)
       return;
 
     final var ctx = READ_CONSISTENCY_CONTEXT.get();
-    if (ctx == null)
-      return;
+    final Database.READ_CONSISTENCY consistency = ctx != null ? ctx.consistency : null;
 
-    final Database.READ_CONSISTENCY consistency = ctx.consistency;
+    if (isLeader()) {
+      if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
+        // Full Raft read protocol: verify lease or send heartbeats to majority.
+        // This guarantees linearizability even after SIGSTOP/SIGCONT.
+        raftHA.ensureLinearizableRead();
+      } else {
+        // Default leader barrier: wait for lastAppliedIndex >= commitIndex.
+        // Handles normal leadership transitions but not SIGSTOP (deposed leader).
+        raftHA.waitForLocalApply();
+      }
+      return;
+    }
+
+    // Follower reads
     if (consistency == null || consistency == Database.READ_CONSISTENCY.EVENTUAL)
       return;
 
@@ -749,8 +770,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
       if (ctx.readAfterIndex >= 0)
         raftHA.waitForAppliedIndex(ctx.readAfterIndex);
     } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
-      // Use the client's bookmark if available (from write response headers - reflects the leader's commit index).
-      // Otherwise fall back to waiting for the local commit index to be applied.
       if (ctx.readAfterIndex >= 0)
         raftHA.waitForAppliedIndex(ctx.readAfterIndex);
       else
