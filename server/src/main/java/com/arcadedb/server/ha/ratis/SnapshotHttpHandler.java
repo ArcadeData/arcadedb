@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.ratis;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
@@ -59,15 +60,17 @@ import java.util.zip.ZipOutputStream;
  */
 public class SnapshotHttpHandler implements HttpHandler {
 
-  // Limit concurrent snapshot downloads to prevent NIC saturation and read-lock stacking
-  // during mass follower restarts. Excess requests get HTTP 503 so followers retry with backoff.
-  private static final int       MAX_CONCURRENT_SNAPSHOTS = 2;
-  private final        Semaphore snapshotSemaphore        = new Semaphore(MAX_CONCURRENT_SNAPSHOTS);
-
   private final HttpServer httpServer;
+  private final int       maxConcurrentSnapshots;
+  private final Semaphore snapshotSemaphore;
 
   public SnapshotHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
+    // Limit concurrent snapshot downloads to prevent NIC saturation and read-lock stacking
+    // during mass follower restarts. Excess requests get HTTP 503 so followers retry with backoff.
+    this.maxConcurrentSnapshots = httpServer.getServer().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT);
+    this.snapshotSemaphore = new Semaphore(maxConcurrentSnapshots);
   }
 
   @Override
@@ -144,7 +147,7 @@ public class SnapshotHttpHandler implements HttpHandler {
     if (!snapshotSemaphore.tryAcquire()) {
       LogManager.instance().log(this, Level.WARNING,
           "Snapshot download rejected for '%s': %d concurrent downloads already in progress",
-          databaseName, MAX_CONCURRENT_SNAPSHOTS);
+          databaseName, maxConcurrentSnapshots);
       exchange.setStatusCode(503);
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
       exchange.getResponseSender().send("Too many concurrent snapshot downloads, retry later");

@@ -117,6 +117,24 @@ class RaftLogEntryTest {
   }
 
   @Test
+  void testFromCodeReturnsNullForUnknownType() {
+    // Forward-compatibility: unknown type codes return null instead of throwing,
+    // so an older node can skip entries from a newer node during rolling upgrades.
+    assertThat(RaftLogEntry.EntryType.fromCode((byte) 0)).isNull();
+    assertThat(RaftLogEntry.EntryType.fromCode((byte) 2)).isNull();
+    assertThat(RaftLogEntry.EntryType.fromCode((byte) 99)).isNull();
+    assertThat(RaftLogEntry.EntryType.fromCode((byte) -1)).isNull();
+  }
+
+  @Test
+  void testReadTypeReturnsNullForUnknownType() {
+    final ByteBuffer buffer = ByteBuffer.allocate(1);
+    buffer.put((byte) 42);
+    buffer.flip();
+    assertThat(RaftLogEntry.readType(buffer)).isNull();
+  }
+
+  @Test
   void testDeserializeTransactionRejectsCorruptedStringLength() {
     // Craft a binary buffer that looks like a TRANSACTION entry but has a corrupted string
     // length field that declares a huge string (e.g. 1GB), which would cause OOM if uncapped.

@@ -71,6 +71,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.stream.Stream;
@@ -104,7 +105,8 @@ public class RaftHAServer {
     }
   }
 
-  // PBKDF2 parameters for cluster token derivation (initClusterToken)
+  // PBKDF2 parameters for cluster token derivation (initClusterToken).
+  // 100k iterations is the OWASP 2023 recommendation for PBKDF2-HMAC-SHA256.
   private static final int PBKDF2_ITERATIONS      = 100_000;
   private static final int PBKDF2_KEY_LENGTH_BITS = 256;
 
@@ -113,6 +115,44 @@ public class RaftHAServer {
   private static final long AUTO_JOIN_JITTER_MAX_MS        = 3000L;
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MIN_SECS = 3;
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MAX_SECS = 5;
+
+  // Leadership transfer timeout (ms). Generous to allow log catch-up on the target peer
+  // before it can accept the leadership role.
+  private static final long LEADERSHIP_TRANSFER_TIMEOUT_MS = 10_000L;
+
+  // After requesting leadership transfer, how long to wait for the leader change notification
+  // before proceeding with shutdown. Short because the transfer itself has its own timeout.
+  private static final long LEADERSHIP_CHANGE_WAIT_MS = 5_000L;
+
+  // Client retry policy for the RaftClient used to submit transactions.
+  // Exponential backoff from 100ms to 5s covers transient leader unavailability.
+  private static final long CLIENT_RETRY_BASE_SLEEP_MS = 100L;
+  private static final long CLIENT_RETRY_MAX_SLEEP_SECS = 5L;
+
+  // Lag monitor: checks follower replication lag every N seconds.
+  private static final int LAG_MONITOR_INITIAL_DELAY_SECS = 5;
+  private static final int LAG_MONITOR_INTERVAL_SECS      = 5;
+
+  // Health monitor: checks Ratis server lifecycle state and restarts if CLOSED.
+  // 3s interval balances quick recovery against CPU overhead of the lifecycle check.
+  private static final int HEALTH_MONITOR_INITIAL_DELAY_SECS = 5;
+  private static final int HEALTH_MONITOR_INTERVAL_SECS      = 3;
+
+  // Ratis RPC and connection timeouts (buildRaftProperties).
+  // Server-side RPC request timeout: how long the leader waits for a follower AppendEntries response.
+  private static final int RPC_REQUEST_TIMEOUT_SECS = 10;
+  // Slowness/close thresholds: how long before a follower is marked slow or its connection is closed.
+  // Set high (5 min) to survive network partitions without prematurely evicting followers.
+  private static final int FOLLOWER_SLOWNESS_TIMEOUT_SECS = 300;
+  private static final int FOLLOWER_CLOSE_THRESHOLD_SECS  = 300;
+
+  // Maximum log entries per AppendEntries RPC batch. Balances throughput vs. memory per batch.
+  private static final int APPEND_ENTRIES_MAX_ELEMENTS = 256;
+
+  // Leader lease ratio: fraction of the election timeout during which the leader considers
+  // its lease valid for serving linearizable reads without a round-trip. 0.9 means the lease
+  // expires at 90% of the election timeout, leaving a 10% safety margin.
+  private static final double LEADER_LEASE_TIMEOUT_RATIO = 0.9;
 
   private final    ArcadeDBServer       server;
   private final    ContextConfiguration configuration;
@@ -383,17 +423,15 @@ public class RaftHAServer {
    * leader via normal Raft consensus once a majority becomes reachable.
    */
   private void tryAutoJoinCluster() {
-    // Randomized jitter (0-3s) to spread probe traffic when multiple pods start simultaneously
+    // Random jitter (100ms-3s) to spread probe traffic when multiple pods start simultaneously
     // (e.g. K8s Parallel pod management policy or mass restart).
-    final long jitterMs = Math.abs(localPeerId.hashCode() % AUTO_JOIN_JITTER_MAX_MS);
-    if (jitterMs > 0) {
-      HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
-      try {
-        Thread.sleep(jitterMs);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return;
-      }
+    final long jitterMs = ThreadLocalRandom.current().nextLong(100, AUTO_JOIN_JITTER_MAX_MS);
+    HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
+    try {
+      Thread.sleep(jitterMs);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return;
     }
 
     HALog.log(this, HALog.BASIC, "K8s auto-join: attempting to join existing cluster...");
@@ -565,9 +603,9 @@ public class RaftHAServer {
           if (!peer.getId().equals(localPeerId)) {
             HALog.log(this, HALog.BASIC, "Leaving cluster: transferring leadership to %s before removal", peer.getId());
             try {
-              transferLeadership(peer.getId().toString(), 10_000);
+              transferLeadership(peer.getId().toString(), LEADERSHIP_TRANSFER_TIMEOUT_MS);
               // Wait for leadership change notification instead of polling
-              final long deadline = System.currentTimeMillis() + 5_000;
+              final long deadline = System.currentTimeMillis() + LEADERSHIP_CHANGE_WAIT_MS;
               synchronized (leaderChangeNotifier) {
                 while (isLeader()) {
                   final long remaining = deadline - System.currentTimeMillis();
@@ -1261,8 +1299,8 @@ public class RaftHAServer {
         .setLeaderId(localPeerId)
         .setProperties(raftProperties)
         .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
-            .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
-            .setMaxSleepTime(TimeDuration.valueOf(5, TimeUnit.SECONDS))
+            .setBaseSleepTime(TimeDuration.valueOf(CLIENT_RETRY_BASE_SLEEP_MS, TimeUnit.MILLISECONDS))
+            .setMaxSleepTime(TimeDuration.valueOf(CLIENT_RETRY_MAX_SLEEP_SECS, TimeUnit.SECONDS))
             .build())
         .build();
   }
@@ -1285,7 +1323,8 @@ public class RaftHAServer {
       t.setDaemon(true);
       return t;
     });
-    lagMonitorExecutor.scheduleAtFixedRate(this::checkReplicaLag, 5, 5, TimeUnit.SECONDS);
+    lagMonitorExecutor.scheduleAtFixedRate(this::checkReplicaLag,
+        LAG_MONITOR_INITIAL_DELAY_SECS, LAG_MONITOR_INTERVAL_SECS, TimeUnit.SECONDS);
   }
 
   private void stopLagMonitor() {
@@ -1311,7 +1350,7 @@ public class RaftHAServer {
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING, "Health monitor error: %s", e.getMessage());
       }
-    }, 5, 3, TimeUnit.SECONDS);
+    }, HEALTH_MONITOR_INITIAL_DELAY_SECS, HEALTH_MONITOR_INTERVAL_SECS, TimeUnit.SECONDS);
   }
 
   private void stopHealthMonitor() {
@@ -1448,7 +1487,7 @@ public class RaftHAServer {
     for (final var peer : getLivePeers()) {
       if (!peer.getId().toString().equals(leaderName)) {
         try {
-          transferLeadership(peer.getId().toString(), 10_000);
+          transferLeadership(peer.getId().toString(), LEADERSHIP_TRANSFER_TIMEOUT_MS);
           return;
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE,
@@ -1582,28 +1621,24 @@ public class RaftHAServer {
       writeBuffer = SizeInBytes.valueOf(minWriteBuffer);
     }
     RaftServerConfigKeys.Log.setWriteBufferSize(properties, writeBuffer);
-    RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, 256);
+    RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, APPEND_ENTRIES_MAX_ELEMENTS);
 
     // Leader lease: enables consistent reads from the leader without a round-trip to followers.
     // The leader can serve reads as long as its lease hasn't expired (based on heartbeat responses).
     RaftServerConfigKeys.Read.setLeaderLeaseEnabled(properties, true);
-    RaftServerConfigKeys.Read.setLeaderLeaseTimeoutRatio(properties, 0.9);
+    RaftServerConfigKeys.Read.setLeaderLeaseTimeoutRatio(properties, LEADER_LEASE_TIMEOUT_RATIO);
     RaftServerConfigKeys.Read.setOption(properties, RaftServerConfigKeys.Read.Option.LINEARIZABLE);
 
     // Note: Ratis uses MAJORITY consensus by default.
     // For ALL quorum mode, we use the Watch API after each write to wait for ALL replicas.
     // See sendToRaft() for the ALL quorum implementation.
 
-    // Server-side RPC request timeout: how long the leader waits for follower AppendEntries responses.
-    // Generous value allows gRPC channels to recover after network partitions.
-    RaftServerConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
-
-    // Slowness timeout: how long before marking a follower as slow. Must survive partitions.
-    RaftServerConfigKeys.Rpc.setSlownessTimeout(properties, TimeDuration.valueOf(300, TimeUnit.SECONDS));
-
-    // Close threshold: how long before the server closes a follower's connection.
-    // Set high to allow recovery after long network partitions without losing the peer.
-    RaftServerConfigKeys.setCloseThreshold(properties, TimeDuration.valueOf(300, TimeUnit.SECONDS));
+    RaftServerConfigKeys.Rpc.setRequestTimeout(properties,
+        TimeDuration.valueOf(RPC_REQUEST_TIMEOUT_SECS, TimeUnit.SECONDS));
+    RaftServerConfigKeys.Rpc.setSlownessTimeout(properties,
+        TimeDuration.valueOf(FOLLOWER_SLOWNESS_TIMEOUT_SECS, TimeUnit.SECONDS));
+    RaftServerConfigKeys.setCloseThreshold(properties,
+        TimeDuration.valueOf(FOLLOWER_CLOSE_THRESHOLD_SECS, TimeUnit.SECONDS));
 
     // gRPC flow control window: larger window helps with catch-up replication after partitions
     final String flowControlWindow = configuration.getValueAsString(GlobalConfiguration.HA_GRPC_FLOW_CONTROL_WINDOW);

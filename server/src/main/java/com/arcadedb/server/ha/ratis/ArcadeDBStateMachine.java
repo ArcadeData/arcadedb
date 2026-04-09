@@ -189,13 +189,16 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       final byte[] data = new byte[entryData.remaining()];
       entryData.get(data);
 
-      final RaftLogEntry.EntryType type;
-      try {
-        type = RaftLogEntry.readType(ByteBuffer.wrap(data));
-      } catch (final IllegalArgumentException e) {
-        // Unknown entry type - skip (Ratis internal entries like configuration changes)
-        LogManager.instance().log(this, Level.FINE, "Skipping unknown Raft log entry at index %d (type byte: %d)", index,
-            data.length > 0 ? data[0] : -1);
+      final RaftLogEntry.EntryType type = RaftLogEntry.readType(ByteBuffer.wrap(data));
+
+      if (type == null) {
+        // Unrecognized entry type - likely from a newer node during a rolling upgrade.
+        // Skip it so the state machine stays healthy; the entry will be applied by nodes
+        // that understand this type.
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipping unrecognized Raft log entry at index %d (type byte: %d). "
+                + "This node may be running an older version than the entry's author",
+            index, data.length > 0 ? data[0] : -1);
         lastAppliedIndex.set(index);
         updateLastAppliedTermIndex(logEntry.getTerm(), index);
         return CompletableFuture.completedFuture(Message.EMPTY);
@@ -206,7 +209,6 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       switch (type) {
         case CREATE_DATABASE -> applyCreateDatabase(data);
         case TRANSACTION -> applyTransactionEntry(data);
-        default -> throw new IllegalArgumentException("Unknown Raft log entry type: " + type + " at index " + index);
       }
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
@@ -310,9 +312,11 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       } catch (final com.arcadedb.exception.ConcurrentModificationException e) {
         // After a cold restart or snapshot installation, Ratis may replay entries that were already
         // applied to the database (via WAL recovery or prior commit). The page version check in
-        // applyChanges() detects this as a ConcurrentModificationException. This is safe to skip.
-        HALog.log(this, HALog.BASIC, "Skipping already-applied WAL entry (db=%s, txId=%d): %s",
-            entry.databaseName(), walTx.txId, e.getMessage());
+        // applyChanges() detects this as a ConcurrentModificationException. This is safe to skip,
+        // but must always be visible in logs so operators can distinguish expected replay from
+        // unexpected data inconsistency.
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipping already-applied WAL entry (db=%s, txId=%d): %s", entry.databaseName(), walTx.txId, e.getMessage());
       }
     }
 
@@ -385,8 +389,24 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private void createNewFiles(final DatabaseInternal db, final Map<Integer, String> filesToAdd) throws IOException {
     final String databasePath = db.getDatabasePath();
     DatabaseContext.INSTANCE.init(db);
-    for (final Map.Entry<Integer, String> entry : filesToAdd.entrySet())
+    for (final Map.Entry<Integer, String> entry : filesToAdd.entrySet()) {
+      // Idempotency guard: during log replay after a cold restart or snapshot installation,
+      // the file may already exist on disk from a prior commit. Skip creation to avoid
+      // disturbing a file that already has valid data.
+      if (db.getFileManager().existsFile(entry.getKey())) {
+        LogManager.instance().log(this, Level.FINE, "Skipping file creation for fileId=%d (%s), already registered",
+            entry.getKey(), entry.getValue());
+        continue;
+      }
+      final File osFile = new File(databasePath + File.separator + entry.getValue());
+      if (osFile.exists() && osFile.length() > 0) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipping file creation for fileId=%d (%s), file already exists on disk with size %d",
+            entry.getKey(), entry.getValue(), osFile.length());
+        continue;
+      }
       db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + File.separator + entry.getValue());
+    }
   }
 
   private void removeDroppedFiles(final DatabaseInternal db, final Map<Integer, String> filesToRemove) throws IOException {

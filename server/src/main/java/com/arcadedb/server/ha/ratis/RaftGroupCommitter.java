@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.ratis;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.network.binary.ReplicationQueueFullException;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -74,8 +75,8 @@ public class RaftGroupCommitter {
   public void submitAndWait(final byte[] entry, final long timeoutMs) {
     final PendingEntry pending = new PendingEntry(entry);
     if (!queue.offer(pending))
-      throw new QuorumNotReachedException(
-          "Replication queue is full (" + MAX_QUEUE_SIZE + " entries). Server is overloaded or cluster is unreachable");
+      throw new ReplicationQueueFullException(
+          "Replication queue is full (" + MAX_QUEUE_SIZE + " entries). Server is overloaded, retry later");
 
     try {
       final Exception error = pending.future.get(timeoutMs, TimeUnit.MILLISECONDS);

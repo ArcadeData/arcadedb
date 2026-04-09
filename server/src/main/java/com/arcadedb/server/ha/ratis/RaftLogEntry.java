@@ -58,11 +58,16 @@ public class RaftLogEntry {
       return code;
     }
 
+    /**
+     * Returns the EntryType for the given wire code, or {@code null} if the code is unrecognized.
+     * Returning null instead of throwing allows forward-compatible handling during rolling upgrades
+     * where a newer node may write entry types that an older node does not yet know about.
+     */
     public static EntryType fromCode(final byte code) {
       return switch (code) {
         case 1 -> CREATE_DATABASE;
         case 3 -> TRANSACTION;
-        default -> throw new IllegalArgumentException("Unknown RaftLogEntry type code: " + code);
+        default -> null;
       };
     }
   }
