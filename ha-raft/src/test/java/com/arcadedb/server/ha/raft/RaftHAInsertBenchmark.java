@@ -443,7 +443,7 @@ public class RaftHAInsertBenchmark {
     CodeUtils.sleep(1_000);
     for (int i = 0; i < serverCount; i++) {
       FileUtils.deleteRecursively(new File("./target/databases" + i));
-      FileUtils.deleteRecursively(new File("./target/raft-storage-peer-" + i));
+      FileUtils.deleteRecursively(new File("./target/raft-storage-localhost_" + (BASE_RAFT_PORT + i)));
     }
     new File("./target/config/server-users.jsonl").delete();
   }

@@ -39,6 +39,14 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   private static final int BASE_RAFT_PORT = 2434;
 
   /**
+   * Returns the peer ID for a given server index in the test cluster.
+   * Matches the host_raftPort format used by {@link RaftHAServer#parsePeerList}.
+   */
+  protected String peerIdForIndex(final int index) {
+    return "localhost_" + (BASE_RAFT_PORT + index);
+  }
+
+  /**
    * Returns true if Raft storage directories should be preserved across server stop/start
    * within a single test. Override to true in tests that call {@link #restartServer(int)}.
    * Default is false to match existing test behaviour.
@@ -71,7 +79,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     super.deleteDatabaseFolders();
     final String rootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
     for (int i = 0; i < getServerCount(); i++)
-      FileUtils.deleteRecursively(new File(rootPath + File.separator + "raft-storage-peer-" + i));
+      FileUtils.deleteRecursively(new File(rootPath + File.separator + "raft-storage-" + peerIdForIndex(i)));
   }
 
   @Override

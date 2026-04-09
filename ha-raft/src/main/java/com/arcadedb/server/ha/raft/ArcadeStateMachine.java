@@ -172,6 +172,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (newLeaderId.equals(raftHAServer.getLocalPeerId())) {
       LogManager.instance().log(this, Level.INFO, "This node is now LEADER");
       raftHAServer.startLagMonitor();
+      raftHAServer.printClusterConfiguration();
     } else {
       LogManager.instance().log(this, Level.INFO, "This node is now REPLICA (leader: %s)", leaderName);
       raftHAServer.stopLagMonitor();

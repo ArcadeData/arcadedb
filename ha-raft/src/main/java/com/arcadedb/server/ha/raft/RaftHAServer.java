@@ -38,6 +38,7 @@ import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.storage.RaftStorage;
 
+import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
@@ -48,6 +49,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -89,6 +91,7 @@ public class RaftHAServer {
   private ScheduledExecutorService  lagMonitorExecutor;
   private final Object              leaderChangeNotifier = new Object();
   private final Object              applyNotifier        = new Object();
+  private int                       lastClusterConfigHash;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -189,8 +192,10 @@ public class RaftHAServer {
         raftAddress = entry + ":" + defaultPort;
       }
 
+      // Use host_raftPort as peer ID (underscore avoids JMX ObjectName issues with colons)
+      final String peerIdStr = raftAddress.replace(':', '_');
       final RaftPeer peer = RaftPeer.newBuilder()
-          .setId("peer-" + i)
+          .setId(peerIdStr)
           .setAddress(raftAddress)
           .setPriority(priority)
           .build();
@@ -220,7 +225,7 @@ public class RaftHAServer {
 
   /**
    * Determines the local peer ID by parsing the numeric suffix from the server name.
-   * For example, "arcadedb-0" or "ArcadeDB_0" maps to index 0, which corresponds to "peer-0".
+   * For example, "arcadedb-0" or "ArcadeDB_0" maps to index 0 in the peer list.
    */
   static RaftPeerId findLocalPeerId(final List<RaftPeer> peers, final String serverName,
       final ArcadeDBServer server) {
@@ -370,22 +375,37 @@ public class RaftHAServer {
       groupCommitter.stop();
       groupCommitter = null;
     }
-    if (raftClient != null) {
-      try {
-        raftClient.close();
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.WARNING, "Error closing RaftClient", e);
-      }
-      raftClient = null;
+
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
+      leaveCluster();
+
+    // Suppress noisy Ratis gRPC warnings during shutdown (AlreadyClosedException, CANCELLED streams).
+    // These are harmless - internal replication threads take a moment to notice the server is closed.
+    final String[] noisyLoggers = {
+        "org.apache.ratis.grpc.server.GrpcLogAppender",
+        "org.apache.ratis.grpc.server.GrpcServerProtocolService"
+    };
+    final java.util.logging.Level[] previousLevels = new java.util.logging.Level[noisyLoggers.length];
+    for (int i = 0; i < noisyLoggers.length; i++) {
+      final java.util.logging.Logger logger = java.util.logging.Logger.getLogger(noisyLoggers[i]);
+      previousLevels[i] = logger.getLevel();
+      logger.setLevel(java.util.logging.Level.SEVERE);
     }
 
-    if (raftServer != null) {
-      try {
-        raftServer.close();
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.WARNING, "Error closing RaftServer", e);
+    try {
+      if (raftClient != null) {
+        raftClient.close();
+        raftClient = null;
       }
-      raftServer = null;
+      if (raftServer != null) {
+        raftServer.close();
+        raftServer = null;
+      }
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING, "Error stopping Ratis HA service", e);
+    } finally {
+      for (int i = 0; i < noisyLoggers.length; i++)
+        java.util.logging.Logger.getLogger(noisyLoggers[i]).setLevel(previousLevels[i]);
     }
 
     LogManager.instance().log(this, Level.INFO, "RaftHAServer stopped");
@@ -898,6 +918,152 @@ public class RaftHAServer {
     } catch (final IOException e) {
       return -1;
     }
+  }
+
+  public long getCurrentTerm() {
+    if (raftServer == null)
+      return -1;
+    try {
+      return raftServer.getDivision(raftGroup.getGroupId()).getInfo().getCurrentTerm();
+    } catch (final IOException e) {
+      return -1;
+    }
+  }
+
+  public List<Map<String, Object>> getFollowerStates() {
+    if (raftServer == null || !isLeader())
+      return List.of();
+    try {
+      final var division = raftServer.getDivision(raftGroup.getGroupId());
+      final var info = division.getInfo();
+
+      final var roleInfo = info.getRoleInfoProto();
+      if (!roleInfo.hasLeaderInfo())
+        return List.of();
+
+      final List<RaftProtos.ServerRpcProto> followerInfos = roleInfo.getLeaderInfo().getFollowerInfoList();
+      final long[] matchIndices = info.getFollowerMatchIndices();
+      final long[] nextIndices = info.getFollowerNextIndices();
+
+      // If sizes diverge, a membership change happened between calls - correlate what we can safely
+      final int safeSize = Math.min(followerInfos.size(), Math.min(matchIndices.length, nextIndices.length));
+
+      final List<Map<String, Object>> result = new ArrayList<>(safeSize);
+      for (int i = 0; i < safeSize; i++) {
+        final String peerId = followerInfos.get(i).getId().getId().toStringUtf8();
+        final long lastRpcElapsedMs = followerInfos.get(i).getLastRpcElapsedTimeMs();
+        final Map<String, Object> state = new LinkedHashMap<>();
+        state.put("peerId", peerId);
+        state.put("matchIndex", matchIndices[i]);
+        state.put("nextIndex", nextIndices[i]);
+        state.put("lastRpcElapsedMs", lastRpcElapsedMs);
+        result.add(state);
+      }
+      return result;
+    } catch (final IOException e) {
+      return List.of();
+    }
+  }
+
+  /**
+   * Prints an ASCII table showing the current cluster configuration.
+   * Called on leader changes so the operator can see the cluster state at a glance.
+   */
+  public void printClusterConfiguration() {
+    if (!isLeader())
+      return;
+
+    try {
+      final RaftPeerId leaderId = getLeaderId();
+      final String leaderPeerId = leaderId != null ? leaderId.toString() : "";
+      final long term = getCurrentTerm();
+      final long commitIndex = getCommitIndex();
+      final Collection<RaftPeer> peers = getLivePeers();
+      if (peers.isEmpty())
+        return;
+
+      // Collect follower replication state (only available on leader)
+      final Map<String, long[]> followerState = new HashMap<>();
+      for (final Map<String, Object> f : getFollowerStates()) {
+        final String peerId = (String) f.get("peerId");
+        final long matchIndex = (Long) f.get("matchIndex");
+        final long lastRpcMs = (Long) f.get("lastRpcElapsedMs");
+        followerState.put(peerId, new long[]{matchIndex, lastRpcMs});
+      }
+
+      // Build table rows
+      final List<String[]> rows = new ArrayList<>();
+      for (final RaftPeer peer : peers) {
+        final String peerId = peer.getId().toString();
+        final boolean isPeerLeader = peerId.equals(leaderPeerId);
+        final String role = isPeerLeader ? "Leader" : "Follower";
+        final String address = peer.getAddress();
+
+        String lagStr = "";
+        String latencyStr = "";
+        if (!isPeerLeader) {
+          final long[] state = followerState.get(peerId);
+          if (state != null) {
+            final long lag = commitIndex - state[0];
+            lagStr = lag > 0 ? String.valueOf(lag) : "0";
+            final long elapsedMs = state[1];
+            final long heartbeatInterval =
+                configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN) / 2;
+            if (elapsedMs <= heartbeatInterval)
+              latencyStr = elapsedMs + " ms";
+          }
+        }
+
+        rows.add(new String[]{peerId, address, role, lagStr, latencyStr});
+      }
+
+      // Calculate column widths
+      final String[] headers = {"SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY"};
+      final int[] widths = new int[headers.length];
+      for (int i = 0; i < headers.length; i++)
+        widths[i] = headers[i].length();
+      for (final String[] row : rows)
+        for (int i = 0; i < row.length; i++)
+          widths[i] = Math.max(widths[i], row[i].length());
+
+      // Format table
+      final StringBuilder sb = new StringBuilder();
+      sb.append(String.format("CLUSTER CONFIGURATION (term=%d, commitIndex=%d)%n", term, commitIndex));
+
+      appendSeparator(sb, widths);
+      appendRow(sb, widths, headers);
+      appendSeparator(sb, widths);
+      for (final String[] row : rows)
+        appendRow(sb, widths, row);
+      appendSeparator(sb, widths);
+
+      final String output = sb.toString();
+
+      // Only print if the configuration actually changed
+      final int hash = output.hashCode();
+      if (hash == lastClusterConfigHash)
+        return;
+      lastClusterConfigHash = hash;
+
+      LogManager.instance().log(this, Level.WARNING, "%s", output);
+
+    } catch (final Exception e) {
+      HALog.log(this, HALog.BASIC, "Error printing cluster configuration: %s", e.getMessage());
+    }
+  }
+
+  private static void appendSeparator(final StringBuilder sb, final int[] widths) {
+    sb.append('+');
+    for (final int w : widths)
+      sb.append('-').append("-".repeat(w)).append("-+");
+    sb.append('\n');
+  }
+
+  private static void appendRow(final StringBuilder sb, final int[] widths, final String[] values) {
+    sb.append('|');
+    for (int i = 0; i < widths.length; i++)
+      sb.append(' ').append(String.format("%-" + widths[i] + "s", values[i])).append(" |");
+    sb.append('\n');
   }
 
   void tryAutoJoinCluster() {

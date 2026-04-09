@@ -58,6 +58,13 @@ class RaftHAServerTest {
   }
 
   @Test
+  void parsePeerListUsesHostPortAsId() {
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("myhost:9999,other:8888", 2434).peers();
+    assertThat(peers.get(0).getId().toString()).isEqualTo("myhost_9999");
+    assertThat(peers.get(1).getId().toString()).isEqualTo("other_8888");
+  }
+
+  @Test
   void parsePeerListPreservesExactPort() {
     final List<RaftPeer> peers = RaftHAServer.parsePeerList("myhost:9999", 2434).peers();
     assertThat(peers.get(0).getAddress()).isEqualTo("myhost:9999");

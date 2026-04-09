@@ -49,7 +49,7 @@ class DynamicMembershipTest extends BaseRaftHATest {
 
     // Pick a non-leader peer to remove, since Ratis requires the leader to process the change
     final int targetIndex = leaderIndex == 0 ? 2 : 0;
-    final String targetPeerId = "peer-" + targetIndex;
+    final String targetPeerId = peerIdForIndex(targetIndex);
 
     final RaftHAServer raftServer = getRaftPlugin(leaderIndex).getRaftHAServer();
     assertThat(raftServer.getLivePeers()).hasSize(3);

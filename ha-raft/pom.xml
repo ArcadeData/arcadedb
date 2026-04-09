@@ -116,10 +116,13 @@
             <version>${project.parent.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- SLF4J-JDK14 bridge: routes Ratis SLF4J logs through java.util.logging
+             so they appear in ArcadeDB's AnsiLogFormatter format.
+             Do NOT add logback-classic here; it would hijack SLF4J binding. -->
         <dependency>
-            <groupId>ch.qos.logback</groupId>
-            <artifactId>logback-classic</artifactId>
-            <version>${logback-classic.version}</version>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>${slf4j.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

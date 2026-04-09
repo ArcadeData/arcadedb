@@ -36,7 +36,7 @@ class LeaveClusterTest extends BaseRaftHATest {
 
     final RaftHAServer leaderRaft = getRaftPlugin(leaderIndex).getRaftHAServer();
     final int targetIndex = leaderIndex == 0 ? 1 : 0;
-    final String targetPeerId = "peer-" + targetIndex;
+    final String targetPeerId = peerIdForIndex(targetIndex);
 
     leaderRaft.transferLeadership(targetPeerId, 10_000);
 

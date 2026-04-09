@@ -52,7 +52,7 @@ class RaftTransferLeadershipIT extends BaseRaftHATest {
     conn.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
 
-    final String body = new JSONObject().put("peerId", "peer-" + targetIndex).put("timeoutMs", 10_000).toString();
+    final String body = new JSONObject().put("peerId", peerIdForIndex(targetIndex)).put("timeoutMs", 10_000).toString();
     conn.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
 
     final int responseCode = conn.getResponseCode();

@@ -42,7 +42,7 @@ class GetClusterHandlerIT extends BaseRaftHATest {
 
     assertThat(response.getString("implementation")).isEqualTo("raft");
     assertThat(response.getString("clusterName")).isNotEmpty();
-    assertThat(response.getString("localPeerId")).startsWith("peer-");
+    assertThat(response.getString("localPeerId")).startsWith("localhost_");
     assertThat(response.has("isLeader")).isTrue();
     assertThat(response.has("leaderId")).isTrue();
 
@@ -51,7 +51,7 @@ class GetClusterHandlerIT extends BaseRaftHATest {
 
     for (int i = 0; i < peers.length(); i++) {
       final JSONObject peer = peers.getJSONObject(i);
-      assertThat(peer.getString("id")).startsWith("peer-");
+      assertThat(peer.getString("id")).startsWith("localhost_");
       assertThat(peer.getString("address")).isNotEmpty();
       assertThat(peer.getString("role")).isIn("LEADER", "FOLLOWER");
     }
