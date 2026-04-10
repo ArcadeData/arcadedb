@@ -116,4 +116,17 @@ public interface HAServerPlugin extends ServerPlugin {
   default void leaveCluster() {
     throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
   }
+
+  /**
+   * Replicates the full server-users.jsonl content across the cluster.
+   * Called by {@code PostServerCommandHandler.createUser} and {@code dropUser},
+   * and by {@code PostAddPeerHandler} to seed newly-joined peers. Default is a
+   * no-op for non-HA setups; the Raft implementation submits a SECURITY_USERS_ENTRY
+   * via the group committer.
+   *
+   * @param usersJsonArray a JSON array string representing the full current users list
+   */
+  default void replicateSecurityUsers(final String usersJsonArray) {
+    // No-op by default; Raft implementation overrides.
+  }
 }
