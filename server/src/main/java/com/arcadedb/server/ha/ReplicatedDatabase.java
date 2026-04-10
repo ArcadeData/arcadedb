@@ -50,7 +50,6 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.ratis.HALog;
 import com.arcadedb.server.ha.ratis.RaftHAServer;
 
@@ -188,6 +187,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
     });
   }
 
+  /** Holds schema/file structure change information for replication via Ratis. */
+  private record ChangeStructure(String schemaJson, Map<Integer, String> filesToAdd, Map<Integer, String> filesToRemove) {
+  }
+
   /** Holds all data captured in phase 1 needed for replication and local commit. */
   private record ReplicationPayload(TransactionContext tx, TransactionContext.TransactionPhase1 phase1,
       Binary bufferChanges, Map<Integer, Integer> delta, String schemaJson,
@@ -207,14 +210,14 @@ public class ReplicatedDatabase implements DatabaseInternal {
     Map<Integer, String> filesToAdd = null;
     Map<Integer, String> filesToRemove = null;
 
-    final DatabaseChangeStructureRequest changeStructure = getChangeStructure(-1);
+    final ChangeStructure changeStructure = getChangeStructure(-1);
     if (changeStructure != null) {
       proxied.getFileManager().stopRecordingChanges();
       proxied.getFileManager().startRecordingChanges();
 
-      schemaJson = changeStructure.getSchemaJson();
-      filesToAdd = changeStructure.getFilesToAdd();
-      filesToRemove = changeStructure.getFilesToRemove();
+      schemaJson = changeStructure.schemaJson();
+      filesToAdd = changeStructure.filesToAdd();
+      filesToRemove = changeStructure.filesToRemove();
     }
 
     final Map<Integer, Integer> delta = tx.getBucketRecordDelta();
@@ -886,7 +889,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     final RaftHAServer raftHA = server.getHA();
 
     final AtomicReference<Object> result = new AtomicReference<>();
-    final AtomicReference<DatabaseChangeStructureRequest> replicationCommand = new AtomicReference<>();
+    final AtomicReference<ChangeStructure> replicationCommand = new AtomicReference<>();
     final AtomicReference<RuntimeException> callbackException = new AtomicReference<>();
 
     proxied.executeInWriteLock(() -> {
@@ -920,10 +923,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // during the Raft quorum round-trip (network I/O).
     // This runs even when the callback failed - cleanup commands (file removals) must reach
     // followers to prevent orphan files from partially-replicated multi-step schema changes.
-    final DatabaseChangeStructureRequest command = replicationCommand.get();
+    final ChangeStructure command = replicationCommand.get();
     if (command != null)
-      raftHA.replicateTransaction(getName(), Map.of(), new Binary(0), command.getSchemaJson(), command.getFilesToAdd(),
-          command.getFilesToRemove());
+      raftHA.replicateTransaction(getName(), Map.of(), new Binary(0), command.schemaJson(), command.filesToAdd(),
+          command.filesToRemove());
 
     if (callbackException.get() != null)
       throw callbackException.get();
@@ -972,7 +975,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     LogManager.instance().log(this, Level.INFO, "createInReplicas() - Raft handles replication to all peers");
   }
 
-  protected DatabaseChangeStructureRequest getChangeStructure(final long schemaVersionBefore) {
+  protected ChangeStructure getChangeStructure(final long schemaVersionBefore) {
     final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
 
     final boolean schemaChanged = proxied.getSchema().getEmbedded().isDirty() || //
@@ -1001,7 +1004,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     } else
       serializedSchema = "";
 
-    return new DatabaseChangeStructureRequest(proxied.getName(), serializedSchema, addFiles, removeFiles);
+    return new ChangeStructure(serializedSchema, addFiles, removeFiles);
   }
 
   protected boolean isLeader() {

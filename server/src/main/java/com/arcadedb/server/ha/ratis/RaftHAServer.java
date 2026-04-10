@@ -26,7 +26,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.ReplicationException;
 import com.arcadedb.server.ReplicationCallback;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;

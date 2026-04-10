@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.ratis;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.engine.WALFile;
-import com.arcadedb.server.ha.ReplicationException;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;

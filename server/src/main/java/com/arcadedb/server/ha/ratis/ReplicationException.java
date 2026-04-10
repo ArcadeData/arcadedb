@@ -16,17 +16,14 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha.network;
+package com.arcadedb.server.ha.ratis;
 
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.ServerSocket;
+public class ReplicationException extends RuntimeException {
+  public ReplicationException(final String message) {
+    super(message);
+  }
 
-/**
- * Abstract factory for creating server sockets. Used by wire protocol modules (Bolt, PostgreSQL, Redis).
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
- */
-public abstract class ServerSocketFactory {
-  public abstract ServerSocket createServerSocket(int port, int backlog, InetAddress ifAddress) throws IOException;
+  public ReplicationException(final String message, final Throwable cause) {
+    super(message, cause);
+  }
 }
