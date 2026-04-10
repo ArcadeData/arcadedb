@@ -323,9 +323,26 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.import-database").increment();
 
-    // Create the database
-    server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-    final Database database = server.getDatabase(databaseName);
+    // Create the database cluster-wide. In HA mode this submits an INSTALL_DATABASE_ENTRY
+    // via Raft so every replica creates the database locally before we start importing.
+    // The importer's subsequent transactions then replicate as normal TX_ENTRY stream.
+    final ServerDatabase createdDb = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    final DatabaseInternal wrapped = createdDb.getWrappedDatabaseInstance();
+    if (wrapped instanceof HAReplicatedDatabase haDb) {
+      try {
+        haDb.createInReplicas();
+      } catch (final RuntimeException e) {
+        // Compensate: drop the just-created local database so the operator can retry cleanly.
+        try {
+          createdDb.getEmbedded().drop();
+          server.removeDatabase(databaseName);
+        } catch (final Exception ignored) {
+          // best-effort
+        }
+        throw e;
+      }
+    }
+    final Database database = createdDb;
 
     if (isSSERequested(exchange)) {
       startSSE(exchange);
