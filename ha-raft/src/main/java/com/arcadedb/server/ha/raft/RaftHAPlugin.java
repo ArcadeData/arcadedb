@@ -20,12 +20,14 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
-
 import com.arcadedb.server.http.HttpServer;
+
 import io.undertow.server.handlers.PathHandler;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.IOException;
 import java.util.logging.Level;
@@ -103,6 +105,22 @@ public class RaftHAPlugin implements HAServerPlugin {
 
   public RaftHAServer getRaftHAServer() {
     return raftHAServer;
+  }
+
+  @Override
+  public void replicateSecurityUsers(final String usersJsonArray) {
+    if (raftHAServer == null)
+      throw new TransactionException("Raft HA server not started");
+
+    final ByteString entry = RaftLogEntryCodec.encodeSecurityUsersEntry(usersJsonArray);
+    try {
+      raftHAServer.getGroupCommitter().submitAndWait(entry.toByteArray(), raftHAServer.getQuorumTimeout());
+    } catch (final TransactionException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new TransactionException("Error sending security-users entry via Raft", e);
+    }
+    LogManager.instance().log(this, Level.INFO, "Security users entry committed via Raft");
   }
 
   @Override
