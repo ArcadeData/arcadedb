@@ -51,7 +51,9 @@ public final class RaftLogEntryCodec {
       Map<Integer, String> filesToAdd,
       Map<Integer, String> filesToRemove,
       List<byte[]> walEntries,
-      List<Map<Integer, Integer>> bucketDeltas
+      List<Map<Integer, Integer>> bucketDeltas,
+      String usersJson,
+      boolean forceSnapshot
   ) {
   }
 
@@ -177,7 +179,7 @@ public final class RaftLogEntryCodec {
       return switch (type) {
         case TX_ENTRY -> decodeTxEntry(dis, databaseName);
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
-        case INSTALL_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName, null, null, null, null, null, null, null);
+        case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
         case DROP_DATABASE_ENTRY -> throw new UnsupportedOperationException("DROP_DATABASE_ENTRY decode not yet implemented");
         case SECURITY_USERS_ENTRY -> throw new UnsupportedOperationException("SECURITY_USERS_ENTRY decode not yet implemented");
       };
@@ -201,7 +203,8 @@ public final class RaftLogEntryCodec {
       bucketRecordDelta.put(bucketId, delta);
     }
 
-    return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta, null, null, null, null, null);
+    return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta,
+        null, null, null, null, null, null, false);
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -236,7 +239,13 @@ public final class RaftLogEntryCodec {
       // Older log entries without embedded WAL section - treat as empty
     }
 
-    return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas);
+    return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
+        schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false);
+  }
+
+  private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
+    return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
+        null, null, null, null, null, null, null, null, false);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {
