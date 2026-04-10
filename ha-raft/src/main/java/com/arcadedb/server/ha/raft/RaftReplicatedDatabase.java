@@ -1012,8 +1012,31 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public void createInReplicas(final boolean forceSnapshot) {
+    final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(getName(), forceSnapshot);
+    try {
+      final RaftHAServer raft = requireRaftServer();
+      raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
+    } catch (final TransactionException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new TransactionException("Error sending install-database entry via Raft for database '" + getName() + "'", e);
+    }
+    LogManager.instance().log(this, Level.INFO, "Database '%s' install-database (forceSnapshot=%s) entry committed via Raft", getName(), forceSnapshot);
+  }
+
+  @Override
   public void dropInReplicas() {
-    throw new UnsupportedOperationException("dropInReplicas not yet implemented");
+    final ByteString entry = RaftLogEntryCodec.encodeDropDatabaseEntry(getName());
+    try {
+      final RaftHAServer raft = requireRaftServer();
+      raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
+    } catch (final TransactionException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new TransactionException("Error sending drop-database entry via Raft for database '" + getName() + "'", e);
+    }
+    LogManager.instance().log(this, Level.INFO, "Database '%s' drop-database entry committed via Raft", getName());
   }
 
   /**
