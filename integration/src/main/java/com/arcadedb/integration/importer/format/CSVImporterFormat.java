@@ -127,8 +127,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
         final MutableDocument document = database.newDocument(settings.documentTypeName);
 
-        for (final AnalyzedProperty prop : properties)
-          document.set(prop.getName(), row[prop.getIndex()]);
+        for (final AnalyzedProperty prop : properties) {
+          final String value = row[prop.getIndex()];
+          if (value != null && !value.isEmpty())
+            document.set(prop.getName(), value);
+        }
 
         document.save();
         context.createdDocuments.incrementAndGet();
@@ -154,44 +157,34 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
-    if (settings.typeIdProperty == null) {
-      LogManager.instance()
-          .log(this, Level.INFO, "Property id was not defined. Set `-typeIdProperty <name>`. Importing is aborted", null,
-              settings.vertexTypeName, settings.typeIdProperty);
-      throw new IllegalArgumentException("Property id was not defined. Set `-typeIdProperty <name>`. Importing is aborted");
-    }
-
     final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.vertexTypeName);
     if (entity == null) {
       LogManager.instance().log(this, Level.INFO, "Vertex type '%s' not defined", null, settings.vertexTypeName);
       return;
     }
 
-    final AnalyzedProperty id = entity.getProperty(settings.typeIdProperty);
+    int idIndex = -1;
+    if (settings.typeIdProperty != null) {
+      final AnalyzedProperty id = entity.getProperty(settings.typeIdProperty);
 
-    if (id == null) {
-      LogManager.instance()
-          .log(this, Level.INFO, "Property Id '%s.%s' is null. Importing is aborted", null, settings.vertexTypeName,
-              settings.typeIdProperty);
-      throw new IllegalArgumentException(
-          "Property Id '" + settings.vertexTypeName + "." + settings.typeIdProperty + "' is null. Importing is aborted");
+      if (id == null) {
+        LogManager.instance()
+            .log(this, Level.INFO, "Property Id '%s.%s' is null. Importing is aborted", null, settings.vertexTypeName,
+                settings.typeIdProperty);
+        throw new IllegalArgumentException(
+            "Property Id '" + settings.vertexTypeName + "." + settings.typeIdProperty + "' is null. Importing is aborted");
+      }
+
+      idIndex = id.getIndex();
+
+      // Ensure the typeIdProperty has a unique index for edge resolution
+      if (!database.getSchema().getType(settings.vertexTypeName).existsProperty(settings.typeIdProperty))
+        database.transaction(
+            () -> database.getSchema().getType(settings.vertexTypeName).createProperty(settings.typeIdProperty, com.arcadedb.schema.Type.STRING));
+      if (database.getSchema().getType(settings.vertexTypeName).getIndexesByProperties(settings.typeIdProperty).isEmpty())
+        database.transaction(
+            () -> database.getSchema().getType(settings.vertexTypeName).createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, settings.typeIdProperty));
     }
-
-    long expectedVertices = settings.expectedVertices;
-    if (expectedVertices <= 0)
-      expectedVertices = (int) (sourceSchema.getSource().totalSize / entity.getAverageRowLength());
-    if (expectedVertices <= 0)
-      expectedVertices = 1000000;
-    else if (expectedVertices > Integer.MAX_VALUE)
-      expectedVertices = Integer.MAX_VALUE;
-
-    // Ensure the typeIdProperty has a unique index for edge resolution
-    if (!database.getSchema().getType(settings.vertexTypeName).existsProperty(settings.typeIdProperty))
-      database.transaction(
-          () -> database.getSchema().getType(settings.vertexTypeName).createProperty(settings.typeIdProperty, com.arcadedb.schema.Type.STRING));
-    if (database.getSchema().getType(settings.vertexTypeName).getIndexesByProperties(settings.typeIdProperty).isEmpty())
-      database.transaction(
-          () -> database.getSchema().getType(settings.vertexTypeName).createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, settings.typeIdProperty));
 
     final AbstractParser<?> csvParser = createCSVParser(settings);
 
@@ -208,8 +201,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
-
-      final int idIndex = id.getIndex();
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
       if (!settings.vertexPropertiesInclude.isEmpty() && !settings.vertexPropertiesInclude.equalsIgnoreCase("*")) {
@@ -231,7 +222,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         if (skipEntries > 0 && line < skipEntries)
           continue;
 
-        if (idIndex >= row.length) {
+        if (idIndex >= 0 && idIndex >= row.length) {
           LogManager.instance()
               .log(this, Level.INFO, "Property Id is configured on property %d but cannot be found on current record. Skip it",
                   null, idIndex);
@@ -239,10 +230,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
 
         final MutableVertex v = database.newVertex(settings.vertexTypeName);
-        v.set(settings.typeIdProperty, row[idIndex]);
+        if (idIndex >= 0)
+          v.set(settings.typeIdProperty, row[idIndex]);
         for (int p = 0; p < properties.size(); ++p) {
           final AnalyzedProperty prop = properties.get(p);
-          v.set(prop.getName(), row[prop.getIndex()]);
+          final String value = row[prop.getIndex()];
+          if (value != null && !value.isEmpty())
+            v.set(prop.getName(), value);
         }
         database.async().createRecord(v, doc -> context.createdVertices.incrementAndGet());
       }
