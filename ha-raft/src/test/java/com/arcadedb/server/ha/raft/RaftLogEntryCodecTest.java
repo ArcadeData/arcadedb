@@ -198,4 +198,42 @@ class RaftLogEntryCodecTest {
     assertThat(decoded.usersJson()).isNull();
     assertThat(decoded.forceSnapshot()).isFalse();
   }
+
+  @Test
+  void roundTripInstallDatabaseEntryDefaults() {
+    final ByteString encoded = RaftLogEntryCodec.encodeInstallDatabaseEntry("testdb");
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.INSTALL_DATABASE_ENTRY);
+    assertThat(decoded.databaseName()).isEqualTo("testdb");
+    assertThat(decoded.forceSnapshot()).isFalse();
+  }
+
+  @Test
+  void roundTripInstallDatabaseEntryWithForceSnapshot() {
+    final ByteString encoded = RaftLogEntryCodec.encodeInstallDatabaseEntry("testdb", true);
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.INSTALL_DATABASE_ENTRY);
+    assertThat(decoded.databaseName()).isEqualTo("testdb");
+    assertThat(decoded.forceSnapshot()).isTrue();
+  }
+
+  @Test
+  void decodeLegacyInstallDatabaseEntryWithoutFlag() throws java.io.IOException {
+    // Hand-crafted byte layout matching the pre-forceSnapshot codec:
+    // type byte + UTF(databaseName), no trailing boolean.
+    final java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+    try (final java.io.DataOutputStream dos = new java.io.DataOutputStream(baos)) {
+      dos.writeByte(RaftLogEntryType.INSTALL_DATABASE_ENTRY.getId());
+      dos.writeUTF("legacydb");
+    }
+    final ByteString legacy = ByteString.copyFrom(baos.toByteArray());
+
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(legacy);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.INSTALL_DATABASE_ENTRY);
+    assertThat(decoded.databaseName()).isEqualTo("legacydb");
+    assertThat(decoded.forceSnapshot()).isFalse();
+  }
 }

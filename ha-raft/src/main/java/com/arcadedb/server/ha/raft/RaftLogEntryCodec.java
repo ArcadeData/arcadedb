@@ -149,15 +149,25 @@ public final class RaftLogEntryCodec {
   /**
    * Encodes an install-database entry into a ByteString.
    * <p>
-   * Binary format: type byte, databaseName (UTF).
+   * Binary format: type byte, databaseName (UTF), forceSnapshot (boolean).
    */
   public static ByteString encodeInstallDatabaseEntry(final String databaseName) {
+    return encodeInstallDatabaseEntry(databaseName, false);
+  }
+
+  /**
+   * Encodes an install-database entry with an explicit forceSnapshot flag.
+   * When {@code forceSnapshot} is true, replicas pull a fresh snapshot from the
+   * leader even if the database already exists locally (used for restore).
+   */
+  public static ByteString encodeInstallDatabaseEntry(final String databaseName, final boolean forceSnapshot) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
 
       dos.writeByte(RaftLogEntryType.INSTALL_DATABASE_ENTRY.getId());
       dos.writeUTF(databaseName);
+      dos.writeBoolean(forceSnapshot);
 
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
@@ -265,8 +275,14 @@ public final class RaftLogEntryCodec {
   }
 
   private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
+    // Length-based detection of the trailing forceSnapshot flag.
+    // Legacy entries (pre-forceSnapshot codec) have no trailing byte; they decode as forceSnapshot=false.
+    boolean forceSnapshot = false;
+    if (dis.available() > 0) {
+      forceSnapshot = dis.readBoolean();
+    }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, false);
+        null, null, null, null, null, null, null, null, forceSnapshot);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {
