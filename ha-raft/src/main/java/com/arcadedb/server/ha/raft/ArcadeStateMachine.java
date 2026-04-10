@@ -114,7 +114,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         case SCHEMA_ENTRY -> applySchemaEntry(decoded);
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
         case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
-        case SECURITY_USERS_ENTRY -> throw new UnsupportedOperationException("SECURITY_USERS_ENTRY apply not yet implemented");
+        case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
       }
 
       lastAppliedIndex.set(termIndex.getIndex());
@@ -449,6 +449,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
     server.removeDatabase(databaseName);
 
     LogManager.instance().log(this, Level.INFO, "Database '%s' dropped via Raft drop-database entry", databaseName);
+  }
+
+  private void applySecurityUsersEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+    final String payload = decoded.usersJson();
+    if (payload == null) {
+      LogManager.instance().log(this, Level.WARNING, "SECURITY_USERS_ENTRY has null payload, skipping");
+      return;
+    }
+    server.getSecurity().applyReplicatedUsers(payload);
+    HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
   }
 
   /**
