@@ -388,6 +388,38 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
   }
 
+  /**
+   * Returns the current users list as a JSON array string, suitable for HA
+   * replication via {@code HAServerPlugin.replicateSecurityUsers}. The output is
+   * the canonical representation of the in-memory users map.
+   */
+  public synchronized String getUsersJsonPayload() {
+    final JSONArray array = new JSONArray();
+    for (final JSONObject userJson : usersToJSON())
+      array.put(userJson);
+    return array.toString();
+  }
+
+  /**
+   * Applies a replicated users payload: writes it atomically to
+   * {@code server-users.jsonl} and reloads the in-memory users map.
+   * Called from the Raft state machine on every peer when a SECURITY_USERS_ENTRY
+   * is applied.
+   */
+  public synchronized void applyReplicatedUsers(final String usersJsonArray) {
+    final JSONArray array = new JSONArray(usersJsonArray);
+    final List<JSONObject> list = new ArrayList<>(array.length());
+    for (int i = 0; i < array.length(); i++)
+      list.add(array.getJSONObject(i));
+
+    try {
+      usersRepository.save(list);
+    } catch (final IOException e) {
+      throw new ServerException("Failed to save replicated users file", e);
+    }
+    loadUsers();
+  }
+
   public void saveGroups() {
     try {
       groupRepository.save(groupsToJSON());
