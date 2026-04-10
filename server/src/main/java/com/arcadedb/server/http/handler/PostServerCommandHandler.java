@@ -541,9 +541,33 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     Metrics.counter("http.drop-user").increment();
 
-    final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
-    if (!result)
-      throw new IllegalArgumentException("User '" + userName + "' not found on server");
+    final ArcadeDBServer server = httpServer.getServer();
+    final HAServerPlugin ha = server.getHA();
+
+    if (ha == null) {
+      // Non-HA mode: direct local mutation.
+      final boolean result = server.getSecurity().dropUser(userName);
+      if (!result)
+        throw new IllegalArgumentException("User '" + userName + "' not found on server");
+      return;
+    }
+
+    // HA mode: compute the new users payload and submit a Raft entry.
+    // Serialises read-compute-submit with other user mutations on this leader so
+    // two concurrent drops (or a concurrent createUser) cannot lose each other's changes.
+    synchronized (server.getSecurity()) {
+      if (server.getSecurity().getUser(userName) == null)
+        throw new IllegalArgumentException("User '" + userName + "' not found on server");
+
+      final JSONArray currentUsers = new JSONArray(server.getSecurity().getUsersJsonPayload());
+      final JSONArray filtered = new JSONArray();
+      for (int i = 0; i < currentUsers.length(); i++) {
+        final JSONObject user = currentUsers.getJSONObject(i);
+        if (!userName.equals(user.getString("name", "")))
+          filtered.put(user);
+      }
+      ha.replicateSecurityUsers(filtered.toString());
+    }
   }
 
   private boolean connectCluster(final String serverAddress, final HttpServerExchange exchange) {
