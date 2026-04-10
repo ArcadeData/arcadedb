@@ -236,4 +236,34 @@ class RaftLogEntryCodecTest {
     assertThat(decoded.databaseName()).isEqualTo("legacydb");
     assertThat(decoded.forceSnapshot()).isFalse();
   }
+
+  @Test
+  void roundTripSecurityUsersEntryEmpty() {
+    final String payload = "[]";
+    final ByteString encoded = RaftLogEntryCodec.encodeSecurityUsersEntry(payload);
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SECURITY_USERS_ENTRY);
+    assertThat(decoded.databaseName()).isEmpty();
+    assertThat(decoded.usersJson()).isEqualTo(payload);
+  }
+
+  @Test
+  void roundTripSecurityUsersEntrySingleUser() {
+    final String payload = "[{\"name\":\"alice\",\"password\":\"$2a$hash\",\"databases\":{\"*\":[\"admin\"]}}]";
+    final ByteString encoded = RaftLogEntryCodec.encodeSecurityUsersEntry(payload);
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SECURITY_USERS_ENTRY);
+    assertThat(decoded.usersJson()).isEqualTo(payload);
+  }
+
+  @Test
+  void roundTripSecurityUsersEntryUnicodeAndNewlines() {
+    final String payload = "[{\"name\":\"björn\",\"note\":\"line1\\nline2\"}]";
+    final ByteString encoded = RaftLogEntryCodec.encodeSecurityUsersEntry(payload);
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.usersJson()).isEqualTo(payload);
+  }
 }

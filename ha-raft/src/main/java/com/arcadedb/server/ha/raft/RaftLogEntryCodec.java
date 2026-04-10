@@ -177,6 +177,30 @@ public final class RaftLogEntryCodec {
   }
 
   /**
+   * Encodes a security-users entry into a ByteString.
+   * <p>
+   * Binary format: type byte, empty databaseName (UTF), jsonLength (int), UTF-8 bytes.
+   * The empty databaseName slot keeps the decoder symmetric with other entry types.
+   */
+  public static ByteString encodeSecurityUsersEntry(final String usersJson) {
+    try {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      final DataOutputStream dos = new DataOutputStream(baos);
+
+      dos.writeByte(RaftLogEntryType.SECURITY_USERS_ENTRY.getId());
+      dos.writeUTF("");
+      final byte[] bytes = usersJson.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      dos.writeInt(bytes.length);
+      dos.write(bytes);
+
+      dos.flush();
+      return ByteString.copyFrom(baos.toByteArray());
+    } catch (final IOException e) {
+      throw new IllegalStateException("Failed to encode SECURITY_USERS entry", e);
+    }
+  }
+
+  /**
    * Encodes a drop-database entry into a ByteString.
    * <p>
    * Binary format: type byte, databaseName (UTF).
@@ -212,7 +236,7 @@ public final class RaftLogEntryCodec {
         case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
         case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
             null, null, null, null, null, null, null, null, false);
-        case SECURITY_USERS_ENTRY -> throw new UnsupportedOperationException("SECURITY_USERS_ENTRY decode not yet implemented");
+        case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
       };
     } catch (final IOException e) {
       throw new IllegalStateException("Failed to decode Raft log entry", e);
@@ -283,6 +307,15 @@ public final class RaftLogEntryCodec {
     }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
         null, null, null, null, null, null, null, null, forceSnapshot);
+  }
+
+  private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
+    final int length = dis.readInt();
+    final byte[] bytes = new byte[length];
+    dis.readFully(bytes);
+    final String usersJson = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+    return new DecodedEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, "",
+        null, null, null, null, null, null, null, usersJson, false);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {
