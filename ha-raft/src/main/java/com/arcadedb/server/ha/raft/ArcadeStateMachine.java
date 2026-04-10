@@ -250,11 +250,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (responseCode != 200)
         throw new java.io.IOException("Failed to download snapshot: HTTP " + responseCode);
 
-      final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
-      final String databasePath = db.getDatabasePath();
-      db.close();
+      // Compute the target path. If the database is already registered, prefer the live path so we
+      // don't accidentally create a second copy in a different location. If it is not registered
+      // (e.g. after a drop+restore flow), fall back to the configured databases directory.
+      final String databasePath;
+      if (server.existsDatabase(databaseName)) {
+        final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
+        databasePath = db.getDatabasePath();
+        db.close();
+        server.removeDatabase(databaseName);
+      } else {
+        databasePath = server.getConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
+            + File.separator + databaseName;
+      }
 
       final java.nio.file.Path dbPath = java.nio.file.Path.of(databasePath).normalize().toAbsolutePath();
+      final java.io.File dbDir = new java.io.File(databasePath);
+      if (!dbDir.exists() && !dbDir.mkdirs())
+        throw new java.io.IOException("Cannot create database directory: " + databasePath);
+
       try (final java.util.zip.ZipInputStream zipIn = new java.util.zip.ZipInputStream(
           connection.getInputStream())) {
         java.util.zip.ZipEntry zipEntry;
@@ -271,12 +285,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
         }
       }
 
-      final java.io.File dbDir = new java.io.File(databasePath);
       final java.io.File[] walFiles = dbDir.listFiles((dir, name) -> name.endsWith(".wal"));
       if (walFiles != null)
         for (final java.io.File walFile : walFiles)
           if (!walFile.delete())
             LogManager.instance().log(this, Level.WARNING, "Failed to delete stale WAL file: %s", walFile.getName());
+
+      // Re-open the database so the server registers it and it becomes visible to clients.
+      server.getDatabase(databaseName);
 
       HALog.log(this, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
 

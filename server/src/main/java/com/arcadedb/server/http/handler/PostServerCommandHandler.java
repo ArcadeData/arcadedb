@@ -945,8 +945,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    */
   private void replicateRestoredDatabase(final ArcadeDBServer server, final ServerDatabase restored,
       final String databaseName) {
-    final DatabaseInternal wrapped = restored.getWrappedDatabaseInstance();
-    if (!(wrapped instanceof HAReplicatedDatabase haDb))
+    if (!(restored.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb))
       return;
 
     try {

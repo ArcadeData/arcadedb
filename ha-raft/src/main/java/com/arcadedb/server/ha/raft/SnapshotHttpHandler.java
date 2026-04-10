@@ -106,31 +106,19 @@ public class SnapshotHttpHandler implements HttpHandler {
     final DatabaseInternal db = server.getDatabase(databaseName);
 
     db.executeInReadLock(() -> {
+      // suspendFlushAndExecute uses a putIfAbsent-based guard that only one concurrent
+      // caller can "own" the suspend. If flush is already suspended (e.g. a concurrent
+      // snapshot request), isPageFlushingSuspended() is true and it is safe to read files
+      // directly since the flush thread is not writing. In both cases we serve the snapshot.
+      final boolean[] executed = { false };
       db.getPageManager().suspendFlushAndExecute(db, () -> {
-        try (final OutputStream out = exchange.getOutputStream();
-             final ZipOutputStream zipOut = new ZipOutputStream(out)) {
-
-          final File configFile = ((LocalDatabase) db.getEmbedded()).getConfigurationFile();
-          if (configFile.exists())
-            addFileToZip(zipOut, configFile);
-
-          final File schemaFile = ((LocalSchema) db.getSchema()).getConfigurationFile();
-          if (schemaFile.exists())
-            addFileToZip(zipOut, schemaFile);
-
-          final Collection<ComponentFile> files = db.getFileManager().getFiles();
-          for (final ComponentFile file : new ArrayList<>(files))
-            if (file != null)
-              addFileToZip(zipOut, file.getOSFile());
-
-          zipOut.finish();
-          HALog.log(this, HALog.BASIC, "Database snapshot for '%s' sent successfully", databaseName);
-
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error serving snapshot for '%s'", e, databaseName);
-          throw new RuntimeException(e);
-        }
+        executed[0] = true;
+        serveSnapshotZip(exchange, db, databaseName);
       });
+      if (!executed[0]) {
+        // Flush was already suspended by another concurrent snapshot request; serve directly.
+        serveSnapshotZip(exchange, db, databaseName);
+      }
       return null;
     });
   }
@@ -204,6 +192,32 @@ public class SnapshotHttpHandler implements HttpHandler {
       }
     }
     return null;
+  }
+
+  private void serveSnapshotZip(final HttpServerExchange exchange, final DatabaseInternal db, final String databaseName) {
+    try (final OutputStream out = exchange.getOutputStream();
+         final ZipOutputStream zipOut = new ZipOutputStream(out)) {
+
+      final File configFile = ((LocalDatabase) db.getEmbedded()).getConfigurationFile();
+      if (configFile.exists())
+        addFileToZip(zipOut, configFile);
+
+      final File schemaFile = ((LocalSchema) db.getSchema()).getConfigurationFile();
+      if (schemaFile.exists())
+        addFileToZip(zipOut, schemaFile);
+
+      final Collection<ComponentFile> files = db.getFileManager().getFiles();
+      for (final ComponentFile file : new ArrayList<>(files))
+        if (file != null)
+          addFileToZip(zipOut, file.getOSFile());
+
+      zipOut.finish();
+      HALog.log(this, HALog.BASIC, "Database snapshot for '%s' sent successfully", databaseName);
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error serving snapshot for '%s'", e, databaseName);
+      throw new RuntimeException(e);
+    }
   }
 
   private void addFileToZip(final ZipOutputStream zipOut, final File inputFile) throws Exception {
