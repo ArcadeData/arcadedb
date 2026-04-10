@@ -113,7 +113,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         case TX_ENTRY -> applyTxEntry(decoded);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded);
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
-        case DROP_DATABASE_ENTRY -> throw new UnsupportedOperationException("DROP_DATABASE_ENTRY apply not yet implemented");
+        case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
         case SECURITY_USERS_ENTRY -> throw new UnsupportedOperationException("SECURITY_USERS_ENTRY apply not yet implemented");
       }
 
@@ -393,6 +393,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
     LogManager.instance().log(this, Level.INFO, "Database '%s' created via Raft install-database entry", databaseName);
+  }
+
+  private void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+    final String databaseName = decoded.databaseName();
+
+    // Idempotent on replay: if the database is already gone, nothing to do.
+    if (!server.existsDatabase(databaseName)) {
+      HALog.log(this, HALog.TRACE, "Database '%s' already absent, skipping drop-database entry", databaseName);
+      return;
+    }
+
+    final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
+    db.getEmbedded().drop();
+    server.removeDatabase(databaseName);
+
+    LogManager.instance().log(this, Level.INFO, "Database '%s' dropped via Raft drop-database entry", databaseName);
   }
 
   /**
