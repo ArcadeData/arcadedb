@@ -21,7 +21,9 @@ package com.arcadedb.server.ha.raft;
 public enum RaftLogEntryType {
   TX_ENTRY((byte) 1),
   SCHEMA_ENTRY((byte) 2),
-  INSTALL_DATABASE_ENTRY((byte) 3);
+  INSTALL_DATABASE_ENTRY((byte) 3),
+  DROP_DATABASE_ENTRY((byte) 4),
+  SECURITY_USERS_ENTRY((byte) 5);
 
   private final byte id;
 

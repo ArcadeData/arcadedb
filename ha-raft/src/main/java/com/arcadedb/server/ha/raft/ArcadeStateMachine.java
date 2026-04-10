@@ -113,6 +113,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         case TX_ENTRY -> applyTxEntry(decoded);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded);
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
+        case DROP_DATABASE_ENTRY -> throw new UnsupportedOperationException("DROP_DATABASE_ENTRY apply not yet implemented");
+        case SECURITY_USERS_ENTRY -> throw new UnsupportedOperationException("SECURITY_USERS_ENTRY apply not yet implemented");
       }
 
       lastAppliedIndex.set(termIndex.getIndex());

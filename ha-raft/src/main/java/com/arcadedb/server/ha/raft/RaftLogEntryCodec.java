@@ -178,6 +178,8 @@ public final class RaftLogEntryCodec {
         case TX_ENTRY -> decodeTxEntry(dis, databaseName);
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
         case INSTALL_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName, null, null, null, null, null, null, null);
+        case DROP_DATABASE_ENTRY -> throw new UnsupportedOperationException("DROP_DATABASE_ENTRY decode not yet implemented");
+        case SECURITY_USERS_ENTRY -> throw new UnsupportedOperationException("SECURITY_USERS_ENTRY decode not yet implemented");
       };
     } catch (final IOException e) {
       throw new IllegalStateException("Failed to decode Raft log entry", e);
