@@ -436,12 +436,26 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty())
       throw new IllegalArgumentException("Database name empty");
 
-    final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
+    checkServerIsLeaderIfInHA();
 
+    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.drop-database").increment();
 
-    database.getEmbedded().drop();
-    httpServer.getServer().removeDatabase(database.getName());
+    if (!server.existsDatabase(databaseName))
+      throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
+
+    final ServerDatabase database = server.getDatabase(databaseName);
+    final DatabaseInternal wrappedDb = database.getWrappedDatabaseInstance();
+
+    if (wrappedDb instanceof HAReplicatedDatabase haDb) {
+      // Raft-first: do NOT drop locally. The state machine apply on every peer
+      // (including this leader) performs the actual drop once the entry is committed.
+      haDb.dropInReplicas();
+    } else {
+      // Non-HA mode: drop locally as before.
+      database.getEmbedded().drop();
+      server.removeDatabase(databaseName);
+    }
   }
 
   private void closeDatabase(final String databaseName) {
