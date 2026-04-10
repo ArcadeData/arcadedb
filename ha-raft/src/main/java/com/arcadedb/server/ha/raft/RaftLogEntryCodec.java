@@ -167,6 +167,26 @@ public final class RaftLogEntryCodec {
   }
 
   /**
+   * Encodes a drop-database entry into a ByteString.
+   * <p>
+   * Binary format: type byte, databaseName (UTF).
+   */
+  public static ByteString encodeDropDatabaseEntry(final String databaseName) {
+    try {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      final DataOutputStream dos = new DataOutputStream(baos);
+
+      dos.writeByte(RaftLogEntryType.DROP_DATABASE_ENTRY.getId());
+      dos.writeUTF(databaseName);
+
+      dos.flush();
+      return ByteString.copyFrom(baos.toByteArray());
+    } catch (final IOException e) {
+      throw new IllegalStateException("Failed to encode DROP_DATABASE entry", e);
+    }
+  }
+
+  /**
    * Decodes a ByteString back into a DecodedEntry.
    */
   public static DecodedEntry decode(final ByteString data) {
@@ -180,7 +200,8 @@ public final class RaftLogEntryCodec {
         case TX_ENTRY -> decodeTxEntry(dis, databaseName);
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
         case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
-        case DROP_DATABASE_ENTRY -> throw new UnsupportedOperationException("DROP_DATABASE_ENTRY decode not yet implemented");
+        case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
+            null, null, null, null, null, null, null, null, false);
         case SECURITY_USERS_ENTRY -> throw new UnsupportedOperationException("SECURITY_USERS_ENTRY decode not yet implemented");
       };
     } catch (final IOException e) {

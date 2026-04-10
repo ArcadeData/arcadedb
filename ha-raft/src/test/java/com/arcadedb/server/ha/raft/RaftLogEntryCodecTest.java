@@ -182,4 +182,20 @@ class RaftLogEntryCodecTest {
     assertThat(decoded.walEntries()).hasSize(1);
     assertThat(decoded.walEntries().get(0)).isEqualTo(fakeWal);
   }
+
+  @Test
+  void roundTripDropDatabaseEntry() {
+    final ByteString encoded = RaftLogEntryCodec.encodeDropDatabaseEntry("testdb");
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.DROP_DATABASE_ENTRY);
+    assertThat(decoded.databaseName()).isEqualTo("testdb");
+    assertThat(decoded.walData()).isNull();
+    assertThat(decoded.bucketRecordDelta()).isNull();
+    assertThat(decoded.schemaJson()).isNull();
+    assertThat(decoded.filesToAdd()).isNull();
+    assertThat(decoded.filesToRemove()).isNull();
+    assertThat(decoded.usersJson()).isNull();
+    assertThat(decoded.forceSnapshot()).isFalse();
+  }
 }
