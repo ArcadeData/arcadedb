@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -52,7 +53,12 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.importer.Importer");
-      final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), url != null ? url.getUrlString() : null);
+      // Use the outermost database wrapper (e.g. RaftReplicatedDatabase in HA mode) so that
+      // the importer's commit() calls are intercepted for replication. In non-HA mode,
+      // getWrappedDatabaseInstance() returns the database itself, so there is no change in behaviour.
+      final Database db = context.getDatabase();
+      final Database effectiveDb = (db instanceof DatabaseInternal di) ? di.getWrappedDatabaseInstance() : db;
+      final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(effectiveDb, url != null ? url.getUrlString() : null);
 
       // TRANSFORM SETTINGS
       final Map<String, String> settingsToString = new HashMap<>();
