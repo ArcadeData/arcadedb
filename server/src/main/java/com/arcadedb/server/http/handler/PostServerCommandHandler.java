@@ -274,7 +274,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
         sendSSE(out, new JSONObject().put("status", "progress").put("message", "Downloading and restoring " + databaseName + "..."));
         clazz.getMethod("restoreDatabase").invoke(restorer);
-        server.getDatabase(databaseName);
+        final ServerDatabase restoredSse = server.getDatabase(databaseName);
+        replicateRestoredDatabase(server, restoredSse, databaseName);
         sendSSE(out, new JSONObject().put("status", "completed").put("message", databaseName + " restored successfully"));
       } catch (final Exception e) {
         final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
@@ -297,7 +298,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       throw new CommandExecutionException("Error restoring database", e.getTargetException());
     }
 
-    server.getDatabase(databaseName);
+    final ServerDatabase restored = server.getDatabase(databaseName);
+    replicateRestoredDatabase(server, restored, databaseName);
     return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
   }
 
@@ -934,5 +936,31 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       throw new CommandExecutionException(
           "ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");
     return ha;
+  }
+
+  /**
+   * Post-restore HA hook. In HA mode, submits an install-database Raft entry with
+   * forceSnapshot=true so every replica pulls the restored files. On any failure,
+   * drops the just-restored local database so the operator can retry cleanly.
+   */
+  private void replicateRestoredDatabase(final ArcadeDBServer server, final ServerDatabase restored,
+      final String databaseName) {
+    final DatabaseInternal wrapped = restored.getWrappedDatabaseInstance();
+    if (!(wrapped instanceof HAReplicatedDatabase haDb))
+      return;
+
+    try {
+      haDb.createInReplicas(true);
+    } catch (final RuntimeException e) {
+      // Compensate: drop the locally-restored database so the operator can retry cleanly.
+      try {
+        restored.getEmbedded().drop();
+        server.removeDatabase(databaseName);
+      } catch (final Exception inner) {
+        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+            "Compensating drop after failed restore replication failed for '%s'", inner, databaseName);
+      }
+      throw e;
+    }
   }
 }
