@@ -509,11 +509,30 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (userPassword.length() > 256)
       throw new ServerSecurityException("User password cannot be longer than 256 characters");
 
-    json.put("password", httpServer.getServer().getSecurity().encodePassword(userPassword));
+    final ArcadeDBServer server = httpServer.getServer();
+    json.put("password", server.getSecurity().encodePassword(userPassword));
 
     Metrics.counter("http.create-user").increment();
 
-    httpServer.getServer().getSecurity().createUser(json);
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null) {
+      // Non-HA mode: direct local mutation.
+      server.getSecurity().createUser(json);
+      return;
+    }
+
+    // HA mode: compute the new users payload and submit a Raft entry.
+    // The `synchronized` block serialises the read-compute-submit sequence with
+    // any other user mutation running on this leader, so two concurrent createUser
+    // calls cannot overwrite each other's in-flight changes.
+    synchronized (server.getSecurity()) {
+      if (server.getSecurity().getUser(json.getString("name")) != null)
+        throw new ServerSecurityException("User '" + json.getString("name") + "' already exists");
+
+      final JSONArray currentUsers = new JSONArray(server.getSecurity().getUsersJsonPayload());
+      currentUsers.put(json);
+      ha.replicateSecurityUsers(currentUsers.toString());
+    }
   }
 
   private void dropUser(final String userName) {
