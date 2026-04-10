@@ -380,12 +380,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String databaseName = decoded.databaseName();
+    final boolean forceSnapshot = decoded.forceSnapshot();
 
-    // Skip if the database is already present locally — either because this node created it
-    // (leader path) or because a previous Raft replay already applied this entry.
-    // Do NOT unconditionally skip on the leader: the createDatabase() HTTP call may have been
-    // received by a follower, which created the database locally and committed the Raft entry.
-    // In that case the leader has never opened the database and must create it here.
+    if (forceSnapshot) {
+      // Restore flow: replace files from the leader's snapshot even if the DB exists.
+      // The leader's own files are already authoritative, so the leader skips the reinstall;
+      // replicas close their local copy and pull the fresh snapshot from the leader.
+      if (raftHAServer != null && raftHAServer.isLeader()) {
+        HALog.log(this, HALog.TRACE, "Leader skips forceSnapshot reinstall for '%s'", databaseName);
+        return;
+      }
+
+      if (server.existsDatabase(databaseName)) {
+        final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
+        db.getEmbedded().close();
+        server.removeDatabase(databaseName);
+      }
+
+      final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
+      final String clusterToken = server.getConfiguration().getValueAsString(
+          com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+      try {
+        installDatabaseSnapshot(databaseName, leaderHttpAddr, clusterToken);
+      } catch (final IOException e) {
+        throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
+      }
+      LogManager.instance().log(this, Level.INFO, "Database '%s' reinstalled via forceSnapshot from leader", databaseName);
+      return;
+    }
+
+    // Normal create flow: skip if the database is already present locally.
     if (server.existsDatabase(databaseName)) {
       HALog.log(this, HALog.TRACE, "Database '%s' already present, skipping install-database entry", databaseName);
       return;
