@@ -273,6 +273,32 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // ReplicatedDatabase.commit() calls replicateTransaction() (Raft quorum) BEFORE commit2ndPhase()
     // (local apply), so the leader also never applies before quorum. The origin-skip here simply
     // prevents double-application on the node that already committed via commit2ndPhase().
+    //
+    // Restart safety (why Ratis will not replay already-applied entries on the origin node):
+    //
+    // 1. Snapshot boundary: applyTransaction() advances lastAppliedIndex for EVERY entry,
+    //    including origin-skipped ones (see the getAndSet call after this switch block).
+    //    takeSnapshot() persists this index as the snapshot marker. On restart, reinitialize()
+    //    restores lastAppliedIndex from that marker. Ratis only calls applyTransaction() for
+    //    entries with index > the snapshot boundary, so all entries up to and including the
+    //    snapshot - whether they were applied via WAL or origin-skipped - are never replayed.
+    //
+    // 2. Post-snapshot replay: for entries committed after the last snapshot but before a
+    //    crash/restart, Ratis DOES replay them. The origin-skip fires again for entries
+    //    originated by this node. This is correct because commit2ndPhase() already wrote
+    //    those changes to the database files before the crash. The skip prevents double-
+    //    application of the same WAL page diffs.
+    //
+    // 3. Crash between Raft commit and commit2ndPhase: if the leader crashes in this narrow
+    //    window, the entry is committed in the Raft log but never locally applied. On restart,
+    //    Ratis replays it and the origin-skip fires (originPeerId is immutable in the entry),
+    //    so the entry is still not applied locally. This is handled by ReplicatedDatabase's
+    //    phase-2 failure logic: if commit2ndPhase() throws, the leader steps down (see
+    //    ReplicatedDatabase.commit()) so a follower with correct state takes over. For hard
+    //    crashes (process kill), a new leader is elected during the outage. When this node
+    //    restarts and rejoins as a follower, Ratis detects it is behind and installs a snapshot
+    //    from the current leader, which triggers a full database download via
+    //    notifyInstallSnapshotFromLeader() and brings this node's data up to date.
     if (isOriginNode(entry.originPeerId())) {
       HALog.log(this, HALog.TRACE, "Skipping WAL apply on origin node (commit2ndPhase handles it): db=%s", entry.databaseName());
       return;

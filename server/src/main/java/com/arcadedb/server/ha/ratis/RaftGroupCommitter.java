@@ -32,7 +32,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
@@ -83,7 +83,9 @@ public class RaftGroupCommitter {
       if (error != null)
         throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
     } catch (final java.util.concurrent.TimeoutException e) {
-      if (pending.dispatched.get()) {
+      // Atomically try to cancel. If CAS fails, the flusher already moved the entry to
+      // DISPATCHED, so cancellation is impossible and we must wait for the Raft result.
+      if (!pending.state.compareAndSet(STATE_PENDING, STATE_CANCELLED)) {
         // Entry was already sent to Raft. We MUST wait for the result to prevent phantom
         // commits (replicated on followers but commit2ndPhase never called on the leader).
         HALog.log(this, HALog.BASIC,
@@ -100,8 +102,7 @@ public class RaftGroupCommitter {
           throw new QuorumNotReachedException("Group commit timed out after extended wait (dispatched to Raft but no reply)");
         }
       }
-      // Entry not yet dispatched to Raft, safe to cancel
-      pending.cancelled.set(true);
+      // Successfully cancelled before dispatch
       HALog.log(this, HALog.BASIC, "Group commit entry cancelled after timeout (%dms), not yet dispatched to Raft", timeoutMs);
       throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms");
     } catch (final RuntimeException e) {
@@ -175,14 +176,12 @@ public class RaftGroupCommitter {
       return;
     }
 
-    // Skip entries that were cancelled by a timed-out caller (phantom commit prevention)
-    batch.removeIf(p -> p.cancelled.get());
+    // Atomically transition each entry from PENDING to DISPATCHED. Entries that were already
+    // CANCELLED by a timed-out caller will fail the CAS and are removed. This single CAS
+    // replaces the old two-step (removeIf cancelled + set dispatched) that had a race window.
+    batch.removeIf(p -> !p.state.compareAndSet(STATE_PENDING, STATE_DISPATCHED));
     if (batch.isEmpty())
       return;
-
-    // Mark all entries as dispatched before sending (prevents cancellation after this point)
-    for (final PendingEntry p : batch)
-      p.dispatched.set(true);
 
     // Send all entries asynchronously (pipelined)
     final List<CompletableFuture<RaftClientReply>> futures = new ArrayList<>(batch.size());
@@ -240,11 +239,18 @@ public class RaftGroupCommitter {
     HALog.log(this, HALog.DETAILED, "Group commit flushed %d entries in one batch", batch.size());
   }
 
-  private static class PendingEntry {
+  // Atomic state constants for PendingEntry. A single AtomicInteger prevents the race
+  // between cancel and dispatch that existed with two separate AtomicBooleans: the flusher's
+  // removeIf(cancelled) and set(dispatched=true) were not atomic, so a timeout firing between
+  // them could cancel an entry that had already passed the cancel check.
+  static final int STATE_PENDING    = 0;
+  static final int STATE_DISPATCHED = 1;
+  static final int STATE_CANCELLED  = 2;
+
+  static class PendingEntry {
     final byte[]                       entry;
-    final CompletableFuture<Exception> future     = new CompletableFuture<>();
-    final AtomicBoolean                cancelled  = new AtomicBoolean(false);
-    final AtomicBoolean                dispatched = new AtomicBoolean(false);
+    final CompletableFuture<Exception> future = new CompletableFuture<>();
+    final AtomicInteger                state  = new AtomicInteger(STATE_PENDING);
 
     PendingEntry(final byte[] entry) {
       this.entry = entry;

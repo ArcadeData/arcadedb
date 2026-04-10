@@ -276,6 +276,11 @@ public class RaftHAServer {
           "Inter-node snapshot and proxy traffic uses plain HTTP. Cluster token and database data are transmitted "
               + "unencrypted. Set arcadedb.ssl.enabled=true or deploy behind a secure network (VPN, private subnet)");
 
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
+      LogManager.instance().log(this, Level.INFO,
+          "K8s mode enabled. The Raft gRPC transport does not enforce cluster-token authentication. "
+              + "Use a Kubernetes NetworkPolicy to restrict gRPC port access to only ArcadeDB StatefulSet pods");
+
     // Derive the cluster token eagerly at startup rather than lazily on the first request.
     // PBKDF2 with 100k iterations is expensive and would block a request thread.
     initClusterToken();
@@ -421,6 +426,31 @@ public class RaftHAServer {
    * was already started with the full peer list from HA_SERVER_LIST, so there is no risk
    * of split-brain. All pods share the same Raft group configuration and will elect a
    * leader via normal Raft consensus once a majority becomes reachable.
+   *
+   * <p><b>Security note:</b> Peer discovery uses DNS resolution of the headless service hostname.
+   * The cluster token authenticates HTTP-level operations (snapshot downloads, command proxying)
+   * but the Raft gRPC transport does not enforce token-based authentication. Any pod that can
+   * resolve the headless service DNS name and reach the gRPC port can participate in Raft
+   * consensus. In production Kubernetes deployments, restrict gRPC port access to only pods in
+   * the ArcadeDB StatefulSet via a NetworkPolicy. Example:
+   * <pre>
+   *   apiVersion: networking.k8s.io/v1
+   *   kind: NetworkPolicy
+   *   metadata:
+   *     name: arcadedb-raft-grpc
+   *   spec:
+   *     podSelector:
+   *       matchLabels:
+   *         app: arcadedb
+   *     ingress:
+   *       - from:
+   *           - podSelector:
+   *               matchLabels:
+   *                 app: arcadedb
+   *         ports:
+   *           - port: 2424    # gRPC/Raft port
+   *             protocol: TCP
+   * </pre>
    */
   private void tryAutoJoinCluster() {
     // Random jitter (100ms-3s) to spread probe traffic when multiple pods start simultaneously
