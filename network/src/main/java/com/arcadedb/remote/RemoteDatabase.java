@@ -288,6 +288,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return explicitLock;
   }
 
+  /**
+   * Returns a builder for configuring a remote batch graph import.
+   * The builder mirrors the server-side GraphBatch.Builder parameters.
+   *
+   * @return a new {@link RemoteGraphBatch.Builder}
+   */
+  public RemoteGraphBatch.Builder batch() {
+    checkDatabaseIsOpen();
+    return new RemoteGraphBatch.Builder(this);
+  }
+
   @Override
   public void begin() {
     begin(transactionIsolationLevel);
@@ -596,6 +607,42 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   private String getUrl(final String command, final String databaseName) {
     return getUrl(command) + "/" + databaseName;
+  }
+
+  JSONObject sendBatch(final String content, final Map<String, String> queryParams) {
+    checkDatabaseIsOpen();
+
+    final StringBuilder urlBuilder = new StringBuilder(getUrl("batch", databaseName));
+    if (queryParams != null && !queryParams.isEmpty()) {
+      urlBuilder.append('?');
+      boolean first = true;
+      for (final Map.Entry<String, String> entry : queryParams.entrySet()) {
+        if (!first)
+          urlBuilder.append('&');
+        urlBuilder.append(entry.getKey()).append('=').append(entry.getValue());
+        first = false;
+      }
+    }
+
+    try {
+      final HttpRequest request = createRequestBuilder("POST", urlBuilder.toString())
+          .POST(HttpRequest.BodyPublishers.ofString(content))
+          .header("Content-Type", "application/x-ndjson")
+          .build();
+
+      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200) {
+        final Exception detail = manageException(response, "batch import");
+        throw new DatabaseOperationException("Error on batch import", detail);
+      }
+
+      return new JSONObject(response.body());
+    } catch (final DatabaseOperationException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error on batch import", e);
+    }
   }
 
   protected ResultSet createResultSet(final JSONObject response) {
