@@ -137,11 +137,6 @@
             </exclusions>
         </dependency>
 
-        <dependency>
-            <groupId>org.opencypher.gremlin</groupId>
-            <artifactId>translation</artifactId>
-            <version>${translation.version}</version>
-        </dependency>
 
         <!-- ARCADEDB DOES NOT USE THIS LIBRARY BUT GREMLIN DOES. REPLACING IT WITH THE LAST RELEASE BECAUSE OF THE SECURITY ISSUE
          https://nvd.nist.gov/vuln/detail/CVE-2022-1471 -->

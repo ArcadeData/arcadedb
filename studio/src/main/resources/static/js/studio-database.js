@@ -2548,7 +2548,7 @@ function populateSettingsPanel() {
   let truncateChecked = (truncateSaved == null || truncateSaved == "true") ? "checked" : "";
 
   let fitSaved = globalStorageLoad("table.fitInPage");
-  let fitChecked = (fitSaved == null || fitSaved == "true") ? "checked" : "";
+  let fitChecked = (fitSaved == "true") ? "checked" : "";
 
   let currentLimit = $("#inputLimit").val() || "20";
 

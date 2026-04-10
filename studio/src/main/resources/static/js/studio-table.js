@@ -14,7 +14,7 @@ function renderTable() {
   let tableFitInPage = $("#tableFitInPage").prop("checked");
   if (tableFitInPage == null) {
     let saved = globalStorageLoad("table.fitInPage");
-    if (saved == null) tableFitInPage = true; // DEFAULT
+    if (saved == null) tableFitInPage = false; // DEFAULT
     else tableFitInPage = saved == "true";
   }
   let tableFitInPageChecked = tableFitInPage;

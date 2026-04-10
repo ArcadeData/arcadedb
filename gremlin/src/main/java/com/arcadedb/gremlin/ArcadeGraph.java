@@ -18,7 +18,6 @@
  */
 package com.arcadedb.gremlin;
 
-import com.arcadedb.cypher.ArcadeCypher;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
@@ -58,7 +57,6 @@ import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
 import org.codehaus.groovy.control.customizers.CompilationCustomizer;
 import org.codehaus.groovy.control.customizers.SecureASTCustomizer;
-import org.opencypher.gremlin.traversal.CustomPredicate;
 
 import java.io.Closeable;
 import java.io.File;
@@ -150,15 +148,6 @@ public class ArcadeGraph implements Graph, Closeable {
     return new ArcadeGraph(database);
   }
 
-  public ArcadeCypher cypher(final String query) {
-    return cypher(query, Collections.emptyMap());
-  }
-
-  public ArcadeCypher cypher(final String query, final Map<String, Object> parameters) {
-    ArcadeCypher arcadeCypher = new ArcadeCypher(this, query);
-    arcadeCypher.setParameters(parameters);
-    return arcadeCypher;
-  }
 
   public ArcadeGremlin gremlin(final String query) {
     return new ArcadeGremlin(this, query);
@@ -413,7 +402,6 @@ public class ArcadeGraph implements Graph, Closeable {
 
       this.database.close();
 
-      ArcadeCypher.closeDatabase(this);
     }
   }
 
@@ -527,8 +515,8 @@ public class ArcadeGraph implements Graph, Closeable {
   private void init() {
     // INITIALIZE CYPHER
     importPlugin = ImportGremlinPlugin.build();
-    importPlugin.classImports(Math.class, ArcadeCustomFunctions.class, CustomPredicate.class);
-    importPlugin.methodImports(List.of("java.lang.Math#*", "com.arcadedb.gremlin.ArcadeCustomFunctions#*"));
+    importPlugin.classImports(Math.class);
+    importPlugin.methodImports(List.of("java.lang.Math#*"));
 
     // INITIALIZE JAVA ENGINE (secure by design)
     gremlinJavaEngine = new GremlinLangScriptEngine(importPlugin.create().getCustomizers().get());

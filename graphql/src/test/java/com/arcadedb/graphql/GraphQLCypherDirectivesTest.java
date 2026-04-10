@@ -22,11 +22,6 @@ import com.arcadedb.database.Database;
 
 public class GraphQLCypherDirectivesTest extends AbstractGraphQLNativeLanguageDirectivesTest {
   @Override
-  protected int getExpectedPropertiesMetadata() {
-    return 0;
-  }
-
-  @Override
   protected void defineTypes(final Database database) {
     super.defineTypes(database);
     database.command("graphql", """

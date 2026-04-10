@@ -9,12 +9,8 @@ scriptEngines:
       org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin:
         classImports:
           - java.lang.Math
-          - org.opencypher.gremlin.traversal.CustomFunctions
-          - org.opencypher.gremlin.traversal.CustomPredicate
         methodImports:
           - "java.lang.Math#*"
-          - "org.opencypher.gremlin.traversal.CustomPredicate#*"
-          - "org.opencypher.gremlin.traversal.CustomFunctions#*"
 serializers:
   - className: org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1
     config:

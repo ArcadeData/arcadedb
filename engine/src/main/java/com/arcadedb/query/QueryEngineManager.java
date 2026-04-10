@@ -66,7 +66,6 @@ public class QueryEngineManager {
 
     // REGISTER GREMLIN AND ITS CYPHER ENGINE (OVERRIDES "cypher" WITH GREMLIN-BASED IMPLEMENTATION IF AVAILABLE)
     register("com.arcadedb.gremlin.query.GremlinQueryEngineFactory");
-    register("com.arcadedb.cypher.query.CypherQueryEngineFactory");
   }
 
   public static QueryEngineManager getInstance() {

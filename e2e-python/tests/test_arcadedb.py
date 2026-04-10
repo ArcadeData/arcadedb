@@ -224,7 +224,7 @@ def test_psycopg2_with_named_parameterized_cypher_query():
     try:
         with conn.cursor() as cursor:
             query_params = {'name': 'Stout', 'brewery_id': 350}
-            cursor.execute('{cypher} MATCH (b:Beer) WHERE b.name =%(name)s AND b.brewery_id = %(brewery_id)s RETURN b', query_params)
+            cursor.execute('{opencypher} MATCH (b:Beer) WHERE b.name =%(name)s AND b.brewery_id = %(brewery_id)s RETURN b', query_params)
             beer = cursor.fetchall()[0]
             assert 'Stout' in beer
     finally:
@@ -255,17 +255,17 @@ def test_psycopg2_cypher_with_array_parameter_in_clause():
     try:
         with conn.cursor() as cursor:
             # Create test vertices first
-            cursor.execute('{cypher} CREATE (n:CHUNK {text: "chunk1"}) RETURN ID(n)')
+            cursor.execute('{opencypher} CREATE (n:CHUNK {text: "chunk1"}) RETURN ID(n)')
             rid1 = cursor.fetchone()[0]
-            cursor.execute('{cypher} CREATE (n:CHUNK {text: "chunk2"}) RETURN ID(n)')
+            cursor.execute('{opencypher} CREATE (n:CHUNK {text: "chunk2"}) RETURN ID(n)')
             rid2 = cursor.fetchone()[0]
-            cursor.execute('{cypher} CREATE (n:CHUNK {text: "chunk3"}) RETURN ID(n)')
+            cursor.execute('{opencypher} CREATE (n:CHUNK {text: "chunk3"}) RETURN ID(n)')
             rid3 = cursor.fetchone()[0]
 
             # Now query with IN clause using array parameter
             rids_list = [rid1, rid2, rid3]
             query_params = {'ids': rids_list}
-            cursor.execute('{cypher} MATCH (n:CHUNK) WHERE ID(n) IN %(ids)s RETURN n.text as text, ID(n) as id', query_params)
+            cursor.execute('{opencypher} MATCH (n:CHUNK) WHERE ID(n) IN %(ids)s RETURN n.text as text, ID(n) as id', query_params)
 
             results = cursor.fetchall()
             assert len(results) == 3
