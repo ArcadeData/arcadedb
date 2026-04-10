@@ -29,6 +29,24 @@ public interface HAReplicatedDatabase {
 
   void createInReplicas();
 
+  /**
+   * Replicates a database drop operation. Raft-first: the leader does NOT drop
+   * its own files until the state machine applies the drop entry across the cluster.
+   * Non-HA implementations should throw {@link UnsupportedOperationException}.
+   */
+  void dropInReplicas();
+
+  /**
+   * Replicates a createDatabase operation with an optional forceSnapshot flag.
+   * When {@code forceSnapshot} is true, replicas pull a fresh snapshot from the leader
+   * even if the database already exists locally (used after a restore).
+   */
+  default void createInReplicas(final boolean forceSnapshot) {
+    if (forceSnapshot)
+      throw new UnsupportedOperationException("forceSnapshot variant not supported by this HA implementation");
+    createInReplicas();
+  }
+
   HAServerPlugin.QUORUM getQuorum();
 
   boolean isLeader();

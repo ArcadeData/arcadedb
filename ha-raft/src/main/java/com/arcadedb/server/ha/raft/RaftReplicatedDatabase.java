@@ -1011,6 +1011,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     LogManager.instance().log(this, Level.INFO, "Database '%s' install-database entry committed via Raft", getName());
   }
 
+  @Override
+  public void dropInReplicas() {
+    throw new UnsupportedOperationException("dropInReplicas not yet implemented");
+  }
+
   /**
    * Forwards a DDL or leader-only command to the Raft leader via HTTP POST to
    * {@code /api/v1/command/{dbName}}. The response JSON is parsed back into a
