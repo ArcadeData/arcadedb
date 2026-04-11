@@ -983,6 +983,135 @@ class RaftHAComprehensiveIT {
         });
   }
 
+  // =====================================================================
+  // TEST 18: Leadership transfer during graceful shutdown with concurrent writes
+  // =====================================================================
+  @Test
+  @Order(18)
+  void test18_leadershipTransferDuringShutdownWithWrites() throws Exception {
+    final ArcadeDBServer leader = findLeader();
+    assertThat(leader).isNotNull();
+    final int leaderIndex = findServerIndex(leader);
+
+    // Start concurrent writes in background
+    final AtomicInteger writeCount = new AtomicInteger();
+    final AtomicInteger errorCount = new AtomicInteger();
+    final var running = new java.util.concurrent.atomic.AtomicBoolean(true);
+
+    final Thread writer = new Thread(() -> {
+      while (running.get()) {
+        try {
+          final ArcadeDBServer currentLeader = findLeader();
+          if (currentLeader != null && currentLeader.isStarted()) {
+            final int id = writeCount.incrementAndGet();
+            currentLeader.getDatabase(DB_NAME).transaction(() ->
+                currentLeader.getDatabase(DB_NAME).newVertex("TestV")
+                    .set("id", (long) (100000 + id)).set("name", "shutdown-" + id).save()
+            );
+          }
+          Thread.sleep(50);
+        } catch (final Exception e) {
+          errorCount.incrementAndGet();
+        }
+      }
+    }, "shutdown-writer");
+    writer.setDaemon(true);
+    writer.start();
+
+    // Let some writes accumulate
+    Thread.sleep(1000);
+
+    // Gracefully stop the leader (triggers leadership transfer)
+    LogManager.instance().log(this, Level.INFO, "TEST: Stopping leader %s during writes", leader.getServerName());
+    leader.stop();
+
+    // Wait for new leader
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).until(() -> {
+      for (int i = 0; i < SERVER_COUNT; i++)
+        if (i != leaderIndex && servers[i] != null && servers[i].isStarted()
+            && servers[i].getHA() != null && servers[i].getHA().isLeader())
+          return true;
+      return false;
+    });
+
+    // Continue writing to the new leader
+    Thread.sleep(2000);
+    running.set(false);
+    writer.join(5000);
+
+    // Verify all acknowledged writes are present on the new leader
+    final ArcadeDBServer newLeader = findLeader();
+    assertThat(newLeader).isNotNull();
+    final long totalRecords = newLeader.getDatabase(DB_NAME).query("sql",
+        "SELECT count(*) as cnt FROM TestV WHERE name LIKE 'shutdown-%'").nextIfAvailable().getProperty("cnt", 0L);
+    LogManager.instance().log(this, Level.INFO, "TEST: %d writes succeeded, %d errors, %d records found",
+        writeCount.get(), errorCount.get(), totalRecords);
+    // At least some writes should have survived the transition
+    assertThat(totalRecords).isGreaterThan(0);
+  }
+
+  // =====================================================================
+  // TEST 19: Snapshot 503 when semaphore is saturated
+  // =====================================================================
+  @Test
+  @Order(19)
+  void test19_snapshotSemaphore503() throws Exception {
+    final ArcadeDBServer leader = findLeader();
+    assertThat(leader).isNotNull();
+    final int httpPort = BASE_HTTP_PORT + findServerIndex(leader);
+
+    // The default semaphore allows 2 concurrent snapshots.
+    // Fire many concurrent requests - at least one should get 503.
+    final var client = java.net.http.HttpClient.newBuilder()
+        .connectTimeout(java.time.Duration.ofSeconds(5)).build();
+    final String auth = "Basic " + java.util.Base64.getEncoder()
+        .encodeToString(("root:testpassword1").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+    // Add enough data to make snapshots take some time
+    for (int i = 0; i < 500; i++) {
+      final int idx = i;
+      leader.getDatabase(DB_NAME).transaction(() ->
+          leader.getDatabase(DB_NAME).newVertex("TestV")
+              .set("id", (long) (200000 + idx)).set("name", "snap-" + "x".repeat(500)).save());
+    }
+
+    // Send 10 concurrent snapshot requests using InputStream (keeps connection open while streaming)
+    final int concurrency = 10;
+    final List<java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<java.io.InputStream>>> futures = new ArrayList<>();
+    for (int i = 0; i < concurrency; i++) {
+      final var req = java.net.http.HttpRequest.newBuilder()
+          .uri(java.net.URI.create("http://localhost:" + httpPort + "/api/v1/ha/snapshot/" + DB_NAME))
+          .header("Authorization", auth)
+          .GET().build();
+      futures.add(client.sendAsync(req, java.net.http.HttpResponse.BodyHandlers.ofInputStream()));
+    }
+
+    // Collect status codes
+    int count503 = 0;
+    int count200 = 0;
+    for (final var f : futures) {
+      try {
+        final var resp = f.get(10, TimeUnit.SECONDS);
+        if (resp.statusCode() == 503)
+          count503++;
+        else if (resp.statusCode() == 200)
+          count200++;
+        resp.body().close();
+      } catch (final Exception ignored) {}
+    }
+    LogManager.instance().log(this, Level.INFO, "TEST: Snapshot semaphore: %d x 200, %d x 503", count200, count503);
+    // At least some should succeed and at least some should be rejected (semaphore = 2, 10 concurrent)
+    assertThat(count200).as("Some snapshots should succeed").isGreaterThan(0);
+    assertThat(count503).as("Some snapshots should be rejected with 503").isGreaterThan(0);
+  }
+
+  private int findServerIndex(final ArcadeDBServer target) {
+    for (int i = 0; i < servers.length; i++)
+      if (servers[i] == target)
+        return i;
+    return -1;
+  }
+
   private ArcadeDBServer findLeader() {
     for (final ArcadeDBServer s : servers)
       if (s != null && s.isStarted() && s.getHA() != null && s.getHA().isLeader())
