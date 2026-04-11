@@ -375,10 +375,19 @@ public class RaftHAServer {
       return;
     }
 
-    // Stop retrying after 10 consecutive failures to avoid infinite noise.
-    // Persistent failures (port conflict, bad storage, full disk) require manual intervention.
+    // After 10 consecutive failures, the problem is persistent (port conflict, bad storage,
+    // full disk). Stop the server so the cluster can heal (other nodes take over) and
+    // orchestrators (K8s, systemd) can restart the process with a clean state.
     if (restartFailureCount >= 10) {
-      return; // Already logged SEVERE on the 10th failure
+      LogManager.instance().log(this, Level.SEVERE,
+          "Ratis restart failed %d consecutive times. Stopping server for cluster-level recovery",
+          restartFailureCount);
+      final Thread stopThread = new Thread(() -> {
+        try { server.stop(); } catch (final Exception ignored) {}
+      }, "arcadedb-restart-failure-stop");
+      stopThread.setDaemon(true);
+      stopThread.start();
+      return;
     }
 
     LogManager.instance().log(this, Level.WARNING,
@@ -784,13 +793,10 @@ public class RaftHAServer {
       try {
         while (getLastAppliedIndex() < targetIndex) {
           final long remaining = deadline - System.currentTimeMillis();
-          if (remaining <= 0) {
-            LogManager.instance().log(this, Level.WARNING,
-                "READ_YOUR_WRITES consistency timeout: applied=%d < target=%d (consistency guarantee degraded to " +
-                    "EVENTUAL)",
-                getLastAppliedIndex(), targetIndex);
-            return;
-          }
+          if (remaining <= 0)
+            throw new ReplicationException(
+                "READ_YOUR_WRITES consistency timeout: follower applied index " + getLastAppliedIndex()
+                    + " has not reached target " + targetIndex + " within " + quorumTimeout + "ms");
           applyCondition.await(remaining, TimeUnit.MILLISECONDS);
         }
       } finally {

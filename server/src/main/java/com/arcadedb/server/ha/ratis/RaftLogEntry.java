@@ -244,6 +244,7 @@ public class RaftLogEntry {
   private static String readBoundedString(final Binary stream) {
     final int pos = stream.position();
     final long declaredLength = stream.getUnsignedNumber();
+    // < 0 is defensive: a corrupt varint from a truncated buffer could produce unexpected values
     if (declaredLength < 0 || declaredLength > MAX_STRING_LENGTH)
       throw new IllegalArgumentException(
           "String length " + declaredLength + " exceeds maximum " + MAX_STRING_LENGTH + " at position " + pos);

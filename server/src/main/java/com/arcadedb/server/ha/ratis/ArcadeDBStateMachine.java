@@ -568,12 +568,20 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         "Downloading databases from leader %s during snapshot installation...", leaderHttpAddr);
 
     for (final String dbName : server.getDatabaseNames()) {
-      LogManager.instance().log(this, Level.INFO, "Installing snapshot for database '%s' from leader %s...",
-          dbName, leaderHttpAddr);
-      final DatabaseInternal db = server.getDatabase(dbName);
-      if (db == null)
-        throw new ReplicationException("Database '" + dbName + "' not found during snapshot installation");
-      installDatabaseSnapshot(db, leaderHttpAddr, dbName);
+      try {
+        LogManager.instance().log(this, Level.INFO, "Installing snapshot for database '%s' from leader %s...",
+            dbName, leaderHttpAddr);
+        final DatabaseInternal db = server.getDatabase(dbName);
+        if (db == null) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Database '%s' was dropped during snapshot installation, skipping", dbName);
+          continue;
+        }
+        installDatabaseSnapshot(db, leaderHttpAddr, dbName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Failed to install snapshot for database '%s', skipping: %s", dbName, e.getMessage());
+      }
     }
 
     LogManager.instance().log(this, Level.INFO, "Snapshot installation from leader completed");
@@ -638,8 +646,6 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
   private void installDatabaseSnapshot(final DatabaseInternal db, final String leaderHttpAddr,
       final String databaseName) throws IOException {
-    final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-    final String snapshotUrl = (useSsl ? "https" : "http") + "://" + leaderHttpAddr + "/api/v1/ha/snapshot/" + databaseName;
 
     final String databasePath = db.getDatabasePath();
     final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
@@ -648,7 +654,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
     // Phase 1: Download and extract to temp directory (database stays open and operational).
     // Retries handle transient leader unavailability (e.g., mid-election, restart).
-    downloadSnapshotWithRetry(snapshotUrl, tempDir, databaseName);
+    // The leader address is refreshed on each retry to handle elections during download.
+    downloadSnapshotWithRetry(leaderHttpAddr, tempDir, databaseName);
 
     // Phase 2: Close database and swap directories using a crash-safe marker file.
     // The marker ensures recovery can complete or rollback the swap if the process crashes.
@@ -722,9 +729,19 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
    * On permanent failure (all retries exhausted) the temp directory is cleaned up and an
    * IOException is thrown.
    */
-  private void downloadSnapshotWithRetry(final String snapshotUrl, final Path tempDir,
+  private void downloadSnapshotWithRetry(final String initialLeaderAddr, final Path tempDir,
       final String databaseName) throws IOException {
+    final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final String protocol = useSsl ? "https" : "http";
+
     for (int attempt = 1; attempt <= SNAPSHOT_DOWNLOAD_MAX_RETRIES; attempt++) {
+      // Refresh leader address on each retry to handle elections during download
+      final var raftHA = server.getHA();
+      String leaderAddr = raftHA != null ? raftHA.getLeaderHTTPAddress() : null;
+      if (leaderAddr == null)
+        leaderAddr = initialLeaderAddr;
+
+      final String snapshotUrl = protocol + "://" + leaderAddr + "/api/v1/ha/snapshot/" + databaseName;
       try {
         downloadSnapshot(snapshotUrl, tempDir, databaseName);
         return; // success

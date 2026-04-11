@@ -38,7 +38,7 @@ public class ClusterMonitor {
   private static final long                     LAG_WARN_INTERVAL_MS = 60_000;
 
   private final long                            lagWarningThreshold;
-  private volatile long                         leaderCommitIndex;
+  private volatile long                         leaderCommitIndex    = -1;
   private final ConcurrentHashMap<String, Long> replicaMatchIndexes  = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, Long> replicaLastWarnTime  = new ConcurrentHashMap<>();
 
@@ -52,6 +52,8 @@ public class ClusterMonitor {
 
   public void updateReplicaMatchIndex(final String replicaId, final long matchIndex) {
     replicaMatchIndexes.put(replicaId, matchIndex);
+    if (leaderCommitIndex < 0)
+      return; // Skip lag calculations until first leader election
     final long lag = Math.max(0, leaderCommitIndex - matchIndex);
 
     if (lagWarningThreshold > 0 && lag > lagWarningThreshold) {
