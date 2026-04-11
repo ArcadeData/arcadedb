@@ -50,7 +50,14 @@ public class Importer extends AbstractImporter {
 
       startImporting();
 
-      loadFromSource(settings.url, AnalyzedEntity.EntityType.DATABASE, analyzedSchema);
+      // Determine entity type for the main URL: if vertexType or edgeType is explicitly set, route accordingly
+      AnalyzedEntity.EntityType urlEntityType = AnalyzedEntity.EntityType.DATABASE;
+      if (settings.options.containsKey("vertexType") && settings.vertices == null)
+        urlEntityType = AnalyzedEntity.EntityType.VERTEX;
+      else if (settings.options.containsKey("edgeType") && settings.edges == null)
+        urlEntityType = AnalyzedEntity.EntityType.EDGE;
+
+      loadFromSource(settings.url, urlEntityType, analyzedSchema);
       loadFromSource(settings.documents, AnalyzedEntity.EntityType.DOCUMENT, analyzedSchema);
       loadFromSource(settings.vertices, AnalyzedEntity.EntityType.VERTEX, analyzedSchema);
       loadFromSource(settings.edges, AnalyzedEntity.EntityType.EDGE, analyzedSchema);

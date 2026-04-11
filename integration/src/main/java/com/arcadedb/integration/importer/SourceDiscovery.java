@@ -197,12 +197,16 @@ public class SourceDiscovery {
       break;
 
     case VERTEX:
-      knownFileType = settings.verticesFileType != null ? settings.verticesFileType : getFileTypeByExtension(settings.vertices);
+      knownFileType = settings.verticesFileType != null ?
+          settings.verticesFileType :
+          getFileTypeByExtension(settings.vertices != null ? settings.vertices : settings.url);
       knownDelimiter = settings.verticesDelimiter;
       break;
 
     case EDGE:
-      knownFileType = settings.edgesFileType != null ? settings.edgesFileType : getFileTypeByExtension(settings.edgeTypeName);
+      knownFileType = settings.edgesFileType != null ?
+          settings.edgesFileType :
+          getFileTypeByExtension(settings.edges != null ? settings.edges : settings.url);
       knownDelimiter = settings.edgesDelimiter;
       break;
 
