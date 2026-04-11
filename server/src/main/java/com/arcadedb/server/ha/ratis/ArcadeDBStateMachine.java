@@ -271,7 +271,14 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       LogManager.instance().log(this, Level.SEVERE,
           "CRITICAL: Unexpected error applying Raft log entry at index %d. "
               + "Shutting down to prevent state divergence.", e, index);
-      server.stop();
+      // Schedule stop on a separate thread to avoid deadlock: server.stop() closes the
+      // Ratis server, which may try to acquire locks held by the current applyTransaction
+      // callback thread.
+      final Thread stopThread = new Thread(() -> {
+        try { server.stop(); } catch (final Exception ignored) {}
+      }, "arcadedb-emergency-stop");
+      stopThread.setDaemon(true);
+      stopThread.start();
       return CompletableFuture.failedFuture(e);
     }
   }
@@ -975,12 +982,14 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         try {
           final RaftHAServer raftHA = server.getHA();
           if (raftHA != null) {
-            // Wait for Ratis to reach CLOSED state before restarting.
-            // restartRatisIfNeeded() checks the state and only restarts if CLOSED/CLOSING.
             final long deadline = System.currentTimeMillis() + 10_000;
             while (raftHA.getRaftLifeCycleState() != org.apache.ratis.util.LifeCycle.State.CLOSED
                 && System.currentTimeMillis() < deadline)
               Thread.sleep(100);
+            // Re-check status: a graceful shutdown may have started between the
+            // outer ONLINE check and now. Don't restart if we're shutting down.
+            if (server.getStatus() != ArcadeDBServer.STATUS.ONLINE)
+              return;
             raftHA.restartRatisIfNeeded();
           }
         } catch (final InterruptedException e) {
