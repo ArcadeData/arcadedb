@@ -18,12 +18,15 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+
+import java.util.logging.Level;
 
 public class PostAddPeerHandler extends AbstractServerHttpHandler {
 
@@ -53,6 +56,20 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
           new JSONObject().put("error", "Missing required fields: peerId, address").toString());
 
     raftHAServer.addPeer(peerId, address);
+
+    // Seed the newly-joined peer with the current users file. Snapshot install does not cover
+    // server-users.jsonl (it lives under <server-root>/config/, outside the database directory),
+    // so without this explicit seed the new peer would start with a stale user set until the
+    // next user mutation happens cluster-wide. Best-effort: a failure here does not roll back
+    // the peer addition.
+    try {
+      final String usersPayload = httpServer.getServer().getSecurity().getUsersJsonPayload();
+      plugin.replicateSecurityUsers(usersPayload);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Users seed to new peer '%s' failed (best-effort): %s", peerId, e.getMessage());
+    }
+
     return new ExecutionResponse(200,
         new JSONObject().put("result", "Peer " + peerId + " added").toString());
   }
