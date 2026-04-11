@@ -52,7 +52,7 @@ public class ClusterMonitor {
 
   public void updateReplicaMatchIndex(final String replicaId, final long matchIndex) {
     replicaMatchIndexes.put(replicaId, matchIndex);
-    final long lag = leaderCommitIndex - matchIndex;
+    final long lag = Math.max(0, leaderCommitIndex - matchIndex);
 
     if (lagWarningThreshold > 0 && lag > lagWarningThreshold) {
       // Debounce: warn at most once per interval per replica
@@ -74,7 +74,7 @@ public class ClusterMonitor {
     final long currentCommitIndex = leaderCommitIndex;
     final Map<String, Long> lags = new HashMap<>(replicaMatchIndexes.size());
     for (final var entry : replicaMatchIndexes.entrySet())
-      lags.put(entry.getKey(), currentCommitIndex - entry.getValue());
+      lags.put(entry.getKey(), Math.max(0, currentCommitIndex - entry.getValue()));
     return Collections.unmodifiableMap(lags);
   }
 

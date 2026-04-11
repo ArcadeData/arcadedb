@@ -163,6 +163,27 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
             "Snapshot index %d is ahead of persisted applied index %d, will download from leader when available",
             snapshotIndex, persistedApplied);
         needsSnapshotDownload.set(true);
+
+        // Watchdog: if notifyLeaderChanged() doesn't fire within 30 seconds (e.g., stable
+        // leader, no election), trigger the download directly. This prevents a follower from
+        // remaining permanently stale when the leader is stable.
+        final Thread watchdog = new Thread(() -> {
+          try {
+            Thread.sleep(30_000);
+            if (needsSnapshotDownload.compareAndSet(true, false)) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Snapshot download watchdog: no leader change after 30s, triggering download directly");
+              installDatabasesFromLeader();
+            }
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.SEVERE,
+                "Snapshot download watchdog failed: %s", e.getMessage());
+          }
+        }, "arcadedb-snapshot-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
       }
 
       lastAppliedIndex.set(snapshotIndex);

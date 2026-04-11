@@ -182,6 +182,7 @@ public class RaftHAServer {
   private volatile boolean                  leaderReady          = true;
   private          ScheduledExecutorService lagMonitorExecutor;
   private          ScheduledExecutorService healthMonitorExecutor;
+  private volatile int                      restartFailureCount;
 
   public RaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     this.server = server;
@@ -242,9 +243,9 @@ public class RaftHAServer {
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
     if (rootPassword == null || rootPassword.isEmpty())
-      LogManager.instance().log(this, Level.WARNING,
-          "Root password is not set - auto-derived cluster token will be weak. "
-              + "Set arcadedb.server.rootPassword or arcadedb.ha.clusterToken for production deployments");
+      throw new ConfigurationException(
+          "Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. "
+              + "Set arcadedb.server.rootPassword or provide an explicit arcadedb.ha.clusterToken");
     final String password = clusterName + ":" + (rootPassword != null ? rootPassword : "");
     try {
       final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
@@ -369,11 +370,20 @@ public class RaftHAServer {
       // getDivision can throw if the group is already removed
       state = raftServer.getLifeCycleState();
     }
-    if (state != org.apache.ratis.util.LifeCycle.State.CLOSED && state != org.apache.ratis.util.LifeCycle.State.CLOSING)
+    if (state != org.apache.ratis.util.LifeCycle.State.CLOSED && state != org.apache.ratis.util.LifeCycle.State.CLOSING) {
+      restartFailureCount = 0; // Reset on healthy state
       return;
+    }
+
+    // Stop retrying after 10 consecutive failures to avoid infinite noise.
+    // Persistent failures (port conflict, bad storage, full disk) require manual intervention.
+    if (restartFailureCount >= 10) {
+      return; // Already logged SEVERE on the 10th failure
+    }
 
     LogManager.instance().log(this, Level.WARNING,
-        "Ratis server is in %s state, restarting for partition recovery...", state);
+        "Ratis server is in %s state, restarting for partition recovery (attempt %d)...",
+        state, restartFailureCount + 1);
 
     try {
       try {
@@ -410,11 +420,18 @@ public class RaftHAServer {
 
       raftClient = buildRaftClient();
 
+      restartFailureCount = 0;
       LogManager.instance().log(this, Level.INFO, "Ratis server restarted successfully after partition recovery");
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE,
-          "Failed to restart Ratis server after partition: %s", e.getMessage());
+      restartFailureCount++;
+      if (restartFailureCount >= 10)
+        LogManager.instance().log(this, Level.SEVERE,
+            "Failed to restart Ratis server after %d attempts. Giving up - manual restart required: %s",
+            restartFailureCount, e.getMessage());
+      else
+        LogManager.instance().log(this, Level.WARNING,
+            "Failed to restart Ratis server (attempt %d/10): %s", restartFailureCount, e.getMessage());
     }
   }
 
@@ -850,6 +867,11 @@ public class RaftHAServer {
         throw new ReplicationException("Linearizable read check failed: " + ex.getMessage());
       }
       // Reply success means the leader lease is valid and the read index is confirmed.
+      // Double-check we're still the leader: after SIGSTOP/SIGCONT, the sendReadOnly
+      // heartbeat might briefly succeed before the old leader fully steps down.
+      if (!isLeader())
+        throw new ServerIsNotTheLeaderException("Leadership lost after read index confirmation",
+            getLeaderHTTPAddress());
       // Now wait for the local state machine to catch up to the read index.
       final long readIndex = reply.getLogIndex();
       if (readIndex > 0)
@@ -997,8 +1019,12 @@ public class RaftHAServer {
           HALog.log(this, HALog.BASIC, "Leader read barrier cleared: applied=%d >= commit=%d",
               getLastAppliedIndex(), getCommitIndex());
         } catch (final Exception e) {
-          leaderReady = true;
-          LogManager.instance().log(this, Level.WARNING, "Leader read barrier wait failed: %s", e.getMessage());
+          // Do NOT set leaderReady = true on failure. If catch-up failed, the leader's
+          // state machine is stale and must not serve linearizable reads. Reads will
+          // block in waitForLeaderReady() until the quorum timeout, then fail with an
+          // error rather than returning stale data.
+          LogManager.instance().log(this, Level.SEVERE,
+              "Leader read barrier catch-up FAILED. Reads will be blocked until resolved: %s", e.getMessage());
         } finally {
           // Wake up any threads blocked in waitForLeaderReady()
           synchronized (leaderChangeNotifier) {

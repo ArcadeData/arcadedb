@@ -78,6 +78,7 @@ public class RaftGroupCommitter {
       throw new ReplicationQueueFullException(
           "Replication queue is full (" + MAX_QUEUE_SIZE + " entries). Server is overloaded, retry later");
 
+    final long deadline = System.currentTimeMillis() + timeoutMs + haServer.getQuorumTimeout();
     try {
       final Exception error = pending.future.get(timeoutMs, TimeUnit.MILLISECONDS);
       if (error != null)
@@ -88,10 +89,13 @@ public class RaftGroupCommitter {
       if (!pending.state.compareAndSet(STATE_PENDING, STATE_CANCELLED)) {
         // Entry was already sent to Raft. We MUST wait for the result to prevent phantom
         // commits (replicated on followers but commit2ndPhase never called on the leader).
+        // Use remaining time from the overall deadline (2x quorumTimeout) instead of a fresh timeout.
+        final long remaining = Math.max(1, deadline - System.currentTimeMillis());
         HALog.log(this, HALog.BASIC,
-            "Group commit entry already dispatched to Raft, waiting for result (initial timeout %dms expired)", timeoutMs);
+            "Group commit entry already dispatched to Raft, waiting %dms for result (initial timeout %dms expired)",
+            remaining, timeoutMs);
         try {
-          final Exception error = pending.future.get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
+          final Exception error = pending.future.get(remaining, TimeUnit.MILLISECONDS);
           if (error != null)
             throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
           return; // Raft succeeded after extended wait
