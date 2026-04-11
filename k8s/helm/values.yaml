@@ -244,5 +244,11 @@ affinity:
                   - arcadedb
           topologyKey: kubernetes.io/hostname
 
+## @param networkPolicy.enabled - Create a NetworkPolicy to restrict Raft gRPC (port 2424)
+## to only ArcadeDB pods. Recommended for HA deployments since the Raft gRPC transport
+## does not enforce cluster-token authentication.
+networkPolicy:
+  enabled: true
+
 ## @param extraManifests - Include any amount of extra arbitrary manifests
 extraManifests: {}

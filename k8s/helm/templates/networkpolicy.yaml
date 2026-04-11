@@ -1,0 +1,32 @@
+{{- if .Values.networkPolicy.enabled }}
+# Restricts Raft gRPC traffic (port 2424) to only ArcadeDB pods.
+# The Raft gRPC transport does not enforce cluster-token authentication,
+# so any pod that can reach port 2424 could submit arbitrary Raft log entries.
+# This NetworkPolicy ensures only pods with the ArcadeDB app label can communicate
+# on the gRPC port, providing defense-in-depth for the Raft protocol.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "arcadedb.fullname" . }}-raft-grpc
+  labels:
+    {{- include "arcadedb.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "arcadedb.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow Raft gRPC (port 2424) only from other ArcadeDB pods
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "arcadedb.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 2424
+    # Allow HTTP API (port 2480) from anywhere (or restrict as needed)
+    - ports:
+        - protocol: TCP
+          port: 2480
+{{- end }}
