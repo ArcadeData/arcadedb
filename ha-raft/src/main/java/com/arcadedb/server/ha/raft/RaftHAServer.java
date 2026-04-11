@@ -25,6 +25,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.conf.Parameters;
@@ -495,6 +496,17 @@ public class RaftHAServer {
    * allowing the cluster to accept writes again as soon as the new leader is elected.
    */
   public synchronized void refreshRaftClient() {
+    refreshRaftClient(null);
+  }
+
+  /**
+   * Like {@link #refreshRaftClient()}, but seeds the new client with the known leader so
+   * the very first write request routes directly to the leader without a probe round-trip.
+   *
+   * @param knownLeaderId the peer ID of the newly elected leader, or {@code null} to use
+   *                      the Ratis group-level leader cache.
+   */
+  public synchronized void refreshRaftClient(final RaftPeerId knownLeaderId) {
     if (raftProperties == null)
       return;
 
@@ -503,7 +515,7 @@ public class RaftHAServer {
     // no committer is available to concurrent callers (the field is volatile).
     final RaftClient oldClient = raftClient;
 
-    raftClient = buildRaftClient(raftGroup, raftProperties);
+    raftClient = buildRaftClient(raftGroup, raftProperties, knownLeaderId);
 
     if (groupCommitter != null) {
       final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
@@ -724,12 +736,27 @@ public class RaftHAServer {
    * our own retry loop in setConfigurationWithRetry to control the overall timeout.
    */
   private static RaftClient buildRaftClient(final RaftGroup group, final RaftProperties properties) {
-    return RaftClient.newBuilder()
+    return buildRaftClient(group, properties, null);
+  }
+
+  /**
+   * Like {@link #buildRaftClient(RaftGroup, RaftProperties)}, but seeds the new client with a
+   * known leader peer ID so the first write request routes directly to the leader without a
+   * probe round-trip.
+   */
+  private static RaftClient buildRaftClient(final RaftGroup group, final RaftProperties properties,
+      final RaftPeerId knownLeaderId) {
+    // Set the client-side RPC timeout to match the quorum timeout so a slow leader response
+    // does not trigger a premature TimeoutIOException before the commit completes.
+    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
+    final RaftClient.Builder builder = RaftClient.newBuilder()
         .setRaftGroup(group)
         .setProperties(properties)
         .setParameters(new Parameters())
-        .setRetryPolicy(RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)))
-        .build();
+        .setRetryPolicy(RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
+    if (knownLeaderId != null)
+      builder.setLeaderId(knownLeaderId);
+    return builder.build();
   }
 
   private int getHttpPortOffset() {

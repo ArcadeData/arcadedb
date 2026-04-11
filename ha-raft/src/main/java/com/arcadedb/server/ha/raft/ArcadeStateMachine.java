@@ -169,7 +169,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // After a network partition, channels to isolated peers enter TRANSIENT_FAILURE
     // with exponential back-off (up to ~120 s). Refreshing on every leader change
     // ensures the client can reach all peers as soon as the partition heals.
-    raftHAServer.refreshRaftClient();
+    // Pass the newly elected leader's peer ID so the fresh client routes its very first
+    // write directly to the leader rather than probing peers.
+    raftHAServer.refreshRaftClient(newLeaderId);
 
     if (newLeaderId.equals(raftHAServer.getLocalPeerId())) {
       LogManager.instance().log(this, Level.INFO, "This node is now LEADER");
