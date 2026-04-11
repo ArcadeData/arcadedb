@@ -392,8 +392,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Returns the current users list as a JSON array string, suitable for HA
    * replication via {@code HAServerPlugin.replicateSecurityUsers}. The output is
    * the canonical representation of the in-memory users map.
+   * <p>
+   * Intentionally NOT {@code synchronized}: callers on the HTTP handler side use
+   * {@code synchronized(server.getSecurity())} to serialise read-compute-submit
+   * sequences. The state machine apply thread (which calls {@link #applyReplicatedUsers})
+   * must NOT touch that monitor or it would deadlock with a handler thread waiting
+   * for {@code submitAndWait} to complete.
    */
-  public synchronized String getUsersJsonPayload() {
+  public String getUsersJsonPayload() {
     final JSONArray array = new JSONArray();
     for (final JSONObject userJson : usersToJSON())
       array.put(userJson);
@@ -405,8 +411,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * {@code server-users.jsonl} and reloads the in-memory users map.
    * Called from the Raft state machine on every peer when a SECURITY_USERS_ENTRY
    * is applied.
+   * <p>
+   * Intentionally NOT {@code synchronized} on the ServerSecurity monitor: the
+   * HTTP handler holds that monitor while waiting for {@code submitAndWait} to
+   * complete, and the state machine apply thread needs to call this method to
+   * unblock the wait. Raft state-machine apply is single-threaded per group, so
+   * there is no internal contention here, and the underlying file write + reload
+   * are themselves self-consistent.
    */
-  public synchronized void applyReplicatedUsers(final String usersJsonArray) {
+  public void applyReplicatedUsers(final String usersJsonArray) {
     final JSONArray array = new JSONArray(usersJsonArray);
     final List<JSONObject> list = new ArrayList<>(array.length());
     for (int i = 0; i < array.length(); i++)
