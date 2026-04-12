@@ -44,6 +44,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   public static final String KIND_CODE = "t";
 
   private String                       timestampColumn;
+  private String                       precision;
   private int                          shardCount;
   private long                         retentionMs;
   private long                         compactionBucketIntervalMs;
@@ -89,6 +90,14 @@ public class LocalTimeSeriesType extends LocalDocumentType {
 
   public void setTimestampColumn(final String timestampColumn) {
     this.timestampColumn = timestampColumn;
+  }
+
+  public String getPrecision() {
+    return precision;
+  }
+
+  public void setPrecision(final String precision) {
+    this.precision = precision;
   }
 
   public int getShardCount() {
@@ -139,6 +148,8 @@ public class LocalTimeSeriesType extends LocalDocumentType {
 
     // TimeSeries-specific fields
     json.put("timestampColumn", timestampColumn);
+    if (precision != null)
+      json.put("precision", precision);
     json.put("shardCount", shardCount);
     json.put("retentionMs", retentionMs);
     if (compactionBucketIntervalMs > 0)
@@ -175,6 +186,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
    */
   public void fromJSON(final JSONObject json) {
     timestampColumn = json.getString("timestampColumn", null);
+    precision = json.getString("precision", null);
     shardCount = json.getInt("shardCount", 1);
     retentionMs = json.getLong("retentionMs", 0L);
     compactionBucketIntervalMs = json.getLong("compactionBucketIntervalMs", 0L);

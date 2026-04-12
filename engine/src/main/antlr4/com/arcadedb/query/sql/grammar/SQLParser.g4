@@ -442,17 +442,31 @@ createTypeBody
 
 /**
  * CREATE TIMESERIES TYPE body
- * Example: CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, humidity DOUBLE) SHARDS 4 RETENTION 90 DAYS COMPACTION_INTERVAL 1 HOURS
+ * Example: CREATE TIMESERIES TYPE SensorData TIMESTAMP ts PRECISION NANOSECOND TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, humidity DOUBLE) SHARDS 4 RETENTION 90 DAYS COMPACTION_INTERVAL 1 HOURS
  */
 createTimeSeriesTypeBody
     : identifier
       (IF NOT EXISTS)?
-      (TIMESTAMP identifier)?
+      (TIMESTAMP identifier (PRECISION tsPrecision)?)?
       (TAGS LPAREN tsTagColumnDef (COMMA tsTagColumnDef)* RPAREN)?
       (FIELDS LPAREN tsFieldColumnDef (COMMA tsFieldColumnDef)* RPAREN)?
       (SHARDS INTEGER_LITERAL)?
-      (RETENTION INTEGER_LITERAL (DAYS | HOURS | MINUTES)?)?
-      (COMPACTION_INTERVAL INTEGER_LITERAL (DAYS | HOURS | MINUTES)?)?
+      (RETENTION INTEGER_LITERAL tsRetentionUnit?)?
+      ((COMPACTION_INTERVAL | COMPACTION INTERVAL) INTEGER_LITERAL tsRetentionUnit?)?
+    ;
+
+tsPrecision
+    : NANOSECOND
+    | MICROSECOND
+    | MILLISECOND
+    | SECOND
+    ;
+
+tsRetentionUnit
+    : DAYS
+    | HOURS
+    | MINUTES
+    | SECONDS
     ;
 
 tsTagColumnDef
@@ -481,8 +495,10 @@ tsTimeUnit
     : DAYS
     | HOURS
     | MINUTES
+    | SECONDS
     | HOUR
     | MINUTE
+    | SECOND
     ;
 
 /**
@@ -1475,6 +1491,12 @@ identifier
     | DAYS
     | HOURS
     | MINUTES
+    | SECONDS
+    | PRECISION
+    | NANOSECOND
+    | MICROSECOND
+    | MILLISECOND
+    | INTERVAL
     | DOWNSAMPLING
     | POLICY
     | GRANULARITY
