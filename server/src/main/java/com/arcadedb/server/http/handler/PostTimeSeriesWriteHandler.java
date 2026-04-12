@@ -131,6 +131,7 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
     // Group by measurement and insert
     int inserted = 0;
     final Set<String> unknownTypes = new LinkedHashSet<>();
+    final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
     database.begin();
     try {
       for (final Sample sample : samples) {
@@ -142,8 +143,10 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
         }
 
         final DocumentType docType = database.getSchema().getType(measurement);
-        if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
-          continue; // skip non-timeseries types
+        if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
+          nonTimeSeriesTypes.add(measurement);
+          continue;
+        }
 
         final TimeSeriesEngine engine = tsType.getEngine();
         final List<ColumnDefinition> columns = tsType.getTsColumns();
@@ -178,12 +181,16 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
 
     if (inserted == 0 && !unknownTypes.isEmpty())
       return new ExecutionResponse(400,
-          "{ \"error\" : \"Unknown timeseries type(s): " + String.join(", ", unknownTypes)
-              + ". Create the type first with CREATE TIMESERIES TYPE.\"}");
+          new JSONObject().put("error", "Unknown timeseries type(s): " + String.join(", ", unknownTypes)
+              + ". Create the type first with CREATE TIMESERIES TYPE.").toString());
 
     if (!unknownTypes.isEmpty())
       LogManager.instance().log(this, Level.WARNING,
           "Skipped line protocol samples for unknown timeseries type(s): %s", null, unknownTypes);
+
+    if (!nonTimeSeriesTypes.isEmpty())
+      LogManager.instance().log(this, Level.WARNING,
+          "Skipped line protocol samples for non-timeseries type(s): %s", null, nonTimeSeriesTypes);
 
     return new ExecutionResponse(204, "");
   }
