@@ -53,16 +53,19 @@ class ExpressionTypeDetector {
       return new FunctionCallExpression("count", args, false);
     }
 
+    // All recursive searches below use a length guard: only match when the found
+    // context covers (almost) the full expression text.  Without this, expressions
+    // like sum(CASE WHEN ... END) would be mis-parsed as just the inner special
+    // expression, losing the outer function wrapper.  The - 2 tolerance allows for
+    // whitespace that ANTLR's getText() strips from tokens.
+    final String exprText = ctx.getText();
+
     // EXISTS expression
     final Cypher25Parser.ExistsExpressionContext existsCtx = builder.findExistsExpressionRecursive(ctx);
-    if (existsCtx != null)
+    if (existsCtx != null && existsCtx.getText().length() >= exprText.length() - 2)
       return builder.parseExistsExpression(existsCtx);
 
-    // CASE expressions (both forms).
-    // Guard: only match if the CASE context covers (almost) the full expression text.
-    // Without this guard, sum(CASE WHEN ... END) would be mis-parsed as just the
-    // inner CaseExpression, losing the outer sum() aggregation wrapper.
-    final String exprText = ctx.getText();
+    // CASE expressions (both forms)
     final Cypher25Parser.CaseExpressionContext caseCtx = builder.findCaseExpressionRecursive(ctx);
     if (caseCtx != null && caseCtx.getText().length() >= exprText.length() - 2)
       return builder.parseCaseExpression(caseCtx);
@@ -73,7 +76,7 @@ class ExpressionTypeDetector {
 
     // shortestPath expressions
     final Cypher25Parser.ShortestPathExpressionContext shortestPathCtx = builder.findShortestPathExpressionRecursive(ctx);
-    if (shortestPathCtx != null)
+    if (shortestPathCtx != null && shortestPathCtx.getText().length() >= exprText.length() - 2)
       return builder.parseShortestPathExpression(shortestPathCtx);
 
     return null;
