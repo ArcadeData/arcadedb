@@ -242,13 +242,16 @@ class CypherExpressionBuilder {
    * This is a helper for parsing lower-level expression contexts.
    */
   Expression parseExpressionFromText(final ParseTree node) {
-    // Check for CASE expressions in the parse tree
+    // Check for CASE expressions in the parse tree.
+    // Guard: only match when the CASE context covers (almost) the full node text so that
+    // sum(CASE WHEN ... END) is not mis-parsed as just the inner CaseExpression.
+    final String nodeText = node.getText();
     final Cypher25Parser.CaseExpressionContext caseCtx = findCaseExpressionRecursive(node);
-    if (caseCtx != null)
+    if (caseCtx != null && caseCtx.getText().length() >= nodeText.length() - 2)
       return parseCaseExpression(caseCtx);
 
     final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = findExtendedCaseExpressionRecursive(node);
-    if (extCaseCtx != null)
+    if (extCaseCtx != null && extCaseCtx.getText().length() >= nodeText.length() - 2)
       return parseExtendedCaseExpression(extCaseCtx);
 
     // Check for EXISTS expressions

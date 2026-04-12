@@ -58,13 +58,17 @@ class ExpressionTypeDetector {
     if (existsCtx != null)
       return builder.parseExistsExpression(existsCtx);
 
-    // CASE expressions (both forms)
+    // CASE expressions (both forms).
+    // Guard: only match if the CASE context covers (almost) the full expression text.
+    // Without this guard, sum(CASE WHEN ... END) would be mis-parsed as just the
+    // inner CaseExpression, losing the outer sum() aggregation wrapper.
+    final String exprText = ctx.getText();
     final Cypher25Parser.CaseExpressionContext caseCtx = builder.findCaseExpressionRecursive(ctx);
-    if (caseCtx != null)
+    if (caseCtx != null && caseCtx.getText().length() >= exprText.length() - 2)
       return builder.parseCaseExpression(caseCtx);
 
     final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = builder.findExtendedCaseExpressionRecursive(ctx);
-    if (extCaseCtx != null)
+    if (extCaseCtx != null && extCaseCtx.getText().length() >= exprText.length() - 2)
       return builder.parseExtendedCaseExpression(extCaseCtx);
 
     // shortestPath expressions
