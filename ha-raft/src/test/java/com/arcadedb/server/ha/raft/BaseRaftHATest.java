@@ -60,6 +60,13 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     if (persistentRaftStorage())
       config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, true);
 
+    // Disable the health monitor in tests by default. During teardown, servers stop
+    // one by one, causing remaining nodes' Ratis to enter CLOSED state. The health
+    // monitor would repeatedly restart Ratis (creating new threads each time) until
+    // the JVM runs out of native threads. Tests that explicitly need the health
+    // monitor (e.g. RaftHealthMonitorRecoveryIT) can override and re-enable it.
+    config.setValue(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL, 0L);
+
     // Each in-process server needs a unique Raft port. Extract the server index
     // from the server name (e.g., "ArcadeDB_1" → index 1) to offset the base port.
     final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
