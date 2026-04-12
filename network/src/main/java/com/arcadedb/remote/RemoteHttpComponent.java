@@ -210,6 +210,19 @@ public class RemoteHttpComponent extends RWLockContext {
 
       try {
         HttpRequest.Builder requestBuilder = createRequestBuilder(method, url);
+
+        // Inject HA read-consistency headers when used from a RemoteDatabase.
+        if (this instanceof RemoteDatabase remoteDb) {
+          final ReadConsistency rc = remoteDb.getReadConsistency();
+          if (rc != ReadConsistency.EVENTUAL)
+            requestBuilder = requestBuilder.header("X-ArcadeDB-Read-Consistency", rc.name().toLowerCase());
+          if (rc == ReadConsistency.READ_YOUR_WRITES) {
+            final long last = remoteDb.getLastCommitIndex();
+            if (last >= 0)
+              requestBuilder = requestBuilder.header("X-ArcadeDB-Commit-Index", String.valueOf(last));
+          }
+        }
+
         HttpRequest request;
 
         if (payloadCommand != null) {
@@ -242,6 +255,17 @@ public class RemoteHttpComponent extends RWLockContext {
         }
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        // Capture commit-index from response for read-your-writes consistency.
+        if (this instanceof RemoteDatabase remoteDb) {
+          response.headers().firstValue("X-ArcadeDB-Commit-Index").ifPresent(val -> {
+            try {
+              remoteDb.updateLastCommitIndex(Long.parseLong(val));
+            } catch (final NumberFormatException ignored) {
+              // server sent an invalid header; ignore
+            }
+          });
+        }
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
@@ -292,7 +316,23 @@ public class RemoteHttpComponent extends RWLockContext {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new RemoteException("Request interrupted", e);
-      } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException |
+      } catch (final NeedRetryException e) {
+        // Election in progress - retry with delay.
+        final int maxElectionRetries = (this instanceof RemoteDatabase db) ? db.getElectionRetryCount() : 3;
+        final long delayMs = (this instanceof RemoteDatabase db) ? db.getElectionRetryDelayMs() : 2000L;
+        if (retry + 1 >= maxRetry || retry >= maxElectionRetries) {
+          lastException = e;
+          break;
+        }
+        try {
+          Thread.sleep(delayMs);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new RemoteException("Request interrupted during election retry", ie);
+        }
+        LogManager.instance().log(this, Level.WARNING,
+            "Election in progress, retrying after %dms (retry=%d/%d)...", null, delayMs, retry, maxRetry);
+      } catch (final RemoteException | DuplicatedKeyException | TransactionException | TimeoutException |
                      SecurityException | RecordNotFoundException e) {
         throw e;
       } catch (final Exception e) {
@@ -533,6 +573,8 @@ public class RemoteHttpComponent extends RWLockContext {
       } else if (exception.equals(ConnectException.class.getName())) {
         return new NeedRetryException(detail);
       } else if (exception.equals("com.arcadedb.server.ha.ReplicationException")) {
+        return new NeedRetryException(detail);
+      } else if (exception.equals(NeedRetryException.class.getName())) {
         return new NeedRetryException(detail);
       } else
         // ELSE

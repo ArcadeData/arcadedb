@@ -35,6 +35,8 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Deque;
 import java.util.concurrent.atomic.AtomicReference;
@@ -44,9 +46,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BASIC  = "Basic";
   private static final String AUTHORIZATION_BEARER = "Bearer";
   protected final HttpServer httpServer;
+  private final LeaderProxy leaderProxy;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
+    this.leaderProxy = new LeaderProxy(httpServer);
   }
 
   protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, JSONObject payload)
@@ -80,6 +84,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    ServerSecurityUser user = null;
     try {
       LogManager.instance().setContext(httpServer.getServer().getServerName());
 
@@ -87,7 +92,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       // Check cluster-internal forwarded auth (highest priority — bypasses session lookup)
       final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
-      ServerSecurityUser user = null;
       if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
         user = validateClusterForwardedAuth(exchange,
             clusterTokenHeader.getFirst(),
@@ -187,6 +191,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               SecurityException.class.getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 403, "Security error", e, null);
     } catch (final ServerIsNotTheLeaderException e) {
+      if (leaderProxy.tryProxy(exchange, e.getLeaderAddress(), user))
+        return;
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                       e.getMessage());
@@ -262,6 +268,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         sendErrorResponse(exchange, 503, "Found duplicate key in index", realException,
                 dke.getIndexName() + "|" + dke.getKeys() + "|" + dke.getCurrentIndexedRID());
       } else if (realException instanceof ServerIsNotTheLeaderException sle) {
+        if (leaderProxy.tryProxy(exchange, sle.getLeaderAddress(), user))
+          return;
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
                         realException.getMessage());
@@ -302,7 +310,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final String clusterToken = httpServer.getServer().getConfiguration()
         .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
 
-    if (clusterToken.isBlank() || !clusterToken.equals(providedToken)) {
+    if (clusterToken.isBlank() || !constantTimeEquals(clusterToken, providedToken)) {
       sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
       return null;
     }
@@ -395,6 +403,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
             Level.INFO :
             Level.FINE;
+  }
+
+  private static boolean constantTimeEquals(final String a, final String b) {
+    if (a == null || b == null)
+      return false;
+    final byte[] aBytes = a.getBytes(StandardCharsets.UTF_8);
+    final byte[] bBytes = b.getBytes(StandardCharsets.UTF_8);
+    return MessageDigest.isEqual(aBytes, bBytes);
   }
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,

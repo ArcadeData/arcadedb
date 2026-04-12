@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
@@ -34,10 +35,13 @@ import io.undertow.util.Headers;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 import java.util.logging.Level;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -50,6 +54,9 @@ import java.util.zip.ZipOutputStream;
  * Endpoint: GET /api/v1/ha/snapshot/{database}
  */
 public class SnapshotHttpHandler implements HttpHandler {
+
+  private static final Semaphore CONCURRENCY_SEMAPHORE =
+      new Semaphore(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger(), true);
 
   private final HttpServer httpServer;
 
@@ -72,55 +79,67 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
-    // Extract database name from the path: /api/v1/ha/snapshot/{database}
-    final String relativePath = exchange.getRelativePath();
-    final String databaseName = relativePath.startsWith("/") ? relativePath.substring(1) : relativePath;
-
-    // Check for checksums sub-path: /api/v1/ha/snapshot/{database}/checksums
-    if (databaseName.endsWith("/checksums")) {
-      final String dbName = databaseName.substring(0, databaseName.length() - "/checksums".length());
-      handleChecksums(exchange, dbName);
+    if (!CONCURRENCY_SEMAPHORE.tryAcquire()) {
+      LogManager.instance().log(this, Level.WARNING, "Snapshot rejected: concurrency limit of %d reached",
+          GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger());
+      exchange.setStatusCode(503);
+      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+      exchange.getResponseSender().send("{\"error\":\"Too many concurrent snapshots\"}");
       return;
     }
+    try {
+      // Extract database name from the path: /api/v1/ha/snapshot/{database}
+      final String relativePath = exchange.getRelativePath();
+      final String databaseName = relativePath.startsWith("/") ? relativePath.substring(1) : relativePath;
 
-    if (databaseName.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("Missing database name in path");
-      return;
-    }
-
-    final var server = httpServer.getServer();
-    if (!server.existsDatabase(databaseName)) {
-      exchange.setStatusCode(404);
-      exchange.getResponseSender().send("Database '" + databaseName + "' not found");
-      return;
-    }
-
-    LogManager.instance().log(this, Level.INFO, "Serving database snapshot for '%s'...", databaseName);
-
-    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
-    exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
-        "attachment; filename=\"" + databaseName + "-snapshot.zip\"");
-    exchange.startBlocking();
-
-    final DatabaseInternal db = server.getDatabase(databaseName);
-
-    db.executeInReadLock(() -> {
-      // suspendFlushAndExecute uses a putIfAbsent-based guard that only one concurrent
-      // caller can "own" the suspend. If flush is already suspended (e.g. a concurrent
-      // snapshot request), isPageFlushingSuspended() is true and it is safe to read files
-      // directly since the flush thread is not writing. In both cases we serve the snapshot.
-      final boolean[] executed = { false };
-      db.getPageManager().suspendFlushAndExecute(db, () -> {
-        executed[0] = true;
-        serveSnapshotZip(exchange, db, databaseName);
-      });
-      if (!executed[0]) {
-        // Flush was already suspended by another concurrent snapshot request; serve directly.
-        serveSnapshotZip(exchange, db, databaseName);
+      // Check for checksums sub-path: /api/v1/ha/snapshot/{database}/checksums
+      if (databaseName.endsWith("/checksums")) {
+        final String dbName = databaseName.substring(0, databaseName.length() - "/checksums".length());
+        handleChecksums(exchange, dbName);
+        return;
       }
-      return null;
-    });
+
+      if (databaseName.isEmpty()) {
+        exchange.setStatusCode(400);
+        exchange.getResponseSender().send("Missing database name in path");
+        return;
+      }
+
+      final var server = httpServer.getServer();
+      if (!server.existsDatabase(databaseName)) {
+        exchange.setStatusCode(404);
+        exchange.getResponseSender().send("Database '" + databaseName + "' not found");
+        return;
+      }
+
+      LogManager.instance().log(this, Level.INFO, "Serving database snapshot for '%s'...", databaseName);
+
+      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
+      exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
+          "attachment; filename=\"" + databaseName + "-snapshot.zip\"");
+      exchange.startBlocking();
+
+      final DatabaseInternal db = server.getDatabase(databaseName);
+
+      db.executeInReadLock(() -> {
+        // suspendFlushAndExecute uses a putIfAbsent-based guard that only one concurrent
+        // caller can "own" the suspend. If flush is already suspended (e.g. a concurrent
+        // snapshot request), isPageFlushingSuspended() is true and it is safe to read files
+        // directly since the flush thread is not writing. In both cases we serve the snapshot.
+        final boolean[] executed = { false };
+        db.getPageManager().suspendFlushAndExecute(db, () -> {
+          executed[0] = true;
+          serveSnapshotZip(exchange, db, databaseName);
+        });
+        if (!executed[0]) {
+          // Flush was already suspended by another concurrent snapshot request; serve directly.
+          serveSnapshotZip(exchange, db, databaseName);
+        }
+        return null;
+      });
+    } finally {
+      CONCURRENCY_SEMAPHORE.release();
+    }
   }
 
   private void handleChecksums(final HttpServerExchange exchange, final String databaseName) throws Exception {
@@ -160,7 +179,7 @@ public class SnapshotHttpHandler implements HttpHandler {
     if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
       final var server = httpServer.getServer();
       final String expectedToken = server.getConfiguration().getValueAsString(
-          com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+          GlobalConfiguration.HA_CLUSTER_TOKEN);
       if (expectedToken != null && !expectedToken.isEmpty()
           && java.security.MessageDigest.isEqual(
               expectedToken.getBytes(), clusterTokenHeader.getFirst().getBytes())) {
@@ -223,6 +242,11 @@ public class SnapshotHttpHandler implements HttpHandler {
   private void addFileToZip(final ZipOutputStream zipOut, final File inputFile) throws Exception {
     if (!inputFile.exists())
       return;
+    final Path filePath = inputFile.toPath();
+    if (Files.isSymbolicLink(filePath)) {
+      LogManager.instance().log(this, Level.WARNING, "Skipping symlink in snapshot: %s", filePath);
+      return;
+    }
     final ZipEntry entry = new ZipEntry(inputFile.getName());
     zipOut.putNextEntry(entry);
     try (final FileInputStream fis = new FileInputStream(inputFile)) {

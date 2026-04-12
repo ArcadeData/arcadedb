@@ -40,6 +40,7 @@ import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.storage.RaftStorage;
 
 import org.apache.ratis.proto.RaftProtos;
+import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
@@ -63,7 +64,7 @@ import java.util.logging.Level;
  * Manages the Apache Ratis RaftServer instance for ArcadeDB high availability.
  * Handles peer list parsing, server/client lifecycle, and leadership queries.
  */
-public class RaftHAServer {
+public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Result of parsing the HA server list. Contains the Raft peers (with raft addresses) and
@@ -75,7 +76,7 @@ public class RaftHAServer {
 
   private final ArcadeDBServer             arcadeServer;
   private final ContextConfiguration       configuration;
-  private final ArcadeStateMachine         stateMachine;
+  private ArcadeStateMachine               stateMachine;
   private final ClusterMonitor             clusterMonitor;
   private final Quorum                     quorum;
   private final long                       quorumTimeout;
@@ -93,6 +94,10 @@ public class RaftHAServer {
   private final Object              leaderChangeNotifier = new Object();
   private final Object              applyNotifier        = new Object();
   private int                       lastClusterConfigHash;
+  private final Object               recoveryLock          = new Object();
+  private volatile boolean           shutdownRequested     = false;
+  private volatile LifeCycle.State   forcedStateForTesting = null;
+  private HealthMonitor              healthMonitor;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -269,12 +274,11 @@ public class RaftHAServer {
   }
 
   /**
-   * Creates and starts the Ratis RaftServer and RaftClient.
+   * Builds the {@link RaftProperties} used to configure the Ratis server.
+   * Extracted so the health-monitor recovery path can rebuild properties
+   * without duplicating configuration logic.
    */
-  public void start() throws IOException {
-    // Suppress verbose Ratis internal logs — operators see ArcadeDB-level cluster events instead
-    java.util.logging.Logger.getLogger("org.apache.ratis").setLevel(java.util.logging.Level.WARNING);
-
+  private RaftProperties buildRaftProperties() {
     final RaftProperties properties = new RaftProperties();
 
     // Use the configured Raft port for the local gRPC bind address.
@@ -290,6 +294,9 @@ public class RaftHAServer {
     RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(electionMin, TimeUnit.MILLISECONDS));
     RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(electionMax, TimeUnit.MILLISECONDS));
     RaftServerConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
+
+    final long flowControlWindow = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_FLOW_CONTROL_WINDOW);
+    GrpcConfigKeys.setFlowControlWindow(properties, SizeInBytes.valueOf(flowControlWindow));
 
     // Staging timeout: when adding a new peer, the leader syncs it before committing the
     // config change. This bounds how long the leader waits for the new peer to catch up.
@@ -318,6 +325,18 @@ public class RaftHAServer {
     RaftServerConfigKeys.Read.setLeaderLeaseEnabled(properties, true);
     RaftServerConfigKeys.Read.setLeaderLeaseTimeoutRatio(properties, 0.9);
     RaftServerConfigKeys.Read.setOption(properties, RaftServerConfigKeys.Read.Option.LINEARIZABLE);
+
+    return properties;
+  }
+
+  /**
+   * Creates and starts the Ratis RaftServer and RaftClient.
+   */
+  public void start() throws IOException {
+    // Suppress verbose Ratis internal logs — operators see ArcadeDB-level cluster events instead
+    java.util.logging.Logger.getLogger("org.apache.ratis").setLevel(java.util.logging.Level.WARNING);
+
+    final RaftProperties properties = buildRaftProperties();
 
     final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
     // Only delete existing Raft storage when persistence is not requested.
@@ -365,12 +384,92 @@ public class RaftHAServer {
     // K8s auto-join: if running in Kubernetes with no existing storage, try to join an existing cluster
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S) && !hadExistingStorage)
       tryAutoJoinCluster();
+
+    final long healthInterval = configuration.getValueAsLong(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL);
+    this.healthMonitor = new HealthMonitor(this, healthInterval);
+    this.healthMonitor.start();
+  }
+
+  @Override
+  public LifeCycle.State getRaftLifeCycleState() {
+    final LifeCycle.State forced = forcedStateForTesting;
+    if (forced != null) {
+      forcedStateForTesting = null;
+      return forced;
+    }
+    if (raftServer == null)
+      return LifeCycle.State.NEW;
+    return raftServer.getLifeCycleState();
+  }
+
+  @Override
+  public boolean isShutdownRequested() {
+    return shutdownRequested;
+  }
+
+  @Override
+  public void restartRatisIfNeeded() {
+    synchronized (recoveryLock) {
+      if (shutdownRequested) {
+        HALog.log(this, HALog.BASIC, "Recovery skipped: shutdown requested");
+        return;
+      }
+
+      final RaftClient oldClient = this.raftClient;
+      final RaftServer oldServer = this.raftServer;
+      final RaftGroupCommitter oldCommitter = this.groupCommitter;
+
+      try { if (oldCommitter != null) oldCommitter.stop(); }
+      catch (final Throwable t) { LogManager.instance().log(this, Level.FINE, "Error closing old committer: %s", t, t.getMessage()); }
+      try { if (oldClient != null) oldClient.close(); }
+      catch (final Throwable t) { LogManager.instance().log(this, Level.FINE, "Error closing old client: %s", t, t.getMessage()); }
+      try { if (oldServer != null) oldServer.close(); }
+      catch (final Throwable t) { LogManager.instance().log(this, Level.FINE, "Error closing old server: %s", t, t.getMessage()); }
+
+      try {
+        this.stateMachine = new ArcadeStateMachine();
+        this.stateMachine.setServer(arcadeServer);
+
+        final RaftProperties properties = buildRaftProperties();
+        final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
+        RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
+
+        this.raftServer = RaftServer.newBuilder()
+            .setServerId(localPeerId)
+            .setGroup(raftGroup)
+            .setStateMachine(stateMachine)
+            .setProperties(properties)
+            .setParameters(new Parameters())
+            .setOption(RaftStorage.StartupOption.RECOVER)
+            .build();
+        this.raftServer.start();
+        this.raftProperties = properties;
+        this.raftClient = buildRaftClient(raftGroup, properties);
+
+        final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
+        this.groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, batchSize);
+
+        HALog.log(this, HALog.BASIC, "Ratis recovered successfully");
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.SEVERE, "HealthMonitor recovery failed: %s", t, t.getMessage());
+      }
+    }
+  }
+
+  /** Package-private test hook. Next call to getRaftLifeCycleState() returns this value, then clears. */
+  void forceRaftStateForTesting(final LifeCycle.State state) {
+    this.forcedStateForTesting = state;
   }
 
   /**
    * Stops the Raft client and server, releasing all resources.
    */
   public void stop() {
+    shutdownRequested = true;
+    if (healthMonitor != null) {
+      healthMonitor.stop();
+      healthMonitor = null;
+    }
     stopLagMonitor();
     if (groupCommitter != null) {
       groupCommitter.stop();

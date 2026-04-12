@@ -50,6 +50,7 @@ import java.net.http.HttpResponse;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
@@ -64,15 +65,19 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase {
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
-  private final String                               databaseName;
-  private       BinarySerializer                     serializer;
-  private       String                               sessionId;
-  private       Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel =
+  private final    String                               databaseName;
+  private          BinarySerializer                     serializer;
+  private          String                               sessionId;
+  private          Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel =
       Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
-  private final RemoteSchema                         schema                    = new RemoteSchema(this);
-  private       boolean                              open                      = true;
-  private       RemoteTransactionExplicitLock        explicitLock;
-  private       int                                  cachedHashCode            = 0;
+  private final    RemoteSchema                         schema                    = new RemoteSchema(this);
+  private          boolean                              open                      = true;
+  private          RemoteTransactionExplicitLock        explicitLock;
+  private          int                                  cachedHashCode            = 0;
+  private volatile ReadConsistency                      readConsistency           = ReadConsistency.EVENTUAL;
+  private final    AtomicLong                           lastCommitIndex           = new AtomicLong(-1L);
+  private volatile int                                  electionRetryCount;
+  private volatile long                                 electionRetryDelayMs;
 
   public RemoteDatabase(final String server, final int port, final String databaseName, final String userName,
                         final String userPassword) {
@@ -88,6 +93,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (ClassNotFoundException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error creating BinarySerializer", e);
     }
+    this.electionRetryCount = configuration.getValueAsInteger(GlobalConfiguration.HA_CLIENT_ELECTION_RETRY_COUNT);
+    this.electionRetryDelayMs = configuration.getValueAsLong(GlobalConfiguration.HA_CLIENT_ELECTION_RETRY_DELAY_MS);
   }
 
   @Override
@@ -547,6 +554,40 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   public void setTransactionIsolationLevel(final Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel) {
     this.transactionIsolationLevel = transactionIsolationLevel;
+  }
+
+  public ReadConsistency getReadConsistency() {
+    return readConsistency;
+  }
+
+  public void setReadConsistency(final ReadConsistency readConsistency) {
+    if (readConsistency == null)
+      throw new IllegalArgumentException("readConsistency cannot be null");
+    this.readConsistency = readConsistency;
+  }
+
+  public long getLastCommitIndex() {
+    return lastCommitIndex.get();
+  }
+
+  void updateLastCommitIndex(final long newValue) {
+    lastCommitIndex.accumulateAndGet(newValue, Math::max);
+  }
+
+  public int getElectionRetryCount() {
+    return electionRetryCount;
+  }
+
+  public void setElectionRetryCount(final int electionRetryCount) {
+    this.electionRetryCount = electionRetryCount;
+  }
+
+  public long getElectionRetryDelayMs() {
+    return electionRetryDelayMs;
+  }
+
+  public void setElectionRetryDelayMs(final long electionRetryDelayMs) {
+    this.electionRetryDelayMs = electionRetryDelayMs;
   }
 
   @Override

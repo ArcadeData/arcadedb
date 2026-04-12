@@ -592,6 +592,38 @@ public enum GlobalConfiguration {
       "If empty, a random token is auto-generated and stored in raft-storage at startup.",
       String.class, ""),
 
+  HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
+      "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
+      Long.class, 3000L),
+
+  HA_GRPC_FLOW_CONTROL_WINDOW("arcadedb.ha.grpcFlowControlWindow", SCOPE.SERVER,
+      "gRPC flow control window size in bytes for Ratis append-entries traffic. Larger values help catch-up replication after partitions.",
+      Long.class, 4L * 1024 * 1024),
+
+  HA_SNAPSHOT_MAX_CONCURRENT("arcadedb.ha.snapshotMaxConcurrent", SCOPE.SERVER,
+      "Maximum number of concurrent snapshot downloads served by the leader. Requests over this limit receive HTTP 503.",
+      Integer.class, 2),
+
+  HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
+      "Read timeout in milliseconds for the leader proxy in AbstractServerHttpHandler. Covers long-running queries proxied from a follower to the leader.",
+      Long.class, 30000L),
+
+  HA_PROXY_CONNECT_TIMEOUT("arcadedb.ha.proxyConnectTimeout", SCOPE.SERVER,
+      "Connect timeout in milliseconds for the leader proxy in AbstractServerHttpHandler.",
+      Long.class, 5000L),
+
+  HA_PROXY_MAX_BODY_SIZE("arcadedb.ha.proxyMaxBodySize", SCOPE.SERVER,
+      "Maximum request body size in bytes that the leader proxy will buffer and forward. Larger requests fall back to HTTP 400.",
+      Integer.class, 16 * 1024 * 1024),
+
+  HA_CLIENT_ELECTION_RETRY_COUNT("arcadedb.ha.clientElectionRetryCount", SCOPE.SERVER,
+      "Number of retries performed by RemoteDatabase after receiving HTTP 503 NeedRetryException during an election.",
+      Integer.class, 3),
+
+  HA_CLIENT_ELECTION_RETRY_DELAY_MS("arcadedb.ha.clientElectionRetryDelayMs", SCOPE.SERVER,
+      "Delay in milliseconds between RemoteDatabase election retries.",
+      Long.class, 2000L),
+
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
