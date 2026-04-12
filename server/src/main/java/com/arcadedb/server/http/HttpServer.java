@@ -28,6 +28,7 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
 import com.arcadedb.server.http.handler.DeleteGroupHandler;
 import com.arcadedb.server.http.handler.DeleteUserHandler;
+import com.arcadedb.server.http.handler.LeaderProxy;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
 import com.arcadedb.server.http.handler.GetApiTokensHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
@@ -115,6 +116,7 @@ public class HttpServer implements ServerPlugin {
   private final    HttpSessionManager     sessionManager;
   private final    HttpAuthSessionManager authSessionManager;
   private final    WebSocketEventBus      webSocketEventBus;
+  private final    LeaderProxy            leaderProxy;
   private          Undertow               undertow;
   private volatile String                 listeningAddress;
   private          int                    httpPortListening;
@@ -127,6 +129,11 @@ public class HttpServer implements ServerPlugin {
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L,
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT) * 1_000L);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
+    this.leaderProxy = new LeaderProxy(this);
+  }
+
+  public LeaderProxy getLeaderProxy() {
+    return leaderProxy;
   }
 
   @Override

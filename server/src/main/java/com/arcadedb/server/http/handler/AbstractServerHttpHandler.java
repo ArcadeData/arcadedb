@@ -46,11 +46,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BASIC  = "Basic";
   private static final String AUTHORIZATION_BEARER = "Bearer";
   protected final HttpServer httpServer;
-  private final LeaderProxy leaderProxy;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
-    this.leaderProxy = new LeaderProxy(httpServer);
   }
 
   protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, JSONObject payload)
@@ -191,7 +189,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               SecurityException.class.getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 403, "Security error", e, null);
     } catch (final ServerIsNotTheLeaderException e) {
-      if (leaderProxy.tryProxy(exchange, e.getLeaderAddress(), user))
+      if (httpServer.getLeaderProxy().tryProxy(exchange, e.getLeaderAddress(), user))
         return;
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
@@ -268,7 +266,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         sendErrorResponse(exchange, 503, "Found duplicate key in index", realException,
                 dke.getIndexName() + "|" + dke.getKeys() + "|" + dke.getCurrentIndexedRID());
       } else if (realException instanceof ServerIsNotTheLeaderException sle) {
-        if (leaderProxy.tryProxy(exchange, sle.getLeaderAddress(), user))
+        if (httpServer.getLeaderProxy().tryProxy(exchange, sle.getLeaderAddress(), user))
           return;
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
