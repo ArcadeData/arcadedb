@@ -37,6 +37,7 @@ public class TimeSeriesTypeBuilder {
   private final DatabaseInternal       database;
   private       String                 typeName;
   private       String                 timestampColumn;
+  private       String                 precision;
   private       int                    shards      = 0; // 0 = default (async worker threads)
   private       long                   retentionMs                = 0;
   private       long                   compactionBucketIntervalMs = 0;
@@ -55,6 +56,11 @@ public class TimeSeriesTypeBuilder {
   public TimeSeriesTypeBuilder withTimestamp(final String name) {
     this.timestampColumn = name;
     this.columns.add(new ColumnDefinition(name, Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP));
+    return this;
+  }
+
+  public TimeSeriesTypeBuilder withPrecision(final String precision) {
+    this.precision = precision;
     return this;
   }
 
@@ -100,6 +106,7 @@ public class TimeSeriesTypeBuilder {
 
     final LocalTimeSeriesType type = new LocalTimeSeriesType(schema, typeName);
     type.setTimestampColumn(timestampColumn);
+    type.setPrecision(precision);
     type.setShardCount(shards > 0 ? shards : database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS));
     type.setRetentionMs(retentionMs);
     type.setCompactionBucketIntervalMs(compactionBucketIntervalMs);

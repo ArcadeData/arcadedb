@@ -6045,9 +6045,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     stmt.name = (Identifier) visit(bodyCtx.identifier(0));
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
-    // TIMESTAMP column
-    if (bodyCtx.TIMESTAMP() != null && bodyCtx.identifier().size() > 1)
+    // TIMESTAMP column and optional PRECISION
+    if (bodyCtx.TIMESTAMP() != null && bodyCtx.identifier().size() > 1) {
       stmt.timestampColumn = (Identifier) visit(bodyCtx.identifier(1));
+      if (bodyCtx.PRECISION() != null && bodyCtx.tsPrecision() != null)
+        stmt.precision = bodyCtx.tsPrecision().getText().toUpperCase();
+    }
 
     // TAGS (name type, ...)
     if (bodyCtx.TAGS() != null) {
@@ -6103,35 +6106,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
       }
 
-      // Determine time unit by looking at tokens after RETENTION + INTEGER_LITERAL
-      long multiplier = 86400000L; // default: DAYS
-      boolean foundRetention = false;
-      boolean foundValue = false;
-      for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof TerminalNode tn) {
-          if (tn.getSymbol().getType() == SQLParser.RETENTION)
-            foundRetention = true;
-          else if (foundRetention && tn.getSymbol().getType() == SQLParser.INTEGER_LITERAL)
-            foundValue = true;
-          else if (foundRetention && foundValue) {
-            if (tn.getSymbol().getType() == SQLParser.HOURS)
-              multiplier = 3600000L;
-            else if (tn.getSymbol().getType() == SQLParser.MINUTES)
-              multiplier = 60000L;
-            break;
-          }
-        }
-      }
-
+      // The first tsRetentionUnit after RETENTION belongs to RETENTION
+      final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, SQLParser.RETENTION, 86400000L);
       stmt.retentionMs = retentionValue * multiplier;
     }
 
-    // COMPACTION_INTERVAL value with optional time unit
-    if (bodyCtx.COMPACTION_INTERVAL() != null) {
+    // COMPACTION_INTERVAL or COMPACTION INTERVAL - value with optional time unit
+    final boolean hasCompaction = bodyCtx.COMPACTION_INTERVAL() != null || bodyCtx.COMPACTION() != null;
+    if (hasCompaction) {
       long compactionValue = 0;
+      final int compactionTokenType = bodyCtx.COMPACTION_INTERVAL() != null
+          ? SQLParser.COMPACTION_INTERVAL : SQLParser.COMPACTION;
       for (int i = 0; i < bodyCtx.children.size(); i++) {
         if (bodyCtx.children.get(i) instanceof TerminalNode tn
-            && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL) {
+            && tn.getSymbol().getType() == compactionTokenType) {
           for (int j = i + 1; j < bodyCtx.children.size(); j++) {
             if (bodyCtx.children.get(j) instanceof TerminalNode tn2
                 && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
@@ -6143,29 +6131,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
       }
 
-      // Determine time unit (default: HOURS for compaction interval)
-      long multiplier = 3600000L; // HOURS
-      // Check for unit keywords AFTER the COMPACTION_INTERVAL token
-      // We need to look at the remaining children after the integer literal
-      boolean foundCompaction = false;
-      for (int i = 0; i < bodyCtx.children.size(); i++) {
-        if (bodyCtx.children.get(i) instanceof TerminalNode tn
-            && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL)
-          foundCompaction = true;
-        else if (foundCompaction && bodyCtx.children.get(i) instanceof TerminalNode tn) {
-          if (tn.getSymbol().getType() == SQLParser.DAYS) {
-            multiplier = 86400000L;
-            break;
-          } else if (tn.getSymbol().getType() == SQLParser.HOURS) {
-            multiplier = 3600000L;
-            break;
-          } else if (tn.getSymbol().getType() == SQLParser.MINUTES) {
-            multiplier = 60000L;
-            break;
-          }
-        }
-      }
-
+      final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, compactionTokenType, 3600000L);
       stmt.compactionIntervalMs = compactionValue * multiplier;
     }
 
@@ -6207,7 +6173,40 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       return 3600000L;
     if (unitCtx.MINUTES() != null || unitCtx.MINUTE() != null)
       return 60000L;
+    if (unitCtx.SECONDS() != null || unitCtx.SECOND() != null)
+      return 1000L;
     return 86400000L; // default to days
+  }
+
+  /**
+   * Finds the tsRetentionUnit context that follows the given keyword token type
+   * in a createTimeSeriesTypeBody and returns the corresponding millisecond multiplier.
+   */
+  private static long resolveTimeUnitAfterKeyword(
+      final SQLParser.CreateTimeSeriesTypeBodyContext bodyCtx,
+      final int keywordTokenType, final long defaultMs) {
+    boolean foundKeyword = false;
+    boolean foundValue = false;
+    for (int i = 0; i < bodyCtx.children.size(); i++) {
+      final var child = bodyCtx.children.get(i);
+      if (child instanceof TerminalNode tn && tn.getSymbol().getType() == keywordTokenType)
+        foundKeyword = true;
+      else if (foundKeyword && child instanceof TerminalNode tn
+          && tn.getSymbol().getType() == SQLParser.INTEGER_LITERAL)
+        foundValue = true;
+      else if (foundKeyword && foundValue && child instanceof SQLParser.TsRetentionUnitContext unitCtx) {
+        if (unitCtx.DAYS() != null)
+          return 86400000L;
+        if (unitCtx.HOURS() != null)
+          return 3600000L;
+        if (unitCtx.MINUTES() != null)
+          return 60000L;
+        if (unitCtx.SECONDS() != null)
+          return 1000L;
+        return defaultMs;
+      }
+    }
+    return defaultMs;
   }
 
   @Override
