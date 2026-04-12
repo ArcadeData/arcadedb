@@ -241,7 +241,10 @@ public class RaftHAServer {
       return;
     }
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
-    final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    // Check both the server's ContextConfiguration and the global default (system property)
+    String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    if (rootPassword == null || rootPassword.isEmpty())
+      rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
     if (rootPassword == null || rootPassword.isEmpty())
       throw new ConfigurationException(
           "Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. "
