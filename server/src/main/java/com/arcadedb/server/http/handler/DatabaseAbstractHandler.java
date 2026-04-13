@@ -106,8 +106,11 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
     final int retries = payload != null && !payload.isNull("retries") ? payload.getInt("retries") : 1;
 
-    // Set read consistency context for HA follower reads
-    if (database instanceof HAReplicatedDatabase haDb) {
+    // Set read consistency context for HA follower reads.
+    // database is a ServerDatabase wrapper; the HA implementation sits one level deeper.
+    final HAReplicatedDatabase haDbForRead = database instanceof HAReplicatedDatabase h ? h
+        : (database != null && database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase h2 ? h2 : null);
+    if (haDbForRead != null) {
       final HeaderValues readConsistencyHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Read-Consistency");
       final HeaderValues commitIndexHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Commit-Index");
 
@@ -119,8 +122,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
           ? Long.parseLong(commitIndexHeader.getFirst()) : -1;
 
       try {
-        final Database.READ_CONSISTENCY consistency = Database.READ_CONSISTENCY.valueOf(consistencyStr.toUpperCase());
-        haDb.setReadConsistencyContext(consistency, bookmarkIndex);
+        final Database.READ_CONSISTENCY consistency = Database.READ_CONSISTENCY.valueOf(consistencyStr.toUpperCase(java.util.Locale.ROOT));
+        haDbForRead.setReadConsistencyContext(consistency, bookmarkIndex);
       } catch (final IllegalArgumentException ignored) {
         // Invalid consistency level, skip
       }
@@ -162,16 +165,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         database.commit();
 
       // Emit bookmark header for read-your-writes consistency
-      if (database instanceof HAReplicatedDatabase haDb) {
-        final long lastApplied = haDb.getLastAppliedIndex();
+      if (haDbForRead != null) {
+        final long lastApplied = haDbForRead.getLastAppliedIndex();
         if (lastApplied >= 0)
           exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), String.valueOf(lastApplied));
       }
 
     } finally {
       // Clear read consistency context
-      if (database instanceof HAReplicatedDatabase haDb)
-        haDb.clearReadConsistencyContext();
+      if (haDbForRead != null)
+        haDbForRead.clearReadConsistencyContext();
 
       if (activeSession != null)
         // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
