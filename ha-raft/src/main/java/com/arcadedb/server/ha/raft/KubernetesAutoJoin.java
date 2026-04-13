@@ -52,11 +52,17 @@ import java.util.logging.Level;
  */
 public class KubernetesAutoJoin {
 
-  // Jitter before probing (to spread traffic when multiple pods start simultaneously)
-  private static final long AUTO_JOIN_JITTER_MAX_MS        = 3_000L;
+  // Jitter before probing (to spread traffic when multiple pods start simultaneously).
+  // The minimum is derived from the pod ordinal (last dash-separated segment of HOSTNAME):
+  // pod-0 waits [0, MAX), pod-1 waits [SLOT, MAX), pod-2 waits [2*SLOT, MAX), etc.
+  // This guarantees non-overlapping base windows for StatefulSet scale-up events.
+  // Falls back to AUTO_JOIN_JITTER_FALLBACK_MIN_MS when ordinal cannot be parsed.
+  private static final long AUTO_JOIN_JITTER_MAX_MS         = 3_000L;
+  private static final long AUTO_JOIN_JITTER_ORDINAL_SLOT_MS = 500L;
+  private static final long AUTO_JOIN_JITTER_FALLBACK_MIN_MS = 500L;
   // Short timeouts for the probe client to avoid blocking for the full default gRPC timeout
-  private static final int  AUTO_JOIN_RPC_TIMEOUT_MIN_SECS = 3;
-  private static final int  AUTO_JOIN_RPC_TIMEOUT_MAX_SECS = 5;
+  private static final int  AUTO_JOIN_RPC_TIMEOUT_MIN_SECS  = 3;
+  private static final int  AUTO_JOIN_RPC_TIMEOUT_MAX_SECS  = 5;
 
   private final ArcadeDBServer  server;
   private final RaftGroup       raftGroup;
@@ -78,8 +84,10 @@ public class KubernetesAutoJoin {
    * proceeds without risk of split-brain.
    */
   public void tryAutoJoin() {
-    final long jitterMs = ThreadLocalRandom.current().nextLong(100, AUTO_JOIN_JITTER_MAX_MS);
-    HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
+    final long jitterMin = computeJitterMinMs();
+    final long jitterMax = Math.max(jitterMin + 100, AUTO_JOIN_JITTER_MAX_MS);
+    final long jitterMs = jitterMin < jitterMax ? ThreadLocalRandom.current().nextLong(jitterMin, jitterMax) : jitterMin;
+    HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing (min=%d, max=%d)...", jitterMs, jitterMin, jitterMax);
     try {
       Thread.sleep(jitterMs);
     } catch (final InterruptedException e) {
@@ -162,6 +170,31 @@ public class KubernetesAutoJoin {
     LogManager.instance().log(this, Level.INFO,
         "K8s auto-join: no existing cluster found. This node will participate in "
             + "Raft leader election with the configured peer group once peers are reachable");
+  }
+
+  /**
+   * Derives the jitter minimum from the pod ordinal embedded in the HOSTNAME environment variable.
+   * StatefulSet pods are named {@code <name>-<ordinal>} (e.g. {@code arcadedb-2}), so the ordinal
+   * is the integer after the last hyphen. Each ordinal is assigned its own time slot
+   * ({@code ordinal * AUTO_JOIN_JITTER_ORDINAL_SLOT_MS}), guaranteeing non-overlapping base windows
+   * when a StatefulSet scales up several pods simultaneously.
+   * Falls back to {@code AUTO_JOIN_JITTER_FALLBACK_MIN_MS} when the hostname is absent or
+   * does not end with a parseable integer.
+   */
+  private static long computeJitterMinMs() {
+    final String hostname = System.getenv("HOSTNAME");
+    if (hostname != null) {
+      final int dash = hostname.lastIndexOf('-');
+      if (dash >= 0 && dash < hostname.length() - 1) {
+        try {
+          final int ordinal = Integer.parseInt(hostname.substring(dash + 1));
+          if (ordinal >= 0)
+            return Math.min((long) ordinal * AUTO_JOIN_JITTER_ORDINAL_SLOT_MS, AUTO_JOIN_JITTER_MAX_MS - 100L);
+        } catch (final NumberFormatException ignored) {
+        }
+      }
+    }
+    return AUTO_JOIN_JITTER_FALLBACK_MIN_MS;
   }
 
   private RaftProperties buildProbeProperties() {

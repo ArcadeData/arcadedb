@@ -52,6 +52,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.ByteBuffer;
 import java.util.HashSet;
 import java.util.Map;
@@ -404,9 +405,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private void applyCreateDatabase(final byte[] data) {
     final RaftLogEntryCodec.CreateDatabaseEntry entry = RaftLogEntryCodec.deserializeCreateDatabase(data);
 
-    // The originating node already created the database locally before submitting the Ratis entry.
-    if (isOriginNode(entry.originPeerId())) {
-      HALog.log(this, HALog.TRACE, "Skipping CREATE_DATABASE on origin node (already created): db=%s", entry.databaseName());
+    // The originating leader already created the database locally before submitting the Ratis entry.
+    // We also require isLeader() for the same reason as applyTransactionEntry: if the leader crashes
+    // before or after local creation and later rejoins as a follower, isOriginNode() would still be
+    // true but the database may never have been created. The existence check below handles idempotency.
+    if (isOriginNode(entry.originPeerId()) && raftHA != null && raftHA.isLeader()) {
+      HALog.log(this, HALog.TRACE, "Skipping CREATE_DATABASE on origin leader (already created): db=%s", entry.databaseName());
       return;
     }
 
@@ -422,9 +426,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private void applyDropDatabase(final byte[] data) {
     final RaftLogEntryCodec.DropDatabaseEntry entry = RaftLogEntryCodec.deserializeDropDatabase(data);
 
-    // The originating node already dropped the database locally before submitting the Ratis entry.
-    if (isOriginNode(entry.originPeerId())) {
-      HALog.log(this, HALog.TRACE, "Skipping DROP_DATABASE on origin node (already dropped): db=%s", entry.databaseName());
+    // The originating leader already dropped the database locally before submitting the Ratis entry.
+    // We also require isLeader() for the same reason as applyTransactionEntry: if the leader crashes
+    // before or after local drop and later rejoins as a follower, isOriginNode() would still be true
+    // but the database may still exist locally. The existence check below handles idempotency.
+    if (isOriginNode(entry.originPeerId()) && raftHA != null && raftHA.isLeader()) {
+      HALog.log(this, HALog.TRACE, "Skipping DROP_DATABASE on origin leader (already dropped): db=%s", entry.databaseName());
       return;
     }
 
@@ -537,7 +544,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   // -- Persisted applied index (for snapshot gap detection) --
 
   private Path getAppliedIndexFile() {
-    return Path.of(server.getRootPath(), "ratis-storage", "applied-index");
+    // Store under the peer-specific subdirectory so that multiple server instances sharing the same
+    // root path (e.g. in-JVM tests) do not overwrite each other's applied index files.
+    final String peerId = raftHA != null ? raftHA.getLocalPeerId().toString() : "default";
+    return Path.of(server.getRootPath(), "ratis-storage", peerId, "applied-index");
   }
 
   private long readPersistedAppliedIndex() {
@@ -555,7 +565,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     try {
       final Path file = getAppliedIndexFile();
       Files.createDirectories(file.getParent());
-      Files.writeString(file, Long.toString(index));
+      // Write via a temp file + atomic rename to avoid a corrupt/truncated file on crash mid-write.
+      // A corrupt file would cause readPersistedAppliedIndex to return -1, preventing the gap
+      // detection from triggering a snapshot download when one is actually needed.
+      final Path tmp = file.resolveSibling("applied-index.tmp");
+      Files.writeString(tmp, Long.toString(index));
+      Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Could not write persisted applied index: %s", e.getMessage());
     }

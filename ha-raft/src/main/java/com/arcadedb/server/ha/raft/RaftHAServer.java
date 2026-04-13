@@ -386,7 +386,8 @@ public class RaftHAServer implements HAPlugin {
         new KubernetesAutoJoin(server, raftGroup, localPeerId, raftProperties).tryAutoJoin();
 
       groupCommitter = new RaftGroupCommitter(this,
-          configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE));
+          configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE),
+          configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE));
       groupCommitter.start();
       startLagMonitor();
       startRatisHealthMonitor();
@@ -1279,7 +1280,7 @@ public class RaftHAServer implements HAPlugin {
     // Peer list with replication state (follower indices available only on leader)
     final var followerStates = getFollowerStates();
     final var peers = new JSONArray();
-    for (final var peer : raftGroup.getPeers()) {
+    for (final var peer : getLivePeers()) {
       final var peerJSON = new JSONObject();
       final String peerId = peer.getId().toString();
       peerJSON.put("id", peerId);
