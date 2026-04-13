@@ -303,6 +303,12 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
       throw new ConfigurationException(
           "Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. "
               + "Set arcadedb.server.rootPassword or provide an explicit arcadedb.ha.clusterToken");
+    // Domain separation: the cluster name appears in both the PBKDF2 password and the salt.
+    // In the password (clusterName + ":" + rootPassword) it ensures that two clusters with the
+    // same root password produce different tokens. In the salt ("arcadedb-cluster-token:" + clusterName)
+    // it provides a fixed, cluster-specific salt so that all nodes in the same cluster derive the
+    // same token deterministically without sharing state. The "arcadedb-cluster-token:" prefix
+    // prevents the salt from colliding with salts used for other purposes.
     final String password = clusterName + ":" + rootPassword;
     try {
       final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
@@ -336,10 +342,23 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
           "Inter-node snapshot and proxy traffic uses plain HTTP. Cluster token and database data are transmitted "
               + "unencrypted. Set arcadedb.ssl.enabled=true or deploy behind a secure network (VPN, private subnet)");
 
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
       LogManager.instance().log(this, Level.INFO,
           "K8s mode enabled. The Raft gRPC transport does not enforce cluster-token authentication. "
               + "Use a Kubernetes NetworkPolicy to restrict gRPC port access to only ArcadeDB StatefulSet pods");
+
+      // Strongest warning for the most dangerous combination: K8s mode + gRPC bound to all interfaces.
+      // In this configuration, any pod in the K8s cluster (not just ArcadeDB pods) can connect to
+      // the Raft gRPC port and inject log entries without authentication.
+      final String incomingHost = configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST);
+      if ("0.0.0.0".equals(incomingHost) || "::".equals(incomingHost))
+        LogManager.instance().log(this, Level.SEVERE,
+            "SECURITY: gRPC Raft port is bound to all interfaces (%s) with K8s mode enabled. "
+                + "Without a NetworkPolicy, ANY pod in the cluster can inject Raft log entries. "
+                + "Either restrict arcadedb.ha.replicationIncomingHost to the pod IP, or apply a NetworkPolicy "
+                + "that limits ingress on port %d to ArcadeDB StatefulSet pods only",
+            incomingHost, parseFirstPort(configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS)));
+    }
 
     // Derive the cluster token eagerly at startup rather than lazily on the first request.
     // PBKDF2 with 100k iterations is expensive and would block a request thread.
@@ -1885,16 +1904,6 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
 
   // -- Peer Parsing --
 
-  /**
-   * Parses the HA_SERVER_LIST into RaftPeer instances.
-   * Supported formats:
-   * <ul>
-   *   <li>"host1:raftPort,host2:raftPort" - HTTP address derived from raft host + configured HTTP port offset</li>
-   *   <li>"host1:raftPort:httpPort,host2:raftPort:httpPort" - explicit HTTP port per peer</li>
-   *   <li>"[::1]:raftPort,[2001:db8::1]:raftPort" - IPv6 addresses in bracketed notation</li>
-   * </ul>
-   * The peer ID is derived from the host_raftPort string for deterministic identification.
-   */
   /**
    * Parses a comma-separated server list into Raft peers.
    * <p>

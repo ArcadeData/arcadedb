@@ -60,9 +60,10 @@ import java.util.zip.ZipOutputStream;
  */
 public class SnapshotHttpHandler implements HttpHandler {
 
-  private final HttpServer httpServer;
-  private final int       maxConcurrentSnapshots;
-  private final Semaphore snapshotSemaphore;
+  private final HttpServer           httpServer;
+  private final int                  maxConcurrentSnapshots;
+  private final Semaphore            snapshotSemaphore;
+  private volatile boolean           plainHttpWarned;
 
   public SnapshotHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
@@ -142,6 +143,15 @@ public class SnapshotHttpHandler implements HttpHandler {
       exchange.setStatusCode(404);
       exchange.getResponseSender().send("Database '" + databaseName + "' not found");
       return;
+    }
+
+    // Warn on first non-TLS snapshot request - database files are transmitted unencrypted
+    if (!plainHttpWarned && "http".equalsIgnoreCase(exchange.getRequestScheme())) {
+      plainHttpWarned = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "SECURITY: serving database snapshot for '%s' over plain HTTP. Database files and cluster token are "
+              + "transmitted unencrypted. Set arcadedb.ssl.enabled=true or deploy behind a secure network",
+          databaseName);
     }
 
     if (!snapshotSemaphore.tryAcquire()) {

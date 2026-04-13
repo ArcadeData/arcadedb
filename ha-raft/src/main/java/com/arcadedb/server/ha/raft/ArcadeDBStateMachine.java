@@ -60,7 +60,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -586,7 +589,25 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     LogManager.instance().log(this, Level.INFO,
         "Downloading databases from leader %s during snapshot installation...", leaderHttpAddr);
 
+    // Fetch the leader's database list so we can detect stale databases on this follower.
+    // A database dropped on the leader before this follower catches up would otherwise remain
+    // as a stale copy on the follower indefinitely.
+    final Set<String> leaderDatabases = fetchLeaderDatabaseNames(leaderHttpAddr, raftHA);
+
     for (final String dbName : server.getDatabaseNames()) {
+      if (!leaderDatabases.isEmpty() && !leaderDatabases.contains(dbName)) {
+        LogManager.instance().log(this, Level.INFO,
+            "Database '%s' exists on this follower but not on the leader, dropping stale copy", dbName);
+        try {
+          server.getDatabase(dbName).getEmbedded().drop();
+          server.removeDatabase(dbName);
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Failed to drop stale database '%s': %s", dbName, e.getMessage());
+        }
+        continue;
+      }
+
       try {
         LogManager.instance().log(this, Level.INFO, "Installing snapshot for database '%s' from leader %s...",
             dbName, leaderHttpAddr);
@@ -631,8 +652,24 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         if (leaderHttpAddr == null)
           throw new ReplicationException("Cannot determine leader HTTP address for snapshot download");
 
-        // Download and install snapshot for each database
-        for (final String dbName : server.getDatabaseNames()) {
+        // Fetch leader's database list to detect stale databases on this follower
+        final Set<String> leaderDatabases = fetchLeaderDatabaseNames(leaderHttpAddr, raftHA);
+
+        // Remove databases that exist locally but not on the leader
+        for (final String dbName : new ArrayList<>(server.getDatabaseNames())) {
+          if (!leaderDatabases.isEmpty() && !leaderDatabases.contains(dbName)) {
+            LogManager.instance().log(this, Level.INFO,
+                "Database '%s' exists on this follower but not on the leader, dropping stale copy", dbName);
+            try {
+              server.getDatabase(dbName).getEmbedded().drop();
+              server.removeDatabase(dbName);
+            } catch (final Exception e) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Failed to drop stale database '%s': %s", dbName, e.getMessage());
+            }
+            continue;
+          }
+
           LogManager.instance().log(this, Level.INFO, "Installing snapshot for database '%s' from leader %s...",
               dbName, leaderHttpAddr);
 
@@ -660,6 +697,45 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
    * Extraction happens to a temp directory first. The database directory is only replaced after
    * the full download and extraction succeeds, preventing partial-failure corruption.
    */
+  /**
+   * Queries the leader's HTTP API for its current database list. Returns an empty set on failure
+   * (caller should skip stale-database removal if the leader is unreachable rather than dropping everything).
+   */
+  private Set<String> fetchLeaderDatabaseNames(final String leaderHttpAddr, final RaftHAServer raftHA) {
+    try {
+      final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+      final String url = (useSsl ? "https" : "http") + "://" + leaderHttpAddr + "/api/v1/server";
+      final java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URI(url).toURL().openConnection();
+      conn.setRequestMethod("GET");
+      conn.setConnectTimeout(10_000);
+      conn.setReadTimeout(10_000);
+      if (raftHA.getClusterToken() != null) {
+        conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
+        conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
+      }
+      try {
+        if (conn.getResponseCode() == 200) {
+          final String body = new String(conn.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+          final com.arcadedb.serializer.json.JSONObject json = new com.arcadedb.serializer.json.JSONObject(body);
+          if (json.has("databases")) {
+            final com.arcadedb.serializer.json.JSONArray dbs = json.getJSONArray("databases");
+            final Set<String> names = new java.util.HashSet<>(dbs.length());
+            for (int i = 0; i < dbs.length(); i++)
+              names.add(dbs.getString(i));
+            return names;
+          }
+        }
+      } finally {
+        conn.disconnect();
+      }
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not fetch database list from leader %s, skipping stale database cleanup: %s",
+          leaderHttpAddr, e.getMessage());
+    }
+    return Set.of();
+  }
+
   private static final int    SNAPSHOT_DOWNLOAD_MAX_RETRIES = 3;
   private static final long[] SNAPSHOT_DOWNLOAD_BACKOFF_MS  = { 5_000, 10_000, 20_000 };
 

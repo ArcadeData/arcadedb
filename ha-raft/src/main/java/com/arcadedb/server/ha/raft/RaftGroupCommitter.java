@@ -71,6 +71,13 @@ public class RaftGroupCommitter {
   /**
    * Enqueues a Raft entry and blocks until it is committed by the cluster.
    * Multiple concurrent callers will have their entries batched into fewer Raft round-trips.
+   * <p>
+   * The overall deadline is {@code timeoutMs + quorumTimeout}. The first timeout covers queue
+   * waiting and batch dispatch; the second covers the Raft round-trip if the entry was dispatched
+   * just before the first timeout expired. In practice, all current callers pass
+   * {@code timeoutMs == quorumTimeout}, so the effective upper bound is {@code 2 * quorumTimeout}.
+   *
+   * @param timeoutMs how long to wait for the entry to be dispatched and committed
    */
   public void submitAndWait(final byte[] entry, final long timeoutMs) {
     final PendingEntry pending = new PendingEntry(entry);
@@ -78,6 +85,8 @@ public class RaftGroupCommitter {
       throw new ReplicationQueueFullException(
           "Replication queue is full (" + MAX_QUEUE_SIZE + " entries). Server is overloaded, retry later");
 
+    // Two-phase deadline: timeoutMs for queue+dispatch, then quorumTimeout for Raft round-trip
+    // if the entry was dispatched just before the first timeout fired.
     final long deadline = System.currentTimeMillis() + timeoutMs + haServer.getQuorumTimeout();
     try {
       final Exception error = pending.future.get(timeoutMs, TimeUnit.MILLISECONDS);
