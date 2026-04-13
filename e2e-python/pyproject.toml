@@ -30,7 +30,7 @@ dependencies = [
     "docker>=7.1.0",
     "psycopg>=3.2.5",
     "psycopg-binary>=3.2.13",
-    "asyncpg>=0.29.0",
+    "asyncpg>=0.31.0",
     "requests>=2.32.5"
 ]
 
