@@ -971,9 +971,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return proxied.getOpenedOn();
   }
 
-  public RaftHAServer.Quorum getQuorum() {
+  public Quorum getQuorum() {
     final HAPlugin ha = server.getHA();
-    return ha instanceof RaftHAPlugin p ? p.getQuorum() : RaftHAServer.Quorum.MAJORITY;
+    return ha instanceof RaftHAPlugin p ? p.getQuorum() : Quorum.MAJORITY;
   }
 
   /**

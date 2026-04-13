@@ -204,7 +204,7 @@ public class RaftGroupCommitter {
     }
 
     // Collect send results. For ALL quorum, issue watch futures in parallel during this pass.
-    final boolean allQuorum = haServer.getQuorum() == RaftHAServer.Quorum.ALL;
+    final boolean allQuorum = haServer.getQuorum() == Quorum.ALL;
     final List<CompletableFuture<RaftClientReply>> watchFutures = allQuorum ? new ArrayList<>(batch.size()) : null;
 
     for (int i = 0; i < batch.size(); i++) {

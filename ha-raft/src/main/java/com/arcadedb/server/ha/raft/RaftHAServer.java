@@ -94,22 +94,6 @@ import java.util.stream.Stream;
  */
 public class RaftHAServer implements HAPlugin {
 
-  /**
-   * Quorum modes supported with Ratis.
-   */
-  public enum Quorum {
-    MAJORITY, ALL;
-
-    public static Quorum parse(final String value) {
-      return switch (value.toLowerCase()) {
-        case "majority" -> MAJORITY;
-        case "all" -> ALL;
-        default -> throw new ConfigurationException(
-            "Unsupported HA quorum mode '" + value + "'. Only 'majority' and 'all' are supported with Ratis");
-      };
-    }
-  }
-
   // PBKDF2 parameters for cluster token derivation (initClusterToken).
   // 100k iterations is the OWASP 2023 recommendation for PBKDF2-HMAC-SHA256.
   private static final int PBKDF2_ITERATIONS      = 100_000;
@@ -789,13 +773,13 @@ public class RaftHAServer implements HAPlugin {
 
   @Override
   public void replicateCreateDatabase(final String databaseName) {
-    final byte[] entry = RaftLogEntry.serializeCreateDatabase(databaseName, localPeerId.toString());
+    final byte[] entry = RaftLogEntryCodec.serializeCreateDatabase(databaseName, localPeerId.toString());
     replicateRawEntry(entry);
   }
 
   @Override
   public void replicateDropDatabase(final String databaseName) {
-    final byte[] entry = RaftLogEntry.serializeDropDatabase(databaseName, localPeerId.toString());
+    final byte[] entry = RaftLogEntryCodec.serializeDropDatabase(databaseName, localPeerId.toString());
     replicateRawEntry(entry);
   }
 
@@ -831,7 +815,7 @@ public class RaftHAServer implements HAPlugin {
                                    final Map<Integer, String> filesToAdd,
                                    final Map<Integer, String> filesToRemove) {
 
-    final byte[] entry = RaftLogEntry.serializeTransaction(databaseName, bucketRecordDelta, walBuffer, schemaJson,
+    final byte[] entry = RaftLogEntryCodec.serializeTransaction(databaseName, bucketRecordDelta, walBuffer, schemaJson,
         filesToAdd,
         filesToRemove, localPeerId.toString());
 

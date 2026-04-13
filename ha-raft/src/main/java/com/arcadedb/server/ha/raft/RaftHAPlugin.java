@@ -251,7 +251,7 @@ public class RaftHAPlugin implements HAPlugin {
   }
 
   /** Returns the configured Quorum mode. */
-  public RaftHAServer.Quorum getQuorum() {
+  public Quorum getQuorum() {
     return raftServer.getQuorum();
   }
 }

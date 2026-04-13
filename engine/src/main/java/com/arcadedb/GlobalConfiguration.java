@@ -546,10 +546,10 @@ public enum GlobalConfiguration {
       Long.class, 10000),
 
   HA_ELECTION_TIMEOUT_MIN("arcadedb.ha.electionTimeoutMin", SCOPE.SERVER,
-      "Minimum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 1500),
+      "Minimum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 2000),
 
   HA_ELECTION_TIMEOUT_MAX("arcadedb.ha.electionTimeoutMax", SCOPE.SERVER,
-      "Maximum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 3000),
+      "Maximum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 5000),
 
   HA_SNAPSHOT_THRESHOLD("arcadedb.ha.snapshotThreshold", SCOPE.SERVER,
       "Number of Raft log entries before triggering an automatic snapshot", Long.class, 100000L),

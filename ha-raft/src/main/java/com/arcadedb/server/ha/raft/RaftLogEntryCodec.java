@@ -20,13 +20,14 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
 
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Defines the format of entries stored in the Ratis log. Each entry represents a replicated operation
+ * Serializes and deserializes Raft log entries. Each entry represents a replicated operation
  * (transaction, schema change, or command) that must be applied to all nodes in the same order.
  *
  * <p>Wire format:
@@ -36,48 +37,34 @@ import java.util.Map;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RaftLogEntry {
+public final class RaftLogEntryCodec {
 
-  public enum EntryType {
-    /**
-     * Replicate database creation to all nodes.
-     */
-    CREATE_DATABASE((byte) 1),
-    /**
-     * Replicate database drop to all nodes.
-     */
-    DROP_DATABASE((byte) 2),
-    /**
-     * Replicate a committed transaction (WAL page diffs + optional schema changes).
-     */
-    TRANSACTION((byte) 3);
-
-    private final byte code;
-
-    EntryType(final byte code) {
-      this.code = code;
-    }
-
-    public byte code() {
-      return code;
-    }
-
-    /**
-     * Returns the EntryType for the given wire code, or {@code null} if the code is unrecognized.
-     * Returning null instead of throwing allows forward-compatible handling during rolling upgrades
-     * where a newer node may write entry types that an older node does not yet know about.
-     */
-    public static EntryType fromCode(final byte code) {
-      return switch (code) {
-        case 1 -> CREATE_DATABASE;
-        case 2 -> DROP_DATABASE;
-        case 3 -> TRANSACTION;
-        default -> null;
-      };
-    }
+  private RaftLogEntryCodec() {
   }
 
-  // -- Serialization helpers for TRANSACTION entries --
+  // -- Result records --
+
+  /**
+   * Parsed transaction entry ready for application.
+   */
+  public record TransactionEntry(String originPeerId, String databaseName, int uncompressedLength, Binary walBuffer,
+                                 Map<Integer, Integer> bucketRecordDelta, String schemaJson,
+                                 Map<Integer, String> filesToAdd, Map<Integer, String> filesToRemove) {
+  }
+
+  /**
+   * Parsed CREATE_DATABASE entry.
+   */
+  public record CreateDatabaseEntry(String originPeerId, String databaseName) {
+  }
+
+  /**
+   * Parsed DROP_DATABASE entry.
+   */
+  public record DropDatabaseEntry(String originPeerId, String databaseName) {
+  }
+
+  // -- Serialization --
 
   /**
    * Serializes a transaction into a byte buffer suitable for the Ratis log.
@@ -95,12 +82,11 @@ public class RaftLogEntry {
    * The caller must not read from it after this call returns.
    */
   public static byte[] serializeTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
-                                            final Binary walBuffer, final String schemaJson, final Map<Integer,
-          String> filesToAdd,
-                                            final Map<Integer, String> filesToRemove, final String originPeerId) {
+      final Binary walBuffer, final String schemaJson, final Map<Integer, String> filesToAdd,
+      final Map<Integer, String> filesToRemove, final String originPeerId) {
 
     final Binary stream = new Binary(walBuffer.size() + 256);
-    stream.putByte(EntryType.TRANSACTION.code());
+    stream.putByte(RaftLogEntryType.TRANSACTION.code());
     stream.putString(originPeerId);
     writeCommonTransactionFields(stream, databaseName, bucketRecordDelta, walBuffer);
 
@@ -116,52 +102,28 @@ public class RaftLogEntry {
     return toByteArray(stream);
   }
 
-  private static void writeCommonTransactionFields(final Binary stream, final String databaseName,
-                                                   final Map<Integer, Integer> bucketRecordDelta,
-                                                   final Binary walBuffer) {
-    // Database name
+  public static byte[] serializeCreateDatabase(final String databaseName, final String originPeerId) {
+    final Binary stream = new Binary(64);
+    stream.putByte(RaftLogEntryType.CREATE_DATABASE.code());
+    stream.putString(originPeerId);
     stream.putString(databaseName);
-
-    // WAL changes (compressed). Rewind mutates the caller's buffer position (intentional, see Javadoc).
-    walBuffer.rewind();
-    final int uncompressedLength = walBuffer.size();
-    final Binary compressed = CompressionFactory.getDefault().compress(walBuffer);
-    stream.putInt(uncompressedLength);
-    stream.putBytes(compressed.getContent(), compressed.size());
-
-    // Bucket record delta
-    stream.putInt(bucketRecordDelta.size());
-    for (final Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
-      stream.putInt(entry.getKey());
-      stream.putInt(entry.getValue());
-    }
-  }
-
-  private static byte[] toByteArray(final Binary stream) {
     stream.flip();
-    final byte[] result = new byte[stream.size()];
-    stream.getByteBuffer().get(result);
-    return result;
+    return stream.toByteArray();
   }
 
-  // Max allowed sizes for deserialized buffers to prevent OOM from corrupted entries
-  private static final int MAX_UNCOMPRESSED_SIZE = 256 * 1024 * 1024; // 256 MB
-  private static final int MAX_DELTA_SIZE        = 1_000_000;
-  private static final int MAX_STRING_LENGTH     = 64 * 1024 * 1024;  // 64 MB (covers large schema JSON)
+  public static byte[] serializeDropDatabase(final String databaseName, final String originPeerId) {
+    final Binary stream = new Binary(64);
+    stream.putByte(RaftLogEntryType.DROP_DATABASE.code());
+    stream.putString(originPeerId);
+    stream.putString(databaseName);
+    stream.flip();
+    return stream.toByteArray();
+  }
 
   // -- Deserialization --
 
-  /**
-   * Parsed transaction entry ready for application.
-   */
-  public record TransactionEntry(String originPeerId, String databaseName, int uncompressedLength, Binary walBuffer,
-                                 Map<Integer, Integer> bucketRecordDelta, String schemaJson,
-                                 Map<Integer, String> filesToAdd,
-                                 Map<Integer, String> filesToRemove) {
-  }
-
-  public static EntryType readType(final ByteBuffer buffer) {
-    return EntryType.fromCode(buffer.get(0));
+  public static RaftLogEntryType readType(final ByteBuffer buffer) {
+    return RaftLogEntryType.fromCode(buffer.get(0));
   }
 
   public static TransactionEntry deserializeTransaction(final byte[] data) {
@@ -195,25 +157,7 @@ public class RaftLogEntry {
     }
 
     return new TransactionEntry(originPeerId, databaseName, uncompressedLength, walBuffer, bucketRecordDelta,
-        schemaJson, filesToAdd,
-        filesToRemove);
-  }
-
-  // -- CREATE_DATABASE serialization --
-
-  /**
-   * Parsed CREATE_DATABASE entry.
-   */
-  public record CreateDatabaseEntry(String originPeerId, String databaseName) {
-  }
-
-  public static byte[] serializeCreateDatabase(final String databaseName, final String originPeerId) {
-    final Binary stream = new Binary(64);
-    stream.putByte(EntryType.CREATE_DATABASE.code());
-    stream.putString(originPeerId);
-    stream.putString(databaseName);
-    stream.flip();
-    return stream.toByteArray();
+        schemaJson, filesToAdd, filesToRemove);
   }
 
   public static CreateDatabaseEntry deserializeCreateDatabase(final byte[] data) {
@@ -222,24 +166,6 @@ public class RaftLogEntry {
     final String originPeerId = readBoundedString(stream);
     final String databaseName = readBoundedString(stream);
     return new CreateDatabaseEntry(originPeerId, databaseName);
-  }
-
-
-  // -- DROP_DATABASE serialization --
-
-  /**
-   * Parsed DROP_DATABASE entry.
-   */
-  public record DropDatabaseEntry(String originPeerId, String databaseName) {
-  }
-
-  public static byte[] serializeDropDatabase(final String databaseName, final String originPeerId) {
-    final Binary stream = new Binary(64);
-    stream.putByte(EntryType.DROP_DATABASE.code());
-    stream.putString(originPeerId);
-    stream.putString(databaseName);
-    stream.flip();
-    return stream.toByteArray();
   }
 
   public static DropDatabaseEntry deserializeDropDatabase(final byte[] data) {
@@ -251,6 +177,37 @@ public class RaftLogEntry {
   }
 
   // -- Internal helpers --
+
+  // Max allowed sizes for deserialized buffers to prevent OOM from corrupted entries
+  private static final int MAX_UNCOMPRESSED_SIZE = 256 * 1024 * 1024; // 256 MB
+  private static final int MAX_DELTA_SIZE        = 1_000_000;
+  private static final int MAX_STRING_LENGTH     = 64 * 1024 * 1024;  // 64 MB (covers large schema JSON)
+
+  private static void writeCommonTransactionFields(final Binary stream, final String databaseName,
+      final Map<Integer, Integer> bucketRecordDelta, final Binary walBuffer) {
+    stream.putString(databaseName);
+
+    // WAL changes (compressed). Rewind mutates the caller's buffer position (intentional, see Javadoc).
+    walBuffer.rewind();
+    final int uncompressedLength = walBuffer.size();
+    final Binary compressed = CompressionFactory.getDefault().compress(walBuffer);
+    stream.putInt(uncompressedLength);
+    stream.putBytes(compressed.getContent(), compressed.size());
+
+    // Bucket record delta
+    stream.putInt(bucketRecordDelta.size());
+    for (final Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
+      stream.putInt(entry.getKey());
+      stream.putInt(entry.getValue());
+    }
+  }
+
+  private static byte[] toByteArray(final Binary stream) {
+    stream.flip();
+    final byte[] result = new byte[stream.size()];
+    stream.getByteBuffer().get(result);
+    return result;
+  }
 
   private static void writeFileMap(final Binary stream, final Map<Integer, String> files) {
     if (files == null) {
@@ -274,7 +231,6 @@ public class RaftLogEntry {
   private static String readBoundedString(final Binary stream) {
     final int pos = stream.position();
     final long declaredLength = stream.getUnsignedNumber();
-    // < 0 is defensive: a corrupt varint from a truncated buffer could produce unexpected values
     if (declaredLength < 0 || declaredLength > MAX_STRING_LENGTH)
       throw new IllegalArgumentException(
           "String length " + declaredLength + " exceeds maximum " + MAX_STRING_LENGTH + " at position " + pos);
@@ -285,7 +241,7 @@ public class RaftLogEntry {
     final byte[] bytes = new byte[(int) declaredLength];
     if (bytes.length > 0)
       stream.getByteArray(bytes);
-    return new String(bytes, com.arcadedb.database.DatabaseFactory.getDefaultCharset());
+    return new String(bytes, DatabaseFactory.getDefaultCharset());
   }
 
   private static Map<Integer, String> readFileMap(final Binary stream) {

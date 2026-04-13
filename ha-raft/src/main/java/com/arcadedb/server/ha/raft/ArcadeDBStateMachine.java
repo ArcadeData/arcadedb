@@ -215,7 +215,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       final byte[] data = new byte[entryData.remaining()];
       entryData.get(data);
 
-      final RaftLogEntry.EntryType type = RaftLogEntry.readType(ByteBuffer.wrap(data));
+      final RaftLogEntryType type = RaftLogEntryCodec.readType(ByteBuffer.wrap(data));
 
       if (type == null) {
         // Unrecognized entry type - likely from a newer node during a rolling upgrade.
@@ -291,7 +291,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   }
 
   private void applyTransactionEntry(final byte[] data) {
-    final RaftLogEntry.TransactionEntry entry = RaftLogEntry.deserializeTransaction(data);
+    final RaftLogEntryCodec.TransactionEntry entry = RaftLogEntryCodec.deserializeTransaction(data);
 
     final DatabaseInternal db = server.getDatabase(entry.databaseName());
     if (db == null || !db.isOpen())
@@ -390,7 +390,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   }
 
   private void applyCreateDatabase(final byte[] data) {
-    final RaftLogEntry.CreateDatabaseEntry entry = RaftLogEntry.deserializeCreateDatabase(data);
+    final RaftLogEntryCodec.CreateDatabaseEntry entry = RaftLogEntryCodec.deserializeCreateDatabase(data);
 
     // The originating node already created the database locally before submitting the Ratis entry.
     if (isOriginNode(entry.originPeerId())) {
@@ -408,7 +408,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   }
 
   private void applyDropDatabase(final byte[] data) {
-    final RaftLogEntry.DropDatabaseEntry entry = RaftLogEntry.deserializeDropDatabase(data);
+    final RaftLogEntryCodec.DropDatabaseEntry entry = RaftLogEntryCodec.deserializeDropDatabase(data);
 
     // The originating node already dropped the database locally before submitting the Ratis entry.
     if (isOriginNode(entry.originPeerId())) {
