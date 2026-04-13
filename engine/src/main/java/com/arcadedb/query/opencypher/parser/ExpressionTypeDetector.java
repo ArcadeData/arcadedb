@@ -45,20 +45,20 @@ class ExpressionTypeDetector {
    * Returns null if not a special function.
    */
   Expression tryParseSpecialFunctions(final Cypher25Parser.ExpressionContext ctx) {
-    // count(*) - special grammar rule
-    final Cypher25Parser.CountStarContext countStarCtx = builder.findCountStarRecursive(ctx);
-    if (countStarCtx != null) {
-      final List<Expression> args = new ArrayList<>();
-      args.add(new StarExpression());
-      return new FunctionCallExpression("count", args, false);
-    }
-
     // All recursive searches below use a length guard: only match when the found
     // context covers (almost) the full expression text.  Without this, expressions
     // like sum(CASE WHEN ... END) would be mis-parsed as just the inner special
     // expression, losing the outer function wrapper.  The - 2 tolerance allows for
     // whitespace that ANTLR's getText() strips from tokens.
     final String exprText = ctx.getText();
+
+    // count(*) - special grammar rule
+    final Cypher25Parser.CountStarContext countStarCtx = builder.findCountStarRecursive(ctx);
+    if (countStarCtx != null && countStarCtx.getText().length() >= exprText.length() - 2) {
+      final List<Expression> args = new ArrayList<>();
+      args.add(new StarExpression());
+      return new FunctionCallExpression("count", args, false);
+    }
 
     // EXISTS expression
     final Cypher25Parser.ExistsExpressionContext existsCtx = builder.findExistsExpressionRecursive(ctx);
