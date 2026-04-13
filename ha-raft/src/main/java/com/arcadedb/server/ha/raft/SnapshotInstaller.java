@@ -24,6 +24,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.server.ArcadeDBServer;
 
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -32,6 +35,8 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -232,7 +237,7 @@ public class SnapshotInstaller {
         leaderAddr = initialLeaderAddr;
 
       final String snapshotUrl = protocol + "://" + leaderAddr + "/api/v1/ha/snapshot/"
-          + java.net.URLEncoder.encode(databaseName, java.nio.charset.StandardCharsets.UTF_8);
+          + URLEncoder.encode(databaseName, StandardCharsets.UTF_8);
       try {
         downloadSnapshot(snapshotUrl, tempDir, databaseName);
         return;
@@ -335,7 +340,7 @@ public class SnapshotInstaller {
     try {
       final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
       final String url = (useSsl ? "https" : "http") + "://" + leaderHttpAddr + "/api/v1/server";
-      final java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URI(url).toURL().openConnection();
+      final HttpURLConnection conn = (HttpURLConnection) new URI(url).toURL().openConnection();
       conn.setRequestMethod("GET");
       conn.setConnectTimeout(10_000);
       conn.setReadTimeout(10_000);
@@ -345,10 +350,10 @@ public class SnapshotInstaller {
       }
       try {
         if (conn.getResponseCode() == 200) {
-          final String body = new String(conn.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-          final com.arcadedb.serializer.json.JSONObject json = new com.arcadedb.serializer.json.JSONObject(body);
+          final String body = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+          final JSONObject json = new JSONObject(body);
           if (json.has("databases")) {
-            final com.arcadedb.serializer.json.JSONArray dbs = json.getJSONArray("databases");
+            final JSONArray dbs = json.getJSONArray("databases");
             final Set<String> names = new HashSet<>(dbs.length());
             for (int i = 0; i < dbs.length(); i++)
               names.add(dbs.getString(i));

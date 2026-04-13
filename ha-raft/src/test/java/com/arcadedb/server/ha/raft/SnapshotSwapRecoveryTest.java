@@ -28,7 +28,7 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests crash recovery for the snapshot swap operation in ArcadeDBStateMachine.
+ * Tests crash recovery for the snapshot swap operation in {@link SnapshotInstaller}.
  * Simulates various crash scenarios during the directory swap phase.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -64,7 +64,7 @@ class SnapshotSwapRecoveryTest {
     Files.writeString(markerPath, "testdb");
 
     // Run recovery
-    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
 
     // The snapshot should now be in the live path
     assertThat(livePath).exists();
@@ -104,7 +104,7 @@ class SnapshotSwapRecoveryTest {
     Files.writeString(markerPath, "testdb");
 
     // Run recovery
-    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
 
     // The snapshot should now be in the live path
     assertThat(livePath).exists();
@@ -140,7 +140,7 @@ class SnapshotSwapRecoveryTest {
     Files.writeString(markerPath, "testdb");
 
     // Run recovery
-    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
 
     // Should rollback: backup restored to live path
     assertThat(livePath).exists();
@@ -167,7 +167,7 @@ class SnapshotSwapRecoveryTest {
     Files.writeString(livePath.resolve("data.dat"), "normal data");
 
     // Run recovery - should not change anything
-    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
 
     assertThat(livePath).exists();
     assertThat(Files.readString(livePath.resolve("data.dat"))).isEqualTo("normal data");
@@ -197,7 +197,7 @@ class SnapshotSwapRecoveryTest {
     Files.writeString(markerPath, "testdb");
 
     // Run recovery
-    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
 
     // Live path should be untouched
     assertThat(livePath).exists();
@@ -230,7 +230,7 @@ class SnapshotSwapRecoveryTest {
     Files.writeString(markerPath, "testdb");
 
     // Run recovery
-    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
 
     // Live path should have new data but no WAL files
     assertThat(livePath).exists();
@@ -260,7 +260,7 @@ class SnapshotSwapRecoveryTest {
     Files.writeString(markerPath, "testdb");
 
     // Recovery should not throw
-    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
 
     // No IOException thrown (no branch matched), so marker is cleaned up
     assertThat(livePath).doesNotExist();
@@ -300,7 +300,7 @@ class SnapshotSwapRecoveryTest {
     Files.writeString(markerPath, "testdb");
 
     // Recovery should succeed despite the stale backup
-    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(dbDir);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
 
     // The snapshot should now be in the live path
     assertThat(livePath).exists();

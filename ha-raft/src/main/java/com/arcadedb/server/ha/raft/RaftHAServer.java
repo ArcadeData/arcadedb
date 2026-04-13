@@ -269,7 +269,7 @@ public class RaftHAServer implements HAPlugin {
 
   @Override
   public void recoverBeforeDatabaseLoad(final java.nio.file.Path databaseDirectory) {
-    ArcadeDBStateMachine.recoverPendingSnapshotSwaps(databaseDirectory);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databaseDirectory);
   }
 
   /**
