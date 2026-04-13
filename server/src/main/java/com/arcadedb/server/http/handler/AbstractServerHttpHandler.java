@@ -23,7 +23,6 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.remote.RemoteHttpComponent;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
@@ -34,11 +33,8 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
-import io.undertow.util.HttpString;
 import io.undertow.util.StatusCodes;
 
-import java.net.HttpURLConnection;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -48,17 +44,16 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
-  private static final String AUTHORIZATION_BASIC      = "Basic";
-  private static final String AUTHORIZATION_BEARER     = "Bearer";
-  private static final String HEADER_CLUSTER_TOKEN     = "X-ArcadeDB-Cluster-Token";
-  private static final String HEADER_FORWARDED_USER    = "X-ArcadeDB-Forwarded-User";
-  private static final int    PROXY_CONNECT_TIMEOUT_MS = 5_000;
+  private static final String AUTHORIZATION_BASIC = "Basic";
+  private static final String AUTHORIZATION_BEARER = "Bearer";
   private static final io.undertow.util.AttachmentKey<String> RAW_PAYLOAD_KEY = io.undertow.util.AttachmentKey.create(String.class);
   static final io.undertow.util.AttachmentKey<String> BASIC_AUTH_KEY = io.undertow.util.AttachmentKey.create(String.class);
-  protected final HttpServer httpServer;
+  protected final HttpServer   httpServer;
+  private final   LeaderProxy  leaderProxy;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
+    this.leaderProxy = new LeaderProxy(httpServer);
   }
 
   protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, JSONObject payload)
@@ -98,7 +93,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
       // Check cluster-internal token auth first (inter-node forwarding in HA)
-      final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(HEADER_CLUSTER_TOKEN);
+      final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(LeaderProxy.HEADER_CLUSTER_TOKEN);
       final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
 
       if (isRequireAuthentication() && clusterTokenHeader == null
@@ -112,7 +107,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       ServerSecurityUser user = null;
       if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
         user = validateClusterForwardedAuth(exchange, clusterTokenHeader.getFirst(),
-            exchange.getRequestHeaders().get(HEADER_FORWARDED_USER));
+            exchange.getRequestHeaders().get(LeaderProxy.HEADER_FORWARDED_USER));
         if (user == null)
           return; // error response already sent
       } else if (authorization != null) {
@@ -316,113 +311,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   /**
    * Proxies the current HTTP request to the leader server. Used when a write operation
    * hits a non-leader node in the Ratis HA cluster.
-   * <p>
-   * SECURITY NOTE: Inter-node communication currently uses plain HTTP. In production deployments,
-   * nodes should be connected via a secure overlay network (e.g., VPN, mTLS sidecar, or private subnet)
-   * to protect WAL data and authentication credentials in transit.
    */
   private void proxyToLeader(final HttpServerExchange exchange, final String leaderAddr) throws Exception {
-    final String path = exchange.getRequestPath();
-    final String query = exchange.getQueryString();
-    final String protocol = httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL) ? "https" : "http";
-    final String targetUrl = protocol + "://" + leaderAddr + path + (query != null && !query.isEmpty() ? "?" + query : "");
-
-    LogManager.instance().log(this, Level.FINE, "Proxying request to leader: %s", targetUrl);
-
-    final HttpURLConnection conn = (HttpURLConnection) new URI(targetUrl).toURL().openConnection();
-    conn.setRequestMethod(exchange.getRequestMethod().toString());
-    conn.setConnectTimeout(PROXY_CONNECT_TIMEOUT_MS);
-    conn.setReadTimeout(httpServer.getServer().getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.HA_PROXY_READ_TIMEOUT));
-
-    // Forward auth using cluster token for inter-node identity.
-    // The cluster token is a shared secret derived from the cluster name + root password.
-    // For session-based auth (Bearer), we use cluster token + forwarded user instead of
-    // forwarding the per-node session token. For Basic/API tokens, we forward as-is.
-    final var haPlugin = httpServer.getServer().getHA();
-    final var authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);
-    if (haPlugin != null && haPlugin.getClusterToken() != null) {
-      final String auth = authHeader != null && !authHeader.isEmpty() ? authHeader.getFirst() : null;
-      if (auth != null && auth.startsWith(AUTHORIZATION_BEARER)) {
-        final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
-
-        if (ApiTokenConfiguration.isApiToken(token)) {
-          // API token (at- prefix): resolve locally and forward as cluster token + user.
-          // This avoids sending long-lived API tokens in plain text over the inter-node channel.
-          try {
-            final var user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
-            conn.setRequestProperty(HEADER_CLUSTER_TOKEN, haPlugin.getClusterToken());
-            conn.setRequestProperty(HEADER_FORWARDED_USER, user.getName());
-          } catch (final ServerSecurityException ex) {
-            conn.disconnect();
-            sendErrorResponse(exchange, 401, "Invalid or expired API token", null, null);
-            return;
-          }
-        } else {
-          // Session token (AU- prefix): resolve locally and forward as cluster token + user
-          final HttpAuthSession session = httpServer.getAuthSessionManager().getSessionByToken(token);
-          if (session == null) {
-            conn.disconnect();
-            sendErrorResponse(exchange, 401, "Session expired or invalid", null, null);
-            return;
-          }
-          conn.setRequestProperty(HEADER_CLUSTER_TOKEN, haPlugin.getClusterToken());
-          conn.setRequestProperty(HEADER_FORWARDED_USER, session.getUser().getName());
-        }
-      } else if (auth != null)
-        // Basic auth: forward as-is (credentials are per-request, not long-lived)
-        conn.setRequestProperty("Authorization", auth);
-      else {
-        // No Authorization header - this is a multi-hop proxy where the original request
-        // was authenticated via cluster token + forwarded user. Preserve the forwarded user
-        // from the incoming request. Reject if no forwarded user is present to prevent
-        // unauthenticated requests from gaining root privileges.
-        final var forwardedUser = exchange.getRequestHeaders().get(HEADER_FORWARDED_USER);
-        if (forwardedUser == null || forwardedUser.isEmpty()) {
-          conn.disconnect();
-          sendErrorResponse(exchange, 401, "No authentication credentials provided", null, null);
-          return;
-        }
-        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, haPlugin.getClusterToken());
-        conn.setRequestProperty(HEADER_FORWARDED_USER, forwardedUser.getFirst());
-      }
-    } else if (authHeader != null && !authHeader.isEmpty())
-      conn.setRequestProperty("Authorization", authHeader.getFirst());
-
-    conn.setRequestProperty("Content-Type", "application/json");
-
-    // Forward request body for POST/PUT (use saved payload since input stream was already consumed)
-    if ("POST".equals(exchange.getRequestMethod().toString()) || "PUT".equals(exchange.getRequestMethod().toString())) {
-      conn.setDoOutput(true);
-      final String savedPayload = exchange.getAttachment(RAW_PAYLOAD_KEY);
-      if (savedPayload != null && !savedPayload.isEmpty())
-        try (final var os = conn.getOutputStream()) {
-          os.write(savedPayload.getBytes(StandardCharsets.UTF_8));
-        }
-    }
-
-    // Send leader's response back to the client
-    final int status = conn.getResponseCode();
-    exchange.setStatusCode(status);
-
-    final String contentType = conn.getContentType();
-    if (contentType != null)
-      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
-
-    // Forward the commit index header for READ_YOUR_WRITES bookmark tracking
-    final String commitIndex = conn.getHeaderField(RemoteHttpComponent.HEADER_COMMIT_INDEX);
-    if (commitIndex != null)
-      exchange.getResponseHeaders().put(new HttpString(RemoteHttpComponent.HEADER_COMMIT_INDEX), commitIndex);
-
-    try (final var in = status < 400 ? conn.getInputStream() : conn.getErrorStream()) {
-      if (in != null) {
-        exchange.startBlocking();
-        try (final var out = exchange.getOutputStream()) {
-          in.transferTo(out);
-        }
-      }
-    } finally {
-      conn.disconnect();
+    try {
+      leaderProxy.proxy(exchange, leaderAddr, exchange.getAttachment(RAW_PAYLOAD_KEY));
+    } catch (final LeaderProxy.ProxyAuthException e) {
+      sendErrorResponse(exchange, e.getStatusCode(), e.getMessage(), null, null);
     }
   }
 

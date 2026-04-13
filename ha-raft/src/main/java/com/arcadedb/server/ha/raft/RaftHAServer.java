@@ -115,10 +115,6 @@ public class RaftHAServer implements HAPlugin {
   private static final int LAG_MONITOR_INITIAL_DELAY_SECS = 5;
   private static final int LAG_MONITOR_INTERVAL_SECS      = 5;
 
-  // Health monitor: checks Ratis server lifecycle state and restarts if CLOSED.
-  // 3s interval balances quick recovery against CPU overhead of the lifecycle check.
-  private static final int HEALTH_MONITOR_INITIAL_DELAY_SECS = 5;
-  private static final int HEALTH_MONITOR_INTERVAL_SECS      = 3;
 
   // Ratis RPC and connection timeouts (buildRaftProperties).
   // Server-side RPC request timeout: how long the leader waits for a follower AppendEntries response.
@@ -167,7 +163,7 @@ public class RaftHAServer implements HAPlugin {
    */
   private volatile boolean                  leaderReady          = true;
   private          ScheduledExecutorService lagMonitorExecutor;
-  private          ScheduledExecutorService healthMonitorExecutor;
+  private          HealthMonitor            healthMonitor;
   private volatile int                      restartFailureCount;
 
   /**
@@ -1419,26 +1415,14 @@ public class RaftHAServer implements HAPlugin {
   // -- Ratis Health Monitor --
 
   private void startRatisHealthMonitor() {
-    healthMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-      final Thread t = new Thread(r, "arcadedb-ratis-health-monitor");
-      t.setDaemon(true);
-      return t;
-    });
-    healthMonitorExecutor.scheduleAtFixedRate(() -> {
-      if (server.getStatus() != ArcadeDBServer.STATUS.ONLINE)
-        return;
-      try {
-        restartRatisIfNeeded();
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING, "Health monitor error: %s", e.getMessage());
-      }
-    }, HEALTH_MONITOR_INITIAL_DELAY_SECS, HEALTH_MONITOR_INTERVAL_SECS, TimeUnit.SECONDS);
+    healthMonitor = new HealthMonitor(server, this::restartRatisIfNeeded);
+    healthMonitor.start();
   }
 
   private void stopHealthMonitor() {
-    if (healthMonitorExecutor != null) {
-      healthMonitorExecutor.shutdownNow();
-      healthMonitorExecutor = null;
+    if (healthMonitor != null) {
+      healthMonitor.stop();
+      healthMonitor = null;
     }
   }
 
