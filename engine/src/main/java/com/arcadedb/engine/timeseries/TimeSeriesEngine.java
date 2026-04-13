@@ -116,6 +116,84 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
+   * Appends a batch of N samples in a single call, distributing them across shards
+   * and writing each shard's sub-batch in one transaction instead of one transaction
+   * per sample.
+   * <p>
+   * For a batch of N samples across S shards this reduces transaction overhead from
+   * N nested-TX cycles down to at most S (one per shard that received data).  Each
+   * shard's write is dispatched to the shared {@code shardExecutor} so all active
+   * shards write in parallel when multiple CPU cores are available.
+   * <p>
+   * Data layout: {@code allColumnValues[colIndex][sampleIndex]}.
+   *
+   * @param allTimestamps   array of N sample timestamps
+   * @param allColumnValues column data where {@code allColumnValues[colIdx][sampleIdx]}
+   *                        is the value for column {@code colIdx} of sample {@code sampleIdx}
+   */
+  public void appendBatch(final long[] allTimestamps, final Object[][] allColumnValues) throws IOException {
+    final int n = allTimestamps.length;
+    if (n == 0)
+      return;
+
+    // Fast path: a single-sample batch avoids grouping overhead.
+    if (n == 1) {
+      appendSamples(allTimestamps, allColumnValues);
+      return;
+    }
+
+    final int colCount = allColumnValues.length;
+
+    // Assign each sample to a shard via round-robin and group sample indices per shard.
+    @SuppressWarnings("unchecked")
+    final List<Integer>[] shardGroups = new List[shardCount];
+    for (int s = 0; s < shardCount; s++)
+      shardGroups[s] = new ArrayList<>();
+
+    for (int i = 0; i < n; i++) {
+      final int s = (int) Math.floorMod(appendCounter.getAndIncrement(), (long) shardCount);
+      shardGroups[s].add(i);
+    }
+
+    // Build per-shard arrays and dispatch parallel writes to shardExecutor.
+    final List<CompletableFuture<Void>> futures = new ArrayList<>(shardCount);
+
+    for (int s = 0; s < shardCount; s++) {
+      final List<Integer> group = shardGroups[s];
+      if (group.isEmpty())
+        continue;
+
+      final int m = group.size();
+      final long[] shardTs = new long[m];
+      final Object[][] shardCols = new Object[colCount][m];
+
+      for (int j = 0; j < m; j++) {
+        final int idx = group.get(j);
+        shardTs[j] = allTimestamps[idx];
+        for (int c = 0; c < colCount; c++)
+          shardCols[c][j] = allColumnValues[c][idx];
+      }
+
+      final int shardIdx = s;
+      futures.add(CompletableFuture.runAsync(() -> {
+        try {
+          shards[shardIdx].appendSamples(shardTs, shardCols);
+        } catch (final IOException e) {
+          throw new CompletionException(e);
+        }
+      }, shardExecutor));
+    }
+
+    try {
+      CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+    } catch (final CompletionException e) {
+      if (e.getCause() instanceof IOException ioe)
+        throw ioe;
+      throw new IOException("Parallel batch shard write failed", e.getCause());
+    }
+  }
+
+  /**
    * Queries all shards and merge-sorts results by timestamp.
    */
   public List<Object[]> query(final long fromTs, final long toTs, final int[] columnIndices,
