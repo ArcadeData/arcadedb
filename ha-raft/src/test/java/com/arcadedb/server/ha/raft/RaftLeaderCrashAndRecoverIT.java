@@ -123,7 +123,7 @@ class RaftLeaderCrashAndRecoverIT extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.INFO, "TEST: Server %d restarted and caught up", leaderIndex);
 
     // Verify old leader rejoined as follower (not leader) and has all 300 records
-    final RaftHAServer oldLeaderHA = (RaftHAServer) getServer(leaderIndex).getHA();
+    final RaftHAServer oldLeaderHA = ((RaftHAPlugin) getServer(leaderIndex).getHA()).getRaftServer();
     assertThat(oldLeaderHA).isNotNull();
     assertThat(oldLeaderHA.isLeader())
         .as("Old leader should be a follower after restart").isFalse();

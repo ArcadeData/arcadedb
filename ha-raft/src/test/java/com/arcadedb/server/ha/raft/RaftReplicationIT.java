@@ -246,7 +246,7 @@ class RaftReplicationIT {
   void testClusterStatus() {
     // Verify cluster status API
     for (final ArcadeDBServer server : servers) {
-      final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+      final RaftHAServer raftHA = ((RaftHAPlugin) server.getHA()).getRaftServer();
       assertThat(raftHA).isNotNull();
       assertThat(raftHA.getClusterName()).isEqualTo("raft-test-cluster");
       assertThat(raftHA.getConfiguredServers()).isEqualTo(3);
@@ -266,7 +266,7 @@ class RaftReplicationIT {
   void testPeerHTTPAddresses() {
     // Verify each peer has a resolvable HTTP address
     for (final ArcadeDBServer server : servers) {
-      final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+      final RaftHAServer raftHA = ((RaftHAPlugin) server.getHA()).getRaftServer();
       final String leaderAddr = raftHA.getLeaderHTTPAddress();
       assertThat(leaderAddr).isNotNull();
       assertThat(leaderAddr).contains("localhost:");

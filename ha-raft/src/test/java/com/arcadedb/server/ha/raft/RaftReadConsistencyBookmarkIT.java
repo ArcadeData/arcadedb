@@ -39,8 +39,8 @@ class RaftReadConsistencyBookmarkIT extends BaseGraphServerTest {
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
-    final RaftHAServer leaderRaft = (RaftHAServer) getServer(leaderIndex).getHA();
-    final RaftHAServer followerRaft = (RaftHAServer) getServer(followerIndex).getHA();
+    final RaftHAServer leaderRaft = ((RaftHAPlugin) getServer(leaderIndex).getHA()).getRaftServer();
+    final RaftHAServer followerRaft = ((RaftHAPlugin) getServer(followerIndex).getHA()).getRaftServer();
 
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
     leaderDb.transaction(() -> {
@@ -68,7 +68,7 @@ class RaftReadConsistencyBookmarkIT extends BaseGraphServerTest {
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
-    final RaftHAServer leaderRaft = (RaftHAServer) getServer(leaderIndex).getHA();
+    final RaftHAServer leaderRaft = ((RaftHAPlugin) getServer(leaderIndex).getHA()).getRaftServer();
 
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
     leaderDb.transaction(() -> {

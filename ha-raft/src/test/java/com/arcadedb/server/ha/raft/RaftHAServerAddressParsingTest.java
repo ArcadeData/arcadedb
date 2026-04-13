@@ -33,35 +33,35 @@ class RaftHAServerAddressParsingTest {
 
   @Test
   void parseHostPortWithIPv4() {
-    final String[] result = RaftHAServer.parseHostPort("192.168.1.1:2424");
+    final String[] result = RaftPeerAddressResolver.parseHostPort("192.168.1.1:2424");
     assertThat(result[0]).isEqualTo("192.168.1.1");
     assertThat(result[1]).isEqualTo("2424");
   }
 
   @Test
   void parseHostPortWithHostname() {
-    final String[] result = RaftHAServer.parseHostPort("myhost:2424");
+    final String[] result = RaftPeerAddressResolver.parseHostPort("myhost:2424");
     assertThat(result[0]).isEqualTo("myhost");
     assertThat(result[1]).isEqualTo("2424");
   }
 
   @Test
   void parseHostPortWithBracketedIPv6() {
-    final String[] result = RaftHAServer.parseHostPort("[::1]:2424");
+    final String[] result = RaftPeerAddressResolver.parseHostPort("[::1]:2424");
     assertThat(result[0]).isEqualTo("[::1]");
     assertThat(result[1]).isEqualTo("2424");
   }
 
   @Test
   void parseHostPortWithFullIPv6() {
-    final String[] result = RaftHAServer.parseHostPort("[2001:db8::1]:9090");
+    final String[] result = RaftPeerAddressResolver.parseHostPort("[2001:db8::1]:9090");
     assertThat(result[0]).isEqualTo("[2001:db8::1]");
     assertThat(result[1]).isEqualTo("9090");
   }
 
   @Test
   void parseHostPortWithExtraPortField() {
-    final String[] result = RaftHAServer.parseHostPort("myhost:2424:2480");
+    final String[] result = RaftPeerAddressResolver.parseHostPort("myhost:2424:2480");
     assertThat(result[0]).isEqualTo("myhost");
     assertThat(result[1]).isEqualTo("2424");
     assertThat(result[2]).isEqualTo("2480");
@@ -69,7 +69,7 @@ class RaftHAServerAddressParsingTest {
 
   @Test
   void parseHostPortIPv6WithExtraPortField() {
-    final String[] result = RaftHAServer.parseHostPort("[::1]:2424:2480");
+    final String[] result = RaftPeerAddressResolver.parseHostPort("[::1]:2424:2480");
     assertThat(result[0]).isEqualTo("[::1]");
     assertThat(result[1]).isEqualTo("2424");
     assertThat(result[2]).isEqualTo("2480");
@@ -77,33 +77,33 @@ class RaftHAServerAddressParsingTest {
 
   @Test
   void parseHostPortRejectsMissingPort() {
-    assertThatThrownBy(() -> RaftHAServer.parseHostPort("myhost"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parseHostPort("myhost"))
         .isInstanceOf(ConfigurationException.class);
   }
 
   @Test
   void parseHostPortRejectsEmptyInput() {
-    assertThatThrownBy(() -> RaftHAServer.parseHostPort(""))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parseHostPort(""))
         .isInstanceOf(ConfigurationException.class);
   }
 
   @Test
   void parseHostPortRejectsBareIPv6WithoutBrackets() {
-    assertThatThrownBy(() -> RaftHAServer.parseHostPort("::1:2424"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parseHostPort("::1:2424"))
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("IPv6");
   }
 
   @Test
   void parseHostPortRejectsIPv6MissingClosingBracket() {
-    assertThatThrownBy(() -> RaftHAServer.parseHostPort("[::1:2424"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parseHostPort("[::1:2424"))
         .isInstanceOf(ConfigurationException.class);
   }
 
   @Test
   void parseHostPortRejectsBareIPv6LinkLocal() {
     // fe80::1:2424 has 4 colons and no dots - correctly detected as bare IPv6
-    assertThatThrownBy(() -> RaftHAServer.parseHostPort("fe80::1:2424"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parseHostPort("fe80::1:2424"))
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("IPv6");
   }
@@ -111,14 +111,14 @@ class RaftHAServerAddressParsingTest {
   @Test
   void parseHostPortRejectsBareIPv6FullAddress() {
     // 2001:db8::1:2424 - full IPv6 without brackets
-    assertThatThrownBy(() -> RaftHAServer.parseHostPort("2001:db8::1:2424"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parseHostPort("2001:db8::1:2424"))
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("IPv6");
   }
 
   @Test
   void parseHostPortAcceptsBracketedLinkLocal() {
-    final String[] result = RaftHAServer.parseHostPort("[fe80::1]:2424");
+    final String[] result = RaftPeerAddressResolver.parseHostPort("[fe80::1]:2424");
     assertThat(result[0]).isEqualTo("[fe80::1]");
     assertThat(result[1]).isEqualTo("2424");
   }

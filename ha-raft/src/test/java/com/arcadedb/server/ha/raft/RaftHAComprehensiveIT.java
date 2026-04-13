@@ -466,7 +466,7 @@ class RaftHAComprehensiveIT {
       assertThat(currentLeader).isNotNull();
 
       // Find a follower to transfer to
-      final RaftHAServer leaderHA = (RaftHAServer) currentLeader.getHA();
+      final RaftHAServer leaderHA = ((RaftHAPlugin) currentLeader.getHA()).getRaftServer();
       String targetPeerId = null;
       for (final var peer : leaderHA.getRaftGroup().getPeers())
         if (!peer.getId().equals(leaderHA.getLocalPeerId())) {

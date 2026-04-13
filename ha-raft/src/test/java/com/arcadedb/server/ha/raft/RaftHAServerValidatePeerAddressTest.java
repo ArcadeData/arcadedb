@@ -33,84 +33,84 @@ class RaftHAServerValidatePeerAddressTest {
 
   @Test
   void validIPv4Address() {
-    assertThatCode(() -> RaftHAServer.validatePeerAddress("192.168.1.1:2424"))
+    assertThatCode(() -> RaftPeerAddressResolver.validatePeerAddress("192.168.1.1:2424"))
         .doesNotThrowAnyException();
   }
 
   @Test
   void validHostnameAddress() {
-    assertThatCode(() -> RaftHAServer.validatePeerAddress("myhost:2424"))
+    assertThatCode(() -> RaftPeerAddressResolver.validatePeerAddress("myhost:2424"))
         .doesNotThrowAnyException();
   }
 
   @Test
   void validBracketedIPv6Address() {
-    assertThatCode(() -> RaftHAServer.validatePeerAddress("[::1]:2424"))
+    assertThatCode(() -> RaftPeerAddressResolver.validatePeerAddress("[::1]:2424"))
         .doesNotThrowAnyException();
   }
 
   @Test
   void validBoundaryPortMin() {
-    assertThatCode(() -> RaftHAServer.validatePeerAddress("myhost:1"))
+    assertThatCode(() -> RaftPeerAddressResolver.validatePeerAddress("myhost:1"))
         .doesNotThrowAnyException();
   }
 
   @Test
   void validBoundaryPortMax() {
-    assertThatCode(() -> RaftHAServer.validatePeerAddress("myhost:65535"))
+    assertThatCode(() -> RaftPeerAddressResolver.validatePeerAddress("myhost:65535"))
         .doesNotThrowAnyException();
   }
 
   @Test
   void rejectsPortZero() {
-    assertThatThrownBy(() -> RaftHAServer.validatePeerAddress("myhost:0"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.validatePeerAddress("myhost:0"))
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("port");
   }
 
   @Test
   void rejectsPortAbove65535() {
-    assertThatThrownBy(() -> RaftHAServer.validatePeerAddress("myhost:70000"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.validatePeerAddress("myhost:70000"))
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("port");
   }
 
   @Test
   void rejectsNegativePort() {
-    assertThatThrownBy(() -> RaftHAServer.validatePeerAddress("myhost:-1"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.validatePeerAddress("myhost:-1"))
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("port");
   }
 
   @Test
   void rejectsNonNumericPort() {
-    assertThatThrownBy(() -> RaftHAServer.validatePeerAddress("myhost:abc"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.validatePeerAddress("myhost:abc"))
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("port");
   }
 
   @Test
   void rejectsMissingPort() {
-    assertThatThrownBy(() -> RaftHAServer.validatePeerAddress("myhost"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.validatePeerAddress("myhost"))
         .isInstanceOf(ConfigurationException.class);
   }
 
   @Test
   void rejectsEmptyAddress() {
-    assertThatThrownBy(() -> RaftHAServer.validatePeerAddress(""))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.validatePeerAddress(""))
         .isInstanceOf(ConfigurationException.class);
   }
 
   @Test
   void rejectsEmptyHost() {
-    assertThatThrownBy(() -> RaftHAServer.validatePeerAddress(":2424"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.validatePeerAddress(":2424"))
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("host");
   }
 
   @Test
   void rejectsIPv6PortOutOfRange() {
-    assertThatThrownBy(() -> RaftHAServer.validatePeerAddress("[::1]:99999"))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.validatePeerAddress("[::1]:99999"))
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("port");
   }

@@ -73,7 +73,7 @@ class ArcadeDBStateMachineCreateFilesTest {
     assertThat(osFile.length()).isEqualTo(8);
 
     // Invoke createNewFiles via reflection (it's private)
-    final ArcadeDBStateMachine stateMachine = new ArcadeDBStateMachine(null);
+    final ArcadeDBStateMachine stateMachine = new ArcadeDBStateMachine(null, null);
     final Method createNewFiles = ArcadeDBStateMachine.class.getDeclaredMethod(
         "createNewFiles", DatabaseInternal.class, Map.class);
     createNewFiles.setAccessible(true);
@@ -109,7 +109,7 @@ class ArcadeDBStateMachineCreateFilesTest {
     final long sizeAfterCreate = new File(filePath).length();
 
     // Invoke createNewFiles with the same fileId - should skip via in-memory guard
-    final ArcadeDBStateMachine stateMachine = new ArcadeDBStateMachine(null);
+    final ArcadeDBStateMachine stateMachine = new ArcadeDBStateMachine(null, null);
     final Method createNewFiles = ArcadeDBStateMachine.class.getDeclaredMethod(
         "createNewFiles", DatabaseInternal.class, Map.class);
     createNewFiles.setAccessible(true);
@@ -133,7 +133,7 @@ class ArcadeDBStateMachineCreateFilesTest {
     assertThat(db.getFileManager().existsFile(fileId)).isFalse();
 
     // Invoke createNewFiles - should create the file normally
-    final ArcadeDBStateMachine stateMachine = new ArcadeDBStateMachine(null);
+    final ArcadeDBStateMachine stateMachine = new ArcadeDBStateMachine(null, null);
     final Method createNewFiles = ArcadeDBStateMachine.class.getDeclaredMethod(
         "createNewFiles", DatabaseInternal.class, Map.class);
     createNewFiles.setAccessible(true);

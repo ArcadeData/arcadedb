@@ -44,7 +44,7 @@ class RaftTransferLeadershipIT extends BaseGraphServerTest {
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
     final int targetIndex = leaderIndex == 0 ? 1 : 0;
-    final String targetPeerId = ((RaftHAServer) getServer(targetIndex).getHA()).getLocalPeerId().toString();
+    final String targetPeerId = ((RaftHAPlugin) getServer(targetIndex).getHA()).getRaftServer().getLocalPeerId().toString();
 
     final int httpPort = 2480 + leaderIndex;
     final HttpURLConnection conn = (HttpURLConnection) new URI(

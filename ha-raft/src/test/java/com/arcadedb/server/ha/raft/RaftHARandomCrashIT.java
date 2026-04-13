@@ -189,6 +189,6 @@ class RaftHARandomCrashIT extends BaseGraphServerTest {
   private RaftHAServer getRaftHAServer(final int serverIndex) {
     if (getServer(serverIndex) == null || !getServer(serverIndex).isStarted())
       return null;
-    return (RaftHAServer) getServer(serverIndex).getHA();
+    return ((RaftHAPlugin) getServer(serverIndex).getHA()).getRaftServer();
   }
 }

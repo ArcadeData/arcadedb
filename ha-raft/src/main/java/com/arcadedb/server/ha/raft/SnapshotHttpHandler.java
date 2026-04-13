@@ -24,6 +24,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.server.ha.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpHandler;
@@ -237,7 +238,7 @@ public class SnapshotHttpHandler implements HttpHandler {
     // Cluster token auth (inter-node communication)
     final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
     if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
-      final RaftHAServer raftHA = (RaftHAServer) httpServer.getServer().getHA();
+      final HAPlugin raftHA = httpServer.getServer().getHA();
       // Constant-time comparison to prevent timing attacks. Hashing both sides with SHA-256
       // guarantees equal-length arrays, avoiding MessageDigest.isEqual's length short-circuit.
       if (raftHA != null && raftHA.getClusterToken() != null && constantTimeTokenEquals(

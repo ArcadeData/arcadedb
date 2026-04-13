@@ -51,7 +51,7 @@ class RaftReplicationWriteAgainstReplicaIT extends BaseGraphServerTest {
     // Find a follower (non-leader) server index
     int followerIndex = -1;
     for (int i = 0; i < getServerCount(); i++) {
-      final RaftHAServer plugin = (RaftHAServer) getServer(i).getHA();
+      final RaftHAServer plugin = ((RaftHAPlugin) getServer(i).getHA()).getRaftServer();
       if (plugin != null && !plugin.isLeader()) {
         followerIndex = i;
         break;

@@ -72,6 +72,7 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.HAPlugin;
 
 import java.io.IOException;
 import java.util.Collection;
@@ -148,11 +149,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // If this fails (quorum not reached), phase 2 never executes -> no local writes -> no divergence.
     //
     // Safety: server.getHA() is guaranteed non-null here because ReplicatedDatabase is only created
-    // when HA is enabled, and the RaftHAServer instance is set before databases are loaded.
+    // when HA is enabled, and the RaftHAPlugin instance is set before databases are loaded.
     // The isLeader() check above already verified that the Raft server is started and this node
     // is the leader - if not, we would have thrown ServerIsNotTheLeaderException in phase 1.
     try {
-      final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+      final HAPlugin raftHA = server.getHA();
       HALog.log(this, HALog.DETAILED, "Replicating WAL via Ratis: db=%s, walSize=%d, deltaSize=%d, schema=%s",
           getName(), payload.bufferChanges.size(), payload.delta.size(), payload.schemaJson != null);
       raftHA.replicateTransaction(getName(), payload.delta, payload.bufferChanges,
@@ -185,7 +186,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
         // Step down so a follower with correct state takes over.
         // This node will self-heal on restart via Raft log replay.
         try {
-          final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+          final HAPlugin raftHA = server.getHA();
           if (raftHA != null && raftHA.isLeader())
             raftHA.stepDown();
         } catch (final Exception stepDownEx) {
@@ -784,7 +785,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
    * or the global config ({@code arcadedb.ha.readConsistency}).
    */
   private void waitForReadConsistency() {
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    final HAPlugin raftHA = server.getHA();
     if (raftHA == null)
       return;
 
@@ -902,7 +903,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    final HAPlugin raftHA = server.getHA();
 
     final AtomicReference<Object> result = new AtomicReference<>();
     final AtomicReference<ChangeStructure> replicationCommand = new AtomicReference<>();
@@ -971,8 +972,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   public RaftHAServer.Quorum getQuorum() {
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
-    return raftHA != null ? raftHA.getQuorum() : RaftHAServer.Quorum.MAJORITY;
+    final HAPlugin ha = server.getHA();
+    return ha instanceof RaftHAPlugin p ? p.getQuorum() : RaftHAServer.Quorum.MAJORITY;
   }
 
   /**
@@ -1024,12 +1025,12 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   protected boolean isLeader() {
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    final HAPlugin raftHA = server.getHA();
     return raftHA != null && raftHA.isLeader();
   }
 
   private String getLeaderHTTPAddress() {
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    final HAPlugin raftHA = server.getHA();
     return raftHA != null ? raftHA.getLeaderHTTPAddress() : null;
   }
 }

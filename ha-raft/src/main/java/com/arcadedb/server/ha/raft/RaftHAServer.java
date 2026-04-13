@@ -372,7 +372,7 @@ public class RaftHAServer implements HAPlugin {
     initClusterToken();
 
     try {
-      stateMachine = new ArcadeDBStateMachine(server);
+      stateMachine = new ArcadeDBStateMachine(server, this);
 
       this.raftProperties = buildRaftProperties();
       final RaftProperties properties = this.raftProperties;
@@ -501,7 +501,7 @@ public class RaftHAServer implements HAPlugin {
       // Create a fresh state machine for the restart. The old state machine has a stale
       // lastAppliedTermIndex that conflicts with RECOVER mode's replay. The database state
       // on disk is the source of truth; the new state machine reads it from the snapshot.
-      stateMachine = new ArcadeDBStateMachine(server);
+      stateMachine = new ArcadeDBStateMachine(server, this);
 
       raftServer = RaftServer.newBuilder()
           .setServerId(localPeerId)

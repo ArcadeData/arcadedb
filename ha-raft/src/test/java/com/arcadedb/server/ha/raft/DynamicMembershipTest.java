@@ -39,7 +39,7 @@ class DynamicMembershipTest extends BaseGraphServerTest {
     final int leaderIndex = getLeaderIndex();
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
-    final RaftHAServer raftServer = (RaftHAServer) getServer(leaderIndex).getHA();
+    final RaftHAServer raftServer = ((RaftHAPlugin) getServer(leaderIndex).getHA()).getRaftServer();
     final Collection<RaftPeer> livePeers = raftServer.getLivePeers();
     assertThat(livePeers).hasSize(3);
   }
@@ -51,9 +51,9 @@ class DynamicMembershipTest extends BaseGraphServerTest {
 
     // Pick a non-leader peer to remove, since Ratis requires the leader to process the change
     final int targetIndex = leaderIndex == 0 ? 2 : 0;
-    final String targetPeerId = ((RaftHAServer) getServer(targetIndex).getHA()).getLocalPeerId().toString();
+    final String targetPeerId = ((RaftHAPlugin) getServer(targetIndex).getHA()).getRaftServer().getLocalPeerId().toString();
 
-    final RaftHAServer raftServer = (RaftHAServer) getServer(leaderIndex).getHA();
+    final RaftHAServer raftServer = ((RaftHAPlugin) getServer(leaderIndex).getHA()).getRaftServer();
     assertThat(raftServer.getLivePeers()).hasSize(3);
 
     raftServer.removePeer(targetPeerId);
@@ -65,7 +65,7 @@ class DynamicMembershipTest extends BaseGraphServerTest {
     final int leaderIndex = getLeaderIndex();
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
-    final RaftHAServer raftServer = (RaftHAServer) getServer(leaderIndex).getHA();
+    final RaftHAServer raftServer = ((RaftHAPlugin) getServer(leaderIndex).getHA()).getRaftServer();
     org.assertj.core.api.Assertions.assertThatThrownBy(() -> raftServer.removePeer("nonexistent"))
         .isInstanceOf(com.arcadedb.exception.ConfigurationException.class);
   }

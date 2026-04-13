@@ -54,7 +54,7 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Both 'peerId' and 'address' are required\"}");
 
     try {
-      RaftHAServer.validatePeerAddress(address);
+      RaftPeerAddressResolver.validatePeerAddress(address);
     } catch (final ConfigurationException e) {
       return new ExecutionResponse(400, "{ \"error\" : \"Invalid peer address: " + e.getMessage() + "\"}");
     }

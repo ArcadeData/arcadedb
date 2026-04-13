@@ -103,7 +103,7 @@ class RaftLeaderDown2NodesIT extends BaseGraphServerTest {
     }
 
     // The remaining node should NOT become leader (cannot form majority with 1 out of 2)
-    final RaftHAServer replicaHA = (RaftHAServer) getServer(replicaIndex).getHA();
+    final RaftHAServer replicaHA = ((RaftHAPlugin) getServer(replicaIndex).getHA()).getRaftServer();
     if (replicaHA != null) {
       final boolean isLeader = replicaHA.isLeader();
       LogManager.instance().log(this, Level.INFO,

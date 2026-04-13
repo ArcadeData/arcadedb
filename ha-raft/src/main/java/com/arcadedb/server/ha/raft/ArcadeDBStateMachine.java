@@ -95,6 +95,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private static final long SNAPSHOT_GAP_TOLERANCE = 10;
 
   private final ArcadeDBServer            server;
+  private final RaftHAServer              raftHA;
   private final SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final AtomicLong                lastAppliedIndex = new AtomicLong(-1);
   private final AtomicLong                electionCount    = new AtomicLong(0);
@@ -110,8 +111,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private final ExecutorService           lifecycleExecutor      = Executors.newSingleThreadExecutor(
       r -> { final Thread t = new Thread(r, "arcadedb-sm-lifecycle"); t.setDaemon(true); return t; });
 
-  public ArcadeDBStateMachine(final ArcadeDBServer server) {
+  public ArcadeDBStateMachine(final ArcadeDBServer server, final RaftHAServer raftHA) {
     this.server = server;
+    this.raftHA = raftHA;
   }
 
   /** Returns the lifecycle executor for scheduling async tasks (leader catch-up, snapshot download). */
@@ -240,7 +242,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       updateLastAppliedTermIndex(logEntry.getTerm(), index);
 
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
-      final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+      final RaftHAServer raftHA = this.raftHA;
       if (raftHA != null) {
         raftHA.notifyApplied();
 
@@ -430,7 +432,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
    * occur if we queried live leadership state (which can change between commit and apply).
    */
   private boolean isOriginNode(final String originPeerId) {
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    final RaftHAServer raftHA = this.raftHA;
     return raftHA != null && raftHA.getLocalPeerId().toString().equals(originPeerId);
   }
 
@@ -554,7 +556,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
    * The Ratis snapshot only contains a marker file; the actual database data is transferred via HTTP.
    */
   private void installDatabasesFromLeader() throws IOException {
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    final RaftHAServer raftHA = this.raftHA;
     if (raftHA == null)
       return;
 
@@ -623,7 +625,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     return CompletableFuture.supplyAsync(() -> {
       try {
         // Resolve the leader's HTTP address for snapshot download
-        final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+        final RaftHAServer raftHA = this.raftHA;
         final RaftPeerId leaderId = RaftPeerId.valueOf(
             roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
         final String leaderHttpAddr = raftHA.getPeerHTTPAddress(leaderId);
@@ -810,7 +812,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
     for (int attempt = 1; attempt <= SNAPSHOT_DOWNLOAD_MAX_RETRIES; attempt++) {
       // Refresh leader address on each retry to handle elections during download
-      final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+      final RaftHAServer raftHA = this.raftHA;
       String leaderAddr = raftHA != null ? raftHA.getLeaderHTTPAddress() : null;
       if (leaderAddr == null)
         leaderAddr = initialLeaderAddr;
@@ -875,7 +877,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_DOWNLOAD_TIMEOUT));
 
     // Authenticate with cluster token for inter-node auth
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    final RaftHAServer raftHA = this.raftHA;
     if (raftHA != null && raftHA.getClusterToken() != null)
       connection.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
 
@@ -1030,7 +1032,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     }
 
     // Refresh gRPC channels to force fresh DNS resolution after potential network partition
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    final RaftHAServer raftHA = this.raftHA;
     if (raftHA != null) {
       // Update cached leader flag (used by applyTransaction origin-skip to avoid Ratis internal calls)
       currentNodeIsLeader = newLeaderId.equals(raftHA.getLocalPeerId());
@@ -1068,7 +1070,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       fireCallback(ReplicationCallback.TYPE.REPLICA_ONLINE, peerId);
     }
 
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    final RaftHAServer raftHA = this.raftHA;
     if (raftHA != null && raftHA.getClusterMonitor() != null) {
       for (final String trackedId : raftHA.getClusterMonitor().getReplicaLags().keySet())
         if (!newPeerIds.contains(trackedId))
@@ -1088,7 +1090,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     if (server.getStatus() == ArcadeDBServer.STATUS.ONLINE) {
       final Thread restartThread = new Thread(() -> {
         try {
-          final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+          final RaftHAServer raftHA = this.raftHA;
           if (raftHA != null) {
             final long deadline = System.currentTimeMillis() + 10_000;
             while (raftHA.getRaftLifeCycleState() != org.apache.ratis.util.LifeCycle.State.CLOSED
