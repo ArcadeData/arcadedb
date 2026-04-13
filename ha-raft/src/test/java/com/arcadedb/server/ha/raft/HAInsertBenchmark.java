@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha;
+package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
@@ -44,7 +44,7 @@ import java.util.logging.Level;
  * Benchmark measuring insert performance across different HA configurations.
  * Compares: single server (no HA), 3-server cluster, and 5-server cluster.
  * <p>
- * Run with: {@code mvn test -pl server -Dtest=HAInsertBenchmark -Dtag=benchmark}
+ * Run with: {@code mvn test -pl ha-raft -Dtest=HAInsertBenchmark -Dgroups=benchmark}
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
