@@ -28,7 +28,9 @@ import io.undertow.server.HttpServerExchange;
 
 /**
  * POST /api/v1/cluster/peer - adds a peer to the Raft cluster.
- * Body: {"peerId": "...", "address": "host:port"}
+ * Body: {"peerId": "...", "address": "host:raftPort", "httpAddress": "host:httpPort"}
+ * The httpAddress field is optional. If omitted, it is derived from the Raft address using the
+ * local node's port offset (which may be incorrect if the new peer has a non-standard port layout).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -57,7 +59,8 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Invalid peer address: " + e.getMessage() + "\"}");
     }
 
-    raftHA.addPeer(peerId, address);
+    final String httpAddress = payload.has("httpAddress") ? payload.getString("httpAddress") : null;
+    raftHA.addPeer(peerId, address, httpAddress);
 
     final JSONObject response = new JSONObject();
     response.put("result", "Peer " + peerId + " added");

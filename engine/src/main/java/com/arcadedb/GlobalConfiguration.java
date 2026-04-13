@@ -596,6 +596,10 @@ public enum GlobalConfiguration {
       "Maximum concurrent snapshot downloads served by this node. Limits NIC saturation and read-lock stacking during mass follower restarts. "
           + "Excess requests receive HTTP 503 so followers retry with backoff", Integer.class, 2),
 
+  HA_SNAPSHOT_DOWNLOAD_TIMEOUT("arcadedb.ha.snapshotDownloadTimeout", SCOPE.SERVER,
+      "Read timeout in milliseconds for downloading a database snapshot from the leader during follower resync. "
+          + "Increase for large databases or slow networks", Integer.class, 300_000),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 

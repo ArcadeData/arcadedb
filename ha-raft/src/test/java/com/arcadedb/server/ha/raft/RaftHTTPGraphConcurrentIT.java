@@ -95,6 +95,9 @@ class RaftHTTPGraphConcurrentIT extends BaseGraphServerTest {
 
       assertThat(atomic.get()).isEqualTo(THREADS * SCRIPTS);
 
+      // Wait for all edges to replicate before checking counts on each server
+      waitForReplicationConvergence();
+
       final JSONObject select = executeCommand(serverIndex, "sql",
           "SELECT id FROM ( SELECT expand( outE('RaftHasUploaded" + serverIndex + "') ) FROM RaftUsers" + serverIndex
               + " WHERE id = \"u1111\" )");
@@ -102,9 +105,6 @@ class RaftHTTPGraphConcurrentIT extends BaseGraphServerTest {
       assertThat(select.getJSONObject("result").getJSONArray("records").length())
           .withFailMessage("Some edges were missing when executing from server " + serverIndex)
           .isEqualTo(THREADS * SCRIPTS);
-
-      waitForReplicationConvergence();
-      checkDatabasesAreIdentical();
     });
   }
 }

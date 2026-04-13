@@ -303,7 +303,7 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
       throw new ConfigurationException(
           "Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. "
               + "Set arcadedb.server.rootPassword or provide an explicit arcadedb.ha.clusterToken");
-    final String password = clusterName + ":" + (rootPassword != null ? rootPassword : "");
+    final String password = clusterName + ":" + rootPassword;
     try {
       final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
       final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
@@ -880,6 +880,7 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
       HALog.log(this, HALog.TRACE, "Bookmark wait complete: applied >= target=%d", targetIndex);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
+      throw new ReplicationException("READ_YOUR_WRITES consistency wait interrupted before reaching target index " + targetIndex);
     } finally {
       applyWaiterCount.decrementAndGet();
     }
@@ -1011,6 +1012,7 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
       }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
+      throw new ReplicationException("Leader apply wait interrupted before state machine caught up");
     } catch (final Exception e) {
       HALog.log(this, HALog.DETAILED, "waitForLocalApply failed: %s", e.getMessage());
     }
@@ -1591,10 +1593,13 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
    * Adds a new peer to the Raft cluster. Must be called on any server (Ratis routes to leader).
    * The new peer must already be running with the same cluster name and group ID.
    *
-   * @param peerId  the new peer's ID (typically host:port)
-   * @param address the new peer's Raft RPC address (host:port)
+   * @param peerId      the new peer's ID (typically host_port)
+   * @param address     the new peer's Raft RPC address (host:port)
+   * @param httpAddress optional HTTP address (host:port). If null or empty, derived from the Raft
+   *                    address using the local port offset (which may be incorrect if the peer uses
+   *                    a non-standard port layout)
    */
-  public void addPeer(final String peerId, final String address) {
+  public void addPeer(final String peerId, final String address, final String httpAddress) {
     final RaftPeer newPeer = RaftPeer.newBuilder()
         .setId(RaftPeerId.valueOf(peerId))
         .setAddress(address)
@@ -1609,26 +1614,39 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
 
-      // Derive and store HTTP address from the Raft address (host:raftPort -> host:httpPort).
-      // This assumes the dynamically added peer uses the same HTTP/Raft port gap as this node.
-      try {
-        final String[] addrParts = parseHostPort(address);
-        final int raftPort = Integer.parseInt(addrParts[1]);
-        final int httpPortOffset = getHttpPortOffset();
-        final String derivedHttp = addrParts[0] + ":" + (raftPort + httpPortOffset);
-        peerHttpAddresses.put(peerId, derivedHttp);
-        LogManager.instance().log(this, Level.WARNING,
-            "Dynamically added peer '%s': HTTP address derived as %s using local port offset (%+d). "
-                + "If incorrect, remove and re-add with explicit HTTP port in HA_SERVER_LIST",
-            peerId, derivedHttp, httpPortOffset);
-      } catch (final ConfigurationException | NumberFormatException ignored) {
-        // Malformed address, skip HTTP address derivation
+      if (httpAddress != null && !httpAddress.isEmpty()) {
+        peerHttpAddresses.put(peerId, httpAddress);
+        LogManager.instance().log(this, Level.INFO, "Peer %s added with explicit HTTP address %s", peerId, httpAddress);
+      } else {
+        // Derive HTTP address from Raft address. This assumes the dynamically added peer uses the
+        // same HTTP/Raft port gap as this node, which may be incorrect for non-standard layouts.
+        try {
+          final String[] addrParts = parseHostPort(address);
+          final int raftPort = Integer.parseInt(addrParts[1]);
+          final int httpPortOffset = getHttpPortOffset();
+          final String derivedHttp = addrParts[0] + ":" + (raftPort + httpPortOffset);
+          peerHttpAddresses.put(peerId, derivedHttp);
+          LogManager.instance().log(this, Level.WARNING,
+              "Dynamically added peer '%s': no HTTP address provided, derived as %s using local port offset (%+d). "
+                  + "Use 'httpAddress' parameter for explicit control",
+              peerId, derivedHttp, httpPortOffset);
+        } catch (final ConfigurationException | NumberFormatException ignored) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Dynamically added peer '%s': could not derive HTTP address from '%s'", peerId, address);
+        }
       }
 
       LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster", peerId);
     } catch (final IOException e) {
       throw new ConfigurationException("Failed to add peer " + peerId, e);
     }
+  }
+
+  /**
+   * Convenience overload for backward compatibility (derives HTTP address from port offset).
+   */
+  public void addPeer(final String peerId, final String address) {
+    addPeer(peerId, address, null);
   }
 
   /**
@@ -1676,8 +1694,13 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
    * @param timeoutMs    timeout in milliseconds
    */
   public void transferLeadership(final String targetPeerId, final long timeoutMs) {
-    try {
-      final RaftClientReply reply = raftClient.admin().transferLeadership(
+    // Create a fresh client for the admin call to avoid "client is closed" errors.
+    // The existing raftClient may have been closed after a prior leadership change.
+    try (final RaftClient adminClient = RaftClient.newBuilder()
+        .setRaftGroup(raftGroup)
+        .setProperties(raftProperties)
+        .build()) {
+      final RaftClientReply reply = adminClient.admin().transferLeadership(
           RaftPeerId.valueOf(targetPeerId), timeoutMs);
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": " + reply.getException());

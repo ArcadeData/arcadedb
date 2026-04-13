@@ -816,7 +816,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
     connection.setRequestMethod("GET");
     connection.setConnectTimeout(30_000);
-    connection.setReadTimeout(300_000); // 5 minutes for large databases
+    connection.setReadTimeout(
+        server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_DOWNLOAD_TIMEOUT));
 
     // Authenticate with cluster token for inter-node auth
     final RaftHAServer raftHA = (RaftHAServer) server.getHA();

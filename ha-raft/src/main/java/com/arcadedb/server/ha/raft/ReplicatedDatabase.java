@@ -784,6 +784,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
     if (consistency == Database.READ_CONSISTENCY.READ_YOUR_WRITES) {
       if (ctx.readAfterIndex >= 0)
         raftHA.waitForAppliedIndex(ctx.readAfterIndex);
+      else
+        // No bookmark: ensure the follower has applied all committed entries before serving the read.
+        // Without this, a catching-up follower would silently degrade to EVENTUAL consistency.
+        raftHA.waitForLocalApply();
     } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
       if (ctx.readAfterIndex >= 0)
         raftHA.waitForAppliedIndex(ctx.readAfterIndex);

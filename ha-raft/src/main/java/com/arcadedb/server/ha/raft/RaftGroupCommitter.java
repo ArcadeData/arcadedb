@@ -113,9 +113,9 @@ public class RaftGroupCommitter {
       throw e;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new QuorumNotReachedException("Group commit interrupted: " + e.getMessage());
+      throw new QuorumNotReachedException("Group commit interrupted", e);
     } catch (final Exception e) {
-      throw new QuorumNotReachedException("Group commit failed: " + e.getMessage());
+      throw new QuorumNotReachedException("Group commit failed: " + e, e);
     }
   }
 
@@ -162,7 +162,7 @@ public class RaftGroupCommitter {
           break;
         Thread.currentThread().interrupt();
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING, "Error in group commit flusher: %s", e.getMessage());
+        LogManager.instance().log(this, Level.WARNING, "Error in group commit flusher", e);
         // Fail all entries in the current batch
         for (final PendingEntry p : batch)
           p.future.complete(e);
@@ -215,7 +215,7 @@ public class RaftGroupCommitter {
           batch.get(i).future.complete(null); // success for MAJORITY
 
       } catch (final Exception e) {
-        batch.get(i).future.complete(new QuorumNotReachedException("Group commit entry failed: " + e.getMessage()));
+        batch.get(i).future.complete(new QuorumNotReachedException("Group commit entry failed: " + e, e));
         if (allQuorum)
           watchFutures.add(null);
       }
@@ -235,7 +235,7 @@ public class RaftGroupCommitter {
           final RaftClientReply watchReply = watchFuture.get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
           batch.get(i).future.complete(watchReply.isSuccess() ? null : new QuorumNotReachedException("ALL quorum not reached"));
         } catch (final Exception e) {
-          batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum watch failed: " + e.getMessage()));
+          batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum watch failed: " + e, e));
         }
       }
     }

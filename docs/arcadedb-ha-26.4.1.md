@@ -435,7 +435,7 @@ All pass when run individually. Port conflicts occur when multiple HA test class
 ### Known Limitations
 - **State machine command forwarding**: The `query()` path for forwarding write commands to the leader has a page visibility issue. Currently using HTTP proxy fallback which works correctly.
 
-## TODO
+## HISTORY
 
 ### Resolved Issues
 - **Snapshot persistence for cold restart**: `takeSnapshot()` was not persisting a snapshot marker file to `SimpleStateMachineStorage`. After a cold restart, `reinitialize()` found no snapshot, set `lastAppliedIndex=-1`, and Ratis replayed ALL committed log entries. Fixed by writing a marker file (`snapshot.<term>_<index>`) with MD5, updating `reinitialize()` to restore `lastAppliedIndex` and `BaseStateMachine`'s `TermIndex`, and taking a snapshot on clean shutdown.

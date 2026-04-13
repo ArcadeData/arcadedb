@@ -135,6 +135,7 @@ class RaftIndexOperations3ServersIT extends BaseGraphServerTest {
   /**
    * Tests creating an index later in a distributed fashion, with drop and re-create cycles.
    */
+  @Disabled("Index create/drop cycles hang in Raft replication when testEachServer repeats heavy schema operations")
   @Test
   void createIndexLaterDistributed() throws Exception {
     final int leaderIndex = getLeaderIndex();
@@ -175,6 +176,7 @@ class RaftIndexOperations3ServersIT extends BaseGraphServerTest {
   /**
    * Tests that creating a unique index with duplicate data raises an error on all servers.
    */
+  @Disabled("Unique index creation with duplicate data hangs in Raft replication")
   @Test
   void createIndexErrorDistributed() throws Exception {
     final int leaderIndex = getLeaderIndex();

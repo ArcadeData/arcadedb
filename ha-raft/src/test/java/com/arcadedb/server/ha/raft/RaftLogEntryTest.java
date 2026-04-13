@@ -120,7 +120,7 @@ class RaftLogEntryTest {
     // Forward-compatibility: unknown type codes return null instead of throwing,
     // so an older node can skip entries from a newer node during rolling upgrades.
     assertThat(RaftLogEntry.EntryType.fromCode((byte) 0)).isNull();
-    assertThat(RaftLogEntry.EntryType.fromCode((byte) 2)).isNull();
+    assertThat(RaftLogEntry.EntryType.fromCode((byte) 2)).isEqualTo(RaftLogEntry.EntryType.DROP_DATABASE);
     assertThat(RaftLogEntry.EntryType.fromCode((byte) 99)).isNull();
     assertThat(RaftLogEntry.EntryType.fromCode((byte) -1)).isNull();
   }

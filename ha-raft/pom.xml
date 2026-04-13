@@ -117,6 +117,13 @@
         <!-- Ratis test utilities for MiniRaftCluster split-brain tests -->
         <dependency>
             <groupId>org.apache.ratis</groupId>
+            <artifactId>ratis-common</artifactId>
+            <version>${ratis.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.ratis</groupId>
             <artifactId>ratis-server</artifactId>
             <version>${ratis.version}</version>
             <type>test-jar</type>

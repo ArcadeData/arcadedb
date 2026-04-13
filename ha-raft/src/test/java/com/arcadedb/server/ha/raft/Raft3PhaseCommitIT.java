@@ -57,9 +57,10 @@ class Raft3PhaseCommitIT extends BaseGraphServerTest {
    */
   @Test
   void concurrentWritersReplicateCorrectly() throws Exception {
-    final int leaderIndex = 0;
+    final int leaderIndex = getLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
     executeCommand(leaderIndex, "sql", "CREATE document TYPE ConcurrentDoc");
-    waitForReplicationIsCompleted(leaderIndex);
+    waitForReplicationConvergence();
 
     final int THREADS = 8;
     final int INSERTS_PER_THREAD = 50;
@@ -72,18 +73,25 @@ class Raft3PhaseCommitIT extends BaseGraphServerTest {
       final int threadId = t;
       futures.add(executor.submit(() -> {
         for (int i = 0; i < INSERTS_PER_THREAD; i++) {
-          try {
-            // Use sqlscript with "commit retry 100" so that MVCC conflicts caused
-            // by the lock-free Raft replication window are retried automatically.
-            final JSONObject response = executeCommand(leaderIndex, "sqlscript",
-                "BEGIN ISOLATION REPEATABLE_READ;"
-                    + "INSERT INTO ConcurrentDoc SET threadId = " + threadId + ", seq = " + i + ";"
-                    + "commit retry 100;");
-            assertThat(response).withFailMessage(
-                "Insert returned null: thread=%d seq=%d", threadId, i).isNotNull();
-            successCount.incrementAndGet();
-          } catch (final Exception e) {
-            fail("Insert failed: thread=" + threadId + " seq=" + i + " error=" + e.getMessage());
+          // Retry on transient failures (leadership changes, MVCC conflicts at HTTP level)
+          boolean inserted = false;
+          for (int retry = 0; retry < 10 && !inserted; retry++) {
+            try {
+              final JSONObject response = executeCommand(leaderIndex, "sqlscript",
+                  "BEGIN ISOLATION REPEATABLE_READ;"
+                      + "INSERT INTO ConcurrentDoc SET threadId = " + threadId + ", seq = " + i + ";"
+                      + "commit retry 100;");
+              if (response != null) {
+                inserted = true;
+                successCount.incrementAndGet();
+              } else {
+                Thread.sleep(200 + retry * 100L);
+              }
+            } catch (final Exception e) {
+              if (retry == 9)
+                fail("Insert failed after retries: thread=" + threadId + " seq=" + i + " error=" + e.getMessage());
+              try { Thread.sleep(200 + retry * 100L); } catch (final InterruptedException ignored) {}
+            }
           }
         }
       }));
