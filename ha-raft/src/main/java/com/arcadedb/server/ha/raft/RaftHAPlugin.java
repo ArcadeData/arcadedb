@@ -118,7 +118,7 @@ public class RaftHAPlugin implements HAPlugin {
 
   @Override
   public boolean isLeader() {
-    return raftServer.isLeader();
+    return raftServer != null && raftServer.isLeader();
   }
 
   @Override

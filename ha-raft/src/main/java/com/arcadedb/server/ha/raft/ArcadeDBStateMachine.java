@@ -1031,17 +1031,19 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       });
     }
 
-    // Refresh gRPC channels to force fresh DNS resolution after potential network partition
+    // Refresh gRPC channels to force fresh DNS resolution after potential network partition.
+    // newLeaderId can be null during elections (no leader yet) - handle defensively.
     final RaftHAServer raftHA = this.raftHA;
     if (raftHA != null) {
       // Update cached leader flag (used by applyTransaction origin-skip to avoid Ratis internal calls)
-      currentNodeIsLeader = newLeaderId.equals(raftHA.getLocalPeerId());
+      currentNodeIsLeader = newLeaderId != null && newLeaderId.equals(raftHA.getLocalPeerId());
       raftHA.refreshRaftClient();
       raftHA.notifyLeaderChanged();
     } else
       currentNodeIsLeader = false;
 
-    fireCallback(ReplicationCallback.TYPE.LEADER_ELECTED, newLeaderId.toString());
+    if (newLeaderId != null)
+      fireCallback(ReplicationCallback.TYPE.LEADER_ELECTED, newLeaderId.toString());
   }
 
   public long getElectionCount() {

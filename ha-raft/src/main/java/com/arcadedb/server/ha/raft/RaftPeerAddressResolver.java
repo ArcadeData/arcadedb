@@ -26,7 +26,10 @@ import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
+import com.arcadedb.server.ServerException;
+
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -307,5 +310,92 @@ public class RaftPeerAddressResolver {
     if (portSpec.contains(","))
       return Integer.parseInt(portSpec.split(",")[0].trim());
     return Integer.parseInt(portSpec.trim());
+  }
+
+  /**
+   * Result of {@link #parsePeerList(String, int)}.
+   * Peers carry the Raft addresses; the separate {@code httpAddresses} map holds the
+   * optional HTTP addresses declared in the server list's three-part format.
+   */
+  public record ParsedPeerList(List<RaftPeer> peers, Map<RaftPeerId, String> httpAddresses) {
+  }
+
+  /**
+   * Pure-static peer list parser suitable for use in tests and configuration validation.
+   * <p>
+   * Supported entry formats:
+   * <ul>
+   *   <li>{@code host:raftPort:httpPort:priority}</li>
+   *   <li>{@code host:raftPort:httpPort}</li>
+   *   <li>{@code host:raftPort}</li>
+   *   <li>{@code host} (uses {@code defaultPort})</li>
+   * </ul>
+   * Mixing localhost/127.0.0.1 addresses with non-localhost addresses is rejected.
+   *
+   * @param serverList  comma-separated list of server entries
+   * @param defaultPort port to use when an entry contains no port
+   * @return parsed peers and optional HTTP address map
+   * @throws ServerException       if localhost and non-localhost addresses are mixed
+   * @throws ConfigurationException if any address is malformed
+   */
+  public static ParsedPeerList parsePeerList(final String serverList, final int defaultPort) {
+    final List<RaftPeer> peers = new ArrayList<>();
+    final Map<RaftPeerId, String> httpAddresses = new HashMap<>();
+
+    boolean hasLocalhost = false;
+    boolean hasNonLocalhost = false;
+
+    for (final String entry : serverList.split(",")) {
+      final String trimmed = entry.trim();
+      if (trimmed.isEmpty())
+        continue;
+
+      // Append default port if entry has no colon (host-only)
+      final String address = trimmed.contains(":") ? trimmed : trimmed + ":" + defaultPort;
+
+      // For bracketed IPv6 use parseHostPort; for hostname/IPv4 split directly to support
+      // 4-part format (host:raftPort:httpPort:priority) without triggering IPv6 detection.
+      final String[] parts;
+      if (address.startsWith("["))
+        parts = parseHostPort(address);
+      else {
+        parts = address.split(":");
+        if (parts.length < 2)
+          throw new ConfigurationException("HA peer address missing port: " + address);
+      }
+      final String host = parts[0];
+      final int raftPort = Integer.parseInt(parts[1]);
+      final String raftAddress = host + ":" + raftPort;
+
+      if ("localhost".equals(host) || "127.0.0.1".equals(host) || "[::1]".equals(host))
+        hasLocalhost = true;
+      else
+        hasNonLocalhost = true;
+
+      String httpAddress = null;
+      if (parts.length >= 3)
+        httpAddress = host + ":" + parts[2];
+
+      int priority = 0;
+      if (parts.length >= 4) {
+        try {
+          priority = Integer.parseInt(parts[3]);
+        } catch (final NumberFormatException e) {
+          throw new ConfigurationException("Invalid priority '" + parts[3] + "' in peer address '" + trimmed + "'");
+        }
+      }
+
+      final String peerIdStr = host + "_" + raftPort;
+      final RaftPeerId peerId = RaftPeerId.valueOf(peerIdStr);
+      peers.add(RaftPeer.newBuilder().setId(peerId).setAddress(raftAddress).setPriority(priority).build());
+
+      if (httpAddress != null)
+        httpAddresses.put(peerId, httpAddress);
+    }
+
+    if (hasLocalhost && hasNonLocalhost)
+      throw new ServerException("Found a localhost address mixed with non-localhost addresses in the server list: " + serverList);
+
+    return new ParsedPeerList(peers, httpAddresses);
   }
 }
