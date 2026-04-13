@@ -40,6 +40,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import org.awaitility.Awaitility;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -163,7 +165,10 @@ class RaftHAServerIT {
       assertThat(reply.isSuccess()).isTrue();
 
       // Wait for all state machines to apply the entry
-      Thread.sleep(500);
+      Awaitility.await()
+          .atMost(10, TimeUnit.SECONDS)
+          .pollInterval(200, TimeUnit.MILLISECONDS)
+          .until(() -> stateMachines.stream().allMatch(sm -> sm.getApplyCount() >= 1));
 
       // All 3 nodes should have applied exactly 1 entry
       for (final CountingStateMachine sm : stateMachines)
@@ -183,7 +188,10 @@ class RaftHAServerIT {
       }
 
       // Wait for all state machines to apply all entries
-      Thread.sleep(1000);
+      Awaitility.await()
+          .atMost(10, TimeUnit.SECONDS)
+          .pollInterval(200, TimeUnit.MILLISECONDS)
+          .until(() -> stateMachines.stream().allMatch(sm -> sm.getApplyCount() >= entryCount));
 
       // All 3 nodes should have applied exactly 10 entries
       for (int i = 0; i < 3; i++)
@@ -195,19 +203,18 @@ class RaftHAServerIT {
 
   // -- Helpers --
 
-  private void waitForLeader() throws Exception {
-    final long deadline = System.currentTimeMillis() + 10_000;
-    while (System.currentTimeMillis() < deadline) {
-      for (final RaftServer server : servers)
-        try {
-          if (server.getDivision(group.getGroupId()).getInfo().isLeader())
-            return;
-        } catch (final Exception e) {
-          // server not ready yet
-        }
-      Thread.sleep(200);
-    }
-    throw new RuntimeException("No leader elected within 10 seconds");
+  private void waitForLeader() {
+    Awaitility.await()
+        .atMost(10, TimeUnit.SECONDS)
+        .pollInterval(200, TimeUnit.MILLISECONDS)
+        .ignoreExceptions()
+        .until(() -> servers.stream().anyMatch(s -> {
+          try {
+            return s.getDivision(group.getGroupId()).getInfo().isLeader();
+          } catch (final Exception e) {
+            return false;
+          }
+        }));
   }
 
   private RaftClient createClient() {

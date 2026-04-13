@@ -24,8 +24,13 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.ha.HAPlugin;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
+import org.awaitility.core.ConditionTimeoutException;
 
 import java.io.File;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 /**
@@ -81,49 +86,58 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   @Override
   protected void waitForReplicationIsCompleted(final int serverNumber) {
-    // Find the leader's last applied index, retrying briefly during election transitions
-    long leaderLastIndex = -1;
-    for (int attempt = 0; attempt < 30 && leaderLastIndex <= 0; attempt++) {
-      for (int i = 0; i < getServerCount(); i++) {
-        final HAPlugin ha = getServer(i) != null && getServer(i).isStarted() ? getServer(i).getHA() : null;
-        if (ha != null && ha.isLeader()) {
-          leaderLastIndex = ha.getLastAppliedIndex();
-          break;
-        }
-      }
-      if (leaderLastIndex <= 0) {
-        try {
-          Thread.sleep(100);
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          return;
-        }
-      }
+    // Find the leader's last applied index, retrying during election transitions.
+    // Return early (no-op) if no leader is found - this happens in teardown when servers are stopped.
+    final long[] leaderLastIndex = { -1 };
+    try {
+      Awaitility.await()
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            for (int i = 0; i < getServerCount(); i++) {
+              final HAPlugin ha = getServer(i) != null && getServer(i).isStarted() ? getServer(i).getHA() : null;
+              if (ha != null && ha.isLeader()) {
+                leaderLastIndex[0] = ha.getLastAppliedIndex();
+                return leaderLastIndex[0] > 0;
+              }
+            }
+            return false;
+          });
+    } catch (final ConditionTimeoutException e) {
+      return; // no leader available (e.g., cluster stopped) - nothing to wait for
     }
 
-    if (leaderLastIndex <= 0)
+    if (leaderLastIndex[0] <= 0)
       return;
 
-    // Wait for this server's state machine to catch up
-    final long targetIndex = leaderLastIndex;
-    final long deadline = System.currentTimeMillis() + 30_000;
-    while (System.currentTimeMillis() < deadline) {
-      final HAPlugin ha = getServer(serverNumber) != null && getServer(serverNumber).isStarted()
-          ? getServer(serverNumber).getHA()
-          : null;
-      if (ha == null)
-        return;
-      if (ha.getLastAppliedIndex() >= targetIndex)
-        return;
-      try {
-        Thread.sleep(100);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return;
-      }
-    }
-    LogManager.instance().log(this, Level.WARNING, "Timeout waiting for server %d to replicate to index %d",
-        serverNumber, targetIndex);
+    // Wait for this server's state machine to catch up to the leader's index
+    final long targetIndex = leaderLastIndex[0];
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          final HAPlugin ha = getServer(serverNumber) != null && getServer(serverNumber).isStarted()
+              ? getServer(serverNumber).getHA() : null;
+          return ha == null || ha.getLastAppliedIndex() >= targetIndex;
+        });
+  }
+
+  /**
+   * Polls {@code condition} every 200 ms until it returns {@code true} or 10 seconds elapses.
+   * Prefer this over {@code Thread.sleep} for any wait that has an observable success condition.
+   */
+  protected void assertEventually(final BooleanSupplier condition) {
+    assertEventually(condition, Duration.ofSeconds(10));
+  }
+
+  /**
+   * Polls {@code condition} every 200 ms until it returns {@code true} or {@code timeout} elapses.
+   */
+  protected void assertEventually(final BooleanSupplier condition, final Duration timeout) {
+    Awaitility.await()
+        .atMost(timeout.toMillis(), TimeUnit.MILLISECONDS)
+        .pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(condition::getAsBoolean);
   }
 
   @Override
@@ -183,7 +197,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       getServer(serverIndex).stop();
     }
 
-    // Brief pause to allow the OS to release the gRPC port
+    // Fixed delay for OS port release: the gRPC listener holds the TCP port in TIME_WAIT
+    // after server.stop() returns. There is no observable condition to poll here - the only
+    // option would be binding a test ServerSocket to the port, which is fragile. 1s is
+    // sufficient in practice; 2s provides a safety margin on slow CI runners.
     try {
       Thread.sleep(2_000);
     } catch (final InterruptedException e) {

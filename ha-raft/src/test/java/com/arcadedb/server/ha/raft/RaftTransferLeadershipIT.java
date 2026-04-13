@@ -21,13 +21,14 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
-
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -69,7 +70,10 @@ class RaftTransferLeadershipIT extends BaseGraphServerTest {
     conn.disconnect();
     assertThat(responseCode).as("Response: %s", responseBody).isEqualTo(200);
 
-    Thread.sleep(3_000);
+    Awaitility.await()
+        .atMost(15, TimeUnit.SECONDS)
+        .pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> getServer(targetIndex).getHA() != null && getServer(targetIndex).getHA().isLeader());
 
     final Database newLeaderDb = getServerDatabase(targetIndex, getDatabaseName());
     newLeaderDb.transaction(() -> {
