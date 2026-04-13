@@ -407,17 +407,23 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
-   * Applies a replicated users payload: writes it atomically to
-   * {@code server-users.jsonl} and reloads the in-memory users map.
+   * Applies a replicated users payload: writes it to {@code server-users.jsonl}
+   * and populates the in-memory users map directly from the payload.
    * Called from the Raft state machine on every peer when a SECURITY_USERS_ENTRY
    * is applied.
+   * <p>
+   * The in-memory map is built from the Raft payload rather than re-reading from
+   * disk. In multi-server test setups (and potentially in embedded deployments),
+   * multiple in-process servers may share the same config directory. Reading from
+   * the file after writing would race with concurrent writes from other servers'
+   * state machine threads, causing a server to load another server's (possibly
+   * earlier) snapshot and permanently lose users.
    * <p>
    * Intentionally NOT {@code synchronized} on the ServerSecurity monitor: the
    * HTTP handler holds that monitor while waiting for {@code submitAndWait} to
    * complete, and the state machine apply thread needs to call this method to
    * unblock the wait. Raft state-machine apply is single-threaded per group, so
-   * there is no internal contention here, and the underlying file write + reload
-   * are themselves self-consistent.
+   * there is no internal contention here.
    */
   public void applyReplicatedUsers(final String usersJsonArray) {
     final JSONArray array = new JSONArray(usersJsonArray);
@@ -430,7 +436,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     } catch (final IOException e) {
       throw new ServerException("Failed to save replicated users file", e);
     }
-    loadUsers();
+
+    // Build in-memory map from the authoritative Raft payload, not from the file.
+    users.clear();
+    for (final JSONObject userJson : list)
+      users.put(userJson.getString("name"), new ServerSecurityUser(server, userJson));
   }
 
   public void saveGroups() {

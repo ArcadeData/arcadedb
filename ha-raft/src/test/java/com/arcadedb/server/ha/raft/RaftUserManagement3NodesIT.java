@@ -50,17 +50,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RaftUserManagement3NodesIT extends BaseRaftHATest {
 
   RaftUserManagement3NodesIT() {
-    FileUtils.deleteRecursively(new File("./target/config"));
+    // Each server gets its own root path so they don't share config files.
+    // In production, servers run in separate processes; in tests, all servers
+    // run in-process and would race on a shared server-users.jsonl file.
+    for (int i = 0; i < 3; i++)
+      FileUtils.deleteRecursively(new File("./target/server" + i));
     FileUtils.deleteRecursively(new File("./target/databases"));
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
-    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
   }
 
   @AfterEach
   @Override
   public void endTest() {
     super.endTest();
-    FileUtils.deleteRecursively(new File("./target/config"));
+    for (int i = 0; i < 3; i++)
+      FileUtils.deleteRecursively(new File("./target/server" + i));
     FileUtils.deleteRecursively(new File("./target/databases"));
   }
 
@@ -78,6 +82,11 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
+
+    // Per-server root path to isolate config directories (see constructor comment).
+    final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
+    final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target/server" + index);
   }
 
   @Override
