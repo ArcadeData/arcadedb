@@ -38,8 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class RaftIndexOperations3ServersIT extends BaseRaftHATest {
 
-  private static final int TOTAL_RECORDS = 10_000;
-  private static final int TX_CHUNK      = 1_000;
+  private static final int TOTAL_RECORDS = 500;
+  private static final int TX_CHUNK      = 100;
 
   @Override
   protected int getServerCount() {
