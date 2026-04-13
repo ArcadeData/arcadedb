@@ -167,7 +167,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         // Watchdog: if notifyLeaderChanged() doesn't fire within 30 seconds (e.g., stable
         // leader, no election), trigger the download directly. This prevents a follower from
         // remaining permanently stale when the leader is stable.
-        final Thread watchdog = new Thread(() -> {
+        // Submitted to lifecycleExecutor so close() can interrupt it via shutdownNow().
+        lifecycleExecutor.submit(() -> {
           try {
             Thread.sleep(30_000);
             if (needsSnapshotDownload.compareAndSet(true, false)) {
@@ -179,11 +180,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
             Thread.currentThread().interrupt();
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE,
-                "Snapshot download watchdog failed: %s", e.getMessage());
+                "Snapshot download watchdog failed", e);
           }
-        }, "arcadedb-snapshot-watchdog");
-        watchdog.setDaemon(true);
-        watchdog.start();
+        });
       }
 
       lastAppliedIndex.set(snapshotIndex);
