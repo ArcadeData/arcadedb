@@ -23,19 +23,19 @@ requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
 
 dependencies = [
-    "testcontainers>=4.9.1",
-    "pytest>=8.3.4",
-    "pytest-check>=2.5.0",
-    "pytest-asyncio>=0.23.0",
+    "testcontainers>=4.13.3",
+    "pytest>=8.4.2",
+    "pytest-check>=2.8.0",
+    "pytest-asyncio>=1.2.0",
     "docker>=7.1.0",
-    "psycopg>=3.2.5",
-    "psycopg-binary>=3.2.5",
-    "asyncpg>=0.29.0",
-    "requests>=2.31.0"
+    "psycopg>=3.2.13",
+    "psycopg-binary>=3.2.13",
+    "asyncpg>=0.31.0",
+    "requests>=2.32.5"
 ]
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

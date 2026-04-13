@@ -42,18 +42,18 @@ repos:
           - --indent=2
         files: ^bindings/python/.*\.ya?ml$
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.12.0-2
+    rev: v3.13.1-1
     hooks:
       - id: shfmt
         args: ["-i", "4", "-ci", "-sr", "-w"]
         files: ^bindings/python/.*\.sh$
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: v3.8.1
+    rev: v3.8.2
     hooks:
       - id: prettier
         types: [ java, xml ]
         additional_dependencies:
-          - prettier@3.8.1
+          - prettier@3.8.2
           - prettier-plugin-java@2.8.1
           - prettier-plugin-xml
         args:

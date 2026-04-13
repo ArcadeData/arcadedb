@@ -242,18 +242,22 @@ class CypherExpressionBuilder {
    * This is a helper for parsing lower-level expression contexts.
    */
   Expression parseExpressionFromText(final ParseTree node) {
-    // Check for CASE expressions in the parse tree
+    // All recursive searches below use a length guard: only match when the found
+    // context covers (almost) the full node text, preventing mis-parsing of
+    // func(CASE ...) as just the inner CASE.  The - 2 allows for whitespace.
+    final String nodeText = node.getText();
+
     final Cypher25Parser.CaseExpressionContext caseCtx = findCaseExpressionRecursive(node);
-    if (caseCtx != null)
+    if (caseCtx != null && caseCtx.getText().length() >= nodeText.length() - 2)
       return parseCaseExpression(caseCtx);
 
     final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = findExtendedCaseExpressionRecursive(node);
-    if (extCaseCtx != null)
+    if (extCaseCtx != null && extCaseCtx.getText().length() >= nodeText.length() - 2)
       return parseExtendedCaseExpression(extCaseCtx);
 
     // Check for EXISTS expressions
     final Cypher25Parser.ExistsExpressionContext existsCtx = findExistsExpressionRecursive(node);
-    if (existsCtx != null)
+    if (existsCtx != null && existsCtx.getText().length() >= nodeText.length() - 2)
       return parseExistsExpression(existsCtx);
 
     // Check for logical expressions (AND, OR, XOR, NOT) in the parse tree

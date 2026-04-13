@@ -12,8 +12,8 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
-    "testcontainers": "^11.13.0",
-    "@types/node": "^25.5.2",
+    "testcontainers": "^11.14.0",
+    "@types/node": "^25.6.0",
     "typescript": "^6.0.2"
   },
   "engines": {
