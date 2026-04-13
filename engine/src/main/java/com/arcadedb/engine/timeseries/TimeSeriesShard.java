@@ -61,6 +61,14 @@ public class TimeSeriesShard implements AutoCloseable {
   // Both writeTempCompactionFile() and truncateToBlockCount() use the same .ts.sealed.tmp path;
   // concurrent execution would corrupt each other's temp files.
   private final Lock                   compactionMutex = new ReentrantLock();
+  // Serializes concurrent appendSamples() calls on this shard.
+  // Multiple threads routing to the same shard via round-robin would otherwise produce
+  // MVCC conflicts (ConcurrentModificationException) on page 0, because each call
+  // starts its own nested transaction and two transactions cannot both modify the same
+  // page version at commit time.  With this lock, only one append runs the begin→commit
+  // cycle at a time per shard, so page versions are always consistent at commit.
+  // Writes to *different* shards are still fully concurrent.
+  private final Lock                   appendLock      = new ReentrantLock();
 
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
                          final List<ColumnDefinition> columns) throws IOException {
@@ -156,25 +164,30 @@ public class TimeSeriesShard implements AutoCloseable {
    * transaction, ArcadeDB creates a nested transaction (a new {@code TransactionContext} pushed
    * onto the per-thread stack).  The nested transaction commits independently; the caller's outer
    * transaction remains unaffected because it holds none of the modified pages in its dirty set.
+   * <p>
+   * Concurrent calls on the <em>same shard</em> are serialized by {@link #appendLock} so that
+   * MVCC page-version conflicts can never arise between two concurrent appends.  Writes to
+   * different shards still proceed in parallel.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
     compactionLock.readLock().lock();
     try {
-      database.begin();
+      // Serialize concurrent appends on this shard to prevent MVCC conflicts.
+      // Two concurrent nested transactions both modifying page 0 would otherwise produce a
+      // ConcurrentModificationException at commit time (current v.X <> database v.Y).
+      appendLock.lock();
       try {
-        mutableBucket.appendSamples(timestamps, columnValues);
-        database.commit();
-      } catch (final ConcurrentModificationException cme) {
-        // Roll back the nested TX only.  Do NOT touch the caller's outer transaction:
-        // the Javadoc promises it remains unaffected, and the caller must decide whether
-        // to rollback/retry their own transaction.
-        if (database.isTransactionActive())
-          database.rollback();
-        throw cme; // propagate as-is so callers can catch and retry
-      } catch (final Exception e) {
-        if (database.isTransactionActive())
-          database.rollback();
-        throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+        database.begin();
+        try {
+          mutableBucket.appendSamples(timestamps, columnValues);
+          database.commit();
+        } catch (final Exception e) {
+          if (database.isTransactionActive())
+            database.rollback();
+          throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+        }
+      } finally {
+        appendLock.unlock();
       }
     } finally {
       compactionLock.readLock().unlock();
