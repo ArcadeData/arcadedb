@@ -62,6 +62,11 @@ public interface HAPlugin extends ServerPlugin {
   void replicateCreateDatabase(String databaseName);
 
   /**
+   * Replicates database drop to all cluster nodes.
+   */
+  void replicateDropDatabase(String databaseName);
+
+  /**
    * Called during server startup before databases are loaded. Allows the HA implementation to
    * recover from crash-related state (e.g. pending snapshot swaps).
    */

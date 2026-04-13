@@ -152,8 +152,27 @@ public class ArcadeDBServer {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
-    // Discover plugins from lib/plugins directory
+    // Discover plugins from lib/plugins directory and ServiceLoader
     pluginManager.discoverPlugins();
+
+    // Auto-discover HA plugin when HA is enabled (no SERVER_PLUGINS config needed).
+    // The HA plugin is on the classpath via the ha-raft module and is discovered by ServiceLoader,
+    // but PluginManager only registers plugins listed in SERVER_PLUGINS. This ensures the HA plugin
+    // is always available when HA_ENABLED=true without requiring explicit plugin configuration.
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
+      boolean haFound = false;
+      for (final ServerPlugin p : pluginManager.getPlugins())
+        if (p instanceof HAPlugin) {
+          haFound = true;
+          break;
+        }
+      if (!haFound)
+        for (final ServerPlugin p : java.util.ServiceLoader.load(ServerPlugin.class))
+          if (p instanceof HAPlugin) {
+            pluginManager.registerPlugin(p.getName(), p);
+            break;
+          }
+    }
 
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
         GlobalConfiguration.SERVER_MODE.getValueAsString(),

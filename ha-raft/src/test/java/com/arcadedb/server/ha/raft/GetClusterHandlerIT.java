@@ -42,11 +42,11 @@ class GetClusterHandlerIT extends BaseGraphServerTest {
   void testClusterEndpointReturnsStatus() throws Exception {
     final JSONObject response = queryClusterEndpoint(0);
 
-    assertThat(response.getString("implementation")).isEqualTo("raft");
+    assertThat(response.getString("protocol")).isEqualTo("ratis");
     assertThat(response.getString("clusterName")).isNotEmpty();
     assertThat(response.getString("localPeerId")).startsWith("localhost_");
     assertThat(response.has("isLeader")).isTrue();
-    assertThat(response.has("leaderId")).isTrue();
+    assertThat(response.has("leader")).isTrue();
 
     final JSONArray peers = response.getJSONArray("peers");
     assertThat(peers.length()).isEqualTo(2);
@@ -75,7 +75,7 @@ class GetClusterHandlerIT extends BaseGraphServerTest {
     final JSONObject response0 = queryClusterEndpoint(0);
     final JSONObject response1 = queryClusterEndpoint(1);
 
-    assertThat(response0.get("leaderId")).isEqualTo(response1.get("leaderId"));
+    assertThat(response0.get("leader")).isEqualTo(response1.get("leader"));
   }
 
   private JSONObject queryClusterEndpoint(final int serverIndex) throws Exception {

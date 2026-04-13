@@ -44,6 +44,10 @@ public class RaftLogEntry {
      */
     CREATE_DATABASE((byte) 1),
     /**
+     * Replicate database drop to all nodes.
+     */
+    DROP_DATABASE((byte) 2),
+    /**
      * Replicate a committed transaction (WAL page diffs + optional schema changes).
      */
     TRANSACTION((byte) 3);
@@ -66,6 +70,7 @@ public class RaftLogEntry {
     public static EntryType fromCode(final byte code) {
       return switch (code) {
         case 1 -> CREATE_DATABASE;
+        case 2 -> DROP_DATABASE;
         case 3 -> TRANSACTION;
         default -> null;
       };
@@ -219,6 +224,31 @@ public class RaftLogEntry {
     return new CreateDatabaseEntry(originPeerId, databaseName);
   }
 
+
+  // -- DROP_DATABASE serialization --
+
+  /**
+   * Parsed DROP_DATABASE entry.
+   */
+  public record DropDatabaseEntry(String originPeerId, String databaseName) {
+  }
+
+  public static byte[] serializeDropDatabase(final String databaseName, final String originPeerId) {
+    final Binary stream = new Binary(64);
+    stream.putByte(EntryType.DROP_DATABASE.code());
+    stream.putString(originPeerId);
+    stream.putString(databaseName);
+    stream.flip();
+    return stream.toByteArray();
+  }
+
+  public static DropDatabaseEntry deserializeDropDatabase(final byte[] data) {
+    final Binary stream = new Binary(data);
+    stream.getByte(); // skip type byte
+    final String originPeerId = readBoundedString(stream);
+    final String databaseName = readBoundedString(stream);
+    return new DropDatabaseEntry(originPeerId, databaseName);
+  }
 
   // -- Internal helpers --
 

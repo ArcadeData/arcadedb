@@ -65,6 +65,14 @@ class RaftHTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest {
       connection.disconnect();
     }
 
+    // Wait for database creation to replicate to all nodes
+    Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS).until(() -> {
+      for (int i = 0; i < getServerCount(); i++)
+        if (!getServer(i).existsDatabase(getDatabaseName()))
+          return false;
+      return true;
+    });
+
     testEachServer((serverIndex) -> {
       final String response = command(serverIndex, "create vertex type RaftCreateVertex" + serverIndex);
       assertThat(response).contains("RaftCreateVertex" + serverIndex);

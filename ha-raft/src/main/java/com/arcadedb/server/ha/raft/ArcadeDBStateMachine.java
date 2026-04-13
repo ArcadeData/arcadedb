@@ -228,6 +228,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
       switch (type) {
         case CREATE_DATABASE -> applyCreateDatabase(data);
+        case DROP_DATABASE -> applyDropDatabase(data);
         case TRANSACTION -> applyTransactionEntry(data);
       }
 
@@ -420,6 +421,25 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
     HALog.log(this, HALog.BASIC, "Creating database '%s' on follower (replicated from leader)", entry.databaseName());
     server.createDatabase(entry.databaseName(), ComponentFile.MODE.READ_WRITE);
+  }
+
+  private void applyDropDatabase(final byte[] data) {
+    final RaftLogEntry.DropDatabaseEntry entry = RaftLogEntry.deserializeDropDatabase(data);
+
+    // The originating node already dropped the database locally before submitting the Ratis entry.
+    if (isOriginNode(entry.originPeerId())) {
+      HALog.log(this, HALog.TRACE, "Skipping DROP_DATABASE on origin node (already dropped): db=%s", entry.databaseName());
+      return;
+    }
+
+    if (!server.existsDatabase(entry.databaseName())) {
+      HALog.log(this, HALog.BASIC, "Database '%s' does not exist on this follower, skipping drop", entry.databaseName());
+      return;
+    }
+
+    HALog.log(this, HALog.BASIC, "Dropping database '%s' on follower (replicated from leader)", entry.databaseName());
+    server.getDatabase(entry.databaseName()).getEmbedded().drop();
+    server.removeDatabase(entry.databaseName());
   }
 
   /**

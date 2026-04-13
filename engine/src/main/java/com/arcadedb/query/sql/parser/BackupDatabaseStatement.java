@@ -112,6 +112,13 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
+  public boolean isIdempotent() {
+    // Backup only reads the database to produce a file - it does not modify database state.
+    // This allows BACKUP DATABASE to run on any node in an HA cluster, including replicas.
+    return true;
+  }
+
+  @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("BACKUP DATABASE");
     if (url != null) {

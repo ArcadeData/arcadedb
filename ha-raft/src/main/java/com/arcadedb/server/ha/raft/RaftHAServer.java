@@ -767,6 +767,12 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
     replicateRawEntry(entry);
   }
 
+  @Override
+  public void replicateDropDatabase(final String databaseName) {
+    final byte[] entry = RaftLogEntry.serializeDropDatabase(databaseName, localPeerId.toString());
+    replicateRawEntry(entry);
+  }
+
   /**
    * Submits a transaction to the Raft cluster. The entry is replicated to all nodes and applied
    * via ArcadeDBStateMachine.applyTransaction() on each node.

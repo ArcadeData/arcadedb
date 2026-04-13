@@ -62,19 +62,27 @@ class RaftVerifyDatabaseIT extends BaseGraphServerTest {
     conn.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
 
+    conn.setDoOutput(true);
+    conn.setRequestProperty("Content-Type", "application/json");
+    conn.getOutputStream().write("{}".getBytes(StandardCharsets.UTF_8));
+
     assertThat(conn.getResponseCode()).isEqualTo(200);
     final String responseBody = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     final JSONObject response = new JSONObject(responseBody);
 
-    assertThat(response.getString("database")).isEqualTo(getDatabaseName());
-    final JSONArray nodes = response.getJSONArray("nodes");
-    assertThat(nodes.length()).isGreaterThan(0);
+    // The verify handler wraps the comparison in a "result" object
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getString("database")).isEqualTo(getDatabaseName());
+    assertThat(result.getString("overallStatus")).isEqualTo("ALL_CONSISTENT");
 
-    for (int i = 0; i < nodes.length(); i++) {
-      final JSONObject node = nodes.getJSONObject(i);
-      assertThat(node.getBoolean("match"))
-          .as("Checksum mismatch on node %s: %s", node.getString("peerId", ""), node)
-          .isTrue();
+    final JSONArray peers = result.getJSONArray("peers");
+    assertThat(peers.length()).isGreaterThan(0);
+
+    for (int i = 0; i < peers.length(); i++) {
+      final JSONObject peer = peers.getJSONObject(i);
+      assertThat(peer.getString("status"))
+          .as("Checksum mismatch on peer %s: %s", peer.getString("peerId", ""), peer)
+          .isEqualTo("CONSISTENT");
     }
 
     conn.disconnect();

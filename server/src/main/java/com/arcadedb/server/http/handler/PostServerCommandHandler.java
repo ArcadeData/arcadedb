@@ -423,12 +423,20 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty())
       throw new IllegalArgumentException("Database name empty");
 
-    final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
+    checkServerIsLeaderIfInHA();
+
+    final ArcadeDBServer server = httpServer.getServer();
+    final ServerDatabase database = server.getDatabase(databaseName);
 
     Metrics.counter("http.drop-database").increment();
 
     database.getEmbedded().drop();
-    httpServer.getServer().removeDatabase(database.getName());
+    server.removeDatabase(database.getName());
+
+    // Replicate database drop to all followers
+    final HAPlugin haPlugin = server.getHA();
+    if (haPlugin != null)
+      haPlugin.replicateDropDatabase(databaseName);
   }
 
   private void closeDatabase(final String databaseName) {

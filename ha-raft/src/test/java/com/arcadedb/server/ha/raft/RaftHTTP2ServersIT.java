@@ -173,7 +173,7 @@ class RaftHTTP2ServersIT extends BaseGraphServerTest {
         connection.connect();
         final String response = readResponse(connection);
         assertThat(connection.getResponseCode()).isEqualTo(200);
-        assertThat(response).contains("\"implementation\":\"raft\"");
+        assertThat(response).contains("\"protocol\":\"ratis\"");
         final JSONObject json = new JSONObject(response);
         if (json.getBoolean("isLeader"))
           leaderCount++;
