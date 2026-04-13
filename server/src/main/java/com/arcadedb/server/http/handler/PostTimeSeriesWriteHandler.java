@@ -92,49 +92,45 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
     if (samples.isEmpty())
       return new ExecutionResponse(204, "");
 
-    // Group by measurement and insert
+    // Group by measurement and insert.
+    // Each engine.appendSamples() call manages its own internal transaction, so samples
+    // from this batch are committed individually.  There is no outer transaction wrapping
+    // the loop: the nested TXs commit independently and cannot be rolled back as a unit.
     int inserted = 0;
-    database.begin();
-    try {
-      for (final Sample sample : samples) {
-        final String measurement = sample.getMeasurement();
+    for (final Sample sample : samples) {
+      final String measurement = sample.getMeasurement();
 
-        if (!database.getSchema().existsType(measurement))
-          continue; // skip unknown measurement types
+      if (!database.getSchema().existsType(measurement))
+        continue; // skip unknown measurement types
 
-        final DocumentType docType = database.getSchema().getType(measurement);
-        if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
-          continue; // skip non-timeseries types
+      final DocumentType docType = database.getSchema().getType(measurement);
+      if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+        continue; // skip non-timeseries types
 
-        final TimeSeriesEngine engine = tsType.getEngine();
-        final List<ColumnDefinition> columns = tsType.getTsColumns();
+      final TimeSeriesEngine engine = tsType.getEngine();
+      final List<ColumnDefinition> columns = tsType.getTsColumns();
 
-        final long[] timestamps = new long[] { sample.getTimestampMs() };
-        final Object[][] columnValues = new Object[columns.size() - 1][1]; // exclude timestamp
+      final long[] timestamps = new long[] { sample.getTimestampMs() };
+      final Object[][] columnValues = new Object[columns.size() - 1][1]; // exclude timestamp
 
-        int colIdx = 0;
-        for (int i = 0; i < columns.size(); i++) {
-          final ColumnDefinition col = columns.get(i);
-          if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-            continue;
+      int colIdx = 0;
+      for (int i = 0; i < columns.size(); i++) {
+        final ColumnDefinition col = columns.get(i);
+        if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          continue;
 
-          Object value;
-          if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
-            value = sample.getTags().get(col.getName());
-          else
-            value = sample.getFields().get(col.getName());
+        Object value;
+        if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+          value = sample.getTags().get(col.getName());
+        else
+          value = sample.getFields().get(col.getName());
 
-          columnValues[colIdx][0] = value;
-          colIdx++;
-        }
-
-        engine.appendSamples(timestamps, columnValues);
-        inserted++;
+        columnValues[colIdx][0] = value;
+        colIdx++;
       }
-      database.commit();
-    } catch (final Exception e) {
-      database.rollback();
-      throw e;
+
+      engine.appendSamples(timestamps, columnValues);
+      inserted++;
     }
 
     // Return 204 No Content (InfluxDB convention) or 200 with count
