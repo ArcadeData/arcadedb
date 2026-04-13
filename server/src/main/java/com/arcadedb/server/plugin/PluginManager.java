@@ -198,7 +198,36 @@ public class PluginManager {
   }
 
   /**
-   * Start plugins based on their installation priority.
+   * Configure all discovered plugins. Called early in the server startup sequence so that plugins
+   * can register callbacks (e.g. database wrappers) before databases are loaded.
+   */
+  public void configurePlugins() {
+    for (final Map.Entry<String, PluginDescriptor> entry : plugins.entrySet()) {
+      final String pluginName = entry.getKey();
+      final PluginDescriptor descriptor = entry.getValue();
+      final ServerPlugin plugin = descriptor.getPluginInstance();
+
+      if (plugin == null || descriptor.isConfigured())
+        continue;
+
+      try {
+        final Thread currentThread = Thread.currentThread();
+        final ClassLoader originalClassLoader = currentThread.getContextClassLoader();
+        try {
+          currentThread.setContextClassLoader(descriptor.getClassLoader());
+          plugin.configure(server, configuration);
+          descriptor.setConfigured(true);
+        } finally {
+          currentThread.setContextClassLoader(originalClassLoader);
+        }
+      } catch (final Exception e) {
+        throw new ServerException("Error configuring plugin: " + pluginName, e);
+      }
+    }
+  }
+
+  /**
+   * Start plugins based on their installation priority. Plugins are configured first if not already done.
    */
   public void startPlugins(final ServerPlugin.PluginInstallationPriority priority) {
     for (final Map.Entry<String, PluginDescriptor> entry : plugins.entrySet()) {
@@ -206,23 +235,23 @@ public class PluginManager {
       final PluginDescriptor descriptor = entry.getValue();
       final ServerPlugin plugin = descriptor.getPluginInstance();
 
-      if (plugin == null || descriptor.isStarted()) {
+      if (plugin == null || descriptor.isStarted())
         continue;
-      }
 
-      if (plugin.getInstallationPriority() != priority) {
+      if (plugin.getInstallationPriority() != priority)
         continue;
-      }
 
       try {
-        // Set the context class loader to the plugin's class loader
         final Thread currentThread = Thread.currentThread();
         final ClassLoader originalClassLoader = currentThread.getContextClassLoader();
         try {
           currentThread.setContextClassLoader(descriptor.getClassLoader());
 
-          // Configure and start the plugin
-          plugin.configure(server, configuration);
+          if (!descriptor.isConfigured()) {
+            plugin.configure(server, configuration);
+            descriptor.setConfigured(true);
+          }
+
           plugin.startService();
 
           if (plugin.isActive()) {

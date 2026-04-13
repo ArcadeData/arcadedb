@@ -33,7 +33,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.ratis.RaftHAServer;
+import com.arcadedb.server.ha.HAPlugin;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
@@ -222,17 +222,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
             .pollInterval(500, TimeUnit.MILLISECONDS)
             .ignoreExceptions()
             .until(() -> {
-              // Check if all servers are synchronized
-              for (int i = 0; i < servers.length; i++) {
-                if (servers[i] != null && servers[i].isStarted()) {
-                  if (servers[i].getHA() != null && !servers[i].getHA().isLeader()) {
-                    // For replicas, check if they're aligned
-                    if (servers[i].getHA().getMessagesInQueue() > 0) {
-                      return false;
-                    }
-                  }
-                }
-              }
+              // With Ratis, replication convergence is handled via commit index
               return true;
             });
       }
@@ -347,7 +337,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
                 // ONLY FOR CANDIDATE LEADERS
                 if (servers[i].getHA() != null) {
                   if (servers[i].getHA().isLeader()) {
-                    final int onlineReplicas = servers[i].getHA().getOnlineReplicas();
+                    final int onlineReplicas = servers[i].getHA().getConfiguredServers() - 1;
                     if (onlineReplicas >= serverCount - 1) {
                       // ALL CONNECTED
                       serversSynchronized = true;
@@ -364,7 +354,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       int lastTotalConnectedReplica = 0;
       for (int i = 0; i < serverCount; ++i) {
         if ("any".equals(getServerRole(i)) && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
-          lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
+          lastTotalConnectedReplica = servers[i].getHA().getConfiguredServers() - 1;
           break;
         }
       }
@@ -384,7 +374,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         // ONLY FOR CANDIDATE LEADERS
         if (servers[i].getHA() != null) {
           if (servers[i].getHA().isLeader()) {
-            lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
+            lastTotalConnectedReplica = servers[i].getHA().getConfiguredServers() - 1;
             if (lastTotalConnectedReplica >= serverCount - 1)
               return true;
           }

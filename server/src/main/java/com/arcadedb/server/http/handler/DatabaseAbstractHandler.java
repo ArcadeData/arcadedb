@@ -29,7 +29,8 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.remote.RemoteHttpComponent;
-import com.arcadedb.server.ha.ReplicatedDatabase;
+import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.ha.ReadConsistencyContext;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -142,7 +143,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         database.commit();
 
     } finally {
-      ReplicatedDatabase.clearReadConsistencyContext();
+      ReadConsistencyContext.clear();
 
       if (activeSession != null)
         // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
@@ -160,9 +161,9 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
 
     // Emit commit index header so clients can track bookmarks for READ_YOUR_WRITES consistency
-    final var raftHA = httpServer.getServer().getHA();
-    if (raftHA != null) {
-      final long commitIndex = raftHA.getCommitIndex();
+    final var haPlugin = httpServer.getServer().getHA();
+    if (haPlugin != null) {
+      final long commitIndex = haPlugin.getCommitIndex();
       if (commitIndex >= 0)
         exchange.getResponseHeaders().put(
             new HttpString(RemoteHttpComponent.HEADER_COMMIT_INDEX),
@@ -201,7 +202,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       try { readAfterIndex = Long.parseLong(readAfterHeader.getFirst()); } catch (final NumberFormatException ignored) {}
 
     if (consistency != null && consistency != Database.READ_CONSISTENCY.EVENTUAL)
-      ReplicatedDatabase.setReadConsistencyContext(consistency, readAfterIndex);
+      ReadConsistencyContext.set(consistency, readAfterIndex);
   }
 
   private void cleanTL(final Database database, DatabaseContext.DatabaseContextTL current) {

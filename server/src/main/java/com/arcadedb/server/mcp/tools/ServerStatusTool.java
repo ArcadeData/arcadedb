@@ -24,7 +24,7 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.ratis.RaftHAServer;
+import com.arcadedb.server.ha.HAPlugin;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.HashSet;
@@ -60,7 +60,7 @@ public class ServerStatusTool {
       installedDatabases.retainAll(allowedDatabases);
     result.put("databases", new JSONArray(installedDatabases));
 
-    final RaftHAServer ha = server.getHA();
+    final HAPlugin ha = server.getHA();
     if (ha != null && config.isAllowAdmin()) {
       final JSONObject haInfo = new JSONObject();
       haInfo.put("clusterName", ha.getClusterName());

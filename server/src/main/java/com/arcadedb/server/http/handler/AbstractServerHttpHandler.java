@@ -339,9 +339,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // The cluster token is a shared secret derived from the cluster name + root password.
     // For session-based auth (Bearer), we use cluster token + forwarded user instead of
     // forwarding the per-node session token. For Basic/API tokens, we forward as-is.
-    final var raftHA = httpServer.getServer().getHA();
+    final var haPlugin = httpServer.getServer().getHA();
     final var authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);
-    if (raftHA != null && raftHA.getClusterToken() != null) {
+    if (haPlugin != null && haPlugin.getClusterToken() != null) {
       final String auth = authHeader != null && !authHeader.isEmpty() ? authHeader.getFirst() : null;
       if (auth != null && auth.startsWith(AUTHORIZATION_BEARER)) {
         final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
@@ -351,7 +351,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           // This avoids sending long-lived API tokens in plain text over the inter-node channel.
           try {
             final var user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
-            conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+            conn.setRequestProperty(HEADER_CLUSTER_TOKEN, haPlugin.getClusterToken());
             conn.setRequestProperty(HEADER_FORWARDED_USER, user.getName());
           } catch (final ServerSecurityException ex) {
             conn.disconnect();
@@ -366,7 +366,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             sendErrorResponse(exchange, 401, "Session expired or invalid", null, null);
             return;
           }
-          conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+          conn.setRequestProperty(HEADER_CLUSTER_TOKEN, haPlugin.getClusterToken());
           conn.setRequestProperty(HEADER_FORWARDED_USER, session.getUser().getName());
         }
       } else if (auth != null)
@@ -383,7 +383,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           sendErrorResponse(exchange, 401, "No authentication credentials provided", null, null);
           return;
         }
-        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, raftHA.getClusterToken());
+        conn.setRequestProperty(HEADER_CLUSTER_TOKEN, haPlugin.getClusterToken());
         conn.setRequestProperty(HEADER_FORWARDED_USER, forwardedUser.getFirst());
       }
     } else if (authHeader != null && !authHeader.isEmpty())
@@ -432,8 +432,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   private ServerSecurityUser validateClusterForwardedAuth(final HttpServerExchange exchange,
       final String providedToken, final HeaderValues forwardedUserValues) {
-    final var raftHA = httpServer.getServer().getHA();
-    final String expectedToken = raftHA != null ? raftHA.getClusterToken() : null;
+    final var haPlugin = httpServer.getServer().getHA();
+    final String expectedToken = haPlugin != null ? haPlugin.getClusterToken() : null;
 
     if (providedToken == null || expectedToken == null || expectedToken.isEmpty()
         || !constantTimeTokenEquals(expectedToken, providedToken)) {

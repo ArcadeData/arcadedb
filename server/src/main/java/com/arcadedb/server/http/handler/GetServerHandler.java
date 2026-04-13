@@ -27,7 +27,7 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerDatabase;
-import com.arcadedb.server.ha.ratis.RaftHAServer;
+import com.arcadedb.server.ha.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
@@ -80,86 +80,11 @@ public class GetServerHandler extends AbstractServerHttpHandler {
   }
 
   private void exportCluster(final HttpServerExchange exchange, final JSONObject response) {
-    final RaftHAServer raftHA = httpServer.getServer().getHA();
-    if (raftHA == null)
+    final HAPlugin haPlugin = httpServer.getServer().getHA();
+    if (haPlugin == null)
       return;
 
-    exportRatisCluster(response);
-  }
-
-  private void exportRatisCluster(final JSONObject response) {
-    final RaftHAServer raftHA = httpServer.getServer().getHA();
-
-    final JSONObject haJSON = new JSONObject();
-    response.put("ha", haJSON);
-
-    haJSON.put("protocol", "ratis");
-    haJSON.put("clusterName", raftHA.getClusterName());
-    haJSON.put("leader", raftHA.getLeaderName());
-    haJSON.put("electionStatus", raftHA.getElectionStatus());
-    haJSON.put("isLeader", raftHA.isLeader());
-    haJSON.put("localPeerId", raftHA.getLocalPeerId().toString());
-    haJSON.put("configuredServers", raftHA.getConfiguredServers());
-    haJSON.put("quorum", raftHA.getQuorum().name());
-    haJSON.put("currentTerm", raftHA.getCurrentTerm());
-    haJSON.put("commitIndex", raftHA.getCommitIndex());
-    haJSON.put("lastAppliedIndex", raftHA.getLastAppliedIndex());
-
-    // Peer list with replication state (follower indices available only on leader)
-    final var followerStates = raftHA.getFollowerStates();
-    final JSONArray peers = new JSONArray();
-    for (final var peer : raftHA.getRaftGroup().getPeers()) {
-      final JSONObject peerJSON = new JSONObject();
-      final String peerId = peer.getId().toString();
-      peerJSON.put("id", peerId);
-      peerJSON.put("address", peer.getAddress());
-      peerJSON.put("httpAddress", raftHA.getPeerHTTPAddress(peer.getId()));
-      peerJSON.put("isLocal", peer.getId().equals(raftHA.getLocalPeerId()));
-      peerJSON.put("role", peer.getId().equals(raftHA.getLocalPeerId()) && raftHA.isLeader() ? "LEADER"
-          : peerId.equals(raftHA.getLeaderName()) ? "LEADER" : "FOLLOWER");
-
-      // Add per-follower replication state if available (leader only)
-      for (final var fs : followerStates)
-        if (peerId.equals(fs.get("peerId"))) {
-          peerJSON.put("matchIndex", fs.get("matchIndex"));
-          peerJSON.put("nextIndex", fs.get("nextIndex"));
-          // Add lag warning status from ClusterMonitor
-          final var monitor = raftHA.getClusterMonitor();
-          if (monitor != null) {
-            final var lags = monitor.getReplicaLags();
-            final Long lag = lags.get(peerId);
-            if (lag != null)
-              peerJSON.put("lagging", lag > monitor.getLagWarningThreshold() && monitor.getLagWarningThreshold() > 0);
-          }
-          break;
-        }
-
-      peers.put(peerJSON);
-    }
-    haJSON.put("peers", peers);
-
-    // Database list
-    final JSONArray databases = new JSONArray();
-    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
-      final JSONObject databaseJSON = new JSONObject();
-      databaseJSON.put("name", dbName);
-      databaseJSON.put("quorum", raftHA.getQuorum().name());
-      databases.put(databaseJSON);
-    }
-    haJSON.put("databases", databases);
-
-    // Metrics
-    final JSONObject metricsJSON = new JSONObject();
-    metricsJSON.put("electionCount", raftHA.getElectionCount());
-    metricsJSON.put("lastElectionTime", raftHA.getLastElectionTime());
-    metricsJSON.put("raftLogSize", raftHA.getRaftLogSize());
-    metricsJSON.put("startTime", raftHA.getStartTime());
-    metricsJSON.put("lagWarningThreshold", raftHA.getClusterMonitor().getLagWarningThreshold());
-    haJSON.put("metrics", metricsJSON);
-
-    // These fields are required by RemoteHttpComponent for cluster configuration
-    haJSON.put("leaderAddress", raftHA.getLeaderHTTPAddress());
-    haJSON.put("replicaAddresses", raftHA.getReplicaAddresses());
+    response.put("ha", haPlugin.exportClusterStatus());
   }
 
   private void exportMetrics(final JSONObject response) {

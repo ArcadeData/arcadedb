@@ -32,11 +32,13 @@ public class PluginDescriptor {
   private final String       pluginName;
   private final ClassLoader  classLoader;
   private       ServerPlugin pluginInstance;
+  private       boolean      configured;
   private       boolean      started;
 
   public PluginDescriptor(final String pluginName, final ClassLoader classLoader) {
     this.pluginName = Objects.requireNonNull(pluginName, "Plugin name cannot be null");
     this.classLoader = Objects.requireNonNull(classLoader, "Class loader cannot be null");
+    this.configured = false;
     this.started = false;
   }
 
@@ -54,6 +56,14 @@ public class PluginDescriptor {
 
   public void setPluginInstance(final ServerPlugin pluginInstance) {
     this.pluginInstance = pluginInstance;
+  }
+
+  public boolean isConfigured() {
+    return configured;
+  }
+
+  public void setConfigured(final boolean configured) {
+    this.configured = configured;
   }
 
   public boolean isStarted() {

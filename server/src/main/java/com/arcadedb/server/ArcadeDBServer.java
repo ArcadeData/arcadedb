@@ -38,9 +38,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
-import com.arcadedb.server.ha.ReplicatedDatabase;
-import com.arcadedb.server.ha.ratis.ArcadeDBStateMachine;
-import com.arcadedb.server.ha.ratis.RaftHAServer;
+import com.arcadedb.server.ha.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
@@ -73,6 +71,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
@@ -91,7 +90,8 @@ public class ArcadeDBServer {
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
-  private             RaftHAServer                          raftHAServer;
+  private             HAPlugin                              haPlugin;
+  private             Function<LocalDatabase, DatabaseInternal> databaseWrapper;
   private             ServerSecurity                        security;
   private             HttpServer                            httpServer;
   private             MCPConfiguration                      mcpConfiguration;
@@ -212,9 +212,9 @@ public class ArcadeDBServer {
 
     createDirectories();
 
-    // Initialize Ratis HA early (before loadDatabases) so databases get wrapped as ReplicatedDatabase.
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-      raftHAServer = new RaftHAServer(this, configuration);
+    // Configure all plugins early so that HA plugins can register their database wrapper
+    // before loadDatabases() wraps databases with the replicated wrapper.
+    pluginManager.configurePlugins();
 
     loadDatabases();
 
@@ -234,10 +234,6 @@ public class ArcadeDBServer {
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
 
     httpServer.startService();
-
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-      // RaftHAServer was already created before loadDatabases(); now start the Raft consensus service
-      raftHAServer.startService();
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
 
@@ -413,8 +409,8 @@ public class ArcadeDBServer {
     if (pluginManager != null)
       pluginManager.stopPlugins();
 
-    if (raftHAServer != null)
-      CodeUtils.executeIgnoringExceptions(raftHAServer::stopService, "Error on stopping Ratis HA service", false);
+    if (haPlugin != null)
+      CodeUtils.executeIgnoringExceptions(haPlugin::stopService, "Error on stopping HA service", false);
 
     if (httpServer != null)
       CodeUtils.executeIgnoringExceptions(httpServer::stopService, "Error on stopping HTTP service", false);
@@ -496,8 +492,8 @@ public class ArcadeDBServer {
         embeddedDatabase = (DatabaseInternal) factory.open(mode);
       }
 
-      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-        embeddedDatabase = new ReplicatedDatabase(this, (LocalDatabase) embeddedDatabase);
+      if (databaseWrapper != null)
+        embeddedDatabase = databaseWrapper.apply((LocalDatabase) embeddedDatabase);
 
       serverDatabase = new ServerDatabase(this, embeddedDatabase);
 
@@ -534,8 +530,16 @@ public class ArcadeDBServer {
   /**
    * Returns the Ratis HA server, or null if HA is not enabled.
    */
-  public RaftHAServer getHA() {
-    return raftHAServer;
+  public HAPlugin getHA() {
+    return haPlugin;
+  }
+
+  public void setHA(final HAPlugin haPlugin) {
+    this.haPlugin = haPlugin;
+  }
+
+  public void setDatabaseWrapper(final Function<LocalDatabase, DatabaseInternal> databaseWrapper) {
+    this.databaseWrapper = databaseWrapper;
   }
 
   public ServerSecurity getSecurity() {
@@ -626,8 +630,8 @@ public class ArcadeDBServer {
             embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
         }
 
-        if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-          embDatabase = new ReplicatedDatabase(this, (LocalDatabase) embDatabase);
+        if (databaseWrapper != null)
+          embDatabase = databaseWrapper.apply((LocalDatabase) embDatabase);
 
         db = new ServerDatabase(this, embDatabase);
 
@@ -647,7 +651,8 @@ public class ArcadeDBServer {
             "file system");
 
       // Recover any pending snapshot swaps from a previous crash before opening databases
-      ArcadeDBStateMachine.recoverPendingSnapshotSwaps(databaseDir.toPath());
+      if (haPlugin != null)
+        haPlugin.recoverBeforeDatabaseLoad(databaseDir.toPath());
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP)) {
         final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
