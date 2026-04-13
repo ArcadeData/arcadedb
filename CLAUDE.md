@@ -157,11 +157,11 @@ cd package
   - `DatabaseAbstractHandler.java` — base handler (wraps commands in transactions)
   - `PostCommandHandler.java` — POST /command endpoint
   - `PostQueryHandler.java`, `GetQueryHandler.java` — query endpoints
-- **HA (Ratis)**: `server/src/main/java/com/arcadedb/server/ha/ratis/`
+- **HA (Ratis)**: `ha-raft/src/main/java/com/arcadedb/server/ha/raft/`
   - `RaftHAServer.java` - Ratis server lifecycle, peer management, cluster token, health monitor
   - `ArcadeDBStateMachine.java` - Ratis state machine for WAL replication on followers
   - `RaftGroupCommitter.java` - batched group commit over Raft (amortizes gRPC round-trips)
-  - `RaftLogEntry.java` - binary serialization for Raft log entries
+  - `RaftLogEntryCodec.java` - binary serialization for Raft log entries
   - `SnapshotHttpHandler.java` - HTTP endpoint for full database snapshot download
   - `ClusterMonitor.java` - follower lag tracking and alerts
   - `HALog.java` - verbose HA logging (`arcadedb.ha.logVerbose=0/1/2/3`)
@@ -211,11 +211,11 @@ cd package
 
 ### Server Components
 - **HTTP API**: `com.arcadedb.server.http.*` - REST endpoints, request handling
-- **High Availability**: `com.arcadedb.server.ha.ratis.*` - Clustering via Apache Ratis, WAL replication, leader election
+- **High Availability**: `com.arcadedb.server.ha.raft.*` (module: `ha-raft/`) - Clustering via Apache Ratis, WAL replication, leader election
   - `RaftHAServer.java` - Ratis server lifecycle, gRPC transport, peer management, cluster token
   - `ArcadeDBStateMachine.java` - Ratis state machine for WAL replication on followers
   - `RaftGroupCommitter.java` - batched group commit over Raft (amortizes gRPC round-trips)
-  - `RaftLogEntry.java` - binary serialization for Raft log entries
+  - `RaftLogEntryCodec.java` - binary serialization for Raft log entries
   - `SnapshotHttpHandler.java` - HTTP endpoint for full database snapshot download
   - `ClusterMonitor.java` - follower lag tracking and alerts
   - `HALog.java` - verbose HA logging (`arcadedb.ha.logVerbose=0/1/2/3`: off/basic/detailed/trace)

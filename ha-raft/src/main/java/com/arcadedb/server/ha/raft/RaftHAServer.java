@@ -76,7 +76,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.stream.Stream;
@@ -98,12 +97,6 @@ public class RaftHAServer implements HAPlugin {
   // 100k iterations is the OWASP 2023 recommendation for PBKDF2-HMAC-SHA256.
   private static final int PBKDF2_ITERATIONS      = 100_000;
   private static final int PBKDF2_KEY_LENGTH_BITS = 256;
-
-  // K8s auto-join parameters (tryAutoJoinCluster). Jitter is kept as a secondary mitigation
-  // even though Mode.ADD is atomic, to avoid thundering-herd probe storms against the leader.
-  private static final long AUTO_JOIN_JITTER_MAX_MS        = 3000L;
-  private static final int  AUTO_JOIN_RPC_TIMEOUT_MIN_SECS = 3;
-  private static final int  AUTO_JOIN_RPC_TIMEOUT_MAX_SECS = 5;
 
   // Leadership transfer timeout (ms). Generous to allow log catch-up on the target peer
   // before it can accept the leadership role.
@@ -394,7 +387,7 @@ public class RaftHAServer implements HAPlugin {
       // be running, try to add ourselves to the existing cluster via AdminApi.
       // This handles StatefulSet scale-up where new pods need to join the existing Raft group.
       if (!storageExists && configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
-        tryAutoJoinCluster();
+        new KubernetesAutoJoin(server, raftGroup, localPeerId, raftProperties).tryAutoJoin();
 
       groupCommitter = new RaftGroupCommitter(this,
           configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE));
@@ -512,143 +505,6 @@ public class RaftHAServer implements HAPlugin {
         LogManager.instance().log(this, Level.WARNING,
             "Failed to restart Ratis server (attempt %d/10): %s", restartFailureCount, e.getMessage());
     }
-  }
-
-  /**
-   * Attempts to join an existing Ratis cluster by contacting a peer and adding this server.
-   * Used in Kubernetes when a new pod is added via StatefulSet scale-up.
-   * If no existing cluster is found (fresh deployment), this is a no-op - the Raft server
-   * was already started with the full peer list from HA_SERVER_LIST, so there is no risk
-   * of split-brain. All pods share the same Raft group configuration and will elect a
-   * leader via normal Raft consensus once a majority becomes reachable.
-   *
-   * <p><b>Security note:</b> Peer discovery uses DNS resolution of the headless service hostname.
-   * The cluster token authenticates HTTP-level operations (snapshot downloads, command proxying)
-   * but the Raft gRPC transport does not enforce token-based authentication. Any pod that can
-   * resolve the headless service DNS name and reach the gRPC port can participate in Raft
-   * consensus. In production Kubernetes deployments, restrict gRPC port access to only pods in
-   * the ArcadeDB StatefulSet via a NetworkPolicy. Example:
-   * <pre>
-   *   apiVersion: networking.k8s.io/v1
-   *   kind: NetworkPolicy
-   *   metadata:
-   *     name: arcadedb-raft-grpc
-   *   spec:
-   *     podSelector:
-   *       matchLabels:
-   *         app: arcadedb
-   *     ingress:
-   *       - from:
-   *           - podSelector:
-   *               matchLabels:
-   *                 app: arcadedb
-   *         ports:
-   *           - port: 2424    # gRPC/Raft port
-   *             protocol: TCP
-   * </pre>
-   */
-  private void tryAutoJoinCluster() {
-    // Random jitter (100ms-3s) to spread probe traffic when multiple pods start simultaneously
-    // (e.g. K8s Parallel pod management policy or mass restart).
-    final long jitterMs = ThreadLocalRandom.current().nextLong(100, AUTO_JOIN_JITTER_MAX_MS);
-    HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
-    try {
-      Thread.sleep(jitterMs);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      return;
-    }
-
-    HALog.log(this, HALog.BASIC, "K8s auto-join: attempting to join existing cluster...");
-
-    // Try each peer to find one that's already running
-    for (final RaftPeer peer : raftGroup.getPeers()) {
-      if (peer.getId().equals(localPeerId))
-        continue;
-
-      try {
-        // Create a temporary client with short timeouts to probe if the cluster exists.
-        // Without explicit timeouts, a firewalled peer blocks for the full default gRPC timeout.
-        final RaftProperties tempProps = new RaftProperties();
-        tempProps.set("raft.server.rpc.type", "GRPC");
-        RaftServerConfigKeys.Rpc.setTimeoutMin(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MIN_SECS,
-            TimeUnit.SECONDS));
-        RaftServerConfigKeys.Rpc.setTimeoutMax(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MAX_SECS,
-            TimeUnit.SECONDS));
-        RaftServerConfigKeys.Rpc.setRequestTimeout(tempProps, TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MAX_SECS,
-            TimeUnit.SECONDS));
-
-        // Build a group with just the target peer to query it
-        final RaftGroup targetGroup = RaftGroup.valueOf(raftGroup.getGroupId(), peer);
-        try (final RaftClient tempClient = RaftClient.newBuilder()
-            .setRaftGroup(targetGroup)
-            .setProperties(tempProps)
-            .build()) {
-
-          // Try to get group info from the peer - if it responds, the cluster exists
-          final var groupInfo = tempClient.getGroupManagementApi(peer.getId()).info(raftGroup.getGroupId());
-
-          if (groupInfo != null && groupInfo.isSuccess()) {
-            // Cluster exists. Check if we're already a member.
-            final var confOpt = groupInfo.getConf();
-            if (confOpt.isPresent()) {
-              final var conf = confOpt.get();
-              boolean alreadyMember = false;
-              for (final var p : conf.getPeersList())
-                if (p.getId().toStringUtf8().equals(localPeerId.toString())) {
-                  alreadyMember = true;
-                  break;
-                }
-
-              if (!alreadyMember) {
-                HALog.log(this, HALog.BASIC, "K8s auto-join: adding self (%s) to existing cluster via peer %s",
-                    localPeerId, peer.getId());
-
-                // Find our peer definition
-                RaftPeer localPeer = null;
-                for (final RaftPeer p : raftGroup.getPeers())
-                  if (p.getId().equals(localPeerId)) {
-                    localPeer = p;
-                    break;
-                  }
-
-                if (localPeer != null) {
-                  // Use Mode.ADD for atomic single-peer addition. Unlike setConfiguration()
-                  // which replaces the entire membership list (last-write-wins race if multiple
-                  // pods call it concurrently), Mode.ADD atomically appends one peer to whatever
-                  // the current configuration is, so concurrent joins from different pods are safe.
-                  final SetConfigurationRequest.Arguments addArgs = SetConfigurationRequest.Arguments.newBuilder()
-                      .setServersInNewConf(List.of(localPeer))
-                      .setMode(SetConfigurationRequest.Mode.ADD)
-                      .build();
-
-                  final RaftClientReply joinReply = tempClient.admin().setConfiguration(addArgs);
-                  if (!joinReply.isSuccess())
-                    LogManager.instance().log(this, Level.WARNING, "K8s auto-join: add peer rejected: %s",
-                        joinReply.getException() != null ? joinReply.getException().getMessage() : "unknown");
-                  else
-                    HALog.log(this, HALog.BASIC, "K8s auto-join: successfully joined cluster via atomic add");
-                }
-              } else {
-                HALog.log(this, HALog.BASIC, "K8s auto-join: already a member of the cluster");
-              }
-            }
-            return;
-          }
-        }
-      } catch (final Exception e) {
-        HALog.log(this, HALog.DETAILED, "K8s auto-join: peer %s not reachable (%s), trying next...",
-            peer.getId(), e.getMessage());
-      }
-    }
-
-    // No peers responded - this is expected on a fresh cold-start deployment where all pods
-    // start simultaneously. The Raft server already has the full peer list configured
-    // (from HA_SERVER_LIST), so it will participate in normal Raft leader election once
-    // a majority becomes reachable. No split-brain risk because no single-node group is created.
-    LogManager.instance().log(this, Level.INFO,
-        "K8s auto-join: no existing cluster found. This node will participate in "
-            + "Raft leader election with the configured peer group once peers are reachable");
   }
 
   @Override
@@ -1128,6 +984,11 @@ public class RaftHAServer implements HAPlugin {
     } else {
       leaderReady = true;
     }
+    // Notify unconditionally so leaveCluster() (which loops on isLeader(), not leaderReady)
+    // can exit as soon as leadership is transferred to another node.
+    // waitForLeaderReady() callers that wake here will see leaderReady==false (on the new-leader
+    // path) and simply re-enter the wait; the background catch-up task issues its own notifyAll()
+    // in its finally block once leaderReady is set to true.
     synchronized (leaderChangeNotifier) {
       leaderChangeNotifier.notifyAll();
     }
@@ -2052,10 +1913,6 @@ public class RaftHAServer implements HAPlugin {
    * @return array where [0]=host (including brackets for IPv6), [1]=first port, and optionally [2]=second port
    */
   /**
-   * Validates that the given address is a well-formed host:port string with a port in the valid TCP range (1-65535).
-   * Call this before passing addresses to Ratis to produce clear error messages.
-   */
-  /**
    * Derives and stores the cluster token in {@code config} using the same PBKDF2 logic as the
    * instance {@link #initClusterToken()} method. Exposed for unit tests that cannot instantiate
    * a full {@link RaftHAServer}.
@@ -2108,6 +1965,10 @@ public class RaftHAServer implements HAPlugin {
     return idx;
   }
 
+  /**
+   * Validates that the given address is a well-formed host:port string with a port in the valid TCP range (1-65535).
+   * Call this before passing addresses to Ratis to produce clear error messages.
+   */
   public static void validatePeerAddress(final String address) {
     final String[] parts = parseHostPort(address);
 

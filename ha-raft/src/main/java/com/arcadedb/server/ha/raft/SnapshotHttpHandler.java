@@ -38,7 +38,6 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
@@ -167,16 +166,8 @@ public class SnapshotHttpHandler implements HttpHandler {
 
     try {
 
-    LogManager.instance().log(this, Level.INFO, "Serving database snapshot for '%s'...", databaseName);
-
-    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
-    // Sanitize database name for Content-Disposition to prevent header injection
-    final String safeName = databaseName.replaceAll("[^a-zA-Z0-9._-]", "_");
-    exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
-        "attachment; filename=\"" + safeName + "-snapshot.zip\"");
-
-    exchange.startBlocking();
-
+    // Resolve and validate the database BEFORE setting response headers or calling startBlocking().
+    // After startBlocking() the status code may already be committed; errors must be returned early.
     final DatabaseInternal db = server.getDatabase(databaseName);
     if (db == null) {
       exchange.setStatusCode(404);
@@ -192,6 +183,16 @@ public class SnapshotHttpHandler implements HttpHandler {
       exchange.getResponseSender().send("Cannot access local database for snapshot: " + databaseName);
       return;
     }
+
+    LogManager.instance().log(this, Level.INFO, "Serving database snapshot for '%s'...", databaseName);
+
+    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
+    // Sanitize database name for Content-Disposition to prevent header injection
+    final String safeName = databaseName.replaceAll("[^a-zA-Z0-9._-]", "_");
+    exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
+        "attachment; filename=\"" + safeName + "-snapshot.zip\"");
+
+    exchange.startBlocking();
 
     localDb.executeInReadLock(() -> {
       localDb.getPageManager().suspendFlushAndExecute(localDb, () -> {
@@ -239,8 +240,8 @@ public class SnapshotHttpHandler implements HttpHandler {
     final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
     if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
       final HAPlugin raftHA = httpServer.getServer().getHA();
-      // Constant-time comparison to prevent timing attacks. Hashing both sides with SHA-256
-      // guarantees equal-length arrays, avoiding MessageDigest.isEqual's length short-circuit.
+      // Constant-time comparison to prevent timing attacks. Both tokens are fixed-length
+      // 64-char hex strings so MessageDigest.isEqual on raw UTF-8 bytes is sufficient.
       if (raftHA != null && raftHA.getClusterToken() != null && constantTimeTokenEquals(
           raftHA.getClusterToken(), clusterTokenHeader.getFirst())) {
         final ServerSecurityUser rootUser = httpServer.getServer().getSecurity().getUser("root");
@@ -299,14 +300,6 @@ public class SnapshotHttpHandler implements HttpHandler {
   }
 
   private static boolean constantTimeTokenEquals(final String expected, final String provided) {
-    try {
-      final MessageDigest sha = MessageDigest.getInstance("SHA-256");
-      final byte[] a = sha.digest(expected.getBytes(StandardCharsets.UTF_8));
-      sha.reset();
-      final byte[] b = sha.digest(provided.getBytes(StandardCharsets.UTF_8));
-      return MessageDigest.isEqual(a, b);
-    } catch (final NoSuchAlgorithmException e) {
-      throw new RuntimeException("SHA-256 not available", e);
-    }
+    return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), provided.getBytes(StandardCharsets.UTF_8));
   }
 }

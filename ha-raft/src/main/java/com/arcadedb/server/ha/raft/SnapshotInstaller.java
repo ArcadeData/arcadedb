@@ -78,6 +78,7 @@ public class SnapshotInstaller {
   /**
    * Downloads all databases from the leader. Called when reinitialize() detects a gap between
    * the snapshot index and the persisted applied index, indicating the follower missed data.
+   * Snapshot failures for individual databases are logged and skipped rather than aborting the whole sync.
    */
   public void installDatabasesFromLeader() throws IOException {
     final String leaderHttpAddr = raftHA.getLeaderHTTPAddress();
@@ -89,7 +90,30 @@ public class SnapshotInstaller {
 
     LogManager.instance().log(this, Level.INFO,
         "Downloading databases from leader %s during snapshot installation...", leaderHttpAddr);
+    syncDatabasesFromLeader(leaderHttpAddr, false);
+    LogManager.instance().log(this, Level.INFO, "Snapshot installation from leader completed");
+  }
 
+  /**
+   * Handles the {@code notifyInstallSnapshotFromLeader} Ratis callback by downloading all databases
+   * from the identified leader. Any failure aborts the sync and propagates to the caller.
+   *
+   * @param leaderHttpAddr  resolved HTTP address of the leader
+   */
+  public void installFromLeaderNotification(final String leaderHttpAddr) throws IOException {
+    syncDatabasesFromLeader(leaderHttpAddr, true);
+  }
+
+  /**
+   * Iterates over local databases, drops any that no longer exist on the leader, and installs
+   * a fresh snapshot for each remaining one.
+   *
+   * @param leaderHttpAddr  HTTP address of the current leader
+   * @param strict          when {@code true}, a missing database or install failure throws
+   *                        {@link ReplicationException}; when {@code false}, such cases are
+   *                        logged as warnings and skipped
+   */
+  private void syncDatabasesFromLeader(final String leaderHttpAddr, final boolean strict) throws IOException {
     final Set<String> leaderDatabases = fetchLeaderDatabaseNames(leaderHttpAddr);
 
     for (final String dbName : new ArrayList<>(server.getDatabaseNames())) {
@@ -107,47 +131,22 @@ public class SnapshotInstaller {
 
       final DatabaseInternal db = server.getDatabase(dbName);
       if (db == null) {
+        if (strict)
+          throw new ReplicationException("Database '" + dbName + "' not found during snapshot installation");
         LogManager.instance().log(this, Level.WARNING, "Database '%s' was dropped during snapshot installation, skipping", dbName);
         continue;
       }
-      try {
-        LogManager.instance().log(this, Level.INFO, "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
+
+      LogManager.instance().log(this, Level.INFO, "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
+      if (strict) {
         installDatabaseSnapshot(db, leaderHttpAddr, dbName);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING, "Failed to install snapshot for database '%s', skipping: %s", dbName, e.getMessage());
-      }
-    }
-
-    LogManager.instance().log(this, Level.INFO, "Snapshot installation from leader completed");
-  }
-
-  /**
-   * Handles the {@code notifyInstallSnapshotFromLeader} Ratis callback by downloading all databases
-   * from the identified leader. Returns the {@code firstTermIndexInLog} on success.
-   *
-   * @param roleInfoProto   Ratis role info containing the leader's peer ID
-   * @param leaderHttpAddr  resolved HTTP address of the leader
-   */
-  public void installFromLeaderNotification(final String leaderHttpAddr) throws IOException {
-    final Set<String> leaderDatabases = fetchLeaderDatabaseNames(leaderHttpAddr);
-
-    for (final String dbName : new ArrayList<>(server.getDatabaseNames())) {
-      if (!leaderDatabases.isEmpty() && !leaderDatabases.contains(dbName)) {
-        LogManager.instance().log(this, Level.INFO,
-            "Database '%s' exists on this follower but not on the leader, dropping stale copy", dbName);
+      } else {
         try {
-          server.getDatabase(dbName).getEmbedded().drop();
-          server.removeDatabase(dbName);
+          installDatabaseSnapshot(db, leaderHttpAddr, dbName);
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING, "Failed to drop stale database '%s': %s", dbName, e.getMessage());
+          LogManager.instance().log(this, Level.WARNING, "Failed to install snapshot for database '%s', skipping: %s", dbName, e.getMessage());
         }
-        continue;
       }
-
-      final DatabaseInternal db = server.getDatabase(dbName);
-      if (db == null)
-        throw new ReplicationException("Database '" + dbName + "' not found during snapshot installation");
-      installDatabaseSnapshot(db, leaderHttpAddr, dbName);
     }
   }
 
@@ -420,7 +419,10 @@ public class SnapshotInstaller {
           LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
               "Snapshot swap already completed for database '%s', cleaning up", baseName);
         }
-        marker.delete();
+        if (!marker.delete())
+          LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+              "Failed to delete snapshot swap marker file '%s' - it will be re-processed on next startup",
+              marker.getName());
       } catch (final IOException e) {
         // Keep the marker so the next restart can retry. The marker is the only signal that
         // recovery is still needed when the directory is in an intermediate state.

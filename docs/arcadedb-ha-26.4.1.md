@@ -102,7 +102,7 @@ ReplicatedDatabase (wraps LocalDatabase)
 
 ### Key Design Decisions
 - **Peer IDs**: `host_port` format (underscore for JMX compatibility, displayed as `host:port` in UI)
-- **Replicate first, commit after**: The commit is split into 3 phases: (1) `commit1stPhase()` under read lock to capture WAL pages and delta, (2) `replicateTransaction()` with NO lock held to send WAL to Ratis and wait for quorum, (3) `commit2ndPhase()` under read lock to apply pages locally. If replication fails, phase 2 throws and phase 3 never runs - no local writes, no divergence. Matching the `ha-redesign` branch approach.
+- **Replicate first, commit after**: The commit is split into 3 phases: (1) `commit1stPhase()` under read lock to capture WAL pages and delta, (2) `replicateTransaction()` with NO lock held to send WAL to Ratis and wait for quorum, (3) `commit2ndPhase()` under read lock to apply pages locally. If replication fails, phase 2 throws and phase 3 never runs - no local writes, no divergence. A successful client response is only returned after all three phases complete, so a write that is acknowledged is guaranteed durable on a quorum of nodes.
 - **Leader skips state machine apply**: `applyTransaction()` on leader is a no-op - `commit2ndPhase()` handles the local page writes after Ratis confirms quorum
 - **Command routing**: `isIdempotent() && !isDDL()` determines local vs forwarded execution
 - **Snapshot mode**: Notification mode (`install.snapshot.enabled=false`) - follower downloads ZIP from leader HTTP, authenticated via cluster token
@@ -113,6 +113,19 @@ ReplicatedDatabase (wraps LocalDatabase)
 - **Cluster token**: SHA-256 derived from cluster name + root password (auto-computed). Can be overridden via `arcadedb.ha.clusterToken` for hardened deployments
 - **Inter-node auth**: Cluster token (`X-ArcadeDB-Cluster-Token` header) used for HTTP proxy forwarding and snapshot downloads, avoiding credential transmission between nodes
 - **Async server stop in callbacks**: Test callbacks that stop servers (e.g., `REPLICA_MSG_RECEIVED`) must use `new Thread(() -> server.stop()).start()` rather than calling `stop()` directly. Direct stop from within Ratis `applyTransaction()` corrupts the gRPC channels mid-flight
+
+### Durability Guarantees
+
+**Write acknowledgment**: A successful `commit()` response is only returned to the client after all three phases complete: WAL captured locally, Raft quorum acknowledgment (a majority of nodes have persisted the log entry), and local page application on the leader. A write that returns successfully is guaranteed durable on a quorum of nodes. A leader crash after quorum but before responding to the client results in a client timeout, not silent data loss - the write is already on a quorum.
+
+**Quorum failure**: If `replicateTransaction()` cannot reach quorum within `arcadedb.ha.quorumTimeout` ms, it throws and the local commit (Phase 2) is never executed. The transaction is rolled back on the leader. Any follower that received a partial AppendEntries will not apply it (Raft only applies entries after they are committed by the leader).
+
+**Phase 2 failure after quorum**: In the unlikely event that `commit2ndPhase()` fails after quorum is reached (e.g., a page version conflict under concurrent file lock), followers have already applied the transaction but the leader has not. The leader logs a `SEVERE` message identifying the transaction, immediately steps down via `stepDown()`, and a follower with correct state takes over. The stepped-down node self-heals on restart via Raft log replay.
+
+**Follower read consistency**: The `arcadedb.ha.readConsistency` setting controls what followers return:
+- `EVENTUAL`: read locally without waiting - may return data that has not yet been applied on this follower.
+- `READ_YOUR_WRITES` (default): waits for the client's own last write to be applied on this follower before reading.
+- `LINEARIZABLE`: waits for all committed entries to be applied before reading - strongest guarantee, highest latency.
 
 ### Storage Layout
 ```
@@ -306,7 +319,7 @@ The `_helpers.tpl` template generates the server list automatically:
 
 When `arcadedb.ha.k8s=true` and a new pod starts without existing Ratis storage, the server automatically attempts to join the existing cluster:
 
-1. After Ratis server starts, `tryAutoJoinCluster()` contacts existing peers
+1. After Ratis server starts, `KubernetesAutoJoin.tryAutoJoin()` contacts existing peers
 2. Queries `GroupManagementApi.info()` to check if this server is already a member
 3. If not, calls `admin().setConfiguration()` to add itself to the Raft group
 4. If no existing cluster responds (fresh deployment), bootstraps a new cluster
@@ -328,7 +341,7 @@ This enables **zero-downtime scale-up**: `kubectl scale statefulset arcadedb --r
 
 | Feature | Old HA | Ratis HA |
 |---|---|---|
-| Scale-up | Restart all pods with new server list | Auto-join via `tryAutoJoinCluster()` |
+| Scale-up | Restart all pods with new server list | Auto-join via `KubernetesAutoJoin.tryAutoJoin()` |
 | Scale-down | Manual disconnect + restart | Auto-leave via preStop hook + `leaveCluster()` |
 | Leader failover | Custom election, 3-5s | Ratis pre-vote + election, 1.5-3s |
 | Rolling upgrade | Stop/start one by one, hope for the best | Ratis RECOVER mode auto-catches up |

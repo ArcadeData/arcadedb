@@ -48,6 +48,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFileFactory;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -178,11 +179,19 @@ public class ReplicatedDatabase implements DatabaseInternal {
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). "
-                + "Followers have applied this transaction but the leader has not. "
-                + "Stepping down to prevent stale reads. Error: %s",
-            getName(), payload.tx, e.getMessage());
+        if (e instanceof ConcurrentModificationException)
+          LogManager.instance().log(this, Level.SEVERE,
+              "Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). "
+                  + "A page was concurrently modified under file lock - this may indicate a locking bug. "
+                  + "Followers have applied this transaction but the leader has not. "
+                  + "Stepping down to prevent stale reads. Error: %s",
+              getName(), payload.tx, e.getMessage());
+        else
+          LogManager.instance().log(this, Level.SEVERE,
+              "Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). "
+                  + "Followers have applied this transaction but the leader has not. "
+                  + "Stepping down to prevent stale reads. Error: %s",
+              getName(), payload.tx, e.getMessage());
         // Step down so a follower with correct state takes over.
         // This node will self-heal on restart via Raft log replay.
         try {

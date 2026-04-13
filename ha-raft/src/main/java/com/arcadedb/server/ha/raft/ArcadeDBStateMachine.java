@@ -95,7 +95,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private final AtomicBoolean             catchingUp       = new AtomicBoolean(false);
   /** Set by reinitialize() when a snapshot gap is detected, cleared by notifyLeaderChanged() via compareAndSet. */
   private final AtomicBoolean             needsSnapshotDownload  = new AtomicBoolean(false);
-  /** Cached leader flag, updated by notifyLeaderChanged(). Avoids calling raftServer.getDivision() on every applyTransaction(). */
+  /** Cached leader flag, updated by notifyLeaderChanged(). Used for non-critical checks (e.g. catch-up detection).
+   *  The correctness-critical origin-skip in applyTransactionEntry() uses raftHA.isLeader() directly to avoid stale reads. */
   private volatile boolean                currentNodeIsLeader    = false;
   /** Executor for async lifecycle tasks (snapshot download, Ratis restart) so they can be awaited on close. */
   private final ExecutorService           lifecycleExecutor      = Executors.newSingleThreadExecutor(
@@ -300,11 +301,21 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // Condition 2 is critical for restart safety: if the leader crashes between Raft commit and
     // commit2ndPhase(), the entry is in the Raft log but was never applied locally. On restart,
     // this node becomes a follower (a new leader was elected during the outage). Ratis replays
-    // the entry, and because isCurrentNodeLeader() returns false, the skip does NOT fire. The
-    // entry is applied via the normal follower path. The page version check in applyChanges()
-    // handles the case where commit2ndPhase() DID run before the crash (the already-applied
-    // pages are detected and skipped with a ConcurrentModificationException log, see below).
-    if (isOriginNode(entry.originPeerId()) && isCurrentNodeLeader()) {
+    // the entry, and because isLeader() returns false, the skip does NOT fire. The entry is
+    // applied via the normal follower path. The page version check in applyChanges() handles the
+    // case where commit2ndPhase() DID run before the crash (the already-applied pages are
+    // detected and skipped with a ConcurrentModificationException log, see below).
+    //
+    // We call raftHA.isLeader() (which queries Ratis's internal role state directly via
+    // getDivision().getInfo().isLeader()) rather than the cached currentNodeIsLeader field.
+    // The cached field is updated by notifyLeaderChanged() on a separate thread: if a live
+    // leadership transfer happens between that write and the read here, we could see a stale
+    // true and skip an entry that was never committed locally via commit2ndPhase(), silently
+    // losing the transaction. The direct Ratis query reflects the authoritative role state and
+    // eliminates this race. A tiny TOCTOU window (between the isLeader() call and the return
+    // below) remains, but cannot cause data loss: commit2ndPhase() is always called before
+    // Ratis delivers the commit notification to the application layer on the leader path.
+    if (isOriginNode(entry.originPeerId()) && raftHA != null && raftHA.isLeader()) {
       HALog.log(this, HALog.TRACE, "Skipping WAL apply on origin node (commit2ndPhase handles it): db=%s", entry.databaseName());
       return;
     }
@@ -341,13 +352,21 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       try {
         db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
       } catch (final com.arcadedb.exception.ConcurrentModificationException e) {
-        // After a cold restart or snapshot installation, Ratis may replay entries that were already
-        // applied to the database (via WAL recovery or prior commit). The page version check in
-        // applyChanges() detects this as a ConcurrentModificationException. This is safe to skip,
-        // but must always be visible in logs so operators can distinguish expected replay from
-        // unexpected data inconsistency.
-        LogManager.instance().log(this, Level.WARNING,
-            "Skipping already-applied WAL entry (db=%s, txId=%d): %s", entry.databaseName(), walTx.txId, e.getMessage());
+        // applyChanges() throws ConcurrentModificationException in two distinct situations:
+        // 1. Benign replay: WAL page version <= DB page version - the entry was already applied
+        //    (via WAL recovery or a prior commit). Expected after cold restart or snapshot install.
+        // 2. Version gap: WAL page version > DB page version + 1 - an intermediate transaction
+        //    was never applied on this node. This should not happen and may indicate state divergence.
+        //    The message starts with "Cannot apply changes" in this case.
+        final String msg = e.getMessage();
+        if (msg != null && msg.startsWith("Cannot apply changes"))
+          LogManager.instance().log(this, Level.SEVERE,
+              "Unexpected WAL version gap on follower - possible state divergence (db=%s, txId=%d): %s",
+              entry.databaseName(), walTx.txId, msg);
+        else
+          LogManager.instance().log(this, Level.WARNING,
+              "Skipping already-applied WAL entry on follower (db=%s, txId=%d): %s",
+              entry.databaseName(), walTx.txId, msg);
       }
     }
 
@@ -605,7 +624,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // newLeaderId can be null during elections (no leader yet) - handle defensively.
     final RaftHAServer raftHA = this.raftHA;
     if (raftHA != null) {
-      // Update cached leader flag (used by applyTransaction origin-skip to avoid Ratis internal calls)
+      // Update cached leader flag (used for non-critical checks like catch-up detection).
+      // The origin-skip in applyTransactionEntry() uses raftHA.isLeader() directly instead.
       currentNodeIsLeader = newLeaderId != null && newLeaderId.equals(raftHA.getLocalPeerId());
       raftHA.refreshRaftClient();
       raftHA.notifyLeaderChanged();

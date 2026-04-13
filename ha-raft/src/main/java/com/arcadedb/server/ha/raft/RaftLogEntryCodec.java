@@ -181,6 +181,7 @@ public final class RaftLogEntryCodec {
   // Max allowed sizes for deserialized buffers to prevent OOM from corrupted entries
   private static final int MAX_UNCOMPRESSED_SIZE = 256 * 1024 * 1024; // 256 MB
   private static final int MAX_DELTA_SIZE        = 1_000_000;
+  private static final int MAX_FILES_PER_TX      = 65_536;            // max files added/removed in one transaction
   private static final int MAX_STRING_LENGTH     = 64 * 1024 * 1024;  // 64 MB (covers large schema JSON)
 
   private static void writeCommonTransactionFields(final Binary stream, final String databaseName,
@@ -246,7 +247,7 @@ public final class RaftLogEntryCodec {
 
   private static Map<Integer, String> readFileMap(final Binary stream) {
     final int count = stream.getInt();
-    if (count < 0 || count > MAX_DELTA_SIZE)
+    if (count < 0 || count > MAX_FILES_PER_TX)
       throw new IllegalArgumentException("Invalid file map count: " + count);
     final Map<Integer, String> result = new HashMap<>(count);
     for (int i = 0; i < count; i++) {
