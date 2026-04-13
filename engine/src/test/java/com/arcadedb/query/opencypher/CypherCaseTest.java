@@ -186,6 +186,52 @@ class CypherCaseTest {
     assertThat((Object) result.getProperty("category")).isEqualTo("unknown");
   }
 
+  /**
+   * Regression test for issue #3858:
+   * Aggregation with CASE statement should not create implicit GROUP BY on variables inside the CASE.
+   * When all RETURN items are aggregations, a single row must be returned.
+   */
+  @Test
+  void aggregationWithCaseNoImplicitGroupBy() {
+    // Both count(loc) and sum(CASE...) are aggregations — no grouping keys exist.
+    // Expected: single row {total: 3, pa: 2}
+    final ResultSet results = database.query("opencypher",
+        "UNWIND [{state: 'NY'}, {state: 'PA'}, {state: 'PA'}] AS loc " +
+        "RETURN count(loc) AS total, sum(CASE WHEN loc.state = 'PA' THEN 1 ELSE 0 END) AS pa");
+
+    assertThat((boolean) results.hasNext()).isTrue();
+    final Result result = results.next();
+    assertThat(((Number) result.getProperty("total")).longValue()).isEqualTo(3L);
+    assertThat(((Number) result.getProperty("pa")).longValue()).isEqualTo(2L);
+    assertThat((boolean) results.hasNext()).isFalse();
+  }
+
+  /**
+   * Regression test for issue #3858 (variant):
+   * When RETURN has both aggregations and a non-aggregated grouping key,
+   * the CASE arguments must not act as additional grouping keys.
+   */
+  @Test
+  void aggregationWithCaseAndGroupByKey() {
+    // category is the real grouping key; sum(CASE...) must aggregate per category, not per loc.state
+    final ResultSet results = database.query("opencypher",
+        "UNWIND [{state: 'NY', cat: 'A'}, {state: 'PA', cat: 'A'}, {state: 'PA', cat: 'B'}] AS loc " +
+        "RETURN loc.cat AS category, sum(CASE WHEN loc.state = 'PA' THEN 1 ELSE 0 END) AS pa " +
+        "ORDER BY category");
+
+    assertThat((boolean) results.hasNext()).isTrue();
+    final Result rowA = results.next();
+    assertThat((Object) rowA.getProperty("category")).isEqualTo("A");
+    assertThat(((Number) rowA.getProperty("pa")).longValue()).isEqualTo(1L);
+
+    assertThat((boolean) results.hasNext()).isTrue();
+    final Result rowB = results.next();
+    assertThat((Object) rowB.getProperty("category")).isEqualTo("B");
+    assertThat(((Number) rowB.getProperty("pa")).longValue()).isEqualTo(1L);
+
+    assertThat((boolean) results.hasNext()).isFalse();
+  }
+
   @Test
   void nestedCaseExpressions() {
     // Nested CASE expressions
