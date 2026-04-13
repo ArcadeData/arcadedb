@@ -25,8 +25,13 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.http.HttpServer;
+import io.undertow.server.handlers.PathHandler;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
@@ -55,6 +60,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HexFormat;
@@ -86,7 +92,7 @@ import java.util.stream.Stream;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
+public class RaftHAServer implements HAPlugin {
 
   /**
    * Quorum modes supported with Ratis.
@@ -153,6 +159,8 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
   // expires at 90% of the election timeout, leaving a 10% safety margin.
   private static final double LEADER_LEASE_TIMEOUT_RATIO = 0.9;
 
+  // These fields are set once in configure() and never changed after. They cannot be final because
+  // ServiceLoader requires a no-arg constructor, and configure() is called separately by the PluginManager.
   private              ArcadeDBServer       server;
   private              ContextConfiguration configuration;
   private              RaftGroup            raftGroup;
@@ -261,10 +269,9 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
   }
 
   @Override
-  public void registerAPI(final com.arcadedb.server.http.HttpServer httpServer,
-      final io.undertow.server.handlers.PathHandler routes) {
+  public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
     // Snapshot endpoint (serves database files as ZIP for follower resync)
-    routes.addPrefixPath("/ha/snapshot", new SnapshotHttpHandler(httpServer));
+    routes.addPrefixPath("/api/v1/ha/snapshot", new SnapshotHttpHandler(httpServer));
 
     // Dedicated REST endpoints for HA cluster management
     routes.addExactPath("/api/v1/cluster", new GetClusterHandler(httpServer, this));
@@ -1160,7 +1167,7 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
         return;
 
       // Collect follower replication state (only available on leader)
-      final Map<String, long[]> followerState = new java.util.HashMap<>();
+      final Map<String, long[]> followerState = new HashMap<>();
       for (final Map<String, Object> f : getFollowerStates()) {
         final String peerId = (String) f.get("peerId");
         final long matchIndex = (Long) f.get("matchIndex");
@@ -1413,8 +1420,8 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
   }
 
   @Override
-  public com.arcadedb.serializer.json.JSONObject exportClusterStatus() {
-    final var haJSON = new com.arcadedb.serializer.json.JSONObject();
+  public JSONObject exportClusterStatus() {
+    final var haJSON = new JSONObject();
 
     haJSON.put("protocol", "ratis");
     haJSON.put("clusterName", getClusterName());
@@ -1430,9 +1437,9 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
 
     // Peer list with replication state (follower indices available only on leader)
     final var followerStates = getFollowerStates();
-    final var peers = new com.arcadedb.serializer.json.JSONArray();
+    final var peers = new JSONArray();
     for (final var peer : raftGroup.getPeers()) {
-      final var peerJSON = new com.arcadedb.serializer.json.JSONObject();
+      final var peerJSON = new JSONObject();
       final String peerId = peer.getId().toString();
       peerJSON.put("id", peerId);
       peerJSON.put("address", peer.getAddress());
@@ -1460,9 +1467,9 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
     haJSON.put("peers", peers);
 
     // Database list
-    final var databases = new com.arcadedb.serializer.json.JSONArray();
+    final var databases = new JSONArray();
     for (final String dbName : server.getDatabaseNames()) {
-      final var databaseJSON = new com.arcadedb.serializer.json.JSONObject();
+      final var databaseJSON = new JSONObject();
       databaseJSON.put("name", dbName);
       databaseJSON.put("quorum", quorum.name());
       databases.put(databaseJSON);
@@ -1470,7 +1477,7 @@ public class RaftHAServer implements com.arcadedb.server.ha.HAPlugin {
     haJSON.put("databases", databases);
 
     // Metrics
-    final var metricsJSON = new com.arcadedb.serializer.json.JSONObject();
+    final var metricsJSON = new JSONObject();
     metricsJSON.put("electionCount", getElectionCount());
     metricsJSON.put("lastElectionTime", getLastElectionTime());
     metricsJSON.put("raftLogSize", getRaftLogSize());

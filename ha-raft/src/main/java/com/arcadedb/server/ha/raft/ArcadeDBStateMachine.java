@@ -104,6 +104,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private final AtomicBoolean             catchingUp       = new AtomicBoolean(false);
   /** Set by reinitialize() when a snapshot gap is detected, cleared by notifyLeaderChanged() via compareAndSet. */
   private final AtomicBoolean             needsSnapshotDownload  = new AtomicBoolean(false);
+  /** Cached leader flag, updated by notifyLeaderChanged(). Avoids calling raftServer.getDivision() on every applyTransaction(). */
+  private volatile boolean                currentNodeIsLeader    = false;
   /** Executor for async lifecycle tasks (snapshot download, Ratis restart) so they can be awaited on close. */
   private final ExecutorService           lifecycleExecutor      = Executors.newSingleThreadExecutor(
       r -> { final Thread t = new Thread(r, "arcadedb-sm-lifecycle"); t.setDaemon(true); return t; });
@@ -293,43 +295,21 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     if (db == null || !db.isOpen())
       throw new ReplicationException("Database '" + entry.databaseName() + "' is not available");
 
-    // The originating node already applied changes locally (commit2ndPhase on leader, or direct create).
-    // Skip the state machine apply to avoid double-applying page changes and bucket record deltas.
-    // We compare originPeerId from the log entry (immutable) rather than querying live leadership state,
-    // which avoids a TOCTOU race if leadership changes between commit and apply.
+    // The originating leader already applied changes locally via commit2ndPhase(). Skip the state
+    // machine apply to avoid double-applying page changes on the current leader only.
     //
-    // Ordering safety: Ratis guarantees that applyTransaction() is called only for COMMITTED entries
-    // (quorum already reached). Followers never apply before quorum. On the leader side,
-    // ReplicatedDatabase.commit() calls replicateTransaction() (Raft quorum) BEFORE commit2ndPhase()
-    // (local apply), so the leader also never applies before quorum. The origin-skip here simply
-    // prevents double-application on the node that already committed via commit2ndPhase().
+    // The skip only fires when BOTH conditions are true:
+    //   1. This node's peer ID matches the originPeerId embedded in the log entry
+    //   2. This node is currently the leader
     //
-    // Restart safety (why Ratis will not replay already-applied entries on the origin node):
-    //
-    // 1. Snapshot boundary: applyTransaction() advances lastAppliedIndex for EVERY entry,
-    //    including origin-skipped ones (see the getAndSet call after this switch block).
-    //    takeSnapshot() persists this index as the snapshot marker. On restart, reinitialize()
-    //    restores lastAppliedIndex from that marker. Ratis only calls applyTransaction() for
-    //    entries with index > the snapshot boundary, so all entries up to and including the
-    //    snapshot - whether they were applied via WAL or origin-skipped - are never replayed.
-    //
-    // 2. Post-snapshot replay: for entries committed after the last snapshot but before a
-    //    crash/restart, Ratis DOES replay them. The origin-skip fires again for entries
-    //    originated by this node. This is correct because commit2ndPhase() already wrote
-    //    those changes to the database files before the crash. The skip prevents double-
-    //    application of the same WAL page diffs.
-    //
-    // 3. Crash between Raft commit and commit2ndPhase: if the leader crashes in this narrow
-    //    window, the entry is committed in the Raft log but never locally applied. On restart,
-    //    Ratis replays it and the origin-skip fires (originPeerId is immutable in the entry),
-    //    so the entry is still not applied locally. This is handled by ReplicatedDatabase's
-    //    phase-2 failure logic: if commit2ndPhase() throws, the leader steps down (see
-    //    ReplicatedDatabase.commit()) so a follower with correct state takes over. For hard
-    //    crashes (process kill), a new leader is elected during the outage. When this node
-    //    restarts and rejoins as a follower, Ratis detects it is behind and installs a snapshot
-    //    from the current leader, which triggers a full database download via
-    //    notifyInstallSnapshotFromLeader() and brings this node's data up to date.
-    if (isOriginNode(entry.originPeerId())) {
+    // Condition 2 is critical for restart safety: if the leader crashes between Raft commit and
+    // commit2ndPhase(), the entry is in the Raft log but was never applied locally. On restart,
+    // this node becomes a follower (a new leader was elected during the outage). Ratis replays
+    // the entry, and because isCurrentNodeLeader() returns false, the skip does NOT fire. The
+    // entry is applied via the normal follower path. The page version check in applyChanges()
+    // handles the case where commit2ndPhase() DID run before the crash (the already-applied
+    // pages are detected and skipped with a ConcurrentModificationException log, see below).
+    if (isOriginNode(entry.originPeerId()) && isCurrentNodeLeader()) {
       HALog.log(this, HALog.TRACE, "Skipping WAL apply on origin node (commit2ndPhase handles it): db=%s", entry.databaseName());
       return;
     }
@@ -455,8 +435,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   }
 
   private boolean isCurrentNodeLeader() {
-    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
-    return raftHA != null && raftHA.isLeader();
+    return currentNodeIsLeader;
   }
 
   // -- Schema Changes --
@@ -836,7 +815,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       if (leaderAddr == null)
         leaderAddr = initialLeaderAddr;
 
-      final String snapshotUrl = protocol + "://" + leaderAddr + "/api/v1/ha/snapshot/" + databaseName;
+      final String snapshotUrl = protocol + "://" + leaderAddr + "/api/v1/ha/snapshot/"
+          + java.net.URLEncoder.encode(databaseName, java.nio.charset.StandardCharsets.UTF_8);
       try {
         downloadSnapshot(snapshotUrl, tempDir, databaseName);
         return; // success
@@ -1052,9 +1032,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // Refresh gRPC channels to force fresh DNS resolution after potential network partition
     final RaftHAServer raftHA = (RaftHAServer) server.getHA();
     if (raftHA != null) {
+      // Update cached leader flag (used by applyTransaction origin-skip to avoid Ratis internal calls)
+      currentNodeIsLeader = newLeaderId.equals(raftHA.getLocalPeerId());
       raftHA.refreshRaftClient();
       raftHA.notifyLeaderChanged();
-    }
+    } else
+      currentNodeIsLeader = false;
 
     fireCallback(ReplicationCallback.TYPE.LEADER_ELECTED, newLeaderId.toString());
   }
@@ -1076,9 +1059,21 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       final org.apache.ratis.proto.RaftProtos.RaftConfigurationProto newConf) {
     HALog.log(this, HALog.BASIC, "Configuration changed at term=%d, index=%d, peers=%d",
         term, index, newConf.getPeersList().size());
-    // Fire REPLICA_ONLINE for each peer in the new configuration
-    for (final var peer : newConf.getPeersList())
-      fireCallback(ReplicationCallback.TYPE.REPLICA_ONLINE, peer.getId().toStringUtf8());
+
+    // Collect new peer IDs and clean up ClusterMonitor entries for removed peers
+    final Set<String> newPeerIds = new HashSet<>(newConf.getPeersList().size());
+    for (final var peer : newConf.getPeersList()) {
+      final String peerId = peer.getId().toStringUtf8();
+      newPeerIds.add(peerId);
+      fireCallback(ReplicationCallback.TYPE.REPLICA_ONLINE, peerId);
+    }
+
+    final RaftHAServer raftHA = (RaftHAServer) server.getHA();
+    if (raftHA != null && raftHA.getClusterMonitor() != null) {
+      for (final String trackedId : raftHA.getClusterMonitor().getReplicaLags().keySet())
+        if (!newPeerIds.contains(trackedId))
+          raftHA.getClusterMonitor().removeReplica(trackedId);
+    }
   }
 
   @Override
