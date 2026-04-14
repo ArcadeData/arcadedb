@@ -409,10 +409,12 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
       } catch (final com.arcadedb.exception.WALVersionGapException e) {
         // Version gap: WAL page version > DB page version + 1 - an intermediate transaction
-        // was never applied on this node. This should not happen and may indicate state divergence.
+        // was never applied on this node. State has diverged; trigger snapshot resync via the
+        // outer ReplicationException catch rather than continuing with inconsistent page data.
         LogManager.instance().log(this, Level.SEVERE,
-            "Unexpected WAL version gap on follower - possible state divergence (db=%s, txId=%d): %s",
+            "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
             entry.databaseName(), walTx.txId, e.getMessage());
+        throw new ReplicationException("WAL version gap detected - snapshot resync required (db=" + entry.databaseName() + ")", e);
       } catch (final com.arcadedb.exception.ConcurrentModificationException e) {
         // Benign replay: WAL page version <= DB page version - the entry was already applied
         // (via WAL recovery or a prior commit). Expected after cold restart or snapshot install.
