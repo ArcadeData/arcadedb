@@ -61,8 +61,23 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
- * Manages the Apache Ratis RaftServer instance for ArcadeDB high availability.
- * Handles peer list parsing, server/client lifecycle, and leadership queries.
+ * Manages the lifecycle of the Apache Ratis {@link RaftServer}, {@link RaftClient},
+ * and {@link RaftGroupCommitter} for ArcadeDB high availability.
+ * <p>
+ * Owns peer configuration (parsed from {@code HA_SERVER_LIST}), quorum policy
+ * ({@link Quorum#MAJORITY} or {@link Quorum#ALL}), and leadership state.
+ * Provides the {@link HealthMonitor.HealthTarget} interface so the background
+ * health monitor can trigger automatic recovery from stuck Ratis states.
+ * <p>
+ * <b>Thread-safety:</b> {@link #recoveryLock} synchronizes recovery attempts in
+ * {@link #restartRatisIfNeeded()} to prevent concurrent restart races. The
+ * {@link #shutdownRequested} volatile flag prevents recovery during shutdown.
+ * <p>
+ * <b>Security note (K8s mode):</b> When {@code HA_K8S} is enabled and gRPC is bound
+ * to {@code 0.0.0.0}, any pod in the Kubernetes cluster can connect to the Raft port
+ * and inject Raft log entries. Authentication for inter-node traffic relies on
+ * Kubernetes NetworkPolicy. Operators should restrict access to the Raft port via
+ * NetworkPolicy rules in production.
  */
 public class RaftHAServer implements HealthMonitor.HealthTarget {
 
@@ -407,6 +422,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return shutdownRequested;
   }
 
+  /**
+   * Recovers from a Ratis server that has entered CLOSED or CLOSING state, typically
+   * after a network partition where the node was isolated long enough for Ratis to
+   * give up on the group.
+   * <p>
+   * Triggered by {@link HealthMonitor} when it detects an unhealthy Ratis state.
+   * Creates a new {@link ArcadeStateMachine} and Ratis server using
+   * {@link RaftStorage.StartupOption#RECOVER} mode, which loads the existing Raft log
+   * from disk instead of formatting fresh storage.
+   * <p>
+   * The database state is persisted on disk, so the new state machine picks up where
+   * the old one left off. The {@code lastAppliedIndex} is restored from Ratis snapshot
+   * metadata during {@link ArcadeStateMachine#reinitialize()}, and Ratis replays any
+   * log entries beyond that point.
+   * <p>
+   * The {@link #recoveryLock} prevents concurrent restart attempts. If
+   * {@link #shutdownRequested} is true, recovery is skipped.
+   */
   @Override
   public void restartRatisIfNeeded() {
     synchronized (recoveryLock) {
@@ -999,6 +1032,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  /**
+   * Blocks until the local state machine's last-applied index reaches the current commit index.
+   * Used for {@code READ_YOUR_WRITES} consistency: the client provides a commit index bookmark
+   * from a previous write, and the replica waits until that entry has been applied locally
+   * before serving the read.
+   * <p>
+   * Uses {@link #applyNotifier} (notified by {@link ArcadeStateMachine#applyTransaction})
+   * with a timeout of {@link #quorumTimeout} milliseconds. If the deadline is reached before
+   * catch-up, the method returns silently (reads may be slightly stale rather than failing).
+   */
   public void waitForLocalApply() {
     try {
       final long commitIndex = getCommitIndex();
