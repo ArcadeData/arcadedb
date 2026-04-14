@@ -25,6 +25,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
@@ -350,7 +351,7 @@ public class TransactionManager {
               null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
           if (ignoreErrors)
             continue;
-          throw new ConcurrentModificationException(
+          throw new WALVersionGapException(
               "Cannot apply changes to the database because modified page " + pageId + " version in WAL ("
                   + txPage.currentPageVersion + ") does not match with existent version (" + page.getVersion() + ") fileId="
                   + txPage.fileId);
