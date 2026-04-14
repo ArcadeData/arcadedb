@@ -26,7 +26,6 @@ import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.RaftProperties;
-import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.retry.RetryPolicies;
@@ -167,69 +166,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Builds the {@link RaftProperties} used to configure the Ratis server.
-   * Extracted so the health-monitor recovery path can rebuild properties
-   * without duplicating configuration logic.
-   */
-  private RaftProperties buildRaftProperties() {
-    final RaftProperties properties = new RaftProperties();
-
-    // Use the configured Raft port for the local gRPC bind address.
-    // Note: the peer address in the server list may differ from the bind port when traffic
-    // is routed through a proxy (e.g., Toxiproxy in e2e tests). The peer address is what
-    // remote nodes use to connect; the bind port is what this node actually listens on.
-    final int localRaftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
-    GrpcConfigKeys.Server.setPort(properties, localRaftPort);
-
-    // Configure Raft RPC timeouts for cluster stability
-    final int electionMin = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN);
-    final int electionMax = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX);
-    RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(electionMin, TimeUnit.MILLISECONDS));
-    RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(electionMax, TimeUnit.MILLISECONDS));
-    RaftServerConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
-
-    final long flowControlWindow = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_FLOW_CONTROL_WINDOW);
-    GrpcConfigKeys.setFlowControlWindow(properties, SizeInBytes.valueOf(flowControlWindow));
-
-    // Staging timeout: when adding a new peer, the leader syncs it before committing the
-    // config change. This bounds how long the leader waits for the new peer to catch up.
-    RaftServerConfigKeys.setStagingTimeout(properties, TimeDuration.valueOf(30, TimeUnit.SECONDS));
-
-    final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD);
-    RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, snapshotThreshold);
-    RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
-
-    // Disable Ratis built-in snapshot transfer; use notification mode
-    // so ArcadeDB controls the snapshot transfer via HTTP
-    RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, false);
-    RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, true);
-
-    // AppendEntries batching: allow multiple entries per gRPC call to followers
-    final String appendBufferSize = configuration.getValueAsString(GlobalConfiguration.HA_APPEND_BUFFER_SIZE);
-    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf(appendBufferSize));
-    RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, 256);
-
-    // Log segment and write buffer sizes
-    final String logSegmentSize = configuration.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE);
-    RaftServerConfigKeys.Log.setSegmentSizeMax(properties, SizeInBytes.valueOf(logSegmentSize));
-    RaftServerConfigKeys.Log.setWriteBufferSize(properties, SizeInBytes.valueOf("8MB"));
-
-    // Leader lease: consistent reads without round-trip
-    RaftServerConfigKeys.Read.setLeaderLeaseEnabled(properties, true);
-    RaftServerConfigKeys.Read.setLeaderLeaseTimeoutRatio(properties, 0.9);
-    RaftServerConfigKeys.Read.setOption(properties, RaftServerConfigKeys.Read.Option.LINEARIZABLE);
-
-    return properties;
-  }
-
-  /**
    * Creates and starts the Ratis RaftServer and RaftClient.
    */
   public void start() throws IOException {
     // Suppress verbose Ratis internal logs — operators see ArcadeDB-level cluster events instead
     java.util.logging.Logger.getLogger("org.apache.ratis").setLevel(java.util.logging.Level.WARNING);
 
-    final RaftProperties properties = buildRaftProperties();
+    final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
     final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
     // Only delete existing Raft storage when persistence is not requested.
@@ -341,7 +284,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         this.stateMachine = new ArcadeStateMachine();
         this.stateMachine.setServer(arcadeServer);
 
-        final RaftProperties properties = buildRaftProperties();
+        final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
         final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
         RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 
