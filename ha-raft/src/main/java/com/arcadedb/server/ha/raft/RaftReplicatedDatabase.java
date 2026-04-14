@@ -147,6 +147,32 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     return s;
   }
 
+  /**
+   * Commits the current transaction through Raft consensus.
+   * <p>
+   * <b>Two-phase flow with lock release during replication:</b>
+   * <ol>
+   *   <li><b>Phase 1 (read lock held):</b> Capture WAL bytes and bucket record deltas
+   *       via {@code commit1stPhase}. The read lock ensures a consistent snapshot of the
+   *       transaction's page changes.</li>
+   *   <li><b>Replication (no lock held):</b> Submit the WAL entry to Raft via
+   *       {@link RaftGroupCommitter#submitAndWait} and wait for quorum. Releasing the lock
+   *       here allows concurrent transactions to proceed through Phase 1 while this
+   *       transaction waits for Raft consensus, significantly improving throughput.</li>
+   *   <li><b>Phase 2 (read lock held on leader):</b> Apply pages locally via
+   *       {@code commit2ndPhase}. On replicas, the state machine applies the pages via
+   *       {@link ArcadeStateMachine#applyTransaction}, so Phase 2 is skipped here.</li>
+   * </ol>
+   * <p>
+   * <b>Phase 2 failure handling:</b> If local apply fails after Raft has committed the entry,
+   * the entry is already in the log and other replicas will apply it. The leader logs SEVERE
+   * and should step down rather than continue with diverged state.
+   * <p>
+   * <b>Schema WAL buffering:</b> When {@code commit()} is called from inside a
+   * {@code recordFileChanges()} callback, the files being created do not yet exist on replicas.
+   * Instead of sending a {@code TX_ENTRY} that would fail, the WAL data is buffered in
+   * {@link #schemaWalBuffer} and embedded in the {@code SCHEMA_ENTRY} sent after the callback.
+   */
   @Override
   public void commit() {
     proxied.incrementStatsWriteTx();

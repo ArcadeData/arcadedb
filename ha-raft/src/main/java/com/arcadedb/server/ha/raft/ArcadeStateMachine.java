@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
@@ -53,8 +52,29 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
- * Ratis state machine that applies committed log entries to ArcadeDB databases.
- * Handles two types of entries: TX_ENTRY (WAL page diffs) and SCHEMA_ENTRY (DDL commands).
+ * Ratis state machine that bridges the Raft log and ArcadeDB storage.
+ * <p>
+ * Handles five entry types:
+ * <ul>
+ *   <li>{@code TX_ENTRY} - WAL page diffs from committed transactions</li>
+ *   <li>{@code SCHEMA_ENTRY} - DDL operations with file creation/removal, buffered WAL entries,
+ *       and schema JSON updates</li>
+ *   <li>{@code INSTALL_DATABASE_ENTRY} - create a new database or force-restore from leader snapshot</li>
+ *   <li>{@code DROP_DATABASE_ENTRY} - drop a database (idempotent on replay)</li>
+ *   <li>{@code SECURITY_USERS_ENTRY} - replicate user/role changes across the cluster</li>
+ * </ul>
+ * <p>
+ * <b>Threading model:</b> {@link #applyTransaction} is called sequentially by Ratis on a single
+ * thread per Raft group. No concurrent apply calls occur for the same group.
+ * <p>
+ * <b>Idempotency:</b> All apply methods are safe for replay after a crash. {@code applyTxEntry}
+ * uses page-version guards in {@link com.arcadedb.engine.TransactionManager#applyChanges} to skip
+ * already-applied pages. {@code applySchemaEntry} uses file-existence guards for file creation
+ * and the same page-version guards for WAL application. Schema reload is naturally idempotent.
+ * <p>
+ * <b>Crash recovery:</b> On startup, {@link SnapshotInstaller#recoverPendingSnapshotSwaps} is
+ * called from {@link #initialize} to complete or roll back any snapshot installations that were
+ * interrupted by a process crash.
  */
 public class ArcadeStateMachine extends BaseStateMachine {
 
@@ -84,9 +104,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
     super.initialize(raftServer, groupId, raftStorage);
     storage.init(raftStorage);
     reinitialize();
+    // Recover any snapshot installations that were interrupted by a crash
+    if (server != null) {
+      final String dbDir = server.getConfiguration().getValueAsString(
+          com.arcadedb.GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+      if (dbDir != null)
+        SnapshotInstaller.recoverPendingSnapshotSwaps(java.nio.file.Path.of(dbDir));
+    }
     LogManager.instance().log(this, Level.INFO, "ArcadeStateMachine initialized (groupId=%s)", groupId);
   }
 
+  /**
+   * Restores {@link #lastAppliedIndex} from the latest Ratis {@link SimpleStateMachineStorage}
+   * snapshot metadata. Called during {@link #initialize} and again if the state machine storage
+   * is reset (e.g., during Ratis recovery via {@link RaftHAServer#restartRatisIfNeeded}).
+   */
   public void reinitialize() throws IOException {
     final var snapshotInfo = storage.getLatestSnapshot();
     if (snapshotInfo != null)
@@ -191,7 +223,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /**
    * Called by Ratis when the follower's log is too far behind the leader's compacted log.
-   * Downloads the full database snapshot from the leader via HTTP and replaces local database files.
+   * Individual log entries are no longer available, so a full database snapshot must be
+   * downloaded from the leader. Delegates to {@link SnapshotInstaller#install} for crash-safe
+   * installation with marker files and atomic directory swap.
+   * <p>
+   * Runs asynchronously via {@link CompletableFuture#supplyAsync} to avoid blocking the
+   * Ratis state machine thread.
    */
   @Override
   public CompletableFuture<TermIndex> notifyInstallSnapshotFromLeader(
@@ -215,7 +252,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
         for (final String dbName : server.getDatabaseNames()) {
           LogManager.instance().log(this, Level.INFO,
               "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
-          installDatabaseSnapshot(dbName, leaderHttpAddr, clusterToken);
+
+          // Close and deregister the database before the swap
+          if (server.existsDatabase(dbName)) {
+            final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
+            final String databasePath = db.getDatabasePath();
+            db.close();
+            server.removeDatabase(dbName);
+            SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, clusterToken, server);
+          }
         }
 
         LogManager.instance().log(this, Level.INFO, "Full resync from leader completed");
@@ -226,81 +271,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
         throw new RuntimeException("Error during Raft snapshot installation", e);
       }
     });
-  }
-
-  private void installDatabaseSnapshot(final String databaseName, final String leaderHttpAddr,
-      final String clusterToken) throws java.io.IOException {
-
-    final String snapshotUrl = "http://" + leaderHttpAddr + "/api/v1/ha/snapshot/" + databaseName;
-    HALog.log(this, HALog.BASIC, "Downloading snapshot from %s", snapshotUrl);
-
-    final java.net.HttpURLConnection connection;
-    try {
-      connection = (java.net.HttpURLConnection) new java.net.URI(snapshotUrl).toURL().openConnection();
-    } catch (final java.net.URISyntaxException e) {
-      throw new java.io.IOException("Invalid snapshot URL: " + snapshotUrl, e);
-    }
-    connection.setRequestMethod("GET");
-    connection.setConnectTimeout(30_000);
-    connection.setReadTimeout(300_000);
-
-    if (clusterToken != null && !clusterToken.isEmpty())
-      connection.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
-
-    try {
-      final int responseCode = connection.getResponseCode();
-      if (responseCode != 200)
-        throw new java.io.IOException("Failed to download snapshot: HTTP " + responseCode);
-
-      // Compute the target path. If the database is already registered, prefer the live path so we
-      // don't accidentally create a second copy in a different location. If it is not registered
-      // (e.g. after a drop+restore flow), fall back to the configured databases directory.
-      final String databasePath;
-      if (server.existsDatabase(databaseName)) {
-        final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
-        databasePath = db.getDatabasePath();
-        db.close();
-        server.removeDatabase(databaseName);
-      } else {
-        databasePath = server.getConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
-            + File.separator + databaseName;
-      }
-
-      final java.nio.file.Path dbPath = java.nio.file.Path.of(databasePath).normalize().toAbsolutePath();
-      final java.io.File dbDir = new java.io.File(databasePath);
-      if (!dbDir.exists() && !dbDir.mkdirs())
-        throw new java.io.IOException("Cannot create database directory: " + databasePath);
-
-      try (final java.util.zip.ZipInputStream zipIn = new java.util.zip.ZipInputStream(
-          connection.getInputStream())) {
-        java.util.zip.ZipEntry zipEntry;
-        while ((zipEntry = zipIn.getNextEntry()) != null) {
-          final java.io.File targetFile = new java.io.File(databasePath, zipEntry.getName());
-
-          if (!targetFile.toPath().normalize().toAbsolutePath().startsWith(dbPath))
-            throw new java.io.IOException("Zip slip detected in snapshot: " + zipEntry.getName());
-
-          try (final java.io.FileOutputStream fos = new java.io.FileOutputStream(targetFile)) {
-            zipIn.transferTo(fos);
-          }
-          zipIn.closeEntry();
-        }
-      }
-
-      final java.io.File[] walFiles = dbDir.listFiles((dir, name) -> name.endsWith(".wal"));
-      if (walFiles != null)
-        for (final java.io.File walFile : walFiles)
-          if (!walFile.delete())
-            LogManager.instance().log(this, Level.WARNING, "Failed to delete stale WAL file: %s", walFile.getName());
-
-      // Re-open the database so the server registers it and it becomes visible to clients.
-      server.getDatabase(databaseName);
-
-      HALog.log(this, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
-
-    } finally {
-      connection.disconnect();
-    }
   }
 
   public long getElectionCount() {
@@ -315,6 +285,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return startTime;
   }
 
+  /**
+   * Applies a committed WAL transaction to the local database.
+   * <p>
+   * <b>Origin-skip optimization:</b> On the leader, the transaction was already applied locally
+   * via {@link RaftReplicatedDatabase#commit}'s Phase 2 ({@code commit2ndPhase}), so the state
+   * machine skips it. On replicas, this is the primary path for applying transaction data.
+   * <p>
+   * <b>Ordering guarantee:</b> WAL capture (Phase 1) happens before Raft replication. Local
+   * apply (Phase 2) happens after Raft commit. The leader skips the state machine apply because
+   * Phase 2 already wrote the pages when replication succeeded.
+   * <p>
+   * <b>{@code ignoreErrors=true} rationale:</b> During Raft log replay on restart, log entries
+   * may already be applied to the database files (Ratis last-applied tracking can lag behind
+   * durable page writes). Page-version guards in {@code applyChanges} detect and skip
+   * already-applied pages; version-gap warnings are still logged.
+   */
   private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     // On the leader, the transaction was already applied via commit2ndPhase() in RaftReplicatedDatabase.
     // Only replicas need to apply WAL changes from the state machine.
@@ -335,6 +321,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
     db.getTransactionManager().applyChanges(walTx, decoded.bucketRecordDelta(), true);
   }
 
+  /**
+   * Applies a committed DDL (schema change) entry to the local database.
+   * <p>
+   * <b>Three-phase application order</b> (order matters for correctness):
+   * <ol>
+   *   <li><b>Create/remove physical files.</b> WAL pages reference file IDs that must already
+   *       exist on the replica. File-existence guards make this idempotent on replay.</li>
+   *   <li><b>Apply buffered WAL entries.</b> Index page writes that occurred during DDL on the
+   *       leader are embedded in the schema entry. These target the files created in step 1.
+   *       Page-version guards make this idempotent on replay.</li>
+   *   <li><b>Update schema JSON and reload.</b> Writes the schema configuration and reloads
+   *       types, buckets, and file IDs into memory. Naturally idempotent (overwrites with
+   *       same content on replay).</li>
+   * </ol>
+   * <p>
+   * Like {@link #applyTxEntry}, the leader skips this because schema changes were already
+   * applied locally during the transaction.
+   */
   private void applySchemaEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     // On the leader, schema changes were already applied locally during the transaction
     if (raftHAServer != null && raftHAServer.isLeader()) {
@@ -409,18 +413,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return;
       }
 
+      String databasePath;
       if (server.existsDatabase(databaseName)) {
         final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
+        databasePath = db.getDatabasePath();
         db.getEmbedded().close();
         server.removeDatabase(databaseName);
+      } else {
+        databasePath = server.getConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
+            + java.io.File.separator + databaseName;
       }
 
       final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
       final String clusterToken = server.getConfiguration().getValueAsString(
           com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
       try {
-        installDatabaseSnapshot(databaseName, leaderHttpAddr, clusterToken);
-      } catch (final IOException e) {
+        SnapshotInstaller.install(databaseName, databasePath, leaderHttpAddr, clusterToken, server);
+      } catch (final java.io.IOException e) {
         throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
       }
       LogManager.instance().log(this, Level.INFO, "Database '%s' reinstalled via forceSnapshot from leader", databaseName);
