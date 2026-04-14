@@ -604,6 +604,14 @@ public enum GlobalConfiguration {
       "Maximum number of concurrent snapshot downloads served by the leader. Requests over this limit receive HTTP 503.",
       Integer.class, 2),
 
+  HA_SNAPSHOT_INSTALL_RETRIES("arcadedb.ha.snapshotInstallRetries", SCOPE.SERVER,
+      "Maximum retry attempts for snapshot download from the leader during snapshot installation.",
+      Integer.class, 3),
+
+  HA_SNAPSHOT_INSTALL_RETRY_BASE_MS("arcadedb.ha.snapshotInstallRetryBaseMs", SCOPE.SERVER,
+      "Base delay in milliseconds for exponential backoff between snapshot download retries. Actual delay is baseMs * 2^attempt.",
+      Long.class, 5000L),
+
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
       "Read timeout in milliseconds for the leader proxy in AbstractServerHttpHandler. Covers long-running queries proxied from a follower to the leader.",
       Long.class, 30000L),
