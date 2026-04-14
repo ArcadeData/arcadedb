@@ -38,8 +38,9 @@ import java.nio.charset.StandardCharsets;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
-  private static final int PEER_CONNECT_TIMEOUT_MS = 30_000;
-  private static final int PEER_READ_TIMEOUT_MS    = 60_000;
+  private static final int PEER_CONNECT_TIMEOUT_MS  = 30_000;
+  private static final int PEER_READ_TIMEOUT_MS     = 60_000;
+  private static final int MAX_PEER_RESPONSE_BYTES  = 1024 * 1024; // 1 MB
 
   private final RaftHAServer raftHA;
 
@@ -141,7 +142,10 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
           }
 
           if (conn.getResponseCode() == 200) {
-            final String body = new String(conn.getInputStream().readAllBytes());
+            final String body;
+            try (final var in = conn.getInputStream()) {
+              body = new String(in.readNBytes(MAX_PEER_RESPONSE_BYTES), StandardCharsets.UTF_8);
+            }
             final JSONObject peerResponse = new JSONObject(body);
 
             if (peerResponse.has("localChecksums")) {
