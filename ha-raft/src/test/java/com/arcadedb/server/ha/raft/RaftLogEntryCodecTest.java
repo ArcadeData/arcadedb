@@ -97,6 +97,16 @@ class RaftLogEntryCodecTest {
   }
 
   @Test
+  void testSerializeTransactionDoesNotMutateWalBufferPosition() {
+    final Binary walBuffer = createTestWalBuffer(1L, 2L, 0);
+    final int positionBefore = walBuffer.getByteBuffer().position();
+
+    RaftLogEntryCodec.serializeTransaction("db", Map.of(), walBuffer, null, null, null, "peer-1");
+
+    assertThat(walBuffer.getByteBuffer().position()).isEqualTo(positionBefore);
+  }
+
+  @Test
   void testCreateDatabaseSerializationRoundTrip() {
     final byte[] serialized = RaftLogEntryCodec.serializeCreateDatabase("newDb", "leader-node");
 

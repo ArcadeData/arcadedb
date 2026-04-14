@@ -78,8 +78,7 @@ public final class RaftLogEntryCodec {
    * @param originPeerId      the peer ID of the node that originated this transaction
    * @return serialized bytes
    *
-   * <p><b>Note:</b> {@code walBuffer} is rewound and fully consumed by this method.
-   * The caller must not read from it after this call returns.
+   * <p>This method does not modify the position of {@code walBuffer}.
    */
   public static byte[] serializeTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
       final Binary walBuffer, final String schemaJson, final Map<Integer, String> filesToAdd,
@@ -188,10 +187,11 @@ public final class RaftLogEntryCodec {
       final Map<Integer, Integer> bucketRecordDelta, final Binary walBuffer) {
     stream.putString(databaseName);
 
-    // WAL changes (compressed). Rewind mutates the caller's buffer position (intentional, see Javadoc).
-    walBuffer.rewind();
-    final int uncompressedLength = walBuffer.size();
-    final Binary compressed = CompressionFactory.getDefault().compress(walBuffer);
+    // WAL changes (compressed). Use a lightweight copy to avoid mutating the caller's buffer position.
+    final Binary walSnapshot = walBuffer.copy();
+    walSnapshot.rewind();
+    final int uncompressedLength = walSnapshot.size();
+    final Binary compressed = CompressionFactory.getDefault().compress(walSnapshot);
     stream.putInt(uncompressedLength);
     stream.putBytes(compressed.getContent(), compressed.size());
 
