@@ -558,12 +558,16 @@ public enum GlobalConfiguration {
       "Maximum Raft log segment size (e.g. '64MB', '128MB')", String.class, "64MB"),
 
   HA_LOG_PURGE_GAP("arcadedb.ha.logPurgeGap", SCOPE.SERVER,
-      "Gap between the last applied index and the purge index. Lower values free disk faster but leave less room for slow followers",
+      "Number of log entries to retain after a snapshot purge, as a buffer for slightly lagging followers. "
+          + "Lower values free disk faster but increase the chance a slow follower needs a full snapshot resync instead of log replay",
       Integer.class, 1024),
 
   HA_LOG_PURGE_UPTO_SNAPSHOT("arcadedb.ha.logPurgeUptoSnapshot", SCOPE.SERVER,
-      "When true, purges Raft log entries up to the latest snapshot index. Required for snapshot-based catch-up of lagging followers",
-      Boolean.class, false),
+      "Purge Raft log entries up to the latest snapshot index (minus purgeGap). "
+          + "When true (recommended), old log segments are deleted after each snapshot, preventing unbounded disk growth. "
+          + "Followers that fall behind the purge boundary recover automatically via snapshot download. "
+          + "Set to false only if you need to retain the full log history for debugging or auditing",
+      Boolean.class, true),
 
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
       "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),

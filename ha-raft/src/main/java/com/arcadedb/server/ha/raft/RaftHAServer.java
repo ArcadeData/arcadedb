@@ -288,11 +288,6 @@ public class RaftHAServer {
   }
 
   /**
-   * Restarts the Ratis server if it has entered CLOSED or CLOSING state (e.g., after a network
-   * partition caused gRPC connection failures). The existing state machine is reused since the
-   * database state is on disk. The Ratis log and metadata are recovered from the persisted storage.
-   */
-  /**
    * Checks if the Ratis server is in a terminal state and restarts it if needed.
    * <p>
    * Thread safety: the method is {@code synchronized} on this instance, and the caller

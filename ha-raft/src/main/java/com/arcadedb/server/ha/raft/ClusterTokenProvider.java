@@ -90,15 +90,7 @@ class ClusterTokenProvider {
           "HA cluster is using the default cluster name '%s'. For stronger token domain separation, set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken",
           clusterName);
 
-    // Convert to char[] so the password material can be zeroed after derivation.
-    // The original String from config remains in the heap (Java Strings are immutable), but
-    // we avoid creating additional long-lived copies.
-    final char[] rootPassword = rootPasswordStr.toCharArray();
-    try {
-      this.clusterToken = deriveTokenFromPassword(clusterName, rootPassword);
-    } finally {
-      Arrays.fill(rootPassword, '\0');
-    }
+    this.clusterToken = deriveTokenInternal(clusterName, rootPasswordStr);
 
     if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE)))
       LogManager.instance().log(this, Level.WARNING,
@@ -130,11 +122,19 @@ class ClusterTokenProvider {
       throw new ConfigurationException(
           "Cannot derive cluster token without a root password. Set arcadedb.server.rootPassword or arcadedb.ha.clusterToken");
 
-    final char[] rootPassword = rootPasswordStr.toCharArray();
+    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, deriveTokenInternal(clusterName, rootPasswordStr));
+  }
+
+  /**
+   * Converts the root password String to a char[], delegates to
+   * {@link #deriveTokenFromPassword(String, char[])}, and zeros the array before returning.
+   */
+  private static String deriveTokenInternal(final String clusterName, final String rootPassword) {
+    final char[] pw = rootPassword.toCharArray();
     try {
-      config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, deriveTokenFromPassword(clusterName, rootPassword));
+      return deriveTokenFromPassword(clusterName, pw);
     } finally {
-      Arrays.fill(rootPassword, '\0');
+      Arrays.fill(pw, '\0');
     }
   }
 

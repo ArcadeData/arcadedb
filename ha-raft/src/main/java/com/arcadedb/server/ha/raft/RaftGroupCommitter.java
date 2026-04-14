@@ -81,9 +81,14 @@ public class RaftGroupCommitter {
    */
   public void submitAndWait(final byte[] entry, final long timeoutMs) {
     final PendingEntry pending = new PendingEntry(entry);
-    if (!queue.offer(pending))
-      throw new ReplicationQueueFullException(
-          "Replication queue is full (" + queue.remainingCapacity() + " remaining of " + (queue.size() + queue.remainingCapacity()) + " max). Server is overloaded, retry later");
+    try {
+      if (!queue.offer(pending, 100, TimeUnit.MILLISECONDS))
+        throw new ReplicationQueueFullException(
+            "Replication queue is full (" + queue.remainingCapacity() + " remaining of " + (queue.size() + queue.remainingCapacity()) + " max). Server is overloaded, retry later");
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new ReplicationQueueFullException("Interrupted while waiting for replication queue space");
+    }
 
     // Two-phase deadline: timeoutMs for queue+dispatch, then quorumTimeout for Raft round-trip
     // if the entry was dispatched just before the first timeout fired.
@@ -261,15 +266,19 @@ public class RaftGroupCommitter {
           // Use MajorityCommittedAllFailedException so ReplicatedDatabase.commit() knows to
           // call commit2ndPhase() rather than roll back - otherwise the leader's database
           // permanently misses this transaction while lastAppliedIndex already reflects it.
-          batch.get(i).future.complete(watchReply.isSuccess() ? null : new MajorityCommittedAllFailedException("ALL quorum not reached"));
+          batch.get(i).future.complete(watchReply.isSuccess() ? null
+              : new MajorityCommittedAllFailedException(
+                  "Transaction IS durable (majority committed) but ALL quorum was not reached; eventual consistency applies"));
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           for (int j = i; j < batch.size(); j++)
             if (!batch.get(j).future.isDone())
-              batch.get(j).future.complete(new MajorityCommittedAllFailedException("ALL quorum watch interrupted"));
+              batch.get(j).future.complete(new MajorityCommittedAllFailedException(
+                  "Transaction IS durable (majority committed) but ALL quorum watch was interrupted; eventual consistency applies"));
           return;
         } catch (final Exception e) {
-          batch.get(i).future.complete(new MajorityCommittedAllFailedException("ALL quorum watch failed: " + e, e));
+          batch.get(i).future.complete(new MajorityCommittedAllFailedException(
+              "Transaction IS durable (majority committed) but ALL quorum watch failed: " + e + "; eventual consistency applies", e));
         }
       }
     }

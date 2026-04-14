@@ -59,10 +59,15 @@ class RaftGroupCommitterTest {
 
     assertThat(queue.remainingCapacity()).isEqualTo(0);
 
-    // Now submitAndWait should throw ReplicationQueueFullException, not QuorumNotReachedException
+    // submitAndWait does a bounded wait (100ms) before throwing, so this should still fail
+    // since nothing is draining the queue. The total time should be >= 100ms (the offer wait).
+    final long start = System.currentTimeMillis();
     assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }, 1000))
         .isInstanceOf(ReplicationQueueFullException.class)
         .hasMessageContaining("Replication queue is full");
+    final long elapsed = System.currentTimeMillis() - start;
+    // Should have waited at least ~100ms for the bounded offer before throwing
+    assertThat(elapsed).isGreaterThanOrEqualTo(80); // small margin for scheduling jitter
   }
 
   // -- PendingEntry atomic state tests (phantom commit prevention) --
@@ -174,7 +179,8 @@ class RaftGroupCommitterTest {
 
     // Simulate what flushBatch does when MAJORITY send succeeds but ALL watch fails
     final MajorityCommittedAllFailedException expected =
-        new MajorityCommittedAllFailedException("ALL quorum not reached");
+        new MajorityCommittedAllFailedException(
+            "Transaction IS durable (majority committed) but ALL quorum was not reached; eventual consistency applies");
     entry.future.complete(expected);
 
     assertThat(entry.future.isDone()).isTrue();
@@ -203,7 +209,8 @@ class RaftGroupCommitterTest {
 
     // Replicate the rethrow logic in submitAndWait():
     //   if (error != null) throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(...)
-    final Exception error = new MajorityCommittedAllFailedException("ALL quorum not reached");
+    final Exception error = new MajorityCommittedAllFailedException(
+        "Transaction IS durable (majority committed) but ALL quorum was not reached; eventual consistency applies");
     final RuntimeException thrown = error instanceof RuntimeException re ? re : null;
 
     assertThat(thrown).isNotNull();

@@ -240,13 +240,19 @@ public class ReplicatedDatabase implements DatabaseInternal {
           // If step-down fails, the leader is in an inconsistent state where
           // followers applied the transaction but the leader did not. Force
           // a server stop so Raft log replay corrects the state on restart.
-          try {
-            server.stop();
-          } catch (final Exception stopEx) {
-            LogManager.instance().log(this, Level.SEVERE,
-                "Server stop also failed (db=%s). Manual intervention required: %s",
-                getName(), stopEx.getMessage());
-          }
+          // Schedule stop on a separate thread to avoid deadlock: we are inside
+          // executeInReadLock(), and server.stop() may acquire a write lock.
+          final Thread stopThread = new Thread(() -> {
+            try {
+              server.stop();
+            } catch (final Throwable t) {
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Server stop also failed (db=%s). Manual intervention required: %s",
+                  getName(), t.getMessage());
+            }
+          }, "arcadedb-emergency-stop");
+          stopThread.setDaemon(true);
+          stopThread.start();
         }
         throw e;
       } finally {

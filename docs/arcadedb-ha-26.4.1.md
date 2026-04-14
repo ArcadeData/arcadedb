@@ -184,10 +184,12 @@ arcadedb.ha.snapshotThreshold=100000
 arcadedb.ha.logSegmentSize=64MB
 
 # Log purging: controls how aggressively old Raft log segments are deleted after snapshots.
-# purgeGap = gap between last applied index and purge index (lower = more aggressive)
-# purgeUptoSnapshot = when true, purges log entries up to the latest snapshot index
+# purgeGap = number of entries to retain after purge as buffer for slightly lagging followers
+# purgeUptoSnapshot = when true (default), deletes old log segments after each snapshot,
+#   preventing unbounded disk growth. Followers that fall behind recover via snapshot download.
+#   Set to false only if you need full log history for debugging or auditing.
 arcadedb.ha.logPurgeGap=1024
-arcadedb.ha.logPurgeUptoSnapshot=false
+arcadedb.ha.logPurgeUptoSnapshot=true
 
 # AppendEntries batch byte limit for follower replication
 arcadedb.ha.appendBufferSize=4MB
@@ -234,8 +236,8 @@ Complete reference of all `HA_*` entries in `GlobalConfiguration.java`. All sett
 |---|---|---|---|---|
 | `HA_SNAPSHOT_THRESHOLD` | `arcadedb.ha.snapshotThreshold` | Long | `100000` | Number of Raft log entries before auto-triggering a snapshot |
 | `HA_LOG_SEGMENT_SIZE` | `arcadedb.ha.logSegmentSize` | String | `64MB` | Maximum Raft log segment size (e.g. `64MB`, `128MB`) |
-| `HA_LOG_PURGE_GAP` | `arcadedb.ha.logPurgeGap` | Integer | `1024` | Gap between last applied index and purge index. Lower values free disk faster but leave less room for slow followers to catch up via log replay |
-| `HA_LOG_PURGE_UPTO_SNAPSHOT` | `arcadedb.ha.logPurgeUptoSnapshot` | Boolean | `false` | When true, purges Raft log entries up to the latest snapshot index. Combined with a low `logPurgeGap`, forces lagging followers to catch up via snapshot download instead of log replay |
+| `HA_LOG_PURGE_GAP` | `arcadedb.ha.logPurgeGap` | Integer | `1024` | Number of log entries to retain after a snapshot purge, as a buffer for slightly lagging followers. Lower values free disk faster but increase the chance a slow follower needs a full snapshot resync |
+| `HA_LOG_PURGE_UPTO_SNAPSHOT` | `arcadedb.ha.logPurgeUptoSnapshot` | Boolean | `true` | Purge old Raft log segments after each snapshot, preventing unbounded disk growth. Followers that fall behind the purge boundary recover automatically via snapshot download. Set to false only to retain full log history for debugging or auditing |
 | `HA_APPEND_BUFFER_SIZE` | `arcadedb.ha.appendBufferSize` | String | `4MB` | AppendEntries batch byte limit per gRPC call to followers |
 
 #### Performance Tuning

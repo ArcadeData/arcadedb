@@ -276,6 +276,13 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
       // On followers, trigger snapshot resync. The needsSnapshotDownload flag debounces multiple
       // failures: only the first successful compareAndSet triggers a download.
+      //
+      // Note: compareAndSet(true, false) clears the flag before the download runs. If the
+      // download itself fails, the flag stays false until the next apply failure re-arms it
+      // (line below sets it to true). On a quiet cluster with no new writes, no new log entry
+      // will arrive to trigger re-arming, so the follower remains diverged until either:
+      //   1. The leader sends new entries (which will also fail to apply, re-arming the flag), or
+      //   2. The HealthMonitor detects the follower lag and triggers corrective action.
       if (!isCurrentNodeLeader()) {
         needsSnapshotDownload.set(true);
         lifecycleExecutor.submit(() -> {
