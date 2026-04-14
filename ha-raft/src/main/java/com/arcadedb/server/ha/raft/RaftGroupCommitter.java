@@ -204,12 +204,17 @@ public class RaftGroupCommitter {
     }
 
     // Collect send results. For ALL quorum, issue watch futures in parallel during this pass.
+    // Use a shared deadline so that sequential get() calls share one timeout window instead
+    // of each getting a fresh quorumTimeout (which would make n entries cost n * quorumTimeout).
     final boolean allQuorum = haServer.getQuorum() == Quorum.ALL;
     final List<CompletableFuture<RaftClientReply>> watchFutures = allQuorum ? new ArrayList<>(batch.size()) : null;
+    final long quorumTimeout = haServer.getQuorumTimeout();
+    long sendDeadline = System.currentTimeMillis() + quorumTimeout;
 
     for (int i = 0; i < batch.size(); i++) {
       try {
-        final RaftClientReply reply = futures.get(i).get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
+        final long remaining = Math.max(1, sendDeadline - System.currentTimeMillis());
+        final RaftClientReply reply = futures.get(i).get(remaining, TimeUnit.MILLISECONDS);
         if (!reply.isSuccess()) {
           final String err = reply.getException() != null ? reply.getException().getMessage() : "replication failed";
           batch.get(i).future.complete(new QuorumNotReachedException("Raft replication failed: " + err));
@@ -236,8 +241,11 @@ public class RaftGroupCommitter {
       }
     }
 
-    // For ALL quorum: all watch RPCs are already in flight, now collect results
+    // For ALL quorum: all watch RPCs are already in flight, now collect results.
+    // Shared deadline ensures a batch of n timed-out watches costs one quorumTimeout, not n.
     if (allQuorum) {
+      final long watchDeadline = System.currentTimeMillis() + quorumTimeout;
+
       for (int i = 0; i < batch.size(); i++) {
         if (batch.get(i).future.isDone())
           continue; // already failed in send phase
@@ -247,7 +255,8 @@ public class RaftGroupCommitter {
           continue; // send failed, already completed with error
 
         try {
-          final RaftClientReply watchReply = watchFuture.get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
+          final long remaining = Math.max(1, watchDeadline - System.currentTimeMillis());
+          final RaftClientReply watchReply = watchFuture.get(remaining, TimeUnit.MILLISECONDS);
           // MAJORITY already committed (applyTransaction fired on the leader with origin-skip).
           // Use MajorityCommittedAllFailedException so ReplicatedDatabase.commit() knows to
           // call commit2ndPhase() rather than roll back - otherwise the leader's database

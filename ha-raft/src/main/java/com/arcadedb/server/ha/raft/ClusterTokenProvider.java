@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.logging.Level;
 
@@ -76,10 +77,10 @@ class ClusterTokenProvider {
       throw new ConfigurationException(
           "Cannot derive cluster token: the cluster name is empty. Set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken");
     // Check both the server's ContextConfiguration and the global default (system property)
-    String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
-    if (rootPassword == null || rootPassword.isEmpty())
-      rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
-    if (rootPassword == null || rootPassword.isEmpty())
+    String rootPasswordStr = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    if (rootPasswordStr == null || rootPasswordStr.isEmpty())
+      rootPasswordStr = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
+    if (rootPasswordStr == null || rootPasswordStr.isEmpty())
       throw new ConfigurationException(
           "Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. "
               + "Set arcadedb.server.rootPassword or provide an explicit arcadedb.ha.clusterToken");
@@ -88,7 +89,16 @@ class ClusterTokenProvider {
       LogManager.instance().log(this, Level.WARNING,
           "HA cluster is using the default cluster name '%s'. For stronger token domain separation, set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken",
           clusterName);
-    this.clusterToken = deriveTokenFromPassword(clusterName, rootPassword);
+
+    // Convert to char[] so the password material can be zeroed after derivation.
+    // The original String from config remains in the heap (Java Strings are immutable), but
+    // we avoid creating additional long-lived copies.
+    final char[] rootPassword = rootPasswordStr.toCharArray();
+    try {
+      this.clusterToken = deriveTokenFromPassword(clusterName, rootPassword);
+    } finally {
+      Arrays.fill(rootPassword, '\0');
+    }
 
     if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE)))
       LogManager.instance().log(this, Level.WARNING,
@@ -113,33 +123,49 @@ class ClusterTokenProvider {
     if (clusterName == null || clusterName.isEmpty())
       throw new ConfigurationException(
           "Cannot derive cluster token: the cluster name is empty. Set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken");
-    String rootPassword = config.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
-    if (rootPassword == null || rootPassword.isEmpty())
-      rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
-    if (rootPassword == null || rootPassword.isEmpty())
+    String rootPasswordStr = config.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    if (rootPasswordStr == null || rootPasswordStr.isEmpty())
+      rootPasswordStr = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
+    if (rootPasswordStr == null || rootPasswordStr.isEmpty())
       throw new ConfigurationException(
           "Cannot derive cluster token without a root password. Set arcadedb.server.rootPassword or arcadedb.ha.clusterToken");
 
-    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, deriveTokenFromPassword(clusterName, rootPassword));
+    final char[] rootPassword = rootPasswordStr.toCharArray();
+    try {
+      config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, deriveTokenFromPassword(clusterName, rootPassword));
+    } finally {
+      Arrays.fill(rootPassword, '\0');
+    }
   }
 
   /**
    * PBKDF2-HMAC-SHA256 derivation of a cluster token from a cluster name and root password.
    * Domain separation: the cluster name appears in both the password and the salt so that
    * two clusters with the same root password produce different tokens.
+   *
+   * <p>The caller's {@code rootPassword} array is NOT zeroed here (callers own their copy).
+   * All intermediate password material created inside this method is zeroed before returning.
    */
-  static String deriveTokenFromPassword(final String clusterName, final String rootPassword) {
-    final String password = clusterName + ":" + rootPassword;
+  static String deriveTokenFromPassword(final String clusterName, final char[] rootPassword) {
+    // Build "clusterName:rootPassword" as a char[] so we can zero it after use.
+    final char[] clusterChars = clusterName.toCharArray();
+    final char[] passwordChars = new char[clusterChars.length + 1 + rootPassword.length];
+    System.arraycopy(clusterChars, 0, passwordChars, 0, clusterChars.length);
+    passwordChars[clusterChars.length] = ':';
+    System.arraycopy(rootPassword, 0, passwordChars, clusterChars.length + 1, rootPassword.length);
+
     try {
       final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
       final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-      final PBEKeySpec spec = new PBEKeySpec(
-          password.toCharArray(), salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH_BITS);
+      final PBEKeySpec spec = new PBEKeySpec(passwordChars, salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH_BITS);
       final byte[] hash = factory.generateSecret(spec).getEncoded();
       spec.clearPassword();
       return HexFormat.of().formatHex(hash);
     } catch (final Exception e) {
       throw new RuntimeException("Failed to derive cluster token", e);
+    } finally {
+      Arrays.fill(passwordChars, '\0');
+      Arrays.fill(clusterChars, '\0');
     }
   }
 }

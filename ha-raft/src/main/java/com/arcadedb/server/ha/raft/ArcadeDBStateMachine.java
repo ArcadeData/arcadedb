@@ -371,9 +371,15 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // We call raftHA.isLeader() (which queries Ratis's internal role state directly) rather than
     // the cached currentNodeIsLeader field. The cached field is updated by notifyLeaderChanged()
     // on a separate thread and could be stale during a concurrent leadership transfer.
-    if (isOriginNode(entry.originPeerId()) && raftHA != null && raftHA.isLeader()) {
-      HALog.log(this, HALog.TRACE, "Skipping WAL apply on origin node (commit2ndPhase handles it): db=%s", entry.databaseName());
-      return;
+    if (isOriginNode(entry.originPeerId())) {
+      if (raftHA != null && raftHA.isLeader()) {
+        HALog.log(this, HALog.TRACE, "Skipping WAL apply on origin node (commit2ndPhase handles it): db=%s", entry.databaseName());
+        return;
+      }
+      if (raftHA == null)
+        LogManager.instance().log(this, Level.WARNING,
+            "Origin node match but raftHA is null - cannot determine leadership, applying entry defensively (db=%s)",
+            entry.databaseName());
     }
     HALog.log(this, HALog.DETAILED, "Applying WAL on follower: db=%s, walSize=%d, deltaSize=%d, hasSchema=%s",
         entry.databaseName(), entry.walBuffer() != null ? entry.walBuffer().size() : 0,

@@ -24,8 +24,10 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -206,5 +208,87 @@ class RaftGroupCommitterTest {
 
     assertThat(thrown).isNotNull();
     assertThat(thrown).isInstanceOf(MajorityCommittedAllFailedException.class);
+  }
+
+  // -- Shared deadline tests --
+
+  @Test
+  void sharedDeadlineCollectsNeverCompletingFuturesWithinOneTimeout() {
+    // Regression test: collecting n never-completing futures with a shared deadline should
+    // take approximately one timeout period, not n * timeout. This test replicates the
+    // watch-collection loop from flushBatch() but without needing a real RaftClient.
+    final int batchSize = 10;
+    final long timeoutMs = 200;
+
+    // Create never-completing futures (simulating watch futures that never get a response)
+    final List<CompletableFuture<Object>> futures = new ArrayList<>(batchSize);
+    for (int i = 0; i < batchSize; i++)
+      futures.add(new CompletableFuture<>());
+
+    final long start = System.currentTimeMillis();
+    final long deadline = start + timeoutMs;
+
+    // This replicates the shared-deadline collection pattern from flushBatch()
+    int timedOut = 0;
+    for (int i = 0; i < batchSize; i++) {
+      try {
+        final long remaining = Math.max(1, deadline - System.currentTimeMillis());
+        futures.get(i).get(remaining, TimeUnit.MILLISECONDS);
+      } catch (final java.util.concurrent.TimeoutException e) {
+        timedOut++;
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    }
+
+    final long elapsed = System.currentTimeMillis() - start;
+
+    assertThat(timedOut).isEqualTo(batchSize);
+    // With the shared deadline, total time should be close to one timeout period.
+    // Without it (n * timeout), this would take ~2000ms for 10 entries * 200ms.
+    // Allow generous margin (2x) for CI/GC jitter, but it must be well under n * timeout.
+    assertThat(elapsed).isLessThan(timeoutMs * 2);
+  }
+
+  @Test
+  void sharedDeadlineDoesNotPenalizeFastFutures() {
+    // When some futures complete quickly, the shared deadline should not cause later futures
+    // to get less time than they need. The deadline is set once at the start of the loop,
+    // so fast completions leave more remaining time for slower ones.
+    final int batchSize = 5;
+    final long timeoutMs = 500;
+
+    final List<CompletableFuture<String>> futures = new ArrayList<>(batchSize);
+    // First 3 complete immediately, last 2 never complete
+    for (int i = 0; i < 3; i++)
+      futures.add(CompletableFuture.completedFuture("ok"));
+    for (int i = 0; i < 2; i++)
+      futures.add(new CompletableFuture<>());
+
+    final long start = System.currentTimeMillis();
+    final long deadline = start + timeoutMs;
+
+    int succeeded = 0;
+    int timedOut = 0;
+    for (int i = 0; i < batchSize; i++) {
+      try {
+        final long remaining = Math.max(1, deadline - System.currentTimeMillis());
+        futures.get(i).get(remaining, TimeUnit.MILLISECONDS);
+        succeeded++;
+      } catch (final java.util.concurrent.TimeoutException e) {
+        timedOut++;
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    }
+
+    final long elapsed = System.currentTimeMillis() - start;
+
+    assertThat(succeeded).isEqualTo(3);
+    assertThat(timedOut).isEqualTo(2);
+    // Total time should still be bounded by one timeout, not 2 * timeout for the 2 slow futures
+    assertThat(elapsed).isLessThan(timeoutMs * 2);
+    // But it should be at least close to the timeout (the 2 slow futures consume the remaining budget)
+    assertThat(elapsed).isGreaterThan(timeoutMs / 2);
   }
 }

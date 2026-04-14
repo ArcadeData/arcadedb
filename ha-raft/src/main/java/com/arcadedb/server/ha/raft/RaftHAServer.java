@@ -95,9 +95,11 @@ public class RaftHAServer {
   private final    AtomicInteger            applyWaiterCount     = new AtomicInteger();
   private final    Object                   leaderReadyNotifier  = new Object();
   /**
-   * Set to false when this node becomes leader, true once all committed entries
-   * have been applied to the state machine. Reads on the leader wait for this
-   * flag before returning results, preventing stale reads during leadership transitions.
+   * True when this node is ready to serve reads. Initialized to true because a node starts
+   * as a follower (followers don't gate reads on this flag). Set to false during the catch-up
+   * window after winning an election, then restored to true once the state machine has applied
+   * all committed entries. Reads on the leader wait for this flag via {@link #waitForLeaderReady()},
+   * preventing stale reads during leadership transitions.
    */
   private volatile boolean                  leaderReady          = true;
   private          HealthMonitor            healthMonitor;

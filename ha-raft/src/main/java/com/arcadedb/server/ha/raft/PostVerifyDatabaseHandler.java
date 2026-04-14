@@ -31,6 +31,7 @@ import io.undertow.server.HttpServerExchange;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Pattern;
 
 /**
  * POST /api/v1/cluster/verify/{database} - verifies database consistency across cluster nodes.
@@ -38,9 +39,11 @@ import java.nio.charset.StandardCharsets;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
-  private static final int PEER_CONNECT_TIMEOUT_MS  = 30_000;
-  private static final int PEER_READ_TIMEOUT_MS     = 60_000;
-  private static final int MAX_PEER_RESPONSE_BYTES  = 1024 * 1024; // 1 MB
+  private static final int     PEER_CONNECT_TIMEOUT_MS  = 30_000;
+  private static final int     PEER_READ_TIMEOUT_MS     = 60_000;
+  private static final int     MAX_PEER_RESPONSE_BYTES  = 1024 * 1024; // 1 MB
+  /** Valid database name: alphanumeric, underscore, hyphen, dot. No path traversal sequences. */
+  private static final Pattern VALID_DATABASE_NAME      = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_\\-.]*");
 
   private final RaftHAServer raftHA;
 
@@ -60,6 +63,9 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
     if (databaseName.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Database name is required in path\"}");
+
+    if (!VALID_DATABASE_NAME.matcher(databaseName).matches())
+      return new ExecutionResponse(400, "{ \"error\" : \"Invalid database name\"}");
 
     final var server = httpServer.getServer();
     if (!server.existsDatabase(databaseName))
@@ -144,7 +150,14 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
           if (conn.getResponseCode() == 200) {
             final String body;
             try (final var in = conn.getInputStream()) {
-              body = new String(in.readNBytes(MAX_PEER_RESPONSE_BYTES), StandardCharsets.UTF_8);
+              final byte[] bytes = in.readNBytes(MAX_PEER_RESPONSE_BYTES);
+              if (bytes.length == MAX_PEER_RESPONSE_BYTES && in.read() != -1) {
+                peerResult.put("status", "ERROR");
+                peerResult.put("error", "Peer response exceeds " + MAX_PEER_RESPONSE_BYTES + " bytes limit");
+                peerResults.put(peerResult);
+                continue;
+              }
+              body = new String(bytes, StandardCharsets.UTF_8);
             }
             final JSONObject peerResponse = new JSONObject(body);
 
