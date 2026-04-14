@@ -23,7 +23,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerException;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.RaftProperties;
@@ -81,14 +80,6 @@ import java.util.logging.Level;
  */
 public class RaftHAServer implements HealthMonitor.HealthTarget {
 
-  /**
-   * Result of parsing the HA server list. Contains the Raft peers (with raft addresses) and
-   * a map from peer ID to HTTP address for replica-to-leader HTTP command forwarding.
-   * The {@code httpAddresses} map is empty when no httpPort is specified in the server list.
-   */
-  public record ParsedPeerList(List<RaftPeer> peers, Map<RaftPeerId, String> httpAddresses) {
-  }
-
   private final ArcadeDBServer             arcadeServer;
   private final ContextConfiguration       configuration;
   private ArcadeStateMachine               stateMachine;
@@ -124,18 +115,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long lagWarningThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
     final int raftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
 
-    final ParsedPeerList parsed = parsePeerList(serverList, raftPort);
+    final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList(serverList, raftPort);
     final List<RaftPeer> peers = parsed.peers();
     final String serverName = arcadeServer.getServerName();
 
     this.httpAddresses.putAll(parsed.httpAddresses());
-    this.localPeerId = findLocalPeerId(peers, serverName, arcadeServer);
+    this.localPeerId = RaftPeerAddressResolver.findLocalPeerId(peers, serverName, arcadeServer);
     this.raftGroup = RaftGroup.valueOf(
         RaftGroupId.valueOf(UUID.nameUUIDFromBytes(clusterName.getBytes(StandardCharsets.UTF_8))),
         peers);
 
     // Build human-readable display names: "ServerName-N (host:httpPort)"
-    final int separatorIdx = findLastSeparatorIndex(serverName);
+    final int separatorIdx = RaftPeerAddressResolver.findLastSeparatorIndex(serverName);
     final String prefix = serverName.substring(0, separatorIdx);
     final char separator = serverName.charAt(separatorIdx);
     final Map<RaftPeerId, String> displayNames = new HashMap<>(peers.size());
@@ -157,119 +148,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     LogManager.instance().log(this, Level.INFO,
         "RaftHAServer configured: cluster='%s', localPeer='%s', peers=%d",
         clusterName, localPeerId, peers.size());
-  }
-
-  /**
-   * Parses a comma-separated server list into a {@link ParsedPeerList}.
-   * <p>
-   * Each entry supports the following formats:
-   * <ul>
-   *   <li>{@code host:raftPort:httpPort:priority} — explicit Raft port, HTTP port, and leader-election priority</li>
-   *   <li>{@code host:raftPort:httpPort} — explicit Raft and HTTP ports, priority defaults to 0</li>
-   *   <li>{@code host:raftPort} — explicit Raft port, no HTTP address stored, priority defaults to 0</li>
-   *   <li>{@code host} — Raft port defaults to {@code defaultPort}, no HTTP address, priority defaults to 0</li>
-   * </ul>
-   * The {@code httpAddresses} map in the result is populated only for entries with 3 or 4 parts;
-   * it is keyed by the {@link RaftPeerId} of each peer.
-   * <p>
-   * Priority is used for Raft leader election: the node with the highest priority is preferred as leader.
-   * This is a soft preference — if the preferred leader is unavailable, another node will take over.
-   */
-  static ParsedPeerList parsePeerList(final String serverList, final int defaultPort) {
-    final String[] entries = serverList.split(",");
-    final List<RaftPeer> peers = new ArrayList<>(entries.length);
-    final Map<RaftPeerId, String> httpAddresses = new HashMap<>(entries.length);
-
-    for (int i = 0; i < entries.length; i++) {
-      final String entry = entries[i].trim();
-      final String[] parts = entry.split(":");
-
-      if (parts.length > 4 || parts.length == 0 || parts[0].isBlank())
-        throw new ServerException(
-            "Invalid peer address format '" + entry + "'. Expected host[:raftPort[:httpPort[:priority]]]");
-
-      final String raftAddress;
-      String httpAddress = null;
-      int priority = 0;
-
-      if (parts.length == 4) {
-        // host:raftPort:httpPort:priority
-        raftAddress = parts[0] + ":" + parts[1];
-        httpAddress = parts[0] + ":" + parts[2];
-        try {
-          priority = Integer.parseInt(parts[3]);
-        } catch (final NumberFormatException e) {
-          throw new ServerException("Invalid priority value '" + parts[3] + "' in peer address '" + entry + "'");
-        }
-      } else if (parts.length == 3) {
-        // host:raftPort:httpPort
-        raftAddress = parts[0] + ":" + parts[1];
-        httpAddress = parts[0] + ":" + parts[2];
-      } else if (parts.length == 2) {
-        // host:raftPort
-        raftAddress = entry;
-      } else {
-        // host only - use default Raft port
-        raftAddress = entry + ":" + defaultPort;
-      }
-
-      // Use host_raftPort as peer ID (underscore avoids JMX ObjectName issues with colons)
-      final String peerIdStr = raftAddress.replace(':', '_');
-      final RaftPeer peer = RaftPeer.newBuilder()
-          .setId(peerIdStr)
-          .setAddress(raftAddress)
-          .setPriority(priority)
-          .build();
-      peers.add(peer);
-
-      if (httpAddress != null)
-        httpAddresses.put(peer.getId(), httpAddress);
-    }
-
-    // Validate: mixing localhost/127.0.0.1 with non-localhost addresses is a misconfiguration
-    boolean hasLocalhost = false;
-    boolean hasNonLocalhost = false;
-    for (final RaftPeer peer : peers) {
-      final String host = peer.getAddress().split(":")[0].trim();
-      if (host.equals("localhost") || host.equals("127.0.0.1"))
-        hasLocalhost = true;
-      else
-        hasNonLocalhost = true;
-    }
-    if (hasLocalhost && hasNonLocalhost)
-      throw new ServerException(
-          "Found a localhost (127.0.0.1) in the server list among non-localhost servers. "
-              + "Please fix the server list configuration.");
-
-    return new ParsedPeerList(Collections.unmodifiableList(peers), Collections.unmodifiableMap(httpAddresses));
-  }
-
-  /**
-   * Determines the local peer ID by parsing the numeric suffix from the server name.
-   * For example, "arcadedb-0" or "ArcadeDB_0" maps to index 0 in the peer list.
-   */
-  static RaftPeerId findLocalPeerId(final List<RaftPeer> peers, final String serverName,
-      final ArcadeDBServer server) {
-    final int separatorIdx = findLastSeparatorIndex(serverName);
-    final int index = Integer.parseInt(serverName.substring(separatorIdx + 1));
-    if (index < 0 || index >= peers.size())
-      throw new IllegalArgumentException(
-          "Server index " + index + " from name '" + serverName + "' is out of range [0, " + peers.size() + ")");
-
-    return peers.get(index).getId();
-  }
-
-  /**
-   * Finds the index of the last separator character ({@code '-'} or {@code '_'}) in the server name.
-   * Server names follow the pattern {@code prefix-N} or {@code prefix_N} where N is the node index.
-   */
-  static int findLastSeparatorIndex(final String serverName) {
-    final int hyphenIdx = serverName.lastIndexOf('-');
-    final int underscoreIdx = serverName.lastIndexOf('_');
-    final int idx = Math.max(hyphenIdx, underscoreIdx);
-    if (idx < 0 || idx == serverName.length() - 1)
-      throw new IllegalArgumentException("Cannot parse server index from server name: " + serverName);
-    return idx;
   }
 
   /**

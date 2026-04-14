@@ -29,14 +29,14 @@ class RaftHAConfigurationIT {
   @Test
   void invalidPeerAddressRejected() {
     // Mix non-localhost IPs with localhost - this should be rejected
-    assertThatThrownBy(() -> RaftHAServer.parsePeerList("192.168.0.1:2434,192.168.0.1:2435,localhost:2434", 2434))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("192.168.0.1:2434,192.168.0.1:2435,localhost:2434", 2434))
         .isInstanceOf(ServerException.class)
         .hasMessageContaining("Found a localhost");
   }
 
   @Test
   void twoPartFormatParsed() {
-    final RaftHAServer.ParsedPeerList result = RaftHAServer.parsePeerList("host1:2434,host2:2435", 2434);
+    final RaftPeerAddressResolver.ParsedPeerList result = RaftPeerAddressResolver.parsePeerList("host1:2434,host2:2435", 2434);
     assertThat(result.peers()).hasSize(2);
     assertThat(result.peers().get(0).getAddress()).isEqualTo("host1:2434");
     assertThat(result.peers().get(1).getAddress()).isEqualTo("host2:2435");
@@ -45,7 +45,7 @@ class RaftHAConfigurationIT {
 
   @Test
   void threePartFormatParsed() {
-    final RaftHAServer.ParsedPeerList result = RaftHAServer.parsePeerList("host1:2434:2480,host2:2435:2481", 2434);
+    final RaftPeerAddressResolver.ParsedPeerList result = RaftPeerAddressResolver.parsePeerList("host1:2434:2480,host2:2435:2481", 2434);
     assertThat(result.peers()).hasSize(2);
     assertThat(result.peers().get(0).getAddress()).isEqualTo("host1:2434");
     assertThat(result.httpAddresses().get(result.peers().get(0).getId())).isEqualTo("host1:2480");
@@ -53,7 +53,7 @@ class RaftHAConfigurationIT {
 
   @Test
   void fourPartFormatWithPriorityParsed() {
-    final RaftHAServer.ParsedPeerList result = RaftHAServer.parsePeerList("host1:2434:2480:10", 2434);
+    final RaftPeerAddressResolver.ParsedPeerList result = RaftPeerAddressResolver.parsePeerList("host1:2434:2480:10", 2434);
     assertThat(result.peers()).hasSize(1);
     assertThat(result.peers().get(0).getPriority()).isEqualTo(10);
   }
@@ -61,7 +61,7 @@ class RaftHAConfigurationIT {
   @Test
   void allLocalhostAddressesAllowed() {
     // All-localhost is fine - only mixing is rejected
-    assertThatCode(() -> RaftHAServer.parsePeerList("localhost:2434,localhost:2435,127.0.0.1:2436", 2434))
+    assertThatCode(() -> RaftPeerAddressResolver.parsePeerList("localhost:2434,localhost:2435,127.0.0.1:2436", 2434))
         .doesNotThrowAnyException();
   }
 }

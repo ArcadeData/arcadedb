@@ -25,44 +25,44 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Edge cases for {@link RaftHAServer#parsePeerList} not covered by {@link RaftHAServerTest}.
+ * Edge cases for {@link RaftPeerAddressResolver#parsePeerList} not covered by {@link RaftHAServerTest}.
  * Ported from apache-ratis branch.
  */
 class RaftHAServerAddressParsingTest {
 
   @Test
   void emptyStringThrows() {
-    assertThatThrownBy(() -> RaftHAServer.parsePeerList("", 2434))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("", 2434))
         .isInstanceOf(ServerException.class);
   }
 
   @Test
   void blankEntryThrows() {
-    assertThatThrownBy(() -> RaftHAServer.parsePeerList("  ", 2434))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("  ", 2434))
         .isInstanceOf(ServerException.class);
   }
 
   @Test
   void tooManyColonsThrows() {
-    assertThatThrownBy(() -> RaftHAServer.parsePeerList("host:1:2:3:4", 2434))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("host:1:2:3:4", 2434))
         .isInstanceOf(ServerException.class);
   }
 
   @Test
   void blankHostnameThrows() {
-    assertThatThrownBy(() -> RaftHAServer.parsePeerList(":2434", 2434))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList(":2434", 2434))
         .isInstanceOf(ServerException.class);
   }
 
   @Test
   void nonNumericPriorityThrows() {
-    assertThatThrownBy(() -> RaftHAServer.parsePeerList("host:2434:2480:abc", 2434))
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("host:2434:2480:abc", 2434))
         .isInstanceOf(ServerException.class);
   }
 
   @Test
   void singleNodeCluster() {
-    final var parsed = RaftHAServer.parsePeerList("myhost:2434:2480", 2434);
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:2434:2480", 2434);
     assertThat(parsed.peers()).hasSize(1);
     assertThat(parsed.peers().get(0).getAddress()).isEqualTo("myhost:2434");
     assertThat(parsed.httpAddresses()).hasSize(1);
@@ -72,13 +72,13 @@ class RaftHAServerAddressParsingTest {
   void trailingCommaIgnored() {
     // parsePeerList splits on comma; trailing comma creates empty entry that should be handled
     // This test documents the current behavior - adjust if it should throw instead
-    final var parsed = RaftHAServer.parsePeerList("host1:2434,host2:2435", 2434);
+    final var parsed = RaftPeerAddressResolver.parsePeerList("host1:2434,host2:2435", 2434);
     assertThat(parsed.peers()).hasSize(2);
   }
 
   @Test
   void leadingWhitespaceInEntryTrimmed() {
-    final var parsed = RaftHAServer.parsePeerList("  host1:2434 , host2:2435 ", 2434);
+    final var parsed = RaftPeerAddressResolver.parsePeerList("  host1:2434 , host2:2435 ", 2434);
     assertThat(parsed.peers()).hasSize(2);
     assertThat(parsed.peers().get(0).getAddress()).isEqualTo("host1:2434");
     assertThat(parsed.peers().get(1).getAddress()).isEqualTo("host2:2435");
