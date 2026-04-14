@@ -242,9 +242,13 @@ public class RaftGroupCommitter {
 
         try {
           final RaftClientReply watchReply = watchFuture.get(haServer.getQuorumTimeout(), TimeUnit.MILLISECONDS);
-          batch.get(i).future.complete(watchReply.isSuccess() ? null : new QuorumNotReachedException("ALL quorum not reached"));
+          // MAJORITY already committed (applyTransaction fired on the leader with origin-skip).
+          // Use MajorityCommittedAllFailedException so ReplicatedDatabase.commit() knows to
+          // call commit2ndPhase() rather than roll back - otherwise the leader's database
+          // permanently misses this transaction while lastAppliedIndex already reflects it.
+          batch.get(i).future.complete(watchReply.isSuccess() ? null : new MajorityCommittedAllFailedException("ALL quorum not reached"));
         } catch (final Exception e) {
-          batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum watch failed: " + e, e));
+          batch.get(i).future.complete(new MajorityCommittedAllFailedException("ALL quorum watch failed: " + e, e));
         }
       }
     }

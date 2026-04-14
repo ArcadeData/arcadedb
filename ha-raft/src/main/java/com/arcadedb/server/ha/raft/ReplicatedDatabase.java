@@ -147,7 +147,15 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
     // REPLICATION (no lock held): send WAL to Ratis and wait for quorum.
     // No database lock is needed - we only send captured bytes over gRPC.
-    // If this fails (quorum not reached), phase 2 never executes -> no local writes -> no divergence.
+    //
+    // Three outcomes:
+    //  - Success: MAJORITY (or ALL) ack'd. Ratis called applyTransaction() on the leader's
+    //    state machine (origin-skip fired), then returned the client reply. Proceed to phase 2.
+    //  - MajorityCommittedAllFailedException: MAJORITY committed (applyTransaction fired with
+    //    origin-skip), but ALL watch failed. Must still call commit2ndPhase() to write pages
+    //    locally - otherwise lastAppliedIndex advanced but database is stale. Re-throw so the
+    //    client knows ALL quorum was not reached.
+    //  - Any other exception: entry was NOT committed by Raft; phase 2 must not run. Rollback.
     //
     // Safety: server.getHA() is guaranteed non-null here because ReplicatedDatabase is only created
     // when HA is enabled, and the RaftHAPlugin instance is set before databases are loaded.
@@ -160,6 +168,15 @@ public class ReplicatedDatabase implements DatabaseInternal {
       raftHA.replicateTransaction(getName(), payload.delta, payload.bufferChanges,
           payload.schemaJson, payload.filesToAdd, payload.filesToRemove);
       HALog.log(this, HALog.TRACE, "WAL replication completed: db=%s", getName());
+    } catch (final MajorityCommittedAllFailedException e) {
+      // MAJORITY quorum committed the entry - Ratis already called applyTransaction() on this
+      // leader with the origin-skip. We must apply locally to prevent permanent divergence
+      // between lastAppliedIndex and the actual database state. Re-throw after applying so the
+      // client receives the ALL-quorum failure and can decide whether to retry.
+      HALog.log(this, HALog.BASIC,
+          "ALL quorum watch failed after MAJORITY commit; applying locally to prevent leader divergence: db=%s", getName());
+      applyLocallyAfterMajorityCommit(payload);
+      throw e;
     } catch (final NeedRetryException | TransactionException e) {
       rollback();
       throw e;
@@ -215,6 +232,40 @@ public class ReplicatedDatabase implements DatabaseInternal {
           }
         }
         throw e;
+      } finally {
+        current.popIfNotLastTransaction();
+      }
+      return null;
+    });
+  }
+
+  /**
+   * Applies the transaction locally after MAJORITY quorum was committed but the ALL watch failed.
+   * Ratis already called {@code applyTransaction()} with the origin-skip on this leader, so
+   * {@code lastAppliedIndex} was advanced but the page writes never happened. Without this call,
+   * the leader's database permanently diverges from its own Raft log.
+   */
+  private void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
+    proxied.executeInReadLock(() -> {
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+      try {
+        payload.tx.commit2ndPhase(payload.phase1);
+        if (getSchema().getEmbedded().isDirty())
+          getSchema().getEmbedded().saveConfiguration();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Phase 2 commit failed during ALL-quorum recovery (db=%s, txId=%s). "
+                + "Leader database may be inconsistent. Stepping down so a node with correct state takes over. Error: %s",
+            getName(), payload.tx, e.getMessage());
+        try {
+          final HAPlugin ha = server.getHA();
+          if (ha != null && ha.isLeader())
+            ha.stepDown();
+        } catch (final Exception stepDownEx) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to step down after ALL-quorum recovery failure (db=%s): %s. Manual intervention required.",
+              getName(), stepDownEx.getMessage());
+        }
       } finally {
         current.popIfNotLastTransaction();
       }

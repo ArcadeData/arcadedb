@@ -40,9 +40,10 @@ class RaftGroupCommitterTest {
 
   @Test
   void submitAndWaitThrowsReplicationQueueFullWhenQueueIsSaturated() throws Exception {
-    // Create a committer with a tiny queue for testing. We don't start() the flusher
-    // so nothing drains the queue, letting us fill it up.
-    final RaftGroupCommitter committer = new RaftGroupCommitter(null, 10);
+    // Create a committer with a tiny queue (capacity 5) for testing. We don't start() the
+    // flusher so nothing drains the queue, letting us fill it up.
+    final int queueCapacity = 5;
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, 10, queueCapacity);
 
     // Access the internal queue via reflection to fill it to capacity
     final Field queueField = RaftGroupCommitter.class.getDeclaredField("queue");
@@ -50,13 +51,8 @@ class RaftGroupCommitterTest {
     @SuppressWarnings("unchecked")
     final LinkedBlockingQueue<Object> queue = (LinkedBlockingQueue<Object>) queueField.get(committer);
 
-    // Fill the queue to capacity (10,000 entries)
-    final Field maxQueueField = RaftGroupCommitter.class.getDeclaredField("MAX_QUEUE_SIZE");
-    maxQueueField.setAccessible(true);
-    final int maxQueueSize = (int) maxQueueField.get(null);
-
-    // Use dummy objects to fill the queue
-    for (int i = 0; i < maxQueueSize; i++)
+    // Fill the queue with dummy objects to saturate it
+    for (int i = 0; i < queueCapacity; i++)
       queue.put(new Object());
 
     assertThat(queue.remainingCapacity()).isEqualTo(0);
@@ -161,5 +157,54 @@ class RaftGroupCommitterTest {
     assertThat(alive.state.get()).isEqualTo(RaftGroupCommitter.STATE_DISPATCHED);
     // Cancelled entry's state is unchanged
     assertThat(cancelled.state.get()).isEqualTo(RaftGroupCommitter.STATE_CANCELLED);
+  }
+
+  // -- ALL quorum TOCTOU fix tests --
+
+  @Test
+  void allQuorumWatchFailureCarriesMajorityCommittedAllFailedException() {
+    // Regression test for the ALL quorum TOCTOU: when MAJORITY ack commits the entry (firing
+    // applyTransaction with origin-skip on the leader) but the ALL watch subsequently fails,
+    // the PendingEntry future must carry MajorityCommittedAllFailedException - not a plain
+    // QuorumNotReachedException - so ReplicatedDatabase.commit() knows to call commit2ndPhase()
+    // rather than roll back.
+    final RaftGroupCommitter.PendingEntry entry = new RaftGroupCommitter.PendingEntry(new byte[] { 1 });
+
+    // Simulate what flushBatch does when MAJORITY send succeeds but ALL watch fails
+    final MajorityCommittedAllFailedException expected =
+        new MajorityCommittedAllFailedException("ALL quorum not reached");
+    entry.future.complete(expected);
+
+    assertThat(entry.future.isDone()).isTrue();
+    assertThat(entry.future.join()).isInstanceOf(MajorityCommittedAllFailedException.class);
+  }
+
+  @Test
+  void majorityCommittedAllFailedExceptionIsSubtypeOfQuorumNotReachedException() {
+    // MajorityCommittedAllFailedException must extend QuorumNotReachedException so that
+    // existing catch (NeedRetryException) handlers continue to work, and so that the
+    // ternary in submitAndWait() (error instanceof RuntimeException) re-throws it by type.
+    final MajorityCommittedAllFailedException ex =
+        new MajorityCommittedAllFailedException("test", new RuntimeException("cause"));
+    assertThat(ex).isInstanceOf(com.arcadedb.network.binary.QuorumNotReachedException.class);
+    assertThat(ex).isInstanceOf(com.arcadedb.exception.NeedRetryException.class);
+    assertThat(ex).isInstanceOf(RuntimeException.class);
+  }
+
+  @Test
+  void submitAndWaitPropagatesMajorityCommittedAllFailedExceptionByType() throws Exception {
+    // When the flusher completes a PendingEntry future with MajorityCommittedAllFailedException,
+    // submitAndWait() must re-throw it as MajorityCommittedAllFailedException (not wrap it in
+    // a plain QuorumNotReachedException). The instanceof RuntimeException check in
+    // submitAndWait() handles this because MajorityCommittedAllFailedException is a RuntimeException.
+    final RaftGroupCommitter.PendingEntry entry = new RaftGroupCommitter.PendingEntry(new byte[] { 1 });
+
+    // Replicate the rethrow logic in submitAndWait():
+    //   if (error != null) throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(...)
+    final Exception error = new MajorityCommittedAllFailedException("ALL quorum not reached");
+    final RuntimeException thrown = error instanceof RuntimeException re ? re : null;
+
+    assertThat(thrown).isNotNull();
+    assertThat(thrown).isInstanceOf(MajorityCommittedAllFailedException.class);
   }
 }

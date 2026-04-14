@@ -68,9 +68,13 @@ import java.util.logging.Level;
 /**
  * Ratis state machine for ArcadeDB replication. Each committed Raft log entry contains a serialized
  * database transaction (WAL page diffs) that is applied identically on all follower nodes.
- * On the originating node, transactions are committed locally via commit2ndPhase() and the state machine
- * apply is skipped to avoid double-application. Origin is determined by comparing the originPeerId
- * embedded in the log entry against the local peer ID, avoiding TOCTOU races with live leadership state.
+ *
+ * <p>On the originating leader, {@code applyTransaction()} fires (step 4 in the sequence below)
+ * BEFORE {@code commit2ndPhase()} runs (step 7). The origin-skip optimization skips the state
+ * machine apply on the leader to prevent double-application once {@code commit2ndPhase()} runs.
+ * For ALL quorum, if the watch fails after MAJORITY ack, {@link ReplicatedDatabase} catches
+ * {@link MajorityCommittedAllFailedException} and still calls {@code commit2ndPhase()} to keep
+ * the leader database consistent with its own Raft log.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -296,30 +300,37 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     if (db == null || !db.isOpen())
       throw new ReplicationException("Database '" + entry.databaseName() + "' is not available");
 
-    // The originating leader already applied changes locally via commit2ndPhase(). Skip the state
-    // machine apply to avoid double-applying page changes on the current leader only.
+    // The originating leader will apply changes locally via commit2ndPhase() after replicateTransaction()
+    // returns. Skip the state machine apply here to avoid double-applying page changes.
+    //
+    // Execution order on the leader (important for understanding the skip logic):
+    //   1. commit1stPhase() - WAL prepared, pages not yet written
+    //   2. replicateTransaction() blocks waiting for Raft commit
+    //   3. Raft gets MAJORITY ack -> commits the entry
+    //   4. applyTransaction() fires on this state machine (HERE) - skip fires if isLeader()
+    //   5. Ratis sends client reply (completing the future in replicateTransaction)
+    //   6. replicateTransaction() returns to the caller
+    //   7. commit2ndPhase() writes pages locally
+    //
+    // So applyTransaction() runs BEFORE commit2ndPhase(), not after.
     //
     // The skip only fires when BOTH conditions are true:
     //   1. This node's peer ID matches the originPeerId embedded in the log entry
     //   2. This node is currently the leader
     //
     // Condition 2 is critical for restart safety: if the leader crashes between Raft commit and
-    // commit2ndPhase(), the entry is in the Raft log but was never applied locally. On restart,
-    // this node becomes a follower (a new leader was elected during the outage). Ratis replays
-    // the entry, and because isLeader() returns false, the skip does NOT fire. The entry is
-    // applied via the normal follower path. The page version check in applyChanges() handles the
-    // case where commit2ndPhase() DID run before the crash (the already-applied pages are
-    // detected and skipped with a ConcurrentModificationException log, see below).
+    // commit2ndPhase() (step 3-7 above), the entry is in the Raft log but pages were never written.
+    // On restart, lastAppliedIndex is restored from the snapshot (not from in-memory state at crash
+    // time), so Ratis replays the entry from snapshot+1. Because isLeader() returns false on restart,
+    // the skip does NOT fire and the entry is applied via the normal follower path.
     //
-    // We call raftHA.isLeader() (which queries Ratis's internal role state directly via
-    // getDivision().getInfo().isLeader()) rather than the cached currentNodeIsLeader field.
-    // The cached field is updated by notifyLeaderChanged() on a separate thread: if a live
-    // leadership transfer happens between that write and the read here, we could see a stale
-    // true and skip an entry that was never committed locally via commit2ndPhase(), silently
-    // losing the transaction. The direct Ratis query reflects the authoritative role state and
-    // eliminates this race. A tiny TOCTOU window (between the isLeader() call and the return
-    // below) remains, but cannot cause data loss: commit2ndPhase() is always called before
-    // Ratis delivers the commit notification to the application layer on the leader path.
+    // ALL quorum TOCTOU: when ALL quorum is configured, step 3 fires applyTransaction() (skip)
+    // but step 5 may fail if the ALL watch times out. ReplicatedDatabase catches
+    // MajorityCommittedAllFailedException and still calls commit2ndPhase() to prevent divergence.
+    //
+    // We call raftHA.isLeader() (which queries Ratis's internal role state directly) rather than
+    // the cached currentNodeIsLeader field. The cached field is updated by notifyLeaderChanged()
+    // on a separate thread and could be stale during a concurrent leadership transfer.
     if (isOriginNode(entry.originPeerId()) && raftHA != null && raftHA.isLeader()) {
       HALog.log(this, HALog.TRACE, "Skipping WAL apply on origin node (commit2ndPhase handles it): db=%s", entry.databaseName());
       return;
