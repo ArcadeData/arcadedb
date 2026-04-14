@@ -297,6 +297,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       raftHAServer.stopLagMonitor();
     }
 
+    // If a snapshot gap was detected during reinitialize(), trigger the download now
+    // that we know who the leader is (primary path; the 30s watchdog is the fallback).
+    if (needsSnapshotDownload.compareAndSet(true, false)) {
+      LogManager.instance().log(this, Level.INFO,
+          "Leader change detected, triggering pending snapshot download from leader %s", leaderName);
+      lifecycleExecutor.submit(this::triggerSnapshotDownload);
+    }
+
     // Wake up any threads waiting for leadership change (e.g. leaveCluster)
     final Object notifier = raftHAServer.getLeaderChangeNotifier();
     synchronized (notifier) {

@@ -341,8 +341,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             raftHAServer.stepDown();
         } catch (final Exception stepDownEx) {
           LogManager.instance().log(this, Level.SEVERE,
-              "Failed to step down after ALL-quorum recovery failure (db=%s): %s. Manual intervention required.",
-              getName(), stepDownEx.getMessage());
+              "Failed to step down after ALL-quorum recovery failure (db=%s). "
+                  + "Forcing server stop to prevent leader-follower divergence.",
+              getName());
+          final Thread stopThread = new Thread(() -> {
+            try {
+              server.stop();
+            } catch (final Throwable t) {
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Server stop also failed (db=%s). Manual intervention required: %s",
+                  getName(), t.getMessage());
+            }
+          }, "arcadedb-emergency-stop");
+          stopThread.setDaemon(true);
+          stopThread.start();
         }
       } finally {
         current.popIfNotLastTransaction();
