@@ -245,6 +245,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final ByteString entry = RaftLogEntryCodec.encodeTxEntry(getName(), payload.walData(), payload.bucketDeltas());
       final RaftHAServer raft = requireRaftServer();
       raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
+    } catch (final MajorityCommittedAllFailedException e) {
+      // MAJORITY committed (applyTransaction fired with origin-skip, lastAppliedIndex advanced)
+      // but ALL-quorum watch failed. We MUST apply locally to prevent permanent divergence.
+      HALog.log(this, HALog.BASIC,
+          "ALL quorum watch failed after MAJORITY commit; applying locally to prevent leader divergence: db=%s", getName());
+      applyLocallyAfterMajorityCommit(payload);
+      throw e;
     } catch (final ArcadeDBException e) {
       rollback();
       throw e;
@@ -269,17 +276,74 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Phase 2 commit failed AFTER successful Raft replication (db=%s). "
-                + "Stepping down to prevent stale reads. Error: %s", getName(), e.getMessage());
+        if (e instanceof java.util.ConcurrentModificationException)
+          LogManager.instance().log(this, Level.SEVERE,
+              "Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). "
+                  + "A page was concurrently modified under file lock - this may indicate a locking bug. "
+                  + "Followers have applied this transaction but the leader has not. "
+                  + "Stepping down to prevent stale reads. Error: %s",
+              getName(), payload.tx(), e.getMessage());
+        else
+          LogManager.instance().log(this, Level.SEVERE,
+              "Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). "
+                  + "Followers have applied this transaction but the leader has not. "
+                  + "Stepping down to prevent stale reads. Error: %s",
+              getName(), payload.tx(), e.getMessage());
+        // Step down so a follower with correct state takes over.
         try {
           if (raftHAServer != null && raftHAServer.isLeader())
             raftHAServer.stepDown();
         } catch (final Exception stepDownEx) {
           LogManager.instance().log(this, Level.SEVERE,
-              "Failed to step down after phase 2 failure (db=%s). Manual restart required.", getName());
+              "Failed to step down after phase 2 failure (db=%s, txId=%s). "
+                  + "Forcing server stop to prevent leader-follower divergence.",
+              getName(), payload.tx());
+          // Schedule stop on a separate thread to avoid deadlock (we hold the read lock)
+          final Thread stopThread = new Thread(() -> {
+            try {
+              server.stop();
+            } catch (final Throwable t) {
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Server stop also failed (db=%s). Manual intervention required: %s",
+                  getName(), t.getMessage());
+            }
+          }, "arcadedb-emergency-stop");
+          stopThread.setDaemon(true);
+          stopThread.start();
         }
         throw e;
+      } finally {
+        current.popIfNotLastTransaction();
+      }
+      return null;
+    });
+  }
+
+  /**
+   * Applies phase 2 locally when ALL-quorum watch fails after MAJORITY commit.
+   * The Raft entry is durably committed (MAJORITY applied it, including origin-skip on the leader),
+   * so we must write the local pages to prevent permanent divergence.
+   */
+  private void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
+    proxied.executeInReadLock(() -> {
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+      try {
+        payload.tx().commit2ndPhase(payload.phase1());
+        if (getSchema().getEmbedded().isDirty())
+          getSchema().getEmbedded().saveConfiguration();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Phase 2 commit failed during ALL-quorum recovery (db=%s, txId=%s). "
+                + "Leader database may be inconsistent. Stepping down so a node with correct state takes over. Error: %s",
+            getName(), payload.tx(), e.getMessage());
+        try {
+          if (raftHAServer != null && raftHAServer.isLeader())
+            raftHAServer.stepDown();
+        } catch (final Exception stepDownEx) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to step down after ALL-quorum recovery failure (db=%s): %s. Manual intervention required.",
+              getName(), stepDownEx.getMessage());
+        }
       } finally {
         current.popIfNotLastTransaction();
       }
