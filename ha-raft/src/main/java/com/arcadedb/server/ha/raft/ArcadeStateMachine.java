@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -44,10 +45,16 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -87,6 +94,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile ArcadeDBServer server;
   private volatile RaftHAServer   raftHAServer;
 
+  private static final long SNAPSHOT_GAP_TOLERANCE = 10;
+
+  private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(r -> {
+    final Thread t = new Thread(r, "arcadedb-sm-lifecycle");
+    t.setDaemon(true);
+    return t;
+  });
+
+  private final AtomicBoolean needsSnapshotDownload = new AtomicBoolean(false);
+  private final AtomicBoolean catchingUp             = new AtomicBoolean(false);
+
   public void setServer(final ArcadeDBServer server) {
     this.server = server;
   }
@@ -121,9 +139,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public void reinitialize() throws IOException {
     final var snapshotInfo = storage.getLatestSnapshot();
-    if (snapshotInfo != null)
-      lastAppliedIndex.set(snapshotInfo.getIndex());
-    else
+    if (snapshotInfo != null) {
+      final long snapshotIndex = snapshotInfo.getIndex();
+      final long persistedApplied = readPersistedAppliedIndex();
+      if (persistedApplied >= 0 && snapshotIndex > persistedApplied + SNAPSHOT_GAP_TOLERANCE) {
+        LogManager.instance().log(this, Level.INFO,
+            "Snapshot index %d is ahead of persisted applied index %d, will download from leader when available",
+            snapshotIndex, persistedApplied);
+        needsSnapshotDownload.set(true);
+
+        // Watchdog: if notifyLeaderChanged() doesn't fire within 30 seconds, trigger download directly
+        lifecycleExecutor.submit(() -> {
+          try {
+            Thread.sleep(30_000);
+            if (needsSnapshotDownload.compareAndSet(true, false)) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Snapshot download watchdog: no leader change after 30s, triggering download directly");
+              triggerSnapshotDownload();
+            }
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Snapshot download watchdog failed", e);
+          }
+        });
+      }
+      lastAppliedIndex.set(snapshotIndex);
+      updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotIndex);
+    } else
       lastAppliedIndex.set(-1);
   }
 
@@ -137,6 +180,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final LogEntryProto entry = trx.getLogEntry();
     final ByteString data = entry.getStateMachineLogEntry().getLogData();
     final TermIndex termIndex = TermIndex.valueOf(entry);
+    final long index = termIndex.getIndex();
 
     try {
       final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(data);
@@ -149,16 +193,55 @@ public class ArcadeStateMachine extends BaseStateMachine {
         case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
       }
 
-      lastAppliedIndex.set(termIndex.getIndex());
-      updateLastAppliedTermIndex(termIndex.getTerm(), termIndex.getIndex());
+      final long previousApplied = lastAppliedIndex.getAndSet(index);
+      updateLastAppliedTermIndex(termIndex.getTerm(), index);
+      writePersistedAppliedIndex(index);
+
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
-      if (raftHAServer != null)
-        raftHAServer.notifyApplied();
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null) {
+        raftHA.notifyApplied();
+
+        // Detect hot resync on followers
+        if (!raftHA.isLeader()) {
+          final long gap = index - previousApplied;
+          if (gap > 1 && catchingUp.compareAndSet(false, true))
+            HALog.log(this, HALog.BASIC, "Follower catching up: gap=%d (previous=%d, current=%d)",
+                gap, previousApplied, index);
+          if (catchingUp.get()) {
+            final long commitIndex = raftHA.getCommitIndex();
+            if (commitIndex > 0 && index >= commitIndex) {
+              catchingUp.set(false);
+              HALog.log(this, HALog.BASIC, "Hot resync complete: applied=%d >= commit=%d", index, commitIndex);
+            }
+          }
+        }
+      }
       return CompletableFuture.completedFuture(Message.valueOf("OK"));
 
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error applying raft log entry at index %d", e, termIndex.getIndex());
+    } catch (final ReplicationException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Replication error at index %d: %s", e, index, e.getMessage());
       return CompletableFuture.failedFuture(e);
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(this, Level.WARNING, "Invalid raft log entry at index %d: %s", index, e.getMessage());
+      return CompletableFuture.failedFuture(e);
+    } catch (final Throwable e) {
+      // Unexpected errors (NPE, ClassCastException, OOM, etc.) indicate a bug that could cause
+      // state divergence if silently swallowed. Crash the server so the node recovers via snapshot.
+      LogManager.instance().log(this, Level.SEVERE,
+          "CRITICAL: Unexpected error applying Raft log entry at index %d. "
+              + "Shutting down to prevent state divergence.", e, index);
+      final Thread stopThread = new Thread(() -> {
+        try {
+          if (server != null)
+            server.stop();
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.SEVERE, "Emergency stop failed", t);
+        }
+      }, "arcadedb-emergency-stop");
+      stopThread.setDaemon(true);
+      stopThread.start();
+      return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
     }
   }
 
@@ -315,10 +398,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
     HALog.log(this, HALog.DETAILED, "Applying tx %d to database '%s' (pages=%d)",
         walTx.txId, decoded.databaseName(), walTx.pages.length);
 
-    // ignoreErrors=true: during Raft log replay on restart, log entries may already be applied to the
-    // database files (Ratis last-applied tracking can lag behind durable page writes). Skipping
-    // already-applied pages (page version >= log version) is safe; version-gap warnings are still logged.
-    db.getTransactionManager().applyChanges(walTx, decoded.bucketRecordDelta(), true);
+    try {
+      db.getTransactionManager().applyChanges(walTx, decoded.bucketRecordDelta(), false);
+    } catch (final WALVersionGapException e) {
+      // Version gap: WAL page version > DB page version + 1 - an intermediate transaction
+      // was never applied on this node. State has diverged; trigger snapshot resync.
+      LogManager.instance().log(this, Level.SEVERE,
+          "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
+          decoded.databaseName(), walTx.txId, e.getMessage());
+      throw new ReplicationException(
+          "WAL version gap detected - snapshot resync required (db=" + decoded.databaseName() + ")", e);
+    } catch (final com.arcadedb.exception.ConcurrentModificationException e) {
+      // Benign replay: WAL page version <= DB page version - the entry was already applied
+      // (via WAL recovery or a prior commit). Expected after cold restart or snapshot install.
+      LogManager.instance().log(this, Level.WARNING,
+          "Skipping already-applied WAL entry on follower (db=%s, txId=%d): %s",
+          decoded.databaseName(), walTx.txId, e.getMessage());
+    }
   }
 
   /**
@@ -470,6 +566,75 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     server.getSecurity().applyReplicatedUsers(payload);
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
+  }
+
+  private long readPersistedAppliedIndex() {
+    try {
+      final Path file = getAppliedIndexFile();
+      if (file != null && Files.exists(file))
+        return Long.parseLong(Files.readString(file).trim());
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not read persisted applied index: %s", e.getMessage());
+    }
+    return -1;
+  }
+
+  private void writePersistedAppliedIndex(final long index) {
+    try {
+      final Path file = getAppliedIndexFile();
+      if (file == null)
+        return;
+      Files.createDirectories(file.getParent());
+      // Write via a temp file + atomic rename to avoid corruption on crash
+      final Path tmp = file.resolveSibling("applied-index.tmp");
+      Files.writeString(tmp, Long.toString(index));
+      Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not write persisted applied index: %s", e.getMessage());
+    }
+  }
+
+  private Path getAppliedIndexFile() {
+    if (server == null)
+      return null;
+    final String dbDir = server.getConfiguration().getValueAsString(
+        com.arcadedb.GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+    if (dbDir == null)
+      return null;
+    return Path.of(dbDir, ".raft", "applied-index");
+  }
+
+  private void triggerSnapshotDownload() {
+    if (raftHAServer == null || server == null)
+      return;
+    final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
+    if (leaderHttpAddr == null) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot trigger snapshot download: leader HTTP address unknown");
+      return;
+    }
+    try {
+      final String clusterToken = server.getConfiguration().getValueAsString(
+          com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+      for (final String dbName : server.getDatabaseNames()) {
+        if (server.existsDatabase(dbName)) {
+          final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
+          final String databasePath = db.getDatabasePath();
+          db.close();
+          server.removeDatabase(dbName);
+          SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, clusterToken, server);
+        }
+      }
+      LogManager.instance().log(this, Level.INFO, "Snapshot download triggered by watchdog completed");
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Snapshot download triggered by watchdog failed", e);
+    }
+  }
+
+  @Override
+  public void close() throws IOException {
+    lifecycleExecutor.shutdownNow();
+    super.close();
   }
 
   /**
