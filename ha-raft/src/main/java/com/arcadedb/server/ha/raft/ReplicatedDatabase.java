@@ -102,6 +102,22 @@ public class ReplicatedDatabase implements DatabaseInternal {
     this.proxied.setWrappedDatabaseInstance(this);
   }
 
+  /**
+   * Commits the current transaction with Raft replication.
+   *
+   * <p>For {@link Quorum#MAJORITY}, the transaction is committed once a majority of peers acknowledge.
+   * For {@link Quorum#ALL}, an additional Watch(ALL_COMMITTED) is issued after the majority ack.
+   *
+   * <p><strong>ALL-quorum contract:</strong> success means all nodes confirmed the entry. If the ALL
+   * watch fails (leader step-down, follower stall, timeout), a {@link MajorityCommittedAllFailedException}
+   * is thrown. In this case the entry is majority-committed and durable - the leader still applies
+   * locally via {@code commit2ndPhase()} to prevent divergence. The caller receives the exception
+   * but the transaction will eventually be visible on all nodes.
+   *
+   * @throws MajorityCommittedAllFailedException if ALL quorum watch failed after majority commit
+   * @throws com.arcadedb.network.binary.QuorumNotReachedException if majority quorum was not reached (rollback occurred)
+   * @throws TransactionException on phase 1 or phase 2 commit failure
+   */
   @Override
   public void commit() {
     final boolean leader = isLeader();

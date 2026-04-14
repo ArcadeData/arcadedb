@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -35,15 +36,21 @@ import java.util.logging.Level;
  */
 public class ClusterMonitor {
 
-  private static final long                     LAG_WARN_INTERVAL_MS = 60_000;
+  static final long                              LAG_WARN_INTERVAL_MS = 60_000;
 
   private final long                            lagWarningThreshold;
+  private final LongSupplier                    clock;
   private volatile long                         leaderCommitIndex    = -1;
   private final ConcurrentHashMap<String, Long> replicaMatchIndexes  = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, Long> replicaLastWarnTime  = new ConcurrentHashMap<>();
 
   public ClusterMonitor(final long lagWarningThreshold) {
+    this(lagWarningThreshold, System::currentTimeMillis);
+  }
+
+  ClusterMonitor(final long lagWarningThreshold, final LongSupplier clock) {
     this.lagWarningThreshold = lagWarningThreshold;
+    this.clock = clock;
   }
 
   public void updateLeaderCommitIndex(final long commitIndex) {
@@ -58,7 +65,7 @@ public class ClusterMonitor {
 
     if (lagWarningThreshold > 0 && lag > lagWarningThreshold) {
       // Debounce: warn at most once per interval per replica
-      final long now = System.currentTimeMillis();
+      final long now = clock.getAsLong();
       final Long lastWarn = replicaLastWarnTime.get(replicaId);
       if (lastWarn == null || now - lastWarn >= LAG_WARN_INTERVAL_MS) {
         replicaLastWarnTime.put(replicaId, now);

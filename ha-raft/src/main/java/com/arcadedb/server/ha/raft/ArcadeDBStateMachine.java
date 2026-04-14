@@ -318,6 +318,21 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     }
   }
 
+  /**
+   * Applies a replicated transaction entry on a follower (or on a restarted leader replaying its log).
+   *
+   * <p>Execution proceeds in three phases:
+   * <ol>
+   *   <li><strong>Phase 1:</strong> Create physical files referenced by the WAL (idempotent)</li>
+   *   <li><strong>Phase 2:</strong> Apply WAL page changes (idempotent via page-version guard)</li>
+   *   <li><strong>Phase 3:</strong> Update schema metadata and remove dropped files</li>
+   * </ol>
+   *
+   * <p><strong>Follower isolation caveat:</strong> between Phase 2 and the deferred schema reload,
+   * concurrent readers may see committed page data but stale schema metadata. This window is
+   * sub-millisecond and consistent with follower eventual-consistency guarantees. Schema-dependent
+   * queries that observe this window will succeed on retry.
+   */
   private void applyTransactionEntry(final byte[] data) {
     final RaftLogEntryCodec.TransactionEntry entry = RaftLogEntryCodec.deserializeTransaction(data);
 
@@ -445,6 +460,16 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // Single schema reload after all phases complete. This avoids:
     // 1. Double reload when a transaction has both new files and schema changes
     // 2. A window where schema is ahead of WAL data for concurrent readers
+    //
+    // Follower isolation note: between Phase 2 (WAL apply) and this schema reload, concurrent
+    // readers on the follower may observe newly written page data (e.g., a new bucket's pages)
+    // but the schema does not yet reflect the new type or property. Reads that go through the
+    // schema layer (type.getProperty(), bucket lookup by type) may return stale metadata during
+    // this brief window. Direct page/record reads by RID are unaffected since they bypass the
+    // schema. This is acceptable because:
+    //   - Followers provide eventual consistency, not snapshot isolation
+    //   - The window is bounded by a single schema reload (typically sub-millisecond)
+    //   - Schema-dependent queries that fail during this window will succeed on retry
     if (needsSchemaReload) {
       try {
         db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, false);

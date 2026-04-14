@@ -20,6 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -75,5 +77,94 @@ class ClusterMonitorTest {
     monitor.updateReplicaMatchIndex("peer-1", 0);
     // Should not throw or log (no assertion on logging, just verifying no exception)
     assertThat(monitor.getReplicaLags().get("peer-1")).isEqualTo(10000);
+  }
+
+  @Test
+  void removeReplicaClearsLagEntry() {
+    final ClusterMonitor monitor = new ClusterMonitor(1000);
+    monitor.updateLeaderCommitIndex(100);
+    monitor.updateReplicaMatchIndex("peer-1", 80);
+    monitor.updateReplicaMatchIndex("peer-2", 90);
+    assertThat(monitor.getReplicaLags()).containsKeys("peer-1", "peer-2");
+
+    monitor.removeReplica("peer-1");
+
+    assertThat(monitor.getReplicaLags()).containsOnlyKeys("peer-2");
+  }
+
+  @Test
+  void removeReplicaClearsWarnState() {
+    final AtomicLong now = new AtomicLong(1000);
+    final ClusterMonitor monitor = new ClusterMonitor(10, now::get);
+    monitor.updateLeaderCommitIndex(100);
+
+    // Trigger a warning for peer-1
+    monitor.updateReplicaMatchIndex("peer-1", 0);
+
+    // Remove and re-add the same replica - it should be able to warn again immediately
+    monitor.removeReplica("peer-1");
+    monitor.updateReplicaMatchIndex("peer-1", 0);
+    // No exception - the warn state was cleared so the second update logs without debounce
+  }
+
+  @Test
+  void removeNonExistentReplicaIsNoOp() {
+    final ClusterMonitor monitor = new ClusterMonitor(1000);
+    monitor.removeReplica("ghost");
+    assertThat(monitor.getReplicaLags()).isEmpty();
+  }
+
+  @Test
+  void debouncesSuppressesWarningWithinInterval() {
+    final AtomicLong now = new AtomicLong(1000);
+    final ClusterMonitor monitor = new ClusterMonitor(10, now::get);
+    monitor.updateLeaderCommitIndex(100);
+
+    // First update triggers the warning and records the warn time
+    monitor.updateReplicaMatchIndex("peer-1", 0);
+
+    // Advance time by less than the debounce interval
+    now.set(1000 + ClusterMonitor.LAG_WARN_INTERVAL_MS - 1);
+    // This should not throw - warning is suppressed
+    monitor.updateReplicaMatchIndex("peer-1", 5);
+
+    // Lag is still tracked correctly even though warning was suppressed
+    assertThat(monitor.getReplicaLags().get("peer-1")).isEqualTo(95);
+  }
+
+  @Test
+  void debounceAllowsWarningAfterInterval() {
+    final AtomicLong now = new AtomicLong(1000);
+    final ClusterMonitor monitor = new ClusterMonitor(10, now::get);
+    monitor.updateLeaderCommitIndex(100);
+
+    // First update triggers warning
+    monitor.updateReplicaMatchIndex("peer-1", 0);
+
+    // Advance past the debounce interval
+    now.set(1000 + ClusterMonitor.LAG_WARN_INTERVAL_MS);
+    // This should log a new warning (no exception)
+    monitor.updateReplicaMatchIndex("peer-1", 5);
+
+    assertThat(monitor.getReplicaLags().get("peer-1")).isEqualTo(95);
+  }
+
+  @Test
+  void catchUpClearsWarnState() {
+    final AtomicLong now = new AtomicLong(1000);
+    final ClusterMonitor monitor = new ClusterMonitor(10, now::get);
+    monitor.updateLeaderCommitIndex(100);
+
+    // Trigger warning
+    monitor.updateReplicaMatchIndex("peer-1", 0);
+
+    // Replica catches up (lag drops below threshold)
+    monitor.updateReplicaMatchIndex("peer-1", 95);
+
+    // Now lag exceeds threshold again - should warn immediately because catch-up cleared the state
+    now.set(1001); // barely any time passed
+    monitor.updateReplicaMatchIndex("peer-1", 0);
+
+    assertThat(monitor.getReplicaLags().get("peer-1")).isEqualTo(100);
   }
 }

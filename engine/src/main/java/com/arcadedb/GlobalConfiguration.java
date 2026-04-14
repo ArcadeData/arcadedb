@@ -596,6 +596,11 @@ public enum GlobalConfiguration {
   HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", SCOPE.SERVER,
       "TCP/IP port number used for incoming replication connections", String.class, "2424-2433"),
 
+  HA_RATIS_RESTART_MAX_RETRIES("arcadedb.ha.ratisRestartMaxRetries", SCOPE.SERVER,
+      "Maximum consecutive Ratis restart failures before the server shuts down for cluster-level recovery. "
+          + "A node recovering from a network partition may experience rapid apply failures during replay; "
+          + "increase this value if premature shutdown is observed in partition-recovery scenarios", Integer.class, 10),
+
   HA_SNAPSHOT_MAX_CONCURRENT("arcadedb.ha.snapshotMaxConcurrent", SCOPE.SERVER,
       "Maximum concurrent snapshot downloads served by this node. Limits NIC saturation and read-lock stacking during mass follower restarts. "
           + "Excess requests receive HTTP 503 so followers retry with backoff", Integer.class, 2),

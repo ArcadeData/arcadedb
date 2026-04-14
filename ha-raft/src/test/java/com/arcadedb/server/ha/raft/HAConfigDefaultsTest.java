@@ -51,6 +51,11 @@ class HAConfigDefaultsTest {
   }
 
   @Test
+  void ratisRestartMaxRetriesDefaultIsTen() {
+    assertThat(GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES.getValueAsInteger()).isEqualTo(10);
+  }
+
+  @Test
   void haClusterTokenDefaultIsEmpty() {
     // Cluster token should be empty by default (no shared secret configured)
     final String token = GlobalConfiguration.HA_CLUSTER_TOKEN.getValueAsString();

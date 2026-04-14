@@ -308,13 +308,14 @@ public class RaftHAServer {
       return;
     }
 
-    // After 10 consecutive failures, the problem is persistent (port conflict, bad storage,
+    // After N consecutive failures, the problem is persistent (port conflict, bad storage,
     // full disk). Stop the server so the cluster can heal (other nodes take over) and
     // orchestrators (K8s, systemd) can restart the process with a clean state.
-    if (restartFailureCount >= 10) {
+    final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES);
+    if (restartFailureCount >= maxRetries) {
       LogManager.instance().log(this, Level.SEVERE,
-          "Ratis restart failed %d consecutive times. Stopping server for cluster-level recovery",
-          restartFailureCount);
+          "Ratis restart failed %d consecutive times (max=%d). Stopping server for cluster-level recovery",
+          restartFailureCount, maxRetries);
       final Thread stopThread = new Thread(() -> {
         try { server.stop(); } catch (final Exception ignored) {}
       }, "arcadedb-restart-failure-stop");
@@ -367,13 +368,13 @@ public class RaftHAServer {
 
     } catch (final Exception e) {
       restartFailureCount++;
-      if (restartFailureCount >= 10)
+      if (restartFailureCount >= maxRetries)
         LogManager.instance().log(this, Level.SEVERE,
-            "Failed to restart Ratis server after %d attempts. Giving up - manual restart required: %s",
-            restartFailureCount, e.getMessage());
+            "Failed to restart Ratis server after %d attempts (max=%d). Giving up - manual restart required: %s",
+            restartFailureCount, maxRetries, e.getMessage());
       else
         LogManager.instance().log(this, Level.WARNING,
-            "Failed to restart Ratis server (attempt %d/10): %s", restartFailureCount, e.getMessage());
+            "Failed to restart Ratis server (attempt %d/%d): %s", restartFailureCount, maxRetries, e.getMessage());
     }
   }
 
