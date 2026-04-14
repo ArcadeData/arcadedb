@@ -287,9 +287,10 @@ public class RaftPeerAddressResolver {
       return result;
     }
 
-    // Detect bare (un-bracketed) IPv6: more than 2 colons and no dots
+    // Detect bare (un-bracketed) IPv6: either contains "::" (IPv6 shorthand, never valid in
+    // hostname:port format) or has 4+ colons without dots (host:raft:http:priority has at most 3).
     final long colonCount = address.chars().filter(c -> c == ':').count();
-    if (colonCount > 2 && !address.contains("."))
+    if ((colonCount > 3 || address.contains("::")) && !address.contains("."))
       throw new ConfigurationException(
           "IPv6 addresses must use bracketed notation (e.g., [::1]:2424) in HA peer address: " + address);
 

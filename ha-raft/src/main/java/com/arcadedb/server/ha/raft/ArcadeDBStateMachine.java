@@ -367,22 +367,18 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
       try {
         db.getTransactionManager().applyChanges(walTx, entry.bucketRecordDelta(), false);
+      } catch (final com.arcadedb.exception.WALVersionGapException e) {
+        // Version gap: WAL page version > DB page version + 1 - an intermediate transaction
+        // was never applied on this node. This should not happen and may indicate state divergence.
+        LogManager.instance().log(this, Level.SEVERE,
+            "Unexpected WAL version gap on follower - possible state divergence (db=%s, txId=%d): %s",
+            entry.databaseName(), walTx.txId, e.getMessage());
       } catch (final com.arcadedb.exception.ConcurrentModificationException e) {
-        // applyChanges() throws ConcurrentModificationException in two distinct situations:
-        // 1. Benign replay: WAL page version <= DB page version - the entry was already applied
-        //    (via WAL recovery or a prior commit). Expected after cold restart or snapshot install.
-        // 2. Version gap: WAL page version > DB page version + 1 - an intermediate transaction
-        //    was never applied on this node. This should not happen and may indicate state divergence.
-        //    The message starts with "Cannot apply changes" in this case.
-        final String msg = e.getMessage();
-        if (msg != null && msg.startsWith("Cannot apply changes"))
-          LogManager.instance().log(this, Level.SEVERE,
-              "Unexpected WAL version gap on follower - possible state divergence (db=%s, txId=%d): %s",
-              entry.databaseName(), walTx.txId, msg);
-        else
-          LogManager.instance().log(this, Level.WARNING,
-              "Skipping already-applied WAL entry on follower (db=%s, txId=%d): %s",
-              entry.databaseName(), walTx.txId, msg);
+        // Benign replay: WAL page version <= DB page version - the entry was already applied
+        // (via WAL recovery or a prior commit). Expected after cold restart or snapshot install.
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipping already-applied WAL entry on follower (db=%s, txId=%d): %s",
+            entry.databaseName(), walTx.txId, e.getMessage());
       }
     }
 

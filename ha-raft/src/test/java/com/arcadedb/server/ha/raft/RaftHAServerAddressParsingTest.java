@@ -122,4 +122,33 @@ class RaftHAServerAddressParsingTest {
     assertThat(result[0]).isEqualTo("[fe80::1]");
     assertThat(result[1]).isEqualTo("2424");
   }
+
+  @Test
+  void parseHostPortWithFourPartDotlessHostname() {
+    // host:raftPort:httpPort:priority with a dotless hostname has 3 colons and no dots
+    final String[] result = RaftPeerAddressResolver.parseHostPort("localhost:2424:2480:10");
+    assertThat(result).hasSize(4);
+    assertThat(result[0]).isEqualTo("localhost");
+    assertThat(result[1]).isEqualTo("2424");
+    assertThat(result[2]).isEqualTo("2480");
+    assertThat(result[3]).isEqualTo("10");
+  }
+
+  @Test
+  void parseHostPortIPv6WithFourPartFormat() {
+    final String[] result = RaftPeerAddressResolver.parseHostPort("[::1]:2424:2480:10");
+    assertThat(result).hasSize(4);
+    assertThat(result[0]).isEqualTo("[::1]");
+    assertThat(result[1]).isEqualTo("2424");
+    assertThat(result[2]).isEqualTo("2480");
+    assertThat(result[3]).isEqualTo("10");
+  }
+
+  @Test
+  void parseHostPortRejectsBareIPv6WithManyColons() {
+    // 2001:db8:0:0:1:2424 has 5 colons and no dots - clearly bare IPv6
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parseHostPort("2001:db8:0:0:1:2424"))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("IPv6");
+  }
 }

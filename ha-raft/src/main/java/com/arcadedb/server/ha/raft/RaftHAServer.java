@@ -291,24 +291,7 @@ public class RaftHAServer implements HAPlugin {
       LogManager.instance().log(this, Level.WARNING,
           "HA cluster is using the default cluster name '%s'. For stronger token domain separation, set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken",
           clusterName);
-    // Domain separation: the cluster name appears in both the PBKDF2 password and the salt.
-    // In the password (clusterName + ":" + rootPassword) it ensures that two clusters with the
-    // same root password produce different tokens. In the salt ("arcadedb-cluster-token:" + clusterName)
-    // it provides a fixed, cluster-specific salt so that all nodes in the same cluster derive the
-    // same token deterministically without sharing state. The "arcadedb-cluster-token:" prefix
-    // prevents the salt from colliding with salts used for other purposes.
-    final String password = clusterName + ":" + rootPassword;
-    try {
-      final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
-      final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-      final PBEKeySpec spec = new PBEKeySpec(
-          password.toCharArray(), salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH_BITS);
-      final byte[] hash = factory.generateSecret(spec).getEncoded();
-      spec.clearPassword();
-      this.clusterToken = HexFormat.of().formatHex(hash);
-    } catch (final Exception e) {
-      throw new RuntimeException("Failed to derive cluster token", e);
-    }
+    this.clusterToken = deriveTokenFromPassword(clusterName, rootPassword);
 
     if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE)))
       LogManager.instance().log(this, Level.WARNING,
@@ -1929,15 +1912,24 @@ public class RaftHAServer implements HAPlugin {
       throw new com.arcadedb.exception.ConfigurationException(
           "Cannot derive cluster token without a root password. Set arcadedb.server.rootPassword or arcadedb.ha.clusterToken");
 
+    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, deriveTokenFromPassword(clusterName, rootPassword));
+  }
+
+  /**
+   * PBKDF2-HMAC-SHA256 derivation of a cluster token from a cluster name and root password.
+   * Domain separation: the cluster name appears in both the password and the salt so that
+   * two clusters with the same root password produce different tokens.
+   */
+  private static String deriveTokenFromPassword(final String clusterName, final String rootPassword) {
     final String password = clusterName + ":" + rootPassword;
     try {
-      final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(java.nio.charset.StandardCharsets.UTF_8);
-      final javax.crypto.SecretKeyFactory factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-      final javax.crypto.spec.PBEKeySpec spec = new javax.crypto.spec.PBEKeySpec(
+      final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
+      final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+      final PBEKeySpec spec = new PBEKeySpec(
           password.toCharArray(), salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH_BITS);
       final byte[] hash = factory.generateSecret(spec).getEncoded();
       spec.clearPassword();
-      config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, HexFormat.of().formatHex(hash));
+      return HexFormat.of().formatHex(hash);
     } catch (final Exception e) {
       throw new RuntimeException("Failed to derive cluster token", e);
     }
@@ -2004,11 +1996,10 @@ public class RaftHAServer implements HAPlugin {
       return result;
     }
 
-    // Detect bare (un-bracketed) IPv6 by counting colons: more than 2 colons and no dots means
-    // this is likely an IPv6 address without brackets (e.g., "::1:2424" or "2001:db8::1:2424").
-    // The maximum for host:raft:http is 2 colons, so 3+ colons without dots is always IPv6.
+    // Detect bare (un-bracketed) IPv6: either contains "::" (IPv6 shorthand, never valid in
+    // hostname:port format) or has 4+ colons without dots (host:raft:http:priority has at most 3).
     final long colonCount = address.chars().filter(c -> c == ':').count();
-    if (colonCount > 2 && !address.contains("."))
+    if ((colonCount > 3 || address.contains("::")) && !address.contains("."))
       throw new ConfigurationException(
           "IPv6 addresses must use bracketed notation (e.g., [::1]:2424) in HA peer address: " + address);
 
