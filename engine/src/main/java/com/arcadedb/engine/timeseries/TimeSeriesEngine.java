@@ -566,6 +566,23 @@ public class TimeSeriesEngine implements AutoCloseable {
       shard.close();
   }
 
+  /**
+   * Drops all shards and deletes their data files from disk.
+   * Called when the timeseries type is dropped from the schema.
+   */
+  public void drop() throws IOException {
+    shardExecutor.shutdown();
+    try {
+      if (!shardExecutor.awaitTermination(30, TimeUnit.SECONDS))
+        shardExecutor.shutdownNow();
+    } catch (final InterruptedException e) {
+      shardExecutor.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
+    for (final TimeSeriesShard shard : shards)
+      shard.drop();
+  }
+
   // --- Private helpers ---
 
   private static final class PeekableIterator implements Iterator<Object[]> {

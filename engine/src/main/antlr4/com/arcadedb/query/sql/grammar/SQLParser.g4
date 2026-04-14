@@ -110,6 +110,7 @@ statement
 
     // DDL Statements - DROP variants
     | DROP TYPE dropTypeBody                         # dropTypeStmt
+    | DROP TIMESERIES TYPE dropTypeBody              # dropTimeSeriesTypeStmt
     | DROP PROPERTY dropPropertyBody                 # dropPropertyStmt
     | DROP INDEX dropIndexBody                       # dropIndexStmt
     | DROP BUCKET dropBucketBody                     # dropBucketStmt

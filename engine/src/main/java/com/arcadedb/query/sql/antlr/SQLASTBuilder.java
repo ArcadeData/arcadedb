@@ -5877,6 +5877,25 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Visit DROP TIMESERIES TYPE statement - delegates to the same DropTypeStatement.
+   */
+  @Override
+  public DropTypeStatement visitDropTimeSeriesTypeStmt(final SQLParser.DropTimeSeriesTypeStmtContext ctx) {
+    final DropTypeStatement stmt = new DropTypeStatement(-1);
+    final SQLParser.DropTypeBodyContext bodyCtx = ctx.dropTypeBody();
+
+    if (bodyCtx.identifier() != null)
+      stmt.name = (Identifier) visit(bodyCtx.identifier());
+    else if (bodyCtx.inputParameter() != null)
+      stmt.nameParam = (InputParameter) visit(bodyCtx.inputParameter());
+
+    stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+    stmt.unsafe = bodyCtx.UNSAFE() != null;
+
+    return stmt;
+  }
+
+  /**
    * Visit DROP PROPERTY statement.
    */
   @Override

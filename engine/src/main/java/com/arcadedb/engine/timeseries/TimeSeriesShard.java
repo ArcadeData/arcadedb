@@ -750,6 +750,23 @@ public class TimeSeriesShard implements AutoCloseable {
     sealedStore.close();
   }
 
+  /**
+   * Drops this shard: deletes the sealed store file and removes the mutable bucket
+   * from the file manager. The mutable bucket file is deleted via the schema's file manager.
+   */
+  public void drop() throws IOException {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+
+    // Drop the mutable bucket via the page/file manager
+    final int fileId = mutableBucket.getFileId();
+    database.getPageManager().deleteFile(database, fileId);
+    database.getFileManager().dropFile(fileId);
+    schema.removeFile(fileId);
+
+    // Drop the sealed store file from disk
+    sealedStore.drop();
+  }
+
   // --- Private helpers ---
 
   private static void addFiltered(final List<Object[]> results, final List<Object[]> source, final TagFilter filter,

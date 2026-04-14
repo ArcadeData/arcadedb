@@ -1526,6 +1526,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexFile.close();
   }
 
+  /**
+   * Closes file handles and deletes the sealed store file from disk.
+   */
+  public void drop() throws IOException {
+    close();
+    final File f = new File(basePath + ".ts.sealed");
+    if (f.exists() && !f.delete())
+      throw new IOException("Failed to delete sealed store file: " + f.getAbsolutePath());
+  }
+
   // --- Private helpers ---
 
   /**

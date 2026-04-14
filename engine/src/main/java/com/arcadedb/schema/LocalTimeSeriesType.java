@@ -84,6 +84,21 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     }
   }
 
+  /**
+   * Drops this timeseries type: deletes all shard data files (mutable bucket and sealed store)
+   * from disk and shuts down the engine.
+   */
+  public void drop() {
+    if (engine != null) {
+      try {
+        engine.drop();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error dropping TimeSeriesEngine for type '%s': %s", e, name, e.getMessage());
+      }
+      engine = null;
+    }
+  }
+
   public String getTimestampColumn() {
     return timestampColumn;
   }
