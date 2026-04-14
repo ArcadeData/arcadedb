@@ -284,14 +284,16 @@ public class SnapshotInstaller {
     }
 
     if (connection instanceof javax.net.ssl.HttpsURLConnection httpsConn) {
-      try {
-        final javax.net.ssl.SSLContext sslContext = server.getHttpServer().getSSLContext();
-        if (sslContext != null)
-          httpsConn.setSSLSocketFactory(sslContext.getSocketFactory());
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Could not configure SSL for snapshot download, using default trust store: %s", e.getMessage());
-      }
+      final javax.net.ssl.SSLContext sslContext = server.getHttpServer().getSSLContext();
+      if (sslContext != null)
+        httpsConn.setSSLSocketFactory(sslContext.getSocketFactory());
+      // If SSL is enabled, getSSLContext() either returns a valid context or throws.
+      // If SSL is disabled, the connection should not be HTTPS. Reaching here with a null
+      // sslContext on an HTTPS connection means a URL/config mismatch - fail explicitly.
+      else
+        throw new ReplicationException(
+            "HTTPS snapshot connection but SSL is not enabled in configuration. "
+                + "Check arcadedb.network.useSSL and the snapshot URL: " + snapshotUrl);
     }
 
     connection.setRequestMethod("GET");
@@ -324,6 +326,21 @@ public class SnapshotInstaller {
             Files.createDirectories(targetFile);
           } else {
             Files.createDirectories(targetFile.getParent());
+
+            // Security: resolve symlinks in parent directories and verify the real path
+            // stays within tempDir. The normalize()+startsWith() check above handles ../
+            // path traversal, but a symlink in a parent component could redirect outside.
+            final Path realParent = targetFile.getParent().toRealPath();
+            final Path realTempDir = tempDir.toRealPath();
+            if (!realParent.startsWith(realTempDir))
+              throw new ReplicationException(
+                  "Symlink escape detected in snapshot parent directory: " + zipEntry.getName()
+                      + " (resolved to " + realParent + ", expected within " + realTempDir + ")");
+
+            // Also refuse to write through a symlink at the file level
+            if (Files.isSymbolicLink(targetFile))
+              throw new ReplicationException("Symlink detected in snapshot extraction path: " + zipEntry.getName());
+
             try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile())) {
               copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName());
             }
@@ -353,6 +370,11 @@ public class SnapshotInstaller {
       final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
       final String url = (useSsl ? "https" : "http") + "://" + leaderHttpAddr + "/api/v1/server";
       final HttpURLConnection conn = (HttpURLConnection) new URI(url).toURL().openConnection();
+      if (conn instanceof javax.net.ssl.HttpsURLConnection httpsConn) {
+        final javax.net.ssl.SSLContext sslContext = server.getHttpServer().getSSLContext();
+        if (sslContext != null)
+          httpsConn.setSSLSocketFactory(sslContext.getSocketFactory());
+      }
       conn.setRequestMethod("GET");
       conn.setConnectTimeout(10_000);
       conn.setReadTimeout(10_000);

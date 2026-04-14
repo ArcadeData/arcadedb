@@ -375,7 +375,8 @@ public class HttpServer implements ServerPlugin {
 
   /**
    * Returns the server's SSLContext built from the configured keystore and truststore,
-   * or null if SSL is not enabled. Used by snapshot downloads for inter-node HTTPS.
+   * or null if SSL is not enabled. Throws on configuration errors so callers can decide
+   * whether to fail or fall back.
    */
   public SSLContext getSSLContext() {
     if (!server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
@@ -383,7 +384,8 @@ public class HttpServer implements ServerPlugin {
     try {
       return createSSLContext();
     } catch (final Exception e) {
-      return null;
+      throw new com.arcadedb.exception.ConfigurationException(
+          "SSL is enabled but SSLContext creation failed. Check keystore/truststore configuration", e);
     }
   }
 

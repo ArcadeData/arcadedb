@@ -292,6 +292,15 @@ public class RaftHAServer {
    * partition caused gRPC connection failures). The existing state machine is reused since the
    * database state is on disk. The Ratis log and metadata are recovered from the persisted storage.
    */
+  /**
+   * Checks if the Ratis server is in a terminal state and restarts it if needed.
+   * <p>
+   * Thread safety: the method is {@code synchronized} on this instance, and the caller
+   * ({@link HealthMonitor}) runs on a single-threaded scheduled executor. Both guards
+   * prevent concurrent restarts: the executor serializes health-check ticks, and the
+   * lock blocks any other caller until the restart (synchronous, not spawned as a thread)
+   * completes. The next tick then observes the new healthy state and returns immediately.
+   */
   public synchronized void restartRatisIfNeeded() {
     if (raftServer == null)
       return;

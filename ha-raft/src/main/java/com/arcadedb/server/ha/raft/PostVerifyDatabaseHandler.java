@@ -132,6 +132,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
         final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
         try {
+          if (conn instanceof javax.net.ssl.HttpsURLConnection httpsConn) {
+            final javax.net.ssl.SSLContext sslContext = httpServer.getSSLContext();
+            if (sslContext != null)
+              httpsConn.setSSLSocketFactory(sslContext.getSocketFactory());
+          }
           conn.setRequestMethod("POST");
           conn.setRequestProperty("Content-Type", "application/json");
           conn.setConnectTimeout(PEER_CONNECT_TIMEOUT_MS);
