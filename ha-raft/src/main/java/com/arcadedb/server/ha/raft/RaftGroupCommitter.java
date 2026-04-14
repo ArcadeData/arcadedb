@@ -223,6 +223,12 @@ public class RaftGroupCommitter {
         else
           batch.get(i).future.complete(null); // success for MAJORITY
 
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        // Fail this and all remaining entries, then return so flushLoop() can see the interrupt
+        for (int j = i; j < batch.size(); j++)
+          batch.get(j).future.complete(new QuorumNotReachedException("Group commit interrupted during batch flush"));
+        return;
       } catch (final Exception e) {
         batch.get(i).future.complete(new QuorumNotReachedException("Group commit entry failed: " + e, e));
         if (allQuorum)
@@ -247,6 +253,12 @@ public class RaftGroupCommitter {
           // call commit2ndPhase() rather than roll back - otherwise the leader's database
           // permanently misses this transaction while lastAppliedIndex already reflects it.
           batch.get(i).future.complete(watchReply.isSuccess() ? null : new MajorityCommittedAllFailedException("ALL quorum not reached"));
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          for (int j = i; j < batch.size(); j++)
+            if (!batch.get(j).future.isDone())
+              batch.get(j).future.complete(new MajorityCommittedAllFailedException("ALL quorum watch interrupted"));
+          return;
         } catch (final Exception e) {
           batch.get(i).future.complete(new MajorityCommittedAllFailedException("ALL quorum watch failed: " + e, e));
         }

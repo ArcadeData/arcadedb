@@ -66,9 +66,7 @@ import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -140,8 +138,7 @@ public class RaftHAServer implements HAPlugin {
   private              RaftPeerId           localPeerId;
   private              Quorum               quorum;
   private              long                 quorumTimeout;
-  private final        Map<String, String>  peerHttpAddresses        = new ConcurrentHashMap<>();
-  private final        Set<String>          derivedAddressWarned     = ConcurrentHashMap.newKeySet();
+  private              RaftPeerAddressResolver addressResolver;
   private volatile     String               clusterToken;
   private              boolean              active;
 
@@ -189,14 +186,15 @@ public class RaftHAServer implements HAPlugin {
     this.configuration = configuration;
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    this.addressResolver = new RaftPeerAddressResolver(server, configuration);
 
     // Parse peers from HA_SERVER_LIST
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     if (serverList == null || serverList.isEmpty())
       throw new ConfigurationException("HA server list (arcadedb.ha.serverList) is required for Ratis HA");
 
-    final List<RaftPeer> peers = parsePeers(serverList);
-    this.localPeerId = resolveLocalPeerId(peers);
+    final List<RaftPeer> peers = addressResolver.parsePeers(serverList);
+    this.localPeerId = addressResolver.resolveLocalPeerId(peers);
 
     // If this node is configured as a replica, set its priority to 0 to prevent leader election.
     // Priority 0 tells Ratis this peer should never become leader.
@@ -328,7 +326,7 @@ public class RaftHAServer implements HAPlugin {
                 + "Without a NetworkPolicy, ANY pod in the cluster can inject Raft log entries. "
                 + "Either restrict arcadedb.ha.replicationIncomingHost to the pod IP, or apply a NetworkPolicy "
                 + "that limits ingress on port %d to ArcadeDB StatefulSet pods only",
-            incomingHost, parseFirstPort(configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS)));
+            incomingHost, RaftPeerAddressResolver.parseFirstPort(configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS)));
     }
 
     // Derive the cluster token eagerly at startup rather than lazily on the first request.
@@ -798,7 +796,7 @@ public class RaftHAServer implements HAPlugin {
         if (ex instanceof org.apache.ratis.protocol.exceptions.NotLeaderException nle) {
           final var suggestedLeader = nle.getSuggestedLeader();
           throw new ServerIsNotTheLeaderException("Not the leader (detected via read index)",
-              suggestedLeader != null ? peerHttpAddresses.get(suggestedLeader.getId().toString()) : null);
+              suggestedLeader != null ? addressResolver.getPeerHTTPAddress(suggestedLeader.getId()) : null);
         }
         throw new ReplicationException("Linearizable read check failed: " + ex.getMessage());
       }
@@ -821,7 +819,7 @@ public class RaftHAServer implements HAPlugin {
       if (e.getCause() instanceof org.apache.ratis.protocol.exceptions.NotLeaderException nle) {
         final var suggestedLeader = nle.getSuggestedLeader();
         throw new ServerIsNotTheLeaderException("Not the leader (detected via read index)",
-            suggestedLeader != null ? peerHttpAddresses.get(suggestedLeader.getId().toString()) : null);
+            suggestedLeader != null ? addressResolver.getPeerHTTPAddress(suggestedLeader.getId()) : null);
       }
       throw new ReplicationException("Linearizable read check failed: " + e.getMessage());
     }
@@ -1065,6 +1063,7 @@ public class RaftHAServer implements HAPlugin {
         return;
       lastClusterConfigHash = hash;
 
+      // Use warning level on purpose for a few releases until the whole HA module has been road tested
       LogManager.instance().log(this, Level.WARNING, "%s", output);
 
     } catch (final Exception e) {
@@ -1461,27 +1460,7 @@ public class RaftHAServer implements HAPlugin {
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
 
-      if (httpAddress != null && !httpAddress.isEmpty()) {
-        peerHttpAddresses.put(peerId, httpAddress);
-        LogManager.instance().log(this, Level.INFO, "Peer %s added with explicit HTTP address %s", peerId, httpAddress);
-      } else {
-        // Derive HTTP address from Raft address. This assumes the dynamically added peer uses the
-        // same HTTP/Raft port gap as this node, which may be incorrect for non-standard layouts.
-        try {
-          final String[] addrParts = parseHostPort(address);
-          final int raftPort = Integer.parseInt(addrParts[1]);
-          final int httpPortOffset = getHttpPortOffset();
-          final String derivedHttp = addrParts[0] + ":" + (raftPort + httpPortOffset);
-          peerHttpAddresses.put(peerId, derivedHttp);
-          LogManager.instance().log(this, Level.WARNING,
-              "Dynamically added peer '%s': no HTTP address provided, derived as %s using local port offset (%+d). "
-                  + "Use 'httpAddress' parameter for explicit control",
-              peerId, derivedHttp, httpPortOffset);
-        } catch (final ConfigurationException | NumberFormatException ignored) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Dynamically added peer '%s': could not derive HTTP address from '%s'", peerId, address);
-        }
-      }
+      addressResolver.registerPeerHttpAddress(peerId, address, httpAddress);
 
       LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster", peerId);
     } catch (final IOException e) {
@@ -1582,58 +1561,17 @@ public class RaftHAServer implements HAPlugin {
 
   /**
    * Returns the HTTP address of a peer given its Raft peer ID.
-   * If no explicit mapping exists (e.g., peer added dynamically), derives the HTTP address
-   * from the peer ID (host_raftPort) using the configured HTTP/Raft port offset.
-   * Derived addresses are NOT cached so that a wrong derivation does not persist permanently.
+   * Delegates to {@link RaftPeerAddressResolver#getPeerHTTPAddress(RaftPeerId)}.
    */
   public String getPeerHTTPAddress(final RaftPeerId peerId) {
-    final String httpAddr = peerHttpAddresses.get(peerId.toString());
-    if (httpAddr != null)
-      return httpAddr;
-
-    // Derive HTTP address from peer ID format "host_raftPort" using port offset.
-    // This assumes all nodes use the same HTTP-to-Raft port gap as this node,
-    // which may be wrong if remote nodes use different port configurations.
-    // Deliberately not cached: if the derivation is wrong, at least it won't stick forever.
-    final String peerIdStr = peerId.toString();
-    final int lastUnderscore = peerIdStr.lastIndexOf('_');
-    if (lastUnderscore > 0 && lastUnderscore < peerIdStr.length() - 1) {
-      final String host = peerIdStr.substring(0, lastUnderscore);
-      try {
-        final int raftPort = Integer.parseInt(peerIdStr.substring(lastUnderscore + 1));
-        final int httpPortOffset = getHttpPortOffset();
-        final int httpPort = raftPort + httpPortOffset;
-        final String derived = host + ":" + httpPort;
-        if (derivedAddressWarned.add(peerIdStr))
-          LogManager.instance().log(this, Level.WARNING,
-              "No explicit HTTP address for peer '%s', deriving %s using local HTTP/Raft port offset (%+d). "
-                  + "If this peer uses a different port layout, specify explicit HTTP ports in HA_SERVER_LIST (format: "
-                  + "host:raftPort:httpPort)",
-              peerIdStr, derived, httpPortOffset);
-        return derived;
-      } catch (final NumberFormatException ignored) {
-        // Fall through to return peer ID as-is
-      }
-    }
-    return peerIdStr;
-  }
-
-  private int getHttpPortOffset() {
-    final int localHttpPort = parseFirstPort(
-        configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT));
-    final int localRaftPort = parseFirstPort(
-        configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
-    return localHttpPort - localRaftPort;
+    return addressResolver.getPeerHTTPAddress(peerId);
   }
 
   /**
    * Returns the HTTP address for the current leader.
    */
   public String getLeaderHTTPAddress() {
-    final String leaderName = getLeaderName();
-    if (leaderName == null)
-      return null;
-    return getPeerHTTPAddress(RaftPeerId.valueOf(leaderName));
+    return addressResolver.getLeaderHTTPAddress(getLeaderName());
   }
 
   // -- Configuration --
@@ -1651,7 +1589,8 @@ public class RaftHAServer implements HAPlugin {
     RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storagePath.toFile()));
 
     // gRPC transport
-    final int port = resolveLocalPort();
+    final int port = RaftPeerAddressResolver.parseFirstPort(
+        configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
     GrpcConfigKeys.Server.setPort(properties, port);
 
     // RPC factory
@@ -1730,164 +1669,8 @@ public class RaftHAServer implements HAPlugin {
     return properties;
   }
 
-  // -- Peer Parsing --
+  // -- Peer Parsing (delegated to RaftPeerAddressResolver) --
 
-  /**
-   * Parses a comma-separated server list into Raft peers.
-   * <p>
-   * Each entry supports the following formats:
-   * <ul>
-   *   <li>{@code host:raftPort:httpPort:priority} - explicit Raft port, HTTP port, and leader-election priority</li>
-   *   <li>{@code host:raftPort:httpPort} - explicit Raft and HTTP ports, priority defaults to 0</li>
-   *   <li>{@code host:raftPort} - explicit Raft port, HTTP derived from local offset, priority defaults to 0</li>
-   * </ul>
-   * Priority is used for Raft leader election: the node with the highest priority is preferred as leader.
-   * This is a soft preference - if the preferred leader is unavailable, another node will take over.
-   */
-  private List<RaftPeer> parsePeers(final String serverList) {
-    final List<RaftPeer> peers = new ArrayList<>();
-    final String[] entries = serverList.split(",");
-
-    final int httpPortOffset = getHttpPortOffset();
-
-    for (final String entry : entries) {
-      final String trimmed = entry.trim();
-      if (trimmed.isEmpty())
-        continue;
-
-      final String[] parts = parseHostPort(trimmed);
-      final String host = parts[0];
-      final int raftPort = Integer.parseInt(parts[1]);
-      final String raftAddress = host + ":" + raftPort;
-
-      // Determine HTTP address: use explicit httpPort if provided, otherwise derive from local offset
-      final String httpAddress;
-      if (parts.length >= 3)
-        httpAddress = host + ":" + parts[2];
-      else {
-        httpAddress = host + ":" + (raftPort + httpPortOffset);
-        LogManager.instance().log(this, Level.INFO,
-            "Peer '%s:%d': no explicit HTTP port in HA_SERVER_LIST, deriving HTTP address %s using local port offset " +
-                "(%+d). "
-                + "Use format 'host:raftPort:httpPort' if peers have different port layouts",
-            host, raftPort, httpAddress, httpPortOffset);
-      }
-
-      // Parse optional priority (4th part): higher priority = preferred leader
-      int priority = 0;
-      if (parts.length >= 4) {
-        try {
-          priority = Integer.parseInt(parts[3]);
-        } catch (final NumberFormatException e) {
-          throw new ConfigurationException(
-              "Invalid priority value '" + parts[3] + "' in peer address '" + trimmed + "'");
-        }
-      }
-
-      // Use underscore in peer ID to avoid JMX ObjectName issues (colon is invalid in JMX values)
-      final String peerIdStr = host + "_" + raftPort;
-      final RaftPeerId peerId = RaftPeerId.valueOf(peerIdStr);
-      final RaftPeer peer = RaftPeer.newBuilder()
-          .setId(peerId)
-          .setAddress(raftAddress)
-          .setPriority(priority)
-          .build();
-      peers.add(peer);
-
-      // Store HTTP address mapping separately (NOT on RaftPeer.clientAddress which Ratis uses for gRPC)
-      peerHttpAddresses.put(peerIdStr, httpAddress);
-    }
-
-    if (peers.size() < 3)
-      LogManager.instance().log(this, Level.WARNING,
-          "Ratis HA cluster has less than 3 peers (%d). A minimum of 3 is recommended for fault tolerance",
-          peers.size());
-
-    return peers;
-  }
-
-  /**
-   * Resolves which peer in the list corresponds to this server instance.
-   * Matching order:
-   * 1. Exact peer ID match using incoming host + port (e.g., "myhost_2424")
-   * 2. Server name match (e.g., server name "arcadedb-0" matches peer "arcadedb-0_2424")
-   * 3. Hostname match via InetAddress.getLocalHost()
-   * 4. Port-only match (only if a single peer uses this port, to avoid ambiguity)
-   */
-  private RaftPeerId resolveLocalPeerId(final List<RaftPeer> peers) {
-    final String localHost = configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST);
-    final String localPorts = configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS);
-    final int localPort = parseFirstPort(localPorts);
-
-    // 1. Exact match: peer ID = incomingHost_port
-    final String exactId = localHost + "_" + localPort;
-    for (final RaftPeer peer : peers)
-      if (peer.getId().toString().equals(exactId))
-        return peer.getId();
-
-    // 2. Match by server name (e.g., "-Darcadedb.server.name=arcadedb-0" matches peer "arcadedb-0_2424")
-    final String serverName = server.getServerName();
-    if (serverName != null && !serverName.isEmpty()) {
-      final String serverNameId = serverName + "_" + localPort;
-      for (final RaftPeer peer : peers)
-        if (peer.getId().toString().equals(serverNameId))
-          return peer.getId();
-    }
-
-    // 3. Match by hostname
-    try {
-      final String hostname = java.net.InetAddress.getLocalHost().getHostName();
-      final String hostnameId = hostname + "_" + localPort;
-      for (final RaftPeer peer : peers)
-        if (peer.getId().toString().equals(hostnameId))
-          return peer.getId();
-    } catch (final java.net.UnknownHostException ignored) {
-    }
-
-    // 4. Fallback: match by port only if unambiguous (useful for single-host testing)
-    RaftPeerId portMatch = null;
-    int portMatchCount = 0;
-    for (final RaftPeer peer : peers) {
-      final String address = peer.getAddress();
-      if (address != null && address.endsWith(":" + localPort)) {
-        portMatch = peer.getId();
-        portMatchCount++;
-      }
-    }
-    if (portMatchCount == 1)
-      return portMatch;
-
-    throw new ConfigurationException(
-        "Cannot find local server in HA_SERVER_LIST. serverName=" + serverName + ", localAddress=" + localHost + ":" + localPort
-            + ", server list: " + peers);
-  }
-
-  private int resolveLocalPort() {
-    final String ports = configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS);
-    return parseFirstPort(ports);
-  }
-
-  private static int parseFirstPort(final String portSpec) {
-    if (portSpec.contains("-"))
-      return Integer.parseInt(portSpec.split("-")[0].trim());
-    if (portSpec.contains(","))
-      return Integer.parseInt(portSpec.split(",")[0].trim());
-    return Integer.parseInt(portSpec.trim());
-  }
-
-  /**
-   * Parses a host:port string, supporting both IPv4/hostname and bracketed IPv6 notation.
-   * <p>
-   * Accepted formats:
-   * <ul>
-   *   <li>"hostname:port" or "hostname:port:extraPort"</li>
-   *   <li>"1.2.3.4:port" or "1.2.3.4:port:extraPort"</li>
-   *   <li>"[::1]:port" or "[2001:db8::1]:port:extraPort"</li>
-   * </ul>
-   * Bare (un-bracketed) IPv6 addresses are rejected because they are ambiguous with the port delimiter.
-   *
-   * @return array where [0]=host (including brackets for IPv6), [1]=first port, and optionally [2]=second port
-   */
   /**
    * Derives and stores the cluster token in {@code config} using the same PBKDF2 logic as the
    * instance {@link #initClusterToken()} method. Exposed for unit tests that cannot instantiate
@@ -1953,61 +1736,4 @@ public class RaftHAServer implements HAPlugin {
     return idx;
   }
 
-  /**
-   * Validates that the given address is a well-formed host:port string with a port in the valid TCP range (1-65535).
-   * Call this before passing addresses to Ratis to produce clear error messages.
-   */
-  public static void validatePeerAddress(final String address) {
-    final String[] parts = parseHostPort(address);
-
-    if (parts[0].isEmpty())
-      throw new ConfigurationException("HA peer address has empty host: " + address);
-
-    final String portStr = parts[1];
-    final int port;
-    try {
-      port = Integer.parseInt(portStr);
-    } catch (final NumberFormatException e) {
-      throw new ConfigurationException("HA peer address has non-numeric port '" + portStr + "': " + address);
-    }
-    if (port < 1 || port > 65535)
-      throw new ConfigurationException("HA peer address port out of range (must be 1-65535): " + port);
-  }
-
-  static String[] parseHostPort(final String address) {
-    if (address == null || address.isEmpty())
-      throw new ConfigurationException("HA peer address is empty");
-
-    if (address.startsWith("[")) {
-      // Bracketed IPv6: [addr]:port or [addr]:port:extraPort
-      final int closeBracket = address.indexOf(']');
-      if (closeBracket < 0)
-        throw new ConfigurationException("Invalid IPv6 address (missing closing bracket): " + address);
-
-      final String host = address.substring(0, closeBracket + 1);
-      final String remainder = address.substring(closeBracket + 1);
-      if (remainder.isEmpty() || remainder.charAt(0) != ':')
-        throw new ConfigurationException("HA peer address missing port after IPv6 host: " + address);
-
-      final String[] ports = remainder.substring(1).split(":");
-      final String[] result = new String[1 + ports.length];
-      result[0] = host;
-      System.arraycopy(ports, 0, result, 1, ports.length);
-      return result;
-    }
-
-    // Detect bare (un-bracketed) IPv6: either contains "::" (IPv6 shorthand, never valid in
-    // hostname:port format) or has 4+ colons without dots (host:raft:http:priority has at most 3).
-    final long colonCount = address.chars().filter(c -> c == ':').count();
-    if ((colonCount > 3 || address.contains("::")) && !address.contains("."))
-      throw new ConfigurationException(
-          "IPv6 addresses must use bracketed notation (e.g., [::1]:2424) in HA peer address: " + address);
-
-    // IPv4 or hostname: host:port or host:port:extraPort
-    final String[] parts = address.split(":");
-    if (parts.length < 2)
-      throw new ConfigurationException("HA peer address missing port: " + address);
-
-    return parts;
-  }
 }

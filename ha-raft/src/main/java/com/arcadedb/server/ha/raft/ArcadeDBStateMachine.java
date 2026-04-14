@@ -266,9 +266,31 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       return CompletableFuture.completedFuture(Message.EMPTY);
 
     } catch (final ReplicationException | IllegalArgumentException | IllegalStateException e) {
-      // Expected errors (database unavailable, corrupted entry, unknown value type): return
-      // failed future so Ratis can handle the failure without crashing the node.
-      LogManager.instance().log(this, Level.SEVERE, "Error applying Raft log entry at index %d", e, index);
+      // Expected errors (database unavailable, corrupted entry, unknown value type).
+      // Advance applied index: Ratis has committed this entry and won't re-apply it.
+      // The snapshot resync will bring the correct state from the leader.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error applying Raft log entry at index %d. Triggering snapshot resync to recover state.", e, index);
+      lastAppliedIndex.set(index);
+      updateLastAppliedTermIndex(logEntry.getTerm(), index);
+
+      // On followers, trigger snapshot resync. The needsSnapshotDownload flag debounces multiple
+      // failures: only the first successful compareAndSet triggers a download.
+      if (!isCurrentNodeLeader()) {
+        needsSnapshotDownload.set(true);
+        lifecycleExecutor.submit(() -> {
+          if (needsSnapshotDownload.compareAndSet(true, false)) {
+            try {
+              if (snapshotInstaller != null)
+                snapshotInstaller.installDatabasesFromLeader();
+            } catch (final Exception ex) {
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Snapshot resync after failed apply failed", ex);
+            }
+          }
+        });
+      }
+
       return CompletableFuture.failedFuture(e);
     } catch (final Throwable e) {
       // Unexpected errors (NPE, ClassCastException, OOM, etc.) indicate a bug that could cause
