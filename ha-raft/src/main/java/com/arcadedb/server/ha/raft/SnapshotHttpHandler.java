@@ -32,6 +32,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 
+import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.OutputStream;
@@ -41,7 +42,11 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -58,20 +63,33 @@ import java.util.zip.ZipOutputStream;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SnapshotHttpHandler implements HttpHandler {
+public class SnapshotHttpHandler implements HttpHandler, Closeable {
 
-  private final HttpServer           httpServer;
-  private final int                  maxConcurrentSnapshots;
-  private final Semaphore            snapshotSemaphore;
-  private volatile boolean           plainHttpWarned;
+  private final HttpServer                httpServer;
+  private final int                       maxConcurrentSnapshots;
+  private final int                       writeTimeoutMs;
+  private final Semaphore                 snapshotSemaphore;
+  private final ScheduledExecutorService  watchdogExecutor;
+  private volatile boolean                plainHttpWarned;
 
   public SnapshotHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
+    final var config = httpServer.getServer().getConfiguration();
     // Limit concurrent snapshot downloads to prevent NIC saturation and read-lock stacking
     // during mass follower restarts. Excess requests get HTTP 503 so followers retry with backoff.
-    this.maxConcurrentSnapshots = httpServer.getServer().getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT);
+    this.maxConcurrentSnapshots = config.getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT);
     this.snapshotSemaphore = new Semaphore(maxConcurrentSnapshots);
+    this.writeTimeoutMs = config.getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_WRITE_TIMEOUT);
+    this.watchdogExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+      final Thread t = new Thread(r, "arcadedb-snapshot-watchdog");
+      t.setDaemon(true);
+      return t;
+    });
+  }
+
+  @Override
+  public void close() {
+    watchdogExecutor.shutdownNow();
   }
 
   @Override
@@ -164,6 +182,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
+    ScheduledFuture<?> watchdog = null;
     try {
 
     // Resolve and validate the database BEFORE setting response headers or calling startBlocking().
@@ -193,6 +212,21 @@ public class SnapshotHttpHandler implements HttpHandler {
         "attachment; filename=\"" + safeName + "-snapshot.zip\"");
 
     exchange.startBlocking();
+
+    // Schedule a watchdog that closes the connection if the transfer exceeds the deadline.
+    // This prevents a stalled or disconnected follower from permanently holding a semaphore
+    // slot and blocking all future snapshot-based catch-ups.
+    final String dbNameForLog = databaseName;
+    watchdog = watchdogExecutor.schedule(() -> {
+      LogManager.instance().log(this, Level.WARNING,
+          "Snapshot write for '%s' timed out after %dms, closing connection to release semaphore slot",
+          dbNameForLog, writeTimeoutMs);
+      try {
+        exchange.getConnection().close();
+      } catch (final Exception ignored) {
+        // Best effort - the goal is to unblock the writing thread
+      }
+    }, writeTimeoutMs, TimeUnit.MILLISECONDS);
 
     localDb.executeInReadLock(() -> {
       localDb.getPageManager().suspendFlushAndExecute(localDb, () -> {
@@ -231,6 +265,8 @@ public class SnapshotHttpHandler implements HttpHandler {
     });
 
     } finally {
+      if (watchdog != null)
+        watchdog.cancel(false);
       snapshotSemaphore.release();
     }
   }

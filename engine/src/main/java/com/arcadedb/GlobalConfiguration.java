@@ -604,6 +604,12 @@ public enum GlobalConfiguration {
       "Read timeout in milliseconds for downloading a database snapshot from the leader during follower resync. "
           + "Increase for large databases or slow networks", Integer.class, 300_000),
 
+  HA_SNAPSHOT_WRITE_TIMEOUT("arcadedb.ha.snapshotWriteTimeout", SCOPE.SERVER,
+      "Server-side write timeout in milliseconds for serving a database snapshot to a follower. "
+          + "If the transfer is not completed within this deadline the connection is closed and the concurrency "
+          + "semaphore slot is released. Prevents stalled or disconnected followers from permanently blocking "
+          + "snapshot slots. Increase for very large databases or slow networks", Integer.class, 300_000),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 

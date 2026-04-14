@@ -45,8 +45,9 @@ import io.undertow.server.handlers.PathHandler;
  */
 public class RaftHAPlugin implements HAPlugin {
 
-  private RaftHAServer raftServer;
-  private boolean      active;
+  private RaftHAServer        raftServer;
+  private SnapshotHttpHandler snapshotHandler;
+  private boolean             active;
 
   /** ServiceLoader requires a no-arg constructor. */
   public RaftHAPlugin() {
@@ -92,12 +93,15 @@ public class RaftHAPlugin implements HAPlugin {
   public void stopService() {
     if (!active)
       return;
+    if (snapshotHandler != null)
+      snapshotHandler.close();
     raftServer.stopService();
   }
 
   @Override
   public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
-    routes.addPrefixPath("/api/v1/ha/snapshot", new SnapshotHttpHandler(httpServer));
+    snapshotHandler = new SnapshotHttpHandler(httpServer);
+    routes.addPrefixPath("/api/v1/ha/snapshot", snapshotHandler);
     routes.addExactPath("/api/v1/cluster", new GetClusterHandler(httpServer, raftServer));
     routes.addExactPath("/api/v1/cluster/peer", new PostAddPeerHandler(httpServer, raftServer));
     routes.addPrefixPath("/api/v1/cluster/peer/", new DeletePeerHandler(httpServer, raftServer));

@@ -46,6 +46,11 @@ class HAConfigDefaultsTest {
   }
 
   @Test
+  void snapshotWriteTimeoutHasPositiveDefault() {
+    assertThat(GlobalConfiguration.HA_SNAPSHOT_WRITE_TIMEOUT.getValueAsInteger()).isEqualTo(300_000);
+  }
+
+  @Test
   void haClusterTokenDefaultIsEmpty() {
     // Cluster token should be empty by default (no shared secret configured)
     final String token = GlobalConfiguration.HA_CLUSTER_TOKEN.getValueAsString();
