@@ -23,55 +23,32 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ReplicationCallback;
-import com.arcadedb.server.ha.HAPlugin;
-import com.arcadedb.server.http.HttpServer;
-import io.undertow.server.handlers.PathHandler;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;
-import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.retry.ExponentialBackoffRetry;
-import org.apache.ratis.grpc.GrpcFactory;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
-import org.apache.ratis.protocol.SetConfigurationRequest;
-import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.server.RaftServer;
-import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.storage.RaftStorage;
-import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
-import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
-import javax.crypto.SecretKeyFactory;
-import javax.crypto.spec.PBEKeySpec;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -89,46 +66,12 @@ import java.util.stream.Stream;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RaftHAServer implements HAPlugin {
-
-  // PBKDF2 parameters for cluster token derivation (initClusterToken).
-  // 100k iterations is the OWASP 2023 recommendation for PBKDF2-HMAC-SHA256.
-  private static final int PBKDF2_ITERATIONS      = 100_000;
-  private static final int PBKDF2_KEY_LENGTH_BITS = 256;
-
-  // Leadership transfer timeout (ms). Generous to allow log catch-up on the target peer
-  // before it can accept the leadership role.
-  private static final long LEADERSHIP_TRANSFER_TIMEOUT_MS = 10_000L;
-
-  // After requesting leadership transfer, how long to wait for the leader change notification
-  // before proceeding with shutdown. Short because the transfer itself has its own timeout.
-  private static final long LEADERSHIP_CHANGE_WAIT_MS = 5_000L;
+public class RaftHAServer {
 
   // Client retry policy for the RaftClient used to submit transactions.
   // Exponential backoff from 100ms to 5s covers transient leader unavailability.
   private static final long CLIENT_RETRY_BASE_SLEEP_MS = 100L;
   private static final long CLIENT_RETRY_MAX_SLEEP_SECS = 5L;
-
-  // Lag monitor: checks follower replication lag every N seconds.
-  private static final int LAG_MONITOR_INITIAL_DELAY_SECS = 5;
-  private static final int LAG_MONITOR_INTERVAL_SECS      = 5;
-
-
-  // Ratis RPC and connection timeouts (buildRaftProperties).
-  // Server-side RPC request timeout: how long the leader waits for a follower AppendEntries response.
-  private static final int RPC_REQUEST_TIMEOUT_SECS = 10;
-  // Slowness/close thresholds: how long before a follower is marked slow or its connection is closed.
-  // Set high (5 min) to survive network partitions without prematurely evicting followers.
-  private static final int FOLLOWER_SLOWNESS_TIMEOUT_SECS = 300;
-  private static final int FOLLOWER_CLOSE_THRESHOLD_SECS  = 300;
-
-  // Maximum log entries per AppendEntries RPC batch. Balances throughput vs. memory per batch.
-  private static final int APPEND_ENTRIES_MAX_ELEMENTS = 256;
-
-  // Leader lease ratio: fraction of the election timeout during which the leader considers
-  // its lease valid for serving linearizable reads without a round-trip. 0.9 means the lease
-  // expires at 90% of the election timeout, leaving a 10% safety margin.
-  private static final double LEADER_LEASE_TIMEOUT_RATIO = 0.9;
 
   // These fields are set once in configure() and never changed after. They cannot be final because
   // ServiceLoader requires a no-arg constructor, and configure() is called separately by the PluginManager.
@@ -139,7 +82,7 @@ public class RaftHAServer implements HAPlugin {
   private              Quorum               quorum;
   private              long                 quorumTimeout;
   private              RaftPeerAddressResolver addressResolver;
-  private volatile     String               clusterToken;
+  private              ClusterTokenProvider tokenProvider;
   private              boolean              active;
 
   private          RaftServer               raftServer;
@@ -147,21 +90,23 @@ public class RaftHAServer implements HAPlugin {
   private          RaftProperties           raftProperties;
   private          ArcadeDBStateMachine     stateMachine;
   private          ClusterMonitor           clusterMonitor;
-  private          RaftGroupCommitter       groupCommitter;
   private final    ReentrantLock            applyLock            = new ReentrantLock();
   private final    Condition                applyCondition       = applyLock.newCondition();
   private final    AtomicInteger            applyWaiterCount     = new AtomicInteger();
-  private final    Object                   leaderChangeNotifier = new Object();
-  private volatile int                      lastClusterConfigHash;
+  private final    Object                   leaderReadyNotifier  = new Object();
   /**
    * Set to false when this node becomes leader, true once all committed entries
    * have been applied to the state machine. Reads on the leader wait for this
    * flag before returning results, preventing stale reads during leadership transitions.
    */
   private volatile boolean                  leaderReady          = true;
-  private          ScheduledExecutorService lagMonitorExecutor;
   private          HealthMonitor            healthMonitor;
   private volatile int                      restartFailureCount;
+
+  // Extracted collaborators (created in startService)
+  private          RaftClusterManager       clusterManager;
+  private          RaftTransactionBroker    transactionBroker;
+  private          RaftClusterStatusExporter statusExporter;
 
   /**
    * ServiceLoader requires a no-arg constructor.
@@ -176,7 +121,6 @@ public class RaftHAServer implements HAPlugin {
     configure(server, configuration);
   }
 
-  @Override
   public void configure(final ArcadeDBServer server, final ContextConfiguration configuration) {
     if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       return;
@@ -187,6 +131,7 @@ public class RaftHAServer implements HAPlugin {
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     this.addressResolver = new RaftPeerAddressResolver(server, configuration);
+    this.tokenProvider = new ClusterTokenProvider(configuration);
 
     // Parse peers from HA_SERVER_LIST
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
@@ -224,80 +169,14 @@ public class RaftHAServer implements HAPlugin {
     final long lagThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
     this.clusterMonitor = new ClusterMonitor(lagThreshold);
 
-    // Register this plugin and the database wrapper with the server
-    server.setHA(this);
+    // Register the database wrapper with the server
     server.setDatabaseWrapper(db -> new ReplicatedDatabase(server, db));
   }
 
-  @Override
   public boolean isActive() {
     return active;
   }
 
-  @Override
-  public PluginInstallationPriority getInstallationPriority() {
-    return PluginInstallationPriority.AFTER_HTTP_ON;
-  }
-
-  @Override
-  public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
-    // Snapshot endpoint (serves database files as ZIP for follower resync)
-    routes.addPrefixPath("/api/v1/ha/snapshot", new SnapshotHttpHandler(httpServer));
-
-    // Dedicated REST endpoints for HA cluster management
-    routes.addExactPath("/api/v1/cluster", new GetClusterHandler(httpServer, this));
-    routes.addExactPath("/api/v1/cluster/peer", new PostAddPeerHandler(httpServer, this));
-    routes.addPrefixPath("/api/v1/cluster/peer/", new DeletePeerHandler(httpServer, this));
-    routes.addExactPath("/api/v1/cluster/leader", new PostTransferLeaderHandler(httpServer, this));
-    routes.addExactPath("/api/v1/cluster/stepdown", new PostStepDownHandler(httpServer, this));
-    routes.addExactPath("/api/v1/cluster/leave", new PostLeaveHandler(httpServer, this));
-    routes.addPrefixPath("/api/v1/cluster/verify/", new PostVerifyDatabaseHandler(httpServer, this));
-  }
-
-  @Override
-  public void recoverBeforeDatabaseLoad(final java.nio.file.Path databaseDirectory) {
-    SnapshotInstaller.recoverPendingSnapshotSwaps(databaseDirectory);
-  }
-
-  /**
-   * Derives a deterministic cluster token from the cluster name and root password using PBKDF2.
-   * All nodes in the same cluster compute the same token without sharing state.
-   * PBKDF2 is used instead of plain SHA-256 to resist brute-force attacks if the token is captured.
-   */
-  private synchronized void initClusterToken() {
-    if (clusterToken != null)
-      return;
-    final String configured = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
-    if (configured != null && !configured.isEmpty()) {
-      this.clusterToken = configured;
-      return;
-    }
-    final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
-    if (clusterName == null || clusterName.isEmpty())
-      throw new ConfigurationException(
-          "Cannot derive cluster token: the cluster name is empty. Set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken");
-    // Check both the server's ContextConfiguration and the global default (system property)
-    String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
-    if (rootPassword == null || rootPassword.isEmpty())
-      rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
-    if (rootPassword == null || rootPassword.isEmpty())
-      throw new ConfigurationException(
-          "Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. "
-              + "Set arcadedb.server.rootPassword or provide an explicit arcadedb.ha.clusterToken");
-    if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE))
-        && "arcadedb".equalsIgnoreCase(clusterName))
-      LogManager.instance().log(this, Level.WARNING,
-          "HA cluster is using the default cluster name '%s'. For stronger token domain separation, set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken",
-          clusterName);
-    this.clusterToken = deriveTokenFromPassword(clusterName, rootPassword);
-
-    if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE)))
-      LogManager.instance().log(this, Level.WARNING,
-          "Using auto-derived cluster token. Changing root password does NOT rotate this token. "
-              + "To explicitly rotate, set arcadedb.ha.clusterToken=<new-value> and restart all nodes");
-  }
-
-  @Override
   public void startService() {
     if (!active)
       return;
@@ -331,12 +210,13 @@ public class RaftHAServer implements HAPlugin {
 
     // Derive the cluster token eagerly at startup rather than lazily on the first request.
     // PBKDF2 with 100k iterations is expensive and would block a request thread.
-    initClusterToken();
+    tokenProvider.initClusterToken();
 
     try {
       stateMachine = new ArcadeDBStateMachine(server, this);
 
-      this.raftProperties = buildRaftProperties();
+      this.raftProperties = RaftPropertiesBuilder.build(configuration, server.getRootPath(),
+          localPeerId.toString(), quorumTimeout);
       final RaftProperties properties = this.raftProperties;
 
       // Use RECOVER if storage exists from a previous run, FORMAT for fresh start
@@ -374,11 +254,15 @@ public class RaftHAServer implements HAPlugin {
       if (!storageExists && configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
         new KubernetesAutoJoin(server, raftGroup, localPeerId, raftProperties).tryAutoJoin();
 
-      groupCommitter = new RaftGroupCommitter(this,
+      // Create extracted collaborators
+      clusterManager = new RaftClusterManager(this, addressResolver, clusterMonitor, raftProperties);
+      transactionBroker = new RaftTransactionBroker(this);
+      statusExporter = new RaftClusterStatusExporter(this, clusterMonitor, configuration);
+
+      transactionBroker.startGroupCommitter(
           configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE),
           configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE));
-      groupCommitter.start();
-      startLagMonitor();
+      statusExporter.startLagMonitor();
       startRatisHealthMonitor();
 
       LogManager.instance().log(this, Level.INFO, "Ratis HA service started (serverId=%s)", localPeerId);
@@ -493,7 +377,6 @@ public class RaftHAServer implements HAPlugin {
     }
   }
 
-  @Override
   public void stopService() {
     if (!active)
       return;
@@ -509,9 +392,10 @@ public class RaftHAServer implements HAPlugin {
       }
     }
 
-    if (groupCommitter != null)
-      groupCommitter.stop();
-    stopLagMonitor();
+    if (transactionBroker != null)
+      transactionBroker.stopGroupCommitter();
+    if (statusExporter != null)
+      statusExporter.stopLagMonitor();
     stopHealthMonitor();
 
     // In K8s mode, automatically remove this peer from the Raft cluster before stopping.
@@ -549,158 +433,30 @@ public class RaftHAServer implements HAPlugin {
     }
   }
 
-  /**
-   * Gracefully removes this server from the Raft cluster. If this server is the leader,
-   * transfers leadership to another peer first. Then contacts the cluster to remove this peer
-   * from the configuration.
-   * <p>
-   * This is best-effort: errors are logged but don't prevent shutdown.
-   */
   public void leaveCluster() {
-    if (raftServer == null || raftClient == null)
-      return;
-
-    try {
-      final Collection<RaftPeer> livePeers = getLivePeers();
-      if (livePeers.size() <= 1) {
-        HALog.log(this, HALog.BASIC, "Single-node cluster, skipping leave");
-        return;
-      }
-
-      // If we're the leader, transfer leadership first
-      if (isLeader()) {
-        for (final RaftPeer peer : livePeers) {
-          if (!peer.getId().equals(localPeerId)) {
-            HALog.log(this, HALog.BASIC, "Leaving cluster: transferring leadership to %s before removal", peer.getId());
-            try {
-              transferLeadership(peer.getId().toString(), LEADERSHIP_TRANSFER_TIMEOUT_MS);
-              // Wait for leadership change notification instead of polling
-              final long deadline = System.currentTimeMillis() + LEADERSHIP_CHANGE_WAIT_MS;
-              synchronized (leaderChangeNotifier) {
-                while (isLeader()) {
-                  final long remaining = deadline - System.currentTimeMillis();
-                  if (remaining <= 0)
-                    break;
-                  leaderChangeNotifier.wait(remaining);
-                }
-              }
-            } catch (final Exception e) {
-              HALog.log(this, HALog.BASIC, "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
-            }
-            break;
-          }
-        }
-      }
-
-      // Remove self from the cluster configuration
-      HALog.log(this, HALog.BASIC, "Leaving cluster: removing self (%s) from Raft group", localPeerId);
-      removePeer(localPeerId.toString());
-      HALog.log(this, HALog.BASIC, "Successfully left the Raft cluster");
-
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Failed to leave cluster gracefully: %s", e.getMessage());
-    }
+    if (clusterManager != null)
+      clusterManager.leaveCluster();
   }
 
-  // -- Transaction Submission --
+  // -- Transaction Submission (delegated to RaftTransactionBroker) --
 
-  /**
-   * Sends a pre-serialized Raft log entry (e.g., CREATE_DATABASE) to the cluster.
-   */
   public void replicateRawEntry(final byte[] entry) {
-    HALog.log(this, HALog.BASIC, "Replicating raw entry: %d bytes, type=%d", entry.length, entry.length > 0 ?
-        entry[0] : -1);
-    sendToRaft(entry);
+    transactionBroker.replicateRawEntry(entry);
   }
 
-  @Override
   public void replicateCreateDatabase(final String databaseName) {
-    final byte[] entry = RaftLogEntryCodec.serializeCreateDatabase(databaseName, localPeerId.toString());
-    replicateRawEntry(entry);
+    transactionBroker.replicateCreateDatabase(databaseName);
   }
 
-  @Override
   public void replicateDropDatabase(final String databaseName) {
-    final byte[] entry = RaftLogEntryCodec.serializeDropDatabase(databaseName, localPeerId.toString());
-    replicateRawEntry(entry);
+    transactionBroker.replicateDropDatabase(databaseName);
   }
 
-  /**
-   * Submits a transaction to the Raft cluster. The entry is replicated to all nodes and applied
-   * via ArcadeDBStateMachine.applyTransaction() on each node.
-   * <p>
-   * <b>Timeout semantics:</b> When using the group committer, the effective timeout can be up to
-   * 2x {@code arcadedb.ha.quorumTimeout}. The first timeout covers queue waiting and Raft dispatch;
-   * if the entry has already been dispatched to Raft when the first timeout expires, a second full
-   * timeout is used to await the Raft reply (to prevent phantom commits where followers apply
-   * the entry but the leader never calls commit2ndPhase). Operators setting
-   * {@code arcadedb.ha.quorumTimeout} should account for this 2x upper bound.
-   * <p>
-   * If this method throws {@link QuorumNotReachedException} due to a timeout,
-   * the outcome is ambiguous - the transaction may or may not have been committed by the cluster.
-   * The caller (ReplicatedDatabase) has already completed commit1stPhase locally, so:
-   * <ul>
-   *   <li>If the cluster DID commit: follower state machines will apply it normally</li>
-   *   <li>If the cluster did NOT commit: the local commit is rolled back by the caller</li>
-   * </ul>
-   * Callers that need exactly-once semantics should use idempotency keys or check-before-retry logic.
-   *
-   * @param databaseName      target database
-   * @param bucketRecordDelta per-bucket record count changes
-   * @param walBuffer         WAL changes buffer from commit1stPhase
-   * @param schemaJson        schema JSON (null if no schema change)
-   * @param filesToAdd        files to add (null if no structural change)
-   * @param filesToRemove     files to remove (null if no structural change)
-   */
   public void replicateTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
                                    final Binary walBuffer, final String schemaJson,
                                    final Map<Integer, String> filesToAdd,
                                    final Map<Integer, String> filesToRemove) {
-
-    final byte[] entry = RaftLogEntryCodec.serializeTransaction(databaseName, bucketRecordDelta, walBuffer, schemaJson,
-        filesToAdd,
-        filesToRemove, localPeerId.toString());
-
-    HALog.log(this, HALog.TRACE, "replicateTransaction: db=%s, entrySize=%d bytes", databaseName, entry.length);
-    sendToRaft(entry);
-  }
-
-  private void sendToRaft(final byte[] entry) {
-    HALog.log(this, HALog.TRACE, "Sending %d bytes to Raft cluster (isLeader=%s)...", entry.length, isLeader());
-
-    // Use group committer to batch multiple concurrent transactions into fewer Raft round-trips
-    if (groupCommitter != null) {
-      groupCommitter.submitAndWait(entry, quorumTimeout);
-      return;
-    }
-
-    // Fallback: direct send (used during startup before group committer is initialized)
-    try {
-      final var future = raftClient.async().send(Message.valueOf(ByteString.copyFrom(entry)));
-      final RaftClientReply reply = future.get(quorumTimeout, TimeUnit.MILLISECONDS);
-
-      if (!reply.isSuccess())
-        throw new QuorumNotReachedException(
-            "Raft replication failed: " + (reply.getException() != null ? reply.getException().getMessage() :
-                "unknown error"));
-
-      if (quorum == Quorum.ALL) {
-        final long logIndex = reply.getLogIndex();
-        final RaftClientReply watchReply = raftClient.io().watch(logIndex, RaftProtos.ReplicationLevel.ALL_COMMITTED);
-        if (!watchReply.isSuccess())
-          throw new QuorumNotReachedException("Raft ALL quorum not reached: not all replicas acknowledged the entry");
-      }
-
-    } catch (final TimeoutException e) {
-      throw new QuorumNotReachedException("Raft replication timed out after " + quorumTimeout + "ms");
-    } catch (final ExecutionException e) {
-      throw new QuorumNotReachedException("Raft replication failed: " + e.getCause().getMessage());
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new QuorumNotReachedException("Raft replication interrupted");
-    } catch (final IOException e) {
-      throw new QuorumNotReachedException("Failed to submit transaction to Raft cluster: " + e.getMessage());
-    }
+    transactionBroker.replicateTransaction(databaseName, bucketRecordDelta, walBuffer, schemaJson, filesToAdd, filesToRemove);
   }
 
   // -- Status --
@@ -756,13 +512,13 @@ public class RaftHAServer implements HAPlugin {
       return;
 
     final long deadline = System.currentTimeMillis() + quorumTimeout;
-    synchronized (leaderChangeNotifier) {
+    synchronized (leaderReadyNotifier) {
       while (!leaderReady) {
         final long remaining = deadline - System.currentTimeMillis();
         if (remaining <= 0)
           break;
         try {
-          leaderChangeNotifier.wait(remaining);
+          leaderReadyNotifier.wait(remaining);
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           return;
@@ -962,176 +718,31 @@ public class RaftHAServer implements HAPlugin {
               "Leader read barrier catch-up FAILED. Reads will be blocked until resolved: %s", e.getMessage());
         } finally {
           // Wake up any threads blocked in waitForLeaderReady()
-          synchronized (leaderChangeNotifier) {
-            leaderChangeNotifier.notifyAll();
+          synchronized (leaderReadyNotifier) {
+            leaderReadyNotifier.notifyAll();
           }
         }
       });
     } else {
       leaderReady = true;
     }
-    // Notify unconditionally so leaveCluster() (which loops on isLeader(), not leaderReady)
-    // can exit as soon as leadership is transferred to another node.
-    // waitForLeaderReady() callers that wake here will see leaderReady==false (on the new-leader
-    // path) and simply re-enter the wait; the background catch-up task issues its own notifyAll()
-    // in its finally block once leaderReady is set to true.
-    synchronized (leaderChangeNotifier) {
-      leaderChangeNotifier.notifyAll();
-    }
-    printClusterConfiguration();
+    // Notify leaveCluster() waiters (which loop on isLeader()) so they can exit
+    // as soon as leadership is transferred to another node.
+    if (clusterManager != null)
+      clusterManager.notifyLeaderChangeForLeave();
+    if (statusExporter != null)
+      statusExporter.printClusterConfiguration();
   }
 
-  /**
-   * Prints an ASCII table showing the current cluster configuration.
-   * Called on leader changes so the operator can see the cluster state at a glance.
-   */
+  // -- Status Export (delegated to RaftClusterStatusExporter) --
+
   public void printClusterConfiguration() {
-    if (!isLeader())
-      return;
-
-    try {
-      final String leaderPeerId = getLeaderName();
-      final long term = getCurrentTerm();
-      final long commitIndex = getCommitIndex();
-      final Collection<RaftPeer> peers = getLivePeers();
-      if (peers.isEmpty())
-        return;
-
-      // Collect follower replication state (only available on leader)
-      final Map<String, long[]> followerState = new HashMap<>();
-      for (final Map<String, Object> f : getFollowerStates()) {
-        final String peerId = (String) f.get("peerId");
-        final long matchIndex = (Long) f.get("matchIndex");
-        final long lastRpcMs = (Long) f.get("lastRpcElapsedMs");
-        followerState.put(peerId, new long[]{matchIndex, lastRpcMs});
-      }
-
-      // Build table rows
-      final List<String[]> rows = new ArrayList<>();
-      for (final RaftPeer peer : peers) {
-        final String peerId = peer.getId().toString();
-        final boolean isPeerLeader = peerId.equals(leaderPeerId);
-        final String role = isPeerLeader ? "Leader" : "Follower";
-        final String address = peer.getAddress();
-
-        String lagStr = "";
-        String latencyStr = "";
-        if (!isPeerLeader) {
-          final long[] state = followerState.get(peerId);
-          if (state != null) {
-            final long lag = commitIndex - state[0];
-            lagStr = lag > 0 ? String.valueOf(lag) : "0";
-            // Only show latency when there's active replication traffic (recent RPC).
-            // During idle periods lastRpcElapsedMs just reflects time since last heartbeat.
-            final long elapsedMs = state[1];
-            final long heartbeatInterval =
-                configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN) / 2;
-            if (elapsedMs <= heartbeatInterval)
-              latencyStr = elapsedMs + " ms";
-          }
-        }
-
-        rows.add(new String[]{peerId, address, role, lagStr, latencyStr});
-      }
-
-      // Calculate column widths
-      final String[] headers = {"SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY"};
-      final int[] widths = new int[headers.length];
-      for (int i = 0; i < headers.length; i++)
-        widths[i] = headers[i].length();
-      for (final String[] row : rows)
-        for (int i = 0; i < row.length; i++)
-          widths[i] = Math.max(widths[i], row[i].length());
-
-      // Format table
-      final StringBuilder sb = new StringBuilder();
-      sb.append(String.format("CLUSTER CONFIGURATION (term=%d, commitIndex=%d)%n", term, commitIndex));
-
-      appendSeparator(sb, widths);
-      appendRow(sb, widths, headers);
-      appendSeparator(sb, widths);
-      for (final String[] row : rows)
-        appendRow(sb, widths, row);
-      appendSeparator(sb, widths);
-
-      final String output = sb.toString();
-
-      // Only print if the configuration actually changed (avoid duplicate logs when
-      // multiple servers in the same JVM each receive the same leader change event)
-      final int hash = output.hashCode();
-      if (hash == lastClusterConfigHash)
-        return;
-      lastClusterConfigHash = hash;
-
-      // Use warning level on purpose for a few releases until the whole HA module has been road tested
-      LogManager.instance().log(this, Level.WARNING, "%s", output);
-
-    } catch (final Exception e) {
-      // Best-effort: don't let formatting errors disrupt the cluster
-      HALog.log(this, HALog.BASIC, "Error printing cluster configuration: %s", e.getMessage());
-    }
+    if (statusExporter != null)
+      statusExporter.printClusterConfiguration();
   }
 
-  private static void appendSeparator(final StringBuilder sb, final int[] widths) {
-    sb.append('+');
-    for (final int w : widths)
-      sb.append('-').append("-".repeat(w)).append("-+");
-    sb.append('\n');
-  }
-
-  private static void appendRow(final StringBuilder sb, final int[] widths, final String[] values) {
-    sb.append('|');
-    for (int i = 0; i < values.length; i++)
-      sb.append(' ').append(String.format("%-" + widths[i] + "s", values[i])).append(" |");
-    sb.append('\n');
-  }
-
-  /**
-   * Returns per-follower replication state (only available on the leader).
-   * Each entry maps a peer ID to {matchIndex, nextIndex}.
-   */
   public List<Map<String, Object>> getFollowerStates() {
-    if (raftServer == null || !isLeader())
-      return List.of();
-    try {
-      final var division = raftServer.getDivision(raftGroup.getGroupId());
-      final var info = division.getInfo();
-
-      // Snapshot the RoleInfoProto once - it contains peer IDs and last-RPC times
-      // from a single point in time (the protobuf is built atomically by Ratis).
-      final var roleInfo = info.getRoleInfoProto();
-      if (!roleInfo.hasLeaderInfo())
-        return List.of();
-
-      final List<RaftProtos.ServerRpcProto> followerInfos = roleInfo.getLeaderInfo().getFollowerInfoList();
-
-      // These two calls are NOT atomic with the roleInfo snapshot. A membership change
-      // between them can reorder or resize the arrays. We guard against this below.
-      final long[] matchIndices = info.getFollowerMatchIndices();
-      final long[] nextIndices = info.getFollowerNextIndices();
-
-      // If sizes diverge, a membership change happened between the calls.
-      // Discard the result rather than risk misattributing indices to the wrong peer.
-      if (followerInfos.size() != matchIndices.length || followerInfos.size() != nextIndices.length)
-        return List.of();
-
-      final List<Map<String, Object>> result = new ArrayList<>(followerInfos.size());
-      for (int i = 0; i < followerInfos.size(); i++) {
-        final String peerId = followerInfos.get(i).getId().getId().toStringUtf8();
-        final long lastRpcElapsedMs = followerInfos.get(i).getLastRpcElapsedTimeMs();
-        final Map<String, Object> state = new java.util.LinkedHashMap<>();
-        state.put("peerId", peerId);
-        state.put("matchIndex", matchIndices[i]);
-        state.put("nextIndex", nextIndices[i]);
-        state.put("lastRpcElapsedMs", lastRpcElapsedMs);
-        result.add(state);
-      }
-      return result;
-    } catch (final Exception e) {
-      // Catch any exception (IOException, ConcurrentModificationException, IndexOutOfBounds)
-      // from a membership change racing with the index array reads.
-      return List.of();
-    }
+    return statusExporter != null ? statusExporter.getFollowerStates() : List.of();
   }
 
   public ArcadeDBServer getServer() {
@@ -1251,77 +862,8 @@ public class RaftHAServer implements HAPlugin {
     }
   }
 
-  @Override
   public JSONObject exportClusterStatus() {
-    final var haJSON = new JSONObject();
-
-    haJSON.put("protocol", "ratis");
-    haJSON.put("clusterName", getClusterName());
-    haJSON.put("leader", getLeaderName());
-    haJSON.put("electionStatus", getElectionStatus());
-    haJSON.put("isLeader", isLeader());
-    haJSON.put("localPeerId", localPeerId.toString());
-    haJSON.put("configuredServers", getConfiguredServers());
-    haJSON.put("quorum", quorum.name());
-    haJSON.put("currentTerm", getCurrentTerm());
-    haJSON.put("commitIndex", getCommitIndex());
-    haJSON.put("lastAppliedIndex", getLastAppliedIndex());
-
-    // Peer list with replication state (follower indices available only on leader)
-    final var followerStates = getFollowerStates();
-    final var peers = new JSONArray();
-    for (final var peer : getLivePeers()) {
-      final var peerJSON = new JSONObject();
-      final String peerId = peer.getId().toString();
-      peerJSON.put("id", peerId);
-      peerJSON.put("address", peer.getAddress());
-      peerJSON.put("httpAddress", getPeerHTTPAddress(peer.getId()));
-      peerJSON.put("isLocal", peer.getId().equals(localPeerId));
-      peerJSON.put("role", peer.getId().equals(localPeerId) && isLeader() ? "LEADER"
-          : peerId.equals(getLeaderName()) ? "LEADER" : "FOLLOWER");
-
-      for (final var fs : followerStates)
-        if (peerId.equals(fs.get("peerId"))) {
-          peerJSON.put("matchIndex", fs.get("matchIndex"));
-          peerJSON.put("nextIndex", fs.get("nextIndex"));
-          if (clusterMonitor != null) {
-            final var lags = clusterMonitor.getReplicaLags();
-            final Long lag = lags.get(peerId);
-            if (lag != null)
-              peerJSON.put("lagging", lag > clusterMonitor.getLagWarningThreshold()
-                  && clusterMonitor.getLagWarningThreshold() > 0);
-          }
-          break;
-        }
-
-      peers.put(peerJSON);
-    }
-    haJSON.put("peers", peers);
-
-    // Database list
-    final var databases = new JSONArray();
-    for (final String dbName : server.getDatabaseNames()) {
-      final var databaseJSON = new JSONObject();
-      databaseJSON.put("name", dbName);
-      databaseJSON.put("quorum", quorum.name());
-      databases.put(databaseJSON);
-    }
-    haJSON.put("databases", databases);
-
-    // Metrics
-    final var metricsJSON = new JSONObject();
-    metricsJSON.put("electionCount", getElectionCount());
-    metricsJSON.put("lastElectionTime", getLastElectionTime());
-    metricsJSON.put("raftLogSize", getRaftLogSize());
-    metricsJSON.put("startTime", getStartTime());
-    metricsJSON.put("lagWarningThreshold", clusterMonitor.getLagWarningThreshold());
-    haJSON.put("metrics", metricsJSON);
-
-    // Required by RemoteHttpComponent for cluster configuration
-    haJSON.put("leaderAddress", getLeaderHTTPAddress());
-    haJSON.put("replicaAddresses", getReplicaAddresses());
-
-    return haJSON;
+    return statusExporter.exportClusterStatus();
   }
 
   public RaftClient getRaftClient() {
@@ -1374,33 +916,10 @@ public class RaftHAServer implements HAPlugin {
         .build();
   }
 
-  // -- Cluster Token --
+  // -- Cluster Token (delegated to ClusterTokenProvider) --
 
   public String getClusterToken() {
-    if (clusterToken == null)
-      initClusterToken();
-    return clusterToken;
-  }
-
-  // -- Lag Monitor --
-
-  private void startLagMonitor() {
-    if (clusterMonitor.getLagWarningThreshold() <= 0)
-      return;
-    lagMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-      final Thread t = new Thread(r, "arcadedb-raft-lag-monitor");
-      t.setDaemon(true);
-      return t;
-    });
-    lagMonitorExecutor.scheduleAtFixedRate(this::checkReplicaLag,
-        LAG_MONITOR_INITIAL_DELAY_SECS, LAG_MONITOR_INTERVAL_SECS, TimeUnit.SECONDS);
-  }
-
-  private void stopLagMonitor() {
-    if (lagMonitorExecutor != null) {
-      lagMonitorExecutor.shutdownNow();
-      lagMonitorExecutor = null;
-    }
+    return tokenProvider.getClusterToken();
   }
 
   // -- Ratis Health Monitor --
@@ -1417,144 +936,30 @@ public class RaftHAServer implements HAPlugin {
     }
   }
 
-  private void checkReplicaLag() {
-    try {
-      if (!isLeader())
-        return;
-      clusterMonitor.updateLeaderCommitIndex(getCommitIndex());
-      for (final var fs : getFollowerStates())
-        clusterMonitor.updateReplicaMatchIndex((String) fs.get("peerId"), (Long) fs.get("matchIndex"));
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Error checking replica lag", e);
-    }
-  }
-
   public ClusterMonitor getClusterMonitor() {
     return clusterMonitor;
   }
 
-  // -- Dynamic Membership --
+  // -- Dynamic Membership (delegated to RaftClusterManager) --
 
-  /**
-   * Adds a new peer to the Raft cluster. Must be called on any server (Ratis routes to leader).
-   * The new peer must already be running with the same cluster name and group ID.
-   *
-   * @param peerId      the new peer's ID (typically host_port)
-   * @param address     the new peer's Raft RPC address (host:port)
-   * @param httpAddress optional HTTP address (host:port). If null or empty, derived from the Raft
-   *                    address using the local port offset (which may be incorrect if the peer uses
-   *                    a non-standard port layout)
-   */
   public void addPeer(final String peerId, final String address, final String httpAddress) {
-    final RaftPeer newPeer = RaftPeer.newBuilder()
-        .setId(RaftPeerId.valueOf(peerId))
-        .setAddress(address)
-        .build();
-
-    try {
-      final SetConfigurationRequest.Arguments addArgs = SetConfigurationRequest.Arguments.newBuilder()
-          .setServersInNewConf(List.of(newPeer))
-          .setMode(SetConfigurationRequest.Mode.ADD)
-          .build();
-      final RaftClientReply reply = raftClient.admin().setConfiguration(addArgs);
-      if (!reply.isSuccess())
-        throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
-
-      addressResolver.registerPeerHttpAddress(peerId, address, httpAddress);
-
-      LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster", peerId);
-    } catch (final IOException e) {
-      throw new ConfigurationException("Failed to add peer " + peerId, e);
-    }
+    clusterManager.addPeer(peerId, address, httpAddress);
   }
 
-  /**
-   * Convenience overload for backward compatibility (derives HTTP address from port offset).
-   */
   public void addPeer(final String peerId, final String address) {
-    addPeer(peerId, address, null);
+    clusterManager.addPeer(peerId, address);
   }
 
-  /**
-   * Removes a peer from the Raft cluster. Must be called on any server (Ratis routes to leader).
-   * The removed peer will step down automatically.
-   *
-   * @param peerId the peer ID to remove
-   */
   public void removePeer(final String peerId) {
-    final Collection<RaftPeer> livePeers = getLivePeers();
-    final List<RaftPeer> currentPeers = new ArrayList<>();
-    final List<RaftPeer> newPeers = new ArrayList<>();
-    for (final RaftPeer peer : livePeers) {
-      currentPeers.add(peer);
-      if (!peer.getId().toString().equals(peerId))
-        newPeers.add(peer);
-    }
-
-    if (newPeers.size() == livePeers.size())
-      throw new ConfigurationException("Peer " + peerId + " not found in cluster");
-
-    try {
-      // Use COMPARE_AND_SET to ensure no concurrent membership change happened between
-      // reading livePeers and applying the removal.
-      final SetConfigurationRequest.Arguments removeArgs = SetConfigurationRequest.Arguments.newBuilder()
-          .setServersInCurrentConf(currentPeers)
-          .setServersInNewConf(newPeers)
-          .setMode(SetConfigurationRequest.Mode.COMPARE_AND_SET)
-          .build();
-      final RaftClientReply reply = raftClient.admin().setConfiguration(removeArgs);
-      if (!reply.isSuccess())
-        throw new ConfigurationException("Failed to remove peer " + peerId + ": " + reply.getException());
-      LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
-      if (clusterMonitor != null)
-        clusterMonitor.removeReplica(peerId);
-    } catch (final IOException e) {
-      throw new ConfigurationException("Failed to remove peer " + peerId, e);
-    }
+    clusterManager.removePeer(peerId);
   }
 
-  /**
-   * Transfers leadership to the specified peer.
-   *
-   * @param targetPeerId the target peer to become leader
-   * @param timeoutMs    timeout in milliseconds
-   */
   public void transferLeadership(final String targetPeerId, final long timeoutMs) {
-    // Create a fresh client for the admin call to avoid "client is closed" errors.
-    // The existing raftClient may have been closed after a prior leadership change.
-    try (final RaftClient adminClient = RaftClient.newBuilder()
-        .setRaftGroup(raftGroup)
-        .setProperties(raftProperties)
-        .build()) {
-      final RaftClientReply reply = adminClient.admin().transferLeadership(
-          RaftPeerId.valueOf(targetPeerId), timeoutMs);
-      if (!reply.isSuccess())
-        throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": " + reply.getException());
-      LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s", targetPeerId);
-    } catch (final IOException e) {
-      throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId, e);
-    }
+    clusterManager.transferLeadership(targetPeerId, timeoutMs);
   }
 
-  /**
-   * Steps down from leadership by transferring to any available peer.
-   * If no peer is available or the transfer fails, logs at SEVERE but does not throw.
-   */
   public void stepDown() {
-    final String leaderName = getLeaderName();
-    for (final var peer : getLivePeers()) {
-      if (!peer.getId().toString().equals(leaderName)) {
-        try {
-          transferLeadership(peer.getId().toString(), LEADERSHIP_TRANSFER_TIMEOUT_MS);
-          return;
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.SEVERE,
-              "Failed to step down (transfer to %s): %s", peer.getId(), e.getMessage());
-        }
-      }
-    }
-    LogManager.instance().log(this, Level.SEVERE,
-        "Cannot step down: no other peer available for leadership transfer");
+    clusterManager.stepDown();
   }
 
   // -- Snapshot --
@@ -1574,148 +979,11 @@ public class RaftHAServer implements HAPlugin {
     return addressResolver.getLeaderHTTPAddress(getLeaderName());
   }
 
-  // -- Configuration --
-
-  private RaftProperties buildRaftProperties() {
-    final RaftProperties properties = new RaftProperties();
-
-    // Storage directory
-    final Path storagePath = Path.of(server.getRootPath(), "ratis-storage", localPeerId.toString());
-    try {
-      Files.createDirectories(storagePath);
-    } catch (final IOException e) {
-      throw new ConfigurationException("Cannot create Ratis storage directory: " + storagePath, e);
-    }
-    RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storagePath.toFile()));
-
-    // gRPC transport
-    final int port = RaftPeerAddressResolver.parseFirstPort(
-        configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
-    GrpcConfigKeys.Server.setPort(properties, port);
-
-    // RPC factory
-    properties.set("raft.server.rpc.type", "GRPC");
-
-    // Election timeouts (configurable for WAN clusters)
-    final int electionMin = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN);
-    final int electionMax = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX);
-    RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(electionMin, TimeUnit.MILLISECONDS));
-    RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(electionMax, TimeUnit.MILLISECONDS));
-
-    // Snapshot: chunk mode (Ratis sends the marker file, ArcadeDB downloads the actual database via HTTP).
-    // The default LogAppender only supports chunk-based transfer, not notification mode.
-    // When the follower receives the marker, reinitialize() detects the index gap and triggers the HTTP download.
-    RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, true);
-    final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD);
-    RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, true);
-    RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, snapshotThreshold);
-    // Allow frequent snapshot creation (default 1024 gap prevents snapshots in short-lived tests)
-    RaftServerConfigKeys.Snapshot.setCreationGap(properties, 0);
-
-    // Log segment size
-    final String logSegmentSize = configuration.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE);
-    RaftServerConfigKeys.Log.setSegmentSizeMax(properties, SizeInBytes.valueOf(logSegmentSize));
-
-    // Log purging: controls how aggressively old log segments are deleted after snapshots
-    final int purgeGap = configuration.getValueAsInteger(GlobalConfiguration.HA_LOG_PURGE_GAP);
-    RaftServerConfigKeys.Log.setPurgeGap(properties, purgeGap);
-    final boolean purgeUptoSnapshot = configuration.getValueAsBoolean(GlobalConfiguration.HA_LOG_PURGE_UPTO_SNAPSHOT);
-    RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, purgeUptoSnapshot);
-
-    // AppendEntries batching: allow multiple log entries in a single gRPC call to followers.
-    // Combined with the group committer, this allows many transactions to be replicated in one round-trip.
-    final String appendBufferSize = configuration.getValueAsString(GlobalConfiguration.HA_APPEND_BUFFER_SIZE);
-    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf(appendBufferSize));
-
-    // Write buffer (must be >= appender buffer byte-limit + 8)
-    final long appendBytes = SizeInBytes.valueOf(appendBufferSize).getSize();
-    final long minWriteBuffer = appendBytes + 8;
-    SizeInBytes writeBuffer =
-        SizeInBytes.valueOf(configuration.getValueAsString(GlobalConfiguration.HA_WRITE_BUFFER_SIZE));
-    if (writeBuffer.getSize() < minWriteBuffer) {
-      LogManager.instance().log(this, Level.WARNING,
-          "ha.writeBufferSize (%s) is smaller than appendBufferSize + 8 (%d bytes). Adjusting to %d bytes",
-          writeBuffer, minWriteBuffer, minWriteBuffer);
-      writeBuffer = SizeInBytes.valueOf(minWriteBuffer);
-    }
-    RaftServerConfigKeys.Log.setWriteBufferSize(properties, writeBuffer);
-    RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, APPEND_ENTRIES_MAX_ELEMENTS);
-
-    // Leader lease: enables consistent reads from the leader without a round-trip to followers.
-    // The leader can serve reads as long as its lease hasn't expired (based on heartbeat responses).
-    RaftServerConfigKeys.Read.setLeaderLeaseEnabled(properties, true);
-    RaftServerConfigKeys.Read.setLeaderLeaseTimeoutRatio(properties, LEADER_LEASE_TIMEOUT_RATIO);
-    RaftServerConfigKeys.Read.setOption(properties, RaftServerConfigKeys.Read.Option.LINEARIZABLE);
-
-    // Note: Ratis uses MAJORITY consensus by default.
-    // For ALL quorum mode, we use the Watch API after each write to wait for ALL replicas.
-    // See sendToRaft() for the ALL quorum implementation.
-
-    RaftServerConfigKeys.Rpc.setRequestTimeout(properties,
-        TimeDuration.valueOf(RPC_REQUEST_TIMEOUT_SECS, TimeUnit.SECONDS));
-    RaftServerConfigKeys.Rpc.setSlownessTimeout(properties,
-        TimeDuration.valueOf(FOLLOWER_SLOWNESS_TIMEOUT_SECS, TimeUnit.SECONDS));
-    RaftServerConfigKeys.setCloseThreshold(properties,
-        TimeDuration.valueOf(FOLLOWER_CLOSE_THRESHOLD_SECS, TimeUnit.SECONDS));
-
-    // gRPC flow control window: larger window helps with catch-up replication after partitions
-    final String flowControlWindow = configuration.getValueAsString(GlobalConfiguration.HA_GRPC_FLOW_CONTROL_WINDOW);
-    GrpcConfigKeys.setFlowControlWindow(properties, SizeInBytes.valueOf(flowControlWindow));
-
-    // Client request timeout: bounds how long the Ratis client waits for a single RPC.
-    // Without this, the client retries indefinitely when the majority is unreachable.
-    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(quorumTimeout, TimeUnit.MILLISECONDS));
-
-    return properties;
-  }
-
-  // -- Peer Parsing (delegated to RaftPeerAddressResolver) --
-
   /**
-   * Derives and stores the cluster token in {@code config} using the same PBKDF2 logic as the
-   * instance {@link #initClusterToken()} method. Exposed for unit tests that cannot instantiate
-   * a full {@link RaftHAServer}.
-   * <p>
-   * If {@link GlobalConfiguration#HA_CLUSTER_TOKEN} is already set in {@code config}, this
-   * method is a no-op.
+   * Delegates to {@link ClusterTokenProvider#initClusterTokenForTest(ContextConfiguration)}.
    */
   static void initClusterTokenForTest(final ContextConfiguration config) {
-    final String configured = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
-    if (configured != null && !configured.isEmpty())
-      return;
-
-    final String clusterName = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
-    if (clusterName == null || clusterName.isEmpty())
-      throw new com.arcadedb.exception.ConfigurationException(
-          "Cannot derive cluster token: the cluster name is empty. Set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken");
-    String rootPassword = config.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
-    if (rootPassword == null || rootPassword.isEmpty())
-      rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
-    if (rootPassword == null || rootPassword.isEmpty())
-      throw new com.arcadedb.exception.ConfigurationException(
-          "Cannot derive cluster token without a root password. Set arcadedb.server.rootPassword or arcadedb.ha.clusterToken");
-
-    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, deriveTokenFromPassword(clusterName, rootPassword));
-  }
-
-  /**
-   * PBKDF2-HMAC-SHA256 derivation of a cluster token from a cluster name and root password.
-   * Domain separation: the cluster name appears in both the password and the salt so that
-   * two clusters with the same root password produce different tokens.
-   */
-  private static String deriveTokenFromPassword(final String clusterName, final String rootPassword) {
-    final String password = clusterName + ":" + rootPassword;
-    try {
-      final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
-      final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-      final PBEKeySpec spec = new PBEKeySpec(
-          password.toCharArray(), salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH_BITS);
-      final byte[] hash = factory.generateSecret(spec).getEncoded();
-      spec.clearPassword();
-      return HexFormat.of().formatHex(hash);
-    } catch (final Exception e) {
-      throw new RuntimeException("Failed to derive cluster token", e);
-    }
+    ClusterTokenProvider.initClusterTokenForTest(config);
   }
 
   /**

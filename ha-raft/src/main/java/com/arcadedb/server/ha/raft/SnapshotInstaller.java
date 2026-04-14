@@ -67,6 +67,14 @@ public class SnapshotInstaller {
   private static final int    SNAPSHOT_DOWNLOAD_MAX_RETRIES = 3;
   private static final long[] SNAPSHOT_DOWNLOAD_BACKOFF_MS  = { 5_000, 10_000, 20_000 };
 
+  /**
+   * Sentinel file written inside the temp snapshot directory after all ZIP entries have been
+   * successfully extracted. {@link #recoverPendingSnapshotSwaps(Path)} checks for this marker
+   * to distinguish a complete download from one interrupted mid-write (power failure, OOM,
+   * kill -9). Without this marker the temp directory is untrusted and will be discarded.
+   */
+  public static final String SNAPSHOT_COMPLETE_MARKER = ".snapshot-complete";
+
   private final ArcadeDBServer server;
   private final RaftHAServer   raftHA;
 
@@ -185,6 +193,7 @@ public class SnapshotInstaller {
       }
       Files.move(tempDir, dbPath);
       deleteStaleWalFiles(dbPath);
+      Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_MARKER));
 
       Files.deleteIfExists(markerFile);
       FileUtils.deleteRecursively(backupDir.toFile());
@@ -326,6 +335,11 @@ public class SnapshotInstaller {
         FileUtils.deleteRecursively(tempDir.toFile());
         throw e;
       }
+
+      // Write completion marker AFTER all ZIP entries have been successfully extracted.
+      // If the JVM crashes before this point, the temp directory will lack the marker and
+      // recoverPendingSnapshotSwaps() will discard it instead of swapping in corrupt data.
+      Files.writeString(tempDir.resolve(SNAPSHOT_COMPLETE_MARKER), "");
     } finally {
       connection.disconnect();
     }
@@ -398,13 +412,29 @@ public class SnapshotInstaller {
           "Found pending snapshot swap marker for database '%s', recovering...", baseName);
 
       try {
+        // Check whether the temp snapshot directory contains a valid, complete download.
+        // The completion marker is written as the last step of a successful extraction.
+        // If it is missing, the download was interrupted (power failure, OOM, kill -9) and
+        // the temp directory may contain truncated or missing files - discard it.
+        boolean snapshotValid = false;
         if (Files.exists(snapshotPath)) {
+          if (Files.exists(snapshotPath.resolve(SNAPSHOT_COMPLETE_MARKER))) {
+            snapshotValid = true;
+          } else {
+            LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+                "Incomplete snapshot download for '%s' (no completion marker), discarding partial data", baseName);
+            FileUtils.deleteRecursively(snapshotPath.toFile());
+          }
+        }
+
+        if (snapshotValid) {
           if (Files.exists(livePath)) {
             FileUtils.deleteRecursively(backupPath.toFile());
             Files.move(livePath, backupPath);
           }
           Files.move(snapshotPath, livePath);
           deleteStaleWalFiles(livePath);
+          Files.deleteIfExists(livePath.resolve(SNAPSHOT_COMPLETE_MARKER));
           FileUtils.deleteRecursively(backupPath.toFile());
           LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
               "Snapshot swap recovery completed for database '%s'", baseName);
@@ -412,7 +442,7 @@ public class SnapshotInstaller {
         } else if (Files.exists(backupPath) && !Files.exists(livePath)) {
           Files.move(backupPath, livePath);
           LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-              "Snapshot swap rolled back for database '%s' (snapshot data was lost)", baseName);
+              "Snapshot swap rolled back for database '%s' (snapshot data was lost or incomplete)", baseName);
 
         } else if (Files.exists(livePath)) {
           FileUtils.deleteRecursively(backupPath.toFile());

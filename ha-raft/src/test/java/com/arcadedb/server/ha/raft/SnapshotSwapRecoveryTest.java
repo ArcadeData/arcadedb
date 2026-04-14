@@ -58,6 +58,7 @@ class SnapshotSwapRecoveryTest {
 
     Files.createDirectories(snapshotPath);
     Files.writeString(snapshotPath.resolve("new-data.dat"), "new snapshot data");
+    Files.writeString(snapshotPath.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_MARKER), "");
 
     // Write the pending marker
     final Path markerPath = dbDir.resolve("testdb.snapshot-pending");
@@ -70,6 +71,9 @@ class SnapshotSwapRecoveryTest {
     assertThat(livePath).exists();
     assertThat(livePath.resolve("new-data.dat")).exists();
     assertThat(Files.readString(livePath.resolve("new-data.dat"))).isEqualTo("new snapshot data");
+
+    // Completion marker should be cleaned up from the live directory
+    assertThat(livePath.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_MARKER)).doesNotExist();
 
     // Backup and temp dirs should be cleaned up
     assertThat(backupPath).doesNotExist();
@@ -95,9 +99,10 @@ class SnapshotSwapRecoveryTest {
     Files.createDirectories(livePath);
     Files.writeString(livePath.resolve("old-data.dat"), "old data");
 
-    // Temp snapshot is ready
+    // Temp snapshot is ready (with completion marker)
     Files.createDirectories(snapshotPath);
     Files.writeString(snapshotPath.resolve("new-data.dat"), "new snapshot data");
+    Files.writeString(snapshotPath.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_MARKER), "");
 
     // Write the pending marker
     final Path markerPath = dbDir.resolve("testdb.snapshot-pending");
@@ -219,11 +224,12 @@ class SnapshotSwapRecoveryTest {
     final Path livePath = dbDir.resolve("testdb");
     final Path snapshotPath = dbDir.resolve("testdb.snapshot-tmp");
 
-    // Temp snapshot with stale WAL files
+    // Temp snapshot with stale WAL files and completion marker
     Files.createDirectories(snapshotPath);
     Files.writeString(snapshotPath.resolve("new-data.dat"), "new data");
     Files.writeString(snapshotPath.resolve("txlog_0.wal"), "stale wal");
     Files.writeString(snapshotPath.resolve("txlog_1.wal"), "stale wal 2");
+    Files.writeString(snapshotPath.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_MARKER), "");
 
     // Write the pending marker
     final Path markerPath = dbDir.resolve("testdb.snapshot-pending");
@@ -287,9 +293,10 @@ class SnapshotSwapRecoveryTest {
     Files.createDirectories(livePath);
     Files.writeString(livePath.resolve("data.dat"), "live data");
 
-    // Temp snapshot is ready
+    // Temp snapshot is ready (with completion marker)
     Files.createDirectories(snapshotPath);
     Files.writeString(snapshotPath.resolve("new-data.dat"), "new data");
+    Files.writeString(snapshotPath.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_MARKER), "");
 
     // Stale backup from a previous partial recovery
     Files.createDirectories(backupPath);
@@ -309,6 +316,119 @@ class SnapshotSwapRecoveryTest {
 
     // Old data should be gone
     assertThat(livePath.resolve("data.dat")).doesNotExist();
+    assertThat(backupPath).doesNotExist();
+    assertThat(snapshotPath).doesNotExist();
+    assertThat(markerPath).doesNotExist();
+  }
+
+  // -- New tests for incomplete snapshot detection --
+
+  /**
+   * Simulates a crash during snapshot download (Phase 1): the temp directory exists
+   * with partial data but the completion marker was never written. The pending marker
+   * also exists (e.g. from a very tight race). Recovery should discard the incomplete
+   * snapshot and preserve the live database.
+   */
+  @Test
+  void testRecoverDiscardsIncompleteSnapshotWhenLiveExists() throws IOException {
+    final Path dbDir = tempDir.resolve("databases");
+    Files.createDirectories(dbDir);
+
+    final Path livePath = dbDir.resolve("testdb");
+    final Path backupPath = dbDir.resolve("testdb.snapshot-old");
+    final Path snapshotPath = dbDir.resolve("testdb.snapshot-tmp");
+
+    // Live DB still exists (Phase 2 swap hadn't started or live was not yet moved)
+    Files.createDirectories(livePath);
+    Files.writeString(livePath.resolve("data.dat"), "original data");
+
+    // Partially extracted snapshot - no completion marker
+    Files.createDirectories(snapshotPath);
+    Files.writeString(snapshotPath.resolve("partial-file.dat"), "partial");
+
+    // Pending marker exists
+    final Path markerPath = dbDir.resolve("testdb.snapshot-pending");
+    Files.writeString(markerPath, "testdb");
+
+    // Run recovery
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
+
+    // Live path should be preserved (incomplete snapshot discarded, not swapped in)
+    assertThat(livePath).exists();
+    assertThat(Files.readString(livePath.resolve("data.dat"))).isEqualTo("original data");
+
+    // Incomplete snapshot should be cleaned up
+    assertThat(snapshotPath).doesNotExist();
+    assertThat(backupPath).doesNotExist();
+    assertThat(markerPath).doesNotExist();
+  }
+
+  /**
+   * Simulates a crash during snapshot download where the live DB was already moved
+   * to backup (race condition or partial Phase 2), but the temp snapshot is incomplete
+   * (no completion marker). Recovery should rollback by restoring the backup.
+   */
+  @Test
+  void testRecoverRollsBackWhenSnapshotIncompleteAndBackupExists() throws IOException {
+    final Path dbDir = tempDir.resolve("databases");
+    Files.createDirectories(dbDir);
+
+    final Path livePath = dbDir.resolve("testdb");
+    final Path backupPath = dbDir.resolve("testdb.snapshot-old");
+    final Path snapshotPath = dbDir.resolve("testdb.snapshot-tmp");
+
+    // Live DB was moved to backup already
+    Files.createDirectories(backupPath);
+    Files.writeString(backupPath.resolve("old-data.dat"), "old data");
+
+    // Partially extracted snapshot - no completion marker
+    Files.createDirectories(snapshotPath);
+    Files.writeString(snapshotPath.resolve("partial-file.dat"), "partial");
+
+    // Pending marker exists
+    final Path markerPath = dbDir.resolve("testdb.snapshot-pending");
+    Files.writeString(markerPath, "testdb");
+
+    // Run recovery
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
+
+    // Should rollback: backup restored to live path, incomplete snapshot discarded
+    assertThat(livePath).exists();
+    assertThat(livePath.resolve("old-data.dat")).exists();
+    assertThat(Files.readString(livePath.resolve("old-data.dat"))).isEqualTo("old data");
+
+    // Incomplete snapshot and backup cleaned up
+    assertThat(snapshotPath).doesNotExist();
+    assertThat(backupPath).doesNotExist();
+    assertThat(markerPath).doesNotExist();
+  }
+
+  /**
+   * Simulates the worst case: an incomplete snapshot with no backup and no live path.
+   * Recovery should discard the incomplete snapshot and clean up. The database will
+   * be unavailable, but the process stays up for operator investigation.
+   */
+  @Test
+  void testRecoverDiscardsIncompleteSnapshotWhenNothingElseExists() throws IOException {
+    final Path dbDir = tempDir.resolve("databases");
+    Files.createDirectories(dbDir);
+
+    final Path livePath = dbDir.resolve("testdb");
+    final Path backupPath = dbDir.resolve("testdb.snapshot-old");
+    final Path snapshotPath = dbDir.resolve("testdb.snapshot-tmp");
+
+    // Only the incomplete snapshot and marker exist
+    Files.createDirectories(snapshotPath);
+    Files.writeString(snapshotPath.resolve("partial-file.dat"), "partial");
+
+    final Path markerPath = dbDir.resolve("testdb.snapshot-pending");
+    Files.writeString(markerPath, "testdb");
+
+    // Run recovery - should not throw
+    SnapshotInstaller.recoverPendingSnapshotSwaps(dbDir);
+
+    // Everything cleaned up, database unavailable
+    assertThat(livePath).doesNotExist();
     assertThat(backupPath).doesNotExist();
     assertThat(snapshotPath).doesNotExist();
     assertThat(markerPath).doesNotExist();

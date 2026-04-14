@@ -291,7 +291,10 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         });
       }
 
-      return CompletableFuture.failedFuture(e);
+      // Return a completed future: Ratis has committed the entry and the applied index has been
+      // advanced. Returning a failed future would violate the BaseStateMachine contract and may
+      // cause Ratis to enter an unexpected state. Recovery happens out-of-band via snapshot.
+      return CompletableFuture.completedFuture(Message.EMPTY);
     } catch (final Throwable e) {
       // Unexpected errors (NPE, ClassCastException, OOM, etc.) indicate a bug that could cause
       // state divergence if silently swallowed. Crash the state machine so the node recovers
