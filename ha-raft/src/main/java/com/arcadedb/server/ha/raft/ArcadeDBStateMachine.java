@@ -266,8 +266,8 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       // failed future so Ratis can handle the failure without crashing the node.
       LogManager.instance().log(this, Level.SEVERE, "Error applying Raft log entry at index %d", e, index);
       return CompletableFuture.failedFuture(e);
-    } catch (final Exception e) {
-      // Unexpected errors (NPE, ClassCastException, etc.) indicate a bug that could cause
+    } catch (final Throwable e) {
+      // Unexpected errors (NPE, ClassCastException, OOM, etc.) indicate a bug that could cause
       // state divergence if silently swallowed. Crash the state machine so the node recovers
       // via snapshot rather than continuing with potentially inconsistent state.
       LogManager.instance().log(this, Level.SEVERE,
@@ -277,11 +277,15 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       // Ratis server, which may try to acquire locks held by the current applyTransaction
       // callback thread.
       final Thread stopThread = new Thread(() -> {
-        try { server.stop(); } catch (final Exception ignored) {}
+        try {
+          server.stop();
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.SEVERE, "Emergency stop failed", t);
+        }
       }, "arcadedb-emergency-stop");
       stopThread.setDaemon(true);
       stopThread.start();
-      return CompletableFuture.failedFuture(e);
+      return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
     }
   }
 
@@ -372,8 +376,29 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     }
 
     // Phase 3: Finalize schema - update metadata and remove dropped files AFTER WAL is safely applied.
-    // This ordering ensures a WAL failure leaves only orphan empty files (harmless, cleaned up by snapshot)
-    // rather than schema-ahead-of-data inconsistency.
+    //
+    // Crash-safety analysis for both failure directions:
+    //
+    // (a) Crash BEFORE Phase 2 (WAL not yet applied, schema not yet updated):
+    //     Ratis replays the entry on restart. All phases run normally. No inconsistency.
+    //
+    // (b) Crash AFTER Phase 2 but BEFORE Phase 3 (pages written, schema.json not updated):
+    //     The local WAL recovery (TransactionManager.checkIntegrity) does NOT cover this case:
+    //     applyChanges() writes directly to page files without going through the local WAL, so
+    //     there is no .wal file to replay. Recovery is handled exclusively by Ratis log replay:
+    //     - lastAppliedIndex is updated only AFTER all phases complete (see the caller), so the
+    //       snapshot never marks this entry as applied if Phase 3 did not finish.
+    //     - On restart, Ratis replays from the snapshot's last applied index, which excludes this entry.
+    //     - Phase 1 is idempotent (file-existence guard). Phase 2 is idempotent (page-version guard
+    //       in applyChanges() throws ConcurrentModificationException for already-applied pages).
+    //     - Phase 3 runs and writes the missing schema update. Inconsistency is resolved.
+    //
+    // (c) Crash AFTER Phase 3 but Phase 1 file not flushed (schema-ahead-of-data):
+    //     Same Ratis replay path. Phase 1's existence guard skips already-created files.
+    //     Phase 2's version guard skips already-applied pages. Phase 3 is idempotent (overwrites
+    //     schema.json with the same content). No harm.
+    //
+    // In all cases the recovery path is Ratis log replay, not WAL recovery.
     if (entry.schemaJson() != null) {
       try {
         removeDroppedFiles(db, entry.filesToRemove());

@@ -275,6 +275,9 @@ public class RaftHAServer implements HAPlugin {
       return;
     }
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
+    if (clusterName == null || clusterName.isEmpty())
+      throw new ConfigurationException(
+          "Cannot derive cluster token: the cluster name is empty. Set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken");
     // Check both the server's ContextConfiguration and the global default (system property)
     String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
     if (rootPassword == null || rootPassword.isEmpty())
@@ -283,6 +286,11 @@ public class RaftHAServer implements HAPlugin {
       throw new ConfigurationException(
           "Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. "
               + "Set arcadedb.server.rootPassword or provide an explicit arcadedb.ha.clusterToken");
+    if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE))
+        && "arcadedb".equalsIgnoreCase(clusterName))
+      LogManager.instance().log(this, Level.WARNING,
+          "HA cluster is using the default cluster name '%s'. For stronger token domain separation, set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken",
+          clusterName);
     // Domain separation: the cluster name appears in both the PBKDF2 password and the salt.
     // In the password (clusterName + ":" + rootPassword) it ensures that two clusters with the
     // same root password produce different tokens. In the salt ("arcadedb-cluster-token:" + clusterName)
@@ -1911,6 +1919,9 @@ public class RaftHAServer implements HAPlugin {
       return;
 
     final String clusterName = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
+    if (clusterName == null || clusterName.isEmpty())
+      throw new com.arcadedb.exception.ConfigurationException(
+          "Cannot derive cluster token: the cluster name is empty. Set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken");
     String rootPassword = config.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
     if (rootPassword == null || rootPassword.isEmpty())
       rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
