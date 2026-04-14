@@ -249,11 +249,10 @@ public class SnapshotInstaller {
       try {
         downloadSnapshot(snapshotUrl, tempDir, databaseName);
         return;
-      } catch (final IOException | ReplicationException e) {
+      } catch (final IOException e) {
         FileUtils.deleteRecursively(tempDir.toFile());
         if (attempt == SNAPSHOT_DOWNLOAD_MAX_RETRIES)
-          throw e instanceof IOException ? (IOException) e
-              : new IOException("Snapshot download failed after " + SNAPSHOT_DOWNLOAD_MAX_RETRIES + " attempts", e);
+          throw e;
 
         final long backoff = SNAPSHOT_DOWNLOAD_BACKOFF_MS[attempt - 1];
         LogManager.instance().log(this, Level.WARNING,

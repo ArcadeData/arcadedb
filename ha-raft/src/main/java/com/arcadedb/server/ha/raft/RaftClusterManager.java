@@ -148,7 +148,10 @@ class RaftClusterManager {
           .setServersInNewConf(List.of(newPeer))
           .setMode(SetConfigurationRequest.Mode.ADD)
           .build();
-      final RaftClientReply reply = haServer.getRaftClient().admin().setConfiguration(addArgs);
+      final RaftClient client = haServer.getRaftClient();
+      if (client == null)
+        throw new ConfigurationException("Failed to add peer " + peerId + ": RaftClient not available");
+      final RaftClientReply reply = client.admin().setConfiguration(addArgs);
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to add peer " + peerId + ": " + reply.getException());
 
@@ -194,7 +197,10 @@ class RaftClusterManager {
           .setServersInNewConf(newPeers)
           .setMode(SetConfigurationRequest.Mode.COMPARE_AND_SET)
           .build();
-      final RaftClientReply reply = haServer.getRaftClient().admin().setConfiguration(removeArgs);
+      final RaftClient client = haServer.getRaftClient();
+      if (client == null)
+        throw new ConfigurationException("Failed to remove peer " + peerId + ": RaftClient not available");
+      final RaftClientReply reply = client.admin().setConfiguration(removeArgs);
       if (!reply.isSuccess())
         throw new ConfigurationException("Failed to remove peer " + peerId + ": " + reply.getException());
       LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);

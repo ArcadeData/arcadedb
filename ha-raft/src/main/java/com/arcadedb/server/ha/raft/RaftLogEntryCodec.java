@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.engine.WALFile;
 
 import java.nio.ByteBuffer;
 import java.util.HashMap;
@@ -106,8 +107,7 @@ public final class RaftLogEntryCodec {
     stream.putByte(RaftLogEntryType.CREATE_DATABASE.code());
     stream.putString(originPeerId);
     stream.putString(databaseName);
-    stream.flip();
-    return stream.toByteArray();
+    return toByteArray(stream);
   }
 
   public static byte[] serializeDropDatabase(final String databaseName, final String originPeerId) {
@@ -115,8 +115,7 @@ public final class RaftLogEntryCodec {
     stream.putByte(RaftLogEntryType.DROP_DATABASE.code());
     stream.putString(originPeerId);
     stream.putString(databaseName);
-    stream.flip();
-    return stream.toByteArray();
+    return toByteArray(stream);
   }
 
   // -- Deserialization --
@@ -244,6 +243,95 @@ public final class RaftLogEntryCodec {
       stream.getByteArray(bytes);
     return new String(bytes, DatabaseFactory.getDefaultCharset());
   }
+
+  // -- WAL Transaction Parsing --
+
+  /**
+   * Parses a decompressed WAL buffer into a {@link WALFile.WALTransaction} for replay on followers.
+   * Validates header, page entries, footer, and magic number to detect corrupted entries.
+   */
+  public static WALFile.WALTransaction parseWalTransaction(final Binary buffer) {
+    final WALFile.WALTransaction tx = new WALFile.WALTransaction();
+
+    // Minimum header: txId(8) + timestamp(8) + pages(4) + segmentSize(4) = 24 bytes
+    final int headerSize = 2 * Binary.LONG_SERIALIZED_SIZE + 2 * Binary.INT_SERIALIZED_SIZE;
+    if (buffer.size() < headerSize)
+      throw new ReplicationException(
+          "Replicated transaction buffer is truncated: expected at least " + headerSize + " header bytes, got " + buffer.size());
+
+    int pos = 0;
+    tx.txId = buffer.getLong(pos);
+    pos += Binary.LONG_SERIALIZED_SIZE;
+
+    tx.timestamp = buffer.getLong(pos);
+    pos += Binary.LONG_SERIALIZED_SIZE;
+
+    final int pages = buffer.getInt(pos);
+    pos += Binary.INT_SERIALIZED_SIZE;
+
+    final int segmentSize = buffer.getInt(pos);
+    pos += Binary.INT_SERIALIZED_SIZE;
+
+    if (segmentSize < 0 || pos + segmentSize + Binary.LONG_SERIALIZED_SIZE > buffer.size())
+      throw new ReplicationException("Replicated transaction buffer is corrupted (segmentSize=" + segmentSize + ")");
+
+    tx.pages = new WALFile.WALPage[pages];
+
+    for (int i = 0; i < pages; ++i) {
+      // Validate that the 4 fixed-size header fields (fileId, pageNumber, changesFrom, changesTo) fit
+      if (pos + 4 * Binary.INT_SERIALIZED_SIZE > buffer.size())
+        throw new ReplicationException("Replicated transaction buffer is corrupted");
+
+      tx.pages[i] = new WALFile.WALPage();
+      tx.pages[i].fileId = buffer.getInt(pos);
+      pos += Binary.INT_SERIALIZED_SIZE;
+      tx.pages[i].pageNumber = buffer.getInt(pos);
+      pos += Binary.INT_SERIALIZED_SIZE;
+      tx.pages[i].changesFrom = buffer.getInt(pos);
+      pos += Binary.INT_SERIALIZED_SIZE;
+      tx.pages[i].changesTo = buffer.getInt(pos);
+      pos += Binary.INT_SERIALIZED_SIZE;
+
+      final int deltaSize = tx.pages[i].changesTo - tx.pages[i].changesFrom + 1;
+      if (deltaSize <= 0)
+        throw new ReplicationException(
+            "Invalid delta range in replicated transaction: changesFrom=" + tx.pages[i].changesFrom + " changesTo=" + tx.pages[i].changesTo);
+
+      // Validate that the remaining 2 fixed fields + delta bytes fit before reading them
+      if (pos + 2 * Binary.INT_SERIALIZED_SIZE + deltaSize > buffer.size())
+        throw new ReplicationException("Replicated transaction buffer is corrupted");
+
+      tx.pages[i].currentPageVersion = buffer.getInt(pos);
+      pos += Binary.INT_SERIALIZED_SIZE;
+      tx.pages[i].currentPageSize = buffer.getInt(pos);
+      pos += Binary.INT_SERIALIZED_SIZE;
+
+      final byte[] pageData = new byte[deltaSize];
+      tx.pages[i].currentContent = new Binary(pageData);
+      buffer.getByteArray(pos, pageData, 0, deltaSize);
+      pos += deltaSize;
+    }
+
+    // Trailing footer: segmentSize(4) + magicNumber(8)
+    final int footerSize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
+    if (pos + footerSize > buffer.size())
+      throw new ReplicationException(
+          "Replicated transaction buffer is truncated: expected " + footerSize + " footer bytes at position " + pos + ", buffer size " + buffer.size());
+
+    final int trailingSegmentSize = buffer.getInt(pos);
+    pos += Binary.INT_SERIALIZED_SIZE;
+    if (trailingSegmentSize != segmentSize)
+      throw new ReplicationException(
+          "Replicated transaction buffer is corrupted (trailing segment size " + trailingSegmentSize + " != leading " + segmentSize + ")");
+
+    final long magicNumber = buffer.getLong(pos);
+    if (magicNumber != WALFile.MAGIC_NUMBER)
+      throw new ReplicationException("Replicated transaction buffer is corrupted (bad magic number)");
+
+    return tx;
+  }
+
+  // -- Internal helpers --
 
   private static Map<Integer, String> readFileMap(final Binary stream) {
     final int count = stream.getInt();

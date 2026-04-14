@@ -128,6 +128,8 @@ class RaftTransactionBroker {
     final long quorumTimeout = haServer.getQuorumTimeout();
     try {
       final var client = haServer.getRaftClient();
+      if (client == null)
+        throw new QuorumNotReachedException("RaftClient not available");
       final var future = client.async().send(Message.valueOf(ByteString.copyFrom(entry)));
       final RaftClientReply reply = future.get(quorumTimeout, TimeUnit.MILLISECONDS);
 

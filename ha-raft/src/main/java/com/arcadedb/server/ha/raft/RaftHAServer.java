@@ -697,13 +697,16 @@ public class RaftHAServer {
    * Called by ArcadeDBStateMachine when the leader changes to wake up leaveCluster().
    */
   public void notifyLeaderChanged() {
-    if (isLeader()) {
+    // Capture the executor before the isLeader() branch. If restartRatisIfNeeded() is
+    // concurrently replacing the state machine, we avoid submitting to a shut-down executor.
+    final var currentStateMachine = stateMachine;
+    if (isLeader() && currentStateMachine != null) {
       // New leader must apply all committed entries before serving reads.
       // Mark as not ready; the catch-up runs in the background to avoid blocking
       // the Ratis event thread (which processes heartbeats and elections).
       leaderReady = false;
       HALog.log(this, HALog.BASIC, "This node became leader, scheduling state machine catch-up in background");
-      stateMachine.getLifecycleExecutor().submit(() -> {
+      currentStateMachine.getLifecycleExecutor().submit(() -> {
         try {
           waitForLocalApply();
           leaderReady = true;

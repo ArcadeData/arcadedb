@@ -385,7 +385,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // Schema component lookups (for page count / vector index updates) gracefully handle
     // missing entries via getFileByIdIfExists(), and will be correct after the final reload.
     if (entry.walBuffer() != null && entry.walBuffer().size() > 0) {
-      final WALFile.WALTransaction walTx = parseWalTransaction(entry.walBuffer());
+      final WALFile.WALTransaction walTx = RaftLogEntryCodec.parseWalTransaction(entry.walBuffer());
 
       LogManager.instance().log(this, Level.FINE, "Applying Raft tx %d (modifiedPages=%d, db=%s)...", walTx.txId,
           walTx.pages.length, entry.databaseName());
@@ -498,7 +498,14 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     }
 
     HALog.log(this, HALog.BASIC, "Dropping database '%s' on follower (replicated from leader)", entry.databaseName());
-    server.getDatabase(entry.databaseName()).getEmbedded().drop();
+    try {
+      server.getDatabase(entry.databaseName()).getEmbedded().drop();
+    } catch (final Exception e) {
+      // Database was removed concurrently between existsDatabase() and getDatabase().
+      // This is harmless - the drop was the intended outcome.
+      HALog.log(this, HALog.BASIC, "Database '%s' was removed concurrently, drop is a no-op: %s",
+          entry.databaseName(), e.getMessage());
+    }
     server.removeDatabase(entry.databaseName());
   }
 
@@ -787,84 +794,11 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
 
   // -- Utilities --
 
+  /**
+   * @deprecated Use {@link RaftLogEntryCodec#parseWalTransaction(Binary)} instead.
+   */
+  @Deprecated
   static WALFile.WALTransaction parseWalTransaction(final Binary buffer) {
-    final WALFile.WALTransaction tx = new WALFile.WALTransaction();
-
-    // Minimum header: txId(8) + timestamp(8) + pages(4) + segmentSize(4) = 24 bytes
-    final int headerSize = 2 * Binary.LONG_SERIALIZED_SIZE + 2 * Binary.INT_SERIALIZED_SIZE;
-    if (buffer.size() < headerSize)
-      throw new ReplicationException(
-          "Replicated transaction buffer is truncated: expected at least " + headerSize + " header bytes, got " + buffer.size());
-
-    int pos = 0;
-    tx.txId = buffer.getLong(pos);
-    pos += Binary.LONG_SERIALIZED_SIZE;
-
-    tx.timestamp = buffer.getLong(pos);
-    pos += Binary.LONG_SERIALIZED_SIZE;
-
-    final int pages = buffer.getInt(pos);
-    pos += Binary.INT_SERIALIZED_SIZE;
-
-    final int segmentSize = buffer.getInt(pos);
-    pos += Binary.INT_SERIALIZED_SIZE;
-
-    if (segmentSize < 0 || pos + segmentSize + Binary.LONG_SERIALIZED_SIZE > buffer.size())
-      throw new ReplicationException("Replicated transaction buffer is corrupted (segmentSize=" + segmentSize + ")");
-
-    tx.pages = new WALFile.WALPage[pages];
-
-    for (int i = 0; i < pages; ++i) {
-      // Validate that the 4 fixed-size header fields (fileId, pageNumber, changesFrom, changesTo) fit
-      if (pos + 4 * Binary.INT_SERIALIZED_SIZE > buffer.size())
-        throw new ReplicationException("Replicated transaction buffer is corrupted");
-
-      tx.pages[i] = new WALFile.WALPage();
-      tx.pages[i].fileId = buffer.getInt(pos);
-      pos += Binary.INT_SERIALIZED_SIZE;
-      tx.pages[i].pageNumber = buffer.getInt(pos);
-      pos += Binary.INT_SERIALIZED_SIZE;
-      tx.pages[i].changesFrom = buffer.getInt(pos);
-      pos += Binary.INT_SERIALIZED_SIZE;
-      tx.pages[i].changesTo = buffer.getInt(pos);
-      pos += Binary.INT_SERIALIZED_SIZE;
-
-      final int deltaSize = tx.pages[i].changesTo - tx.pages[i].changesFrom + 1;
-      if (deltaSize <= 0)
-        throw new ReplicationException(
-            "Invalid delta range in replicated transaction: changesFrom=" + tx.pages[i].changesFrom + " changesTo=" + tx.pages[i].changesTo);
-
-      // Validate that the remaining 2 fixed fields + delta bytes fit before reading them
-      if (pos + 2 * Binary.INT_SERIALIZED_SIZE + deltaSize > buffer.size())
-        throw new ReplicationException("Replicated transaction buffer is corrupted");
-
-      tx.pages[i].currentPageVersion = buffer.getInt(pos);
-      pos += Binary.INT_SERIALIZED_SIZE;
-      tx.pages[i].currentPageSize = buffer.getInt(pos);
-      pos += Binary.INT_SERIALIZED_SIZE;
-
-      final byte[] pageData = new byte[deltaSize];
-      tx.pages[i].currentContent = new Binary(pageData);
-      buffer.getByteArray(pos, pageData, 0, deltaSize);
-      pos += deltaSize;
-    }
-
-    // Trailing footer: segmentSize(4) + magicNumber(8)
-    final int footerSize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
-    if (pos + footerSize > buffer.size())
-      throw new ReplicationException(
-          "Replicated transaction buffer is truncated: expected " + footerSize + " footer bytes at position " + pos + ", buffer size " + buffer.size());
-
-    final int trailingSegmentSize = buffer.getInt(pos);
-    pos += Binary.INT_SERIALIZED_SIZE;
-    if (trailingSegmentSize != segmentSize)
-      throw new ReplicationException(
-          "Replicated transaction buffer is corrupted (trailing segment size " + trailingSegmentSize + " != leading " + segmentSize + ")");
-
-    final long magicNumber = buffer.getLong(pos);
-    if (magicNumber != WALFile.MAGIC_NUMBER)
-      throw new ReplicationException("Replicated transaction buffer is corrupted (bad magic number)");
-
-    return tx;
+    return RaftLogEntryCodec.parseWalTransaction(buffer);
   }
 }
