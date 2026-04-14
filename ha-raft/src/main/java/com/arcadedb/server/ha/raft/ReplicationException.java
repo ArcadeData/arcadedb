@@ -1,5 +1,5 @@
 /*
- * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,14 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.network.binary;
+package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.exception.NeedRetryException;
-
-public class QuorumNotReachedException extends NeedRetryException {
-  public QuorumNotReachedException(final String s) {
-    super(s);
+public class ReplicationException extends RuntimeException {
+  public ReplicationException(final String message) {
+    super(message);
   }
 
-  public QuorumNotReachedException(final String s, final Throwable e) {
-    super(s, e);
+  public ReplicationException(final String message, final Throwable cause) {
+    super(message, cause);
   }
 }
