@@ -46,8 +46,8 @@ class RaftTransactionBroker {
     this.haServer = haServer;
   }
 
-  void startGroupCommitter(final int batchSize, final int queueSize) {
-    groupCommitter = new RaftGroupCommitter(haServer, batchSize, queueSize);
+  void startGroupCommitter(final int batchSize, final int queueSize, final int offerTimeoutMs) {
+    groupCommitter = new RaftGroupCommitter(haServer, batchSize, queueSize, offerTimeoutMs);
     groupCommitter.start();
   }
 
@@ -72,6 +72,21 @@ class RaftTransactionBroker {
 
   void replicateDropDatabase(final String databaseName) {
     final byte[] entry = RaftLogEntryCodec.serializeDropDatabase(databaseName, haServer.getLocalPeerId().toString());
+    replicateRawEntry(entry);
+  }
+
+  void replicateCreateUser(final String userJson) {
+    final byte[] entry = RaftLogEntryCodec.serializeCreateUser(userJson, haServer.getLocalPeerId().toString());
+    replicateRawEntry(entry);
+  }
+
+  void replicateUpdateUser(final String userJson) {
+    final byte[] entry = RaftLogEntryCodec.serializeUpdateUser(userJson, haServer.getLocalPeerId().toString());
+    replicateRawEntry(entry);
+  }
+
+  void replicateDropUser(final String userName) {
+    final byte[] entry = RaftLogEntryCodec.serializeDropUser(userName, haServer.getLocalPeerId().toString());
     replicateRawEntry(entry);
   }
 

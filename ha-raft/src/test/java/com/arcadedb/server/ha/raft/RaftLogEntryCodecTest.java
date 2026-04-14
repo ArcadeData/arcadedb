@@ -119,11 +119,56 @@ class RaftLogEntryCodecTest {
   }
 
   @Test
+  void testCreateUserSerializationRoundTrip() {
+    final String userJson = "{\"name\":\"testUser\",\"password\":\"encoded123\",\"databases\":{\"myDb\":[\"admin\"]}}";
+    final byte[] serialized = RaftLogEntryCodec.serializeCreateUser(userJson, "leader-0");
+
+    assertThat(RaftLogEntryCodec.readType(ByteBuffer.wrap(serialized))).isEqualTo(RaftLogEntryType.CREATE_USER);
+
+    final RaftLogEntryCodec.UserEntry entry = RaftLogEntryCodec.deserializeUserEntry(serialized);
+
+    assertThat(entry.originPeerId()).isEqualTo("leader-0");
+    assertThat(entry.userJson()).isEqualTo(userJson);
+  }
+
+  @Test
+  void testUpdateUserSerializationRoundTrip() {
+    final String userJson = "{\"name\":\"testUser\",\"password\":\"newEncoded\",\"databases\":{\"*\":[\"reader\"]}}";
+    final byte[] serialized = RaftLogEntryCodec.serializeUpdateUser(userJson, "node-2");
+
+    assertThat(RaftLogEntryCodec.readType(ByteBuffer.wrap(serialized))).isEqualTo(RaftLogEntryType.UPDATE_USER);
+
+    final RaftLogEntryCodec.UserEntry entry = RaftLogEntryCodec.deserializeUserEntry(serialized);
+
+    assertThat(entry.originPeerId()).isEqualTo("node-2");
+    assertThat(entry.userJson()).isEqualTo(userJson);
+  }
+
+  @Test
+  void testDropUserSerializationRoundTrip() {
+    final byte[] serialized = RaftLogEntryCodec.serializeDropUser("oldUser", "leader-1");
+
+    assertThat(RaftLogEntryCodec.readType(ByteBuffer.wrap(serialized))).isEqualTo(RaftLogEntryType.DROP_USER);
+
+    final RaftLogEntryCodec.DropUserEntry entry = RaftLogEntryCodec.deserializeDropUser(serialized);
+
+    assertThat(entry.originPeerId()).isEqualTo("leader-1");
+    assertThat(entry.userName()).isEqualTo("oldUser");
+  }
+
+  @Test
   void testFromCodeReturnsNullForUnknownType() {
     assertThat(RaftLogEntryType.fromCode((byte) 0)).isNull();
     assertThat(RaftLogEntryType.fromCode((byte) 2)).isEqualTo(RaftLogEntryType.DROP_DATABASE);
     assertThat(RaftLogEntryType.fromCode((byte) 99)).isNull();
     assertThat(RaftLogEntryType.fromCode((byte) -1)).isNull();
+  }
+
+  @Test
+  void testFromCodeReturnsUserTypes() {
+    assertThat(RaftLogEntryType.fromCode((byte) 4)).isEqualTo(RaftLogEntryType.CREATE_USER);
+    assertThat(RaftLogEntryType.fromCode((byte) 5)).isEqualTo(RaftLogEntryType.UPDATE_USER);
+    assertThat(RaftLogEntryType.fromCode((byte) 6)).isEqualTo(RaftLogEntryType.DROP_USER);
   }
 
   @Test

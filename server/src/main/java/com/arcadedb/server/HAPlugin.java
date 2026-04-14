@@ -66,6 +66,25 @@ public interface HAPlugin extends ServerPlugin {
   void replicateDropDatabase(String databaseName);
 
   /**
+   * Replicates user creation to all cluster nodes.
+   *
+   * @param userJson the user configuration JSON (name, encoded password, databases)
+   */
+  void replicateCreateUser(String userJson);
+
+  /**
+   * Replicates user update to all cluster nodes.
+   *
+   * @param userJson the updated user configuration JSON
+   */
+  void replicateUpdateUser(String userJson);
+
+  /**
+   * Replicates user deletion to all cluster nodes.
+   */
+  void replicateDropUser(String userName);
+
+  /**
    * Returns true if this node is the leader and has finished applying all committed entries from
    * the previous term. During the brief window after election this returns false.
    */

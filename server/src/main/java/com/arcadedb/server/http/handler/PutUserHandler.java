@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -37,6 +38,7 @@ public class PutUserHandler extends AbstractServerHttpHandler {
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
     checkRootUser(user);
+    checkServerIsLeaderIfInHA();
 
     if (payload == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
@@ -67,6 +69,11 @@ public class PutUserHandler extends AbstractServerHttpHandler {
       updatedConfig.put("databases", payload.getJSONObject("databases"));
 
     security.updateUser(updatedConfig);
+
+    // Replicate user update to all followers
+    final HAPlugin haPlugin = httpServer.getServer().getHA();
+    if (haPlugin != null)
+      haPlugin.replicateUpdateUser(updatedConfig.toString());
 
     final JSONObject response = new JSONObject();
     response.put("result", "User '" + name + "' updated");

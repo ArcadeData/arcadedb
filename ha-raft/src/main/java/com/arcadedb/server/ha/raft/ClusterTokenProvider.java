@@ -52,7 +52,8 @@ class ClusterTokenProvider {
   }
 
   /**
-   * Returns the cluster token, deriving it lazily on first call if not explicitly configured.
+   * Returns the cluster token. Called eagerly at startup via {@link #initClusterToken()};
+   * the null-check here is a safety fallback that should never be needed in practice.
    */
   String getClusterToken() {
     if (clusterToken == null)

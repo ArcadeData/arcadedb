@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -36,6 +37,7 @@ public class DeleteUserHandler extends AbstractServerHttpHandler {
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
     checkRootUser(user);
+    checkServerIsLeaderIfInHA();
 
     final String name = getQueryParameter(exchange, "name");
     if (name == null || name.isBlank())
@@ -46,12 +48,18 @@ public class DeleteUserHandler extends AbstractServerHttpHandler {
 
     final boolean deleted = httpServer.getServer().getSecurity().dropUser(name);
 
-    final JSONObject response = new JSONObject();
     if (deleted) {
+      // Replicate user deletion to all followers
+      final HAPlugin haPlugin = httpServer.getServer().getHA();
+      if (haPlugin != null)
+        haPlugin.replicateDropUser(name);
+
+      final JSONObject response = new JSONObject();
       response.put("result", "User '" + name + "' deleted");
       return new ExecutionResponse(200, response.toString());
     }
 
+    final JSONObject response = new JSONObject();
     response.put("error", "User '" + name + "' not found");
     return new ExecutionResponse(404, response.toString());
   }

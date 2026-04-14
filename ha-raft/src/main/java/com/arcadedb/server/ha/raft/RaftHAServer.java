@@ -263,7 +263,8 @@ public class RaftHAServer {
 
       transactionBroker.startGroupCommitter(
           configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE),
-          configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE));
+          configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE),
+          configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT));
       statusExporter.startLagMonitor();
       startRatisHealthMonitor();
 
@@ -335,6 +336,13 @@ public class RaftHAServer {
         state, restartFailureCount + 1);
 
     try {
+      // Any transactions currently in STATE_DISPATCHED (sent to Raft but not yet acknowledged)
+      // will receive errors when the client is closed. These transactions may have already been
+      // committed on a majority of replicas, so the calling thread will see QuorumNotReachedException
+      // even though the data is durably replicated. After restart, Ratis replays committed entries
+      // via applyTransactionEntry(), which applies them correctly since isLeader() returns false.
+      LogManager.instance().log(this, Level.WARNING,
+          "Closing Ratis client/server for restart - in-flight transactions may report failure despite being committed on replicas");
       try {
         raftClient.close();
       } catch (final Exception ignored) {
@@ -459,6 +467,18 @@ public class RaftHAServer {
     transactionBroker.replicateDropDatabase(databaseName);
   }
 
+  public void replicateCreateUser(final String userJson) {
+    transactionBroker.replicateCreateUser(userJson);
+  }
+
+  public void replicateUpdateUser(final String userJson) {
+    transactionBroker.replicateUpdateUser(userJson);
+  }
+
+  public void replicateDropUser(final String userName) {
+    transactionBroker.replicateDropUser(userName);
+  }
+
   public void replicateTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
                                    final Binary walBuffer, final String schemaJson,
                                    final Map<Integer, String> filesToAdd,
@@ -533,7 +553,7 @@ public class RaftHAServer {
       }
     }
     if (!leaderReady)
-      HALog.log(this, HALog.BASIC, "waitForLeaderReady timed out after %dms", quorumTimeout);
+      LogManager.instance().log(this, Level.WARNING, "waitForLeaderReady timed out after %dms - proceeding with potentially stale leader state", quorumTimeout);
   }
 
   /**
@@ -704,8 +724,9 @@ public class RaftHAServer {
    * Called by ArcadeDBStateMachine when the leader changes to wake up leaveCluster().
    */
   public void notifyLeaderChanged() {
-    // Capture the executor before the isLeader() branch. If restartRatisIfNeeded() is
-    // concurrently replacing the state machine, we avoid submitting to a shut-down executor.
+    // Capture the state machine reference before the isLeader() branch. If restartRatisIfNeeded()
+    // is concurrently replacing the state machine, the executor may already be shut down by the
+    // time we call submit() below, so we catch RejectedExecutionException.
     final var currentStateMachine = stateMachine;
     if (isLeader() && currentStateMachine != null) {
       // New leader must apply all committed entries before serving reads.
@@ -713,26 +734,41 @@ public class RaftHAServer {
       // the Ratis event thread (which processes heartbeats and elections).
       leaderReady = false;
       HALog.log(this, HALog.BASIC, "This node became leader, scheduling state machine catch-up in background");
-      currentStateMachine.getLifecycleExecutor().submit(() -> {
-        try {
-          waitForLocalApply();
-          leaderReady = true;
-          HALog.log(this, HALog.BASIC, "Leader read barrier cleared: applied=%d >= commit=%d",
-              getLastAppliedIndex(), getCommitIndex());
-        } catch (final Exception e) {
-          // Do NOT set leaderReady = true on failure. If catch-up failed, the leader's
-          // state machine is stale and must not serve linearizable reads. Reads will
-          // block in waitForLeaderReady() until the quorum timeout, then fail with an
-          // error rather than returning stale data.
-          LogManager.instance().log(this, Level.SEVERE,
-              "Leader read barrier catch-up FAILED. Reads will be blocked until resolved: %s", e.getMessage());
-        } finally {
-          // Wake up any threads blocked in waitForLeaderReady()
-          synchronized (leaderReadyNotifier) {
-            leaderReadyNotifier.notifyAll();
+      try {
+        currentStateMachine.getLifecycleExecutor().submit(() -> {
+          try {
+            waitForLocalApply();
+            leaderReady = true;
+            HALog.log(this, HALog.BASIC, "Leader read barrier cleared: applied=%d >= commit=%d",
+                getLastAppliedIndex(), getCommitIndex());
+          } catch (final Exception e) {
+            // Do NOT set leaderReady = true on failure. If catch-up failed, the leader's
+            // state machine is stale and must not serve linearizable reads. Reads will
+            // block in waitForLeaderReady() until the quorum timeout, then fail with an
+            // error rather than returning stale data.
+            LogManager.instance().log(this, Level.SEVERE,
+                "Leader read barrier catch-up FAILED. Reads will be blocked until resolved: %s", e.getMessage());
+          } finally {
+            // Wake up any threads blocked in waitForLeaderReady()
+            synchronized (leaderReadyNotifier) {
+              leaderReadyNotifier.notifyAll();
+            }
           }
+        });
+      } catch (final java.util.concurrent.RejectedExecutionException e) {
+        // The lifecycle executor was shut down by a concurrent restartRatisIfNeeded().
+        // Restore leaderReady so reads are not blocked indefinitely. This is safe because:
+        //   - The Ratis server is restarting, so isLeader() will return false shortly
+        //   - Even if a read slips through, ensureLinearizableRead() will fail because
+        //     the raft client is being replaced
+        //   - After restart, a new leadership transition triggers notifyLeaderChanged() again
+        LogManager.instance().log(this, Level.WARNING,
+            "Leader catch-up submit rejected (executor shut down during concurrent restart), restoring leaderReady");
+        leaderReady = true;
+        synchronized (leaderReadyNotifier) {
+          leaderReadyNotifier.notifyAll();
         }
-      });
+      }
     } else {
       leaderReady = true;
     }

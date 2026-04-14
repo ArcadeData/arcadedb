@@ -45,7 +45,7 @@ class RaftGroupCommitterTest {
     // Create a committer with a tiny queue (capacity 5) for testing. We don't start() the
     // flusher so nothing drains the queue, letting us fill it up.
     final int queueCapacity = 5;
-    final RaftGroupCommitter committer = new RaftGroupCommitter(null, 10, queueCapacity);
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, 10, queueCapacity, 100);
 
     // Access the internal queue via reflection to fill it to capacity
     final Field queueField = RaftGroupCommitter.class.getDeclaredField("queue");

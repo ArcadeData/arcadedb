@@ -235,6 +235,9 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
         case CREATE_DATABASE -> applyCreateDatabase(data);
         case DROP_DATABASE -> applyDropDatabase(data);
         case TRANSACTION -> applyTransactionEntry(data);
+        case CREATE_USER -> applyCreateUser(data);
+        case UPDATE_USER -> applyUpdateUser(data);
+        case DROP_USER -> applyDropUser(data);
       }
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
@@ -547,6 +550,63 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
           entry.databaseName(), e.getMessage());
     }
     server.removeDatabase(entry.databaseName());
+  }
+
+  private void applyCreateUser(final byte[] data) {
+    final RaftLogEntryCodec.UserEntry entry = RaftLogEntryCodec.deserializeUserEntry(data);
+
+    if (isOriginNode(entry.originPeerId()) && raftHA != null && raftHA.isLeader()) {
+      HALog.log(this, HALog.TRACE, "Skipping CREATE_USER on origin leader (already created)");
+      return;
+    }
+
+    final JSONObject userConfig = new JSONObject(entry.userJson());
+    final String userName = userConfig.getString("name");
+
+    if (server.getSecurity().getUser(userName) != null) {
+      HALog.log(this, HALog.BASIC, "User '%s' already exists on this follower, skipping create", userName);
+      return;
+    }
+
+    HALog.log(this, HALog.BASIC, "Creating user '%s' on follower (replicated from leader)", userName);
+    server.getSecurity().createUser(userConfig);
+  }
+
+  private void applyUpdateUser(final byte[] data) {
+    final RaftLogEntryCodec.UserEntry entry = RaftLogEntryCodec.deserializeUserEntry(data);
+
+    if (isOriginNode(entry.originPeerId()) && raftHA != null && raftHA.isLeader()) {
+      HALog.log(this, HALog.TRACE, "Skipping UPDATE_USER on origin leader (already updated)");
+      return;
+    }
+
+    final JSONObject userConfig = new JSONObject(entry.userJson());
+    final String userName = userConfig.getString("name");
+
+    if (server.getSecurity().getUser(userName) == null) {
+      HALog.log(this, HALog.BASIC, "User '%s' does not exist on this follower, skipping update", userName);
+      return;
+    }
+
+    HALog.log(this, HALog.BASIC, "Updating user '%s' on follower (replicated from leader)", userName);
+    server.getSecurity().updateUser(userConfig);
+  }
+
+  private void applyDropUser(final byte[] data) {
+    final RaftLogEntryCodec.DropUserEntry entry = RaftLogEntryCodec.deserializeDropUser(data);
+
+    if (isOriginNode(entry.originPeerId()) && raftHA != null && raftHA.isLeader()) {
+      HALog.log(this, HALog.TRACE, "Skipping DROP_USER on origin leader (already dropped): user=%s", entry.userName());
+      return;
+    }
+
+    if (server.getSecurity().getUser(entry.userName()) == null) {
+      HALog.log(this, HALog.BASIC, "User '%s' does not exist on this follower, skipping drop", entry.userName());
+      return;
+    }
+
+    HALog.log(this, HALog.BASIC, "Dropping user '%s' on follower (replicated from leader)", entry.userName());
+    server.getSecurity().dropUser(entry.userName());
   }
 
   /**

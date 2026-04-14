@@ -65,6 +65,18 @@ public final class RaftLogEntryCodec {
   public record DropDatabaseEntry(String originPeerId, String databaseName) {
   }
 
+  /**
+   * Parsed CREATE_USER or UPDATE_USER entry.
+   */
+  public record UserEntry(String originPeerId, String userJson) {
+  }
+
+  /**
+   * Parsed DROP_USER entry.
+   */
+  public record DropUserEntry(String originPeerId, String userName) {
+  }
+
   // -- Serialization --
 
   /**
@@ -115,6 +127,30 @@ public final class RaftLogEntryCodec {
     stream.putByte(RaftLogEntryType.DROP_DATABASE.code());
     stream.putString(originPeerId);
     stream.putString(databaseName);
+    return toByteArray(stream);
+  }
+
+  public static byte[] serializeCreateUser(final String userJson, final String originPeerId) {
+    final Binary stream = new Binary(256);
+    stream.putByte(RaftLogEntryType.CREATE_USER.code());
+    stream.putString(originPeerId);
+    stream.putString(userJson);
+    return toByteArray(stream);
+  }
+
+  public static byte[] serializeUpdateUser(final String userJson, final String originPeerId) {
+    final Binary stream = new Binary(256);
+    stream.putByte(RaftLogEntryType.UPDATE_USER.code());
+    stream.putString(originPeerId);
+    stream.putString(userJson);
+    return toByteArray(stream);
+  }
+
+  public static byte[] serializeDropUser(final String userName, final String originPeerId) {
+    final Binary stream = new Binary(64);
+    stream.putByte(RaftLogEntryType.DROP_USER.code());
+    stream.putString(originPeerId);
+    stream.putString(userName);
     return toByteArray(stream);
   }
 
@@ -172,6 +208,22 @@ public final class RaftLogEntryCodec {
     final String originPeerId = readBoundedString(stream);
     final String databaseName = readBoundedString(stream);
     return new DropDatabaseEntry(originPeerId, databaseName);
+  }
+
+  public static UserEntry deserializeUserEntry(final byte[] data) {
+    final Binary stream = new Binary(data);
+    stream.getByte(); // skip type byte
+    final String originPeerId = readBoundedString(stream);
+    final String userJson = readBoundedString(stream);
+    return new UserEntry(originPeerId, userJson);
+  }
+
+  public static DropUserEntry deserializeDropUser(final byte[] data) {
+    final Binary stream = new Binary(data);
+    stream.getByte(); // skip type byte
+    final String originPeerId = readBoundedString(stream);
+    final String userName = readBoundedString(stream);
+    return new DropUserEntry(originPeerId, userName);
   }
 
   // -- Internal helpers --

@@ -116,6 +116,9 @@ public class SnapshotInstaller {
    * Iterates over local databases, drops any that no longer exist on the leader, and installs
    * a fresh snapshot for each remaining one.
    *
+   * <p>Note: databases present on the leader but absent locally are not created here. Those are
+   * handled via Raft log replay (CREATE_DATABASE entries), not snapshot sync.
+   *
    * @param leaderHttpAddr  HTTP address of the current leader
    * @param strict          when {@code true}, a missing database or install failure throws
    *                        {@link ReplicationException}; when {@code false}, such cases are
@@ -251,8 +254,11 @@ public class SnapshotInstaller {
         return;
       } catch (final IOException e) {
         FileUtils.deleteRecursively(tempDir.toFile());
-        if (attempt == SNAPSHOT_DOWNLOAD_MAX_RETRIES)
+        if (attempt == SNAPSHOT_DOWNLOAD_MAX_RETRIES) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "All %d snapshot download attempts failed for database '%s'", SNAPSHOT_DOWNLOAD_MAX_RETRIES, databaseName);
           throw e;
+        }
 
         final long backoff = SNAPSHOT_DOWNLOAD_BACKOFF_MS[attempt - 1];
         LogManager.instance().log(this, Level.WARNING,

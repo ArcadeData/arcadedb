@@ -50,14 +50,16 @@ import java.util.logging.Level;
 public class RaftGroupCommitter {
 
   private final int                                    maxBatchSize;
+  private final int                                    offerTimeoutMs;
   private final RaftHAServer                           haServer;
   private final LinkedBlockingQueue<PendingEntry>      queue;
   private final Thread                                 flusher;
   private volatile boolean                             running    = true;
 
-  public RaftGroupCommitter(final RaftHAServer haServer, final int maxBatchSize, final int maxQueueSize) {
+  public RaftGroupCommitter(final RaftHAServer haServer, final int maxBatchSize, final int maxQueueSize, final int offerTimeoutMs) {
     this.haServer = haServer;
     this.maxBatchSize = maxBatchSize;
+    this.offerTimeoutMs = offerTimeoutMs;
     this.queue = new LinkedBlockingQueue<>(maxQueueSize);
     this.flusher = new Thread(this::flushLoop, "arcadedb-raft-group-committer");
     this.flusher.setDaemon(true);
@@ -82,7 +84,7 @@ public class RaftGroupCommitter {
   public void submitAndWait(final byte[] entry, final long timeoutMs) {
     final PendingEntry pending = new PendingEntry(entry);
     try {
-      if (!queue.offer(pending, 100, TimeUnit.MILLISECONDS))
+      if (!queue.offer(pending, offerTimeoutMs, TimeUnit.MILLISECONDS))
         throw new ReplicationQueueFullException(
             "Replication queue is full (" + queue.remainingCapacity() + " remaining of " + (queue.size() + queue.remainingCapacity()) + " max). Server is overloaded, retry later");
     } catch (final InterruptedException e) {

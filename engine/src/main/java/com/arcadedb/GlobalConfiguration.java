@@ -586,6 +586,11 @@ public enum GlobalConfiguration {
       "Maximum number of pending transactions allowed in the Raft group-commit queue. Increase under sustained high write load to avoid ReplicationQueueFullException",
       Integer.class, 10_000),
 
+  HA_GROUP_COMMIT_OFFER_TIMEOUT("arcadedb.ha.groupCommitOfferTimeout", SCOPE.SERVER,
+      "Timeout in ms waiting for space in the Raft group-commit queue before throwing ReplicationQueueFullException. "
+          + "Increase under sustained write bursts where the queue drains quickly but is momentarily full",
+      Integer.class, 100),
+
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
       "Read timeout in milliseconds when proxying requests from followers to the leader. Increase for long-running queries",
       Integer.class, 30_000),

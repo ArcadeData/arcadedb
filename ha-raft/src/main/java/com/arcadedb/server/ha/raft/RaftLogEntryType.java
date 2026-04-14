@@ -39,7 +39,19 @@ public enum RaftLogEntryType {
   /**
    * Replicate a committed transaction (WAL page diffs + optional schema changes).
    */
-  TRANSACTION((byte) 3);
+  TRANSACTION((byte) 3),
+  /**
+   * Replicate user creation to all nodes.
+   */
+  CREATE_USER((byte) 4),
+  /**
+   * Replicate user update to all nodes.
+   */
+  UPDATE_USER((byte) 5),
+  /**
+   * Replicate user deletion to all nodes.
+   */
+  DROP_USER((byte) 6);
 
   private final byte code;
 
@@ -59,6 +71,9 @@ public enum RaftLogEntryType {
       case 1 -> CREATE_DATABASE;
       case 2 -> DROP_DATABASE;
       case 3 -> TRANSACTION;
+      case 4 -> CREATE_USER;
+      case 5 -> UPDATE_USER;
+      case 6 -> DROP_USER;
       default -> null;
     };
   }

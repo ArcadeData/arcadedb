@@ -274,6 +274,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         sendSSE(out, new JSONObject().put("status", "progress").put("message", "Downloading and restoring " + databaseName + "..."));
         clazz.getMethod("restoreDatabase").invoke(restorer);
         server.getDatabase(databaseName);
+
+        // Replicate database creation to all followers
+        final HAPlugin haPlugin1 = server.getHA();
+        if (haPlugin1 != null)
+          haPlugin1.replicateCreateDatabase(databaseName);
+
         sendSSE(out, new JSONObject().put("status", "completed").put("message", databaseName + " restored successfully"));
       } catch (final Exception e) {
         final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
@@ -297,6 +303,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     }
 
     server.getDatabase(databaseName);
+
+    // Replicate database creation to all followers
+    final HAPlugin haPlugin = server.getHA();
+    if (haPlugin != null)
+      haPlugin.replicateCreateDatabase(databaseName);
+
     return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
   }
 
@@ -322,6 +334,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     // Create the database
     server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+
+    // Replicate database creation to all followers
+    final HAPlugin haPlugin = server.getHA();
+    if (haPlugin != null)
+      haPlugin.replicateCreateDatabase(databaseName);
+
     final Database database = server.getDatabase(databaseName);
 
     if (isSSERequested(exchange)) {
@@ -488,6 +506,11 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     Metrics.counter("http.create-user").increment();
 
     httpServer.getServer().getSecurity().createUser(json);
+
+    // Replicate user creation to all followers
+    final HAPlugin haPlugin = httpServer.getServer().getHA();
+    if (haPlugin != null)
+      haPlugin.replicateCreateUser(json.toString());
   }
 
   private void dropUser(final String userName) {
@@ -496,9 +519,15 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     Metrics.counter("http.drop-user").increment();
 
-    final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
+    final ArcadeDBServer server = httpServer.getServer();
+    final boolean result = server.getSecurity().dropUser(userName);
     if (!result)
       throw new IllegalArgumentException("User '" + userName + "' not found on server");
+
+    // Replicate user deletion to all followers
+    final HAPlugin haPlugin = server.getHA();
+    if (haPlugin != null)
+      haPlugin.replicateDropUser(userName);
   }
 
   private ExecutionResponse connectCluster() {
@@ -915,9 +944,4 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     }
   }
 
-  private void checkServerIsLeaderIfInHA() {
-    final HAPlugin ha = httpServer.getServer().getHA();
-    if (ha != null && !ha.isLeader())
-      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderHTTPAddress());
-  }
 }

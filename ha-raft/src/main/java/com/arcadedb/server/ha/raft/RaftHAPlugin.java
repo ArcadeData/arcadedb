@@ -189,6 +189,21 @@ public class RaftHAPlugin implements HAPlugin {
   }
 
   @Override
+  public void replicateCreateUser(final String userJson) {
+    raftServer.replicateCreateUser(userJson);
+  }
+
+  @Override
+  public void replicateUpdateUser(final String userJson) {
+    raftServer.replicateUpdateUser(userJson);
+  }
+
+  @Override
+  public void replicateDropUser(final String userName) {
+    raftServer.replicateDropUser(userName);
+  }
+
+  @Override
   public boolean isLeaderReady() {
     return raftServer.isLeaderReady();
   }

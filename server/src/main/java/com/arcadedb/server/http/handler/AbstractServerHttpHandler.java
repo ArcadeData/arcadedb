@@ -24,6 +24,7 @@ import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ApiTokenConfiguration;
@@ -367,6 +368,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected void checkRootUser(ServerSecurityUser user) {
     if (!"root".equals(user.getName()))
       throw new ServerSecurityException("Only root user is authorized to execute server commands");
+  }
+
+  /**
+   * Throws {@link ServerIsNotTheLeaderException} if HA is active and this node is not the leader.
+   * The exception is caught by {@link #handleRequest} which proxies the request to the leader.
+   */
+  protected void checkServerIsLeaderIfInHA() {
+    final HAPlugin ha = httpServer.getServer().getHA();
+    if (ha != null && !ha.isLeader())
+      throw new ServerIsNotTheLeaderException("This operation can only be executed on the leader server", ha.getLeaderHTTPAddress());
   }
 
   protected String decode(final String command) {
