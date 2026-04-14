@@ -33,7 +33,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;

@@ -19,7 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.server.ha.ReadConsistencyContext;
+import com.arcadedb.server.ReadConsistencyContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha.network;
+package com.arcadedb.server.network;
 
 import java.io.IOException;
 import java.net.InetAddress;

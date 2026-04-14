@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha;
+package com.arcadedb.server;
 
 import com.arcadedb.database.Database;
 

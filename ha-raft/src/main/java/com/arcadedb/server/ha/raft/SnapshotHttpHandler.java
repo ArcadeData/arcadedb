@@ -24,7 +24,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpHandler;

@@ -22,7 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;

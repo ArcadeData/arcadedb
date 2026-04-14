@@ -36,7 +36,7 @@ import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.backup.DatabaseBackupConfig;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;

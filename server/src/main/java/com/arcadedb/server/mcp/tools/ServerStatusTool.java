@@ -24,7 +24,7 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.HashSet;

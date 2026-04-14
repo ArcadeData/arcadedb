@@ -16,13 +16,9 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha;
+package com.arcadedb.server;
 
-import com.arcadedb.database.Binary;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ServerPlugin;
-
-import java.util.Map;
 
 /**
  * Interface for HA (High Availability) plugins. The server core depends only on this interface,
@@ -68,13 +64,6 @@ public interface HAPlugin extends ServerPlugin {
    * Replicates database drop to all cluster nodes.
    */
   void replicateDropDatabase(String databaseName);
-
-  /**
-   * Replicates a transaction (WAL + schema changes) to all cluster nodes.
-   */
-  default void replicateTransaction(String databaseName, Map<Integer, Integer> bucketRecordDelta,
-      Binary walBuffer, String schemaJson, Map<Integer, String> filesToAdd, Map<Integer, String> filesToRemove) {
-  }
 
   /**
    * Returns true if this node is the leader and has finished applying all committed entries from

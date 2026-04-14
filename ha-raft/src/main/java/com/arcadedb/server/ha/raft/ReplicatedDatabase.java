@@ -73,7 +73,8 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
+import com.arcadedb.server.ReadConsistencyContext;
 
 import java.io.IOException;
 import java.util.Collection;
@@ -162,10 +163,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // The isLeader() check above already verified that the Raft server is started and this node
     // is the leader - if not, we would have thrown ServerIsNotTheLeaderException in phase 1.
     try {
-      final HAPlugin raftHA = server.getHA();
+      final RaftHAServer raftServer = ((RaftHAPlugin) server.getHA()).getRaftServer();
       HALog.log(this, HALog.DETAILED, "Replicating WAL via Ratis: db=%s, walSize=%d, deltaSize=%d, schema=%s",
           getName(), payload.bufferChanges.size(), payload.delta.size(), payload.schemaJson != null);
-      raftHA.replicateTransaction(getName(), payload.delta, payload.bufferChanges,
+      raftServer.replicateTransaction(getName(), payload.delta, payload.bufferChanges,
           payload.schemaJson, payload.filesToAdd, payload.filesToRemove);
       HALog.log(this, HALog.TRACE, "WAL replication completed: db=%s", getName());
     } catch (final MajorityCommittedAllFailedException e) {
@@ -849,7 +850,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     if (raftHA == null)
       return;
 
-    final com.arcadedb.server.ha.ReadConsistencyContext ctx = com.arcadedb.server.ha.ReadConsistencyContext.get();
+    final ReadConsistencyContext ctx = ReadConsistencyContext.get();
     final Database.READ_CONSISTENCY consistency = ctx != null ? ctx.consistency : null;
 
     if (isLeader()) {
@@ -1002,8 +1003,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // followers to prevent orphan files from partially-replicated multi-step schema changes.
     final ChangeStructure command = replicationCommand.get();
     if (command != null)
-      raftHA.replicateTransaction(getName(), Map.of(), new Binary(0), command.schemaJson(), command.filesToAdd(),
-          command.filesToRemove());
+      ((RaftHAPlugin) raftHA).getRaftServer().replicateTransaction(getName(), Map.of(), new Binary(0), command.schemaJson(),
+          command.filesToAdd(), command.filesToRemove());
 
     if (callbackException.get() != null)
       throw callbackException.get();

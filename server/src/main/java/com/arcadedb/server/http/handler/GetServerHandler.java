@@ -27,7 +27,7 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerDatabase;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;

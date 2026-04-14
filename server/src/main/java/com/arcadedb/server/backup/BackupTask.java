@@ -23,7 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;

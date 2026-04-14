@@ -22,7 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
+import com.arcadedb.server.network.DefaultServerSocketFactory;
 
 /**
  * Server plugin that enables Neo4j BOLT protocol support.

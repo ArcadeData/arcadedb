@@ -38,7 +38,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.monitor.ServerQueryProfiler;

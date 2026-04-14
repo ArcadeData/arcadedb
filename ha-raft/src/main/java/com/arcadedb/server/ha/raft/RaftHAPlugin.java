@@ -20,14 +20,12 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Binary;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.HAPlugin;
+import com.arcadedb.server.HAPlugin;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.handlers.PathHandler;
 
-import java.util.Map;
 
 /**
  * ServiceLoader entry point for the Ratis-based HA plugin. This class is the thin plugin
@@ -184,13 +182,6 @@ public class RaftHAPlugin implements HAPlugin {
   @Override
   public void replicateDropDatabase(final String databaseName) {
     raftServer.replicateDropDatabase(databaseName);
-  }
-
-  @Override
-  public void replicateTransaction(final String databaseName, final Map<Integer, Integer> bucketRecordDelta,
-      final Binary walBuffer, final String schemaJson, final Map<Integer, String> filesToAdd,
-      final Map<Integer, String> filesToRemove) {
-    raftServer.replicateTransaction(databaseName, bucketRecordDelta, walBuffer, schemaJson, filesToAdd, filesToRemove);
   }
 
   @Override
