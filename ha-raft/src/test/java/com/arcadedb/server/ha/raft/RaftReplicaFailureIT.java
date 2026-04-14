@@ -29,20 +29,21 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration test: 3-node cluster with majority quorum.
- * Tests replica failure: write data, stop a replica (not the leader), write more data,
- * and verify the leader and remaining replica continue operating.
- * <p>
- * Note: Replica restart and catch-up is not tested here because in-JVM Raft tests
- * do not reliably support server restart (Raft storage directories are cleaned on startup,
- * and a restarted server would need to rejoin the Raft group).
+ * Tests replica failure scenarios during snapshot installation.
+ * Ported from apache-ratis branch, adapted to ha-redesign's BaseRaftHATest framework.
  */
 class RaftReplicaFailureIT extends BaseRaftHATest {
+
+  @Override
+  protected boolean persistentRaftStorage() {
+    return true;
+  }
 
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
+    config.setValue(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD, 10L);
   }
 
   @Override
@@ -51,98 +52,53 @@ class RaftReplicaFailureIT extends BaseRaftHATest {
   }
 
   @Test
-  void writesContinueAfterReplicaStop() {
-    // Find the leader server
+  void replicaRecoverAfterLongAbsenceRequiringSnapshot() {
     final int leaderIndex = findLeaderIndex();
-    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+    final int replicaIndex = (leaderIndex + 1) % getServerCount();
 
     final var leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
 
-    // Create type and write initial data
     leaderDb.transaction(() -> {
-      if (!leaderDb.getSchema().existsType("RaftReplicaFail"))
-        leaderDb.getSchema().createVertexType("RaftReplicaFail");
+      if (!leaderDb.getSchema().existsType("FailureTest"))
+        leaderDb.getSchema().createVertexType("FailureTest");
     });
 
     leaderDb.transaction(() -> {
-      for (int i = 0; i < 50; i++) {
-        final MutableVertex v = leaderDb.newVertex("RaftReplicaFail");
-        v.set("name", "before-stop-" + i);
-        v.set("phase", "before");
+      for (int i = 0; i < 30; i++) {
+        final MutableVertex v = leaderDb.newVertex("FailureTest");
+        v.set("name", "before-" + i);
         v.save();
       }
     });
 
     assertClusterConsistency();
 
-    // Find a replica (not the leader) to stop
-    int replicaToStop = -1;
-    for (int i = 0; i < getServerCount(); i++) {
-      if (i != leaderIndex) {
-        replicaToStop = i;
-        break;
-      }
+    // Stop replica
+    LogManager.instance().log(this, Level.INFO, "TEST: Stopping replica %d for long absence", replicaIndex);
+    getServer(replicaIndex).stop();
+
+    // Write enough data to trigger multiple log compactions
+    for (int batch = 0; batch < 5; batch++) {
+      final int b = batch;
+      leaderDb.transaction(() -> {
+        for (int i = 0; i < 50; i++) {
+          final MutableVertex v = leaderDb.newVertex("FailureTest");
+          v.set("name", "during-" + b + "-" + i);
+          v.save();
+        }
+      });
     }
-    assertThat(replicaToStop).as("Must find a replica to stop").isGreaterThanOrEqualTo(0);
 
-    // Verify initial data before stopping replica
-    final var replicaDb = getServerDatabase(replicaToStop, getDatabaseName());
-    assertThat(replicaDb.countType("RaftReplicaFail", true))
-        .as("Replica should have 50 records before stop")
-        .isEqualTo(50);
+    assertThat(leaderDb.countType("FailureTest", true)).isEqualTo(280);
 
-    // Stop the replica
-    LogManager.instance().log(this, Level.INFO, "TEST: Stopping replica server %d (leader is %d)", replicaToStop, leaderIndex);
-    getServer(replicaToStop).stop();
+    // Restart the long-absent replica - needs full snapshot
+    LogManager.instance().log(this, Level.INFO, "TEST: Restarting replica %d after long absence", replicaIndex);
+    restartServer(replicaIndex);
 
-    // Write more data on the leader (should succeed with quorum=none)
-    leaderDb.transaction(() -> {
-      for (int i = 0; i < 50; i++) {
-        final MutableVertex v = leaderDb.newVertex("RaftReplicaFail");
-        v.set("name", "after-stop-" + i);
-        v.set("phase", "after");
-        v.save();
-      }
-    });
+    assertThat(getServerDatabase(replicaIndex, getDatabaseName()).countType("FailureTest", true))
+        .as("Replica should have all records after recovery").isEqualTo(280);
 
-    // Verify that the leader has all 100 records
-    assertThat(leaderDb.countType("RaftReplicaFail", true))
-        .as("Leader should have 100 records")
-        .isEqualTo(100);
-
-    // Verify the other surviving replica (not the leader and not the stopped one) also has data
-    for (int i = 0; i < getServerCount(); i++) {
-      if (i == leaderIndex || i == replicaToStop)
-        continue;
-      waitForReplicationIsCompleted(i);
-      final var nodeDb = getServerDatabase(i, getDatabaseName());
-      assertThat(nodeDb.countType("RaftReplicaFail", true))
-          .as("Surviving replica server " + i + " should have 100 records")
-          .isEqualTo(100);
-    }
-  }
-
-  @Override
-  protected void checkDatabasesAreIdentical() {
-    // Skip deep byte-level comparison after replica failure tests.
-    // The test itself verifies data consistency on surviving nodes.
-  }
-
-  @Override
-  protected int[] getServerToCheck() {
-    // Only check servers that are still running
-    final int count = getServerCount();
-    int alive = 0;
-    for (int i = 0; i < count; i++) {
-      if (getServer(i) != null && getServer(i).isStarted())
-        alive++;
-    }
-    final int[] result = new int[alive];
-    int idx = 0;
-    for (int i = 0; i < count; i++) {
-      if (getServer(i) != null && getServer(i).isStarted())
-        result[idx++] = i;
-    }
-    return result;
+    assertClusterConsistency();
   }
 }
