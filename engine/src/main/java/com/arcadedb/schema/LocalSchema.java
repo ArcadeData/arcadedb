@@ -1160,7 +1160,7 @@ public class LocalSchema implements Schema {
         }
 
         if (type instanceof LocalTimeSeriesType tsType)
-          tsType.close();
+          tsType.drop();
 
         if (types.remove(typeName) == null)
           throw new SchemaException("Type '" + typeName + "' not found");
