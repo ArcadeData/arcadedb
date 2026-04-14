@@ -49,4 +49,11 @@ class RaftGroupCommitterTest {
     final String result = future.join();
     assertThat(result).startsWith("failed:");
   }
+
+  @Test
+  void allQuorumWatchFailureThrowsMajorityCommittedException() {
+    final var ex = new MajorityCommittedAllFailedException("ALL quorum watch failed");
+    assertThat(ex).isInstanceOf(QuorumNotReachedException.class);
+    assertThat(ex.getMessage()).contains("ALL quorum");
+  }
 }

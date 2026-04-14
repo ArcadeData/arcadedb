@@ -145,11 +145,13 @@ public class RaftGroupCommitter {
             final RaftClientReply watchReply = raftClient.io().watch(
                 reply.getLogIndex(), RaftProtos.ReplicationLevel.ALL_COMMITTED);
             if (!watchReply.isSuccess()) {
-              batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum not reached"));
+              batch.get(i).future.complete(new MajorityCommittedAllFailedException(
+                  "ALL quorum not reached after MAJORITY commit at logIndex=" + reply.getLogIndex()));
               continue;
             }
           } catch (final Exception e) {
-            batch.get(i).future.complete(new QuorumNotReachedException("ALL quorum watch failed: " + e.getMessage()));
+            batch.get(i).future.complete(new MajorityCommittedAllFailedException(
+                "ALL quorum watch failed after MAJORITY commit: " + e.getMessage(), e));
             continue;
           }
         }
