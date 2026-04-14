@@ -98,6 +98,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private ScheduledExecutorService  lagMonitorExecutor;
   private final Object              leaderChangeNotifier = new Object();
   private final Object              applyNotifier        = new Object();
+  private RaftClusterManager        clusterManager;
   private int                       lastClusterConfigHash;
   private final Object               recoveryLock          = new Object();
   private volatile boolean           shutdownRequested     = false;
@@ -143,6 +144,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.clusterMonitor = new ClusterMonitor(lagWarningThreshold);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+
+    this.clusterManager = new RaftClusterManager(this);
 
     LogManager.instance().log(this, Level.INFO,
         "RaftHAServer configured: cluster='%s', localPeer='%s', peers=%d",
@@ -404,20 +407,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * @return true if the transfer succeeded
    */
   public boolean transferLeadership(final long timeoutMs) {
-    if (raftClient == null)
-      return false;
-    try {
-      final RaftClientReply reply = raftClient.admin().transferLeadership(null, timeoutMs);
-      return reply.isSuccess() || !isLeader();
-    } catch (final Exception e) {
-      // When the transfer succeeds, notifyLeaderChanged calls refreshRaftClient() which
-      // closes the old client. The in-flight RPC then fails with "is closed".
-      // If we are no longer the leader, the transfer succeeded.
-      if (!isLeader())
-        return true;
-      LogManager.instance().log(this, Level.INFO, "Leadership transfer request: %s", e.getMessage());
-      return false;
-    }
+    return clusterManager.transferLeadership(timeoutMs);
   }
 
   /**
@@ -594,91 +584,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   public void addPeer(final String peerId, final String address) {
-    final RaftPeer newPeer = RaftPeer.newBuilder()
-        .setId(RaftPeerId.valueOf(peerId))
-        .setAddress(address)
-        .build();
-
-    final List<RaftPeer> newPeers = new ArrayList<>(getLivePeers());
-    newPeers.add(newPeer);
-
-    setConfigurationWithRetry(newPeers, "add peer " + peerId);
-
-    final int colonIdx = address.lastIndexOf(':');
-    if (colonIdx > 0) {
-      final String host = address.substring(0, colonIdx);
-      try {
-        final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));
-        final int httpPortOffset = getHttpPortOffset();
-        httpAddresses.put(RaftPeerId.valueOf(peerId), host + ":" + (raftPort + httpPortOffset));
-      } catch (final NumberFormatException ignored) {
-      }
-    }
-
-    LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster at %s", peerId, address);
+    clusterManager.addPeer(peerId, address);
   }
 
   public void removePeer(final String peerId) {
-    final Collection<RaftPeer> livePeers = getLivePeers();
-    final List<RaftPeer> newPeers = new ArrayList<>();
-    for (final RaftPeer peer : livePeers)
-      if (!peer.getId().toString().equals(peerId))
-        newPeers.add(peer);
-
-    if (newPeers.size() == livePeers.size())
-      throw new ConfigurationException("Peer " + peerId + " not found in cluster");
-
-    setConfigurationWithRetry(newPeers, "remove peer " + peerId);
-
-    httpAddresses.remove(RaftPeerId.valueOf(peerId));
-    LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
-  }
-
-  /**
-   * Calls {@code setConfiguration} with bounded retry on {@link ReconfigurationInProgressException}.
-   * <p>
-   * On a fresh cluster the newly elected leader must commit an entry from its own term before it
-   * can process configuration changes (Raft protocol requirement). This method sends a no-op
-   * message first to ensure the leader has committed from its current term, then issues the
-   * setConfiguration call with bounded retry.
-   */
-  private void setConfigurationWithRetry(final List<RaftPeer> peers, final String operationDesc) {
-    final long deadline = System.currentTimeMillis() + 90_000;
-    long sleepMs = 200;
-
-    while (true) {
-      try {
-        final RaftClientReply reply = raftClient.admin().setConfiguration(peers);
-        if (reply.isSuccess())
-          return;
-
-        if (System.currentTimeMillis() < deadline) {
-          LogManager.instance().log(this, Level.FINE,
-              "setConfiguration failed for %s, retrying in %d ms: %s", operationDesc, sleepMs, reply.getException());
-          Thread.sleep(sleepMs);
-          sleepMs = Math.min(sleepMs * 2, 2_000);
-          continue;
-        }
-        throw new ConfigurationException("Failed to " + operationDesc + ": " + reply.getException());
-      } catch (final IOException e) {
-        if (System.currentTimeMillis() < deadline) {
-          LogManager.instance().log(this, Level.FINE,
-              "setConfiguration I/O error for %s, retrying in %d ms", operationDesc, sleepMs);
-          try {
-            Thread.sleep(sleepMs);
-          } catch (final InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            throw new ConfigurationException("Interrupted while waiting to " + operationDesc, ie);
-          }
-          sleepMs = Math.min(sleepMs * 2, 2_000);
-          continue;
-        }
-        throw new ConfigurationException("Failed to " + operationDesc, e);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new ConfigurationException("Interrupted while waiting to " + operationDesc, e);
-      }
-    }
+    clusterManager.removePeer(peerId);
   }
 
   /**
@@ -712,54 +622,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return builder.build();
   }
 
-  private int getHttpPortOffset() {
-    for (final RaftPeer peer : raftGroup.getPeers()) {
-      final String httpAddr = httpAddresses.get(peer.getId());
-      if (httpAddr != null) {
-        try {
-          final int httpPort = Integer.parseInt(httpAddr.substring(httpAddr.lastIndexOf(':') + 1));
-          final int raftPort = Integer.parseInt(
-              peer.getAddress().toString().substring(peer.getAddress().toString().lastIndexOf(':') + 1));
-          return httpPort - raftPort;
-        } catch (final NumberFormatException ignored) {
-        }
-      }
-    }
-    return 46;
-  }
-
   public void transferLeadership(final String targetPeerId, final long timeoutMs) {
-    LogManager.instance().log(this, Level.INFO, "Transferring leadership to %s (timeout=%d ms)", targetPeerId, timeoutMs);
-    try {
-      final RaftClientReply reply = raftClient.admin().transferLeadership(
-          RaftPeerId.valueOf(targetPeerId), timeoutMs);
-      if (!reply.isSuccess()) {
-        // The leader change notification fires refreshRaftClient(), which closes the old client
-        // while this call is still in flight. If the leader actually changed to the target,
-        // the transfer succeeded despite the error reply.
-        if (isLeaderNow(targetPeerId)) {
-          LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s (confirmed via leader check)", targetPeerId);
-          return;
-        }
-        throw new ConfigurationException(
-            "Failed to transfer leadership to " + targetPeerId + ": " + reply.getException());
-      }
-      LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s", targetPeerId);
-    } catch (final IOException e) {
-      // When the transfer succeeds, notifyLeaderChanged calls refreshRaftClient() which closes
-      // the old RaftClient. The in-flight RPC then fails with "is closed". Verify the transfer
-      // actually succeeded by checking who the leader is now.
-      if (isLeaderNow(targetPeerId)) {
-        LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s (confirmed after IOException)", targetPeerId);
-        return;
-      }
-      throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": " + e.getMessage(), e);
-    }
-  }
-
-  private boolean isLeaderNow(final String expectedPeerId) {
-    final RaftPeerId leaderId = getLeaderId();
-    return leaderId != null && leaderId.toString().equals(expectedPeerId);
+    clusterManager.transferLeadership(targetPeerId, timeoutMs);
   }
 
   public void stepDown() {
@@ -779,49 +643,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   public void leaveCluster() {
-    if (raftServer == null || raftClient == null)
-      return;
-
-    try {
-      final Collection<RaftPeer> livePeers = getLivePeers();
-      if (livePeers.size() <= 1) {
-        HALog.log(this, HALog.BASIC, "Single-node cluster, skipping leave");
-        return;
-      }
-
-      if (isLeader()) {
-        for (final RaftPeer peer : livePeers) {
-          if (!peer.getId().equals(localPeerId)) {
-            HALog.log(this, HALog.BASIC,
-                "Leaving cluster: transferring leadership to %s before removal", peer.getId());
-            try {
-              transferLeadership(peer.getId().toString(), 10_000);
-              final long deadline = System.currentTimeMillis() + 5_000;
-              synchronized (leaderChangeNotifier) {
-                while (isLeader()) {
-                  final long remaining = deadline - System.currentTimeMillis();
-                  if (remaining <= 0)
-                    break;
-                  leaderChangeNotifier.wait(remaining);
-                }
-              }
-            } catch (final Exception e) {
-              HALog.log(this, HALog.BASIC,
-                  "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
-            }
-            break;
-          }
-        }
-      }
-
-      HALog.log(this, HALog.BASIC, "Leaving cluster: removing self (%s) from Raft group", localPeerId);
-      removePeer(localPeerId.toString());
-      HALog.log(this, HALog.BASIC, "Successfully left the Raft cluster");
-
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Failed to leave cluster gracefully: %s", e.getMessage());
-    }
+    clusterManager.leaveCluster();
   }
 
   public void notifyApplied() {
