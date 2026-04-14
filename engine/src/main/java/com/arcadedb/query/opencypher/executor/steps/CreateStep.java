@@ -485,21 +485,9 @@ public class CreateStep extends AbstractExecutionStep {
    * Handles both single values and collections/arrays of temporal values.
    */
   private static Object convertTemporalForStorage(final Object value) {
-    // Handle collections (lists/arrays of temporal values)
-    if (value instanceof Collection<?> collection) {
-      final List<Object> converted = new ArrayList<>(collection.size());
-      for (final Object item : collection) {
-        converted.add(convertTemporalForStorage(item));
-      }
-      return converted;
-    }
-    if (value instanceof Object[] array) {
-      final Object[] converted = new Object[array.length];
-      for (int i = 0; i < array.length; i++) {
-        converted[i] = convertTemporalForStorage(array[i]);
-      }
-      return converted;
-    }
+    // Fast path: skip non-temporal primitives, numbers, strings, and boolean (common case for vector embeddings)
+    if (value == null || value instanceof Number || value instanceof String || value instanceof Boolean)
+      return value;
 
     // Handle single temporal values
     if (value instanceof CypherDate)
@@ -514,6 +502,33 @@ public class CreateStep extends AbstractExecutionStep {
       return ((CypherTime) value).getValue().toString();
     if (value instanceof CypherDuration)
       return value.toString();
+
+    // Handle collections - only iterate if the collection could contain temporal values
+    if (value instanceof Collection<?> collection) {
+      if (collection.isEmpty())
+        return value;
+      // Check the first element: if it's a simple type (Number, String, Boolean),
+      // the entire collection is unlikely to contain temporal values
+      final Object first = collection.iterator().next();
+      if (first instanceof Number || first instanceof String || first instanceof Boolean)
+        return value;
+      // Collection may contain temporal values, convert each element
+      final List<Object> converted = new ArrayList<>(collection.size());
+      for (final Object item : collection)
+        converted.add(convertTemporalForStorage(item));
+      return converted;
+    }
+    if (value instanceof Object[] array) {
+      if (array.length == 0)
+        return value;
+      if (array[0] instanceof Number || array[0] instanceof String || array[0] instanceof Boolean)
+        return value;
+      final Object[] converted = new Object[array.length];
+      for (int i = 0; i < array.length; i++)
+        converted[i] = convertTemporalForStorage(array[i]);
+      return converted;
+    }
+
     return value;
   }
 

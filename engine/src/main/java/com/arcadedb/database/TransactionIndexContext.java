@@ -25,6 +25,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -188,6 +189,28 @@ public class TransactionIndexContext {
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
       final Index index = database.getSchema().getIndexByName(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
+
+      // Batch optimization for vector indexes (issue #3864): collect all ADD operations
+      // and process them in a single putBatch call with one lock acquisition
+      if (index instanceof LSMVectorIndex vectorIndex && keys.size() > 1) {
+        final List<Object[]> batchKeys = new ArrayList<>(keys.size());
+        final List<RID> batchRids = new ArrayList<>(keys.size());
+
+        for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
+          for (final IndexKey key : keyValueEntries.getValue().values()) {
+            if (key.operation == IndexKey.IndexKeyOperation.ADD ||
+                key.operation == IndexKey.IndexKeyOperation.REPLACE) {
+              batchKeys.add(key.keyValues);
+              batchRids.add(key.rid);
+            }
+          }
+        }
+
+        if (!batchKeys.isEmpty())
+          vectorIndex.putBatch(batchKeys, batchRids);
+
+        continue;
+      }
 
       for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();

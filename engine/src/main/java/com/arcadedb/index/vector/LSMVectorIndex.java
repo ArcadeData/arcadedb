@@ -3282,23 +3282,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
           persistVectorWithLocation(id, rid, vector);
 
-          // Incremental graph update: add node directly to the live HNSW graph in O(log n)
-          // instead of buffering in deltaVectors and rebuilding from scratch
+          // Track in liveVectorValues for metadata consistency (O(1) - just a map put)
           final VectorFloat<?> vf = vts.createFloatVector(vector);
-
-          // Lazy-initialize the live builder on first insert (if graph exists)
-          if (liveBuilder == null && graphIndex != null)
-            ensureLiveBuilder();
-
-          if (liveBuilder != null) {
+          if (liveVectorValues != null)
             liveVectorValues.addVector(id, vf);
-            // Add to live builder's graph (O(log n) HNSW insert)
-            if (!liveBuilder.getGraph().containsNode(id))
-              liveBuilder.addGraphNode(id, vf);
-          }
 
           // Add to delta buffer so the vector is visible in search via mergeWithDeltaScan.
-          // The live builder's graph will replace the batch-built graph on next full rebuild.
+          // Skipping expensive O(log n) HNSW graph inserts during commit replay (issue #3864):
+          // the inactivity rebuild timer will incorporate delta vectors into the graph.
           deltaVectors.add(new DeltaVectorEntry(id, rid, vector));
 
           if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING)
@@ -3306,12 +3297,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Increment mutation counter (used for periodic graph persistence)
           mutationsSinceSerialize.incrementAndGet();
-
-          // Schedule inactivity rebuild timer (issue #3737)
-          scheduleInactivityRebuild();
         } finally {
           lock.writeLock().unlock();
         }
+
+        // Schedule inactivity rebuild timer outside the lock (issue #3737)
+        scheduleInactivityRebuild();
       }
     } finally {
       // Track insert latency (only for actual writes, not transaction registration)
@@ -3321,6 +3312,68 @@ public class LSMVectorIndex implements Index, IndexInternal {
         metrics.addInsertLatency(elapsed);
       }
     }
+  }
+
+  /**
+   * Batch insert multiple vectors in a single lock acquisition.
+   * Called by TransactionIndexContext during commit replay for efficient batch processing (issue #3864).
+   * Skips per-vector HNSW graph inserts and schedules a single inactivity rebuild at the end.
+   * Vectors are immediately visible in search via delta scan (mergeWithDeltaScan).
+   *
+   * @param keysList list of key arrays, each containing a single ComparableVector or float[]
+   * @param ridsList list of corresponding RIDs
+   */
+  public void putBatch(final List<Object[]> keysList, final List<RID> ridsList) {
+    if (keysList.isEmpty())
+      return;
+
+    final long startTime = System.currentTimeMillis();
+
+    lock.writeLock().lock();
+    try {
+      for (int i = 0; i < keysList.size(); i++) {
+        final Object[] keys = keysList.get(i);
+        final RID rid = ridsList.get(i);
+
+        if (keys == null || keys.length == 0 || keys[0] == null)
+          continue;
+
+        final float[] vector;
+        if (keys[0] instanceof ComparableVector c)
+          vector = c.vector;
+        else
+          vector = VectorUtils.convertToFloatArray(keys[0]);
+
+        if (vector == null || vector.length != metadata.dimensions)
+          continue;
+
+        final int id = nextId.getAndIncrement();
+        persistVectorWithLocation(id, rid, vector);
+
+        // Track in liveVectorValues for metadata consistency (O(1) - just a map put)
+        final VectorFloat<?> vf = vts.createFloatVector(vector);
+        if (liveVectorValues != null)
+          liveVectorValues.addVector(id, vf);
+
+        // Add to delta buffer for search visibility via mergeWithDeltaScan
+        deltaVectors.add(new DeltaVectorEntry(id, rid, vector));
+
+        mutationsSinceSerialize.incrementAndGet();
+      }
+
+      if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING)
+        this.graphState = GraphState.MUTABLE;
+
+      metrics.incrementInsertOperations(keysList.size());
+    } finally {
+      lock.writeLock().unlock();
+    }
+
+    // Schedule ONE inactivity rebuild for the entire batch (outside the lock)
+    scheduleInactivityRebuild();
+
+    final long elapsed = System.currentTimeMillis() - startTime;
+    metrics.addInsertLatency(elapsed);
   }
 
   @Override

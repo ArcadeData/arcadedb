@@ -63,6 +63,10 @@ class LSMVectorIndexMetrics {
     insertOperations.incrementAndGet();
   }
 
+  void incrementInsertOperations(final int count) {
+    insertOperations.addAndGet(count);
+  }
+
   void incrementGraphRebuildCount() {
     graphRebuildCount.incrementAndGet();
   }
