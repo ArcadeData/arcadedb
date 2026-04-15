@@ -207,7 +207,7 @@ public class RaftHAPlugin implements HAServerPlugin {
       conn.setDoOutput(true);
       conn.setRequestProperty("Content-Type", "application/json");
 
-      final String token = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+      final String token = raftHAServer.getClusterToken();
       if (token != null && !token.isEmpty())
         conn.setRequestProperty("Authorization", "Bearer " + token);
 

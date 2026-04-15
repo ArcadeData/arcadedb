@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -87,8 +86,8 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
       final JSONArray nodesResult = new JSONArray();
 
-      final String clusterToken = httpServer.getServer().getConfiguration()
-          .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+      final RaftHAServer raftHAServer = plugin.getRaftHAServer();
+      final String clusterToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
 
       for (final RaftPeer peer : raftHAServer.getLivePeers()) {
         if (peer.getId().equals(raftHAServer.getLocalPeerId()))

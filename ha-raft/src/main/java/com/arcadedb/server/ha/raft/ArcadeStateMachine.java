@@ -186,6 +186,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
     try {
       final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(data);
 
+      if (decoded.type() == null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Unknown Raft log entry type at index %d, skipping - likely from a newer node version", index);
+        lastAppliedIndex.set(index);
+        updateLastAppliedTermIndex(termIndex.getTerm(), index);
+        writePersistedAppliedIndex(index);
+        if (raftHAServer != null)
+          raftHAServer.notifyApplied();
+        return CompletableFuture.completedFuture(Message.valueOf("OK"));
+      }
+
       switch (decoded.type()) {
         case TX_ENTRY -> applyTxEntry(decoded);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded);
@@ -338,8 +349,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         if (leaderHttpAddr == null)
           throw new RuntimeException("Cannot determine leader HTTP address for snapshot download");
 
-        final String clusterToken = server.getConfiguration().getValueAsString(
-            GlobalConfiguration.HA_CLUSTER_TOKEN);
+        final String clusterToken = raftHAServer.getClusterToken();
 
         for (final String dbName : server.getDatabaseNames()) {
           LogManager.instance().log(this, Level.INFO,
@@ -530,8 +540,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
 
       final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
-      final String clusterToken = server.getConfiguration().getValueAsString(
-          GlobalConfiguration.HA_CLUSTER_TOKEN);
+      final String clusterToken = raftHAServer.getClusterToken();
       try {
         SnapshotInstaller.install(databaseName, databasePath, leaderHttpAddr, clusterToken, server);
       } catch (final java.io.IOException e) {
@@ -623,8 +632,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
     try {
-      final String clusterToken = server.getConfiguration().getValueAsString(
-          GlobalConfiguration.HA_CLUSTER_TOKEN);
+      final String clusterToken = raftHAServer.getClusterToken();
       for (final String dbName : server.getDatabaseNames()) {
         if (server.existsDatabase(dbName)) {
           final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);

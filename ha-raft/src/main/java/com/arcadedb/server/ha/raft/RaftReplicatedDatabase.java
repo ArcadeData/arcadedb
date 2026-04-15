@@ -19,7 +19,6 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
@@ -1166,7 +1165,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString()));
 
-    final String clusterToken = server.getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+    final String clusterToken = raftHAServer.getClusterToken();
     if (clusterToken != null && !clusterToken.isBlank())
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
 

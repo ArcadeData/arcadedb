@@ -214,8 +214,9 @@ public class SnapshotHttpHandler implements HttpHandler {
     final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
     if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
       final var server = httpServer.getServer();
-      final String expectedToken = server.getConfiguration().getValueAsString(
-          GlobalConfiguration.HA_CLUSTER_TOKEN);
+      final RaftHAPlugin haPlugin = server.getHA() instanceof RaftHAPlugin rp ? rp : null;
+      final RaftHAServer raftHAServer = haPlugin != null ? haPlugin.getRaftHAServer() : null;
+      final String expectedToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
       if (expectedToken != null && !expectedToken.isEmpty()
           && java.security.MessageDigest.isEqual(
               expectedToken.getBytes(), clusterTokenHeader.getFirst().getBytes())) {

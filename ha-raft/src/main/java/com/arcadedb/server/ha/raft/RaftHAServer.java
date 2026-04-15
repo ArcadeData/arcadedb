@@ -102,6 +102,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile boolean           shutdownRequested     = false;
   private volatile LifeCycle.State   forcedStateForTesting = null;
   private HealthMonitor              healthMonitor;
+  private ClusterTokenProvider       tokenProvider;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -152,6 +153,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Returns the cluster token, deriving it if not yet initialized.
+   * The token is used for inter-node authentication.
+   */
+  public String getClusterToken() {
+    return tokenProvider != null ? tokenProvider.getClusterToken() : null;
+  }
+
+  /**
    * Returns the HTTP address for a peer, or null if not configured.
    */
   public String getPeerHttpAddress(final RaftPeerId peerId) {
@@ -185,8 +194,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       deleteRecursive(storageDir);
     RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 
-    final ClusterTokenProvider tokenProvider = new ClusterTokenProvider(configuration);
-    tokenProvider.initClusterToken();
+    this.tokenProvider = new ClusterTokenProvider(configuration);
+    this.tokenProvider.initClusterToken();
 
     // When persistent storage is requested and the storage directory already has data,
     // use RECOVER mode so Ratis loads the existing Raft log instead of trying to format
