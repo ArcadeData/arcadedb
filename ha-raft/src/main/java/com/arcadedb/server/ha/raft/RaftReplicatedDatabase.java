@@ -1194,13 +1194,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (clusterToken != null && !clusterToken.isBlank())
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
 
-    // When called from the internal Java API (not HTTP), there is no security context and
-    // getCurrentUserName() returns null. Fall back to "root" so the cluster token forwarding
-    // succeeds - the call is already trusted because it originates in-process. This is safe
-    // only when the cluster token header is also enforced on the receiving side.
     final String proxiedUser = proxied.getCurrentUserName();
-    final String currentUser = (proxiedUser != null && !proxiedUser.isBlank()) ? proxiedUser : "root";
-    builder.header("X-ArcadeDB-Forwarded-User", currentUser);
+    if (proxiedUser == null || proxiedUser.isBlank())
+      throw new SecurityException(
+          "Cannot forward command to leader: no authenticated user in the current security context");
+    builder.header("X-ArcadeDB-Forwarded-User", proxiedUser);
 
     try {
       final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());

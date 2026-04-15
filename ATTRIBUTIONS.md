@@ -165,6 +165,16 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | io.undertow | undertow-core | ~2.3.x | Apache 2.0 | https://undertow.io/ |
 | io.netty | netty-* | ~4.1.x | Apache 2.0 | https://netty.io/ |
 
+### Apache Ratis (High Availability Module)
+
+| Group ID | Artifact ID | Version | License | Homepage |
+|----------|-------------|---------|---------|----------|
+| org.apache.ratis | ratis-server | 3.2.2 | Apache 2.0 | https://ratis.apache.org/ |
+| org.apache.ratis | ratis-grpc | 3.2.2 | Apache 2.0 | https://ratis.apache.org/ |
+| org.apache.ratis | ratis-metrics-default | 3.2.2 | Apache 2.0 | https://ratis.apache.org/ |
+
+**Apache Ratis Notice:** Apache Ratis is a Java library that implements the Raft consensus protocol. See the NOTICE file for Ratis's own third-party attributions.
+
 ### Apache TinkerPop / Gremlin (Optional Module)
 
 | Group ID | Artifact ID | Version | License | Homepage |

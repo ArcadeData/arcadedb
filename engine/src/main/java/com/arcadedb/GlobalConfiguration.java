@@ -569,8 +569,9 @@ public enum GlobalConfiguration {
       Integer.class, 2434),
 
   HA_RAFT_PERSIST_STORAGE("arcadedb.ha.raftPersistStorage", SCOPE.SERVER,
-      "If true, the Raft storage directory is not deleted when the server starts. " +
-      "Enables node restart and rejoin in integration tests. Not intended for production use.",
+      "If true, the Raft storage directory is preserved across server restarts, enabling node rejoin " +
+      "without a full snapshot resync. Defaults to false (ephemeral) for testing convenience; " +
+      "set to true for durable deployments.",
       Boolean.class, false),
 
   HA_RAFT_SNAPSHOT_THRESHOLD("arcadedb.ha.raftSnapshotThreshold", SCOPE.SERVER,
@@ -1006,7 +1007,7 @@ public enum GlobalConfiguration {
   }
 
   public boolean isHidden() {
-    return hidden;
+    return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password");
   }
 
   public Object getDefValue() {
