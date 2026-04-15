@@ -390,7 +390,10 @@ public class SnapshotInstaller {
       }
       try {
         if (conn.getResponseCode() == 200) {
-          final String body = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+          final String body;
+          try (final InputStream is = conn.getInputStream()) {
+            body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+          }
           final JSONObject json = new JSONObject(body);
           if (json.has("databases")) {
             final JSONArray dbs = json.getJSONArray("databases");

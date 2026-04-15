@@ -322,7 +322,6 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
           LogManager.instance().log(this, Level.SEVERE, "Emergency stop failed", t);
         }
       }, "arcadedb-emergency-stop");
-      stopThread.setDaemon(true);
       stopThread.start();
       return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
     }

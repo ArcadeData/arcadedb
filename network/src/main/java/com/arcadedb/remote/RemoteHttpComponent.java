@@ -202,12 +202,15 @@ public class RemoteHttpComponent extends RWLockContext {
     if (maxRetry < 1)
       maxRetry = 1;
 
+    // Effective limit may be raised during failover; original maxRetry is preserved for diagnostics
+    int effectiveMaxRetry = maxRetry;
+
     Pair<String, Integer> connectToServer =
         leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
     String server = null;
 
-    for (int retry = 0; retry < maxRetry && connectToServer != null; ++retry) {
+    for (int retry = 0; retry < effectiveMaxRetry && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
       String url = protocol + "://" + server + "/api/v" + apiVersion + "/" + operation;
 
@@ -253,7 +256,7 @@ public class RemoteHttpComponent extends RWLockContext {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
           if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received")) {
             LogManager.instance()
-                .log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
+                .log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, effectiveMaxRetry);
             continue;
           }
 
@@ -276,10 +279,10 @@ public class RemoteHttpComponent extends RWLockContext {
         lastException = e;
 
         // On connection failure or leader election, ensure enough retries for failover
-        if (maxRetry < 3)
-          maxRetry = 3;
+        if (effectiveMaxRetry < 3)
+          effectiveMaxRetry = 3;
 
-        if (!autoReconnect || retry + 1 >= maxRetry)
+        if (!autoReconnect || retry + 1 >= effectiveMaxRetry)
           break;
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED) {
