@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
@@ -38,21 +39,21 @@ import java.util.logging.Level;
  * Each transaction enqueues its entry and blocks; a background flusher collects all pending
  * entries and sends them via pipelined async calls, then notifies all waiting threads.
  */
-public class RaftGroupCommitter {
+class RaftGroupCommitter {
 
-  private final    RaftClient                        raftClient;
-  private final    Quorum                            quorum;
-  private final    long                              quorumTimeout;
-  private final    int                               maxBatchSize;
-  private final    LinkedBlockingQueue<PendingEntry> queue   = new LinkedBlockingQueue<>();
-  private final    Thread                            flusher;
-  private volatile boolean                           running = true;
+  private final    RaftClient                                 raftClient;
+  private final    Quorum                                     quorum;
+  private final    long                                       quorumTimeout;
+  private final    int                                        maxBatchSize;
+  private final    LinkedBlockingQueue<CancellablePendingEntry> queue   = new LinkedBlockingQueue<>();
+  private final    Thread                                     flusher;
+  private volatile boolean                                    running = true;
 
-  public RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout) {
+  RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout) {
     this(raftClient, quorum, quorumTimeout, 500);
   }
 
-  public RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
+  RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
       final int maxBatchSize) {
     this.raftClient = raftClient;
     this.quorum = quorum;
@@ -63,8 +64,8 @@ public class RaftGroupCommitter {
     this.flusher.start();
   }
 
-  public void submitAndWait(final byte[] entry, final long timeoutMs) {
-    final PendingEntry pending = new PendingEntry(entry);
+  void submitAndWait(final byte[] entry, final long timeoutMs) {
+    final CancellablePendingEntry pending = new CancellablePendingEntry(entry);
     queue.add(pending);
 
     try {
@@ -72,7 +73,21 @@ public class RaftGroupCommitter {
       if (error != null)
         throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
     } catch (final java.util.concurrent.TimeoutException e) {
-      throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms");
+      if (pending.tryCancel())
+        throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms (cancelled before dispatch)");
+
+      try {
+        final Exception error = pending.future.get(quorumTimeout, TimeUnit.MILLISECONDS);
+        if (error != null)
+          throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
+      } catch (final java.util.concurrent.TimeoutException e2) {
+        throw new QuorumNotReachedException(
+            "Group commit timed out after " + timeoutMs + "ms + " + quorumTimeout + "ms grace (entry was dispatched to Raft)");
+      } catch (final RuntimeException re) {
+        throw re;
+      } catch (final Exception ex) {
+        throw new QuorumNotReachedException("Group commit failed during grace wait: " + ex.getMessage());
+      }
     } catch (final RuntimeException e) {
       throw e;
     } catch (final Exception e) {
@@ -80,20 +95,20 @@ public class RaftGroupCommitter {
     }
   }
 
-  public void stop() {
+  void stop() {
     running = false;
     flusher.interrupt();
-    PendingEntry pending;
+    CancellablePendingEntry pending;
     while ((pending = queue.poll()) != null)
       pending.future.complete(new QuorumNotReachedException("Group committer shutting down"));
   }
 
   private void flushLoop() {
-    final List<PendingEntry> batch = new ArrayList<>(maxBatchSize);
+    final List<CancellablePendingEntry> batch = new ArrayList<>(maxBatchSize);
 
     while (running) {
       try {
-        final PendingEntry first = queue.poll(100, TimeUnit.MILLISECONDS);
+        final CancellablePendingEntry first = queue.poll(100, TimeUnit.MILLISECONDS);
         if (first == null)
           continue;
 
@@ -109,7 +124,7 @@ public class RaftGroupCommitter {
         Thread.currentThread().interrupt();
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING, "Error in group commit flusher: %s", e.getMessage());
-        for (final PendingEntry p : batch)
+        for (final CancellablePendingEntry p : batch)
           p.future.complete(e);
         batch.clear();
       }
@@ -117,21 +132,30 @@ public class RaftGroupCommitter {
   }
 
   @SuppressWarnings("unchecked")
-  private void flushBatch(final List<PendingEntry> batch) {
+  private void flushBatch(final List<CancellablePendingEntry> batch) {
     if (raftClient == null) {
       final Exception err = new QuorumNotReachedException("RaftClient not available");
-      for (final PendingEntry p : batch)
+      for (final CancellablePendingEntry p : batch)
         p.future.complete(err);
       return;
     }
 
     final CompletableFuture<RaftClientReply>[] futures = new CompletableFuture[batch.size()];
     for (int i = 0; i < batch.size(); i++) {
-      final Message msg = Message.valueOf(ByteString.copyFrom(batch.get(i).entry));
+      final CancellablePendingEntry p = batch.get(i);
+      if (!p.tryDispatch()) {
+        p.future.complete(new QuorumNotReachedException("cancelled before dispatch"));
+        futures[i] = null;
+        continue;
+      }
+      final Message msg = Message.valueOf(ByteString.copyFrom(p.entry));
       futures[i] = raftClient.async().send(msg);
     }
 
     for (int i = 0; i < batch.size(); i++) {
+      if (futures[i] == null)
+        continue;
+
       try {
         final RaftClientReply reply = futures[i].get(quorumTimeout, TimeUnit.MILLISECONDS);
         if (!reply.isSuccess()) {
@@ -166,12 +190,29 @@ public class RaftGroupCommitter {
     HALog.log(this, HALog.DETAILED, "Group commit flushed %d entries in one batch", batch.size());
   }
 
-  private static class PendingEntry {
+  static class CancellablePendingEntry {
+    static final int PENDING    = 0;
+    static final int DISPATCHED = 1;
+    static final int CANCELLED  = 2;
+
     final byte[]                       entry;
     final CompletableFuture<Exception> future = new CompletableFuture<>();
+    private final AtomicInteger        state  = new AtomicInteger(PENDING);
 
-    PendingEntry(final byte[] entry) {
+    CancellablePendingEntry(final byte[] entry) {
       this.entry = entry;
+    }
+
+    boolean tryDispatch() {
+      return state.compareAndSet(PENDING, DISPATCHED);
+    }
+
+    boolean tryCancel() {
+      return state.compareAndSet(PENDING, CANCELLED);
+    }
+
+    int getState() {
+      return state.get();
     }
   }
 }

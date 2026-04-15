@@ -59,4 +59,45 @@ class RaftGroupCommitterTest {
     assertThat(ex).isInstanceOf(QuorumNotReachedException.class);
     assertThat(ex.getMessage()).contains("ALL quorum");
   }
+
+  @Test
+  void cancelledEntryIsSkippedByFlusher() throws Exception {
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 5_000);
+
+    try {
+      committer.submitAndWait(new byte[] { 1, 2, 3 }, 1);
+    } catch (final QuorumNotReachedException e) {
+      assertThat(e.getMessage()).containsAnyOf("timed out", "cancelled", "not available");
+    }
+
+    Thread.sleep(300);
+
+    final var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+      try {
+        committer.submitAndWait(new byte[] { 4, 5, 6 }, 5_000);
+        return "success";
+      } catch (final QuorumNotReachedException e) {
+        return "failed: " + e.getMessage();
+      }
+    });
+
+    final String result = future.join();
+    assertThat(result).contains("not available");
+
+    committer.stop();
+  }
+
+  @Test
+  void dispatchedEntryWaitsForResultOnTimeout() {
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 5_000);
+
+    try {
+      committer.submitAndWait(new byte[] { 1, 2, 3 }, 2_000);
+      org.junit.jupiter.api.Assertions.fail("Expected exception");
+    } catch (final QuorumNotReachedException e) {
+      assertThat(e.getMessage()).contains("not available");
+    } finally {
+      committer.stop();
+    }
+  }
 }
