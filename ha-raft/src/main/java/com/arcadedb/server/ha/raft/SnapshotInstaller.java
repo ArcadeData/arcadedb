@@ -23,12 +23,20 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
 
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URI;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.KeyStore;
 import java.util.logging.Level;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -95,7 +103,7 @@ public final class SnapshotInstaller {
     final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
     final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
 
-    downloadWithRetry(databaseName, snapshotNew, leaderHttpAddr, clusterToken, maxRetries, retryBaseMs);
+    downloadWithRetry(databaseName, snapshotNew, leaderHttpAddr, clusterToken, maxRetries, retryBaseMs, server);
 
     // Mark download as complete
     Files.writeString(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE), "");
@@ -196,14 +204,21 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Downloads the snapshot ZIP from the leader with exponential backoff retry.
-   * On each failure, cleans up the partial {@code .snapshot-new} directory before retrying.
+   * Package-private overload used by tests - assumes plain HTTP (no SSL).
    */
   static void downloadWithRetry(final String databaseName, final Path snapshotNewDir,
       final String leaderHttpAddr, final String clusterToken,
       final int maxRetries, final long retryBaseMs) throws IOException {
+    downloadWithRetry(databaseName, snapshotNewDir, leaderHttpAddr, clusterToken, maxRetries, retryBaseMs, null);
+  }
 
-    final String snapshotUrl = "http://" + leaderHttpAddr + "/api/v1/ha/snapshot/" + databaseName;
+  static void downloadWithRetry(final String databaseName, final Path snapshotNewDir,
+      final String leaderHttpAddr, final String clusterToken,
+      final int maxRetries, final long retryBaseMs, final ArcadeDBServer server) throws IOException {
+
+    final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final String scheme = useSSL ? "https://" : "http://";
+    final String snapshotUrl = scheme + leaderHttpAddr + "/api/v1/ha/snapshot/" + databaseName;
     IOException lastException = null;
 
     for (int attempt = 0; attempt <= maxRetries; attempt++) {
@@ -224,7 +239,7 @@ public final class SnapshotInstaller {
       }
 
       try {
-        downloadSnapshot(snapshotNewDir, snapshotUrl, clusterToken);
+        downloadSnapshot(snapshotNewDir, snapshotUrl, clusterToken, useSSL, server);
         return; // Success
       } catch (final IOException e) {
         lastException = e;
@@ -239,16 +254,24 @@ public final class SnapshotInstaller {
   }
 
   private static void downloadSnapshot(final Path targetDir, final String snapshotUrl,
-      final String clusterToken) throws IOException {
+      final String clusterToken, final boolean useSSL, final ArcadeDBServer server) throws IOException {
 
     HALog.log(SnapshotInstaller.class, HALog.BASIC, "Downloading snapshot from %s", snapshotUrl);
 
-    final java.net.HttpURLConnection connection;
+    final HttpURLConnection connection;
     try {
-      connection = (java.net.HttpURLConnection) new java.net.URI(snapshotUrl).toURL().openConnection();
+      connection = (HttpURLConnection) new URI(snapshotUrl).toURL().openConnection();
     } catch (final java.net.URISyntaxException e) {
       throw new IOException("Invalid snapshot URL: " + snapshotUrl, e);
     }
+
+    if (connection instanceof HttpsURLConnection) {
+      if (!useSSL)
+        throw new ReplicationException("Snapshot URL is HTTPS but SSL is disabled: " + snapshotUrl);
+      final SSLContext sslContext = buildSSLContext(server);
+      ((HttpsURLConnection) connection).setSSLSocketFactory(sslContext.getSocketFactory());
+    }
+
     connection.setRequestMethod("GET");
     connection.setConnectTimeout(30_000);
     connection.setReadTimeout(300_000);
@@ -266,22 +289,74 @@ public final class SnapshotInstaller {
         while ((zipEntry = zipIn.getNextEntry()) != null) {
           final Path targetFile = targetDir.resolve(zipEntry.getName()).normalize();
 
-          // Zip-slip protection
+          // Zip-slip protection: normalized path must remain inside targetDir
           if (!targetFile.startsWith(targetDir))
-            throw new IOException("Zip slip detected in snapshot: " + zipEntry.getName());
+            throw new ReplicationException("Zip slip detected in snapshot: " + zipEntry.getName());
 
-          // Symlink rejection
+          // Reject suspicious path components before touching the filesystem
           if (zipEntry.getName().contains(".."))
-            throw new IOException("Suspicious path in snapshot ZIP: " + zipEntry.getName());
+            throw new ReplicationException("Suspicious path in snapshot ZIP: " + zipEntry.getName());
+
+          // Create parent directories and perform real-path symlink-escape check
+          Files.createDirectories(targetFile.getParent());
+          final Path realParent = targetFile.getParent().toRealPath();
+          if (!realParent.startsWith(targetDir.toRealPath()))
+            throw new ReplicationException(
+                "Symlink escape detected in snapshot: entry '" + zipEntry.getName() + "' resolves outside target directory");
+
+          // Reject symlinks at the target file path
+          if (Files.isSymbolicLink(targetFile))
+            throw new ReplicationException("Symlink detected at extraction target: " + targetFile);
 
           try (final java.io.FileOutputStream fos = new java.io.FileOutputStream(targetFile.toFile())) {
-            zipIn.transferTo(fos);
+            copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName());
           }
           zipIn.closeEntry();
         }
       }
     } finally {
       connection.disconnect();
+    }
+  }
+
+  private static SSLContext buildSSLContext(final ArcadeDBServer server) throws IOException {
+    try {
+      if (server == null)
+        return SSLContext.getDefault();
+      final String keystorePath = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
+      if (keystorePath == null || keystorePath.isBlank())
+        return SSLContext.getDefault();
+
+      final String keystorePassword = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD);
+      final char[] password = keystorePassword != null ? keystorePassword.toCharArray() : new char[0];
+
+      final KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+      try (final InputStream is = Files.newInputStream(Path.of(keystorePath))) {
+        ks.load(is, password);
+      }
+      final TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+      tmf.init(ks);
+      final SSLContext ctx = SSLContext.getInstance("TLS");
+      ctx.init(null, tmf.getTrustManagers(), null);
+      return ctx;
+    } catch (final IOException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new IOException("Failed to build SSL context for snapshot download", e);
+    }
+  }
+
+  private static void copyWithLimit(final InputStream in, final OutputStream out,
+      final long maxBytes, final String entryName) throws IOException {
+    final byte[] buffer = new byte[8192];
+    long totalRead = 0;
+    int bytesRead;
+    while ((bytesRead = in.read(buffer)) != -1) {
+      totalRead += bytesRead;
+      if (totalRead > maxBytes)
+        throw new ReplicationException(
+            "Snapshot entry '" + entryName + "' exceeds size limit of " + maxBytes + " bytes (zip-bomb protection)");
+      out.write(buffer, 0, bytesRead);
     }
   }
 
