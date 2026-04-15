@@ -74,7 +74,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
-import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.IOException;
 import java.net.URI;
@@ -183,7 +182,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    *       via {@code commit1stPhase}. The read lock ensures a consistent snapshot of the
    *       transaction's page changes.</li>
    *   <li><b>Replication (no lock held):</b> Submit the WAL entry to Raft via
-   *       {@link RaftGroupCommitter#submitAndWait} and wait for quorum. Releasing the lock
+   *       {@link RaftTransactionBroker#replicateTransaction} and wait for quorum. Releasing the lock
    *       here allows concurrent transactions to proceed through Phase 1 while this
    *       transaction waits for Raft consensus, significantly improving throughput.</li>
    *   <li><b>Phase 2 (read lock held on leader):</b> Apply pages locally via
@@ -269,9 +268,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
     try {
-      final ByteString entry = RaftLogEntryCodec.encodeTxEntry(getName(), payload.walData(), payload.bucketDeltas());
       final RaftHAServer raft = requireRaftServer();
-      raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
+      raft.getTransactionBroker().replicateTransaction(getName(), payload.walData(), payload.bucketDeltas(), raft.getQuorumTimeout());
     } catch (final MajorityCommittedAllFailedException e) {
       // MAJORITY committed (applyTransaction fired with origin-skip, lastAppliedIndex advanced)
       // but ALL-quorum watch failed. We MUST apply locally to prevent permanent divergence.
@@ -1064,10 +1062,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // Embedded walEntries carry the initial page writes (e.g. index root pages) so
       // replicas apply them immediately after creating the files - in the correct order.
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged) {
-        final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(getName(), serializedSchema, addFiles, removeFiles,
-            walEntries, bucketDeltas);
         final RaftHAServer raft = requireRaftServer();
-        raft.getGroupCommitter().submitAndWait(schemaEntry.toByteArray(), raft.getQuorumTimeout());
+        raft.getTransactionBroker().replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
+            raft.getQuorumTimeout());
         HALog.log(this, HALog.DETAILED,
             "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d",
             addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size());
@@ -1129,10 +1126,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void createInReplicas() {
-    final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(getName());
     try {
       final RaftHAServer raft = requireRaftServer();
-      raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
+      raft.getTransactionBroker().replicateInstallDatabase(getName(), false, raft.getQuorumTimeout());
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -1143,10 +1139,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void createInReplicas(final boolean forceSnapshot) {
-    final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(getName(), forceSnapshot);
     try {
       final RaftHAServer raft = requireRaftServer();
-      raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
+      raft.getTransactionBroker().replicateInstallDatabase(getName(), forceSnapshot, raft.getQuorumTimeout());
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -1159,10 +1154,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void dropInReplicas() {
-    final ByteString entry = RaftLogEntryCodec.encodeDropDatabaseEntry(getName());
     try {
       final RaftHAServer raft = requireRaftServer();
-      raft.getGroupCommitter().submitAndWait(entry.toByteArray(), raft.getQuorumTimeout());
+      raft.getTransactionBroker().replicateDropDatabase(getName(), raft.getQuorumTimeout());
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {

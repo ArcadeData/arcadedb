@@ -27,7 +27,6 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 
 import io.undertow.server.handlers.PathHandler;
-import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -113,9 +112,8 @@ public class RaftHAPlugin implements HAServerPlugin {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
 
-    final ByteString entry = RaftLogEntryCodec.encodeSecurityUsersEntry(usersJsonArray);
     try {
-      raftHAServer.getGroupCommitter().submitAndWait(entry.toByteArray(), raftHAServer.getQuorumTimeout());
+      raftHAServer.getTransactionBroker().replicateSecurityUsers(usersJsonArray, raftHAServer.getQuorumTimeout());
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {

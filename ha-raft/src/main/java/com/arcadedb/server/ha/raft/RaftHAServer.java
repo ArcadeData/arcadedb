@@ -57,7 +57,7 @@ import java.util.logging.Logger;
 
 /**
  * Manages the lifecycle of the Apache Ratis {@link RaftServer}, {@link RaftClient},
- * and {@link RaftGroupCommitter} for ArcadeDB high availability.
+ * and {@link RaftTransactionBroker} for ArcadeDB high availability.
  * <p>
  * Owns peer configuration (parsed from {@code HA_SERVER_LIST}), quorum policy
  * ({@link Quorum#MAJORITY} or {@link Quorum#ALL}), and leadership state.
@@ -91,7 +91,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          RaftServer                raftServer;
   private          RaftClient                raftClient;
   private          RaftProperties            raftProperties;
-  private volatile RaftGroupCommitter        groupCommitter;
+  private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
   private final    Object                    leaderChangeNotifier  = new Object();
@@ -227,7 +227,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         .log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
 
     final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
-    groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, batchSize);
+    transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize);
 
     // K8s auto-join: if running in Kubernetes with no existing storage, try to join an existing cluster
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S) && !hadExistingStorage)
@@ -283,13 +283,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
       final RaftClient oldClient = this.raftClient;
       final RaftServer oldServer = this.raftServer;
-      final RaftGroupCommitter oldCommitter = this.groupCommitter;
+      final RaftTransactionBroker oldBroker = this.transactionBroker;
 
       try {
-        if (oldCommitter != null)
-          oldCommitter.stop();
+        if (oldBroker != null)
+          oldBroker.stop();
       } catch (final Throwable t) {
-        LogManager.instance().log(this, Level.FINE, "Error closing old committer: %s", t, t.getMessage());
+        LogManager.instance().log(this, Level.FINE, "Error closing old broker: %s", t, t.getMessage());
       }
       try {
         if (oldClient != null)
@@ -325,7 +325,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         this.raftClient = buildRaftClient(raftGroup, properties);
 
         final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
-        this.groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, batchSize);
+        this.transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize);
 
         HALog.log(this, HALog.BASIC, "Ratis recovered successfully");
       } catch (final Throwable t) {
@@ -351,9 +351,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       healthMonitor = null;
     }
     stopLagMonitor();
-    if (groupCommitter != null) {
-      groupCommitter.stop();
-      groupCommitter = null;
+    if (transactionBroker != null) {
+      transactionBroker.stop();
+      transactionBroker = null;
     }
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
@@ -449,8 +449,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return raftClient;
   }
 
-  public RaftGroupCommitter getGroupCommitter() {
-    return groupCommitter;
+  public RaftTransactionBroker getTransactionBroker() {
+    return transactionBroker;
   }
 
   /**
@@ -477,18 +477,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (raftProperties == null)
       return;
 
-    // Stop the group committer FIRST so its flusher thread is no longer using the old raftClient.
-    // Create the replacement committer before stopping the old one to minimize the window where
-    // no committer is available to concurrent callers (the field is volatile).
+    // Stop the transaction broker FIRST so its flusher thread is no longer using the old raftClient.
+    // Create the replacement broker before stopping the old one to minimize the window where
+    // no broker is available to concurrent callers (the field is volatile).
     final RaftClient oldClient = raftClient;
 
     raftClient = buildRaftClient(raftGroup, raftProperties, knownLeaderId);
 
-    if (groupCommitter != null) {
+    if (transactionBroker != null) {
       final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
-      final RaftGroupCommitter oldCommitter = groupCommitter;
-      groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, batchSize);
-      oldCommitter.stop();
+      final RaftTransactionBroker oldBroker = transactionBroker;
+      transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize);
+      oldBroker.stop();
     }
 
     if (oldClient != null) {
