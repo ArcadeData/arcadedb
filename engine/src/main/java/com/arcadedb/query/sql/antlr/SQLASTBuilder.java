@@ -61,7 +61,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * When an identifierChain matches "namespace.method(args)", it is rewritten as a
    * namespace-qualified function call (e.g. "geo.point(x,y)" → FunctionCall("geo.point")).
    */
-  private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts","geo");
+  private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts", "geo", "text", "math", "convert", "date", "util", "coll",
+      "map", "agg", "node", "rel", "path", "create");
 
 
   private int positionalParamCounter = 0;

@@ -25,6 +25,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.function.FunctionRegistry;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -198,25 +200,47 @@ public class SQLQueryEngine implements QueryEngine {
     if (sqlFunction == null) {
       final int pos = name.indexOf(".");
       if (pos > -1) {
-        // LOOK INTO FUNCTION LIBRARY
         final String libraryName = name.substring(0, pos);
         final String fnName = name.substring(pos + 1);
-        final FunctionDefinition function = database.getSchema().getFunction(libraryName, fnName);
-        if (function != null) {
-          // WRAP LIBRARY FUNCTION TO SQL FUNCTION TO BE EXECUTED BY SQL ENGINE
-          sqlFunction = new SQLFunctionAbstract(name) {
-            @Override
-            public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult,
-                final Object[] params,
-                final CommandContext context) {
-              return function.execute(params);
-            }
 
-            @Override
-            public String getSyntax() {
-              return null;
-            }
-          };
+        // LOOK INTO USER-DEFINED FUNCTION LIBRARY
+        if (database.getSchema().hasFunctionLibrary(libraryName)) {
+          final FunctionDefinition function = database.getSchema().getFunction(libraryName, fnName);
+          if (function != null) {
+            // WRAP LIBRARY FUNCTION TO SQL FUNCTION TO BE EXECUTED BY SQL ENGINE
+            sqlFunction = new SQLFunctionAbstract(name) {
+              @Override
+              public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult,
+                  final Object[] params,
+                  final CommandContext context) {
+                return function.execute(params);
+              }
+
+              @Override
+              public String getSyntax() {
+                return null;
+              }
+            };
+          }
+        }
+
+        // LOOK INTO UNIFIED FUNCTION REGISTRY (stateless functions: text, math, convert, date, util, etc.)
+        if (sqlFunction == null) {
+          final StatelessFunction statelessFn = FunctionRegistry.getStateless(name);
+          if (statelessFn != null) {
+            sqlFunction = new SQLFunctionAbstract(name) {
+              @Override
+              public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult,
+                  final Object[] params, final CommandContext context) {
+                return statelessFn.execute(params, context);
+              }
+
+              @Override
+              public String getSyntax() {
+                return statelessFn.getName() + "(...)";
+              }
+            };
+          }
         }
       }
     }

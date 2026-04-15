@@ -51,6 +51,12 @@ public final class FunctionRegistry {
   private static final String APOC_PREFIX = "apoc.";
   private static final Map<String, Function> FUNCTIONS = new ConcurrentHashMap<>();
 
+  static {
+    // Ensure built-in stateless functions are registered.
+    // CypherFunctionRegistry's static initializer registers them into this registry.
+    CypherFunctionRegistry.size();
+  }
+
   private FunctionRegistry() {
     // Utility class - prevent instantiation
   }
