@@ -406,7 +406,8 @@ public class MergeStep extends AbstractExecutionStep {
           break; // Leftmost prefix only
       }
 
-      if (matchCount > 0 && matchCount > bestMatchCount) {
+      // Require full index match (all index properties covered) - lookupByKey needs exact match
+      if (matchCount > 0 && matchCount == indexProperties.size() && matchCount > bestMatchCount) {
         bestMatchCount = matchCount;
         bestIndex = index;
         bestMatchedProperties = matchedProperties;
@@ -421,9 +422,7 @@ public class MergeStep extends AbstractExecutionStep {
     for (int i = 0; i < propertyNames.length; i++)
       propertyValues[i] = evaluatedProperties.get(propertyNames[i]);
 
-    @SuppressWarnings("unchecked")
-    final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
-        context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    final Iterator<Identifiable> iter = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
     return iter;
   }
 

@@ -194,4 +194,47 @@ class Issue3864CypherBatchMatchByIdPerformanceTest extends TestHelper {
       }
     });
   }
+
+  /**
+   * Verify that elementId() works the same as ID() for dynamic UNWIND+MATCH lookups.
+   */
+  @Test
+  void unwindMatchByElementIdShouldUseLookup() {
+    final List<String> chunkRids = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid FROM CHUNK LIMIT 10")) {
+        while (rs.hasNext())
+          chunkRids.add(rs.next().getProperty("rid").toString());
+      }
+    });
+
+    final List<Map<String, Object>> batch = new ArrayList<>();
+    for (final String rid : chunkRids) {
+      final Map<String, Object> entry = new HashMap<>();
+      entry.put("destRID", rid);
+      entry.put("vector", List.of(1.0, 2.0, 3.0));
+      batch.add(entry);
+    }
+
+    database.transaction(() -> {
+      database.command("opencypher",
+          "UNWIND $batch AS BatchEntry "
+              + "MATCH (b:CHUNK) WHERE elementId(b) = BatchEntry.destRID "
+              + "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) "
+              + "CREATE (p)-[:embb]->(b)",
+          Map.of("batch", batch));
+    });
+
+    // Verify correctness: same number of embeddings and edges as batch entries
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM CHUNK_EMBEDDING")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(chunkRids.size());
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM embb")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(chunkRids.size());
+      }
+    });
+  }
 }
