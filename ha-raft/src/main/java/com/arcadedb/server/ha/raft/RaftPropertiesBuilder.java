@@ -126,14 +126,12 @@ class RaftPropertiesBuilder {
     // Write buffer (must be >= appender buffer byte-limit + 8)
     final long appendBytes = SizeInBytes.valueOf(appendBufferSize).getSize();
     final long minWriteBuffer = appendBytes + 8;
-    SizeInBytes writeBuffer =
+    final SizeInBytes writeBuffer =
         SizeInBytes.valueOf(configuration.getValueAsString(GlobalConfiguration.HA_WRITE_BUFFER_SIZE));
-    if (writeBuffer.getSize() < minWriteBuffer) {
-      LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
-          "ha.writeBufferSize (%s) is smaller than appendBufferSize + 8 (%d bytes). Adjusting to %d bytes",
-          writeBuffer, minWriteBuffer, minWriteBuffer);
-      writeBuffer = SizeInBytes.valueOf(minWriteBuffer);
-    }
+    if (writeBuffer.getSize() < minWriteBuffer)
+      throw new ConfigurationException(
+          "arcadedb.ha.writeBufferSize (" + writeBuffer + ") must be >= arcadedb.ha.appendBufferSize + 8 ("
+              + minWriteBuffer + " bytes). Increase writeBufferSize or decrease appendBufferSize");
     RaftServerConfigKeys.Log.setWriteBufferSize(properties, writeBuffer);
     RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, APPEND_ENTRIES_MAX_ELEMENTS);
 

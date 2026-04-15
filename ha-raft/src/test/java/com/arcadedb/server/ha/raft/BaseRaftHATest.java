@@ -28,6 +28,8 @@ import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
 
 import java.io.File;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -197,16 +199,20 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       getServer(serverIndex).stop();
     }
 
-    // Fixed delay for OS port release: the gRPC listener holds the TCP port in TIME_WAIT
-    // after server.stop() returns. There is no observable condition to poll here - the only
-    // option would be binding a test ServerSocket to the port, which is fragile. 1s is
-    // sufficient in practice; 2s provides a safety margin on slow CI runners.
-    try {
-      Thread.sleep(2_000);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      return;
-    }
+    // Wait for the gRPC port to be released before restarting.
+    final int raftPort = 2424 + serverIndex;
+    Awaitility.await()
+        .atMost(10, TimeUnit.SECONDS)
+        .pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          try (final ServerSocket ss = new ServerSocket()) {
+            ss.setReuseAddress(false);
+            ss.bind(new InetSocketAddress("localhost", raftPort));
+            return true;
+          } catch (final Exception e) {
+            return false;
+          }
+        });
 
     LogManager.instance().log(this, Level.INFO, "TEST: Starting server %d again", serverIndex);
     getServer(serverIndex).start();

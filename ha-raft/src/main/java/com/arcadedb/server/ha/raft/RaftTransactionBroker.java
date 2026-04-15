@@ -25,7 +25,6 @@ import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
-import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -155,7 +154,8 @@ class RaftTransactionBroker {
 
       if (haServer.getQuorum() == Quorum.ALL) {
         final long logIndex = reply.getLogIndex();
-        final RaftClientReply watchReply = client.io().watch(logIndex, RaftProtos.ReplicationLevel.ALL_COMMITTED);
+        final RaftClientReply watchReply = client.async().watch(logIndex, RaftProtos.ReplicationLevel.ALL_COMMITTED)
+            .get(quorumTimeout, TimeUnit.MILLISECONDS);
         if (!watchReply.isSuccess())
           throw new QuorumNotReachedException("Raft ALL quorum not reached: not all replicas acknowledged the entry");
       }
@@ -167,8 +167,6 @@ class RaftTransactionBroker {
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new QuorumNotReachedException("Raft replication interrupted");
-    } catch (final IOException e) {
-      throw new QuorumNotReachedException("Failed to submit transaction to Raft cluster: " + e.getMessage());
     }
   }
 }
