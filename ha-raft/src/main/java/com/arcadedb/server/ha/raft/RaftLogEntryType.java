@@ -39,6 +39,6 @@ public enum RaftLogEntryType {
     for (final RaftLogEntryType type : values())
       if (type.id == id)
         return type;
-    throw new IllegalArgumentException("Unknown RaftLogEntryType id: " + id);
+    return null;
   }
 }

@@ -266,4 +266,22 @@ class RaftLogEntryCodecTest {
 
     assertThat(decoded.usersJson()).isEqualTo(payload);
   }
+
+  @Test
+  void unknownEntryTypeReturnsNull() {
+    assertThat(RaftLogEntryType.fromId((byte) 99)).isNull();
+  }
+
+  @Test
+  void decodeUnknownTypeReturnsNullTypeEntry() throws java.io.IOException {
+    // Build an entry with an unknown type byte (99)
+    final java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+    try (final java.io.DataOutputStream dos = new java.io.DataOutputStream(baos)) {
+      dos.writeByte(99);
+    }
+    final ByteString unknown = ByteString.copyFrom(baos.toByteArray());
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(unknown);
+
+    assertThat(decoded.type()).isNull();
+  }
 }

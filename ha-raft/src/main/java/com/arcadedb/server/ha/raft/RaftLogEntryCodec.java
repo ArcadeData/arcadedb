@@ -227,7 +227,10 @@ public final class RaftLogEntryCodec {
     try (final InputStream input = data.newInput();
         final DataInputStream dis = new DataInputStream(input)) {
 
-      final RaftLogEntryType type = RaftLogEntryType.fromId(dis.readByte());
+      final byte typeByte = dis.readByte();
+      final RaftLogEntryType type = RaftLogEntryType.fromId(typeByte);
+      if (type == null)
+        return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false);
       final String databaseName = dis.readUTF();
 
       return switch (type) {
