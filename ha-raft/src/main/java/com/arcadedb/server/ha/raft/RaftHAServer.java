@@ -88,7 +88,7 @@ public class RaftHAServer {
   private          RaftServer               raftServer;
   private volatile RaftClient               raftClient;
   private          RaftProperties           raftProperties;
-  private          ArcadeDBStateMachine     stateMachine;
+  private volatile ArcadeDBStateMachine     stateMachine;
   private          ClusterMonitor           clusterMonitor;
   private final    ReentrantLock            applyLock            = new ReentrantLock();
   private final    Condition                applyCondition       = applyLock.newCondition();
@@ -724,17 +724,19 @@ public class RaftHAServer {
    * Called by ArcadeDBStateMachine when the leader changes to wake up leaveCluster().
    */
   public void notifyLeaderChanged() {
-    // Capture the state machine reference before the isLeader() branch. If restartRatisIfNeeded()
-    // is concurrently replacing the state machine, the executor may already be shut down by the
-    // time we call submit() below, so we catch RejectedExecutionException.
-    final var currentStateMachine = stateMachine;
-    if (isLeader() && currentStateMachine != null) {
-      // New leader must apply all committed entries before serving reads.
-      // Mark as not ready; the catch-up runs in the background to avoid blocking
-      // the Ratis event thread (which processes heartbeats and elections).
-      leaderReady = false;
-      HALog.log(this, HALog.BASIC, "This node became leader, scheduling state machine catch-up in background");
-      try {
+    // Synchronized on 'this' because restartRatisIfNeeded() holds the same monitor
+    // when it closes the old state machine and creates a new one. Reading and
+    // submitting to the lifecycle executor inside the same synchronized block
+    // prevents use-after-close: the executor cannot be shut down between the
+    // field read and the submit() call.
+    synchronized (this) {
+      final var currentStateMachine = stateMachine;
+      if (isLeader() && currentStateMachine != null) {
+        // New leader must apply all committed entries before serving reads.
+        // Mark as not ready; the catch-up runs in the background to avoid blocking
+        // the Ratis event thread (which processes heartbeats and elections).
+        leaderReady = false;
+        HALog.log(this, HALog.BASIC, "This node became leader, scheduling state machine catch-up in background");
         currentStateMachine.getLifecycleExecutor().submit(() -> {
           try {
             waitForLocalApply();
@@ -755,22 +757,9 @@ public class RaftHAServer {
             }
           }
         });
-      } catch (final java.util.concurrent.RejectedExecutionException e) {
-        // The lifecycle executor was shut down by a concurrent restartRatisIfNeeded().
-        // Restore leaderReady so reads are not blocked indefinitely. This is safe because:
-        //   - The Ratis server is restarting, so isLeader() will return false shortly
-        //   - Even if a read slips through, ensureLinearizableRead() will fail because
-        //     the raft client is being replaced
-        //   - After restart, a new leadership transition triggers notifyLeaderChanged() again
-        LogManager.instance().log(this, Level.WARNING,
-            "Leader catch-up submit rejected (executor shut down during concurrent restart), restoring leaderReady");
+      } else {
         leaderReady = true;
-        synchronized (leaderReadyNotifier) {
-          leaderReadyNotifier.notifyAll();
-        }
       }
-    } else {
-      leaderReady = true;
     }
     // Notify leaveCluster() waiters (which loop on isLeader()) so they can exit
     // as soon as leadership is transferred to another node.
