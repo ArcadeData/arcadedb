@@ -190,7 +190,7 @@ class RaftGroupCommitter {
     HALog.log(this, HALog.DETAILED, "Group commit flushed %d entries in one batch", batch.size());
   }
 
-  static class CancellablePendingEntry {
+  private static class CancellablePendingEntry {
     static final int PENDING    = 0;
     static final int DISPATCHED = 1;
     static final int CANCELLED  = 2;
@@ -211,8 +211,5 @@ class RaftGroupCommitter {
       return state.compareAndSet(PENDING, CANCELLED);
     }
 
-    int getState() {
-      return state.get();
-    }
   }
 }
