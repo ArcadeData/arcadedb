@@ -41,7 +41,12 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -57,6 +62,15 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   private static final Semaphore CONCURRENCY_SEMAPHORE =
       new Semaphore(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger(), true);
+
+  private static final ScheduledExecutorService TIMEOUT_SCHEDULER =
+      Executors.newSingleThreadScheduledExecutor(r -> {
+        final Thread t = new Thread(r, "arcadedb-snapshot-timeout");
+        t.setDaemon(true);
+        return t;
+      });
+
+  private static volatile boolean sslWarningLogged = false;
 
   private final HttpServer httpServer;
 
@@ -77,6 +91,19 @@ public class SnapshotHttpHandler implements HttpHandler {
       exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic realm=\"ArcadeDB\"");
       exchange.getResponseSender().send("Unauthorized");
       return;
+    }
+
+    if (!"root".equals(user.getName())) {
+      exchange.setStatusCode(403);
+      exchange.getResponseSender().send("Only root user can download database snapshots");
+      return;
+    }
+
+    if (!sslWarningLogged && !httpServer.getServer().getConfiguration().getValueAsBoolean(
+        GlobalConfiguration.NETWORK_USE_SSL)) {
+      sslWarningLogged = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "Serving database snapshots over plain HTTP. Consider enabling SSL for production clusters.");
     }
 
     if (!CONCURRENCY_SEMAPHORE.tryAcquire()) {
@@ -105,6 +132,14 @@ public class SnapshotHttpHandler implements HttpHandler {
         return;
       }
 
+      if (databaseName.contains("/") || databaseName.contains("\\")
+          || databaseName.contains("..") || databaseName.contains("\0")
+          || !databaseName.chars().allMatch(c -> c >= 0x20 && c < 0x7F)) {
+        exchange.setStatusCode(400);
+        exchange.getResponseSender().send("Invalid database name");
+        return;
+      }
+
       final var server = httpServer.getServer();
       if (!server.existsDatabase(databaseName)) {
         exchange.setStatusCode(404);
@@ -114,9 +149,10 @@ public class SnapshotHttpHandler implements HttpHandler {
 
       LogManager.instance().log(this, Level.INFO, "Serving database snapshot for '%s'...", databaseName);
 
+      final String safeName = databaseName.replaceAll("[^a-zA-Z0-9._-]", "_");
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
       exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
-          "attachment; filename=\"" + databaseName + "-snapshot.zip\"");
+          "attachment; filename=\"" + safeName + "-snapshot.zip\"");
       exchange.startBlocking();
 
       final DatabaseInternal db = server.getDatabase(databaseName);
@@ -214,6 +250,17 @@ public class SnapshotHttpHandler implements HttpHandler {
   }
 
   private void serveSnapshotZip(final HttpServerExchange exchange, final DatabaseInternal db, final String databaseName) {
+    final AtomicBoolean completed = new AtomicBoolean(false);
+    final ScheduledFuture<?> watchdog = TIMEOUT_SCHEDULER.schedule(() -> {
+      if (!completed.get()) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Snapshot streaming for '%s' timed out after 5 minutes, closing connection", databaseName);
+        try {
+          exchange.getConnection().close();
+        } catch (final Exception ignored) {}
+      }
+    }, 5, TimeUnit.MINUTES);
+
     try (final OutputStream out = exchange.getOutputStream();
          final ZipOutputStream zipOut = new ZipOutputStream(out)) {
 
@@ -236,6 +283,9 @@ public class SnapshotHttpHandler implements HttpHandler {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error serving snapshot for '%s'", e, databaseName);
       throw new RuntimeException(e);
+    } finally {
+      completed.set(true);
+      watchdog.cancel(false);
     }
   }
 

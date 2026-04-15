@@ -150,6 +150,31 @@ class SnapshotSwapRecoveryTest {
   }
 
   @Test
+  void incompleteExtractionWithoutMarkerIsDiscarded(@TempDir final Path databasesDir) throws IOException {
+    // Simulate: .snapshot-new exists (extraction started) but no .snapshot-complete marker inside it,
+    // meaning extraction was interrupted before completing. No backup exists either.
+    final Path dbDir = databasesDir.resolve("mydb");
+    final Path snapshotNew = dbDir.resolve(".snapshot-new");
+
+    Files.createDirectories(dbDir);
+    Files.createDirectories(snapshotNew);
+    Files.writeString(dbDir.resolve(".snapshot-pending"), "");
+    Files.writeString(dbDir.resolve("data.dat"), "existing-data");
+    // Incomplete extraction: some files written but no .snapshot-complete
+    Files.writeString(snapshotNew.resolve("partial.dat"), "incomplete-extraction");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+
+    // The .snapshot-new directory must be discarded (no marker = not safe to apply)
+    assertThat(snapshotNew).doesNotExist();
+    // Existing database data is untouched
+    assertThat(dbDir.resolve("data.dat")).exists();
+    assertThat(Files.readString(dbDir.resolve("data.dat"))).isEqualTo("existing-data");
+    // Pending marker cleaned up
+    assertThat(dbDir.resolve(".snapshot-pending")).doesNotExist();
+  }
+
+  @Test
   void testRecoveryHandlesSwapCompletedButCleanupIncomplete(@TempDir final Path databasesDir) throws IOException {
     // Simulate: swap was completed (.snapshot-new renamed to live) but .snapshot-pending marker
     // and leftover .snapshot-new dir (with .snapshot-complete) still exist. No backup.
