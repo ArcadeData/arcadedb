@@ -278,13 +278,20 @@ public class HashIndexBucket extends PaginatedComponent {
 
     final byte[] serializedRID = serializeCompressedRID(rid);
 
-    // For non-unique indexes, check if key already exists and append RID
+    // For non-unique indexes, check if key already exists (on primary page or overflow chain) and append RID
     if (!unique) {
-      final int existingPos = findExactEntry(bucketPage, entryCount, serializedKey);
-      if (existingPos >= 0) {
-        addRIDToExistingEntry(bucketPageNum, bucketPage, entryCount, existingPos, serializedKey, serializedRID);
-        updateTotalEntries(1);
-        return;
+      int currentPageNum = bucketPageNum;
+      while (currentPageNum != NO_OVERFLOW_PAGE) {
+        final MutablePage currentPage = database.getTransaction()
+            .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
+        final int currentEntryCount = currentPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
+        final int existingPos = findExactEntry(currentPage, currentEntryCount, serializedKey);
+        if (existingPos >= 0) {
+          addRIDToExistingEntry(currentPageNum, currentPage, currentEntryCount, existingPos, serializedKey, serializedRID);
+          updateTotalEntries(1);
+          return;
+        }
+        currentPageNum = currentPage.readInt(BUCKET_OVERFLOW_PAGE);
       }
     }
 
@@ -351,19 +358,28 @@ public class HashIndexBucket extends PaginatedComponent {
     while (currentPageNum != NO_OVERFLOW_PAGE) {
       final MutablePage page = database.getTransaction()
           .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
-      final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
+      int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
       final int overflowPage = page.readInt(BUCKET_OVERFLOW_PAGE);
 
       final int pos = findExactEntry(page, entryCount, serializedKey);
       if (pos >= 0) {
         if (specificRID != null && !unique) {
-          final int removed = removeRIDFromEntry(page, entryCount, pos, specificRID);
-          updateTotalEntries(-removed);
+          // Search all matching entries on this page (entries for the same key may be split)
+          for (int p = pos; p < entryCount; p++) {
+            if (!keysMatch(page, readSlot(page, p), serializedKey))
+              break;
+            final int removed = removeRIDFromEntry(page, entryCount, p, specificRID);
+            if (removed > 0) {
+              updateTotalEntries(-removed);
+              return;
+            }
+          }
+          // RID not in any entry on this page - continue to overflow pages
         } else {
           final int removedCount = removeEntryFromPage(page, entryCount, pos);
           updateTotalEntries(-removedCount);
+          return;
         }
-        return;
       }
 
       currentPageNum = overflowPage;
@@ -490,30 +506,34 @@ public class HashIndexBucket extends PaginatedComponent {
 
   // ─── OVERFLOW PAGES ──────────────────────────────────────
 
-  private void insertIntoOverflow(final MutablePage bucketPage, final int bucketPageNum,
+  private void insertIntoOverflow(MutablePage currentPage, int currentPageNum,
       final byte[] serializedKey, final byte[] serializedRID) throws IOException {
-    int overflowPageNum = bucketPage.readInt(BUCKET_OVERFLOW_PAGE);
-
-    if (overflowPageNum == NO_OVERFLOW_PAGE) {
-      // Allocate new overflow page with same local depth
-      final int localDepth = bucketPage.readShort(BUCKET_LOCAL_DEPTH) & 0xFFFF;
-      overflowPageNum = allocateOverflowPage(localDepth);
-      bucketPage.writeInt(BUCKET_OVERFLOW_PAGE, overflowPageNum);
-    }
-
-    final MutablePage overflowPage = database.getTransaction()
-        .getPageToModify(new PageId(database, fileId, overflowPageNum), pageSize, false);
-    final int entryCount = overflowPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
     final int entryDataSize = unique ?
         serializedKey.length + serializedRID.length :
         serializedKey.length + varIntSize(1) + serializedRID.length;
     final int totalNeeded = entryDataSize + SLOT_SIZE;
 
-    if (totalNeeded <= freeSpace(overflowPage, entryCount)) {
-      insertEntryInPage(overflowPage, entryCount, serializedKey, serializedRID);
-    } else {
-      // Chain another overflow page
-      insertIntoOverflow(overflowPage, overflowPageNum, serializedKey, serializedRID);
+    while (true) {
+      int overflowPageNum = currentPage.readInt(BUCKET_OVERFLOW_PAGE);
+
+      if (overflowPageNum == NO_OVERFLOW_PAGE) {
+        final int localDepth = currentPage.readShort(BUCKET_LOCAL_DEPTH) & 0xFFFF;
+        overflowPageNum = allocateOverflowPage(localDepth);
+        currentPage.writeInt(BUCKET_OVERFLOW_PAGE, overflowPageNum);
+      }
+
+      final MutablePage overflowPage = database.getTransaction()
+          .getPageToModify(new PageId(database, fileId, overflowPageNum), pageSize, false);
+      final int entryCount = overflowPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
+
+      if (totalNeeded <= freeSpace(overflowPage, entryCount)) {
+        insertEntryInPage(overflowPage, entryCount, serializedKey, serializedRID);
+        return;
+      }
+
+      // Chain to the next overflow page
+      currentPage = overflowPage;
+      currentPageNum = overflowPageNum;
     }
   }
 
@@ -855,36 +875,43 @@ public class HashIndexBucket extends PaginatedComponent {
    * Inserts a raw entry (already serialized) into a bucket page, finding the correct position.
    */
   private void insertRawEntry(final int bucketPageNum, final byte[] rawEntry) throws IOException {
-    final MutablePage page = database.getTransaction()
-        .getPageToModify(new PageId(database, fileId, bucketPageNum), pageSize, false);
-    final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
-    final int totalNeeded = rawEntry.length + SLOT_SIZE;
+    int currentPageNum = bucketPageNum;
 
-    if (totalNeeded <= freeSpace(page, entryCount)) {
-      final int keyLen = computeKeyLengthFromEntry(rawEntry, 0);
-      final byte[] serializedKey = new byte[keyLen];
-      System.arraycopy(rawEntry, 0, serializedKey, 0, keyLen);
+    while (true) {
+      final MutablePage page = database.getTransaction()
+          .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
+      final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
+      final int totalNeeded = rawEntry.length + SLOT_SIZE;
 
-      final int insertPos = findInsertionPoint(page, entryCount, serializedKey);
+      if (totalNeeded <= freeSpace(page, entryCount)) {
+        final int keyLen = computeKeyLengthFromEntry(rawEntry, 0);
+        final byte[] serializedKey = new byte[keyLen];
+        System.arraycopy(rawEntry, 0, serializedKey, 0, keyLen);
 
-      // Append data at dataEnd
-      final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
-      page.writeByteArray(dataEnd, rawEntry);
-      page.writeShort(BUCKET_DATA_END, (short) (dataEnd + rawEntry.length));
+        final int insertPos = findInsertionPoint(page, entryCount, serializedKey);
 
-      // Shift slots right and insert
-      for (int i = entryCount; i > insertPos; i--)
-        writeSlot(page, i, readSlot(page, i - 1));
-      writeSlot(page, insertPos, dataEnd);
+        // Append data at dataEnd
+        final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
+        page.writeByteArray(dataEnd, rawEntry);
+        page.writeShort(BUCKET_DATA_END, (short) (dataEnd + rawEntry.length));
 
-      page.writeShort(BUCKET_ENTRY_COUNT, (short) (entryCount + 1));
-    } else {
-      final int keyLen = computeKeyLengthFromEntry(rawEntry, 0);
-      final byte[] serializedKey = new byte[keyLen];
-      System.arraycopy(rawEntry, 0, serializedKey, 0, keyLen);
-      final byte[] serializedRID = new byte[rawEntry.length - keyLen];
-      System.arraycopy(rawEntry, keyLen, serializedRID, 0, rawEntry.length - keyLen);
-      insertIntoOverflow(page, bucketPageNum, serializedKey, serializedRID);
+        // Shift slots right and insert
+        for (int i = entryCount; i > insertPos; i--)
+          writeSlot(page, i, readSlot(page, i - 1));
+        writeSlot(page, insertPos, dataEnd);
+
+        page.writeShort(BUCKET_ENTRY_COUNT, (short) (entryCount + 1));
+        return;
+      }
+
+      // No space in this page - follow or create overflow chain (preserves raw entry format)
+      int overflowPageNum = page.readInt(BUCKET_OVERFLOW_PAGE);
+      if (overflowPageNum == NO_OVERFLOW_PAGE) {
+        final int localDepth = page.readShort(BUCKET_LOCAL_DEPTH) & 0xFFFF;
+        overflowPageNum = allocateOverflowPage(localDepth);
+        page.writeInt(BUCKET_OVERFLOW_PAGE, overflowPageNum);
+      }
+      currentPageNum = overflowPageNum;
     }
   }
 
@@ -917,11 +944,43 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
+   * Compacts a bucket page by rebuilding the data area without dead space (holes).
+   * Reads all live entries (referenced by slots), rewrites them contiguously starting
+   * at BUCKET_CONTENT_START, and updates all slot pointers.
+   *
+   * @return the entry count after compaction (unchanged, but returned for convenience)
+   */
+  private int compactPage(final MutablePage page, final int entryCount) {
+    if (entryCount == 0)
+      return 0;
+
+    // Collect all live entries with their slot positions
+    final byte[][] entries = new byte[entryCount][];
+    for (int i = 0; i < entryCount; i++) {
+      final int offset = readSlot(page, i);
+      final int size = getEntrySize(page, offset);
+      entries[i] = new byte[size];
+      page.readByteArray(offset, entries[i]);
+    }
+
+    // Rewrite entries contiguously starting at BUCKET_CONTENT_START
+    int dataEnd = BUCKET_CONTENT_START;
+    for (int i = 0; i < entryCount; i++) {
+      page.writeByteArray(dataEnd, entries[i]);
+      writeSlot(page, i, dataEnd);
+      dataEnd += entries[i].length;
+    }
+
+    page.writeShort(BUCKET_DATA_END, (short) dataEnd);
+    return entryCount;
+  }
+
+  /**
    * For non-unique index: adds a RID to an existing entry for the same key.
    */
-  private void addRIDToExistingEntry(final int bucketPageNum, final MutablePage page, final int entryCount,
+  private void addRIDToExistingEntry(final int bucketPageNum, final MutablePage page, int entryCount,
       final int pos, final byte[] serializedKey, final byte[] serializedRID) throws IOException {
-    final int entryStart = readSlot(page, pos);
+    int entryStart = readSlot(page, pos);
     final int oldEntrySize = getEntrySize(page, entryStart);
 
     // Skip the key
@@ -934,25 +993,12 @@ public class HashIndexBucket extends PaginatedComponent {
     final int newRidCount = currentRidCount + 1;
     final int newRidCountSize = varIntSize(newRidCount);
 
-    // For slotted page: we need to write the updated entry. If the RID count encoding
-    // size doesn't change, we can append the RID in-place if this entry is at the dataEnd.
-    // Otherwise, we remove the old entry and re-insert a new one.
     final int ridCountDiff = newRidCountSize - oldRidCountSize;
 
-    // Check if there's space for the extra data
-    final int availableSpace = freeSpace(page, entryCount);
-
-    final int extraSpace = serializedRID.length + ridCountDiff;
-    if (extraSpace > availableSpace) {
-      throw new IndexException("Hash index bucket full when adding RID to existing entry");
-    }
-
-    // In a slotted page, we write the updated entry as a new copy at dataEnd.
-    // Read old entry data, build new entry with extra RID, write at dataEnd, update slot.
+    // Read old entry data and build new entry with extra RID
     final byte[] oldEntryBytes = new byte[oldEntrySize];
     page.readByteArray(entryStart, oldEntryBytes);
 
-    // Build new entry: key + newRidCount + old RIDs + new RID
     final int oldRidsStart = keyLen + oldRidCountSize;
     final int oldRidsLen = oldEntrySize - oldRidsStart;
     final byte[] newRidCountBytes = encodeVarInt(newRidCount);
@@ -963,6 +1009,29 @@ public class HashIndexBucket extends PaginatedComponent {
     System.arraycopy(newRidCountBytes, 0, newEntry, keyLen, newRidCountBytes.length);
     System.arraycopy(oldEntryBytes, oldRidsStart, newEntry, keyLen + newRidCountBytes.length, oldRidsLen);
     System.arraycopy(serializedRID, 0, newEntry, keyLen + newRidCountBytes.length + oldRidsLen, serializedRID.length);
+
+    // Check if there's space for the new entry (the ENTIRE new entry is appended at dataEnd,
+    // the old entry becomes dead space - so we need newEntrySize bytes of free space)
+    int availableSpace = freeSpace(page, entryCount);
+    if (newEntrySize > availableSpace) {
+      // Try compaction to reclaim dead space from previous updates
+      entryCount = compactPage(page, entryCount);
+      availableSpace = freeSpace(page, entryCount);
+
+      if (newEntrySize > availableSpace) {
+        // Still not enough space even after compaction. Instead of trying to move the
+        // oversized entry, keep the existing entry in place and insert a separate entry
+        // for just the new RID (key + ridCount=1 + RID). The search handles multiple
+        // entries for the same key correctly by scanning the entire overflow chain.
+        insertIntoOverflow(page, bucketPageNum, serializedKey, serializedRID);
+        return;
+      }
+
+      // After compaction, the slot positions may have changed - find the entry again
+      final int newPos = findExactEntry(page, entryCount, serializedKey);
+      if (newPos >= 0)
+        entryStart = readSlot(page, newPos);
+    }
 
     // Write new entry at dataEnd
     final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
@@ -977,32 +1046,35 @@ public class HashIndexBucket extends PaginatedComponent {
    * For non-unique index: removes a specific RID from an entry. Returns 1 if removed, 0 otherwise.
    * If the entry has only one RID left, removes the entire entry.
    */
-  private int removeRIDFromEntry(final MutablePage page, final int entryCount, final int pos,
+  private int removeRIDFromEntry(final MutablePage page, int entryCount, final int pos,
       final RID targetRID) {
     final int entryStart = readSlot(page, pos);
     final int keyLen = computeKeyLengthFromPage(page, entryStart);
-    int offset = entryStart + keyLen;
+    final int offset = entryStart + keyLen;
 
     final int ridCount = readVarIntFromPage(page, offset);
 
     if (ridCount <= 1) {
+      // Verify the single RID matches the target before removing the entire entry
+      final int ridOffset = offset + varIntSize(ridCount);
+      final RID rid = readCompressedRID(page, ridOffset);
+      if (!rid.equals(targetRID))
+        return 0;
       removeEntryFromPage(page, entryCount, pos);
       return 1;
     }
 
-    // Read old entry, rebuild without the target RID, write at dataEnd
+    // Read old entry, rebuild without the target RID
     final int oldEntrySize = getEntrySize(page, entryStart);
     final byte[] oldEntry = new byte[oldEntrySize];
     page.readByteArray(entryStart, oldEntry);
 
-    // Find and skip the target RID in the byte array
     final int ridCountSize = varIntSize(ridCount);
     int ridOffset = keyLen + ridCountSize;
     for (int r = 0; r < ridCount; r++) {
       final RID rid = readCompressedRID(page, entryStart + ridOffset);
       final int ridSize = compressedRIDSize(rid);
       if (rid.equals(targetRID)) {
-        // Build new entry without this RID
         final int newRidCount = ridCount - 1;
         final byte[] newRidCountBytes = encodeVarInt(newRidCount);
         final int newEntrySize = oldEntrySize - ridSize - (ridCountSize - newRidCountBytes.length);
@@ -1022,6 +1094,12 @@ public class HashIndexBucket extends PaginatedComponent {
         if (ridsAfterLen > 0)
           System.arraycopy(oldEntry, ridsAfterStart, newEntry,
               keyLen + newRidCountBytes.length + ridsBeforeLen, ridsAfterLen);
+
+        // Check if there's space to write at dataEnd
+        int availableSpace = freeSpace(page, entryCount);
+        if (newEntrySize > availableSpace) {
+          entryCount = compactPage(page, entryCount);
+        }
 
         // Write new entry at dataEnd, update slot
         final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
@@ -1342,21 +1420,21 @@ public class HashIndexBucket extends PaginatedComponent {
     return entries;
   }
 
-  private void collectEntriesFromPage(final int pageNum, final List<byte[]> entries) throws IOException {
-    final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
-    final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
-    final int overflowPage = page.readInt(BUCKET_OVERFLOW_PAGE);
+  private void collectEntriesFromPage(int currentPageNum, final List<byte[]> entries) throws IOException {
+    while (currentPageNum != NO_OVERFLOW_PAGE) {
+      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, currentPageNum), pageSize);
+      final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
 
-    for (int i = 0; i < entryCount; i++) {
-      final int offset = readSlot(page, i);
-      final int entrySize = getEntrySize(page, offset);
-      final byte[] entry = new byte[entrySize];
-      page.readByteArray(offset, entry);
-      entries.add(entry);
+      for (int i = 0; i < entryCount; i++) {
+        final int offset = readSlot(page, i);
+        final int entrySize = getEntrySize(page, offset);
+        final byte[] entry = new byte[entrySize];
+        page.readByteArray(offset, entry);
+        entries.add(entry);
+      }
+
+      currentPageNum = page.readInt(BUCKET_OVERFLOW_PAGE);
     }
-
-    if (overflowPage != NO_OVERFLOW_PAGE)
-      collectEntriesFromPage(overflowPage, entries);
   }
 
   // ─── RID READING ─────────────────────────────────────────
