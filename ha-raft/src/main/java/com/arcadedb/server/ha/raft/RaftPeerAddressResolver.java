@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import org.apache.ratis.protocol.RaftPeer;
@@ -143,6 +144,43 @@ final class RaftPeerAddressResolver {
           "Server index " + index + " from name '" + serverName + "' is out of range [0, " + peers.size() + ")");
 
     return peers.get(index).getId();
+  }
+
+  /**
+   * Validates a peer address of the form {@code host:port} or {@code [ipv6]:port}.
+   * Throws {@link ConfigurationException} if the address is malformed.
+   */
+  static void validatePeerAddress(final String address) {
+    if (address == null || address.isBlank())
+      throw new ConfigurationException("Peer address must not be empty");
+
+    final int colonIdx;
+    if (address.startsWith("[")) {
+      // IPv6 bracketed form: [::1]:port
+      final int closingBracket = address.indexOf(']');
+      if (closingBracket < 0 || closingBracket + 1 >= address.length() || address.charAt(closingBracket + 1) != ':')
+        throw new ConfigurationException("Invalid IPv6 peer address: " + address);
+      colonIdx = closingBracket + 1;
+    } else {
+      colonIdx = address.lastIndexOf(':');
+    }
+
+    if (colonIdx < 0)
+      throw new ConfigurationException("Peer address missing port: " + address);
+
+    final String host = address.substring(0, colonIdx);
+    if (host.isBlank())
+      throw new ConfigurationException("Peer address has empty host: " + address);
+
+    final String portStr = address.substring(colonIdx + 1);
+    final int port;
+    try {
+      port = Integer.parseInt(portStr);
+    } catch (final NumberFormatException e) {
+      throw new ConfigurationException("Invalid port in peer address '" + address + "': " + portStr);
+    }
+    if (port < 1 || port > 65535)
+      throw new ConfigurationException("port out of range [1,65535] in peer address '" + address + "': " + port);
   }
 
   /**

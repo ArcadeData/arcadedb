@@ -32,8 +32,11 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
+
+  static final Pattern VALID_DATABASE_NAME = Pattern.compile("[A-Za-z][A-Za-z0-9_\\-.]*");
 
   private final RaftHAPlugin plugin;
 
@@ -59,6 +62,10 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty())
       return new ExecutionResponse(400,
           new JSONObject().put("error", "Missing database name in path").toString());
+
+    if (!VALID_DATABASE_NAME.matcher(databaseName).matches())
+      return new ExecutionResponse(400,
+          new JSONObject().put("error", "Invalid database name: " + databaseName).toString());
 
     if (!httpServer.getServer().existsDatabase(databaseName))
       return new ExecutionResponse(404,
@@ -86,8 +93,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
       final JSONArray nodesResult = new JSONArray();
 
-      final RaftHAServer raftHAServer = plugin.getRaftHAServer();
-      final String clusterToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
+      final String clusterToken = raftHAServer.getClusterToken();
 
       for (final RaftPeer peer : raftHAServer.getLivePeers()) {
         if (peer.getId().equals(raftHAServer.getLocalPeerId()))

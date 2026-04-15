@@ -462,7 +462,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
-    final String databasePath = db.getDatabasePath();
 
     HALog.log(this, HALog.DETAILED,
         "Applying schema entry to database '%s': filesToAdd=%d, filesToRemove=%d, hasSchemaJson=%s",
@@ -473,8 +472,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     try {
       if (decoded.filesToAdd() != null)
-        for (final Map.Entry<Integer, String> fileEntry : decoded.filesToAdd().entrySet())
-          db.getFileManager().getOrCreateFile(fileEntry.getKey(), databasePath + File.separator + fileEntry.getValue());
+        createNewFiles(db, decoded.filesToAdd());
 
       if (decoded.filesToRemove() != null)
         for (final Map.Entry<Integer, String> fileEntry : decoded.filesToRemove().entrySet()) {
@@ -513,6 +511,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     HALog.log(this, HALog.DETAILED, "Applied schema change to database '%s'", decoded.databaseName());
+  }
+
+  /**
+   * Creates new database files for each entry in {@code filesToAdd} that does not already exist.
+   * Skips files that are already registered in the file manager or already present on disk with
+   * non-zero content (idempotent re-apply after a crash before the applied-index was persisted).
+   */
+  private void createNewFiles(final DatabaseInternal db, final Map<Integer, String> filesToAdd) throws IOException {
+    final String databasePath = db.getDatabasePath();
+    for (final Map.Entry<Integer, String> fileEntry : filesToAdd.entrySet()) {
+      final int fileId = fileEntry.getKey();
+      final String fileName = fileEntry.getValue();
+      // Skip if already registered in memory (idempotent)
+      if (db.getFileManager().existsFile(fileId))
+        continue;
+      // Skip if the file already exists on disk with data (crash-safe: the prior run created it)
+      final File osFile = new File(databasePath + File.separator + fileName);
+      if (osFile.exists() && osFile.length() > 0)
+        continue;
+      db.getFileManager().getOrCreateFile(fileId, databasePath + File.separator + fileName);
+    }
   }
 
   private void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
