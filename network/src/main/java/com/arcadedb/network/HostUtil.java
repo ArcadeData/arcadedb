@@ -33,6 +33,22 @@ public class HostUtil {
     if (host.isEmpty())
       throw new IllegalArgumentException("Host is empty");
 
+    // Bracketed IPv6 per RFC 3986: [addr] or [addr]:port
+    if (host.startsWith("[")) {
+      final int closeBracket = host.indexOf(']');
+      if (closeBracket < 0)
+        throw new IllegalArgumentException("Invalid host " + host);
+
+      final String addr = host.substring(1, closeBracket);
+      if (closeBracket == host.length() - 1)
+        return new String[] { addr, defaultPort };
+      if (host.charAt(closeBracket + 1) == ':')
+        return new String[] { addr, host.substring(closeBracket + 2) };
+
+      throw new IllegalArgumentException("Invalid host " + host);
+    }
+
+    // Legacy unbracketed format: colon-count heuristic for fully-expanded IPv6
     final String[] parts = host.split(":");
     if (parts.length == 1 || parts.length == 8)
       // ( IPV4 OR IPV6 ) NO PORT

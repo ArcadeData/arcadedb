@@ -264,12 +264,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Atomic swap — readers see all-or-nothing
       this.snapshot = snapshotFromResult(result, durationMs);
       this.status = Status.READY;
+      this.notifyAll();
 
       if (deltaCollector == null)
         registerChangeListeners();
     } catch (final Exception e) {
       this.buildError = e;
       this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      this.notifyAll();
       throw e;
     } finally {
       latch.countDown();
@@ -300,10 +302,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
             final long durationMs = System.currentTimeMillis() - buildStart;
 
-            this.snapshot = snapshotFromResult(result, durationMs);
-            this.status = Status.READY;
-
             synchronized (GraphAnalyticalView.this) {
+              this.snapshot = snapshotFromResult(result, durationMs);
+              this.status = Status.READY;
+              GraphAnalyticalView.this.notifyAll();
               if (deltaCollector == null)
                 registerChangeListeners();
             }
@@ -312,15 +314,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               database.rollback();
           }
         } catch (final Exception e) {
-          this.buildError = e;
-          if (snapshot != null) {
-            this.status = Status.STALE;
-          } else {
-            this.status = Status.NOT_BUILT;
-            // Unregister failed GAV so the name can be reused for a fresh build
-            GraphTraversalProviderRegistry.unregister(database, this);
-            if (name != null)
-              GraphAnalyticalViewRegistry.unregister(database, name);
+          synchronized (GraphAnalyticalView.this) {
+            this.buildError = e;
+            if (snapshot != null) {
+              this.status = Status.STALE;
+            } else {
+              this.status = Status.NOT_BUILT;
+              // Unregister failed GAV so the name can be reused for a fresh build
+              GraphTraversalProviderRegistry.unregister(database, this);
+              if (name != null)
+                GraphAnalyticalViewRegistry.unregister(database, name);
+            }
+            GraphAnalyticalView.this.notifyAll();
           }
           LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
         } finally {
@@ -332,6 +337,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     } catch (final RejectedExecutionException e) {
       this.buildError = e;
       this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      this.notifyAll();
       buildQueued.set(false);
       latch.countDown();
       LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async build rejected (executor shut down)", name);

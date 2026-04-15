@@ -106,31 +106,32 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
     final int retries = payload != null && !payload.isNull("retries") ? payload.getInt("retries") : 1;
 
-    // Set read consistency context for HA follower reads.
-    // database is a ServerDatabase wrapper; the HA implementation sits one level deeper.
+    // Resolve HA database for read consistency (may be wrapped inside ServerDatabase).
     final HAReplicatedDatabase haDbForRead = database instanceof HAReplicatedDatabase h ? h
         : (database != null && database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase h2 ? h2 : null);
-    if (haDbForRead != null) {
-      final HeaderValues readConsistencyHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Read-Consistency");
-      final HeaderValues commitIndexHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Commit-Index");
-
-      final String consistencyStr = readConsistencyHeader != null && !readConsistencyHeader.isEmpty()
-          ? readConsistencyHeader.getFirst()
-          : database.getConfiguration().getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY);
-
-      final long bookmarkIndex = commitIndexHeader != null && !commitIndexHeader.isEmpty()
-          ? Long.parseLong(commitIndexHeader.getFirst()) : -1;
-
-      try {
-        final Database.READ_CONSISTENCY consistency = Database.READ_CONSISTENCY.valueOf(consistencyStr.toUpperCase(java.util.Locale.ROOT));
-        haDbForRead.setReadConsistencyContext(consistency, bookmarkIndex);
-      } catch (final IllegalArgumentException ignored) {
-        // Invalid consistency level, skip
-      }
-    }
 
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
+      // Set read consistency context for HA follower reads.
+      // Must be inside the try block so the finally always clears the ThreadLocal.
+      if (haDbForRead != null) {
+        final HeaderValues readConsistencyHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Read-Consistency");
+        final HeaderValues commitIndexHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Commit-Index");
+
+        final String consistencyStr = readConsistencyHeader != null && !readConsistencyHeader.isEmpty()
+            ? readConsistencyHeader.getFirst()
+            : database.getConfiguration().getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY);
+
+        final long bookmarkIndex = commitIndexHeader != null && !commitIndexHeader.isEmpty()
+            ? Long.parseLong(commitIndexHeader.getFirst()) : -1;
+
+        try {
+          final Database.READ_CONSISTENCY consistency = Database.READ_CONSISTENCY.valueOf(consistencyStr.toUpperCase(java.util.Locale.ROOT));
+          haDbForRead.setReadConsistencyContext(consistency, bookmarkIndex);
+        } catch (final IllegalArgumentException ignored) {
+          // Invalid consistency level, skip
+        }
+      }
       boolean finalAtomicTransaction = atomicTransaction;
       if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME

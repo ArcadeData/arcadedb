@@ -4394,8 +4394,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int numberOfEntries = page.readInt(OFFSET_NUM_ENTRIES);
 
       LogManager.instance().log(this, Level.FINE,
-          "applyReplicatedPageUpdate: index=%s, pageNum=%d, fileId=%d, entries=%d, freeContent=%d, vectorIndexSizeBefore=%d",
-          indexName, pageNum, fileId, numberOfEntries, offsetFreeContent, vectorIndex.size());
+          "applyReplicatedPageUpdate: index=%s, pageNum=%d, entries=%d, freeContent=%d, contentSize=%d",
+          indexName, pageNum, numberOfEntries, offsetFreeContent, page.getContentSize());
 
       if (numberOfEntries == 0)
         return; // Empty page, nothing to update
@@ -4439,6 +4439,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final boolean deleted = page.readByte(currentOffset) == 1;
         currentOffset += 1;
 
+        // Read quantization type byte (always written, even if NONE)
+        final byte quantOrdinal = (byte) page.readByte(currentOffset);
+        currentOffset += 1;
+        final VectorQuantizationType quantType = quantOrdinal >= 0 && quantOrdinal < VectorQuantizationType.values().length
+            ? VectorQuantizationType.values()[quantOrdinal] : VectorQuantizationType.NONE;
+
+        // Skip quantized vector data based on type
+        if (quantType == VectorQuantizationType.INT8) {
+          final int vectorLength = page.readInt(currentOffset);
+          currentOffset += 4; // vector length (int)
+          currentOffset += vectorLength; // quantized bytes
+          currentOffset += 8; // min + max (2 floats)
+        } else if (quantType == VectorQuantizationType.BINARY) {
+          final int originalLength = page.readInt(currentOffset);
+          currentOffset += 4; // original length (int)
+          currentOffset += (originalLength + 7) / 8; // packed bytes (1 bit per dimension)
+          currentOffset += 4; // median (float)
+        }
+
         // Update VectorLocationIndex with this entry's absolute file offset
         // LSM semantics: later entries override earlier ones
         vectorIndex.addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
@@ -4450,9 +4469,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
               fileId, isCompacted, numberOfEntries);
 
     } catch (final Exception e) {
-      // Log but don't fail replication - VectorLocationIndex will be rebuilt if needed
       LogManager.instance()
-          .log(this, Level.WARNING, "Error applying replicated page update for index %s: %s", indexName,
+          .log(this, Level.SEVERE, "Error applying replicated page update for index %s: %s", e, indexName,
               e.getMessage());
     }
   }

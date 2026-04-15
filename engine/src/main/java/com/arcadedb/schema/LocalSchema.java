@@ -110,7 +110,8 @@ public class LocalSchema implements Schema {
   private             TimeZone                               timeZone                      = TimeZone.getDefault();
   private             ZoneId                                 zoneId                        = ZoneId.systemDefault();
   private             boolean                                readingFromFile               = false;
-  private             boolean                                dirtyConfiguration            = false;
+  private final       AtomicLong                             dirtyGeneration               = new AtomicLong(0);
+  private volatile    long                                   savedGeneration               = 0;
   private             boolean                                loadInRamCompleted            = false;
   private             boolean                                multipleUpdate                = false;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
@@ -943,13 +944,14 @@ public class LocalSchema implements Schema {
 
   public void close() {
     // Save dirty configuration before clearing everything
-    if (dirtyConfiguration) {
+    if (dirtyGeneration.get() > savedGeneration) {
       try {
         // Force save even if transaction is active - this is the last chance to save
         LogManager.instance().log(this, Level.INFO, "Saving dirty schema configuration before close");
+        final long capturedGeneration = dirtyGeneration.get();
         versionSerial.incrementAndGet();
         update(toJSON());
-        dirtyConfiguration = false;
+        savedGeneration = capturedGeneration;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error saving schema configuration during close: %s", e,
             e.getMessage());
@@ -1709,7 +1711,7 @@ public class LocalSchema implements Schema {
       readingFromFile = false;
       loadInRamCompleted = true;
 
-      if (dirtyConfiguration)
+      if (dirtyGeneration.get() > savedGeneration)
         saveConfiguration();
 
       rebuildBucketTypeMap();
@@ -1721,10 +1723,14 @@ public class LocalSchema implements Schema {
     rebuildBucketTypeMap();
 
     if (readingFromFile || !loadInRamCompleted || multipleUpdate || database.isTransactionActive()) {
-      // POSTPONE THE SAVING
-      dirtyConfiguration = true;
+      // POSTPONE THE SAVING - ensure at least one generation is marked dirty
+      dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
       return;
     }
+
+    // Capture the generation BEFORE serializing. Any concurrent modification that increments
+    // dirtyGeneration after this point will remain unsaved, so isDirty() stays true.
+    final long capturedGeneration = dirtyGeneration.get();
 
     try {
       LogManager.instance().log(this, Level.FINE, "Saving schema configuration to file - versionSerial = %s ", versionSerial);
@@ -1732,7 +1738,7 @@ public class LocalSchema implements Schema {
 
       update(toJSON());
 
-      dirtyConfiguration = false;
+      savedGeneration = capturedGeneration;
 
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
@@ -1862,7 +1868,7 @@ public class LocalSchema implements Schema {
   }
 
   public boolean isDirty() {
-    return dirtyConfiguration;
+    return dirtyGeneration.get() > savedGeneration;
   }
 
   public File getConfigurationFile() {
@@ -1905,9 +1911,8 @@ public class LocalSchema implements Schema {
       }
     }
 
-    final boolean madeDirty = !dirtyConfiguration;
-    if (madeDirty)
-      dirtyConfiguration = true;
+    final long prevGeneration = dirtyGeneration.get();
+    dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
 
     boolean executed = false;
     try {
@@ -1921,9 +1926,9 @@ public class LocalSchema implements Schema {
       return result;
 
     } finally {
-      if (!executed && madeDirty)
-        // ROLLBACK THE DIRTY STATUS
-        dirtyConfiguration = false;
+      if (!executed && prevGeneration <= savedGeneration)
+        // ROLLBACK THE DIRTY STATUS - restore only if we were the ones who made it dirty
+        savedGeneration = dirtyGeneration.get();
     }
   }
 
