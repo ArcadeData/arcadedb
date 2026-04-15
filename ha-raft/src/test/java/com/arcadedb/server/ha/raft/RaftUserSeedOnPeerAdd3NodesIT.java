@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Verifies that when a new peer joins a Raft cluster, the leader emits a one-shot
  * SECURITY_USERS_ENTRY that brings the new peer's users file up to date.
- *
+ * <p>
  * The test simulates the "newly joined peer with stale users" scenario by manually
  * corrupting a non-leader server's users state after the cluster is up, then invoking
  * the seed path that {@link PostAddPeerHandler} would call after a successful addPeer,

@@ -42,8 +42,8 @@ class ClusterTokenProvider {
   private static final int PBKDF2_ITERATIONS      = 100_000;
   private static final int PBKDF2_KEY_LENGTH_BITS = 256;
 
-  private final ContextConfiguration configuration;
-  private volatile String            clusterToken;
+  private final    ContextConfiguration configuration;
+  private volatile String               clusterToken;
 
   ClusterTokenProvider(final ContextConfiguration configuration) {
     this.configuration = configuration;

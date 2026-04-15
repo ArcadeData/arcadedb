@@ -59,10 +59,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public abstract class BaseMiniRaftTest {
 
-  /** Base HTTP port for ArcadeDBServer instances in this test (avoids port 2480 used by other tests). */
-  private static final int  BASE_HTTP_PORT = 12480;
-  private static final String DB_NAME      = "mini-raft-test";
-  private static final String TARGET_DIR   = "target/mini-raft-test";
+  /**
+   * Base HTTP port for ArcadeDBServer instances in this test (avoids port 2480 used by other tests).
+   */
+  private static final int    BASE_HTTP_PORT = 12480;
+  private static final String DB_NAME        = "mini-raft-test";
+  private static final String TARGET_DIR     = "target/mini-raft-test";
 
   private MiniRaftClusterWithGrpc cluster;
   private ArcadeDBServer[]        arcadeServers;

@@ -27,12 +27,11 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.TestServerHelper;
-
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.UUID;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

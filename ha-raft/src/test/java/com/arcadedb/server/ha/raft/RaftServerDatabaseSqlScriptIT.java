@@ -23,13 +23,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class RaftServerDatabaseSqlScriptIT extends BaseRaftHATest {
 
@@ -67,10 +66,10 @@ class RaftServerDatabaseSqlScriptIT extends BaseRaftHATest {
     database.transaction(() -> {
       final ResultSet result = database.command("sqlscript",
           """
-          LET photo1 = CREATE vertex RaftPhotos SET id = "3778f235a52d", name = "beach.jpg", status = "";
-          LET photo2 = CREATE vertex RaftPhotos SET id = "23kfkd23223", name = "luca.jpg", status = "";
-          LET connected = Create edge RaftConnected FROM $photo1 to $photo2 set type = "User_Photos";return $photo1;\
-          """);
+              LET photo1 = CREATE vertex RaftPhotos SET id = "3778f235a52d", name = "beach.jpg", status = "";
+              LET photo2 = CREATE vertex RaftPhotos SET id = "23kfkd23223", name = "luca.jpg", status = "";
+              LET connected = Create edge RaftConnected FROM $photo1 to $photo2 set type = "User_Photos";return $photo1;\
+              """);
       assertThat(result.hasNext()).isTrue();
       final Result response = result.next();
       assertThat(response.<String>getProperty("name")).isEqualTo("beach.jpg");

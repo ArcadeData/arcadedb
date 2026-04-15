@@ -20,12 +20,11 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
-
 import org.junit.jupiter.api.Test;
 
 import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Verifies that writes issued via HTTP against a Raft follower are forwarded to the leader and

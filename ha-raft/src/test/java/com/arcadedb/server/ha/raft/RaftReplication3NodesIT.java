@@ -109,19 +109,19 @@ class RaftReplication3NodesIT extends BaseRaftHATest {
       final Schema schema = nodeDb.getSchema();
 
       assertThat(schema.existsType("RaftCustomer"))
-        .as("Server " + i + " should have RaftCustomer type")
-        .isTrue();
+          .as("Server " + i + " should have RaftCustomer type")
+          .isTrue();
 
       final var customerType = schema.getType("RaftCustomer");
       assertThat(customerType.existsProperty("email"))
-        .as("Server " + i + " should have email property")
-        .isTrue();
+          .as("Server " + i + " should have email property")
+          .isTrue();
       assertThat(customerType.existsProperty("age"))
-        .as("Server " + i + " should have age property")
-        .isTrue();
+          .as("Server " + i + " should have age property")
+          .isTrue();
       assertThat(customerType.existsProperty("active"))
-        .as("Server " + i + " should have active property")
-        .isTrue();
+          .as("Server " + i + " should have active property")
+          .isTrue();
     }
   }
 }

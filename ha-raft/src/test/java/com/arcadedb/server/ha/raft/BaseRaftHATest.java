@@ -22,8 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
@@ -159,7 +159,8 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
         return;
       }
     }
-    LogManager.instance().log(this, Level.WARNING, "Timeout waiting for server %d to replicate to index %d", serverNumber, targetIndex);
+    LogManager.instance()
+        .log(this, Level.WARNING, "Timeout waiting for server %d to replicate to index %d", serverNumber, targetIndex);
   }
 
   @Override

@@ -33,13 +33,13 @@ import java.io.IOException;
  * Developer utility (NOT a JUnit test) that starts a 3-node Ratis HA cluster for manual testing of Studio.
  * Run this, then open http://localhost:2480 in your browser and click the Cluster tab.
  * System.out is intentional here since this is an interactive CLI tool.
- *
+ * <p>
  * Ctrl+C to stop.
  */
 public class RaftClusterStarter {
 
-  private static final int    SERVER_COUNT  = 3;
-  private static final int    BASE_HA_PORT  = 2424;
+  private static final int    SERVER_COUNT   = 3;
+  private static final int    BASE_HA_PORT   = 2424;
   private static final int    BASE_HTTP_PORT = 2480;
   private static final String DB_NAME        = "demodb";
 
@@ -88,7 +88,8 @@ public class RaftClusterStarter {
     // Build server list
     final StringBuilder serverList = new StringBuilder();
     for (int i = 0; i < SERVER_COUNT; i++) {
-      if (i > 0) serverList.append(",");
+      if (i > 0)
+        serverList.append(",");
       serverList.append("localhost:").append(BASE_HA_PORT + i);
     }
 
@@ -141,7 +142,9 @@ public class RaftClusterStarter {
       System.out.println("\nShutting down cluster...");
       for (int i = servers.length - 1; i >= 0; i--)
         if (servers[i] != null)
-          try { servers[i].stop(); } catch (final Exception e) { /* ignore */ }
+          try {
+            servers[i].stop();
+          } catch (final Exception e) { /* ignore */ }
       System.out.println("Done.");
     }));
 

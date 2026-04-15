@@ -20,12 +20,12 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.utility.FileUtils;
-
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Verifies that materialized view creation, querying, and deletion replicate correctly across a

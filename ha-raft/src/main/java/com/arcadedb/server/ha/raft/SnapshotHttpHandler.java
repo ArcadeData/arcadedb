@@ -55,7 +55,7 @@ import java.util.zip.ZipOutputStream;
  * HTTP handler serving a consistent database snapshot as a ZIP file.
  * When a follower falls behind the compacted Raft log, it downloads
  * the database from the leader via this endpoint.
- *
+ * <p>
  * Endpoint: GET /api/v1/ha/snapshot/{database}
  */
 public class SnapshotHttpHandler implements HttpHandler {
@@ -219,7 +219,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       final String expectedToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
       if (expectedToken != null && !expectedToken.isEmpty()
           && java.security.MessageDigest.isEqual(
-              expectedToken.getBytes(), clusterTokenHeader.getFirst().getBytes())) {
+          expectedToken.getBytes(), clusterTokenHeader.getFirst().getBytes())) {
         final ServerSecurityUser rootUser = server.getSecurity().getUser("root");
         if (rootUser == null) {
           LogManager.instance().log(this, Level.SEVERE, "Cluster token valid but 'root' user not found");
@@ -258,12 +258,13 @@ public class SnapshotHttpHandler implements HttpHandler {
             "Snapshot streaming for '%s' timed out after 5 minutes, closing connection", databaseName);
         try {
           exchange.getConnection().close();
-        } catch (final Exception ignored) {}
+        } catch (final Exception ignored) {
+        }
       }
     }, 5, TimeUnit.MINUTES);
 
     try (final OutputStream out = exchange.getOutputStream();
-         final ZipOutputStream zipOut = new ZipOutputStream(out)) {
+        final ZipOutputStream zipOut = new ZipOutputStream(out)) {
 
       final File configFile = ((LocalDatabase) db.getEmbedded()).getConfigurationFile();
       if (configFile.exists())

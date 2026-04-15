@@ -20,15 +20,19 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class RaftHTTPGraphConcurrentIT extends BaseRaftHATest {
 
@@ -72,7 +76,8 @@ class RaftHTTPGraphConcurrentIT extends BaseRaftHATest {
               atomic.incrementAndGet();
 
               if (responseAsJson == null) {
-                LogManager.instance().log(this, Level.SEVERE, "Error on execution from thread %d", Thread.currentThread().threadId());
+                LogManager.instance()
+                    .log(this, Level.SEVERE, "Error on execution from thread %d", Thread.currentThread().threadId());
                 continue;
               }
 

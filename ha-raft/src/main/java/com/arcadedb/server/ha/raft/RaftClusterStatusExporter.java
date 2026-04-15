@@ -41,9 +41,9 @@ class RaftClusterStatusExporter {
   private static final int LAG_MONITOR_INITIAL_DELAY_SECS = 5;
   private static final int LAG_MONITOR_INTERVAL_SECS      = 5;
 
-  private final RaftHAServer haServer;
-  private final ClusterMonitor clusterMonitor;
-  private volatile int lastClusterConfigHash;
+  private final    RaftHAServer   haServer;
+  private final    ClusterMonitor clusterMonitor;
+  private volatile int            lastClusterConfigHash;
 
   RaftClusterStatusExporter(final RaftHAServer haServer, final ClusterMonitor clusterMonitor) {
     this.haServer = haServer;
@@ -147,7 +147,7 @@ class RaftClusterStatusExporter {
         final String peerId = (String) f.get("peerId");
         final long matchIndex = (Long) f.get("matchIndex");
         final long lastRpcMs = (Long) f.get("lastRpcElapsedMs");
-        followerState.put(peerId, new long[]{matchIndex, lastRpcMs});
+        followerState.put(peerId, new long[] { matchIndex, lastRpcMs });
       }
 
       // Build table rows
@@ -175,11 +175,11 @@ class RaftClusterStatusExporter {
           }
         }
 
-        rows.add(new String[]{peerId, address, role, lagStr, latencyStr});
+        rows.add(new String[] { peerId, address, role, lagStr, latencyStr });
       }
 
       // Calculate column widths
-      final String[] headers = {"SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY"};
+      final String[] headers = { "SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY" };
       final int[] widths = new int[headers.length];
       for (int i = 0; i < headers.length; i++)
         widths[i] = headers[i].length();

@@ -28,19 +28,27 @@ import java.util.logging.Level;
  */
 public final class HALog {
 
-  /** Level 1: election, leader changes, replication start/complete, peer add/remove. */
-  public static final int BASIC = 1;
-  /** Level 2: command forwarding, WAL replication details, schema changes. */
+  /**
+   * Level 1: election, leader changes, replication start/complete, peer add/remove.
+   */
+  public static final int BASIC    = 1;
+  /**
+   * Level 2: command forwarding, WAL replication details, schema changes.
+   */
   public static final int DETAILED = 2;
-  /** Level 3: every state machine operation, entry parsing, serialization. */
-  public static final int TRACE = 3;
+  /**
+   * Level 3: every state machine operation, entry parsing, serialization.
+   */
+  public static final int TRACE    = 3;
 
   private static volatile int cachedLevel = -1;
 
   private HALog() {
   }
 
-  /** Refreshes the cached verbose level from GlobalConfiguration. Call after config changes. */
+  /**
+   * Refreshes the cached verbose level from GlobalConfiguration. Call after config changes.
+   */
   public static void refreshLevel() {
     cachedLevel = GlobalConfiguration.HA_LOG_VERBOSE.getValueAsInteger();
   }

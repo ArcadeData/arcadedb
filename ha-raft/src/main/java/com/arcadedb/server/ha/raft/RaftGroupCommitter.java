@@ -40,13 +40,13 @@ import java.util.logging.Level;
  */
 public class RaftGroupCommitter {
 
-  private final RaftClient                        raftClient;
-  private final Quorum                            quorum;
-  private final long                              quorumTimeout;
-  private final int                               maxBatchSize;
-  private final LinkedBlockingQueue<PendingEntry> queue   = new LinkedBlockingQueue<>();
-  private final Thread                            flusher;
-  private volatile boolean                        running = true;
+  private final    RaftClient                        raftClient;
+  private final    Quorum                            quorum;
+  private final    long                              quorumTimeout;
+  private final    int                               maxBatchSize;
+  private final    LinkedBlockingQueue<PendingEntry> queue   = new LinkedBlockingQueue<>();
+  private final    Thread                            flusher;
+  private volatile boolean                           running = true;
 
   public RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout) {
     this(raftClient, quorum, quorumTimeout, 500);

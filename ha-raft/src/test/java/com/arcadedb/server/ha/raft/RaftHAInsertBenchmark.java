@@ -25,12 +25,11 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
-
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -212,10 +211,14 @@ public class RaftHAInsertBenchmark {
           try (final RemoteDatabase db = new RemoteDatabase("127.0.0.1", port, DB_NAME, "root", ROOT_PASSWORD)) {
             startLatch.await();
             final long[] latencies = insertRemote(db, perThread, base);
-            synchronized (allLatencies) { allLatencies.add(latencies); }
+            synchronized (allLatencies) {
+              allLatencies.add(latencies);
+            }
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING, "Concurrent write error: %s", e.getMessage());
-          } finally { doneLatch.countDown(); }
+          } finally {
+            doneLatch.countDown();
+          }
         }, "bench-writer-" + i).start();
       }
 
@@ -225,10 +228,14 @@ public class RaftHAInsertBenchmark {
       final long concurrentElapsed = System.nanoTime() - concurrentStart;
 
       int totalOps = 0;
-      for (final long[] l : allLatencies) totalOps += l.length;
+      for (final long[] l : allLatencies)
+        totalOps += l.length;
       final long[] merged = new long[totalOps];
       int pos = 0;
-      for (final long[] l : allLatencies) { System.arraycopy(l, 0, merged, pos, l.length); pos += l.length; }
+      for (final long[] l : allLatencies) {
+        System.arraycopy(l, 0, merged, pos, l.length);
+        pos += l.length;
+      }
 
       return formatResult(serverCount + " servers (Raft HA) - concurrent (" + serverCount + " threads)",
           merged, serverCount, concurrentElapsed);
@@ -429,7 +436,8 @@ public class RaftHAInsertBenchmark {
       // Three-part format: host:raftPort:httpPort (enables follower HTTP forwarding)
       final StringBuilder serverList = new StringBuilder();
       for (int i = 0; i < serverCount; i++) {
-        if (i > 0) serverList.append(",");
+        if (i > 0)
+          serverList.append(",");
         serverList.append("localhost:").append(BASE_RAFT_PORT + i).append(":").append(BASE_HTTP_PORT + i);
       }
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList.toString());
@@ -468,7 +476,8 @@ public class RaftHAInsertBenchmark {
       final long overallElapsedNs) {
     Arrays.sort(latenciesNs);
     final int n = latenciesNs.length;
-    if (n == 0) return scenario + ": NO DATA\n\n";
+    if (n == 0)
+      return scenario + ": NO DATA\n\n";
 
     final long totalNs = Arrays.stream(latenciesNs).sum();
     final double avgUs = (totalNs / (double) n) / 1_000.0;

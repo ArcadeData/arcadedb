@@ -35,12 +35,12 @@ import org.apache.ratis.protocol.RaftGroupMemberId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
+import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.statemachine.StateMachineStorage;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
-import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.File;
@@ -86,11 +86,11 @@ import java.util.logging.Level;
  */
 public class ArcadeStateMachine extends BaseStateMachine {
 
-  private final SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
-  private final AtomicLong                lastAppliedIndex = new AtomicLong(-1);
-  private final AtomicLong                electionCount    = new AtomicLong(0);
-  private volatile long                   lastElectionTime = 0;
-  private final long                      startTime        = System.currentTimeMillis();
+  private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
+  private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
+  private final    AtomicLong                electionCount    = new AtomicLong(0);
+  private volatile long                      lastElectionTime = 0;
+  private final    long                      startTime        = System.currentTimeMillis();
 
   private volatile ArcadeDBServer server;
   private volatile RaftHAServer   raftHAServer;
@@ -104,7 +104,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   });
 
   private final AtomicBoolean needsSnapshotDownload = new AtomicBoolean(false);
-  private final AtomicBoolean catchingUp             = new AtomicBoolean(false);
+  private final AtomicBoolean catchingUp            = new AtomicBoolean(false);
 
   public void setServer(final ArcadeDBServer server) {
     this.server = server;
@@ -198,11 +198,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
 
       switch (decoded.type()) {
-        case TX_ENTRY -> applyTxEntry(decoded);
-        case SCHEMA_ENTRY -> applySchemaEntry(decoded);
-        case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
-        case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
-        case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
+      case TX_ENTRY -> applyTxEntry(decoded);
+      case SCHEMA_ENTRY -> applySchemaEntry(decoded);
+      case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
+      case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
+      case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
       }
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
@@ -340,6 +340,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     LogManager.instance().log(this, Level.INFO,
         "Snapshot installation requested from leader (firstLogIndex=%s). Starting full resync...", firstTermIndexInLog);
 
+    // Runs on the common ForkJoinPool via supplyAsync(). Apache-ratis uses a dedicated pool
+    // to avoid blocking Ratis internal threads. The current approach is safe because
+    // supplyAsync() returns immediately and the snapshot download runs on a separate thread.
+    // However, if the common pool is exhausted, new snapshot downloads may be delayed.
     return CompletableFuture.supplyAsync(() -> {
       try {
         final RaftPeerId leaderId = RaftPeerId.valueOf(

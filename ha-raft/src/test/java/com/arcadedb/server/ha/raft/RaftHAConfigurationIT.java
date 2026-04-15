@@ -19,10 +19,11 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.server.ServerException;
-
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RaftHAConfigurationIT {
 
@@ -45,7 +46,8 @@ class RaftHAConfigurationIT {
 
   @Test
   void threePartFormatParsed() {
-    final RaftPeerAddressResolver.ParsedPeerList result = RaftPeerAddressResolver.parsePeerList("host1:2434:2480,host2:2435:2481", 2434);
+    final RaftPeerAddressResolver.ParsedPeerList result = RaftPeerAddressResolver.parsePeerList("host1:2434:2480,host2:2435:2481",
+        2434);
     assertThat(result.peers()).hasSize(2);
     assertThat(result.peers().get(0).getAddress()).isEqualTo("host1:2434");
     assertThat(result.httpAddresses().get(result.peers().get(0).getId())).isEqualTo("host1:2480");

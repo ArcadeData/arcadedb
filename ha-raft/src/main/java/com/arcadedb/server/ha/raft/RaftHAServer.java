@@ -24,18 +24,17 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
-import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.conf.Parameters;
-import org.apache.ratis.retry.RetryPolicies;
+import org.apache.ratis.conf.RaftProperties;
+import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.storage.RaftStorage;
-
-import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.TimeDuration;
 
@@ -77,32 +76,32 @@ import java.util.logging.Logger;
  */
 public class RaftHAServer implements HealthMonitor.HealthTarget {
 
-  private final ArcadeDBServer             arcadeServer;
-  private final ContextConfiguration       configuration;
-  private ArcadeStateMachine               stateMachine;
-  private final ClusterMonitor             clusterMonitor;
-  private final Quorum                     quorum;
-  private final long                       quorumTimeout;
-  private final RaftGroup                  raftGroup;
-  private final RaftPeerId                 localPeerId;
-  private final Map<RaftPeerId, String>    httpAddresses = new HashMap<>();
-  private final Map<RaftPeerId, String>    peerDisplayNames;
-  private final String                     clusterName;
+  private final ArcadeDBServer          arcadeServer;
+  private final ContextConfiguration    configuration;
+  private       ArcadeStateMachine      stateMachine;
+  private final ClusterMonitor          clusterMonitor;
+  private final Quorum                  quorum;
+  private final long                    quorumTimeout;
+  private final RaftGroup               raftGroup;
+  private final RaftPeerId              localPeerId;
+  private final Map<RaftPeerId, String> httpAddresses = new HashMap<>();
+  private final Map<RaftPeerId, String> peerDisplayNames;
+  private final String                  clusterName;
 
-  private RaftServer                raftServer;
-  private RaftClient                raftClient;
-  private RaftProperties            raftProperties;
-  private volatile RaftGroupCommitter groupCommitter;
-  private RaftClusterStatusExporter statusExporter;
-  private ScheduledExecutorService  lagMonitorExecutor;
-  private final Object              leaderChangeNotifier = new Object();
-  private final Object              applyNotifier        = new Object();
-  private RaftClusterManager        clusterManager;
-  private final Object               recoveryLock          = new Object();
-  private volatile boolean           shutdownRequested     = false;
-  private volatile LifeCycle.State   forcedStateForTesting = null;
-  private HealthMonitor              healthMonitor;
-  private ClusterTokenProvider       tokenProvider;
+  private          RaftServer                raftServer;
+  private          RaftClient                raftClient;
+  private          RaftProperties            raftProperties;
+  private volatile RaftGroupCommitter        groupCommitter;
+  private          RaftClusterStatusExporter statusExporter;
+  private          ScheduledExecutorService  lagMonitorExecutor;
+  private final    Object                    leaderChangeNotifier  = new Object();
+  private final    Object                    applyNotifier         = new Object();
+  private          RaftClusterManager        clusterManager;
+  private final    Object                    recoveryLock          = new Object();
+  private volatile boolean                   shutdownRequested     = false;
+  private volatile LifeCycle.State           forcedStateForTesting = null;
+  private          HealthMonitor             healthMonitor;
+  private          ClusterTokenProvider      tokenProvider;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -224,7 +223,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     raftClient = buildRaftClient(raftGroup, properties);
 
-    LogManager.instance().log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
+    LogManager.instance()
+        .log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
 
     final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
     groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, batchSize);
@@ -285,12 +285,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final RaftServer oldServer = this.raftServer;
       final RaftGroupCommitter oldCommitter = this.groupCommitter;
 
-      try { if (oldCommitter != null) oldCommitter.stop(); }
-      catch (final Throwable t) { LogManager.instance().log(this, Level.FINE, "Error closing old committer: %s", t, t.getMessage()); }
-      try { if (oldClient != null) oldClient.close(); }
-      catch (final Throwable t) { LogManager.instance().log(this, Level.FINE, "Error closing old client: %s", t, t.getMessage()); }
-      try { if (oldServer != null) oldServer.close(); }
-      catch (final Throwable t) { LogManager.instance().log(this, Level.FINE, "Error closing old server: %s", t, t.getMessage()); }
+      try {
+        if (oldCommitter != null)
+          oldCommitter.stop();
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.FINE, "Error closing old committer: %s", t, t.getMessage());
+      }
+      try {
+        if (oldClient != null)
+          oldClient.close();
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.FINE, "Error closing old client: %s", t, t.getMessage());
+      }
+      try {
+        if (oldServer != null)
+          oldServer.close();
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.FINE, "Error closing old server: %s", t, t.getMessage());
+      }
 
       try {
         this.stateMachine = new ArcadeStateMachine();
@@ -322,7 +334,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
-  /** Package-private test hook. Next call to getRaftLifeCycleState() returns this value, then clears. */
+  /**
+   * Package-private test hook. Next call to getRaftLifeCycleState() returns this value, then clears.
+   */
   void forceRaftStateForTesting(final LifeCycle.State state) {
     this.forcedStateForTesting = state;
   }
@@ -413,6 +427,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * to restarted peers whose gRPC channels are stuck in exponential backoff.
    *
    * @param timeoutMs maximum time to wait for the transfer to complete
+   *
    * @return true if the transfer succeeded
    */
   public boolean transferLeadership(final long timeoutMs) {

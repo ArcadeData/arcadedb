@@ -67,10 +67,10 @@ class OriginNodeSkipIT {
   private static final int BASE_PORT  = 19870;
   private static final int NODE_COUNT = 3;
 
-  private final List<RaftServer>               servers       = new ArrayList<>();
+  private final List<RaftServer>                 servers       = new ArrayList<>();
   private final List<OriginTrackingStateMachine> stateMachines = new ArrayList<>();
-  private RaftGroup group;
-  private Path      tempDir;
+  private       RaftGroup                        group;
+  private       Path                             tempDir;
 
   @BeforeEach
   void setUp() throws Exception {
@@ -210,7 +210,9 @@ class OriginNodeSkipIT {
 
   // -- Helpers --
 
-  /** Encodes a test entry as "originPeerId\0label" for the state machine to parse. */
+  /**
+   * Encodes a test entry as "originPeerId\0label" for the state machine to parse.
+   */
   private static byte[] encodeEntry(final String originPeerId, final String label) {
     return (originPeerId + "\0" + label).getBytes(StandardCharsets.UTF_8);
   }

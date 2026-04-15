@@ -33,7 +33,9 @@ import java.util.logging.Level;
  */
 public final class HealthMonitor {
 
-  /** Minimal surface of RaftHAServer that the monitor depends on. Kept small for testing. */
+  /**
+   * Minimal surface of RaftHAServer that the monitor depends on. Kept small for testing.
+   */
   public interface HealthTarget {
     LifeCycle.State getRaftLifeCycleState();
 
@@ -42,8 +44,8 @@ public final class HealthMonitor {
     void restartRatisIfNeeded();
   }
 
-  private final HealthTarget target;
-  private final long intervalMs;
+  private final    HealthTarget             target;
+  private final    long                     intervalMs;
   private volatile ScheduledExecutorService executor;
 
   public HealthMonitor(final HealthTarget target, final long intervalMs) {
@@ -73,7 +75,9 @@ public final class HealthMonitor {
     }
   }
 
-  /** Package-private for tests. Runs one check synchronously. */
+  /**
+   * Package-private for tests. Runs one check synchronously.
+   */
   void tick() {
     if (target.isShutdownRequested())
       return;

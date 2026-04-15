@@ -26,11 +26,10 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
-
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

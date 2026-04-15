@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SnapshotInstallerRetryTest {
 
   private HttpServer httpServer;
-  private int port;
+  private int        port;
 
   @BeforeEach
   void startServer() throws IOException {

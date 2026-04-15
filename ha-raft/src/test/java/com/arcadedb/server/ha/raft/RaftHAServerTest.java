@@ -102,7 +102,8 @@ class RaftHAServerTest {
 
   @Test
   void parsePeerListThreePartMultipleNodes() {
-    final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList("host1:2434:2480,host2:2435:2481,host3:2436:2482", 2434);
+    final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList(
+        "host1:2434:2480,host2:2435:2481,host3:2436:2482", 2434);
     final List<RaftPeer> peers = parsed.peers();
     assertThat(peers).hasSize(3);
     assertThat(peers.get(0).getAddress()).isEqualTo("host1:2434");
@@ -138,7 +139,8 @@ class RaftHAServerTest {
 
   @Test
   void parsePeerListFourPartSetsPriority() {
-    final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList("node1:2434:2480:10,node2:2435:2481:0", 2434);
+    final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList(
+        "node1:2434:2480:10,node2:2435:2481:0", 2434);
     final List<RaftPeer> peers = parsed.peers();
     assertThat(peers).hasSize(2);
     assertThat(peers.get(0).getAddress()).isEqualTo("node1:2434");
@@ -221,7 +223,8 @@ class RaftHAServerTest {
 
   @Test
   void peerDisplayNamesWithoutHttpAddresses() {
-    final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList("localhost:2434,localhost:2435", 2434);
+    final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList("localhost:2434,localhost:2435",
+        2434);
     final List<RaftPeer> peers = parsed.peers();
 
     final String prefix = "MyDB";

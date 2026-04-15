@@ -40,7 +40,10 @@ class LeaveClusterTest extends BaseRaftHATest {
 
     leaderRaft.transferLeadership(targetPeerId, 10_000);
 
-    try { Thread.sleep(3_000); } catch (final InterruptedException ignored) {}
+    try {
+      Thread.sleep(3_000);
+    } catch (final InterruptedException ignored) {
+    }
 
     final int newLeaderIndex = findLeaderIndex();
     assertThat(newLeaderIndex).isEqualTo(targetIndex);
@@ -54,7 +57,10 @@ class LeaveClusterTest extends BaseRaftHATest {
     final RaftHAServer leaderRaft = getRaftPlugin(leaderIndex).getRaftHAServer();
     leaderRaft.stepDown();
 
-    try { Thread.sleep(3_000); } catch (final InterruptedException ignored) {}
+    try {
+      Thread.sleep(3_000);
+    } catch (final InterruptedException ignored) {
+    }
 
     final int newLeaderIndex = findLeaderIndex();
     assertThat(newLeaderIndex).isNotEqualTo(leaderIndex);

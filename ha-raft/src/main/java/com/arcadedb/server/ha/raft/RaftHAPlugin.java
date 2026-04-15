@@ -276,6 +276,7 @@ public class RaftHAPlugin implements HAServerPlugin {
     final int serverCount = serverList.split(",").length;
     if (quorum == Quorum.ALL && serverCount > 3)
       LogManager.instance().log(this, Level.WARNING,
-          "HA_QUORUM=ALL with %d nodes: every node must acknowledge writes. A single slow node will throttle the cluster.", serverCount);
+          "HA_QUORUM=ALL with %d nodes: every node must acknowledge writes. A single slow node will throttle the cluster.",
+          serverCount);
   }
 }

@@ -19,12 +19,33 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.database.*;
+import com.arcadedb.database.DataEncryption;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentCallback;
+import com.arcadedb.database.DocumentIndexer;
+import com.arcadedb.database.EmbeddedModifier;
+import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.LocalTransactionExplicitLock;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordCallback;
+import com.arcadedb.database.RecordEvents;
+import com.arcadedb.database.RecordFactory;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
-import com.arcadedb.engine.*;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.ErrorRecordCallback;
+import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.WALFile;
+import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -35,6 +56,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
@@ -47,10 +69,9 @@ import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -60,7 +81,14 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.logging.Level;
 
@@ -79,12 +107,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       TransactionContext.TransactionPhase1 phase1,
       byte[] walData,
       Map<Integer, Integer> bucketDeltas
-  ) {}
+  ) {
+  }
 
   // Thread-local buffers used to accumulate WAL data when commit() is called inside
   // a recordFileChanges() callback. The buffered entries are then embedded in the
   // SCHEMA_ENTRY so replicas receive them atomically with the file-creation step.
-  private static final ThreadLocal<List<byte[]>>               schemaWalBuffer        = ThreadLocal.withInitial(ArrayList::new);
+  private static final ThreadLocal<List<byte[]>>                schemaWalBuffer         = ThreadLocal.withInitial(ArrayList::new);
   private static final ThreadLocal<List<Map<Integer, Integer>>> schemaBucketDeltaBuffer = ThreadLocal.withInitial(ArrayList::new);
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
@@ -130,7 +159,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private final ArcadeDBServer server;
   private final LocalDatabase  proxied;
   private final RaftHAServer   raftHAServer;
-
 
   public RaftReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied, final RaftHAServer raftHAServer) {
     this.server = server;
@@ -1036,7 +1064,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // Embedded walEntries carry the initial page writes (e.g. index root pages) so
       // replicas apply them immediately after creating the files - in the correct order.
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged) {
-        final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
+        final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(getName(), serializedSchema, addFiles, removeFiles,
+            walEntries, bucketDeltas);
         final RaftHAServer raft = requireRaftServer();
         raft.getGroupCommitter().submitAndWait(schemaEntry.toByteArray(), raft.getQuorumTimeout());
         HALog.log(this, HALog.DETAILED,
@@ -1123,7 +1152,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     } catch (final Exception e) {
       throw new TransactionException("Error sending install-database entry via Raft for database '" + getName() + "'", e);
     }
-    LogManager.instance().log(this, Level.INFO, "Database '%s' install-database (forceSnapshot=%s) entry committed via Raft", getName(), forceSnapshot);
+    LogManager.instance()
+        .log(this, Level.INFO, "Database '%s' install-database (forceSnapshot=%s) entry committed via Raft", getName(),
+            forceSnapshot);
   }
 
   @Override

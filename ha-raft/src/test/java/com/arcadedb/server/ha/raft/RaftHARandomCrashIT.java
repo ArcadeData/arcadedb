@@ -34,7 +34,6 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
-
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -43,18 +42,18 @@ import java.util.TimerTask;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class RaftHARandomCrashIT extends BaseRaftHATest {
 
-  private static final int TXS                   = 1_500;
-  private static final int VERTICES_PER_TX       = 10;
-  private static final int MAX_RETRY             = 30;
+  private static final int TXS                    = 1_500;
+  private static final int VERTICES_PER_TX        = 10;
+  private static final int MAX_RETRY              = 30;
   private static final int CRASH_INITIAL_DELAY_MS = 15_000;
-  private static final int CRASH_INTERVAL_MS     = 10_000;
-  private static final int RESTART_POLL_MS       = 300;
-  private static final int TX_SLEEP_MS           = 100;
-  private static final int RETRY_SLEEP_MS        = 1_000;
+  private static final int CRASH_INTERVAL_MS      = 10_000;
+  private static final int RESTART_POLL_MS        = 300;
+  private static final int TX_SLEEP_MS            = 100;
+  private static final int RETRY_SLEEP_MS         = 1_000;
 
   private volatile int restarts = 0;
 

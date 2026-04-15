@@ -38,8 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ArcadeStateMachineCreateFilesTest {
 
-  private static final String DB_PATH = "./target/databases/test-create-files-idempotency";
-  private DatabaseInternal db;
+  private static final String           DB_PATH = "./target/databases/test-create-files-idempotency";
+  private              DatabaseInternal db;
 
   @BeforeEach
   void setUp() {

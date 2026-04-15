@@ -41,12 +41,6 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -129,7 +123,8 @@ class RaftHAComprehensiveIT {
 
     // Verify exact count on ALL servers
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have %d records", s.getServerName(), recordCount).isEqualTo(recordCount);
@@ -139,7 +134,8 @@ class RaftHAComprehensiveIT {
     for (int check = 0; check < 10; check++) {
       final int id = (int) (Math.random() * recordCount);
       for (final ArcadeDBServer s : servers) {
-        if (s == null || !s.isStarted()) continue;
+        if (s == null || !s.isStarted())
+          continue;
         final ResultSet rs = s.getDatabase(DB_NAME).query("sql", "SELECT FROM TestV WHERE id = ?", (long) id);
         assertThat(rs.hasNext()).as("Server %s should have record id=%d", s.getServerName(), id).isTrue();
         final Result r = rs.next();
@@ -239,7 +235,8 @@ class RaftHAComprehensiveIT {
 
     // Verify data survived
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have 50 records after full restart", s.getServerName())
@@ -254,7 +251,8 @@ class RaftHAComprehensiveIT {
     CodeUtils.sleep(2000);
 
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have 51 records").isEqualTo(51);
@@ -304,7 +302,8 @@ class RaftHAComprehensiveIT {
 
     final int expected = threads * recordsPerThread;
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have %d records", s.getServerName(), expected).isEqualTo(expected);
@@ -334,7 +333,8 @@ class RaftHAComprehensiveIT {
 
     // Verify schema propagated to all servers
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       assertThat(s.getDatabase(DB_NAME).getSchema().existsType("NewType"))
           .as("Server %s should have NewType", s.getServerName()).isTrue();
     }
@@ -345,7 +345,8 @@ class RaftHAComprehensiveIT {
 
     // Verify data in new type on all servers
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM NewType")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have 1 NewType record", s.getServerName()).isEqualTo(1);
@@ -371,7 +372,8 @@ class RaftHAComprehensiveIT {
 
     // Verify index lookup works on all servers
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       for (int id = 0; id < 50; id++) {
         final ResultSet rs = s.getDatabase(DB_NAME).query("sql", "SELECT FROM TestV WHERE id = ?", (long) id);
         assertThat(rs.hasNext()).as("Server " + s.getServerName() + " index lookup for id=" + id).isTrue();
@@ -443,7 +445,8 @@ class RaftHAComprehensiveIT {
     CodeUtils.sleep(5000);
 
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have 500 records from bulk tx", s.getServerName()).isEqualTo(500);
@@ -492,7 +495,8 @@ class RaftHAComprehensiveIT {
     CodeUtils.sleep(3000);
 
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV WHERE id = 55555")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).isEqualTo(1);
@@ -596,7 +600,8 @@ class RaftHAComprehensiveIT {
     CodeUtils.sleep(8000);
 
     for (final ArcadeDBServer s : servers) {
-      if (s == null || !s.isStarted()) continue;
+      if (s == null || !s.isStarted())
+        continue;
       final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV WHERE id >= 70000")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have all 2000 large records", s.getServerName()).isEqualTo(2000);
@@ -677,7 +682,8 @@ class RaftHAComprehensiveIT {
   private void startCluster() {
     final StringBuilder serverList = new StringBuilder();
     for (int i = 0; i < SERVER_COUNT; i++) {
-      if (i > 0) serverList.append(",");
+      if (i > 0)
+        serverList.append(",");
       serverList.append("localhost:").append(BASE_HA_PORT + i);
     }
 
@@ -704,7 +710,9 @@ class RaftHAComprehensiveIT {
     if (servers != null)
       for (int i = servers.length - 1; i >= 0; i--)
         if (servers[i] != null)
-          try { servers[i].stop(); } catch (final Exception e) { /* ignore */ }
+          try {
+            servers[i].stop();
+          } catch (final Exception e) { /* ignore */ }
     CodeUtils.sleep(2000);
   }
 
@@ -720,7 +728,9 @@ class RaftHAComprehensiveIT {
         });
   }
 
-  /** Waits for replication to settle by pausing for 3 seconds after the last leader write. */
+  /**
+   * Waits for replication to settle by pausing for 3 seconds after the last leader write.
+   */
   private void waitForReplication() {
     CodeUtils.sleep(3000);
   }

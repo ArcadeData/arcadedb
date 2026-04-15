@@ -24,7 +24,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -232,7 +231,7 @@ class RaftGraphIngestionStabilityIT extends BaseRaftHATest {
 
     // Phase 4: Verify the recovered replica has all data
     final long expectedVertices = 1000;
-    final long expectedEdges    = 499;
+    final long expectedEdges = 499;
 
     for (int i = 0; i < getServerCount(); i++) {
       final Database nodeDb = getServerDatabase(i, getDatabaseName());

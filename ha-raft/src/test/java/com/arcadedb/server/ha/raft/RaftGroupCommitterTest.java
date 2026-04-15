@@ -33,7 +33,7 @@ class RaftGroupCommitterTest {
     // Submit an entry in a background thread
     final var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
       try {
-        committer.submitAndWait(new byte[]{1, 2, 3}, 5_000);
+        committer.submitAndWait(new byte[] { 1, 2, 3 }, 5_000);
         return "success";
       } catch (final QuorumNotReachedException e) {
         return "failed: " + e.getMessage();
@@ -41,7 +41,10 @@ class RaftGroupCommitterTest {
     });
 
     // Give the background thread time to enqueue
-    try { Thread.sleep(200); } catch (final InterruptedException ignored) {}
+    try {
+      Thread.sleep(200);
+    } catch (final InterruptedException ignored) {
+    }
 
     // Stop should drain the queue and complete all futures with errors
     committer.stop();

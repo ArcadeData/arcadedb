@@ -32,9 +32,9 @@ import java.util.logging.Level;
  */
 public class ClusterMonitor {
 
-  private final long lagWarningThreshold;
-  private volatile long leaderCommitIndex;
-  private final ConcurrentHashMap<String, Long> replicaMatchIndexes = new ConcurrentHashMap<>();
+  private final    long                            lagWarningThreshold;
+  private volatile long                            leaderCommitIndex;
+  private final    ConcurrentHashMap<String, Long> replicaMatchIndexes = new ConcurrentHashMap<>();
 
   public ClusterMonitor(final long lagWarningThreshold) {
     this.lagWarningThreshold = lagWarningThreshold;

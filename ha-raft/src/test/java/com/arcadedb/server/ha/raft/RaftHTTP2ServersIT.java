@@ -21,18 +21,18 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
-
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Base64;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class RaftHTTP2ServersIT extends BaseRaftHATest {
 

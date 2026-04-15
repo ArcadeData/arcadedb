@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.log.LogManager;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
@@ -51,7 +50,6 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,8 +64,8 @@ class RaftHAServerIT {
 
   private final List<RaftServer>           servers       = new ArrayList<>();
   private final List<CountingStateMachine> stateMachines = new ArrayList<>();
-  private RaftGroup group;
-  private Path      tempDir;
+  private       RaftGroup                  group;
+  private       Path                       tempDir;
 
   @BeforeEach
   void setUp() throws Exception {
