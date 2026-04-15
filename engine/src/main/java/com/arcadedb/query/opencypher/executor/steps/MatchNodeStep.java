@@ -66,11 +66,12 @@ import java.util.NoSuchElementException;
  * predicates during scanning rather than in a separate FilterPropertiesStep.
  */
 public class MatchNodeStep extends AbstractExecutionStep {
-  private final String            variable;
-  private final NodePattern       pattern;
-  private final String            idFilter;    // Optional ID filter to apply (e.g., "#1:0")
-  private final BooleanExpression whereFilter; // Optional inline WHERE predicate (pushdown)
-  private       String            usedIndexName; // Track which index was used (if any)
+  private final String              variable;
+  private final NodePattern         pattern;
+  private final String              idFilter;    // Optional ID filter to apply (e.g., "#1:0")
+  private final BooleanExpression   whereFilter; // Optional inline WHERE predicate (pushdown)
+  private final ExpressionEvaluator evaluator;   // Shared evaluator for WHERE/ID expression resolution
+  private       String              usedIndexName; // Track which index was used (if any)
 
   /**
    * Creates a match node step.
@@ -112,6 +113,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     this.pattern = pattern;
     this.idFilter = idFilter;
     this.whereFilter = whereFilter;
+    this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
   }
 
   @Override
@@ -292,13 +294,19 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private Iterator<Identifiable> getVertexIterator(final Result currentInputResult) {
+    // Check for dynamic ID filter from WHERE clause if static idFilter is not present
+    String effectiveIdFilter = this.idFilter;
+    if ((effectiveIdFilter == null || effectiveIdFilter.isEmpty()) && whereFilter != null) {
+      effectiveIdFilter = extractDynamicIdFilter(whereFilter, currentInputResult);
+    }
+
     // OPTIMIZATION: If ID filter is present, look up the specific vertex by ID
     // This is critical for performance when matching by ID (e.g., WHERE ID(a) = "#1:0")
     // Without this optimization, MATCH (a),(b) WHERE ID(a) = x AND ID(b) = y
     // would create a Cartesian product of ALL vertices before filtering
-    if (idFilter != null && !idFilter.isEmpty()) {
+    if (effectiveIdFilter != null && !effectiveIdFilter.isEmpty()) {
       try {
-        final RID rid = new RID(context.getDatabase(), idFilter);
+        final RID rid = new RID(context.getDatabase(), effectiveIdFilter);
         final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
         // Return single-element iterator for the matched vertex
         return List.of(vertex).iterator();
@@ -588,6 +596,58 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   /**
+   * Extracts ID filter from a boolean expression, resolving dynamic values against the current input result.
+   * This handles UNWIND...MATCH...WHERE patterns where ID is filtered dynamically.
+   */
+  private String extractDynamicIdFilter(final BooleanExpression expr, final Result currentInputResult) {
+    if (expr instanceof ComparisonExpression) {
+      final ComparisonExpression comp = (ComparisonExpression) expr;
+      if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
+        return null;
+
+      // Check for pattern: ID(variable) = <expression>
+      if (comp.getLeft() instanceof FunctionCallExpression) {
+        final FunctionCallExpression func = (FunctionCallExpression) comp.getLeft();
+        if ("id".equalsIgnoreCase(func.getFunctionName()) && func.getArguments().size() == 1) {
+          final Expression arg = func.getArguments().get(0);
+          if (arg instanceof VariableExpression && variable.equals(((VariableExpression) arg).getVariableName())) {
+            return evaluateToId(comp.getRight(), currentInputResult);
+          }
+        }
+      }
+
+      // Check for reversed: <expression> = ID(variable)
+      if (comp.getRight() instanceof FunctionCallExpression) {
+        final FunctionCallExpression func = (FunctionCallExpression) comp.getRight();
+        if ("id".equalsIgnoreCase(func.getFunctionName()) && func.getArguments().size() == 1) {
+          final Expression arg = func.getArguments().get(0);
+          if (arg instanceof VariableExpression && variable.equals(((VariableExpression) arg).getVariableName())) {
+            return evaluateToId(comp.getLeft(), currentInputResult);
+          }
+        }
+      }
+    } else if (expr instanceof LogicalExpression) {
+      final LogicalExpression logical = (LogicalExpression) expr;
+      if (logical.getOperator() == LogicalExpression.Operator.AND) {
+        final String leftId = extractDynamicIdFilter(logical.getLeft(), currentInputResult);
+        if (leftId != null) return leftId;
+        return extractDynamicIdFilter(logical.getRight(), currentInputResult);
+      }
+    }
+    return null;
+  }
+
+  private String evaluateToId(final Expression expr, final Result currentInputResult) {
+    final Object resolvedValue = evaluator.evaluate(expr, currentInputResult, context);
+    if (resolvedValue != null) {
+      if (resolvedValue instanceof Identifiable)
+        return ((Identifiable) resolvedValue).getIdentity().toString();
+      return resolvedValue.toString();
+    }
+    return null;
+  }
+
+  /**
    * Extracts equality predicates of the form variable.property = value from a boolean expression.
    * Supports AND conjunctions. Resolves dynamic expressions against the current input result.
    */
@@ -620,8 +680,6 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       if (propertyName != null && valueExpr != null) {
         // Resolve the value expression
-        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
-            new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
         final Object resolvedValue = evaluator.evaluate(valueExpr, currentInputResult, context);
         if (resolvedValue != null)
           predicates.put(propertyName, resolvedValue);
