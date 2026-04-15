@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
@@ -304,6 +305,22 @@ public class MatchNodeStep extends AbstractExecutionStep {
       } catch (final Exception e) {
         // Invalid ID format - return empty iterator
         return List.<Identifiable>of().iterator();
+      }
+    }
+
+    // OPTIMIZATION: Check if WHERE filter contains ID(variable) = dynamicExpression
+    // for runtime RID lookup. Critical for UNWIND...MATCH...WHERE ID(b) = BatchEntry.destRID
+    // patterns where the ID value is dynamic and can't be extracted at plan time (issue #3864)
+    if (currentInputResult != null && whereFilter != null) {
+      final String dynamicRid = extractDynamicIdFromWhere(whereFilter, currentInputResult);
+      if (dynamicRid != null) {
+        try {
+          final RID rid = new RID(context.getDatabase(), dynamicRid);
+          final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
+          return List.of(vertex).iterator();
+        } catch (final Exception e) {
+          return List.<Identifiable>of().iterator();
+        }
       }
     }
 
@@ -742,5 +759,65 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   private static String getIndent(final int depth, final int indent) {
     return "  ".repeat(Math.max(0, depth * indent));
+  }
+
+  /**
+   * Extracts a dynamic ID value from the WHERE filter at runtime.
+   * Detects patterns like ID(variable) = expression where the expression is a dynamic
+   * value (e.g., from UNWIND). Evaluates the expression against the current input result
+   * to resolve the RID value at runtime.
+   *
+   * @param expr               the boolean expression (WHERE filter) to search
+   * @param currentInputResult the current row from the previous step (e.g., UNWIND output)
+   * @return the resolved RID string, or null if no ID pattern was found
+   */
+  private String extractDynamicIdFromWhere(final BooleanExpression expr, final Result currentInputResult) {
+    if (expr instanceof ComparisonExpression) {
+      final ComparisonExpression comp = (ComparisonExpression) expr;
+      if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
+        return null;
+
+      // Check both: ID(variable) = expr and expr = ID(variable)
+      Expression valueExpr = null;
+      if (isIdFunctionOnThisVariable(comp.getLeft()))
+        valueExpr = comp.getRight();
+      else if (isIdFunctionOnThisVariable(comp.getRight()))
+        valueExpr = comp.getLeft();
+
+      if (valueExpr != null) {
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
+            new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
+        final Object resolved = evaluator.evaluate(valueExpr, currentInputResult, context);
+        return resolved != null ? resolved.toString() : null;
+      }
+    }
+
+    // Handle AND: check both sides (the ID predicate may be combined with other conditions)
+    if (expr instanceof LogicalExpression) {
+      final LogicalExpression logical = (LogicalExpression) expr;
+      if (logical.getOperator() == LogicalExpression.Operator.AND) {
+        final String left = extractDynamicIdFromWhere(logical.getLeft(), currentInputResult);
+        if (left != null)
+          return left;
+        return extractDynamicIdFromWhere(logical.getRight(), currentInputResult);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Checks if an expression is a call to ID() on this step's variable.
+   * Matches: id(variable) where variable equals this.variable.
+   */
+  private boolean isIdFunctionOnThisVariable(final Expression expr) {
+    if (expr instanceof FunctionCallExpression) {
+      final FunctionCallExpression func = (FunctionCallExpression) expr;
+      if ("id".equalsIgnoreCase(func.getFunctionName()) && func.getArguments().size() == 1) {
+        final Expression arg = func.getArguments().get(0);
+        return arg instanceof VariableExpression && variable.equals(((VariableExpression) arg).getVariableName());
+      }
+    }
+    return false;
   }
 }
