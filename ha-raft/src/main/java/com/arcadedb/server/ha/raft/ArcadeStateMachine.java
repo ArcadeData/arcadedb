@@ -106,6 +106,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final AtomicBoolean needsSnapshotDownload = new AtomicBoolean(false);
   private final AtomicBoolean catchingUp            = new AtomicBoolean(false);
 
+  /**
+   * Recovery watermark: the persisted applied index at startup time.
+   * Entries with index <= this value were applied to database files before the last shutdown/crash.
+   * Entries with index > this value have NOT been applied and must be applied even if this node
+   * is now the leader (the leader-skip optimization is only safe for entries committed during
+   * the current leadership term, not for replayed entries from before a restart).
+   */
+  private volatile long recoveryWatermark = -1;
+
+
   public void setServer(final ArcadeDBServer server) {
     this.server = server;
   }
@@ -139,10 +149,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * is reset (e.g., during Ratis recovery via {@link RaftHAServer#restartRatisIfNeeded}).
    */
   public void reinitialize() throws IOException {
+    // Record the recovery watermark before any replay happens.
+    // This is the highest index we successfully applied to database files before the last stop/crash.
+    final long persistedApplied = readPersistedAppliedIndex();
+    recoveryWatermark = persistedApplied;
+
     final var snapshotInfo = storage.getLatestSnapshot();
     if (snapshotInfo != null) {
       final long snapshotIndex = snapshotInfo.getIndex();
-      final long persistedApplied = readPersistedAppliedIndex();
       if (persistedApplied >= 0 && snapshotIndex > persistedApplied + SNAPSHOT_GAP_TOLERANCE) {
         LogManager.instance().log(this, Level.INFO,
             "Snapshot index %d is ahead of persisted applied index %d, will download from leader when available",
@@ -198,8 +212,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
 
       switch (decoded.type()) {
-      case TX_ENTRY -> applyTxEntry(decoded);
-      case SCHEMA_ENTRY -> applySchemaEntry(decoded);
+      case TX_ENTRY -> applyTxEntry(decoded, index);
+      case SCHEMA_ENTRY -> applySchemaEntry(decoded, index);
       case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
       case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
       case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
@@ -407,10 +421,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * durable page writes). Page-version guards in {@code applyChanges} detect and skip
    * already-applied pages; version-gap warnings are still logged.
    */
-  private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+  private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     // On the leader, the transaction was already applied via commit2ndPhase() in RaftReplicatedDatabase.
     // Only replicas need to apply WAL changes from the state machine.
-    if (raftHAServer != null && raftHAServer.isLeader()) {
+    //
+    // IMPORTANT: after a crash and restart this node may become the new leader before Ratis
+    // finishes replaying pending log entries. Entries with index > recoveryWatermark have NOT
+    // been applied to database files yet and must be applied even if we're now the leader.
+    if (raftHAServer != null && raftHAServer.isLeader() && !isReplayingEntry(entryIndex)) {
       HALog.log(this, HALog.TRACE, "Skipping tx apply on leader for database '%s'", decoded.databaseName());
       return;
     }
@@ -458,9 +476,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Like {@link #applyTxEntry}, the leader skips this because schema changes were already
    * applied locally during the transaction.
    */
-  private void applySchemaEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
-    // On the leader, schema changes were already applied locally during the transaction
-    if (raftHAServer != null && raftHAServer.isLeader()) {
+  private void applySchemaEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
+    // On the leader, schema changes were already applied locally during the transaction.
+    // Same replay-safety check as applyTxEntry: entries from before the restart must be applied.
+    if (raftHAServer != null && raftHAServer.isLeader() && !isReplayingEntry(entryIndex)) {
       HALog.log(this, HALog.TRACE, "Skipping schema apply on leader for database '%s'", decoded.databaseName());
       return;
     }
@@ -675,6 +694,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public void close() throws IOException {
     lifecycleExecutor.shutdownNow();
     super.close();
+  }
+
+  /**
+   * Returns true if this node was restarted and the current entry might not have been applied
+   * to database files before the crash/shutdown.
+   * <p>
+   * After a crash/restart, Ratis replays committed log entries through the state machine.
+   * If this node becomes the new leader before replay completes, the leader-skip optimization
+   * must be disabled for entries beyond the watermark - those entries were never applied.
+   * <p>
+   * The page-version guards in {@link com.arcadedb.engine.TransactionManager#applyChanges}
+   * provide idempotency: already-applied pages are detected via version match and skipped.
+   * This means applying during recovery is always safe with negligible overhead.
+   *
+   * @param entryIndex the Raft log index of the entry being applied
+   */
+  private boolean isReplayingEntry(final long entryIndex) {
+    return recoveryWatermark >= 0 && entryIndex > recoveryWatermark;
   }
 
   /**
