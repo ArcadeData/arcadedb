@@ -40,7 +40,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Integration test for the Ratis-based HA system. Starts 3 ArcadeDB servers with HA_ENABLED=true,
@@ -96,7 +95,7 @@ class RaftReplicationIT {
     for (int i = 0; i < SERVER_COUNT; i++) {
       if (i > 0)
         serverList.append(",");
-      serverList.append("localhost:").append(BASE_HA_PORT + i);
+      serverList.append("localhost:").append(BASE_HA_PORT + i).append(":").append(BASE_HTTP_PORT + i);
     }
 
     // Start all servers
@@ -208,7 +207,7 @@ class RaftReplicationIT {
   }
 
   @Test
-  void testWriteOnFollowerRedirects() {
+  void testWriteOnFollowerForwardsThroughRaft() {
     // Find a follower server (not the leader)
     ArcadeDBServer follower = null;
     for (final ArcadeDBServer server : servers)
@@ -219,19 +218,16 @@ class RaftReplicationIT {
 
     assertThat(follower).isNotNull();
 
-    // Writing on a follower should throw an exception indicating the leader address
+    // Writing on a follower via the local database API forwards the WAL through Raft.
+    // The RaftClient transparently routes the write to the current leader.
     final Database followerDb = follower.getDatabase(DATABASE_NAME);
-    assertThatThrownBy(() -> followerDb.transaction(() -> {
+    followerDb.transaction(() -> {
       final MutableVertex v = followerDb.newVertex("TestVertex");
       v.set("id", 100L);
       v.set("name", "follower-vertex");
       v.save();
-    })).isInstanceOf(com.arcadedb.network.binary.ServerIsNotTheLeaderException.class)
-        .satisfies(e -> {
-          final var notLeader = (com.arcadedb.network.binary.ServerIsNotTheLeaderException) e;
-          assertThat(notLeader.getLeaderAddress()).isNotNull();
-          assertThat(notLeader.getLeaderAddress()).contains("localhost:");
-        });
+    });
+    // The write should succeed without throwing - Raft forwarding handles leader routing.
   }
 
   @Test
