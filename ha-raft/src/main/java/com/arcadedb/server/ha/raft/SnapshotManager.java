@@ -31,7 +31,7 @@ import java.util.zip.CRC32;
  * Utility methods for snapshot-based resync in Raft HA.
  * <p>
  * Currently provides checksum computation and file-diffing helpers. Full
- * {@code installSnapshot()} integration with Ratis is not yet wired — replicas
+ * {@code installSnapshot()} integration with Ratis is not yet wired - replicas
  * that fall behind past log compaction require a manual data copy from the leader.
  * These utilities are the building blocks for the future automatic resync.
  */

@@ -30,6 +30,7 @@ import io.undertow.server.handlers.PathHandler;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.logging.Level;
 
 /**
@@ -125,7 +126,7 @@ public class RaftHAPlugin implements HAServerPlugin {
 
   @Override
   public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
-    // Always register the endpoint — it returns 503 when Raft is not yet started.
+    // Always register the endpoint - it returns 503 when Raft is not yet started.
     // Note: registerAPI is called before configure()/startService() for AFTER_HTTP_ON plugins,
     // so isRaftEnabled() cannot be checked here.
     routes.addExactPath("/api/v1/cluster", new GetClusterHandler(httpServer, this));
@@ -206,11 +207,11 @@ public class RaftHAPlugin implements HAServerPlugin {
       conn.setDoOutput(true);
       conn.setRequestProperty("Content-Type", "application/json");
 
-      final String token = configuration.getValueAsString(com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+      final String token = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
       if (token != null && !token.isEmpty())
         conn.setRequestProperty("Authorization", "Bearer " + token);
 
-      conn.getOutputStream().write("{\"command\":\"shutdown\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      conn.getOutputStream().write("{\"command\":\"shutdown\"}".getBytes(StandardCharsets.UTF_8));
       conn.getResponseCode();
       conn.disconnect();
     } catch (final java.io.IOException e) {

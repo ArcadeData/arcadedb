@@ -23,9 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
-import java.io.File;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -164,23 +162,26 @@ class RaftHAServerTest {
   }
 
   @Test
-  void initClusterTokenDerivesTokenFromClusterNameAndPassword(@TempDir final File tempDir) {
+  void initClusterTokenDerivesTokenFromClusterNameAndPassword() {
     final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "test-password");
     // HA_CLUSTER_TOKEN starts blank by default
 
-    RaftHAServer.initClusterToken(config, tempDir);
+    ClusterTokenProvider.initClusterTokenForTest(config);
 
     final String token = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
     assertThat(token).isNotBlank();
   }
 
   @Test
-  void initClusterTokenIsDeterministicForSameClusterNameAndPassword(@TempDir final File tempDir) {
+  void initClusterTokenIsDeterministicForSameClusterNameAndPassword() {
     final ContextConfiguration config1 = new ContextConfiguration();
     final ContextConfiguration config2 = new ContextConfiguration();
+    config1.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "test-password");
+    config2.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "test-password");
 
-    RaftHAServer.initClusterToken(config1, tempDir);
-    RaftHAServer.initClusterToken(config2, tempDir);
+    ClusterTokenProvider.initClusterTokenForTest(config1);
+    ClusterTokenProvider.initClusterTokenForTest(config2);
 
     // Both nodes with the same cluster name and root password must derive the same token
     assertThat(config1.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN))
@@ -188,11 +189,11 @@ class RaftHAServerTest {
   }
 
   @Test
-  void initClusterTokenKeepsExplicitConfigValue(@TempDir final File tempDir) {
+  void initClusterTokenKeepsExplicitConfigValue() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, "explicit-token");
 
-    RaftHAServer.initClusterToken(config, tempDir);
+    ClusterTokenProvider.initClusterTokenForTest(config);
 
     assertThat(config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN)).isEqualTo("explicit-token");
   }

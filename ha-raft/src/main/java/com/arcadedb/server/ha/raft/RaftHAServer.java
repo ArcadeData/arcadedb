@@ -20,14 +20,12 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.conf.Parameters;
-import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
@@ -39,7 +37,6 @@ import org.apache.ratis.server.storage.RaftStorage;
 
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.util.LifeCycle;
-import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
 import java.io.File;
@@ -57,6 +54,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Manages the lifecycle of the Apache Ratis {@link RaftServer}, {@link RaftClient},
@@ -95,11 +93,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private RaftClient                raftClient;
   private RaftProperties            raftProperties;
   private volatile RaftGroupCommitter groupCommitter;
+  private RaftClusterStatusExporter statusExporter;
   private ScheduledExecutorService  lagMonitorExecutor;
   private final Object              leaderChangeNotifier = new Object();
   private final Object              applyNotifier        = new Object();
   private RaftClusterManager        clusterManager;
-  private int                       lastClusterConfigHash;
   private final Object               recoveryLock          = new Object();
   private volatile boolean           shutdownRequested     = false;
   private volatile LifeCycle.State   forcedStateForTesting = null;
@@ -146,6 +144,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
     this.clusterManager = new RaftClusterManager(this);
+    this.statusExporter = new RaftClusterStatusExporter(this, this.clusterMonitor);
 
     LogManager.instance().log(this, Level.INFO,
         "RaftHAServer configured: cluster='%s', localPeer='%s', peers=%d",
@@ -172,8 +171,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Creates and starts the Ratis RaftServer and RaftClient.
    */
   public void start() throws IOException {
-    // Suppress verbose Ratis internal logs — operators see ArcadeDB-level cluster events instead
-    java.util.logging.Logger.getLogger("org.apache.ratis").setLevel(java.util.logging.Level.WARNING);
+    // Suppress verbose Ratis internal logs - operators see ArcadeDB-level cluster events instead
+    Logger.getLogger("org.apache.ratis").setLevel(Level.WARNING);
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
@@ -186,7 +185,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       deleteRecursive(storageDir);
     RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 
-    initClusterToken(configuration, storageDir);
+    final ClusterTokenProvider tokenProvider = new ClusterTokenProvider(configuration);
+    tokenProvider.initClusterToken();
 
     // When persistent storage is requested and the storage directory already has data,
     // use RECOVER mode so Ratis loads the existing Raft log instead of trying to format
@@ -222,7 +222,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     // K8s auto-join: if running in Kubernetes with no existing storage, try to join an existing cluster
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S) && !hadExistingStorage)
-      tryAutoJoinCluster();
+      new KubernetesAutoJoin(this).tryAutoJoinCluster();
 
     final long healthInterval = configuration.getValueAsLong(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL);
     this.healthMonitor = new HealthMonitor(this, healthInterval);
@@ -342,11 +342,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         "org.apache.ratis.grpc.server.GrpcLogAppender",
         "org.apache.ratis.grpc.server.GrpcServerProtocolService"
     };
-    final java.util.logging.Level[] previousLevels = new java.util.logging.Level[noisyLoggers.length];
+    final Level[] previousLevels = new Level[noisyLoggers.length];
     for (int i = 0; i < noisyLoggers.length; i++) {
-      final java.util.logging.Logger logger = java.util.logging.Logger.getLogger(noisyLoggers[i]);
+      final Logger logger = Logger.getLogger(noisyLoggers[i]);
       previousLevels[i] = logger.getLevel();
-      logger.setLevel(java.util.logging.Level.SEVERE);
+      logger.setLevel(Level.SEVERE);
     }
 
     try {
@@ -362,7 +362,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       LogManager.instance().log(this, Level.WARNING, "Error stopping Ratis HA service", e);
     } finally {
       for (int i = 0; i < noisyLoggers.length; i++)
-        java.util.logging.Logger.getLogger(noisyLoggers[i]).setLevel(previousLevels[i]);
+        Logger.getLogger(noisyLoggers[i]).setLevel(previousLevels[i]);
     }
 
     LogManager.instance().log(this, Level.INFO, "RaftHAServer stopped");
@@ -504,6 +504,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public String getClusterName() {
     return clusterName;
+  }
+
+  public ContextConfiguration getConfiguration() {
+    return configuration;
+  }
+
+  public ArcadeDBServer getServer() {
+    return arcadeServer;
   }
 
   public int getConfiguredServers() {
@@ -782,196 +790,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Called on leader changes so the operator can see the cluster state at a glance.
    */
   public void printClusterConfiguration() {
-    if (!isLeader())
-      return;
-
-    try {
-      final RaftPeerId leaderId = getLeaderId();
-      final String leaderPeerId = leaderId != null ? leaderId.toString() : "";
-      final long term = getCurrentTerm();
-      final long commitIndex = getCommitIndex();
-      final Collection<RaftPeer> peers = getLivePeers();
-      if (peers.isEmpty())
-        return;
-
-      // Collect follower replication state (only available on leader)
-      final Map<String, long[]> followerState = new HashMap<>();
-      for (final Map<String, Object> f : getFollowerStates()) {
-        final String peerId = (String) f.get("peerId");
-        final long matchIndex = (Long) f.get("matchIndex");
-        final long lastRpcMs = (Long) f.get("lastRpcElapsedMs");
-        followerState.put(peerId, new long[]{matchIndex, lastRpcMs});
-      }
-
-      // Build table rows
-      final List<String[]> rows = new ArrayList<>();
-      for (final RaftPeer peer : peers) {
-        final String peerId = peer.getId().toString();
-        final boolean isPeerLeader = peerId.equals(leaderPeerId);
-        final String role = isPeerLeader ? "Leader" : "Follower";
-        final String address = peer.getAddress();
-
-        String lagStr = "";
-        String latencyStr = "";
-        if (!isPeerLeader) {
-          final long[] state = followerState.get(peerId);
-          if (state != null) {
-            final long lag = commitIndex - state[0];
-            lagStr = lag > 0 ? String.valueOf(lag) : "0";
-            final long elapsedMs = state[1];
-            final long heartbeatInterval =
-                configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN) / 2;
-            if (elapsedMs <= heartbeatInterval)
-              latencyStr = elapsedMs + " ms";
-          }
-        }
-
-        rows.add(new String[]{peerId, address, role, lagStr, latencyStr});
-      }
-
-      // Calculate column widths
-      final String[] headers = {"SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY"};
-      final int[] widths = new int[headers.length];
-      for (int i = 0; i < headers.length; i++)
-        widths[i] = headers[i].length();
-      for (final String[] row : rows)
-        for (int i = 0; i < row.length; i++)
-          widths[i] = Math.max(widths[i], row[i].length());
-
-      // Format table
-      final StringBuilder sb = new StringBuilder();
-      sb.append(String.format("CLUSTER CONFIGURATION (term=%d, commitIndex=%d)%n", term, commitIndex));
-
-      appendSeparator(sb, widths);
-      appendRow(sb, widths, headers);
-      appendSeparator(sb, widths);
-      for (final String[] row : rows)
-        appendRow(sb, widths, row);
-      appendSeparator(sb, widths);
-
-      final String output = sb.toString();
-
-      // Only print if the configuration actually changed
-      final int hash = output.hashCode();
-      if (hash == lastClusterConfigHash)
-        return;
-      lastClusterConfigHash = hash;
-
-      LogManager.instance().log(this, Level.WARNING, "%s", output);
-
-    } catch (final Exception e) {
-      HALog.log(this, HALog.BASIC, "Error printing cluster configuration: %s", e.getMessage());
-    }
-  }
-
-  private static void appendSeparator(final StringBuilder sb, final int[] widths) {
-    sb.append('+');
-    for (final int w : widths)
-      sb.append('-').append("-".repeat(w)).append("-+");
-    sb.append('\n');
-  }
-
-  private static void appendRow(final StringBuilder sb, final int[] widths, final String[] values) {
-    sb.append('|');
-    for (int i = 0; i < widths.length; i++)
-      sb.append(' ').append(String.format("%-" + widths[i] + "s", values[i])).append(" |");
-    sb.append('\n');
-  }
-
-  void tryAutoJoinCluster() {
-    final long jitterMs = Math.abs(localPeerId.hashCode() % 3000L);
-    if (jitterMs > 0) {
-      HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing...", jitterMs);
-      try {
-        Thread.sleep(jitterMs);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return;
-      }
-    }
-
-    HALog.log(this, HALog.BASIC, "K8s auto-join: attempting to join existing cluster...");
-
-    for (final RaftPeer peer : raftGroup.getPeers()) {
-      if (peer.getId().equals(localPeerId))
-        continue;
-
-      try {
-        final RaftProperties tempProps = new RaftProperties();
-        RaftServerConfigKeys.Rpc.setTimeoutMin(tempProps, TimeDuration.valueOf(3, TimeUnit.SECONDS));
-        RaftServerConfigKeys.Rpc.setTimeoutMax(tempProps, TimeDuration.valueOf(5, TimeUnit.SECONDS));
-        RaftServerConfigKeys.Rpc.setRequestTimeout(tempProps, TimeDuration.valueOf(5, TimeUnit.SECONDS));
-
-        final RaftGroup targetGroup = RaftGroup.valueOf(raftGroup.getGroupId(), peer);
-        try (final RaftClient tempClient = RaftClient.newBuilder()
-            .setRaftGroup(targetGroup)
-            .setProperties(tempProps)
-            .build()) {
-
-          final var groupInfo = tempClient.getGroupManagementApi(peer.getId())
-              .info(raftGroup.getGroupId());
-
-          if (groupInfo != null && groupInfo.isSuccess()) {
-            final var confOpt = groupInfo.getConf();
-            if (confOpt.isPresent()) {
-              final var conf = confOpt.get();
-              boolean alreadyMember = false;
-              for (final var p : conf.getPeersList())
-                if (p.getId().toStringUtf8().equals(localPeerId.toString())) {
-                  alreadyMember = true;
-                  break;
-                }
-
-              if (!alreadyMember) {
-                HALog.log(this, HALog.BASIC,
-                    "K8s auto-join: adding self (%s) to existing cluster via peer %s",
-                    localPeerId, peer.getId());
-
-                RaftPeer localPeer = null;
-                for (final RaftPeer p : raftGroup.getPeers())
-                  if (p.getId().equals(localPeerId)) {
-                    localPeer = p;
-                    break;
-                  }
-
-                if (localPeer != null) {
-                  final List<RaftPeer> newPeers = new ArrayList<>();
-                  for (final var existingPeer : conf.getPeersList()) {
-                    final String existingId = existingPeer.getId().toStringUtf8();
-                    for (final RaftPeer p : raftGroup.getPeers())
-                      if (p.getId().toString().equals(existingId)) {
-                        newPeers.add(p);
-                        break;
-                      }
-                  }
-                  newPeers.add(localPeer);
-
-                  final RaftClientReply joinReply = tempClient.admin().setConfiguration(newPeers);
-                  if (!joinReply.isSuccess())
-                    LogManager.instance().log(this, Level.WARNING,
-                        "K8s auto-join: setConfiguration rejected: %s",
-                        joinReply.getException() != null ? joinReply.getException().getMessage() : "unknown");
-                  else
-                    HALog.log(this, HALog.BASIC,
-                        "K8s auto-join: successfully joined cluster with %d peers", newPeers.size());
-                }
-              } else {
-                HALog.log(this, HALog.BASIC, "K8s auto-join: already a member of the cluster");
-              }
-            }
-            return;
-          }
-        }
-      } catch (final Exception e) {
-        HALog.log(this, HALog.DETAILED,
-            "K8s auto-join: peer %s not reachable (%s), trying next...",
-            peer.getId(), e.getMessage());
-      }
-    }
-
-    LogManager.instance().log(this, Level.WARNING,
-        "K8s auto-join: no existing cluster found, starting as new cluster. "
-            + "If other nodes exist but are unreachable, this may create a split-brain. Verify network connectivity");
+    statusExporter.printClusterConfiguration();
   }
 
   boolean hasExistingRaftStorage() {
@@ -980,40 +799,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return false;
     final File[] subdirs = storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found"));
     return subdirs != null && subdirs.length > 0;
-  }
-
-  /**
-   * Initialises the cluster token used for inter-node request forwarding.
-   * <ul>
-   *   <li>If {@code HA_CLUSTER_TOKEN} is already set in config, nothing changes.</li>
-   *   <li>If the token file exists in {@code storageDir}, its value is loaded into config.</li>
-   *   <li>Otherwise a new UUID is generated, written to the file, and set in config.</li>
-   * </ul>
-   */
-  static void initClusterToken(final ContextConfiguration configuration, final File storageDir) {
-    final String configured = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
-    if (configured != null && !configured.isBlank())
-      return;
-
-    // Derive a deterministic cluster token from the cluster name and root password.
-    // All nodes in the same cluster share the same cluster name and root password, so
-    // they will all compute the same token — a requirement for inter-node HTTP forwarding.
-    // A random per-node token (the previous approach) caused authentication failures
-    // because each node stored its token in its own private Raft storage directory.
-    final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
-    final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
-    final String password = clusterName + ":" + (rootPassword != null ? rootPassword : "");
-    try {
-      final byte[] salt = ("arcadedb-cluster-token:" + clusterName).getBytes(StandardCharsets.UTF_8);
-      final javax.crypto.SecretKeyFactory factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-      final javax.crypto.spec.PBEKeySpec spec = new javax.crypto.spec.PBEKeySpec(
-          password.toCharArray(), salt, 100_000, 256);
-      final byte[] hash = factory.generateSecret(spec).getEncoded();
-      final String token = java.util.HexFormat.of().formatHex(hash);
-      configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, token);
-    } catch (final Exception e) {
-      throw new RuntimeException("Failed to derive cluster token", e);
-    }
   }
 
   /**
@@ -1028,7 +813,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       t.setDaemon(true);
       return t;
     });
-    lagMonitorExecutor.scheduleAtFixedRate(this::checkReplicaLag, 5, 5, TimeUnit.SECONDS);
+    lagMonitorExecutor.scheduleAtFixedRate(statusExporter::checkReplicaLag, 5, 5, TimeUnit.SECONDS);
   }
 
   /**
@@ -1038,19 +823,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (lagMonitorExecutor != null) {
       lagMonitorExecutor.shutdownNow();
       lagMonitorExecutor = null;
-    }
-  }
-
-  private void checkReplicaLag() {
-    try {
-      final var division = raftServer.getDivision(raftGroup.getGroupId());
-      final var info = division.getInfo();
-      if (!info.isLeader())
-        return;
-      final long commitIndex = info.getLastAppliedIndex();
-      clusterMonitor.updateLeaderCommitIndex(commitIndex);
-    } catch (final Exception e) {
-      HALog.log(this, HALog.TRACE, "Error checking replica lag", e);
     }
   }
 

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
@@ -125,9 +126,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // Recover any snapshot installations that were interrupted by a crash
     if (server != null) {
       final String dbDir = server.getConfiguration().getValueAsString(
-          com.arcadedb.GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+          GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
       if (dbDir != null)
-        SnapshotInstaller.recoverPendingSnapshotSwaps(java.nio.file.Path.of(dbDir));
+        SnapshotInstaller.recoverPendingSnapshotSwaps(Path.of(dbDir));
     }
     LogManager.instance().log(this, Level.INFO, "ArcadeStateMachine initialized (groupId=%s)", groupId);
   }
@@ -248,7 +249,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Records a snapshot checkpoint so Ratis can compact the log up to the last-applied index.
    * <p>
-   * The ArcadeDB database files on disk are inherently the snapshot state — every committed
+   * The ArcadeDB database files on disk are inherently the snapshot state - every committed
    * transaction is already durably flushed by the {@link com.arcadedb.engine.TransactionManager}.
    * Returning the last-applied index here tells Ratis it may purge log entries up to that index,
    * reducing log disk usage over time.
@@ -338,7 +339,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           throw new RuntimeException("Cannot determine leader HTTP address for snapshot download");
 
         final String clusterToken = server.getConfiguration().getValueAsString(
-            com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+            GlobalConfiguration.HA_CLUSTER_TOKEN);
 
         for (final String dbName : server.getDatabaseNames()) {
           LogManager.instance().log(this, Level.INFO,
@@ -524,13 +525,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
         db.getEmbedded().close();
         server.removeDatabase(databaseName);
       } else {
-        databasePath = server.getConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
-            + java.io.File.separator + databaseName;
+        databasePath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
+            + File.separator + databaseName;
       }
 
       final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
       final String clusterToken = server.getConfiguration().getValueAsString(
-          com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+          GlobalConfiguration.HA_CLUSTER_TOKEN);
       try {
         SnapshotInstaller.install(databaseName, databasePath, leaderHttpAddr, clusterToken, server);
       } catch (final java.io.IOException e) {
@@ -606,7 +607,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (server == null)
       return null;
     final String dbDir = server.getConfiguration().getValueAsString(
-        com.arcadedb.GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+        GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
     if (dbDir == null)
       return null;
     return Path.of(dbDir, ".raft", "applied-index");
@@ -623,7 +624,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     try {
       final String clusterToken = server.getConfiguration().getValueAsString(
-          com.arcadedb.GlobalConfiguration.HA_CLUSTER_TOKEN);
+          GlobalConfiguration.HA_CLUSTER_TOKEN);
       for (final String dbName : server.getDatabaseNames()) {
         if (server.existsDatabase(dbName)) {
           final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
