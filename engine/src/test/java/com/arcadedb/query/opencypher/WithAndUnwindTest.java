@@ -662,4 +662,56 @@ class WithAndUnwindTest {
       FileUtils.deleteRecursively(new File(isolatedDbPath));
     }
   }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3874
+   * Path variable binding with variable-length patterns: COUNT(path) returns 0
+   * even though the underlying traversal matches rows.
+   */
+  @Test
+  @Order(62)
+  void pathVariableWithVarLengthPattern_Issue3874() {
+    final String isolatedDbPath = "./target/test-databases/issue-3874-repro";
+    FileUtils.deleteRecursively(new File(isolatedDbPath));
+    final Database db = new DatabaseFactory(isolatedDbPath).create();
+    try {
+      db.transaction(() -> {
+        db.getSchema().createVertexType("Person").createProperty("name", String.class);
+        db.getSchema().createEdgeType("KNOWS");
+        db.command("opencypher",
+            "CREATE (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), (c:Person {name: 'Carol'}), "
+                + "(a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)");
+      });
+
+      // Exact query from bug report: COUNT(path) should be 1
+      final ResultSet result = db.query("opencypher",
+          "MATCH path = (start:Person)-[:KNOWS*2]->(end:Person) RETURN COUNT(path) AS c");
+
+      assertThat(result.hasNext()).as("Should return a result row").isTrue();
+      final long count = ((Number) result.next().getProperty("c")).longValue();
+      result.close();
+      assertThat(count).as("One 2-hop path Alice->Bob->Carol").isEqualTo(1L);
+
+      // Also test length(path) - user reports this produces no rows
+      final ResultSet lenResult = db.query("opencypher",
+          "MATCH path = (start:Person)-[:KNOWS*2]->(end:Person) RETURN length(path) AS len");
+      assertThat(lenResult.hasNext()).as("length(path) should produce a row").isTrue();
+      final long len = ((Number) lenResult.next().getProperty("len")).longValue();
+      lenResult.close();
+      assertThat(len).as("Path length should be 2 (two edges)").isEqualTo(2L);
+
+      // Control: same pattern without path variable should work
+      final ResultSet ctrl = db.query("opencypher",
+          "MATCH (start:Person)-[:KNOWS*2]->(end:Person) RETURN start.name AS s, end.name AS e");
+      assertThat(ctrl.hasNext()).isTrue();
+      final var row = ctrl.next();
+      assertThat(row.<String>getProperty("s")).isEqualTo("Alice");
+      assertThat(row.<String>getProperty("e")).isEqualTo("Carol");
+      assertThat(ctrl.hasNext()).as("Only one 2-hop path").isFalse();
+      ctrl.close();
+    } finally {
+      db.drop();
+      FileUtils.deleteRecursively(new File(isolatedDbPath));
+    }
+  }
 }
