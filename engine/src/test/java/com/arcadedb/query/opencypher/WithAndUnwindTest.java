@@ -619,4 +619,47 @@ class WithAndUnwindTest {
     ctrl3.close();
     assertThat(ctrl3Count).as("Control 3: no LIMIT should return 2 rows").isEqualTo(2);
   }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3876
+   * After aggregation in WITH, ORDER BY + SKIP + LIMIT returns empty result set.
+   */
+  @Test
+  @Order(61)
+  void withAggregationOrderBySkipLimit_Issue3876() {
+    final String isolatedDbPath = "./target/test-databases/issue-3876-repro";
+    FileUtils.deleteRecursively(new File(isolatedDbPath));
+    final Database db = new DatabaseFactory(isolatedDbPath).create();
+    try {
+      db.transaction(() -> {
+        db.getSchema().createVertexType("Person").createProperty("name", String.class);
+        db.getSchema().createVertexType("Movie").createProperty("title", String.class);
+        db.getSchema().createEdgeType("ACTED_IN");
+        db.command("opencypher",
+            "CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Carol'}), "
+                + "(m:Movie {title:'M1'}), (a)-[:ACTED_IN]->(m), (b)-[:ACTED_IN]->(m)");
+      });
+
+      // Exact query from the bug report
+      final ResultSet result = db.query("opencypher",
+          "MATCH (p:Person) OPTIONAL MATCH (p)-[:ACTED_IN]->(m:Movie) "
+              + "WITH p, COUNT(m) AS c ORDER BY p.name SKIP 1 LIMIT 2 "
+              + "RETURN p.name AS name, c ORDER BY name");
+
+      final List<Map<String, Object>> rows = new ArrayList<>();
+      while (result.hasNext()) {
+        final var row = result.next();
+        rows.add(Map.of("name", (String) row.getProperty("name"),
+            "c", ((Number) row.getProperty("c")).longValue()));
+      }
+      result.close();
+
+      assertThat(rows).as("Should return 2 rows (Bob c=1, Carol c=0)").hasSize(2);
+      assertThat(rows.get(0)).containsEntry("name", "Bob").containsEntry("c", 1L);
+      assertThat(rows.get(1)).containsEntry("name", "Carol").containsEntry("c", 0L);
+    } finally {
+      db.drop();
+      FileUtils.deleteRecursively(new File(isolatedDbPath));
+    }
+  }
 }
