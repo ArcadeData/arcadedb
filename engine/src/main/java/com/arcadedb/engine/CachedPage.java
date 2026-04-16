@@ -19,9 +19,11 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.log.LogManager;
 
 import java.nio.*;
 import java.util.*;
+import java.util.logging.*;
 
 /**
  * Contains the page content to be shared across threads.
@@ -60,7 +62,14 @@ public class CachedPage {
 
   public void loadMetadata() {
     version = content.getInt(BasePage.PAGE_VERSION_OFFSET);
-    content.size(content.getInt(BasePage.PAGE_CONTENTSIZE_OFFSET));
+    int contentSize = content.getInt(BasePage.PAGE_CONTENTSIZE_OFFSET);
+    if (contentSize < 0 || contentSize > size) {
+      // Corrupted page metadata - clamp to physical page size and log a warning
+      LogManager.instance().log(this, Level.WARNING,
+          "Page %s has invalid content size %d (physical size %d), clamping to physical size", pageId, contentSize, size);
+      contentSize = size;
+    }
+    content.size(contentSize);
   }
 
   public ImmutablePage useAsImmutable() {

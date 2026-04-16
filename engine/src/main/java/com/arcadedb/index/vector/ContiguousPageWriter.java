@@ -210,6 +210,16 @@ public class ContiguousPageWriter implements IndexWriter {
           // Invoke callback to commit current transaction
           chunkCallback.onChunkComplete(totalBytesWritten);
 
+          // Invalidate stale page reference: the commit above finalized the old
+          // transaction so currentPage now points to a MutablePage that has already
+          // been handed to the async-flush thread. Continuing to write through that
+          // reference would mutate its byte array concurrently with the flush,
+          // potentially corrupting the on-disk page metadata (content-size header).
+          // Resetting currentPageNum forces ensurePageLoaded() to re-acquire the
+          // page in the new transaction on the next iteration.
+          currentPageNum = -1;
+          currentPage = null;
+
           // Reset counter for next chunk
           totalBytesWritten = 0;
         }
