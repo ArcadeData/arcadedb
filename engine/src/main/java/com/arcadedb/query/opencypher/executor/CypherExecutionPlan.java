@@ -4589,11 +4589,13 @@ public class CypherExecutionPlan {
     if (expr instanceof ComparisonExpression) {
       final ComparisonExpression compExpr = (ComparisonExpression) expr;
 
-      // Check if left side is ID(variable)
+      // Check if left side is ID(variable) or elementId(variable)
       final Expression left = compExpr.getLeft();
       if (left instanceof FunctionCallExpression) {
         final FunctionCallExpression funcExpr = (FunctionCallExpression) left;
-        if ("id".equalsIgnoreCase(funcExpr.getFunctionName()) && funcExpr.getArguments().size() == 1) {
+        final String funcName = funcExpr.getFunctionName();
+        if (("id".equalsIgnoreCase(funcName) || "elementid".equalsIgnoreCase(funcName))
+            && funcExpr.getArguments().size() == 1) {
           final Expression arg = funcExpr.getArguments().get(0);
           if (arg instanceof VariableExpression) {
             final VariableExpression varExpr = (VariableExpression) arg;

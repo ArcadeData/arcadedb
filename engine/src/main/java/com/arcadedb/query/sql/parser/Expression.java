@@ -160,8 +160,11 @@ public class Expression extends SimpleNode {
       rid.toString(params, builder);
     else if (mathExpression != null)
       mathExpression.toString(params, builder);
-    else if (whereCondition != null)
+    else if (whereCondition != null) {
+      builder.append("(");
       whereCondition.toString(params, builder);
+      builder.append(")");
+    }
     else if (arrayConcatExpression != null)
       arrayConcatExpression.toString(params, builder);
     else if (json != null)

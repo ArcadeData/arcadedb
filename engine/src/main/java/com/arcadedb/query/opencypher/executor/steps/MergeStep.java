@@ -42,6 +42,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 
@@ -382,6 +383,50 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
+   * Tries to find and use an index for the evaluated property constraints.
+   * Returns an iterator of matching identifiables, or null if no suitable index found.
+   * Applies leftmost-prefix matching for composite indexes.
+   */
+  private Iterator<Identifiable> tryFindByIndex(final DocumentType type, final String label,
+      final Map<String, Object> evaluatedProperties) {
+    TypeIndex bestIndex = null;
+    int bestMatchCount = 0;
+    List<String> bestMatchedProperties = null;
+
+    for (final TypeIndex index : type.getAllIndexes(false)) {
+      final List<String> indexProperties = index.getPropertyNames();
+      int matchCount = 0;
+      final List<String> matchedProperties = new ArrayList<>();
+
+      for (final String indexProp : indexProperties) {
+        if (evaluatedProperties.containsKey(indexProp)) {
+          matchCount++;
+          matchedProperties.add(indexProp);
+        } else
+          break; // Leftmost prefix only
+      }
+
+      // Require full index match (all index properties covered) - lookupByKey needs exact match
+      if (matchCount > 0 && matchCount == indexProperties.size() && matchCount > bestMatchCount) {
+        bestMatchCount = matchCount;
+        bestIndex = index;
+        bestMatchedProperties = matchedProperties;
+      }
+    }
+
+    if (bestIndex == null || bestMatchedProperties == null || bestMatchedProperties.isEmpty())
+      return null;
+
+    final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
+    final Object[] propertyValues = new Object[propertyNames.length];
+    for (int i = 0; i < propertyNames.length; i++)
+      propertyValues[i] = evaluatedProperties.get(propertyNames[i]);
+
+    final Iterator<Identifiable> iter = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    return iter;
+  }
+
+  /**
    * Finds a node matching the pattern.
    *
    * @param nodePattern node pattern to find
@@ -443,6 +488,22 @@ public class MergeStep extends AbstractExecutionStep {
     // Check if the type exists in the schema before iterating
     if (!context.getDatabase().getSchema().existsType(label))
       return null;
+
+    // OPTIMIZATION: try index before full scan
+    if (evaluatedProperties != null && !evaluatedProperties.isEmpty()) {
+      final DocumentType type = context.getDatabase().getSchema().getType(label);
+      if (type != null) {
+        final Iterator<Identifiable> indexIter = tryFindByIndex(type, label, evaluatedProperties);
+        if (indexIter != null) {
+          while (indexIter.hasNext()) {
+            final Identifiable identifiable = indexIter.next();
+            if (identifiable instanceof Vertex vertex && matchesProperties(vertex, evaluatedProperties))
+              return vertex;
+          }
+          return null;
+        }
+      }
+    }
 
     @SuppressWarnings("unchecked")
     final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
@@ -516,6 +577,23 @@ public class MergeStep extends AbstractExecutionStep {
     final String label = labels.get(0);
     if (!context.getDatabase().getSchema().existsType(label))
       return matches;
+
+    // OPTIMIZATION: try index before full scan
+    if (evaluatedProperties != null && !evaluatedProperties.isEmpty()) {
+      final DocumentType type = context.getDatabase().getSchema().getType(label);
+      if (type != null) {
+        final Iterator<Identifiable> indexIter = tryFindByIndex(type, label, evaluatedProperties);
+        if (indexIter != null) {
+          while (indexIter.hasNext()) {
+            final Identifiable identifiable = indexIter.next();
+            if (identifiable instanceof Vertex vertex && matchesProperties(vertex, evaluatedProperties))
+              matches.add(vertex);
+          }
+          return matches;
+        }
+      }
+    }
+
     @SuppressWarnings("unchecked")
     final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
     while (iterator.hasNext()) {

@@ -28,11 +28,11 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
-import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -65,11 +65,13 @@ import java.util.NoSuchElementException;
  * predicates during scanning rather than in a separate FilterPropertiesStep.
  */
 public class MatchNodeStep extends AbstractExecutionStep {
-  private final String            variable;
-  private final NodePattern       pattern;
-  private final String            idFilter;    // Optional ID filter to apply (e.g., "#1:0")
-  private final BooleanExpression whereFilter; // Optional inline WHERE predicate (pushdown)
-  private       String            usedIndexName; // Track which index was used (if any)
+  private final String              variable;
+  private final NodePattern         pattern;
+  private final String              idFilter;    // Optional ID filter to apply (e.g., "#1:0")
+  private final BooleanExpression   whereFilter; // Optional inline WHERE predicate (pushdown)
+  private final ExpressionEvaluator evaluator;   // Shared evaluator for WHERE/ID expression resolution
+  private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
+  private       String              usedIndexName; // Track which index was used (if any)
 
   /**
    * Creates a match node step.
@@ -111,6 +113,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     this.pattern = pattern;
     this.idFilter = idFilter;
     this.whereFilter = whereFilter;
+    this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
+    this.dynamicIdExpression = (whereFilter != null) ? findIdValueExpression(whereFilter) : null;
   }
 
   @Override
@@ -291,18 +295,30 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private Iterator<Identifiable> getVertexIterator(final Result currentInputResult) {
-    // OPTIMIZATION: If ID filter is present, look up the specific vertex by ID
+    // OPTIMIZATION: Resolve ID filter - either static (from plan time) or dynamic (from runtime).
+    // Static idFilter handles literals/parameters; dynamicIdExpression handles expressions like
+    // BatchEntry.destRID that can only be resolved with the current input row (issue #3864).
+    String effectiveIdFilter = this.idFilter;
+    if ((effectiveIdFilter == null || effectiveIdFilter.isEmpty())
+        && dynamicIdExpression != null && currentInputResult != null) {
+      final Object resolved = evaluator.evaluate(dynamicIdExpression, currentInputResult, context);
+      if (resolved != null)
+        effectiveIdFilter = resolved instanceof Identifiable
+            ? ((Identifiable) resolved).getIdentity().toString()
+            : resolved.toString();
+    }
+
+    // If ID filter is present, look up the specific vertex by ID.
     // This is critical for performance when matching by ID (e.g., WHERE ID(a) = "#1:0")
     // Without this optimization, MATCH (a),(b) WHERE ID(a) = x AND ID(b) = y
     // would create a Cartesian product of ALL vertices before filtering
-    if (idFilter != null && !idFilter.isEmpty()) {
+    if (effectiveIdFilter != null && !effectiveIdFilter.isEmpty()) {
       try {
-        final RID rid = new RID(context.getDatabase(), idFilter);
+        final RID rid = new RID(context.getDatabase(), effectiveIdFilter);
         final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
-        // Return single-element iterator for the matched vertex
         return List.of(vertex).iterator();
       } catch (final Exception e) {
-        // Invalid ID format - return empty iterator
+        // Invalid ID format or record not found - return empty iterator
         return List.<Identifiable>of().iterator();
       }
     }
@@ -446,11 +462,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
       }
       // Resolve dynamic expressions (e.g., e.src_id from UNWIND) against the current input result
       else if (propertyValue instanceof Expression) {
-        if (currentInputResult != null) {
-          final ExpressionEvaluator evaluator = new ExpressionEvaluator(
-              new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
+        if (currentInputResult != null)
           propertyValue = evaluator.evaluate((Expression) propertyValue, currentInputResult, context);
-        } else
+        else
           return null; // Cannot resolve expression without input row — skip index
       }
 
@@ -484,8 +498,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
         }
       }
 
-      // Update best match if this index matches more properties
-      if (matchCount > 0 && matchCount > bestMatchCount) {
+      // Update best match if this index covers all its properties (full match required for lookupByKey)
+      if (matchCount > 0 && matchCount == indexProperties.size() && matchCount > bestMatchCount) {
         bestMatchCount = matchCount;
         bestIndex = index;
         bestMatchedProperties = matchedProperties;
@@ -497,16 +511,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
       final Object[] propertyValues = new Object[propertyNames.length];
 
-      for (int i = 0; i < propertyNames.length; i++) {
+      for (int i = 0; i < propertyNames.length; i++)
         propertyValues[i] = properties.get(propertyNames[i]);
-      }
 
       // Track which index was used for profiling output
       usedIndexName = label + "[" + String.join(", ", propertyNames) + "]";
 
-      // Use the index for lookup
-      @SuppressWarnings("unchecked") final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
-          context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+      final Iterator<Identifiable> iter = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
       return iter;
     }
 
@@ -517,7 +528,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Extracts equality predicates from the WHERE clause pushdown filter and tries to use
    * an index for lookup. This is critical for UNWIND...MATCH...WHERE patterns where
    * the WHERE references an UNWIND variable (e.g., WHERE a.id = e.src_id).
-   * Without this, each UNWIND row triggers a full type scan — O(N) per row.
+   * Without this, each UNWIND row triggers a full type scan - O(N) per row.
    * With index lookup, it's O(log N) per row.
    */
   private Iterator<Identifiable> tryFindAndUseIndexFromWhere(final DocumentType type, final String label,
@@ -547,7 +558,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
           break; // Leftmost prefix matching
       }
 
-      if (matchCount > 0 && matchCount > bestMatchCount) {
+      // Require full index match (all index properties covered) - lookupByKey needs exact match
+      if (matchCount > 0 && matchCount == indexProperties.size() && matchCount > bestMatchCount) {
         bestMatchCount = matchCount;
         bestIndex = index;
         bestMatchedProperties = matchedProperties;
@@ -562,12 +574,56 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       usedIndexName = label + "[" + String.join(", ", propertyNames) + "]";
 
-      @SuppressWarnings("unchecked") final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
-          context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+      final Iterator<Identifiable> iter = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
       return iter;
     }
 
     return null;
+  }
+
+  /**
+   * Pre-analyzes the WHERE filter AST to find an expression providing the RID value for
+   * ID(variable) = &lt;expression&gt; patterns. Called once in the constructor so the AST
+   * is not re-traversed on every input row. Supports both id() and elementId().
+   *
+   * @return the Expression that evaluates to the RID, or null if no ID pattern found
+   */
+  private Expression findIdValueExpression(final BooleanExpression expr) {
+    if (expr instanceof ComparisonExpression) {
+      final ComparisonExpression comp = (ComparisonExpression) expr;
+      if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
+        return null;
+
+      // Check for pattern: id(variable) = <expression> or elementId(variable) = <expression>
+      if (isIdFunctionOnVariable(comp.getLeft()))
+        return comp.getRight();
+      if (isIdFunctionOnVariable(comp.getRight()))
+        return comp.getLeft();
+    } else if (expr instanceof LogicalExpression) {
+      final LogicalExpression logical = (LogicalExpression) expr;
+      if (logical.getOperator() == LogicalExpression.Operator.AND) {
+        final Expression left = findIdValueExpression(logical.getLeft());
+        if (left != null)
+          return left;
+        return findIdValueExpression(logical.getRight());
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Checks if an expression is a call to id() or elementId() on this step's variable.
+   */
+  private boolean isIdFunctionOnVariable(final Expression expr) {
+    if (expr instanceof FunctionCallExpression) {
+      final FunctionCallExpression func = (FunctionCallExpression) expr;
+      final String name = func.getFunctionName();
+      if (("id".equalsIgnoreCase(name) || "elementid".equalsIgnoreCase(name)) && func.getArguments().size() == 1) {
+        final Expression arg = func.getArguments().get(0);
+        return arg instanceof VariableExpression && variable.equals(((VariableExpression) arg).getVariableName());
+      }
+    }
+    return false;
   }
 
   /**
@@ -603,8 +659,6 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       if (propertyName != null && valueExpr != null) {
         // Resolve the value expression
-        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
-            new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
         final Object resolvedValue = evaluator.evaluate(valueExpr, currentInputResult, context);
         if (resolvedValue != null)
           predicates.put(propertyName, resolvedValue);
@@ -667,11 +721,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
       Object expectedValue = entry.getValue();
 
       // Evaluate Expression-based property values (e.g., event.year)
-      if (expectedValue instanceof Expression && currentResult != null) {
-        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
-            new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
+      if (expectedValue instanceof Expression && currentResult != null)
         expectedValue = evaluator.evaluate((Expression) expectedValue, currentResult, context);
-      }
 
       // Resolve parameter references (e.g., $username -> actual value from context)
       if (expectedValue instanceof CypherASTBuilder.ParameterReference) {
