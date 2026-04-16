@@ -1218,6 +1218,11 @@ public class SelectExecutionPlanner {
           else if (variableValue instanceof String typeName) {
             target.setIdentifier(new Identifier(typeName));
           }
+        } else {
+          // Variable not available at plan creation time (e.g., script LET variable).
+          // Defer resolution to execution time.
+          info.fetchExecutionPlan.chain(new FetchFromVariableStep(identifierValue, null, context));
+          return;
         }
       }
 
