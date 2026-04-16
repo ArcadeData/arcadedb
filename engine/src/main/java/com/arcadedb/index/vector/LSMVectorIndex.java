@@ -96,6 +96,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -117,6 +118,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public static final  int               CURRENT_VERSION = 0;
   public static final  int               DEF_PAGE_SIZE   = 262_144;
   private static final VectorTypeSupport vts             = VectorizationProvider.getInstance().getVectorTypeSupport();
+
+  // JVM-wide semaphore limiting the number of concurrent async graph rebuilds across all indexes
+  // and databases.  Multiple concurrent rebuilds are extremely memory-intensive and can cause OOM
+  // kills (issue #3868).  The permit count is read once at class-load time from the configuration.
+  private static final Semaphore REBUILD_SEMAPHORE = new Semaphore(
+      GlobalConfiguration.VECTOR_INDEX_MAX_CONCURRENT_REBUILDS.getValueAsInteger());
 
   // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
@@ -1939,6 +1946,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * The current graph remains available for searches while the rebuild is in progress.
    * When the rebuild completes, the new graph is hot-swapped atomically.
    * If a rebuild is already in progress, this method does nothing (the next search will check again).
+   * <p>
+   * A JVM-wide semaphore limits the number of concurrent rebuilds to prevent OOM kills
+   * when multiple indexes trigger rebuilds simultaneously (issue #3868).
    */
   private synchronized void startAsyncGraphRebuild() {
     if (asyncRebuildInProgress)
@@ -1953,6 +1963,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     asyncRebuildThread = new Thread(() -> {
       try {
+        // Acquire a rebuild permit to limit concurrent rebuilds across all indexes (issue #3868).
+        // This prevents multiple large graph rebuilds from running simultaneously and exhausting
+        // heap memory.  The thread blocks here until a permit becomes available.
+        REBUILD_SEMAPHORE.acquire();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        asyncRebuildInProgress = false;
+        asyncRebuildThread = null;
+        return;
+      }
+      try {
+        LogManager.instance().log(this, Level.INFO,
+            "Acquired rebuild permit for index: %s (available permits: %d)",
+            indexName, REBUILD_SEMAPHORE.availablePermits());
         buildGraphFromScratch();
         LogManager.instance().log(this, Level.INFO,
             "Async graph rebuild completed for index: %s", indexName);
@@ -1965,6 +1989,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               "Error during async graph rebuild for index %s: %s", indexName, e.getMessage());
         }
       } finally {
+        REBUILD_SEMAPHORE.release();
         asyncRebuildInProgress = false;
         asyncRebuildThread = null;
       }
@@ -4538,18 +4563,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         try {
           if (graphIndex != null && graphIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE) {
-            // Large graph: async rebuild
+            // Large graph: async rebuild (semaphore acquired inside the async thread)
             startAsyncGraphRebuild();
           } else {
-            // Small graph: synchronous rebuild.
-            // Do NOT wrap in an external write lock - buildGraphFromScratch() manages
-            // its own locking internally (acquires/releases around preparation and state
-            // update phases, but releases during graph build to allow concurrent reads).
-            // Wrapping in an external lock would cause the internal release to only
-            // decrement the hold count, keeping the lock held during the graph build phase
-            // and potentially blocking ForkJoinPool workers that need database access.
-            if (mutationsSinceSerialize.get() > 0)
-              buildGraphFromScratch();
+            // Small graph: synchronous rebuild on the timer thread.
+            // Use tryAcquire to avoid blocking the timer thread indefinitely.
+            // If a large rebuild is already running, skip this small one - the next
+            // inactivity timeout or mutation threshold will pick it up.
+            if (mutationsSinceSerialize.get() > 0) {
+              if (REBUILD_SEMAPHORE.tryAcquire()) {
+                try {
+                  buildGraphFromScratch();
+                } finally {
+                  REBUILD_SEMAPHORE.release();
+                }
+              } else {
+                LogManager.instance().log(this, Level.INFO,
+                    "Skipping inactivity rebuild for index %s: another rebuild is already in progress",
+                    indexName);
+              }
+            }
           }
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,

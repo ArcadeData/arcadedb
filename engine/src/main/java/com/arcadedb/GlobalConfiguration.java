@@ -386,6 +386,13 @@ public enum GlobalConfiguration {
       This provides visibility during graph construction; disable if any logging overhead is a concern.""",
         Boolean.class, true),
 
+  VECTOR_INDEX_MAX_CONCURRENT_REBUILDS("arcadedb.vectorIndex.maxConcurrentRebuilds", SCOPE.JVM,
+      """
+      Maximum number of vector index graph rebuilds that can run concurrently across all databases. \
+      Concurrent rebuilds are memory-intensive; running too many in parallel can cause OOM kills. \
+      Set to 1 to serialize all rebuilds (safest for memory). Higher values trade memory for throughput.""",
+      Integer.class, 1),
+
   // NETWORK
   NETWORK_SAME_SERVER_ERROR_RETRIES("arcadedb.network.sameServerErrorRetry", SCOPE.SERVER,
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, look also at HA_ERROR_RETRY setting. 0 (default) = no retry",
