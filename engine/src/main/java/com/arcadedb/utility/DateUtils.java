@@ -181,9 +181,10 @@ public class DateUtils {
       else if (precisionToUse.equals(ChronoUnit.MICROS))
         timestamp =
             TimeUnit.MICROSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS) + (offsetDateTime.getNano() / 1000);
-      else if (precisionToUse.equals(ChronoUnit.NANOS))
-        timestamp = TimeUnit.NANOSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS) + offsetDateTime.getNano();
-      else
+      else if (precisionToUse.equals(ChronoUnit.NANOS)) {
+        long s2n = TimeUnit.NANOSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS);
+        timestamp = (s2n >= 0 && Long.MAX_VALUE - s2n < offsetDateTime.getNano()) ? Long.MAX_VALUE : s2n + offsetDateTime.getNano();
+      } else
         // NOT SUPPORTED
         timestamp = 0;
     } else if (value instanceof Instant instant) {
