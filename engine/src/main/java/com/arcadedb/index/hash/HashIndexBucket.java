@@ -354,6 +354,7 @@ public class HashIndexBucket extends PaginatedComponent {
 
   private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final RID specificRID) throws IOException {
     int currentPageNum = bucketPageNum;
+    int totalRemoved = 0;
 
     while (currentPageNum != NO_OVERFLOW_PAGE) {
       final MutablePage page = database.getTransaction()
@@ -376,14 +377,28 @@ public class HashIndexBucket extends PaginatedComponent {
           }
           // RID not in any entry on this page - continue to overflow pages
         } else {
-          final int removedCount = removeEntryFromPage(page, entryCount, pos);
-          updateTotalEntries(-removedCount);
-          return;
+          // Remove all entries matching the key on this page. For unique indexes only one
+          // exists in the whole chain; for non-unique indexes, entries for the same key
+          // may be split across multiple overflow pages (see addRIDToExistingEntry when
+          // space runs out), so we must keep scanning subsequent pages too.
+          int p = pos;
+          while (p < entryCount && keysMatch(page, readSlot(page, p), serializedKey)) {
+            totalRemoved += removeEntryFromPage(page, entryCount, p);
+            entryCount--;
+            // next entry has shifted into position p, do not advance
+          }
+          if (unique) {
+            updateTotalEntries(-totalRemoved);
+            return;
+          }
         }
       }
 
       currentPageNum = overflowPage;
     }
+
+    if (totalRemoved > 0)
+      updateTotalEntries(-totalRemoved);
   }
 
   // ─── COUNTING ────────────────────────────────────────────

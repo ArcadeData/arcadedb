@@ -249,6 +249,143 @@ class Issue3714HashIndexCorruptionTest {
   }
 
   /**
+   * Regression test for the user's comment on #3714: verifies that after the addRIDToExistingEntry
+   * fix, a full batch UPSERT workflow (like the Metadata ingest in the reported issue) does NOT
+   * produce duplicate results in a SELECT ... ORDER BY on a non-unique hash-indexed property.
+   * <p>
+   * Mirrors the user's schema: unique hash index on recordId (used by UPSERT WHERE) and a
+   * non-unique hash index on publicationYear. Repeatedly UPSERTs the same records and verifies
+   * that the physical record count and the SELECT result count stay consistent.
+   */
+  @Test
+  void testNoDuplicatesAfterBatchUpsertsWithHashIndexes() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().getOrCreateDocumentType("Metadata");
+      type.createProperty("recordId", String.class);
+      type.createProperty("publicationYear", Integer.class);
+      type.createProperty("name", String.class);
+      database.getSchema().buildTypeIndex("Metadata", new String[] { "recordId" })
+          .withType(Schema.INDEX_TYPE.HASH).withUnique(true).withPageSize(2048).create();
+      database.getSchema().buildTypeIndex("Metadata", new String[] { "publicationYear" })
+          .withType(Schema.INDEX_TYPE.HASH).withUnique(false).withPageSize(2048).create();
+    });
+
+    final int totalRecords = 500;
+    final int distinctYears = 10;
+
+    // Initial UPSERT batch
+    database.transaction(() -> {
+      for (int i = 0; i < totalRecords; i++) {
+        database.command("sql",
+            "UPDATE Metadata CONTENT {\"recordId\":\"rec_" + i + "\",\"publicationYear\":" + (2000 + i % distinctYears)
+                + ",\"name\":\"initial_" + i + "\"} UPSERT WHERE recordId = 'rec_" + i + "'");
+      }
+    });
+
+    // Re-UPSERT same records multiple times with updated name (stresses remove+insert on both indexes)
+    for (int iter = 0; iter < 5; iter++) {
+      final int iteration = iter;
+      database.transaction(() -> {
+        for (int i = 0; i < totalRecords; i++) {
+          database.command("sql",
+              "UPDATE Metadata CONTENT {\"recordId\":\"rec_" + i + "\",\"publicationYear\":" + (2000 + i % distinctYears)
+                  + ",\"name\":\"iter_" + iteration + "_" + i + "\"} UPSERT WHERE recordId = 'rec_" + i + "'");
+        }
+      });
+    }
+
+    // Verify physical record count
+    database.transaction(() -> {
+      assertThat(database.countType("Metadata", false)).isEqualTo(totalRecords);
+
+      // Verify unique hash index lookup works for every recordId
+      for (int i = 0; i < totalRecords; i++) {
+        try (final ResultSet rs = database.query("sql", "SELECT FROM Metadata WHERE recordId = 'rec_" + i + "'")) {
+          int found = 0;
+          while (rs.hasNext()) {
+            rs.next();
+            found++;
+          }
+          assertThat(found).withFailMessage("Expected 1 record for recordId rec_%d but got %d", i, found).isEqualTo(1);
+        }
+      }
+
+      // The exact query from the user's comment - must NOT return duplicates
+      try (final ResultSet rs = database.query("sql", "SELECT publicationYear FROM Metadata ORDER BY publicationYear DESC")) {
+        int count = 0;
+        while (rs.hasNext()) {
+          rs.next();
+          count++;
+        }
+        assertThat(count).withFailMessage("Duplicate results in ORDER BY query: got %d, expected %d", count, totalRecords)
+            .isEqualTo(totalRecords);
+      }
+
+      // Non-unique hash index lookups must return exactly totalRecords/distinctYears per year
+      for (int y = 0; y < distinctYears; y++) {
+        final int year = 2000 + y;
+        try (final ResultSet rs = database.query("sql", "SELECT FROM Metadata WHERE publicationYear = " + year)) {
+          int found = 0;
+          while (rs.hasNext()) {
+            rs.next();
+            found++;
+          }
+          assertThat(found).withFailMessage("publicationYear %d returned %d, expected %d", year, found, totalRecords / distinctYears)
+              .isEqualTo(totalRecords / distinctYears);
+        }
+      }
+    });
+  }
+
+  /**
+   * Regression test for the orphan-entries bug in removeFromBucket: when a non-unique key's
+   * entries are split across multiple overflow pages (which happens after addRIDToExistingEntry
+   * exhausts in-page space), a single remove(keys) call (without specific RID) must walk the
+   * entire overflow chain and remove ALL matching entries, not stop at the first matching page.
+   */
+  @Test
+  void testRemoveAllEntriesForKeyAcrossOverflowChain() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().getOrCreateDocumentType("OrphanDoc");
+      type.createProperty("key", String.class);
+      type.createProperty("seq", Integer.class);
+      // Very small pages to force entries to split across overflow chain
+      database.getSchema().buildTypeIndex("OrphanDoc", new String[] { "key" })
+          .withType(Schema.INDEX_TYPE.HASH).withUnique(false).withPageSize(512).create();
+    });
+
+    // Insert many docs with the same key - forces RID list to spill into overflow pages
+    final int totalDocs = 400;
+    database.transaction(() -> {
+      for (int i = 0; i < totalDocs; i++) {
+        final MutableDocument doc = database.newDocument("OrphanDoc");
+        doc.set("key", "hot_key");
+        doc.set("seq", i);
+        doc.save();
+      }
+    });
+
+    // Drop everything for the key via the index-level remove(keys) - this is the exact path
+    // that had the orphan bug: before the fix it stopped after the first matching page.
+    database.transaction(() -> {
+      final Index index = database.getSchema().getIndexByName("OrphanDoc[key]");
+      index.remove(new Object[] { "hot_key" });
+    });
+
+    // The index must report zero entries for the key after the single remove call
+    database.transaction(() -> {
+      final Index index = database.getSchema().getIndexByName("OrphanDoc[key]");
+      final IndexCursor cursor = index.get(new Object[] { "hot_key" });
+      int remaining = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        remaining++;
+      }
+      assertThat(remaining).withFailMessage("Orphan entries left in overflow chain after remove(keys): %d", remaining).isEqualTo(0);
+    });
+  }
+
+  /**
    * Test overflow chain handling with deeply chained pages.
    * Uses very small page size to force many overflow pages.
    */
