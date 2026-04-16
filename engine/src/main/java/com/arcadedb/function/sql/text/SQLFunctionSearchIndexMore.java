@@ -30,6 +30,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.fulltext.MoreLikeThisConfig;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -44,10 +45,16 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
-  public static final String NAME = "search_index_more";
+  public static final String NAME  = "fulltext.searchIndexMore";
+  public static final String ALIAS = "search_index_more";
 
   public SQLFunctionSearchIndexMore() {
     super(NAME);
+  }
+
+  @Override
+  public String getAlias() {
+    return ALIAS;
   }
 
   @Override
@@ -66,11 +73,15 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
     // Convert sourceRIDs to Set<RID>
     final Set<RID> sourceRids = parseSourceRIDs(iParams[1]);
 
-    // Parse optional metadata
+    // Parse optional options. Preferred form is a typed map, validated against MoreLikeThisConfig.OPTION_KEYS.
+    // A JSON string is still accepted for backward compatibility.
     final MoreLikeThisConfig config;
     if (iParams.length >= 3 && iParams[2] != null) {
-      final JSONObject metadata = new JSONObject(iParams[2].toString());
-      config = MoreLikeThisConfig.fromJSON(metadata);
+      if (iParams[2] instanceof Map<?, ?> rawMap) {
+        config = MoreLikeThisConfig.fromOptions(new FunctionOptions(NAME, rawMap, MoreLikeThisConfig.OPTION_KEYS));
+      } else {
+        config = MoreLikeThisConfig.fromJSON(new JSONObject(iParams[2].toString()));
+      }
     } else {
       config = new MoreLikeThisConfig();
     }

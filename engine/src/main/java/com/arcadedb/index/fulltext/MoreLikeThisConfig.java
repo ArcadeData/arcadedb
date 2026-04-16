@@ -17,9 +17,11 @@
  */
 package com.arcadedb.index.fulltext;
 
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Configuration for More Like This (MLT) queries. Holds all parameters that control
@@ -28,15 +30,22 @@ import java.util.Objects;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class MoreLikeThisConfig {
-  private int minTermFreq = 2;
-  private int minDocFreq = 5;
+  /**
+   * Keys accepted by {@link #fromOptions(FunctionOptions)}. Exposed so SQL functions can wire this set into
+   * {@link FunctionOptions} for unknown-key rejection.
+   */
+  public static final Set<String> OPTION_KEYS = Set.of("minTermFreq", "minDocFreq", "maxDocFreqPercent", "maxQueryTerms",
+      "minWordLen", "maxWordLen", "boostByScore", "excludeSource", "maxSourceDocs");
+
+  private int   minTermFreq       = 2;
+  private int   minDocFreq        = 5;
   private Float maxDocFreqPercent = null;
-  private int maxQueryTerms = 25;
-  private int minWordLen = 0;
-  private int maxWordLen = 0;
-  private boolean boostByScore = true;
+  private int   maxQueryTerms     = 25;
+  private int   minWordLen        = 0;
+  private int   maxWordLen        = 0;
+  private boolean boostByScore  = true;
   private boolean excludeSource = true;
-  private int maxSourceDocs = 25;
+  private int     maxSourceDocs = 25;
 
   /**
    * Creates a configuration with default values.
@@ -87,6 +96,29 @@ public class MoreLikeThisConfig {
     if (json.has("maxSourceDocs")) {
       config.maxSourceDocs = json.getInt("maxSourceDocs");
     }
+
+    return config;
+  }
+
+  /**
+   * Creates a configuration from a typed {@link FunctionOptions} bag. Missing keys keep the defaults. The caller is responsible
+   * for building the {@code FunctionOptions} with {@link #OPTION_KEYS} as the set of allowed keys so that typos are rejected.
+   */
+  public static MoreLikeThisConfig fromOptions(final FunctionOptions opts) {
+    final MoreLikeThisConfig config = new MoreLikeThisConfig();
+    if (opts == null || opts.isEmpty())
+      return config;
+
+    config.minTermFreq = opts.getInt("minTermFreq", config.minTermFreq);
+    config.minDocFreq = opts.getInt("minDocFreq", config.minDocFreq);
+    if (opts.containsKey("maxDocFreqPercent"))
+      config.maxDocFreqPercent = (float) opts.getDouble("maxDocFreqPercent", 0d);
+    config.maxQueryTerms = opts.getInt("maxQueryTerms", config.maxQueryTerms);
+    config.minWordLen = opts.getInt("minWordLen", config.minWordLen);
+    config.maxWordLen = opts.getInt("maxWordLen", config.maxWordLen);
+    config.boostByScore = opts.getBoolean("boostByScore", config.boostByScore);
+    config.excludeSource = opts.getBoolean("excludeSource", config.excludeSource);
+    config.maxSourceDocs = opts.getInt("maxSourceDocs", config.maxSourceDocs);
 
     return config;
   }

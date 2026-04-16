@@ -54,10 +54,16 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements IndexableSQLFunction {
-  public static final String NAME = "search_index";
+  public static final String NAME  = "fulltext.searchIndex";
+  public static final String ALIAS = "search_index";
 
   public SQLFunctionSearchIndex() {
     super(NAME);
+  }
+
+  @Override
+  public String getAlias() {
+    return ALIAS;
   }
 
   @Override

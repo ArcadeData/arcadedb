@@ -86,4 +86,20 @@ class SQLFunctionSearchFieldsTest extends TestHelper {
       assertThat(count).isEqualTo(1);
     });
   }
+
+  @Test
+  void searchByFieldNamesNamespaced() {
+    database.transaction(() -> {
+      final ResultSet result = database.query("sql",
+          "SELECT title FROM Article WHERE `fulltext.searchFields`(['content'], 'java') = true");
+
+      int count = 0;
+      while (result.hasNext()) {
+        final Result r = result.next();
+        assertThat(r.getProperty("title").toString()).isEqualTo("Doc1");
+        count++;
+      }
+      assertThat(count).isEqualTo(1);
+    });
+  }
 }

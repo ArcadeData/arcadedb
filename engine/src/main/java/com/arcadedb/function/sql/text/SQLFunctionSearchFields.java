@@ -40,14 +40,24 @@ import java.util.*;
  * SQL function to search full-text indexes by field names.
  * Automatically finds the appropriate full-text index for the given fields.
  *
- * Usage: SEARCH_FIELDS(['field1', 'field2'], 'query')
- * Example: SELECT FROM Article WHERE SEARCH_FIELDS(['title', 'content'], 'java')
+ * Usage: fulltext.searchFields(['field1', 'field2'], 'query')
+ * Example: SELECT FROM Article WHERE fulltext.searchFields(['title', 'content'], 'java')
+ *
+ * Legacy alias: {@code search_fields} (snake_case, kept for backward compatibility).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SQLFunctionSearchFields extends SQLFunctionAbstract {
-  public static final String NAME = "search_fields";
+  public static final String NAME  = "fulltext.searchFields";
+  public static final String ALIAS = "search_fields";
 
   public SQLFunctionSearchFields() {
     super(NAME);
+  }
+
+  @Override
+  public String getAlias() {
+    return ALIAS;
   }
 
   @Override
