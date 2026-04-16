@@ -18,6 +18,7 @@
  */
 package org.apache.tinkerpop.gremlin.util;
 
+import com.arcadedb.utility.DateUtils;
 import org.apache.tinkerpop.gremlin.process.traversal.Path;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Element;
@@ -25,7 +26,18 @@ import org.apache.tinkerpop.gremlin.structure.Property;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.VertexProperty;
 
-import java.util.*;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.EnumMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 import static org.apache.tinkerpop.gremlin.util.NumberHelper.eitherAreNaN;
 
@@ -167,6 +179,17 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
   private final Comparator<Comparable> naturalOrderComparator = Comparator.naturalOrder();
 
   /**
+   * Mixed date types (java.util.Date, java.time.*, java.util.Calendar).
+   */
+  private final Comparator<Object> dateComparator = (f, s) -> {
+    if (f == s)
+      return 0;
+    final Long t1 = DateUtils.dateTimeToTimestamp(f, ChronoUnit.NANOS);
+    final Long t2 = DateUtils.dateTimeToTimestamp(s, ChronoUnit.NANOS);
+    return t1.compareTo(t2);
+  };
+
+  /**
    * This comparator does not provide a stable order for numerics because of type promotion equivalence semantics.
    */
   private final Comparator<Number> numberComparator = (f, s) -> NumberHelper.compare(f, s);
@@ -256,12 +279,35 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
       if (o == null)
         return Nulltype;
 
-      final Type[] types = Type.values();
-      for (int i = 1; i < types.length; i++) {
-        if (types[i].type.isInstance(o)) {
-          return types[i];
-        }
-      }
+      if (o instanceof Boolean)
+        return Boolean;
+      if (o instanceof Number)
+        return Number;
+      if (DateUtils.isDate(o))
+        return Date;
+      if (o instanceof String)
+        return String;
+      if (o instanceof UUID)
+        return UUID;
+      if (o instanceof Vertex)
+        return Vertex;
+      if (o instanceof Edge)
+        return Edge;
+      if (o instanceof VertexProperty)
+        return VertexProperty;
+      if (o instanceof Property)
+        return Property;
+      if (o instanceof Path)
+        return Path;
+      if (o instanceof Set)
+        return Set;
+      if (o instanceof List)
+        return List;
+      if (o instanceof Map)
+        return Map;
+      if (o instanceof Map.Entry)
+        return MapEntry;
+
       return Unknown;
     }
 
@@ -315,7 +361,7 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     put(Type.Nulltype, nulltypeComparator);
     put(Type.Boolean, naturalOrderComparator);
     put(Type.Number, numberComparator);
-    put(Type.Date, naturalOrderComparator);
+    put(Type.Date, dateComparator);
     put(Type.String, naturalOrderComparator);
     put(Type.UUID, naturalOrderComparator);
     put(Type.Vertex, elementComparator);
