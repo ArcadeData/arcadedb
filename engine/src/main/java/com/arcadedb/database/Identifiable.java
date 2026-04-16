@@ -41,7 +41,6 @@ public interface Identifiable {
    * Returns the generic record.
    *
    * @param loadContent specifies if pre-load the record content
-   *
    * @return the {@link Record}
    */
   Record getRecord(boolean loadContent);
@@ -64,7 +63,6 @@ public interface Identifiable {
    * Returns the document record. If the record is not a document, a UnsupportedOperationException exception is thrown.
    *
    * @param loadContent specifies if pre-load the record content
-   *
    * @return the {@link Document}
    */
   Document asDocument(final boolean loadContent);
@@ -80,7 +78,6 @@ public interface Identifiable {
    * Returns the vertex record. If the record is not a vertex, a UnsupportedOperationException exception is thrown.
    *
    * @param loadContent specifies if pre-load the record content
-   *
    * @return the {@link Vertex}
    */
   Vertex asVertex(boolean loadContent);
@@ -97,8 +94,15 @@ public interface Identifiable {
    * Returns the edge record. If the record is not an edge, a UnsupportedOperationException exception is thrown.
    *
    * @param loadContent specifies if pre-load the record content
-   *
    * @return the {@link Edge}
    */
   Edge asEdge(boolean loadContent);
+
+  /**
+   * Database is not stored anymore into the RID since 26.4.1. This API will be removed in the future.
+   */
+  @Deprecated
+  default Database getDatabase() {
+    return DatabaseContext.INSTANCE.getActiveDatabase();
+  }
 }

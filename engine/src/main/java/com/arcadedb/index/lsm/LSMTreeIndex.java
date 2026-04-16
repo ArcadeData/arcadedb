@@ -95,8 +95,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   public static class PaginatedComponentFactoryHandlerUnique implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
-    public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+    public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
+                                           final int id,
+                                           final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
       if (filePath.endsWith(LSMTreeIndexCompacted.UNIQUE_INDEX_EXT))
         return new LSMTreeIndexCompacted(null, database, name, true, filePath, id, mode, pageSize, version);
 
@@ -106,8 +107,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   public static class PaginatedComponentFactoryHandlerNotUnique implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
-    public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+    public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
+                                           final int id,
+                                           final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
       if (filePath.endsWith(LSMTreeIndexCompacted.UNIQUE_INDEX_EXT))
         return new LSMTreeIndexCompacted(null, database, name, false, filePath, id, mode, pageSize, version);
 
@@ -119,12 +121,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * Called at creation time.
    */
   public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
-      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+                      final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
+                      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     try {
       this.name = name;
       this.metadata = new IndexMetadata(null, null, -1);
-      this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
+      this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, mode, keyTypes, pageSize,
+          nullStrategy);
     } catch (final IOException e) {
       throw new IndexException("Error on creating index '" + name + "'", e);
     }
@@ -133,8 +136,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   /**
    * Called at load time (1st page only).
    */
-  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final int id,
-      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath
+      , final int id,
+                      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     this.name = FileUtils.encode(name, database.getSchema().getEncoding());
     this.metadata = new IndexMetadata(null, null, -1);
     this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, id, mode, pageSize, version);
@@ -395,9 +399,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public IndexCursor range(final boolean ascendingOrder, final Object[] beginKeys, final boolean beginKeysInclusive,
-      final Object[] endKeys, final boolean endKeysInclusive) {
+                           final Object[] endKeys, final boolean endKeysInclusive) {
     checkIsValid();
-    return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
+    return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys,
+        endKeysInclusive));
   }
 
   @Override
@@ -430,7 +435,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       Set<RID> removedRids = null;
       boolean hasRemoves = false;
 
-      final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges = getDatabase().getTransaction()
+      final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey,
+          TransactionIndexContext.IndexKey>> indexChanges = getDatabase().getTransaction()
           .getIndexChanges().getIndexKeys(getName());
       if (indexChanges != null) {
         final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values = indexChanges.get(
@@ -526,7 +532,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
       getDatabase().getTransaction()
-          .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys, rid.getIdentity());
+          .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys,
+              rid.getIdentity());
     else
       lock.executeInReadLock(() -> {
         mutable.remove(convertedKeys, rid);
@@ -596,7 +603,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final int fileId = mutable.getFileId();
 
-    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(fileId, 0, Thread.currentThread());
+    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(fileId, 0,
+        Thread.currentThread());
     if (locked == LockManager.LOCK_STATUS.NO)
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
 
@@ -613,7 +621,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         final String newName = mutable.getName().substring(0, last_) + "_" + System.nanoTime();
 
         final LSMTreeIndexMutable newMutableIndex = new LSMTreeIndexMutable(this, database, newName, mutable.isUnique(),
-            database.getDatabasePath() + File.separator + newName, mutable.getKeyTypes(), mutable.getBinaryKeyTypes(), pageSize,
+            database.getDatabasePath() + File.separator + newName, mutable.getKeyTypes(), mutable.getBinaryKeyTypes()
+            , pageSize,
             LSMTreeIndexMutable.CURRENT_VERSION, compactedIndex);
         database.getSchema().getEmbedded().registerFile(newMutableIndex);
 
@@ -668,7 +677,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         try {
           prevMutable.drop();
         } catch (final IOException e) {
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e, prevMutable);
+          LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e,
+              prevMutable);
         }
 
       return result;
@@ -695,7 +705,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
 
-      LogManager.instance().log(this, Level.INFO, "Building index '%s' on %d properties...", name, metadata.propertyNames.size());
+      LogManager.instance().log(this, Level.INFO, "Building index '%s' on %s...", name,
+          getTypeName() + metadata.propertyNames);
 
       final long startTime = System.currentTimeMillis();
 
