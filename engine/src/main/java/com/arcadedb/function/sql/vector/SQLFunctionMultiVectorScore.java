@@ -20,7 +20,11 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
+
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Combines multiple scores from different vectors using a fusion method.
@@ -38,6 +42,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
  */
 public class SQLFunctionMultiVectorScore extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.multiScore";
+
+  private static final Set<String> OPTIONS = Set.of("weights");
 
   public enum FusionMethod {
     MAX,
@@ -86,9 +92,14 @@ public class SQLFunctionMultiVectorScore extends SQLFunctionVectorAbstract {
     // Handle WEIGHTED separately (needs weight array)
     if (method == FusionMethod.WEIGHTED) {
       if (params.length < 3)
-        throw new CommandSQLParsingException("WEIGHTED method requires weights array: multiVectorScore(scores, 'WEIGHTED', weights)");
+        throw new CommandSQLParsingException(
+            "WEIGHTED method requires a weights array, either positionally (<weights>) or via { weights: [...] }");
 
-      final Object weightsObj = params[2];
+      Object weightsObj = params[2];
+      if (weightsObj instanceof Map<?, ?> rawMap) {
+        final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+        weightsObj = opts.get("weights");
+      }
       if (weightsObj == null)
         return null;
 
@@ -150,6 +161,6 @@ public class SQLFunctionMultiVectorScore extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<scores_array>, <method> [, <weights_array>])";
+    return NAME + "(<scores_array>, <method> [, <weights_array> | { weights: [...] }])";
   }
 }

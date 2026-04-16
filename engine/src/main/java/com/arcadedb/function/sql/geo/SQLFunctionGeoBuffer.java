@@ -19,9 +19,17 @@
 package com.arcadedb.function.sql.geo;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.operation.buffer.BufferOp;
+import org.locationtech.jts.operation.buffer.BufferParameters;
+
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * SQL function geo.buffer: returns a WKT string of the buffered geometry.
@@ -32,6 +40,8 @@ import org.locationtech.jts.geom.Geometry;
  */
 public class SQLFunctionGeoBuffer extends SQLFunctionAbstract {
   public static final String NAME = "geo.buffer";
+
+  private static final Set<String> OPTIONS = Set.of("quadrantSegments", "endCapStyle", "joinStyle");
 
   public SQLFunctionGeoBuffer() {
     super(NAME);
@@ -48,12 +58,47 @@ public class SQLFunctionGeoBuffer extends SQLFunctionAbstract {
       return null;
 
     final double distance = GeoUtils.getDoubleValue(iParams[1]);
-    final Geometry buffered = geometry.buffer(distance);
+
+    final Geometry buffered;
+    if (iParams.length >= 3 && iParams[2] instanceof Map<?, ?> rawMap) {
+      final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+      final BufferParameters bufferParams = new BufferParameters();
+      if (opts.containsKey("quadrantSegments"))
+        bufferParams.setQuadrantSegments(opts.getInt("quadrantSegments", BufferParameters.DEFAULT_QUADRANT_SEGMENTS));
+      if (opts.containsKey("endCapStyle"))
+        bufferParams.setEndCapStyle(parseEndCapStyle(opts.getString("endCapStyle", "ROUND")));
+      if (opts.containsKey("joinStyle"))
+        bufferParams.setJoinStyle(parseJoinStyle(opts.getString("joinStyle", "ROUND")));
+      buffered = BufferOp.bufferOp(geometry, distance, bufferParams);
+    } else {
+      buffered = geometry.buffer(distance);
+    }
     return GeoUtils.jtsToWKT(buffered);
+  }
+
+  private static int parseEndCapStyle(final String s) {
+    return switch (s.toUpperCase(Locale.ENGLISH)) {
+      case "ROUND" -> BufferParameters.CAP_ROUND;
+      case "FLAT" -> BufferParameters.CAP_FLAT;
+      case "SQUARE" -> BufferParameters.CAP_SQUARE;
+      default -> throw new CommandSQLParsingException(
+          "Option 'endCapStyle' for function 'geo.buffer' must be ROUND, FLAT, or SQUARE, got: " + s);
+    };
+  }
+
+  private static int parseJoinStyle(final String s) {
+    return switch (s.toUpperCase(Locale.ENGLISH)) {
+      case "ROUND" -> BufferParameters.JOIN_ROUND;
+      case "MITRE", "MITER" -> BufferParameters.JOIN_MITRE;
+      case "BEVEL" -> BufferParameters.JOIN_BEVEL;
+      default -> throw new CommandSQLParsingException(
+          "Option 'joinStyle' for function 'geo.buffer' must be ROUND, MITRE, or BEVEL, got: " + s);
+    };
   }
 
   @Override
   public String getSyntax() {
-    return "geo.buffer(<geometry>, <distance>)";
+    return "geo.buffer(<geometry>, <distance>"
+        + " [, { quadrantSegments: <int>, endCapStyle: 'ROUND|FLAT|SQUARE', joinStyle: 'ROUND|MITRE|BEVEL' }])";
   }
 }

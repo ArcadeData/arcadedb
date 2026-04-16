@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.engine.timeseries.promql.PromQLEvaluator;
 import com.arcadedb.engine.timeseries.promql.PromQLParser;
 import com.arcadedb.engine.timeseries.promql.PromQLResult;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -30,6 +31,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * SQL function: {@code promql(expr [, evalTimeMs])}
@@ -51,6 +53,8 @@ public class SQLFunctionPromQL extends SQLFunctionConfigurableAbstract {
 
   public static final String NAME = "promql";
 
+  private static final Set<String> OPTIONS = Set.of("evalTimeMs");
+
   public SQLFunctionPromQL() {
     super(NAME);
   }
@@ -63,10 +67,16 @@ public class SQLFunctionPromQL extends SQLFunctionConfigurableAbstract {
 
     final String expr = params[0].toString();
     final long evalTimeMs;
-    if (params.length >= 2 && params[1] != null)
-      evalTimeMs = params[1] instanceof Number n ? n.longValue() : Long.parseLong(params[1].toString());
-    else
+    if (params.length >= 2 && params[1] != null) {
+      if (params[1] instanceof Map<?, ?> rawMap) {
+        final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+        evalTimeMs = opts.getLong("evalTimeMs", System.currentTimeMillis());
+      } else {
+        evalTimeMs = params[1] instanceof Number n ? n.longValue() : Long.parseLong(params[1].toString());
+      }
+    } else {
       evalTimeMs = System.currentTimeMillis();
+    }
 
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final PromQLEvaluator evaluator = new PromQLEvaluator(database);
@@ -102,6 +112,6 @@ public class SQLFunctionPromQL extends SQLFunctionConfigurableAbstract {
 
   @Override
   public String getSyntax() {
-    return "promql(<expr> [,<evalTimeMs>])";
+    return "promql(<expr> [, <evalTimeMs> | { evalTimeMs: <long> }])";
   }
 }

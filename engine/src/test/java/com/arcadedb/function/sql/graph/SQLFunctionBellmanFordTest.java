@@ -21,14 +21,18 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the bellmanFord() SQL function.
@@ -167,6 +171,42 @@ class SQLFunctionBellmanFordTest {
           new Object[] { v1, v4, "'weight'", "OUT" }, ctx);
 
       assertThat(result).hasSize(4);
+    });
+  }
+
+  @Test
+  void executeWithOptionsMap() throws Exception {
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordOptionsMap", (graph) -> {
+      setUp(graph);
+      final BasicCommandContext ctx = new BasicCommandContext();
+      ctx.setDatabase(graph);
+
+      final Map<String, Object> options = new HashMap<>();
+      options.put("direction", "OUT");
+
+      @SuppressWarnings("unchecked")
+      final List<RID> result = (List<RID>) functionBellmanFord.execute(null, null, null,
+          new Object[] { v1, v4, "'weight'", options }, ctx);
+
+      assertThat(result).hasSize(4);
+    });
+  }
+
+  @Test
+  void rejectsUnknownOption() throws Exception {
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordUnknownOption", (graph) -> {
+      setUp(graph);
+      final BasicCommandContext ctx = new BasicCommandContext();
+      ctx.setDatabase(graph);
+
+      final Map<String, Object> options = new HashMap<>();
+      options.put("whoops", 1);
+
+      assertThatThrownBy(() -> functionBellmanFord.execute(null, null, null,
+          new Object[] { v1, v4, "'weight'", options }, ctx))
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("whoops")
+          .hasMessageContaining("bellmanFord");
     });
   }
 }

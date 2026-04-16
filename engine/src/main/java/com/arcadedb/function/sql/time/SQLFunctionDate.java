@@ -20,11 +20,14 @@ package com.arcadedb.function.sql.time;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.utility.DateUtils;
 
 import java.time.*;
 import java.time.format.*;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Builds a date object from the format passed as a number or a string. If no arguments are passed, then the system date is built (like sysdate() function).
@@ -34,6 +37,8 @@ import java.time.format.*;
  */
 public class SQLFunctionDate extends SQLFunctionAbstract {
   public static final String NAME = "date";
+
+  private static final Set<String> OPTIONS = Set.of("format", "timezone");
 
   /**
    * Get the date at construction to have the same date for all the iteration.
@@ -52,11 +57,23 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
       date = DateUtils.millisToLocalDateTime(number.longValue(), null);
     else if (params[0] instanceof String dateAsString) {
       try {
-        final String format;
+        // params[1] can be a format string (positional) or a full options map { format, timezone }.
+        String format = null;
+        String timezone = null;
 
-        if (params.length > 1)
-          format = (String) params[1];
-        else {
+        if (params.length > 1 && params[1] != null) {
+          if (params[1] instanceof Map<?, ?> rawMap) {
+            final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+            format = opts.getString("format", null);
+            timezone = opts.getString("timezone", null);
+          } else {
+            format = params[1].toString();
+            if (params.length > 2 && params[2] != null)
+              timezone = params[2].toString();
+          }
+        }
+
+        if (format == null) {
           final String databaseDateFormat = context.getDatabase().getSchema().getDateFormat();
           if (dateAsString.length() == databaseDateFormat.length())
             format = databaseDateFormat;
@@ -70,7 +87,7 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
         }
 
         final DateTimeFormatter formatter = DateUtils.getFormatter(format)
-            .withZone(params.length > 2 ? ZoneId.of(params[2].toString()) : context.getDatabase().getSchema().getZoneId());
+            .withZone(timezone != null ? ZoneId.of(timezone) : context.getDatabase().getSchema().getZoneId());
 
         date = LocalDateTime.parse(dateAsString, formatter);
       } catch (DateTimeParseException e) {
@@ -84,6 +101,6 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "date([<date-as-number-or-string>] [,<format>] [,<timezone>])";
+    return "date([<date-as-number-or-string> [, <format> | { format: '...', timezone: '...' } [, <timezone>]]])";
   }
 }

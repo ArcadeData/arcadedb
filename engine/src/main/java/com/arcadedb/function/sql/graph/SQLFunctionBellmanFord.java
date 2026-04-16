@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -57,6 +58,8 @@ import java.util.Set;
 public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
   public static final String NAME = "bellmanFord";
 
+  private static final Set<String> OPTIONS = Set.of("direction");
+
   public SQLFunctionBellmanFord() {
     super(NAME);
   }
@@ -70,7 +73,7 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
     final Vertex sourceVertex = toVertex(params[0], context);
     final Vertex destVertex = toVertex(params[1], context);
     final String weightProperty = FileUtils.getStringContent(params[2]);
-    final String direction = params.length > 3 ? params[3].toString().toUpperCase() : "BOTH";
+    final String direction = parseDirectionParam(params);
 
     if (sourceVertex == null || destVertex == null)
       return new LinkedList<>();
@@ -236,8 +239,22 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
     };
   }
 
+  /**
+   * The 4th positional param accepts either the direction string (back-compat) or an options map.
+   */
+  private String parseDirectionParam(final Object[] params) {
+    if (params.length <= 3 || params[3] == null)
+      return "BOTH";
+    if (params[3] instanceof Map<?, ?> rawMap) {
+      final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+      return opts.getString("direction", "BOTH").toUpperCase();
+    }
+    return params[3].toString().toUpperCase();
+  }
+
   @Override
   public String getSyntax() {
-    return "bellmanFord(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName> [, <direction>])";
+    return "bellmanFord(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>"
+        + " [, <direction> | { direction }])";
   }
 }

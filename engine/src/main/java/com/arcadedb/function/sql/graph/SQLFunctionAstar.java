@@ -27,6 +27,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
@@ -54,6 +55,10 @@ import java.util.Set;
  */
 public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   public static final String NAME = "astar";
+
+  private static final Set<String> OPTIONS = Set.of(PARAM_DIRECTION, PARAM_EDGE_TYPE_NAMES, PARAM_VERTEX_AXIS_NAMES,
+      PARAM_PARALLEL, PARAM_MAX_DEPTH, PARAM_EMPTY_IF_MAX_DEPTH, PARAM_TIE_BREAKER, PARAM_D_FACTOR, PARAM_HEURISTIC_FORMULA,
+      PARAM_CUSTOM_HEURISTIC_FORMULA);
 
   private         String              paramWeightFieldName = "weight";
   private         long                currentDepth         = 0;
@@ -275,44 +280,47 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   }
 
   private void bindAdditionalParams(final Object additionalParams, final SQLFunctionAstar context) {
-    if (additionalParams == null) {
+    if (additionalParams == null)
       return;
-    }
-    Map<String, Object> mapParams = null;
-    if (additionalParams instanceof Map) {
-      mapParams = (Map) additionalParams;
-    } else if (additionalParams instanceof Identifiable) {
-      mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).toMap();
-    }
-    if (mapParams != null) {
-      context.paramEdgeTypeNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES));
-      context.paramVertexAxisNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES));
-      if (mapParams.get(SQLFunctionAstar.PARAM_DIRECTION) != null) {
-        if (mapParams.get(SQLFunctionAstar.PARAM_DIRECTION) instanceof String) {
-          context.paramDirection = Vertex.DIRECTION.valueOf(
-              stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_DIRECTION), "OUT").toUpperCase(Locale.ENGLISH));
-        } else {
-          context.paramDirection = (Vertex.DIRECTION) mapParams.get(SQLFunctionAstar.PARAM_DIRECTION);
-        }
-      }
 
-      context.paramParallel = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_PARALLEL), false);
-      context.paramMaxDepth = longOrDefault(mapParams.get(SQLFunctionAstar.PARAM_MAX_DEPTH), context.paramMaxDepth);
-      context.paramEmptyIfMaxDepth = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_EMPTY_IF_MAX_DEPTH),
-          context.paramEmptyIfMaxDepth);
-      context.paramTieBreaker = booleanOrDefault(mapParams.get(SQLFunctionAstar.PARAM_TIE_BREAKER), context.paramTieBreaker);
-      context.paramDFactor = doubleOrDefault(mapParams.get(SQLFunctionAstar.PARAM_D_FACTOR), context.paramDFactor);
-      if (mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA) != null) {
-        if (mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA) instanceof String) {
-          context.paramHeuristicFormula = SQLHeuristicFormula.valueOf(
-              stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA), "MANHATTAN").toUpperCase(Locale.ENGLISH));
-        } else {
-          context.paramHeuristicFormula = (SQLHeuristicFormula) mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA);
-        }
-      }
+    final Map<?, ?> rawMap;
+    if (additionalParams instanceof Map<?, ?> map)
+      rawMap = map;
+    else if (additionalParams instanceof Identifiable identifiable)
+      rawMap = ((Document) identifiable.getRecord()).toMap();
+    else
+      return;
 
-      context.paramCustomHeuristicFormula = stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_CUSTOM_HEURISTIC_FORMULA), "");
+    final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+
+    if (opts.containsKey(PARAM_EDGE_TYPE_NAMES))
+      context.paramEdgeTypeNames = stringArray(opts.get(PARAM_EDGE_TYPE_NAMES));
+    if (opts.containsKey(PARAM_VERTEX_AXIS_NAMES))
+      context.paramVertexAxisNames = stringArray(opts.get(PARAM_VERTEX_AXIS_NAMES));
+
+    if (opts.containsKey(PARAM_DIRECTION)) {
+      final Object raw = opts.get(PARAM_DIRECTION);
+      if (raw instanceof Vertex.DIRECTION direction)
+        context.paramDirection = direction;
+      else
+        context.paramDirection = Vertex.DIRECTION.valueOf(raw.toString().toUpperCase(Locale.ENGLISH));
     }
+
+    context.paramParallel = opts.getBoolean(PARAM_PARALLEL, context.paramParallel);
+    context.paramMaxDepth = opts.getLong(PARAM_MAX_DEPTH, context.paramMaxDepth);
+    context.paramEmptyIfMaxDepth = opts.getBoolean(PARAM_EMPTY_IF_MAX_DEPTH, context.paramEmptyIfMaxDepth);
+    context.paramTieBreaker = opts.getBoolean(PARAM_TIE_BREAKER, context.paramTieBreaker);
+    context.paramDFactor = opts.getDouble(PARAM_D_FACTOR, context.paramDFactor);
+
+    if (opts.containsKey(PARAM_HEURISTIC_FORMULA)) {
+      final Object raw = opts.get(PARAM_HEURISTIC_FORMULA);
+      if (raw instanceof SQLHeuristicFormula formula)
+        context.paramHeuristicFormula = formula;
+      else
+        context.paramHeuristicFormula = SQLHeuristicFormula.valueOf(raw.toString().toUpperCase(Locale.ENGLISH));
+    }
+
+    context.paramCustomHeuristicFormula = opts.getString(PARAM_CUSTOM_HEURISTIC_FORMULA, context.paramCustomHeuristicFormula);
   }
 
   public String getSyntax() {

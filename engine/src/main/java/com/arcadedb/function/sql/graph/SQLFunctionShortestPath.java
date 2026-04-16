@@ -32,6 +32,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
@@ -54,6 +55,9 @@ import java.util.Map;
 public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
   public static final String NAME            = "shortestPath";
   public static final String PARAM_MAX_DEPTH = "maxDepth";
+
+  private static final java.util.Set<String> OPTIONS = java.util.Set.of("direction", "edgeType", "edgeTypeNames", "maxDepth",
+      "edge");
 
   public SQLFunctionShortestPath() {
     super(NAME);
@@ -143,30 +147,34 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       return result;
     }
 
-    if (params.length > 2 && params[2] != null) {
-      shortestPathContext.directionLeft = Vertex.DIRECTION.valueOf(params[2].toString().toUpperCase(Locale.ENGLISH));
+    // Params 2..4 are optional. They can be passed positionally (direction, edgeType(s), {maxDepth,edge}) or consolidated
+    // into a single trailing options map at position 2 that also accepts `direction`, `edgeType`, and `edgeTypeNames`.
+    if (params.length > 2 && params[2] instanceof Map<?, ?> consolidated) {
+      bindOptions(consolidated, shortestPathContext, true);
+    } else {
+      if (params.length > 2 && params[2] != null)
+        shortestPathContext.directionLeft = Vertex.DIRECTION.valueOf(params[2].toString().toUpperCase(Locale.ENGLISH));
+
+      if (params.length > 3) {
+        shortestPathContext.edgeType = params[3] == null ? null : "" + params[3];
+      }
+      if (params.length > 3 && params[3] != null) {
+        if (params[3] instanceof List<?> list)
+          shortestPathContext.edgeTypeParam = list.toArray(new String[0]);
+        else
+          shortestPathContext.edgeTypeParam = new String[] { shortestPathContext.edgeType };
+      }
+
+      if (params.length > 4 && params[4] instanceof Map<?, ?> additional)
+        bindOptions(additional, shortestPathContext, false);
+      else if (params.length > 4 && params[4] instanceof Identifiable additionalId)
+        bindOptions(additionalId.getRecord().asDocument().toMap(), shortestPathContext, false);
     }
-    if (shortestPathContext.directionLeft == Vertex.DIRECTION.OUT) {
+
+    if (shortestPathContext.directionLeft == Vertex.DIRECTION.OUT)
       shortestPathContext.directionRight = Vertex.DIRECTION.IN;
-    } else if (shortestPathContext.directionLeft == Vertex.DIRECTION.IN) {
+    else if (shortestPathContext.directionLeft == Vertex.DIRECTION.IN)
       shortestPathContext.directionRight = Vertex.DIRECTION.OUT;
-    }
-
-    shortestPathContext.edgeType = null;
-    if (params.length > 3) {
-      shortestPathContext.edgeType = params[3] == null ? null : "" + params[3];
-    }
-    shortestPathContext.edgeTypeParam = null;
-    if (params.length > 3 && params[3] != null) {
-      if (params[3] instanceof List<?> list) {
-        shortestPathContext.edgeTypeParam = list.toArray(new String[0]);
-      } else
-        shortestPathContext.edgeTypeParam = new String[] { shortestPathContext.edgeType };
-    }
-
-    if (params.length > 4) {
-      bindAdditionalParams(params[4], shortestPathContext);
-    }
 
     // Try CSR-accelerated provider for non-edge path
     if (!Boolean.TRUE.equals(shortestPathContext.edge)) {
@@ -237,58 +245,38 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
   }
 
-  private void bindAdditionalParams(final Object additionalParams, final ShortestPathContext context) {
-    if (additionalParams == null)
+  /**
+   * Reads options from a map into the shortest-path context. When {@code allowPathKnobs} is true the map may also carry
+   * {@code direction} / {@code edgeType} / {@code edgeTypeNames}, so callers can use a single consolidated trailing map.
+   */
+  private void bindOptions(final Map<?, ?> map, final ShortestPathContext ctx, final boolean allowPathKnobs) {
+    if (map == null || map.isEmpty())
       return;
 
-    Map<String, Object> mapParams = null;
-    if (additionalParams instanceof Map map)
-      mapParams = map;
-    else if (additionalParams instanceof Identifiable identifiable)
-      mapParams = identifiable.getRecord().asDocument().toMap();
+    final FunctionOptions opts = new FunctionOptions(NAME, map, OPTIONS);
 
-    if (mapParams != null) {
-      context.maxDepth = integer(mapParams.get("maxDepth"));
-      final Boolean withEdge = toBoolean(mapParams.get("edge"));
-      context.edge = Boolean.TRUE.equals(withEdge) ? Boolean.TRUE : Boolean.FALSE;
-    }
-  }
+    if (allowPathKnobs) {
+      if (opts.containsKey("direction"))
+        ctx.directionLeft = Vertex.DIRECTION.valueOf(opts.getString("direction", "BOTH").toUpperCase(Locale.ENGLISH));
 
-  private Integer integer(final Object fromObject) {
-    if (fromObject == null)
-      return null;
-
-    if (fromObject instanceof Number number)
-      return number.intValue();
-
-    if (fromObject instanceof String string) {
-      try {
-        return Integer.parseInt(string);
-      } catch (final NumberFormatException ignore) {
+      final Object edgeTypes = opts.containsKey("edgeTypeNames") ? opts.get("edgeTypeNames") : opts.get("edgeType");
+      if (edgeTypes != null) {
+        if (edgeTypes instanceof List<?> list) {
+          ctx.edgeTypeParam = list.toArray(new String[0]);
+          ctx.edgeType = ctx.edgeTypeParam.length > 0 ? ctx.edgeTypeParam[0] : null;
+        } else {
+          ctx.edgeType = edgeTypes.toString();
+          ctx.edgeTypeParam = new String[] { ctx.edgeType };
+        }
       }
     }
-    return null;
-  }
 
-  /**
-   * @return
-   *
-   * @author Thomas Young (YJJThomasYoung@hotmail.com)
-   */
-  private Boolean toBoolean(final Object fromObject) {
-    if (fromObject == null)
-      return null;
-
-    if (fromObject instanceof Boolean bool)
-      return bool;
-
-    if (fromObject instanceof String string) {
-      try {
-        return Boolean.parseBoolean(string);
-      } catch (final NumberFormatException ignore) {
-      }
-    }
-    return null;
+    if (opts.containsKey("maxDepth"))
+      ctx.maxDepth = opts.getInt("maxDepth", 0);
+    if (opts.containsKey("edge"))
+      ctx.edge = opts.getBoolean("edge", false);
+    else if (ctx.edge == null)
+      ctx.edge = Boolean.FALSE;
   }
 
   /**
@@ -336,7 +324,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
   }
 
   public String getSyntax() {
-    return "shortestPath(<sourceVertex>, <destinationVertex>, [<direction>, [ <edgeTypeAsString> ]])";
+    return "shortestPath(<sourceVertex>, <destinationVertex>"
+        + " [, <direction> [, <edgeType> [, { maxDepth, edge } ]]]"
+        + " | { direction, edgeType | edgeTypeNames, maxDepth, edge })";
   }
 
   protected List<RID> walkLeft(final ShortestPathContext context) {

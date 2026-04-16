@@ -115,4 +115,37 @@ class TimeSeriesFunctionMovingAvgTest extends TestHelper {
         assertThat((List<?>) ma).isEmpty();
     }
   }
+
+  @Test
+  void optionsMapWindow() {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE MaOpt TIMESTAMP ts FIELDS (value DOUBLE)");
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO MaOpt SET ts = 1000, value = 1.0");
+      database.command("sql", "INSERT INTO MaOpt SET ts = 2000, value = 2.0");
+      database.command("sql", "INSERT INTO MaOpt SET ts = 3000, value = 3.0");
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT ts.movingAvg(value, { window: 2 }) AS ma FROM MaOpt");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Double> ma = (List<Double>) rs.next().getProperty("ma");
+    assertThat(ma).hasSize(3);
+    assertThat(ma.get(0)).isCloseTo(1.0, within(0.001));
+    assertThat(ma.get(1)).isCloseTo(1.5, within(0.001));
+    assertThat(ma.get(2)).isCloseTo(2.5, within(0.001));
+  }
+
+  @Test
+  void optionsMapRejectsUnknownKey() {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE MaBad TIMESTAMP ts FIELDS (value DOUBLE)");
+    database.transaction(() -> database.command("sql", "INSERT INTO MaBad SET ts = 1000, value = 1.0"));
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+        database.query("sql", "SELECT ts.movingAvg(value, { whoops: 1 }) AS ma FROM MaBad").next())
+      .hasMessageContaining("whoops")
+      .hasMessageContaining("ts.movingAvg");
+  }
 }
