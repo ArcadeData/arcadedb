@@ -714,4 +714,44 @@ class WithAndUnwindTest {
       FileUtils.deleteRecursively(new File(isolatedDbPath));
     }
   }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3875
+   * Path assignment in CREATE: CREATE p = (n)-[r:TYPE]->(m) should bind both p and r.
+   */
+  @Test
+  @Order(63)
+  void createPathAssignment_Issue3875() {
+    final String isolatedDbPath = "./target/test-databases/issue-3875-repro";
+    FileUtils.deleteRecursively(new File(isolatedDbPath));
+    final Database db = new DatabaseFactory(isolatedDbPath).create();
+    try {
+      db.transaction(() -> {
+        db.getSchema().createVertexType("Country").createProperty("name", String.class);
+        db.getSchema().createEdgeType("BORDERS_WITH");
+        db.command("opencypher",
+            "CREATE (n:Country {name: 'Belgium'}), (m:Country {name: 'Netherlands'})");
+      });
+
+      // Exact query from bug report
+      db.transaction(() -> {
+        final ResultSet result = db.command("opencypher",
+            "MATCH (n:Country {name: 'Belgium'}), (m:Country {name: 'Netherlands'}) "
+                + "CREATE p = (n)-[r:BORDERS_WITH {length: '30KM'}]->(m) "
+                + "RETURN COUNT(p) AS path_count, COUNT(r) AS rel_count");
+
+        assertThat(result.hasNext()).as("Should return a result row").isTrue();
+        final var row = result.next();
+        final long pathCount = ((Number) row.getProperty("path_count")).longValue();
+        final long relCount = ((Number) row.getProperty("rel_count")).longValue();
+        result.close();
+
+        assertThat(pathCount).as("One path created").isEqualTo(1L);
+        assertThat(relCount).as("One relationship created").isEqualTo(1L);
+      });
+    } finally {
+      db.drop();
+      FileUtils.deleteRecursively(new File(isolatedDbPath));
+    }
+  }
 }
