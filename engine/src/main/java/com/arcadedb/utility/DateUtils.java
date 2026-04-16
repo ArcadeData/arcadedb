@@ -173,6 +173,19 @@ public class DateUtils {
       else
         // NOT SUPPORTED
         timestamp = 0;
+    } else if (value instanceof java.time.OffsetDateTime offsetDateTime) {
+      if (precisionToUse.equals(ChronoUnit.SECONDS))
+        timestamp = offsetDateTime.toInstant().getEpochSecond();
+      else if (precisionToUse.equals(ChronoUnit.MILLIS))
+        timestamp = offsetDateTime.toInstant().toEpochMilli();
+      else if (precisionToUse.equals(ChronoUnit.MICROS))
+        timestamp =
+            TimeUnit.MICROSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS) + (offsetDateTime.getNano() / 1000);
+      else if (precisionToUse.equals(ChronoUnit.NANOS))
+        timestamp = TimeUnit.NANOSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS) + offsetDateTime.getNano();
+      else
+        // NOT SUPPORTED
+        timestamp = 0;
     } else if (value instanceof Instant instant) {
       if (precisionToUse.equals(ChronoUnit.SECONDS))
         timestamp = instant.getEpochSecond();
@@ -309,7 +322,7 @@ public class DateUtils {
     if (obj == null)
       return false;
     return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDate || obj instanceof LocalDateTime
-        || obj instanceof ZonedDateTime || obj instanceof Instant;
+        || obj instanceof ZonedDateTime || obj instanceof java.time.OffsetDateTime || obj instanceof Instant;
   }
 
   public static ChronoUnit getHigherPrecision(final Object... objs) {
