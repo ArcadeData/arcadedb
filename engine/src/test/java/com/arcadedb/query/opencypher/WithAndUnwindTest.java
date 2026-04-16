@@ -560,4 +560,63 @@ class WithAndUnwindTest {
       FileUtils.deleteRecursively(new File(isolatedDbPath));
     }
   }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3877
+   * WITH multiple projected columns + ORDER BY + SKIP + LIMIT returns empty result set.
+   * Tests the exact query from the bug report plus all control cases.
+   */
+  @Test
+  @Order(60)
+  void withMultiColumnOrderBySkipLimit_Issue3877() {
+    // Exact reproduction from issue report
+    final String cypher = "UNWIND [3,2,1] AS x "
+        + "WITH x, x + 10 AS y ORDER BY x DESC SKIP 1 LIMIT 2 "
+        + "RETURN x, y ORDER BY x";
+
+    // Test via query()
+    final ResultSet result = database.query("opencypher", cypher);
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    while (result.hasNext()) {
+      final var row = result.next();
+      rows.add(Map.of("x", ((Number) row.getProperty("x")).longValue(),
+          "y", ((Number) row.getProperty("y")).longValue()));
+    }
+    result.close();
+
+    assertThat(rows).as("Should return 2 rows after SKIP 1 LIMIT 2").hasSize(2);
+    assertThat(rows.get(0)).containsEntry("x", 1L).containsEntry("y", 11L);
+    assertThat(rows.get(1)).containsEntry("x", 2L).containsEntry("y", 12L);
+
+    // Test via command() (HTTP /command endpoint path)
+    final ResultSet cmdResult = database.command("opencypher", cypher);
+    int cmdCount = 0;
+    while (cmdResult.hasNext()) { cmdResult.next(); cmdCount++; }
+    cmdResult.close();
+    assertThat(cmdCount).as("command() should also return 2 rows").isEqualTo(2);
+
+    // Control 1: single column - should work
+    final ResultSet ctrl1 = database.query("opencypher",
+        "UNWIND [3,2,1] AS x WITH x ORDER BY x DESC SKIP 1 LIMIT 2 RETURN x ORDER BY x");
+    int ctrl1Count = 0;
+    while (ctrl1.hasNext()) { ctrl1.next(); ctrl1Count++; }
+    ctrl1.close();
+    assertThat(ctrl1Count).as("Control 1: single column should return 2 rows").isEqualTo(2);
+
+    // Control 2: no SKIP - should work
+    final ResultSet ctrl2 = database.query("opencypher",
+        "UNWIND [3,2,1] AS x WITH x, x + 10 AS y ORDER BY x DESC LIMIT 2 RETURN x, y ORDER BY x");
+    int ctrl2Count = 0;
+    while (ctrl2.hasNext()) { ctrl2.next(); ctrl2Count++; }
+    ctrl2.close();
+    assertThat(ctrl2Count).as("Control 2: no SKIP should return 2 rows").isEqualTo(2);
+
+    // Control 3: no LIMIT - should work
+    final ResultSet ctrl3 = database.query("opencypher",
+        "UNWIND [3,2,1] AS x WITH x, x + 10 AS y ORDER BY x DESC SKIP 1 RETURN x, y ORDER BY x");
+    int ctrl3Count = 0;
+    while (ctrl3.hasNext()) { ctrl3.next(); ctrl3Count++; }
+    ctrl3.close();
+    assertThat(ctrl3Count).as("Control 3: no LIMIT should return 2 rows").isEqualTo(2);
+  }
 }
