@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
 import java.io.File;
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -487,5 +487,77 @@ class WithAndUnwindTest {
     // Allow generous margin but ensure it's not catastrophically slow
     assertThat(whereTimeMs).as("WHERE clause version should complete within 10 seconds (was timing out before fix)")
         .isLessThan(10000);
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3873
+   * When UNWIND follows a WITH that carries rows forward from a MATCH,
+   * ArcadeDB duplicated every expanded row by the size of the upstream row set.
+   * <p>
+   * Tests exact reproduction from the bug report with isolated database,
+   * both query() and command() paths (HTTP /command endpoint uses command()),
+   * and varying upstream row counts (1, 3, 4) to guard against the reported
+   * duplication factor = number of upstream rows.
+   */
+  @Test
+  @Order(51)
+  void unwindAfterWithShouldNotDuplicateRows_Issue3873() {
+    final String isolatedDbPath = "./target/test-databases/issue-3873-repro";
+    FileUtils.deleteRecursively(new File(isolatedDbPath));
+    final Database db = new DatabaseFactory(isolatedDbPath).create();
+    try {
+      db.transaction(() -> {
+        db.getSchema().createVertexType("Person").createProperty("name", String.class);
+        db.command("opencypher",
+            "CREATE (:Person {name: 'Alice'}), (:Person {name: 'Bob'}), (:Person {name: 'Charlie'})");
+      });
+
+      final String cypher = "MATCH (p:Person) WITH p.name AS personName WHERE personName <> 'Bob' "
+          + "UNWIND range(1, 3) AS i RETURN personName, i ORDER BY personName, i";
+
+      // Test via query() (read-only path)
+      final ResultSet result = db.query("opencypher", cypher);
+      final List<Map<String, Object>> rows = new ArrayList<>();
+      while (result.hasNext()) {
+        final var row = result.next();
+        rows.add(Map.of("personName", row.getProperty("personName"), "i", row.getProperty("i")));
+      }
+      result.close();
+
+      assertThat(rows).as("query() should produce exactly 6 rows (2 names x 3 range values)").hasSize(6);
+      assertThat(rows.get(0)).containsEntry("personName", "Alice").containsEntry("i", 1L);
+      assertThat(rows.get(1)).containsEntry("personName", "Alice").containsEntry("i", 2L);
+      assertThat(rows.get(2)).containsEntry("personName", "Alice").containsEntry("i", 3L);
+      assertThat(rows.get(3)).containsEntry("personName", "Charlie").containsEntry("i", 1L);
+      assertThat(rows.get(4)).containsEntry("personName", "Charlie").containsEntry("i", 2L);
+      assertThat(rows.get(5)).containsEntry("personName", "Charlie").containsEntry("i", 3L);
+
+      // Test via command() (same path as HTTP /command endpoint)
+      final ResultSet cmdResult = db.command("opencypher", cypher);
+      int cmdCount = 0;
+      while (cmdResult.hasNext()) { cmdResult.next(); cmdCount++; }
+      cmdResult.close();
+      assertThat(cmdCount).as("command() should also produce exactly 6 rows").isEqualTo(6);
+
+      // Control: all 3 persons without filter, range(1,3) = 3 * 3 = 9
+      final ResultSet allResult = db.query("opencypher",
+          "MATCH (p:Person) WITH p.name AS personName UNWIND range(1, 3) AS i RETURN personName, i");
+      int allCount = 0;
+      while (allResult.hasNext()) { allResult.next(); allCount++; }
+      allResult.close();
+      assertThat(allCount).as("3 upstream rows * 3 = 9").isEqualTo(9);
+
+      // Control: single upstream row, range(1,3) = 1 * 3 = 3
+      final ResultSet singleResult = db.query("opencypher",
+          "MATCH (p:Person {name: 'Alice'}) WITH p.name AS personName "
+              + "UNWIND range(1, 3) AS i RETURN personName, i");
+      int singleCount = 0;
+      while (singleResult.hasNext()) { singleResult.next(); singleCount++; }
+      singleResult.close();
+      assertThat(singleCount).as("1 upstream row * 3 = 3").isEqualTo(3);
+    } finally {
+      db.drop();
+      FileUtils.deleteRecursively(new File(isolatedDbPath));
+    }
   }
 }
