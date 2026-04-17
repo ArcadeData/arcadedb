@@ -61,6 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("IntegrationTest")
+@Tag("slow")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Timeout(120)
 class RaftHAComprehensiveIT {

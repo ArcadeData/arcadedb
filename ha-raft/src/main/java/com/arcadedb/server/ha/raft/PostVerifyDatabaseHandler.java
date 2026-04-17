@@ -27,10 +27,19 @@ import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
+import org.apache.ratis.protocol.RaftPeer;
 
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 /**
@@ -45,11 +54,23 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
   /** Valid database name: alphanumeric, underscore, hyphen, dot. No path traversal sequences. */
   private static final Pattern VALID_DATABASE_NAME      = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_\\-.]*");
 
-  private final RaftHAServer raftHA;
+  private final RaftHAServer   raftHA;
+  /**
+   * Dedicated pool for fanning peer verify calls out in parallel. Cached (threads idle out after
+   * 60 s by default) so a rarely-invoked endpoint does not keep N idle threads around, daemon so
+   * the JVM can shut down without an explicit close on this handler.
+   */
+  private final ExecutorService peerQueryExecutor;
 
   public PostVerifyDatabaseHandler(final HttpServer httpServer, final RaftHAServer raftHA) {
     super(httpServer);
     this.raftHA = raftHA;
+    final AtomicInteger threadId = new AtomicInteger();
+    this.peerQueryExecutor = Executors.newCachedThreadPool(r -> {
+      final Thread t = new Thread(r, "arcadedb-verify-peer-" + threadId.incrementAndGet());
+      t.setDaemon(true);
+      return t;
+    });
   }
 
   @Override
@@ -114,113 +135,30 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     result.put("localPeerId", raftHA.getLocalPeerId().toString());
     result.put("localChecksums", localChecksums);
 
-    // Query each remote peer for their checksums via HTTP
-    final JSONArray peerResults = new JSONArray();
-    for (final var peer : raftHA.getRaftGroup().getPeers()) {
+    // Fan out peer queries in parallel so wall-clock latency is max(peer) not sum(peers).
+    // Each queryPeer call catches its own exceptions and returns an ERROR JSONObject, so the
+    // futures themselves never fail; join() below is safe.
+    final List<CompletableFuture<JSONObject>> futures = new ArrayList<>();
+    final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    for (final RaftPeer peer : raftHA.getRaftGroup().getPeers()) {
       if (peer.getId().equals(raftHA.getLocalPeerId()))
         continue;
+      futures.add(CompletableFuture.supplyAsync(
+          () -> queryPeer(peer, databaseName, localChecksums, user, useSsl),
+          peerQueryExecutor));
+    }
 
-      final JSONObject peerResult = new JSONObject();
-      peerResult.put("peerId", peer.getId().toString());
-      peerResult.put("httpAddress", raftHA.getPeerHTTPAddress(peer.getId()));
-
+    final JSONArray peerResults = new JSONArray();
+    for (final CompletableFuture<JSONObject> f : futures) {
       try {
-        final String peerHttpAddr = raftHA.getPeerHTTPAddress(peer.getId());
-        final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-        final String url = (useSsl ? "https" : "http") + "://" + peerHttpAddr
-            + "/api/v1/cluster/verify/" + databaseName;
-
-        final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
-        try {
-          if (conn instanceof javax.net.ssl.HttpsURLConnection httpsConn) {
-            final javax.net.ssl.SSLContext sslContext = httpServer.getSSLContext();
-            if (sslContext != null)
-              httpsConn.setSSLSocketFactory(sslContext.getSocketFactory());
-          }
-          conn.setRequestMethod("POST");
-          conn.setRequestProperty("Content-Type", "application/json");
-          conn.setConnectTimeout(PEER_CONNECT_TIMEOUT_MS);
-          conn.setReadTimeout(PEER_READ_TIMEOUT_MS);
-
-          if (raftHA.getClusterToken() != null) {
-            conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
-            // Forward the initiating user's identity rather than a hardcoded "root" so that
-            // authorization on the peer evaluates against the actual caller. Today checkRootUser()
-            // above guarantees user is root, but the forwarded identity should always mirror the
-            // authenticated principal (matching LeaderProxy's pattern) so the invariant holds if
-            // the root-only gate is ever relaxed.
-            conn.setRequestProperty("X-ArcadeDB-Forwarded-User", user.getName());
-          }
-
-          conn.setDoOutput(true);
-          try (final var os = conn.getOutputStream()) {
-            os.write("{}".getBytes(StandardCharsets.UTF_8));
-          }
-
-          if (conn.getResponseCode() == 200) {
-            final String body;
-            try (final var in = conn.getInputStream()) {
-              final byte[] bytes = in.readNBytes(MAX_PEER_RESPONSE_BYTES);
-              if (bytes.length == MAX_PEER_RESPONSE_BYTES && in.read() != -1) {
-                peerResult.put("status", "ERROR");
-                peerResult.put("error", "Peer response exceeds " + MAX_PEER_RESPONSE_BYTES + " bytes limit");
-                peerResults.put(peerResult);
-                continue;
-              }
-              body = new String(bytes, StandardCharsets.UTF_8);
-            }
-            final JSONObject peerResponse = new JSONObject(body);
-
-            if (peerResponse.has("localChecksums")) {
-              final JSONObject remoteChecksums = peerResponse.getJSONObject("localChecksums");
-
-              int matchCount = 0;
-              int mismatchCount = 0;
-              final JSONArray mismatches = new JSONArray();
-
-              for (final String fileName : localChecksums.keySet()) {
-                final long localCrc = localChecksums.getLong(fileName);
-                if (remoteChecksums.has(fileName)) {
-                  final long remoteCrc = remoteChecksums.getLong(fileName);
-                  if (localCrc == remoteCrc)
-                    matchCount++;
-                  else {
-                    mismatchCount++;
-                    mismatches.put(new JSONObject()
-                        .put("file", fileName)
-                        .put("type", categorizeFile(fileName))
-                        .put("localChecksum", localCrc)
-                        .put("remoteChecksum", remoteCrc));
-                  }
-                } else {
-                  mismatchCount++;
-                  mismatches.put(new JSONObject()
-                      .put("file", fileName)
-                      .put("type", categorizeFile(fileName))
-                      .put("localChecksum", localCrc)
-                      .put("remoteChecksum", "MISSING"));
-                }
-              }
-
-              peerResult.put("status", mismatchCount == 0 ? "CONSISTENT" : "INCONSISTENT");
-              peerResult.put("matchingFiles", matchCount);
-              peerResult.put("mismatchedFiles", mismatchCount);
-              if (mismatchCount > 0)
-                peerResult.put("mismatches", mismatches);
-            }
-          } else {
-            peerResult.put("status", "ERROR");
-            peerResult.put("error", "HTTP " + conn.getResponseCode());
-          }
-        } finally {
-          conn.disconnect();
-        }
-      } catch (final Exception e) {
-        peerResult.put("status", "ERROR");
-        peerResult.put("error", e.getMessage());
+        peerResults.put(f.join());
+      } catch (final CompletionException | CancellationException e) {
+        final Throwable cause = e.getCause() != null ? e.getCause() : e;
+        final JSONObject err = new JSONObject();
+        err.put("status", "ERROR");
+        err.put("error", "peer query failed: " + cause.getMessage());
+        peerResults.put(err);
       }
-
-      peerResults.put(peerResult);
     }
 
     result.put("peers", peerResults);
@@ -233,6 +171,115 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     result.put("overallStatus", allConsistent ? "ALL_CONSISTENT" : "INCONSISTENCY_DETECTED");
     response.put("result", result);
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Queries a single peer for its checksums and compares them against the leader's. Always returns
+   * a JSONObject describing the outcome (CONSISTENT, INCONSISTENT, or ERROR); never throws so the
+   * caller can safely join on the CompletableFuture.
+   */
+  private JSONObject queryPeer(final RaftPeer peer, final String databaseName, final JSONObject localChecksums,
+      final ServerSecurityUser user, final boolean useSsl) {
+    final JSONObject peerResult = new JSONObject();
+    peerResult.put("peerId", peer.getId().toString());
+    final String peerHttpAddr = raftHA.getPeerHTTPAddress(peer.getId());
+    peerResult.put("httpAddress", peerHttpAddr);
+
+    try {
+      final String url = (useSsl ? "https" : "http") + "://" + peerHttpAddr
+          + "/api/v1/cluster/verify/" + databaseName;
+      final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
+      try {
+        if (conn instanceof javax.net.ssl.HttpsURLConnection httpsConn) {
+          final javax.net.ssl.SSLContext sslContext = httpServer.getSSLContext();
+          if (sslContext != null)
+            httpsConn.setSSLSocketFactory(sslContext.getSocketFactory());
+        }
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setConnectTimeout(PEER_CONNECT_TIMEOUT_MS);
+        conn.setReadTimeout(PEER_READ_TIMEOUT_MS);
+
+        if (raftHA.getClusterToken() != null) {
+          conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
+          // Forward the initiating user's identity rather than a hardcoded "root" so that
+          // authorization on the peer evaluates against the actual caller. Today checkRootUser()
+          // above guarantees user is root, but the forwarded identity should always mirror the
+          // authenticated principal (matching LeaderProxy's pattern) so the invariant holds if
+          // the root-only gate is ever relaxed.
+          conn.setRequestProperty("X-ArcadeDB-Forwarded-User", user.getName());
+        }
+
+        conn.setDoOutput(true);
+        try (final var os = conn.getOutputStream()) {
+          os.write("{}".getBytes(StandardCharsets.UTF_8));
+        }
+
+        if (conn.getResponseCode() == 200) {
+          final String body;
+          try (final var in = conn.getInputStream()) {
+            final byte[] bytes = in.readNBytes(MAX_PEER_RESPONSE_BYTES);
+            if (bytes.length == MAX_PEER_RESPONSE_BYTES && in.read() != -1) {
+              peerResult.put("status", "ERROR");
+              peerResult.put("error", "Peer response exceeds " + MAX_PEER_RESPONSE_BYTES + " bytes limit");
+              return peerResult;
+            }
+            body = new String(bytes, StandardCharsets.UTF_8);
+          }
+          final JSONObject peerResponse = new JSONObject(body);
+
+          if (peerResponse.has("localChecksums")) {
+            final JSONObject remoteChecksums = peerResponse.getJSONObject("localChecksums");
+
+            int matchCount = 0;
+            int mismatchCount = 0;
+            final JSONArray mismatches = new JSONArray();
+
+            for (final String fileName : localChecksums.keySet()) {
+              final long localCrc = localChecksums.getLong(fileName);
+              if (remoteChecksums.has(fileName)) {
+                final long remoteCrc = remoteChecksums.getLong(fileName);
+                if (localCrc == remoteCrc)
+                  matchCount++;
+                else {
+                  mismatchCount++;
+                  mismatches.put(new JSONObject()
+                      .put("file", fileName)
+                      .put("type", categorizeFile(fileName))
+                      .put("localChecksum", localCrc)
+                      .put("remoteChecksum", remoteCrc));
+                }
+              } else {
+                mismatchCount++;
+                mismatches.put(new JSONObject()
+                    .put("file", fileName)
+                    .put("type", categorizeFile(fileName))
+                    .put("localChecksum", localCrc)
+                    .put("remoteChecksum", "MISSING"));
+              }
+            }
+
+            peerResult.put("status", mismatchCount == 0 ? "CONSISTENT" : "INCONSISTENT");
+            peerResult.put("matchingFiles", matchCount);
+            peerResult.put("mismatchedFiles", mismatchCount);
+            if (mismatchCount > 0)
+              peerResult.put("mismatches", mismatches);
+          } else {
+            peerResult.put("status", "ERROR");
+            peerResult.put("error", "peer response missing 'localChecksums'");
+          }
+        } else {
+          peerResult.put("status", "ERROR");
+          peerResult.put("error", "HTTP " + conn.getResponseCode());
+        }
+      } finally {
+        conn.disconnect();
+      }
+    } catch (final Exception e) {
+      peerResult.put("status", "ERROR");
+      peerResult.put("error", e.getMessage());
+    }
+    return peerResult;
   }
 
   private static String categorizeFile(final String fileName) {

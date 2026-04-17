@@ -394,7 +394,10 @@ public class SnapshotInstaller {
       FileUtils.deleteRecursively(tempDir.toFile());
       Files.createDirectories(tempDir);
 
-      try (final ZipInputStream zipIn = new ZipInputStream(connection.getInputStream())) {
+      // Wrap the raw connection input so we can measure compressed bytes consumed per entry and
+      // reject suspicious compression ratios (defense against decompression-bomb snapshots).
+      final CountingInputStream rawCounter = new CountingInputStream(connection.getInputStream());
+      try (final ZipInputStream zipIn = new ZipInputStream(rawCounter)) {
         ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {
           final Path targetFile = tempDir.resolve(zipEntry.getName()).normalize();
@@ -405,8 +408,11 @@ public class SnapshotInstaller {
 
           LogManager.instance().log(this, Level.FINE, "Extracting snapshot file: %s", zipEntry.getName());
 
+          final long compressedStart = rawCounter.getCount();
+          final long uncompressedBytes;
           if (zipEntry.isDirectory()) {
             Files.createDirectories(targetFile);
+            uncompressedBytes = 0;
           } else {
             Files.createDirectories(targetFile.getParent());
 
@@ -425,10 +431,23 @@ public class SnapshotInstaller {
               throw new ReplicationException("Symlink detected in snapshot extraction path: " + zipEntry.getName());
 
             try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile())) {
-              copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName());
+              uncompressedBytes = copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName());
             }
           }
           zipIn.closeEntry();
+
+          // Decompression-bomb defense. Compute the ratio only when the inflated entry is large
+          // enough that a high ratio implies an attack (tiny entries like schema JSON can
+          // legitimately inflate 100x+ and pose no memory risk). Uses the delta of the raw
+          // counter across the full entry (header + payload + descriptor trailer), which slightly
+          // OVER-estimates the compressed payload and therefore UNDER-estimates the ratio -
+          // intentional, as we want zero false positives on borderline-compressible data.
+          final long compressedBytes = Math.max(1L, rawCounter.getCount() - compressedStart);
+          if (uncompressedBytes > MIN_RATIO_CHECK_BYTES
+              && uncompressedBytes / compressedBytes > MAX_COMPRESSION_RATIO_PER_ENTRY)
+            throw new ReplicationException("Suspicious compression ratio for snapshot entry '"
+                + zipEntry.getName() + "': inflated " + uncompressedBytes + " bytes from "
+                + compressedBytes + " (ratio > " + MAX_COMPRESSION_RATIO_PER_ENTRY + ":1)");
         }
       } catch (final Exception e) {
         FileUtils.deleteRecursively(tempDir.toFile());
@@ -589,19 +608,35 @@ public class SnapshotInstaller {
   private static final int COPY_BUFFER_SIZE = 512 * 1024;
 
   /**
+   * Maximum tolerated uncompressed:compressed size ratio per ZIP entry. 200:1 comfortably
+   * accommodates real-world page data (DEFLATE typically compresses 5-20x) while rejecting
+   * crafted decompression bombs that inflate 1000:1+. Package-private for unit testing.
+   */
+  static final int MAX_COMPRESSION_RATIO_PER_ENTRY = 200;
+
+  /**
+   * Minimum uncompressed entry size before applying the ratio check. Tiny entries (the
+   * completion marker, short schema snippets) naturally have ill-defined or extreme ratios
+   * and pose no memory risk, so skipping them avoids false positives without weakening the
+   * defense - a decompression bomb must inflate to many megabytes to actually threaten the
+   * process.
+   */
+  static final long MIN_RATIO_CHECK_BYTES = 64L * 1024L;
+
+  /**
    * Streams bytes from {@code in} to {@code out} until EOF, throwing a {@link ReplicationException}
-   * if the total exceeds {@code maxBytes}. Guarantees no silent truncation: the size check runs
-   * BEFORE each {@code out.write(...)}, so if the cap is exceeded we throw without writing the
-   * over-limit chunk, and the caller's {@code try/catch} deletes {@code tempDir} so a partial
-   * file cannot be mistaken for a valid extraction. Network-level truncation (connection dropped
-   * mid-entry) is a separate concern handled by the surrounding ZIP layer via
-   * {@link java.util.zip.ZipInputStream#closeEntry()} (DEFLATE trailer / CRC32 check) and by
-   * the final {@code SNAPSHOT_COMPLETE_MARKER} write, which happens only after every entry
-   * extracts cleanly.
+   * if the total exceeds {@code maxBytes}, and returns the number of bytes copied. Guarantees
+   * no silent truncation: the size check runs BEFORE each {@code out.write(...)}, so if the cap
+   * is exceeded we throw without writing the over-limit chunk, and the caller's {@code try/catch}
+   * deletes {@code tempDir} so a partial file cannot be mistaken for a valid extraction.
+   * Network-level truncation (connection dropped mid-entry) is a separate concern handled by
+   * the surrounding ZIP layer via {@link java.util.zip.ZipInputStream#closeEntry()} (DEFLATE
+   * trailer / CRC32 check) and by the final {@code SNAPSHOT_COMPLETE_MARKER} write, which
+   * happens only after every entry extracts cleanly.
    * <p>
    * Package-private to enable direct unit testing of the no-silent-truncate contract.
    */
-  static void copyWithLimit(final InputStream in, final OutputStream out, final long maxBytes,
+  static long copyWithLimit(final InputStream in, final OutputStream out, final long maxBytes,
       final String entryName) throws IOException {
     final byte[] buf = new byte[COPY_BUFFER_SIZE];
     long total = 0;
@@ -611,6 +646,57 @@ public class SnapshotInstaller {
       if (total > maxBytes)
         throw new ReplicationException("Snapshot entry '" + entryName + "' exceeds size limit of " + maxBytes + " bytes");
       out.write(buf, 0, read);
+    }
+    return total;
+  }
+
+  /**
+   * FilterInputStream that counts bytes consumed by the downstream reader. Used to measure the
+   * compressed bytes a {@link ZipInputStream} reads per entry so we can enforce a per-entry
+   * compression-ratio cap. The count intentionally includes the ZIP's local file header and
+   * optional data descriptor for each entry (ZipInputStream reads them via the same stream);
+   * this over-estimates the pure compressed payload and therefore under-estimates the ratio,
+   * which is the safe direction for the check.
+   */
+  static final class CountingInputStream extends java.io.FilterInputStream {
+    private long count;
+
+    CountingInputStream(final InputStream in) {
+      super(in);
+    }
+
+    long getCount() {
+      return count;
+    }
+
+    @Override
+    public int read() throws IOException {
+      final int b = super.read();
+      if (b != -1)
+        count++;
+      return b;
+    }
+
+    @Override
+    public int read(final byte[] b, final int off, final int len) throws IOException {
+      final int n = super.read(b, off, len);
+      if (n > 0)
+        count += n;
+      return n;
+    }
+
+    @Override
+    public long skip(final long n) throws IOException {
+      final long skipped = super.skip(n);
+      if (skipped > 0)
+        count += skipped;
+      return skipped;
+    }
+
+    /** {@link ZipInputStream} does not call {@code mark/reset}, but honor the contract. */
+    @Override
+    public boolean markSupported() {
+      return false;
     }
   }
 }

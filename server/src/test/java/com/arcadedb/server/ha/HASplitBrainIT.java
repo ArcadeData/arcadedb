@@ -24,6 +24,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
@@ -45,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("slow")
 public class HASplitBrainIT extends BaseGraphServerTest {
 
   @Override

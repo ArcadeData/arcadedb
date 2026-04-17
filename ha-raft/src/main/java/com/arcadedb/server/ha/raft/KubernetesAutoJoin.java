@@ -198,7 +198,13 @@ public class KubernetesAutoJoin {
   }
 
   private RaftProperties buildProbeProperties() {
-    final RaftProperties props = new RaftProperties();
+    // Clone the main server's RaftProperties so TLS, gRPC flow-control, authentication and any
+    // other operator-set security knobs carry over into the short-lived probe client. Starting
+    // from a bare RaftProperties() would silently build a plaintext client that cannot talk to
+    // a TLS-only peer (handshake failure) and - more dangerously - could downgrade a deployment
+    // to plaintext if Ratis ever allowed an unencrypted fallback. Only the probe-specific
+    // timeouts are then overridden.
+    final RaftProperties props = new RaftProperties(raftProperties);
     props.set("raft.server.rpc.type", "GRPC");
     RaftServerConfigKeys.Rpc.setTimeoutMin(props,
         TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MIN_SECS, TimeUnit.SECONDS));
