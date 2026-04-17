@@ -961,6 +961,7 @@ function updateMCPConnectionInfo() {
     mcpServers: {
       arcadedb: {
         url: url,
+        type: "http",
         headers: {
           Authorization: authHeader
         }
