@@ -110,6 +110,10 @@ class RemoteDateIT {
     DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");
     if (databaseFactory.exists())
       databaseFactory.open().drop();
+    // Remove any stale security config from a previous run so the server recreates it with the
+    // test password; without this, an earlier test's users file produces "User/Password not
+    // valid" when the remote client connects here.
+    new java.io.File(rootPath + "/config/server-users.jsonl").delete();
   }
 
   @AfterEach

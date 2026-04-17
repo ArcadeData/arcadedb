@@ -1647,7 +1647,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public <RET> RET executeLockingFiles(final Collection<Integer> fileIds, Callable<RET> callable) {
     List<Integer> lockedFiles = null;
     try {
-      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000, Thread.currentThread());
+      final long timeout = configuration.getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+      lockedFiles = transactionManager.tryLockFiles(fileIds, timeout, Thread.currentThread());
 
       return callable.call();
 

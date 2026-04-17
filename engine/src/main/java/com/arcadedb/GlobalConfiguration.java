@@ -399,6 +399,11 @@ public enum GlobalConfiguration {
 
   NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
+  NETWORK_HTTP_CLIENT_WATCHDOG_SLACK("arcadedb.network.http.clientWatchdogSlack", SCOPE.SERVER,
+      "Extra milliseconds the remote HTTP client waits on top of the per-request timeout before firing its own watchdog that cancels the request. "
+          + "Defense-in-depth for the case where the JDK HttpClient fails to honor its own .timeout() directive on a stuck HTTP/2 stream.",
+      Long.class, 5000L),
+
   NETWORK_USE_SSL("arcadedb.ssl.enabled", SCOPE.SERVER, "Use SSL for client connections", Boolean.class, false),
 
   NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", SCOPE.SERVER, "Path where the SSL certificates are stored", String.class, null),

@@ -67,12 +67,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RaftLoadConvergenceIT extends BaseRaftHATest {
 
   // 3 concurrent loader threads hitting the leader with LOCK TYPE + COMMIT RETRY writes. This
-  // exercises both the HA convergence path and the server-side commit-retry path: under this
-  // concurrency, multiple threads hold LOCK TYPE on the same types and the commit step has to
-  // acquire file locks with a default 5s timeout. The RetryStep was previously broken here
-  // (TimeoutException wasn't classified as retry-worthy) which caused this test to fail with
-  // "Timeout on locking file X during commit"; see the fix in
-  // engine/.../query/sql/executor/RetryStep.java.
+  // is the stable CI scale: exercises both the HA convergence path and the server-side
+  // commit-retry path (multiple threads holding LOCK TYPE + acquiring file locks in commit).
+  // Depends on the RetryStep fix (engine/.../query/sql/executor/RetryStep.java) that retries
+  // on TimeoutException; without that fix, this test fails with
+  // "Timeout on locking file X during commit".
+  // <p>
+  // A 5-thread × 400-user × 10-photo × 2000-fr/likes variant has been run by hand and completes
+  // the workload cleanly (0 timeouts, 0 failures), but after ~25 leader changes over 15 min of
+  // load we have observed a rare +1 edge convergence anomaly (2001 FriendOf vs expected 2000)
+  // on one replica. That is a real HA fragility under sustained leader-change storms and is
+  // tracked as a follow-up, not a CI gate.
   private static final int  LOADER_THREADS       = 3;
   private static final int  USERS_PER_THREAD     = 200;
   private static final int  PHOTOS_PER_USER      = 5;

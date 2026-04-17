@@ -737,26 +737,43 @@ public class RaftHAServer {
         // the Ratis event thread (which processes heartbeats and elections).
         leaderReady = false;
         HALog.log(this, HALog.BASIC, "This node became leader, scheduling state machine catch-up in background");
-        currentStateMachine.getLifecycleExecutor().submit(() -> {
-          try {
-            waitForLocalApply();
-            leaderReady = true;
-            HALog.log(this, HALog.BASIC, "Leader read barrier cleared: applied=%d >= commit=%d",
-                getLastAppliedIndex(), getCommitIndex());
-          } catch (final Exception e) {
-            // Do NOT set leaderReady = true on failure. If catch-up failed, the leader's
-            // state machine is stale and must not serve linearizable reads. Reads will
-            // block in waitForLeaderReady() until the quorum timeout, then fail with an
-            // error rather than returning stale data.
-            LogManager.instance().log(this, Level.SEVERE,
-                "Leader read barrier catch-up FAILED. Reads will be blocked until resolved: %s", e.getMessage());
-          } finally {
-            // Wake up any threads blocked in waitForLeaderReady()
-            synchronized (leaderReadyNotifier) {
-              leaderReadyNotifier.notifyAll();
+        try {
+          currentStateMachine.getLifecycleExecutor().submit(() -> {
+            try {
+              waitForLocalApply();
+              leaderReady = true;
+              HALog.log(this, HALog.BASIC, "Leader read barrier cleared: applied=%d >= commit=%d",
+                  getLastAppliedIndex(), getCommitIndex());
+            } catch (final Exception e) {
+              // Do NOT set leaderReady = true on failure. If catch-up failed, the leader's
+              // state machine is stale and must not serve linearizable reads. Reads will
+              // block in waitForLeaderReady() until the quorum timeout, then fail with an
+              // error rather than returning stale data.
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Leader read barrier catch-up FAILED. Reads will be blocked until resolved: %s", e.getMessage());
+            } finally {
+              // Wake up any threads blocked in waitForLeaderReady()
+              synchronized (leaderReadyNotifier) {
+                leaderReadyNotifier.notifyAll();
+              }
             }
+          });
+        } catch (final java.util.concurrent.RejectedExecutionException rex) {
+          // The lifecycle executor has been shut down (e.g. by a concurrent
+          // restartRatisIfNeeded()). We cannot run the catch-up, but we must not leave
+          // leaderReady stuck at false - otherwise every subsequent read would block
+          // on a state machine that will never come online. Restore leaderReady and
+          // wake any waiters so they can observe the new (shutdown) state via their
+          // normal timeouts.
+          leaderReady = true;
+          LogManager.instance().log(this, Level.WARNING,
+              "Could not schedule leader read-barrier catch-up: state machine lifecycle executor is shut down (%s). "
+                  + "Restoring leaderReady so subsequent reads are not stuck; this usually indicates a concurrent Ratis restart.",
+              null, rex.getMessage());
+          synchronized (leaderReadyNotifier) {
+            leaderReadyNotifier.notifyAll();
           }
-        });
+        }
       } else {
         leaderReady = true;
       }

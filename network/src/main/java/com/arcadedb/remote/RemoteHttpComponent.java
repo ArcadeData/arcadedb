@@ -285,6 +285,19 @@ public class RemoteHttpComponent extends RWLockContext {
         if (effectiveMaxRetry < 3)
           effectiveMaxRetry = 3;
 
+        // Don't blindly retry non-idempotent requests on IOException. NeedRetryException is
+        // declared by the server meaning "I did NOT commit, you can retry"; IOException is
+        // ambiguous - the request may have been committed on the server but the response got
+        // lost, and retrying a non-idempotent write creates duplicate-key or double-write
+        // violations. Only idempotent methods (GET) are safe to retry on raw network errors.
+        if (e instanceof IOException && !"GET".equalsIgnoreCase(method)) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Non-idempotent %s request to %s failed with network error; not retrying to avoid ambiguous double-apply (cause: %s)",
+              null, method, server, e.getMessage());
+          throw new RemoteException(
+              "Error on executing remote operation " + operation + " (non-idempotent, not auto-retrying on network error)", e);
+        }
+
         if (!autoReconnect || retry + 1 >= effectiveMaxRetry)
           break;
 
@@ -376,11 +389,13 @@ public class RemoteHttpComponent extends RWLockContext {
    * {@code timeout + slack} via {@link CompletableFuture#get(long, TimeUnit) get(timeout, ms)} on
    * the async variant; on timeout we cancel the future (which aborts the underlying stream) and
    * throw {@link TimeoutException}, which the outer retry loop already handles as a retry-worthy
-   * condition.
+   * condition. The slack is configurable via
+   * {@link GlobalConfiguration#NETWORK_HTTP_CLIENT_WATCHDOG_SLACK}.
    */
   private HttpResponse<String> sendWithWatchdog(final HttpRequest request)
       throws IOException, InterruptedException, TimeoutException {
-    final long watchdogBudgetMs = Math.max(timeout, 1_000) + WATCHDOG_SLACK_MS;
+    final long slack = configuration.getValueAsLong(GlobalConfiguration.NETWORK_HTTP_CLIENT_WATCHDOG_SLACK);
+    final long watchdogBudgetMs = Math.max(timeout, 1_000) + slack;
     final CompletableFuture<HttpResponse<String>> future =
         httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
     try {
@@ -389,7 +404,7 @@ public class RemoteHttpComponent extends RWLockContext {
       future.cancel(true);
       LogManager.instance().log(this, Level.WARNING,
           "HTTP watchdog fired after %dms (request timeout=%dms, slack=%dms) for %s; aborting stream",
-          null, watchdogBudgetMs, timeout, WATCHDOG_SLACK_MS, request.uri());
+          null, watchdogBudgetMs, timeout, slack, request.uri());
       throw new TimeoutException(
           "HTTP request exceeded watchdog budget of " + watchdogBudgetMs + "ms (timeout=" + timeout + "ms)");
     } catch (final ExecutionException e) {
@@ -402,14 +417,6 @@ public class RemoteHttpComponent extends RWLockContext {
       throw new IOException("HTTP request failed", cause);
     }
   }
-
-  /**
-   * Slack added on top of the per-request timeout before the client-side watchdog fires. The JDK
-   * HttpClient should normally cancel a request when its {@link HttpRequest#timeout()} expires;
-   * the slack lets that mechanism win in the common case and only falls back to the watchdog when
-   * the underlying stream is truly stuck.
-   */
-  private static final long WATCHDOG_SLACK_MS = 5_000L;
 
   void requestClusterConfiguration() {
     final JSONObject response;
@@ -569,10 +576,12 @@ public class RemoteHttpComponent extends RWLockContext {
       return e;
     }
 
-    // HTTP 503 = leader unknown or election in progress, trigger retry
-    if (response.statusCode() == 503)
-      return new NeedRetryException(detail != null ? detail : "Service unavailable (leader election in progress)");
-
+    // Prefer the specific exception class the server reported. The server uses HTTP 503 for
+    // several classes of retryable errors (NeedRetryException and its subclasses including
+    // ConcurrentModificationException and DuplicatedKeyException), so we must not collapse
+    // every 503 into a plain NeedRetryException before checking the exception name - doing so
+    // loses the ConcurrentModificationException / DuplicatedKeyException identity that client
+    // code (e.g. RemoteDatabase.commit) depends on to surface the correct exception type.
     if (exception != null) {
       if (detail == null)
         detail = "Unknown";
@@ -607,11 +616,19 @@ public class RemoteHttpComponent extends RWLockContext {
         return new NeedRetryException(detail);
       } else if (exception.equals("com.arcadedb.server.ha.ReplicationException")) {
         return new NeedRetryException(detail);
+      } else if (response.statusCode() == 503) {
+        // Unknown 503 exception class - treat as generic retry
+        return new NeedRetryException(detail);
       } else
         // ELSE
         return new RemoteException(
             "Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
     }
+
+    // No specific exception class reported (e.g. bare 503 from an upstream proxy during leader
+    // election). Fall back to NeedRetryException so the caller retries.
+    if (response.statusCode() == 503)
+      return new NeedRetryException(detail != null ? detail : "Service unavailable (leader election in progress)");
 
     final String httpErrorDescription = response.statusCode() == 400 ? "Bad Request" :
         response.statusCode() == 404 ? "Not Found" :
