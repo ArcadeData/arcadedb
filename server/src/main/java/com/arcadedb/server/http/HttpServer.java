@@ -115,6 +115,8 @@ public class HttpServer implements ServerPlugin {
   private final    HttpSessionManager     sessionManager;
   private final    HttpAuthSessionManager authSessionManager;
   private final    WebSocketEventBus      webSocketEventBus;
+  private final    IdempotencyCache       idempotencyCache;
+  private          java.util.concurrent.ScheduledExecutorService idempotencyCleanup;
   private          Undertow               undertow;
   private volatile String                 listeningAddress;
   private          int                    httpPortListening;
@@ -127,6 +129,13 @@ public class HttpServer implements ServerPlugin {
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L,
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT) * 1_000L);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
+    this.idempotencyCache = new IdempotencyCache(
+        server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_IDEMPOTENCY_TTL),
+        server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IDEMPOTENCY_MAX_ENTRIES));
+  }
+
+  public IdempotencyCache getIdempotencyCache() {
+    return idempotencyCache;
   }
 
   @Override
@@ -139,6 +148,11 @@ public class HttpServer implements ServerPlugin {
       } catch (final Exception e) {
         // IGNORE IT
       }
+    }
+
+    if (idempotencyCleanup != null) {
+      idempotencyCleanup.shutdownNow();
+      idempotencyCleanup = null;
     }
 
     sessionManager.close();
@@ -171,6 +185,17 @@ public class HttpServer implements ServerPlugin {
         listeningAddress = host.equals("0.0.0.0") ?
             server.getHostAddress() + ":" + httpPortListening :
             host + ":" + httpPortListening;
+
+        // Sweep expired idempotency cache entries periodically so the cache can't grow
+        // unboundedly on workloads with low retry rate.
+        idempotencyCleanup = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+          final Thread t = new Thread(r, "arcadedb-http-idempotency-cleanup");
+          t.setDaemon(true);
+          return t;
+        });
+        idempotencyCleanup.scheduleAtFixedRate(idempotencyCache::cleanupExpired, 30, 30,
+            java.util.concurrent.TimeUnit.SECONDS);
+
         return;
 
       } catch (final Exception e) {

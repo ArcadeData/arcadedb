@@ -213,6 +213,13 @@ public class RemoteHttpComponent extends RWLockContext {
 
     String server = null;
 
+    // Generate one idempotency key per logical request so that every retry attempt sends the
+    // same X-Request-Id. The server caches the first successful response under that key and
+    // replays it instead of re-executing, which makes it safe to auto-retry non-idempotent
+    // writes (POST) on ambiguous network errors without producing duplicate-key violations.
+    // Only attach the key for non-GET methods; GET is already idempotent and doesn't need it.
+    final String requestId = "GET".equalsIgnoreCase(method) ? null : java.util.UUID.randomUUID().toString();
+
     for (int retry = 0; retry < effectiveMaxRetry && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
       String url = protocol + "://" + server + "/api/v" + apiVersion + "/" + operation;
@@ -222,6 +229,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
       try {
         HttpRequest.Builder requestBuilder = createRequestBuilder(method, url);
+        if (requestId != null)
+          requestBuilder.header("X-Request-Id", requestId);
         HttpRequest request;
 
         if (payloadCommand != null) {
@@ -285,18 +294,12 @@ public class RemoteHttpComponent extends RWLockContext {
         if (effectiveMaxRetry < 3)
           effectiveMaxRetry = 3;
 
-        // Don't blindly retry non-idempotent requests on IOException. NeedRetryException is
-        // declared by the server meaning "I did NOT commit, you can retry"; IOException is
-        // ambiguous - the request may have been committed on the server but the response got
-        // lost, and retrying a non-idempotent write creates duplicate-key or double-write
-        // violations. Only idempotent methods (GET) are safe to retry on raw network errors.
-        if (e instanceof IOException && !"GET".equalsIgnoreCase(method)) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Non-idempotent %s request to %s failed with network error; not retrying to avoid ambiguous double-apply (cause: %s)",
-              null, method, server, e.getMessage());
-          throw new RemoteException(
-              "Error on executing remote operation " + operation + " (non-idempotent, not auto-retrying on network error)", e);
-        }
+        // Retries for non-idempotent methods (POST) are safe because we attach an
+        // X-Request-Id header above. If the first attempt already committed server-side and
+        // only the response was lost, the server replays the cached response on retry instead
+        // of re-executing the operation. NeedRetryException means the server explicitly
+        // declared it did not commit, so retry is always safe regardless of the idempotency
+        // key.
 
         if (!autoReconnect || retry + 1 >= effectiveMaxRetry)
           break;

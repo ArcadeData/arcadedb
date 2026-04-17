@@ -404,6 +404,14 @@ public enum GlobalConfiguration {
           + "Defense-in-depth for the case where the JDK HttpClient fails to honor its own .timeout() directive on a stuck HTTP/2 stream.",
       Long.class, 5000L),
 
+  SERVER_HTTP_IDEMPOTENCY_TTL("arcadedb.server.http.idempotencyTtl", SCOPE.SERVER,
+      "Milliseconds a successful response is cached server-side under its X-Request-Id header, so that clients retrying a non-idempotent request with the same header see the original response instead of re-executing the operation.",
+      Long.class, 60_000L),
+
+  SERVER_HTTP_IDEMPOTENCY_MAX_ENTRIES("arcadedb.server.http.idempotencyMaxEntries", SCOPE.SERVER,
+      "Maximum number of idempotency cache entries held in memory. Exceeding this count evicts the oldest entry.",
+      Integer.class, 10_000),
+
   NETWORK_USE_SSL("arcadedb.ssl.enabled", SCOPE.SERVER, "Use SSL for client connections", Boolean.class, false),
 
   NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", SCOPE.SERVER, "Path where the SSL certificates are stored", String.class, null),

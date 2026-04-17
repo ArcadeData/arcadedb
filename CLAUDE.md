@@ -213,6 +213,9 @@ cd package
 - **Index System**: `com.arcadedb.index.*` - LSM-Tree indexes, full-text, vector indexes
 - **Graph Engine**: `com.arcadedb.graph.*` - Vertex/Edge management, graph traversals
 - **Serialization**: `com.arcadedb.serializer.*` - Binary serialization, JSON handling
+- **Remote Client**: `com.arcadedb.remote.*` (module: `network/`) - `RemoteDatabase` / `RemoteServer` / `RemoteSchema` wrap the HTTP API. `RemoteDatabase` is **thread-safe for sharing across threads**: `RemoteSchema` uses a synchronized `reload()` with volatile snapshot-swap, and `RemoteHttpComponent.httpCommand` is stateless per call. See `server/src/test/java/com/arcadedb/server/RemoteSchemaConcurrentInitIT.java` for the regression test.
+  - `RemoteHttpComponent` wraps `HttpClient.sendAsync` in a watchdog that enforces `timeout + NETWORK_HTTP_CLIENT_WATCHDOG_SLACK` as a hard wall-clock bound (defense against JDK HttpClient stuck HTTP/2 streams).
+  - Non-idempotent methods (POST/PUT/DELETE) are **not** auto-retried on raw `IOException` because the request may have been committed with only the response lost; retrying would duplicate the write. `NeedRetryException` (explicitly declared by the server as "I did not commit") is still retried for all methods.
 
 ### Server Components
 - **HTTP API**: `com.arcadedb.server.http.*` - REST endpoints, request handling

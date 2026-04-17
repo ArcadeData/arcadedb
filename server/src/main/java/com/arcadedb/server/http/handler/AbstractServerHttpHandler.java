@@ -47,6 +47,14 @@ import java.util.logging.Level;
 public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BASIC = "Basic";
   private static final String AUTHORIZATION_BEARER = "Bearer";
+  /**
+   * HTTP header a client may set to enable server-side idempotency replay of a non-idempotent
+   * request (POST). The server caches the successful response under this header and, if the
+   * same authenticated principal replays the request with the same value, returns the cached
+   * response instead of re-executing the operation. See
+   * {@link com.arcadedb.server.http.IdempotencyCache}.
+   */
+  public static final String IDEMPOTENCY_HEADER = "X-Request-Id";
   private static final io.undertow.util.AttachmentKey<String> RAW_PAYLOAD_KEY = io.undertow.util.AttachmentKey.create(String.class);
   static final io.undertow.util.AttachmentKey<String> BASIC_AUTH_KEY = io.undertow.util.AttachmentKey.create(String.class);
   protected final HttpServer   httpServer;
@@ -184,9 +192,34 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       // Store raw payload for potential proxy forwarding
       exchange.putAttachment(RAW_PAYLOAD_KEY, rawPayload != null ? rawPayload : "");
 
+      // Idempotency replay: if the client sent an X-Request-Id header that matches a cached
+      // successful response for the same authenticated principal, replay it without executing
+      // the operation. This makes safe retries possible for non-idempotent requests (POST)
+      // that may have already been committed server-side while the original response was lost
+      // in transit.
+      final io.undertow.util.HeaderValues requestIdHeader = exchange.getRequestHeaders().get(IDEMPOTENCY_HEADER);
+      final String requestId = requestIdHeader != null && !requestIdHeader.isEmpty() ? requestIdHeader.getFirst() : null;
+      if (requestId != null) {
+        final com.arcadedb.server.http.IdempotencyCache.CachedEntry cached =
+            httpServer.getIdempotencyCache().get(requestId);
+        if (cached != null && java.util.Objects.equals(cached.principal, user != null ? user.getName() : null)) {
+          exchange.setStatusCode(cached.statusCode);
+          if (cached.binary != null) {
+            exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, cached.binary.length);
+            exchange.getResponseSender().send(java.nio.ByteBuffer.wrap(cached.binary));
+          } else
+            exchange.getResponseSender().send(cached.body);
+          return;
+        }
+      }
+
       final ExecutionResponse response = execute(exchange, user, payload);
-      if (response != null)
+      if (response != null) {
         response.send(exchange);
+        if (requestId != null)
+          httpServer.getIdempotencyCache().putSuccess(requestId, response.getCode(), response.getResponse(),
+              response.getBinary(), user != null ? user.getName() : null);
+      }
 
     } catch (final ServerSecurityException e) {
       // PASS SecurityException TO THE CLIENT
