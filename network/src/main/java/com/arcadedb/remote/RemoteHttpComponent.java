@@ -51,6 +51,9 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -250,7 +253,7 @@ public class RemoteHttpComponent extends RWLockContext {
           }
         }
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendWithWatchdog(request);
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
@@ -364,6 +367,50 @@ public class RemoteHttpComponent extends RWLockContext {
         .header("Authorization", authHeader);
   }
 
+  /**
+   * Sends an HTTP request with a belt-and-suspenders wall-clock watchdog on top of the
+   * {@link HttpRequest#timeout() per-request timeout} already set on the builder. The JDK
+   * HttpClient's own timeout has been observed to not always fire when an HTTP/2 stream gets into
+   * a stuck state (the synchronous {@code send} then parks indefinitely inside
+   * {@code CompletableFuture.waitingGet}). This method enforces an upper bound of
+   * {@code timeout + slack} via {@link CompletableFuture#get(long, TimeUnit) get(timeout, ms)} on
+   * the async variant; on timeout we cancel the future (which aborts the underlying stream) and
+   * throw {@link TimeoutException}, which the outer retry loop already handles as a retry-worthy
+   * condition.
+   */
+  private HttpResponse<String> sendWithWatchdog(final HttpRequest request)
+      throws IOException, InterruptedException, TimeoutException {
+    final long watchdogBudgetMs = Math.max(timeout, 1_000) + WATCHDOG_SLACK_MS;
+    final CompletableFuture<HttpResponse<String>> future =
+        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+    try {
+      return future.get(watchdogBudgetMs, TimeUnit.MILLISECONDS);
+    } catch (final java.util.concurrent.TimeoutException watchdog) {
+      future.cancel(true);
+      LogManager.instance().log(this, Level.WARNING,
+          "HTTP watchdog fired after %dms (request timeout=%dms, slack=%dms) for %s; aborting stream",
+          null, watchdogBudgetMs, timeout, WATCHDOG_SLACK_MS, request.uri());
+      throw new TimeoutException(
+          "HTTP request exceeded watchdog budget of " + watchdogBudgetMs + "ms (timeout=" + timeout + "ms)");
+    } catch (final ExecutionException e) {
+      final Throwable cause = e.getCause();
+      if (cause instanceof IOException io) throw io;
+      if (cause instanceof java.net.http.HttpTimeoutException)
+        throw new TimeoutException("HTTP request timed out (" + timeout + "ms)");
+      if (cause instanceof RuntimeException re) throw re;
+      if (cause instanceof Error err) throw err;
+      throw new IOException("HTTP request failed", cause);
+    }
+  }
+
+  /**
+   * Slack added on top of the per-request timeout before the client-side watchdog fires. The JDK
+   * HttpClient should normally cancel a request when its {@link HttpRequest#timeout()} expires;
+   * the slack lets that mechanism win in the common case and only falls back to the watchdog when
+   * the underlying stream is truly stuck.
+   */
+  private static final long WATCHDOG_SLACK_MS = 5_000L;
+
   void requestClusterConfiguration() {
     final JSONObject response;
     try {
@@ -371,7 +418,7 @@ public class RemoteHttpComponent extends RWLockContext {
           .GET()
           .build();
 
-      HttpResponse<String> httpResponse = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> httpResponse = sendWithWatchdog(request);
 
       if (httpResponse.statusCode() != 200) {
         final Exception detail = manageException(httpResponse, "cluster configuration");

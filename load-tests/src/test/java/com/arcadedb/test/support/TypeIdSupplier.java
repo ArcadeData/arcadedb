@@ -25,18 +25,28 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.function.Supplier;
 
+/**
+ * Supplier of existing ids for a given vertex/document type. Fetches ids from the server in
+ * batches via SELECT ORDER BY id SKIP ? LIMIT ?. When the end of the type is reached, the
+ * supplier cycles back to skip=0 so callers that consume more ids than the type holds (e.g. a
+ * createFriendships loop that requests 1000 edges from 500 users) keep getting valid ids rather
+ * than running forever on empty SELECTs.
+ * <p>
+ * Prior behavior returned {@code null} once the type was exhausted, which combined with the
+ * {@code continue} in {@link DatabaseWrapper#createFriendships} and
+ * {@link DatabaseWrapper#createLike} produced an infinite loop of empty-batch SELECTs that
+ * looked like an HTTP client hang. This cycling behavior is the intended read-pick-write
+ * traffic pattern for a mixed workload and matches how a real consumer would use a random
+ * subset of existing ids.
+ */
 public class TypeIdSupplier implements Supplier<Integer> {
-  /**
-   * This class is a supplier for user IDs.
-   * It fetches user IDs from the database in batches.
-   * It uses an iterator to provide the next user ID when requested.
-   */
 
   private final RemoteDatabase    db;
   private final String            query;
   private final int               batchSize;
   private       Iterator<Integer> idsIt;
   private       int               skip;
+  private       boolean           exhaustedOnce;
 
   public TypeIdSupplier(RemoteDatabase db, String type) {
     this.db = db;
@@ -47,14 +57,11 @@ public class TypeIdSupplier implements Supplier<Integer> {
 
   @Override
   public Integer get() {
-    if (idsIt == null || !idsIt.hasNext()) {
+    if (idsIt == null || !idsIt.hasNext())
       fetchNextBatch();
-    }
-    if (idsIt.hasNext()) {
+    if (idsIt.hasNext())
       return idsIt.next();
-    } else {
-      return null; // No more available
-    }
+    return null;
   }
 
   private void fetchNextBatch() {
@@ -62,10 +69,23 @@ public class TypeIdSupplier implements Supplier<Integer> {
     List<Integer> ids = resultSet.stream()
         .map(r -> r.<Integer>getProperty("id"))
         .toList();
-    idsIt = ids.iterator();
-    if (!ids.isEmpty()) {
-      skip += ids.size(); // Update skip for the next batch
+    if (ids.isEmpty()) {
+      // End of the type: cycle from the beginning. If skip was already 0 the type is truly
+      // empty and we'll return an empty iterator so the caller sees get() == null; this is
+      // the only way out of the feedback loop when no ids exist at all.
+      if (skip == 0 || exhaustedOnce) {
+        idsIt = ids.iterator();
+        return;
+      }
+      exhaustedOnce = true;
+      skip = 0;
+      resultSet = db.query("sql", query, skip, batchSize);
+      ids = resultSet.stream().map(r -> r.<Integer>getProperty("id")).toList();
+    } else {
+      exhaustedOnce = false;
     }
-
+    idsIt = ids.iterator();
+    if (!ids.isEmpty())
+      skip += ids.size();
   }
 }

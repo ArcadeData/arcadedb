@@ -48,14 +48,18 @@ import java.util.stream.Collectors;
  * are needed and cached in RAM until the schema is changed, then it is automatically reloaded from the server.
  * You can manually reload the schema by calling the {@link #reload()} method.
  * <p>
- * This class is not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
+ * Concurrent callers on a shared {@link RemoteDatabase} serialize on {@link #reload()} via a
+ * synchronized method and a volatile-published snapshot of the types/buckets maps: readers either
+ * see the previous complete snapshot or the new one, never a partially-built map. Prior to this
+ * change, two threads could race on the {@code null}-gated init and hit
+ * {@link java.util.ConcurrentModificationException} inside {@link java.util.HashMap#computeIfAbsent}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteSchema implements Schema {
-  private final RemoteDatabase                  remoteDatabase;
-  private       Map<String, RemoteDocumentType> types   = null;
-  private       Map<String, RemoteBucket>       buckets = null;
+  private final    RemoteDatabase                  remoteDatabase;
+  private volatile Map<String, RemoteDocumentType> types   = null;
+  private volatile Map<String, RemoteBucket>       buckets = null;
 
   public RemoteSchema(final RemoteDatabase remoteDatabase) {
     this.remoteDatabase = remoteDatabase;
@@ -716,31 +720,31 @@ public class RemoteSchema implements Schema {
   }
 
   /**
-   * Force a reload of the schema from the server.
+   * Force a reload of the schema from the server. Synchronized so concurrent callers on a shared
+   * {@link RemoteDatabase} don't race on the {@code types}/{@code buckets} init; the new maps are
+   * built locally and only published to the volatile fields once complete, so readers always see
+   * either the previous snapshot or the new one, never a partially populated map.
    */
-  public RemoteSchema reload() {
+  public synchronized RemoteSchema reload() {
     final ResultSet result = remoteDatabase.command("sql", "select from schema:types");
 
     final List<Result> cached = new ArrayList<>();
     while (result.hasNext())
       cached.add(result.next());
 
-    if (types == null) {
-      types = new HashMap<>();
-      buckets = new HashMap<>();
-    } else
-      buckets.clear();
+    final Map<String, RemoteBucket>       newBuckets = new HashMap<>();
+    final Map<String, RemoteDocumentType> newTypes   = new HashMap<>();
+    final Map<String, RemoteDocumentType> previous   = this.types;
 
     for (Result record : cached) {
       final List<String> typeBucketNames = record.getProperty("buckets");
       for (String typeBucketName : typeBucketNames)
-        buckets.computeIfAbsent(typeBucketName, (name) -> new RemoteBucket(name));
+        newBuckets.computeIfAbsent(typeBucketName, (name) -> new RemoteBucket(name));
     }
 
     for (Result record : cached) {
       final String typeName = record.getProperty("name");
-
-      RemoteDocumentType type = types.get(typeName);
+      RemoteDocumentType type = previous != null ? previous.get(typeName) : null;
       if (type == null) {
         switch ((String) record.getProperty("type")) {
         case "document":
@@ -756,15 +760,22 @@ public class RemoteSchema implements Schema {
         default:
           throw new IllegalArgumentException("Unknown record type for " + typeName);
         }
-        types.put(typeName, type);
       } else
         type.reload(record);
+      newTypes.put(typeName, type);
     }
+
+    this.buckets = newBuckets;
+    this.types   = newTypes;
     return this;
   }
 
   private void checkSchemaIsLoaded() {
-    if (types == null)
-      reload();
+    if (types == null) {
+      synchronized (this) {
+        if (types == null)
+          reload();
+      }
+    }
   }
 }
