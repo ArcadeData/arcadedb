@@ -329,14 +329,24 @@ public class SnapshotHttpHandler implements HttpHandler, Closeable {
     return null;
   }
 
-  private void addFileToZip(final ZipOutputStream zipOut, final File inputFile) throws Exception {
+  // Package-private for direct unit testing of the symlink-rejection contract.
+  static void addFileToZip(final ZipOutputStream zipOut, final File inputFile) throws Exception {
     if (!inputFile.exists())
       return;
 
-    // Security: skip symlinks to prevent path traversal via crafted symlinks
+    // Security: refuse to follow or include symlinks. Silently skipping would hand the follower
+    // a ZIP that looks complete but is missing a data file, producing silent corruption after the
+    // directory swap. Failing the snapshot makes the client retry (or surface the misconfiguration),
+    // which is the only safe option: ArcadeDB writes its component files directly, so a symlink
+    // here indicates either tampering or an operator override that must be understood before
+    // replication can proceed.
     if (Files.isSymbolicLink(inputFile.toPath())) {
-      LogManager.instance().log(this, Level.WARNING, "Skipping symlinked file in snapshot: %s", inputFile.getAbsolutePath());
-      return;
+      LogManager.instance().log(SnapshotHttpHandler.class, Level.SEVERE,
+          "Refusing to serve snapshot: '%s' is a symlink. Snapshots require regular files so the "
+              + "follower receives an identical copy. Replace or relocate the symlink and retry",
+          inputFile.getAbsolutePath());
+      throw new ReplicationException("Snapshot refused: symlinked database file '"
+          + inputFile.getAbsolutePath() + "' cannot be safely replicated");
     }
 
     final ZipEntry entry = new ZipEntry(inputFile.getName());

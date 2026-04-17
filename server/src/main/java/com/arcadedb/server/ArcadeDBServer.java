@@ -101,6 +101,15 @@ public class ArcadeDBServer {
       new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
+  /**
+   * Set to {@code true} by {@link com.arcadedb.server.ha.raft.SnapshotInstaller} while a
+   * database snapshot is being installed on this node (close → directory swap → reopen).
+   * The HTTP base handler reclassifies failures that fire during this window from 500 to
+   * 503 + {@code Retry-After} so clients retry against the reopened database. Snapshot
+   * installs are rare events (new node joining, long-partition catch-up); in steady state
+   * this flag is always {@code false} and costs nothing.
+   */
+  private volatile    boolean                               snapshotInstallInProgress            = false;
 
   static {
     // must be called before any Logger method is used.
@@ -536,6 +545,22 @@ public class ArcadeDBServer {
 
   public void removeDatabase(final String databaseName) {
     databases.remove(databaseName);
+  }
+
+  /**
+   * Returns {@code true} while a snapshot install is closing and replacing a local database
+   * directory. HTTP handlers use this to translate transient failures into 503 + Retry-After.
+   */
+  public boolean isSnapshotInstallInProgress() {
+    return snapshotInstallInProgress;
+  }
+
+  /**
+   * Called by {@link com.arcadedb.server.ha.raft.SnapshotInstaller} around the close → swap →
+   * reopen window. Must be paired (set {@code true} before close, {@code false} in finally).
+   */
+  public void setSnapshotInstallInProgress(final boolean inProgress) {
+    this.snapshotInstallInProgress = inProgress;
   }
 
   public String getServerName() {

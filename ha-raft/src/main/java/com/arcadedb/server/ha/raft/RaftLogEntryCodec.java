@@ -291,6 +291,11 @@ public final class RaftLogEntryCodec {
    */
   private static String readBoundedString(final Binary stream) {
     final int pos = stream.position();
+    // Binary#getUnsignedNumber decodes a variable-length integer into the full 64-bit long
+    // (it does NOT zigzag-decode or constrain the sign; values like Long.MIN_VALUE round-trip).
+    // So a corrupted stream can legitimately produce a negative long here, and the < 0 check
+    // is not dead code - it rejects those values before the subsequent cast to int could yield
+    // a nonsensical positive allocation size.
     final long declaredLength = stream.getUnsignedNumber();
     if (declaredLength < 0 || declaredLength > MAX_STRING_LENGTH)
       throw new IllegalArgumentException(
@@ -388,6 +393,15 @@ public final class RaftLogEntryCodec {
     final long magicNumber = buffer.getLong(pos);
     if (magicNumber != WALFile.MAGIC_NUMBER)
       throw new ReplicationException("Replicated transaction buffer is corrupted (bad magic number)");
+    pos += Binary.LONG_SERIALIZED_SIZE;
+
+    // The header + pages + footer must have consumed the entire buffer. Any trailing bytes mean
+    // the serializer produced more than the parser recognizes (framing mismatch, forward-incompatible
+    // writer, or corruption that happened to leave a valid magic at the right offset) and would be
+    // silently dropped otherwise.
+    if (pos != buffer.size())
+      throw new ReplicationException(
+          "Replicated transaction buffer has " + (buffer.size() - pos) + " unexpected trailing bytes after footer");
 
     return tx;
   }

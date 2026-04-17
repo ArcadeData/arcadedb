@@ -32,7 +32,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 /**
@@ -115,7 +115,7 @@ public class RaftGroupCommitter {
     } catch (final java.util.concurrent.TimeoutException e) {
       // Atomically try to cancel. If CAS fails, the flusher already moved the entry to
       // DISPATCHED, so cancellation is impossible and we must wait for the Raft result.
-      if (!pending.state.compareAndSet(STATE_PENDING, STATE_CANCELLED)) {
+      if (!pending.state.compareAndSet(EntryState.PENDING, EntryState.CANCELLED)) {
         // Entry was already sent to Raft. We MUST wait for the result to prevent phantom
         // commits (replicated on followers but commit2ndPhase never called on the leader).
         // Wait is capped by the overall deadline so total wall-clock remains bounded by
@@ -213,7 +213,7 @@ public class RaftGroupCommitter {
     // Atomically transition each entry from PENDING to DISPATCHED. Entries that were already
     // CANCELLED by a timed-out caller will fail the CAS and are removed. This single CAS
     // replaces the old two-step (removeIf cancelled + set dispatched) that had a race window.
-    batch.removeIf(p -> !p.state.compareAndSet(STATE_PENDING, STATE_DISPATCHED));
+    batch.removeIf(p -> !p.state.compareAndSet(EntryState.PENDING, EntryState.DISPATCHED));
     if (batch.isEmpty())
       return;
 
@@ -302,18 +302,21 @@ public class RaftGroupCommitter {
     HALog.log(this, HALog.DETAILED, "Group commit flushed %d entries in one batch", batch.size());
   }
 
-  // Atomic state constants for PendingEntry. A single AtomicInteger prevents the race
-  // between cancel and dispatch that existed with two separate AtomicBooleans: the flusher's
-  // removeIf(cancelled) and set(dispatched=true) were not atomic, so a timeout firing between
-  // them could cancel an entry that had already passed the cancel check.
-  static final int STATE_PENDING    = 0;
-  static final int STATE_DISPATCHED = 1;
-  static final int STATE_CANCELLED  = 2;
+  /**
+   * Lifecycle of an entry in the group committer. A single CAS between {@code PENDING} and either
+   * {@code DISPATCHED} or {@code CANCELLED} prevents the race that existed with two separate
+   * AtomicBooleans: the flusher's {@code removeIf(cancelled)} and {@code set(dispatched=true)}
+   * were not atomic, so a timeout firing between them could cancel an entry that had already
+   * passed the cancel check. An enum makes illegal integer values unrepresentable.
+   */
+  enum EntryState {
+    PENDING, DISPATCHED, CANCELLED
+  }
 
   static class PendingEntry {
-    final byte[]                       entry;
-    final CompletableFuture<Exception> future = new CompletableFuture<>();
-    final AtomicInteger                state  = new AtomicInteger(STATE_PENDING);
+    final byte[]                        entry;
+    final CompletableFuture<Exception>  future = new CompletableFuture<>();
+    final AtomicReference<EntryState>   state  = new AtomicReference<>(EntryState.PENDING);
 
     PendingEntry(final byte[] entry) {
       this.entry = entry;

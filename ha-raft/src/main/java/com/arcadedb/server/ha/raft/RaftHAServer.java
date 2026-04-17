@@ -340,7 +340,7 @@ public class RaftHAServer {
         state, restartFailureCount + 1);
 
     try {
-      // Any transactions currently in STATE_DISPATCHED (sent to Raft but not yet acknowledged)
+      // Any transactions currently in EntryState.DISPATCHED (sent to Raft but not yet acknowledged)
       // will receive errors when the client is closed. These transactions may have already been
       // committed on a majority of replicas, so the calling thread will see QuorumNotReachedException
       // even though the data is durably replicated. After restart, Ratis replays committed entries

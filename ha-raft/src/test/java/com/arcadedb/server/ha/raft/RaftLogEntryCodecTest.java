@@ -259,6 +259,29 @@ class RaftLogEntryCodecTest {
     assertThat(tx.pages[0].changesTo).isEqualTo(109);
   }
 
+  @Test
+  void testParseWalTransactionRejectsTrailingBytesAfterFooter() {
+    // Regression test: the parser must reject any bytes after the magic number. Silently ignoring
+    // them would mask framing mismatches (forward-incompatible writer, serializer bug) and leave
+    // corrupted entries undetected whenever the extra bytes happen to follow a valid-looking footer.
+    final Binary valid = createTestWalBufferWithOnePage(7L, 123L, 1, 0, 3);
+    final byte[] src = new byte[valid.size()];
+    valid.getByteBuffer().position(0);
+    valid.getByteBuffer().get(src, 0, src.length);
+
+    // Append 4 bytes of garbage after the footer
+    final byte[] padded = new byte[src.length + 4];
+    System.arraycopy(src, 0, padded, 0, src.length);
+    padded[src.length] = (byte) 0xDE;
+    padded[src.length + 1] = (byte) 0xAD;
+    padded[src.length + 2] = (byte) 0xBE;
+    padded[src.length + 3] = (byte) 0xEF;
+
+    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(new Binary(padded)))
+        .isInstanceOf(ReplicationException.class)
+        .hasMessageContaining("trailing");
+  }
+
   private Binary createTestWalBuffer(final long txId, final long timestamp, final int pageCount) {
     final int segmentSize = 0;
     final int totalSize = Binary.LONG_SERIALIZED_SIZE

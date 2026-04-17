@@ -79,11 +79,11 @@ class RaftGroupCommitterTest {
     final RaftGroupCommitter.PendingEntry entry = new RaftGroupCommitter.PendingEntry(new byte[] { 1 });
 
     // Flusher transitions PENDING -> DISPATCHED
-    assertThat(entry.state.compareAndSet(RaftGroupCommitter.STATE_PENDING, RaftGroupCommitter.STATE_DISPATCHED)).isTrue();
+    assertThat(entry.state.compareAndSet(RaftGroupCommitter.EntryState.PENDING, RaftGroupCommitter.EntryState.DISPATCHED)).isTrue();
 
     // Caller's timeout fires, tries PENDING -> CANCELLED - must fail
-    assertThat(entry.state.compareAndSet(RaftGroupCommitter.STATE_PENDING, RaftGroupCommitter.STATE_CANCELLED)).isFalse();
-    assertThat(entry.state.get()).isEqualTo(RaftGroupCommitter.STATE_DISPATCHED);
+    assertThat(entry.state.compareAndSet(RaftGroupCommitter.EntryState.PENDING, RaftGroupCommitter.EntryState.CANCELLED)).isFalse();
+    assertThat(entry.state.get()).isEqualTo(RaftGroupCommitter.EntryState.DISPATCHED);
   }
 
   @Test
@@ -93,11 +93,11 @@ class RaftGroupCommitterTest {
     final RaftGroupCommitter.PendingEntry entry = new RaftGroupCommitter.PendingEntry(new byte[] { 1 });
 
     // Caller times out, transitions PENDING -> CANCELLED
-    assertThat(entry.state.compareAndSet(RaftGroupCommitter.STATE_PENDING, RaftGroupCommitter.STATE_CANCELLED)).isTrue();
+    assertThat(entry.state.compareAndSet(RaftGroupCommitter.EntryState.PENDING, RaftGroupCommitter.EntryState.CANCELLED)).isTrue();
 
     // Flusher tries PENDING -> DISPATCHED - must fail
-    assertThat(entry.state.compareAndSet(RaftGroupCommitter.STATE_PENDING, RaftGroupCommitter.STATE_DISPATCHED)).isFalse();
-    assertThat(entry.state.get()).isEqualTo(RaftGroupCommitter.STATE_CANCELLED);
+    assertThat(entry.state.compareAndSet(RaftGroupCommitter.EntryState.PENDING, RaftGroupCommitter.EntryState.DISPATCHED)).isFalse();
+    assertThat(entry.state.get()).isEqualTo(RaftGroupCommitter.EntryState.CANCELLED);
   }
 
   @Test
@@ -116,13 +116,13 @@ class RaftGroupCommitterTest {
       final Thread dispatcher = new Thread(() -> {
         ready.countDown();
         try { go.await(); } catch (final InterruptedException ignored) { }
-        if (entry.state.compareAndSet(RaftGroupCommitter.STATE_PENDING, RaftGroupCommitter.STATE_DISPATCHED))
+        if (entry.state.compareAndSet(RaftGroupCommitter.EntryState.PENDING, RaftGroupCommitter.EntryState.DISPATCHED))
           dispatchWins.incrementAndGet();
       });
       final Thread canceller = new Thread(() -> {
         ready.countDown();
         try { go.await(); } catch (final InterruptedException ignored) { }
-        if (entry.state.compareAndSet(RaftGroupCommitter.STATE_PENDING, RaftGroupCommitter.STATE_CANCELLED))
+        if (entry.state.compareAndSet(RaftGroupCommitter.EntryState.PENDING, RaftGroupCommitter.EntryState.CANCELLED))
           cancelWins.incrementAndGet();
       });
 
@@ -134,8 +134,8 @@ class RaftGroupCommitterTest {
       canceller.join();
 
       // Exactly one must have won
-      final int state = entry.state.get();
-      assertThat(state).isIn(RaftGroupCommitter.STATE_DISPATCHED, RaftGroupCommitter.STATE_CANCELLED);
+      final RaftGroupCommitter.EntryState state = entry.state.get();
+      assertThat(state).isIn(RaftGroupCommitter.EntryState.DISPATCHED, RaftGroupCommitter.EntryState.CANCELLED);
     }
 
     // Both sides should win sometimes (validates the test is actually racing)
@@ -152,18 +152,18 @@ class RaftGroupCommitterTest {
     final List<RaftGroupCommitter.PendingEntry> batch = new ArrayList<>();
     final RaftGroupCommitter.PendingEntry alive = new RaftGroupCommitter.PendingEntry(new byte[] { 1 });
     final RaftGroupCommitter.PendingEntry cancelled = new RaftGroupCommitter.PendingEntry(new byte[] { 2 });
-    cancelled.state.set(RaftGroupCommitter.STATE_CANCELLED);
+    cancelled.state.set(RaftGroupCommitter.EntryState.CANCELLED);
     batch.add(alive);
     batch.add(cancelled);
 
     // Same logic as flushBatch
-    batch.removeIf(p -> !p.state.compareAndSet(RaftGroupCommitter.STATE_PENDING, RaftGroupCommitter.STATE_DISPATCHED));
+    batch.removeIf(p -> !p.state.compareAndSet(RaftGroupCommitter.EntryState.PENDING, RaftGroupCommitter.EntryState.DISPATCHED));
 
     assertThat(batch).hasSize(1);
     assertThat(batch.get(0)).isSameAs(alive);
-    assertThat(alive.state.get()).isEqualTo(RaftGroupCommitter.STATE_DISPATCHED);
+    assertThat(alive.state.get()).isEqualTo(RaftGroupCommitter.EntryState.DISPATCHED);
     // Cancelled entry's state is unchanged
-    assertThat(cancelled.state.get()).isEqualTo(RaftGroupCommitter.STATE_CANCELLED);
+    assertThat(cancelled.state.get()).isEqualTo(RaftGroupCommitter.EntryState.CANCELLED);
   }
 
   // -- ALL quorum TOCTOU fix tests --

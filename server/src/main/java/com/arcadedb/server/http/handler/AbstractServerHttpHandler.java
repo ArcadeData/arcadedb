@@ -470,8 +470,21 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,
                                  final String exceptionArgs) {
+    // Reclassify 500-level failures that fire during a snapshot install window as 503 with
+    // Retry-After: the database was transiently unavailable while being replaced on disk,
+    // and retries are safe (idempotent by construction for GETs; coordinated with the
+    // IdempotencyCache for POST/PUT/DELETE). Done here so every catch branch that routes
+    // through sendErrorResponse benefits without having to repeat the check.
+    int effectiveCode = code;
+    String effectiveMessage = errorMessage;
+    if (code == 500 && httpServer.getServer().isSnapshotInstallInProgress()) {
+      effectiveCode = 503;
+      effectiveMessage = "Database temporarily unavailable (snapshot install in progress), retry the request";
+      exchange.getResponseHeaders().put(io.undertow.util.HttpString.tryFromString("Retry-After"), "5");
+    }
+
     if (!exchange.isResponseStarted())
-      exchange.setStatusCode(code);
+      exchange.setStatusCode(effectiveCode);
 
     String detail = "";
     if (e != null) {
@@ -487,7 +500,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       detail = buffer.toString();
     }
 
-    exchange.getResponseSender().send(error2json(errorMessage, detail, e, exceptionArgs, null));
+    exchange.getResponseSender().send(error2json(effectiveMessage, detail, e, exceptionArgs, null));
   }
 
   private static boolean constantTimeTokenEquals(final String expected, final String provided) {

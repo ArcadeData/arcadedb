@@ -23,10 +23,13 @@ import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests the symlink protections in snapshot extraction.
@@ -79,6 +82,25 @@ class SnapshotSymlinkProtectionTest {
       assertThat(realParent.startsWith(realTempDir)).isFalse(); // real path check catches it
     } finally {
       com.arcadedb.utility.FileUtils.deleteRecursively(outsideDir.toFile());
+    }
+  }
+
+  @Test
+  @DisabledOnOs(OS.WINDOWS)
+  void addFileToZipFailsSnapshotWhenSourceIsSymlink() throws Exception {
+    // Regression test: the leader must NOT silently skip a symlinked database file. Doing so
+    // would hand the follower a ZIP that looks complete but is missing data, producing silent
+    // corruption after the atomic directory swap. The only safe behavior is to fail the snapshot.
+    final Path realFile = tempDir.resolve("real.data");
+    Files.writeString(realFile, "payload");
+
+    final Path symlinkFile = tempDir.resolve("aliased.data");
+    Files.createSymbolicLink(symlinkFile, realFile);
+
+    try (final ZipOutputStream zipOut = new ZipOutputStream(new ByteArrayOutputStream())) {
+      assertThatThrownBy(() -> SnapshotHttpHandler.addFileToZip(zipOut, symlinkFile.toFile()))
+          .isInstanceOf(ReplicationException.class)
+          .hasMessageContaining("symlink");
     }
   }
 

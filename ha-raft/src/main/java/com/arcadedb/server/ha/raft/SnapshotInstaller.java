@@ -67,6 +67,22 @@ public class SnapshotInstaller {
   private static final int    SNAPSHOT_DOWNLOAD_MAX_RETRIES = 3;
   private static final long[] SNAPSHOT_DOWNLOAD_BACKOFF_MS  = { 5_000, 10_000, 20_000 };
 
+  /** Hard cap on uncompressed bytes per ZIP entry extracted from a snapshot. Protects the
+   *  follower from a malicious or corrupted leader entry that would inflate indefinitely; sized
+   *  well above the largest realistic ArcadeDB component file (pages, indexes) while keeping a
+   *  memoryless streaming check. Package-private for unit testing. */
+  static final long MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024;
+
+  /** Connect timeout for the snapshot HTTP GET. Read timeout is governed separately by
+   *  {@link GlobalConfiguration#HA_SNAPSHOT_DOWNLOAD_TIMEOUT} because it must cover the full
+   *  transfer of a potentially multi-GB database. */
+  private static final int SNAPSHOT_CONNECT_TIMEOUT_MS = 30_000;
+
+  /** Connect and read timeout for the lightweight `/api/v1/server` call used to fetch the
+   *  leader's current database list. Kept short because the response is tiny and a slow leader
+   *  here only degrades stale-database cleanup, not snapshot installation itself. */
+  private static final int LEADER_METADATA_TIMEOUT_MS = 10_000;
+
   /**
    * Sentinel file written inside the temp snapshot directory after all ZIP entries have been
    * successfully extracted. {@link #recoverPendingSnapshotSwaps(Path)} checks for this marker
@@ -206,32 +222,42 @@ public class SnapshotInstaller {
     // Phase 2: Close database and swap directories using a crash-safe marker file.
     // Close the underlying LocalDatabase directly - ServerDatabase.close() throws
     // UnsupportedOperationException because server-managed databases are shared.
-    db.getEmbedded().close();
-
+    //
+    // Mark the install as in-progress so that any HTTP request that hits the close → swap →
+    // reopen window sees its failure translated into 503 + Retry-After by the base HTTP handler,
+    // making the transient error client-visible and safely retryable with the idempotency cache.
     final Path markerFile = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-pending");
+    final SwapOutcome outcome;
 
-    final SwapOutcome outcome = performSnapshotSwap(dbPath, tempDir, backupDir, markerFile, databaseName, DEFAULT_MOVER);
+    server.setSnapshotInstallInProgress(true);
+    try {
+      db.getEmbedded().close();
 
-    // Only reopen when the on-disk state is known-good. On UNRECOVERABLE, dbPath may be missing
-    // or partial and server.getDatabase() could silently open a corrupt or auto-created empty
-    // database, masking data loss. The retained pending marker lets startup recovery retry.
-    if (outcome != SwapOutcome.UNRECOVERABLE) {
-      try {
-        server.removeDatabase(databaseName);
-        server.getDatabase(databaseName);
-        LogManager.instance().log(this, Level.INFO, "Database '%s' reopened after snapshot installation", databaseName);
-      } catch (final Exception e) {
+      outcome = performSnapshotSwap(dbPath, tempDir, backupDir, markerFile, databaseName, DEFAULT_MOVER);
+
+      // Only reopen when the on-disk state is known-good. On UNRECOVERABLE, dbPath may be missing
+      // or partial and server.getDatabase() could silently open a corrupt or auto-created empty
+      // database, masking data loss. The retained pending marker lets startup recovery retry.
+      if (outcome != SwapOutcome.UNRECOVERABLE) {
+        try {
+          server.removeDatabase(databaseName);
+          server.getDatabase(databaseName);
+          LogManager.instance().log(this, Level.INFO, "Database '%s' reopened after snapshot installation", databaseName);
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "CRITICAL: Failed to reopen database '%s' after snapshot installation. "
+                  + "This node may need to be restarted to recover. Error: %s",
+              databaseName, e.getMessage());
+        }
+      } else {
         LogManager.instance().log(this, Level.SEVERE,
-            "CRITICAL: Failed to reopen database '%s' after snapshot installation. "
-                + "This node may need to be restarted to recover. Error: %s",
-            databaseName, e.getMessage());
+            "CRITICAL: database '%s' left in inconsistent state (swap and rollback both failed). "
+                + "Path '%s' may be missing or partial. Pending marker '%s' retained for startup recovery. "
+                + "Manual recovery or node restart required.",
+            databaseName, dbPath, markerFile);
       }
-    } else {
-      LogManager.instance().log(this, Level.SEVERE,
-          "CRITICAL: database '%s' left in inconsistent state (swap and rollback both failed). "
-              + "Path '%s' may be missing or partial. Pending marker '%s' retained for startup recovery. "
-              + "Manual recovery or node restart required.",
-          databaseName, dbPath, markerFile);
+    } finally {
+      server.setSnapshotInstallInProgress(false);
     }
 
     if (outcome != SwapOutcome.SUCCESS)
@@ -380,7 +406,7 @@ public class SnapshotInstaller {
     }
 
     connection.setRequestMethod("GET");
-    connection.setConnectTimeout(30_000);
+    connection.setConnectTimeout(SNAPSHOT_CONNECT_TIMEOUT_MS);
     connection.setReadTimeout(server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_DOWNLOAD_TIMEOUT));
 
     if (raftHA.getClusterToken() != null)
@@ -431,7 +457,7 @@ public class SnapshotInstaller {
               throw new ReplicationException("Symlink detected in snapshot extraction path: " + zipEntry.getName());
 
             try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile())) {
-              uncompressedBytes = copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName());
+              uncompressedBytes = copyWithLimit(zipIn, fos, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES, zipEntry.getName());
             }
           }
           zipIn.closeEntry();
@@ -478,8 +504,8 @@ public class SnapshotInstaller {
           httpsConn.setSSLSocketFactory(sslContext.getSocketFactory());
       }
       conn.setRequestMethod("GET");
-      conn.setConnectTimeout(10_000);
-      conn.setReadTimeout(10_000);
+      conn.setConnectTimeout(LEADER_METADATA_TIMEOUT_MS);
+      conn.setReadTimeout(LEADER_METADATA_TIMEOUT_MS);
       if (raftHA.getClusterToken() != null) {
         conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
         conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
