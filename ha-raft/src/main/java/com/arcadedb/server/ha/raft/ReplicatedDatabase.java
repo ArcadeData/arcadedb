@@ -85,9 +85,20 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 public class ReplicatedDatabase implements DatabaseInternal {
+  /**
+   * Test-only fault-injection hook. When non-null, invoked on the leader AFTER
+   * {@code replicateTransaction()} succeeds and BEFORE {@code commit2ndPhase()} runs.
+   * A hook that throws simulates a leader crash in the narrow window where the Raft
+   * entry is durably committed (and followers applied it) but the leader did not yet
+   * write pages locally. Always {@code null} in production; set only from integration
+   * tests that need to exercise this crash window.
+   */
+  static volatile Consumer<String> TEST_POST_REPLICATION_HOOK = null;
+
   protected final ArcadeDBServer server;
   protected final LocalDatabase proxied;
   protected final long timeout;
@@ -201,6 +212,12 @@ public class ReplicatedDatabase implements DatabaseInternal {
       rollback();
       throw new TransactionException("Error on commit distributed transaction (replication)", e);
     }
+
+    // Test-only fault-injection point: replication succeeded, phase 2 not yet run.
+    // Null-checked to keep the production hot path branch-free on the common case.
+    final Consumer<String> postReplicationHook = TEST_POST_REPLICATION_HOOK;
+    if (postReplicationHook != null)
+      postReplicationHook.accept(getName());
 
     // PHASE 2 (under read lock): quorum reached, commit locally.
     // If this fails, followers have already applied the changes but the leader has not.
