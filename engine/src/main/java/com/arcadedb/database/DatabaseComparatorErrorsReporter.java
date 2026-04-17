@@ -16,11 +16,8 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.database.bucketselectionstrategy;
+package com.arcadedb.database;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.LocalBucket;

@@ -1,9 +1,8 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.bucketselectionstrategy.DatabaseComparatorErrorsReporter;
+import com.arcadedb.database.DatabaseComparatorErrorsReporter;
 
 public class ClusterDatabaseChecker {
 
