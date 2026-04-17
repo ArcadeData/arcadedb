@@ -144,7 +144,12 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
           if (raftHA.getClusterToken() != null) {
             conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
-            conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
+            // Forward the initiating user's identity rather than a hardcoded "root" so that
+            // authorization on the peer evaluates against the actual caller. Today checkRootUser()
+            // above guarantees user is root, but the forwarded identity should always mirror the
+            // authenticated principal (matching LeaderProxy's pattern) so the invariant holds if
+            // the root-only gate is ever relaxed.
+            conn.setRequestProperty("X-ArcadeDB-Forwarded-User", user.getName());
           }
 
           conn.setDoOutput(true);

@@ -580,9 +580,17 @@ public class SnapshotInstaller {
               "Failed to delete stale WAL file: %s", walFile.getName());
   }
 
+  /**
+   * Copy buffer size for ZIP extraction during snapshot download. Sized for the database
+   * transfer described in the class Javadoc (tens to hundreds of GB) rather than the default
+   * 8 KB used for small streams - a larger buffer meaningfully reduces the number of
+   * read/inflate/write syscalls per snapshot and dominates over the one-time allocation cost.
+   */
+  private static final int COPY_BUFFER_SIZE = 512 * 1024;
+
   private static void copyWithLimit(final InputStream in, final OutputStream out, final long maxBytes,
       final String entryName) throws IOException {
-    final byte[] buf = new byte[8192];
+    final byte[] buf = new byte[COPY_BUFFER_SIZE];
     long total = 0;
     int read;
     while ((read = in.read(buf)) != -1) {

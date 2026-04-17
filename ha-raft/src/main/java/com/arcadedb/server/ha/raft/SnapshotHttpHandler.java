@@ -36,6 +36,7 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.OutputStream;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
@@ -130,14 +131,27 @@ public class SnapshotHttpHandler implements HttpHandler, Closeable {
     // Extract database name from path parameters or URL path directly.
     // After dispatch(), path parameters may be empty in some Undertow versions.
     final var dbParam = exchange.getPathParameters().get("database");
-    final String databaseName;
+    String databaseName;
     if (dbParam != null && !dbParam.isEmpty())
       databaseName = dbParam.getFirst();
     else {
-      // Fallback: extract from URL path (e.g., /api/v1/ha/snapshot/testdb -> testdb)
+      // Fallback: extract from URL path (e.g., /api/v1/ha/snapshot/testdb -> testdb).
+      // The client URL-encodes the name (SnapshotInstaller uses URLEncoder with UTF-8), so the
+      // raw relative path still carries percent-escapes that must be decoded before the downstream
+      // validation and database lookup, which compare against the decoded name.
       final String path = exchange.getRelativePath();
       final int lastSlash = path.lastIndexOf('/');
-      databaseName = lastSlash >= 0 ? path.substring(lastSlash + 1) : null;
+      final String raw = lastSlash >= 0 ? path.substring(lastSlash + 1) : null;
+      if (raw != null) {
+        try {
+          databaseName = URLDecoder.decode(raw, StandardCharsets.UTF_8);
+        } catch (final IllegalArgumentException e) {
+          exchange.setStatusCode(400);
+          exchange.getResponseSender().send("Invalid 'database' parameter encoding");
+          return;
+        }
+      } else
+        databaseName = null;
     }
 
     if (databaseName == null || databaseName.isEmpty()) {

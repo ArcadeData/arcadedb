@@ -82,15 +82,6 @@ import java.util.logging.Level;
 public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache.ratis.statemachine.StateMachine.EventApi {
 
   /**
-   * Tolerance for the snapshot gap check in {@link #reinitialize()}. During normal shutdown the
-   * persisted applied index may lag a few entries behind the snapshot index because
-   * {@link #takeSnapshot()} and {@link #persistAppliedIndex(long)} are not atomic with respect
-   * to each other. A small gap (within this tolerance) is harmless and does not indicate missing
-   * data, so we avoid an unnecessary full snapshot download on restart.
-   */
-  private static final long SNAPSHOT_GAP_TOLERANCE = 10;
-
-  /**
    * Safety factor applied to {@link GlobalConfiguration#HA_ELECTION_TIMEOUT_MAX} when computing
    * the effective snapshot watchdog timeout. With Raft's randomized elections, a cluster typically
    * converges on a leader within 1-2 election cycles; 4x gives headroom for split votes on WAN
@@ -173,10 +164,18 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       // The download is deferred to notifyLeaderChanged() because during reinitialize()
       // the Ratis server hasn't joined the cluster yet and the leader is unknown.
       final long persistedApplied = readPersistedAppliedIndex();
-      if (persistedApplied >= 0 && snapshotIndex > persistedApplied + SNAPSHOT_GAP_TOLERANCE) {
+      // The gap tolerance absorbs the non-atomicity between storage.updateLatestSnapshot() and
+      // writePersistedAppliedIndex() inside takeSnapshot() - both are atomic-rename file writes
+      // in the same thread but a crash BETWEEN them leaves snapshotIndex ahead. A chunk-based
+      // snapshot install by Ratis produces a gap of at least HA_SNAPSHOT_THRESHOLD entries, so
+      // any tolerance well below that threshold is safe.
+      final long gapTolerance = server != null
+          ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_GAP_TOLERANCE)
+          : (Integer) GlobalConfiguration.HA_SNAPSHOT_GAP_TOLERANCE.getDefValue();
+      if (persistedApplied >= 0 && snapshotIndex > persistedApplied + gapTolerance) {
         LogManager.instance().log(this, Level.INFO,
-            "Snapshot index %d is ahead of persisted applied index %d, will download from leader when available",
-            snapshotIndex, persistedApplied);
+            "Snapshot index %d is ahead of persisted applied index %d (tolerance=%d), will download from leader when available",
+            snapshotIndex, persistedApplied, gapTolerance);
         needsSnapshotDownload.set(true);
 
         // Watchdog: if notifyLeaderChanged() doesn't fire within this delay (e.g., stable

@@ -644,6 +644,14 @@ public enum GlobalConfiguration {
           + "4 x electionTimeoutMax so the watchdog cannot fire before elections can complete on "
           + "WAN clusters. Increase only when the automatic floor is insufficient", Integer.class, 30_000),
 
+  HA_SNAPSHOT_GAP_TOLERANCE("arcadedb.ha.snapshotGapTolerance", SCOPE.SERVER,
+      "Maximum tolerated difference between the Ratis snapshot index and the persisted applied index "
+          + "before a follower forces a full snapshot download on startup. A small positive value absorbs "
+          + "the inherent non-atomicity between takeSnapshot() and writePersistedAppliedIndex() (two separate "
+          + "atomic-rename operations in the same thread) without misclassifying a chunk-based snapshot install "
+          + "by Ratis - which produces a gap of at least HA_SNAPSHOT_THRESHOLD entries - as noise. "
+          + "Raise only if benign false-positive downloads are observed", Integer.class, 10),
+
   HA_SNAPSHOT_WRITE_TIMEOUT("arcadedb.ha.snapshotWriteTimeout", SCOPE.SERVER,
       "Server-side write timeout in milliseconds for serving a database snapshot to a follower. "
           + "If the transfer is not completed within this deadline the connection is closed and the concurrency "
