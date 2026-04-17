@@ -431,7 +431,18 @@ public class SnapshotInstaller {
 
       // Wrap the raw connection input so we can measure compressed bytes consumed per entry and
       // reject suspicious compression ratios (defense against decompression-bomb snapshots).
-      final CountingInputStream rawCounter = new CountingInputStream(connection.getInputStream());
+      //
+      // Memory safety note: HttpURLConnection.getInputStream() returns a STREAMING reader; the
+      // JVM does NOT materialize the full response body in memory, regardless of response size.
+      // The setChunkedStreamingMode()/setFixedLengthStreamingMode() knobs gate REQUEST-body
+      // buffering on uploads, not response-body buffering on downloads, so they do not apply
+      // here. We wrap in a BufferedInputStream to give a bounded, explicit 64 KB read buffer
+      // in front of the counter + ZipInputStream chain; the overall pipeline (this buffer →
+      // CountingInputStream → ZipInputStream → copyWithLimit's 512 KB buffer → FileOutputStream)
+      // never holds more than a fixed constant of bytes, so multi-GB snapshot downloads are
+      // safe for the follower JVM heap.
+      final java.io.InputStream bufferedIn = new java.io.BufferedInputStream(connection.getInputStream(), 64 * 1024);
+      final CountingInputStream rawCounter = new CountingInputStream(bufferedIn);
       try (final ZipInputStream zipIn = new ZipInputStream(rawCounter)) {
         ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {

@@ -102,7 +102,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   private final AtomicBoolean             needsSnapshotDownload  = new AtomicBoolean(false);
   /** Cached leader flag, updated by notifyLeaderChanged(). Used for non-critical checks (e.g. catch-up detection).
    *  The correctness-critical origin-skip in applyTransactionEntry() uses raftHA.isLeader() directly to avoid stale reads. */
-  private volatile boolean                currentNodeIsLeader    = false;
+  private volatile boolean                cachedIsLeader    = false;
   /** Executor for async lifecycle tasks (snapshot download, Ratis restart) so they can be awaited on close. */
   private final ExecutorService           lifecycleExecutor      = Executors.newSingleThreadExecutor(
       r -> { final Thread t = new Thread(r, "arcadedb-sm-lifecycle"); t.setDaemon(true); return t; });
@@ -415,7 +415,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     // MajorityCommittedAllFailedException and still calls commit2ndPhase() to prevent divergence.
     //
     // We call raftHA.isLeader() (which queries Ratis's internal role state directly) rather than
-    // the cached currentNodeIsLeader field. The cached field is updated by notifyLeaderChanged()
+    // the cached cachedIsLeader field. The cached field is updated by notifyLeaderChanged()
     // on a separate thread and could be stale during a concurrent leadership transfer.
     if (isOriginNode(entry.originPeerId())) {
       if (raftHA != null && raftHA.isLeader()) {
@@ -656,7 +656,7 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
   }
 
   private boolean isCurrentNodeLeader() {
-    return currentNodeIsLeader;
+    return cachedIsLeader;
   }
 
   // -- Schema Changes --
@@ -841,11 +841,11 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     if (raftHA != null) {
       // Update cached leader flag (used for non-critical checks like catch-up detection).
       // The origin-skip in applyTransactionEntry() uses raftHA.isLeader() directly instead.
-      currentNodeIsLeader = newLeaderId != null && newLeaderId.equals(raftHA.getLocalPeerId());
+      cachedIsLeader = newLeaderId != null && newLeaderId.equals(raftHA.getLocalPeerId());
       raftHA.refreshRaftClient();
       raftHA.notifyLeaderChanged();
     } else
-      currentNodeIsLeader = false;
+      cachedIsLeader = false;
 
     if (newLeaderId != null)
       fireCallback(ReplicationCallback.TYPE.LEADER_ELECTED, newLeaderId.toString());

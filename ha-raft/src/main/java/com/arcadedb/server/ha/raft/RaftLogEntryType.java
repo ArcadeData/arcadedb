@@ -24,6 +24,14 @@ package com.arcadedb.server.ha.raft;
  * Returning {@code null} from {@link #fromCode(byte)} instead of throwing for unknown codes
  * allows forward-compatible handling during rolling upgrades where a newer node may write
  * entry types that an older node does not yet know about.
+ * <p>
+ * <b>Invariant:</b> every value declared in this enum MUST be handled by
+ * {@code ArcadeDBStateMachine.applyTransaction()} (see its switch over {@code RaftLogEntryType}).
+ * A {@code null} return from {@link #fromCode(byte)} MUST mean the code is unknown to this node
+ * version, never "known but not yet implemented by the state machine" - the state machine logs
+ * a null result and advances {@code lastAppliedIndex}, so using null for the unimplemented case
+ * would silently skip real entries. If a new code is added here, it must be wired through the
+ * state machine in the same change.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -64,7 +72,9 @@ public enum RaftLogEntryType {
   }
 
   /**
-   * Returns the RaftLogEntryType for the given wire code, or {@code null} if the code is unrecognized.
+   * Returns the RaftLogEntryType for the given wire code, or {@code null} if the code is
+   * unknown to this node version. {@code null} MUST NOT be used to signal "known but
+   * unimplemented" - see the invariant documented on the enum.
    */
   public static RaftLogEntryType fromCode(final byte code) {
     return switch (code) {
