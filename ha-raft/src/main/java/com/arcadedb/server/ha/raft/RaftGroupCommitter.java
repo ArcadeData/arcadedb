@@ -74,9 +74,19 @@ public class RaftGroupCommitter {
    * Enqueues a Raft entry and blocks until it is committed by the cluster.
    * Multiple concurrent callers will have their entries batched into fewer Raft round-trips.
    * <p>
-   * The overall deadline is {@code timeoutMs + quorumTimeout}. The first timeout covers queue
-   * waiting and batch dispatch; the second covers the Raft round-trip if the entry was dispatched
-   * just before the first timeout expired. In practice, all current callers pass
+   * Time budget (post-queue.offer): a single deadline of {@code timeoutMs + quorumTimeout}
+   * measured from entry to this method, split into two windows derived from the SAME clock
+   * reading:
+   * <ul>
+   *   <li>{@code dispatchDeadline = start + timeoutMs} - during this window the entry is
+   *       waiting in the queue / being dispatched by the flusher. On timeout we CAS-cancel.</li>
+   *   <li>{@code overallDeadline = start + timeoutMs + quorumTimeout} - used only when the CAS
+   *       fails (entry already dispatched); remaining time to this deadline is how long we
+   *       wait for the Raft round-trip.</li>
+   * </ul>
+   * Every wait is sized as {@code max(1, deadline - now)} so elapsed time always counts toward
+   * the bound - the total wall-clock is strictly {@code <= timeoutMs + quorumTimeout}, never
+   * a naive sum of independent timeouts. In practice callers pass
    * {@code timeoutMs == quorumTimeout}, so the effective upper bound is {@code 2 * quorumTimeout}.
    *
    * @param timeoutMs how long to wait for the entry to be dispatched and committed
@@ -92,11 +102,14 @@ public class RaftGroupCommitter {
       throw new ReplicationQueueFullException("Interrupted while waiting for replication queue space");
     }
 
-    // Two-phase deadline: timeoutMs for queue+dispatch, then quorumTimeout for Raft round-trip
-    // if the entry was dispatched just before the first timeout fired.
-    final long deadline = System.currentTimeMillis() + timeoutMs + haServer.getQuorumTimeout();
+    // Single start-time reading drives both deadlines so elapsed time is uniformly accounted for.
+    final long startMs = System.currentTimeMillis();
+    final long dispatchDeadline = startMs + timeoutMs;
+    final long overallDeadline = dispatchDeadline + haServer.getQuorumTimeout();
+
     try {
-      final Exception error = pending.future.get(timeoutMs, TimeUnit.MILLISECONDS);
+      final long firstWait = Math.max(1L, dispatchDeadline - System.currentTimeMillis());
+      final Exception error = pending.future.get(firstWait, TimeUnit.MILLISECONDS);
       if (error != null)
         throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
     } catch (final java.util.concurrent.TimeoutException e) {
@@ -105,8 +118,9 @@ public class RaftGroupCommitter {
       if (!pending.state.compareAndSet(STATE_PENDING, STATE_CANCELLED)) {
         // Entry was already sent to Raft. We MUST wait for the result to prevent phantom
         // commits (replicated on followers but commit2ndPhase never called on the leader).
-        // Use remaining time from the overall deadline (2x quorumTimeout) instead of a fresh timeout.
-        final long remaining = Math.max(1, deadline - System.currentTimeMillis());
+        // Wait is capped by the overall deadline so total wall-clock remains bounded by
+        // timeoutMs + quorumTimeout even in this extended path.
+        final long remaining = Math.max(1L, overallDeadline - System.currentTimeMillis());
         HALog.log(this, HALog.BASIC,
             "Group commit entry already dispatched to Raft, waiting %dms for result (initial timeout %dms expired)",
             remaining, timeoutMs);
