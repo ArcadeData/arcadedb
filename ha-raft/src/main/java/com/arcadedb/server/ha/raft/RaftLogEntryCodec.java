@@ -174,8 +174,9 @@ public final class RaftLogEntryCodec {
         uncompressedLength);
 
     final int deltaSize = stream.getInt();
-    if (deltaSize < 0 || deltaSize > MAX_DELTA_SIZE)
-      throw new IllegalArgumentException("Invalid bucket delta size: " + deltaSize);
+    if (deltaSize < 0 || deltaSize > MAX_BUCKET_DELTA_ENTRIES)
+      throw new IllegalArgumentException(
+          "Invalid bucket delta entry count: " + deltaSize + " (max " + MAX_BUCKET_DELTA_ENTRIES + ")");
     final Map<Integer, Integer> bucketRecordDelta = new HashMap<>(deltaSize);
     for (int i = 0; i < deltaSize; i++)
       bucketRecordDelta.put(stream.getInt(), stream.getInt());
@@ -228,11 +229,19 @@ public final class RaftLogEntryCodec {
 
   // -- Internal helpers --
 
-  // Max allowed sizes for deserialized buffers to prevent OOM from corrupted entries
-  private static final int MAX_UNCOMPRESSED_SIZE = 256 * 1024 * 1024; // 256 MB
-  private static final int MAX_DELTA_SIZE        = 1_000_000;
-  private static final int MAX_FILES_PER_TX      = 65_536;            // max files added/removed in one transaction
-  private static final int MAX_STRING_LENGTH     = 64 * 1024 * 1024;  // 64 MB (covers large schema JSON)
+  // Max allowed sizes for deserialized buffers to prevent OOM from corrupted entries.
+  // These bound MAP CARDINALITIES and BYTE LENGTHS - the per-WAL-page byte cap is governed by
+  // MAX_UNCOMPRESSED_SIZE, which covers the entire compressed WAL change set (all touched pages
+  // across all files combined), not per-page.
+  private static final int MAX_UNCOMPRESSED_SIZE     = 256 * 1024 * 1024; // 256 MB - total uncompressed WAL change set
+  /** Maximum number of (bucketId, recordCountDelta) entries in the bucketRecordDelta map. Each
+   *  entry represents ONE bucket touched by the transaction, not bytes of page data. 1,000,000
+   *  is orders of magnitude above any realistic schema (ArcadeDB databases have thousands of
+   *  buckets at most); the bound exists solely to cap allocation from a corrupted/adversarial
+   *  length prefix. */
+  private static final int MAX_BUCKET_DELTA_ENTRIES  = 1_000_000;
+  private static final int MAX_FILES_PER_TX          = 65_536;            // max files added/removed in one transaction
+  private static final int MAX_STRING_LENGTH         = 64 * 1024 * 1024;  // 64 MB (covers large schema JSON)
 
   private static void writeCommonTransactionFields(final Binary stream, final String databaseName,
       final Map<Integer, Integer> bucketRecordDelta, final Binary walBuffer) {

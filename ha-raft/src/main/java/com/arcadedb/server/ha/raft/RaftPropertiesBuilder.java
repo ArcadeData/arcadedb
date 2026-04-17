@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import org.apache.ratis.client.RaftClientConfigKeys;
+import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.server.RaftServerConfigKeys;
@@ -33,6 +34,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -161,5 +163,34 @@ class RaftPropertiesBuilder {
     RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(quorumTimeout, TimeUnit.MILLISECONDS));
 
     return properties;
+  }
+
+  /**
+   * Builds the Ratis {@link Parameters} used alongside {@link RaftProperties}. Holds the
+   * {@link org.apache.ratis.grpc.server.GrpcServices.Customizer} that installs ArcadeDB's
+   * server-side gRPC transport filters (peer allowlist, and in the future mTLS contexts).
+   * <p>
+   * Always returns a non-null {@link Parameters} object so callers can pass it unconditionally;
+   * when no customization is configured, the object is empty and Ratis behaves as before.
+   */
+  static Parameters buildParameters(final ContextConfiguration configuration) {
+    final Parameters parameters = new Parameters();
+
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED)) {
+      final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
+      final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts(serverList);
+      if (hosts.isEmpty()) {
+        LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
+            "arcadedb.ha.peerAllowlist.enabled=true but arcadedb.ha.serverList is empty; allowlist not installed");
+      } else {
+        final long refreshMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_ALLOWLIST_REFRESH_MS);
+        final PeerAddressAllowlistFilter filter = new PeerAddressAllowlistFilter(hosts, refreshMs);
+        GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(filter));
+        LogManager.instance().log(RaftPropertiesBuilder.class, Level.INFO,
+            "Raft gRPC peer allowlist enabled (hosts=%s, resolved=%s)", hosts, filter.getAllowedIps());
+      }
+    }
+
+    return parameters;
   }
 }

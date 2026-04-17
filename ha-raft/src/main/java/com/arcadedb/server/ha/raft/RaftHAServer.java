@@ -27,6 +27,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.retry.ExponentialBackoffRetry;
 import org.apache.ratis.protocol.Message;
@@ -88,6 +89,7 @@ public class RaftHAServer {
   private          RaftServer               raftServer;
   private volatile RaftClient               raftClient;
   private          RaftProperties           raftProperties;
+  private          Parameters               raftParameters;
   private volatile ArcadeDBStateMachine     stateMachine;
   private          ClusterMonitor           clusterMonitor;
   private final    ReentrantLock            applyLock            = new ReentrantLock();
@@ -219,6 +221,7 @@ public class RaftHAServer {
 
       this.raftProperties = RaftPropertiesBuilder.build(configuration, server.getRootPath(),
           localPeerId.toString(), quorumTimeout);
+      this.raftParameters = RaftPropertiesBuilder.buildParameters(configuration);
       final RaftProperties properties = this.raftProperties;
 
       // Use RECOVER if storage exists from a previous run, FORMAT for fresh start
@@ -239,6 +242,7 @@ public class RaftHAServer {
           .setServerId(localPeerId)
           .setStateMachine(stateMachine)
           .setProperties(properties)
+          .setParameters(raftParameters)
           .setGroup(raftGroup)
           .setOption(startupOption)
           .build();
@@ -369,6 +373,7 @@ public class RaftHAServer {
           .setServerId(localPeerId)
           .setStateMachine(stateMachine)
           .setProperties(raftProperties)
+          .setParameters(raftParameters)
           .setGroup(raftGroup)
           .setOption(RaftStorage.StartupOption.RECOVER)
           .build();
@@ -961,6 +966,7 @@ public class RaftHAServer {
         .setRaftGroup(raftGroup)
         .setLeaderId(localPeerId)
         .setProperties(raftProperties)
+        .setParameters(raftParameters)
         .setRetryPolicy(ExponentialBackoffRetry.newBuilder()
             .setBaseSleepTime(TimeDuration.valueOf(CLIENT_RETRY_BASE_SLEEP_MS, TimeUnit.MILLISECONDS))
             .setMaxSleepTime(TimeDuration.valueOf(CLIENT_RETRY_MAX_SLEEP_SECS, TimeUnit.SECONDS))

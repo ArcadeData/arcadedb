@@ -588,7 +588,20 @@ public class SnapshotInstaller {
    */
   private static final int COPY_BUFFER_SIZE = 512 * 1024;
 
-  private static void copyWithLimit(final InputStream in, final OutputStream out, final long maxBytes,
+  /**
+   * Streams bytes from {@code in} to {@code out} until EOF, throwing a {@link ReplicationException}
+   * if the total exceeds {@code maxBytes}. Guarantees no silent truncation: the size check runs
+   * BEFORE each {@code out.write(...)}, so if the cap is exceeded we throw without writing the
+   * over-limit chunk, and the caller's {@code try/catch} deletes {@code tempDir} so a partial
+   * file cannot be mistaken for a valid extraction. Network-level truncation (connection dropped
+   * mid-entry) is a separate concern handled by the surrounding ZIP layer via
+   * {@link java.util.zip.ZipInputStream#closeEntry()} (DEFLATE trailer / CRC32 check) and by
+   * the final {@code SNAPSHOT_COMPLETE_MARKER} write, which happens only after every entry
+   * extracts cleanly.
+   * <p>
+   * Package-private to enable direct unit testing of the no-silent-truncate contract.
+   */
+  static void copyWithLimit(final InputStream in, final OutputStream out, final long maxBytes,
       final String entryName) throws IOException {
     final byte[] buf = new byte[COPY_BUFFER_SIZE];
     long total = 0;

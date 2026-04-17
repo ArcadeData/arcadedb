@@ -658,6 +658,19 @@ public enum GlobalConfiguration {
           + "semaphore slot is released. Prevents stalled or disconnected followers from permanently blocking "
           + "snapshot slots. Increase for very large databases or slow networks", Integer.class, 300_000),
 
+  HA_PEER_ALLOWLIST_ENABLED("arcadedb.ha.peerAllowlist.enabled", SCOPE.SERVER,
+      "Reject inbound Raft gRPC connections whose remote address does not resolve to one of the hosts configured in "
+          + "arcadedb.ha.serverList. Defeats the 'any host that knows the port can inject log entries' attack, but does "
+          + "not provide cryptographic peer identity or in-transit encryption (use mTLS in production on untrusted "
+          + "networks). Loopback addresses are always allowed so single-host test clusters continue to work",
+      Boolean.class, true),
+
+  HA_PEER_ALLOWLIST_REFRESH_MS("arcadedb.ha.peerAllowlist.refreshMs", SCOPE.SERVER,
+      "Minimum interval in milliseconds between DNS re-resolutions of the peer host list. A re-resolve is also "
+          + "triggered when an inbound connection from an unknown address arrives, bounded by this interval to avoid "
+          + "DNS flooding. Increase on clusters with high churn and strict DNS rate limits",
+      Long.class, 5000L),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 
