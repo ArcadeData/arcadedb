@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
@@ -88,6 +89,15 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
    * data, so we avoid an unnecessary full snapshot download on restart.
    */
   private static final long SNAPSHOT_GAP_TOLERANCE = 10;
+
+  /**
+   * Safety factor applied to {@link GlobalConfiguration#HA_ELECTION_TIMEOUT_MAX} when computing
+   * the effective snapshot watchdog timeout. With Raft's randomized elections, a cluster typically
+   * converges on a leader within 1-2 election cycles; 4x gives headroom for split votes on WAN
+   * clusters while still bounding how long a stale follower waits before forcing a direct
+   * snapshot download.
+   */
+  static final int WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER = 4;
 
   private final ArcadeDBServer            server;
   private final RaftHAServer              raftHA;
@@ -169,16 +179,23 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
             snapshotIndex, persistedApplied);
         needsSnapshotDownload.set(true);
 
-        // Watchdog: if notifyLeaderChanged() doesn't fire within 30 seconds (e.g., stable
+        // Watchdog: if notifyLeaderChanged() doesn't fire within this delay (e.g., stable
         // leader, no election), trigger the download directly. This prevents a follower from
         // remaining permanently stale when the leader is stable.
+        // The delay is floored to WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER x electionTimeoutMax so
+        // the watchdog cannot fire before elections can realistically complete on WAN clusters
+        // with large election timeouts - without this floor a 30s hardcoded watchdog would fire
+        // prematurely whenever HA_ELECTION_TIMEOUT_MAX is raised above ~7.5 seconds.
         // Submitted to lifecycleExecutor so close() can interrupt it via shutdownNow().
+        final long watchdogDelayMs = computeSnapshotWatchdogTimeoutMs(
+            server != null ? server.getConfiguration() : null);
         lifecycleExecutor.submit(() -> {
           try {
-            Thread.sleep(30_000);
+            Thread.sleep(watchdogDelayMs);
             if (needsSnapshotDownload.compareAndSet(true, false)) {
               LogManager.instance().log(this, Level.WARNING,
-                  "Snapshot download watchdog: no leader change after 30s, triggering download directly");
+                  "Snapshot download watchdog: no leader change after %dms, triggering download directly",
+                  watchdogDelayMs);
               if (snapshotInstaller != null)
                 snapshotInstaller.installDatabasesFromLeader();
             }
@@ -195,6 +212,28 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
       updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotIndex);
     } else
       lastAppliedIndex.set(-1);
+  }
+
+  /**
+   * Effective snapshot-download watchdog delay, in milliseconds. Returns the larger of the
+   * configured {@link GlobalConfiguration#HA_SNAPSHOT_WATCHDOG_TIMEOUT} and
+   * {@link #WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER} x {@link GlobalConfiguration#HA_ELECTION_TIMEOUT_MAX}.
+   * The floor prevents the watchdog from firing before Raft elections can complete on WAN
+   * clusters where the election timeout is raised well above its default. Package-private for
+   * direct unit testing.
+   */
+  static long computeSnapshotWatchdogTimeoutMs(final ContextConfiguration configuration) {
+    final int configured;
+    final int electionTimeoutMax;
+    if (configuration != null) {
+      configured = configuration.getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT);
+      electionTimeoutMax = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX);
+    } else {
+      configured = (Integer) GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.getDefValue();
+      electionTimeoutMax = (Integer) GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getDefValue();
+    }
+    final long floor = (long) Math.max(0, electionTimeoutMax) * WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER;
+    return Math.max(configured, floor);
   }
 
   @Override

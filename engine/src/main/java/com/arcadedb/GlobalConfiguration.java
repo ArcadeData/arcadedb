@@ -638,6 +638,12 @@ public enum GlobalConfiguration {
       "Read timeout in milliseconds for downloading a database snapshot from the leader during follower resync. "
           + "Increase for large databases or slow networks", Integer.class, 300_000),
 
+  HA_SNAPSHOT_WATCHDOG_TIMEOUT("arcadedb.ha.snapshotWatchdogTimeout", SCOPE.SERVER,
+      "Delay in milliseconds after which a follower that detected a snapshot gap forces a direct "
+          + "snapshot download if no leader change has fired. The effective value is at least "
+          + "4 x electionTimeoutMax so the watchdog cannot fire before elections can complete on "
+          + "WAN clusters. Increase only when the automatic floor is insufficient", Integer.class, 30_000),
+
   HA_SNAPSHOT_WRITE_TIMEOUT("arcadedb.ha.snapshotWriteTimeout", SCOPE.SERVER,
       "Server-side write timeout in milliseconds for serving a database snapshot to a follower. "
           + "If the transfer is not completed within this deadline the connection is closed and the concurrency "
