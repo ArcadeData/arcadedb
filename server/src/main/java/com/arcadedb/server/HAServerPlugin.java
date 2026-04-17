@@ -118,6 +118,22 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Ensures linearizable read consistency on the leader by confirming the leader lease
+   * via ReadIndex RPC and waiting for the local state machine to catch up.
+   */
+  default void ensureLinearizableRead() {
+    throw new UnsupportedOperationException("Linearizable reads not supported by this HA implementation");
+  }
+
+  /**
+   * Ensures linearizable read consistency on a follower by contacting the leader via
+   * ReadIndex RPC to obtain the current commit index and waiting for local apply.
+   */
+  default void ensureLinearizableFollowerRead() {
+    throw new UnsupportedOperationException("Linearizable reads not supported by this HA implementation");
+  }
+
+  /**
    * Replicates the full server-users.jsonl content across the cluster.
    * Called by {@code PostServerCommandHandler.createUser} and {@code dropUser},
    * and by {@code PostAddPeerHandler} to seed newly-joined peers. Default is a

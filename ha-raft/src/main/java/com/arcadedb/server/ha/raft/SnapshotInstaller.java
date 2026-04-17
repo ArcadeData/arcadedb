@@ -67,6 +67,20 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_PENDING_FILE  = ".snapshot-pending";
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
 
+  /**
+   * Maximum tolerated uncompressed:compressed size ratio per ZIP entry. 200:1 comfortably
+   * accommodates real-world page data (DEFLATE typically compresses 5-20x) while rejecting
+   * crafted decompression bombs that inflate 1000:1+. Package-private for unit testing.
+   */
+  static final int MAX_COMPRESSION_RATIO = 200;
+
+  /**
+   * Minimum uncompressed entry size before applying the ratio check. Tiny entries (schema JSON,
+   * completion marker) naturally have extreme ratios and pose no memory risk, so skipping them
+   * avoids false positives without weakening the defense. Package-private for unit testing.
+   */
+  static final long MIN_RATIO_CHECK_BYTES = 64L * 1024L;
+
   private SnapshotInstaller() {
   }
 
@@ -284,7 +298,8 @@ public final class SnapshotInstaller {
       if (responseCode != 200)
         throw new IOException("Failed to download snapshot: HTTP " + responseCode);
 
-      try (final ZipInputStream zipIn = new ZipInputStream(connection.getInputStream())) {
+      final CountingInputStream rawCounter = new CountingInputStream(connection.getInputStream());
+      try (final ZipInputStream zipIn = new ZipInputStream(rawCounter)) {
         ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {
           final Path targetFile = targetDir.resolve(zipEntry.getName()).normalize();
@@ -308,8 +323,19 @@ public final class SnapshotInstaller {
           if (Files.isSymbolicLink(targetFile))
             throw new ReplicationException("Symlink detected at extraction target: " + targetFile);
 
+          final long compressedStart = rawCounter.getCount();
           try (final java.io.FileOutputStream fos = new java.io.FileOutputStream(targetFile.toFile())) {
-            copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName());
+            final long uncompressedBytes = copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName());
+
+            // Decompression-bomb defense: check ratio for entries large enough to matter.
+            // Uses raw counter delta (compressed bytes including headers) which slightly
+            // over-estimates compressed size, under-estimating ratio - safe direction.
+            final long compressedBytes = Math.max(1L, rawCounter.getCount() - compressedStart);
+            if (uncompressedBytes > MIN_RATIO_CHECK_BYTES
+                && uncompressedBytes / compressedBytes > MAX_COMPRESSION_RATIO)
+              throw new ReplicationException("Suspicious compression ratio for snapshot entry '"
+                  + zipEntry.getName() + "': inflated " + uncompressedBytes + " bytes from "
+                  + compressedBytes + " (ratio > " + MAX_COMPRESSION_RATIO + ":1)");
           }
           zipIn.closeEntry();
         }
@@ -346,7 +372,7 @@ public final class SnapshotInstaller {
     }
   }
 
-  private static void copyWithLimit(final InputStream in, final OutputStream out,
+  static long copyWithLimit(final InputStream in, final OutputStream out,
       final long maxBytes, final String entryName) throws IOException {
     final byte[] buffer = new byte[8192];
     long totalRead = 0;
@@ -357,6 +383,56 @@ public final class SnapshotInstaller {
         throw new ReplicationException(
             "Snapshot entry '" + entryName + "' exceeds size limit of " + maxBytes + " bytes (zip-bomb protection)");
       out.write(buffer, 0, bytesRead);
+    }
+    return totalRead;
+  }
+
+  /**
+   * FilterInputStream that counts bytes consumed by the downstream reader. Used to measure the
+   * compressed bytes a {@link ZipInputStream} reads per entry so we can enforce a per-entry
+   * compression-ratio cap. The count intentionally includes the ZIP's local file header and
+   * optional data descriptor for each entry; this over-estimates the pure compressed payload
+   * and therefore under-estimates the ratio, which is the safe direction for the check.
+   * Package-private for unit testing.
+   */
+  static final class CountingInputStream extends java.io.FilterInputStream {
+    private long count;
+
+    CountingInputStream(final InputStream in) {
+      super(in);
+    }
+
+    long getCount() {
+      return count;
+    }
+
+    @Override
+    public int read() throws IOException {
+      final int b = super.read();
+      if (b != -1)
+        count++;
+      return b;
+    }
+
+    @Override
+    public int read(final byte[] b, final int off, final int len) throws IOException {
+      final int n = super.read(b, off, len);
+      if (n > 0)
+        count += n;
+      return n;
+    }
+
+    @Override
+    public long skip(final long n) throws IOException {
+      final long skipped = super.skip(n);
+      if (skipped > 0)
+        count += skipped;
+      return skipped;
+    }
+
+    @Override
+    public boolean markSupported() {
+      return false;
     }
   }
 

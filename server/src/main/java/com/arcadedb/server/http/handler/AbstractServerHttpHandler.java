@@ -26,6 +26,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -35,8 +36,6 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Deque;
 import java.util.concurrent.atomic.AtomicReference;
@@ -82,85 +81,73 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
-    ServerSecurityUser user = null;
     try {
       LogManager.instance().setContext(httpServer.getServer().getServerName());
 
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
-      // Check cluster-internal forwarded auth (highest priority — bypasses session lookup)
-      final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
-      if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
-        user = validateClusterForwardedAuth(exchange,
-            clusterTokenHeader.getFirst(),
-            exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User"));
-        if (user == null)
-          return; // 401 already sent
+      final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
+      if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
+        exchange.setStatusCode(401);
+        exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
+        sendErrorResponse(exchange, 401, "", null, null);
+        return;
       }
 
-      if (user == null) {
-        final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
-        if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
-          exchange.setStatusCode(401);
-          exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
-          sendErrorResponse(exchange, 401, "", null, null);
-          return;
-        }
+      ServerSecurityUser user = null;
+      if (authorization != null) {
+        try {
+          final String auth = authorization.getFirst();
 
-        if (authorization != null) {
-          try {
-            final String auth = authorization.getFirst();
+          if (auth.startsWith(AUTHORIZATION_BEARER)) {
+            // Bearer token authentication
+            final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
 
-            if (auth.startsWith(AUTHORIZATION_BEARER)) {
-              // Bearer token authentication
-              final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
-
-              if (ApiTokenConfiguration.isApiToken(token)) {
-                // API token authentication (at- prefix)
-                try {
-                  user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
-                } catch (final ServerSecurityException ex) {
-                  exchange.setStatusCode(401);
-                  sendErrorResponse(exchange, 401, "Invalid or expired API token", null, null);
-                  return;
-                }
-              } else {
-                // Session token authentication (AU- prefix)
-                final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
-                if (authSession == null) {
-                  exchange.setStatusCode(401);
-                  sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
-                  return;
-                }
-                user = authSession.getUser();
-              }
-
-            } else if (auth.startsWith(AUTHORIZATION_BASIC)) {
-              // Basic authentication
-              final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
-
-              final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
-
-              final String[] authPair = authPairClear.split(":");
-
-              if (authPair.length != 2) {
-                sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+            if (ApiTokenConfiguration.isApiToken(token)) {
+              // API token authentication (at- prefix)
+              try {
+                user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
+              } catch (final ServerSecurityException ex) {
+                exchange.setStatusCode(401);
+                sendErrorResponse(exchange, 401, "Invalid or expired API token", null, null);
                 return;
               }
-
-              user = authenticate(authPair[0], authPair[1]);
-
             } else {
-              sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
+              // Session token authentication (AU- prefix)
+              final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
+              if (authSession == null) {
+                exchange.setStatusCode(401);
+                sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
+                return;
+              }
+              user = authSession.getUser();
+            }
+
+          } else if (auth.startsWith(AUTHORIZATION_BASIC)) {
+            // Basic authentication
+            final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
+
+            final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
+
+            final String[] authPair = authPairClear.split(":");
+
+            if (authPair.length != 2) {
+              sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
               return;
             }
 
-          } catch (ServerSecurityException e) {
-            // PASS THROUGH
-            throw e;
-          } catch (Exception e) {
-            throw new ServerSecurityException("Authentication error");
+            user = authenticate(authPair[0], authPair[1]);
+
+          } else {
+            sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
+            return;
           }
+
+        } catch (ServerSecurityException e) {
+          // PASS THROUGH
+          throw e;
+        } catch (Exception e) {
+          throw new ServerSecurityException("Authentication error");
         }
       }
 
@@ -175,9 +162,28 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           }
       }
 
+      final String requestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
+      if (requestId != null && "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())) {
+        final IdempotencyCache.CachedEntry cached = httpServer.getIdempotencyCache().get(requestId);
+        if (cached != null) {
+          final String currentPrincipal = user != null ? user.getName() : null;
+          if (cached.principal == null || cached.principal.equals(currentPrincipal)) {
+            exchange.setStatusCode(cached.statusCode);
+            exchange.getResponseSender().send(cached.body != null ? cached.body : "");
+            return;
+          }
+        }
+      }
+
       final ExecutionResponse response = execute(exchange, user, payload);
-      if (response != null)
+      if (response != null) {
         response.send(exchange);
+        if (requestId != null && "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())) {
+          final String currentPrincipal = user != null ? user.getName() : null;
+          httpServer.getIdempotencyCache().putSuccess(requestId, response.getCode(), response.getResponse(), response.getBinary(),
+              currentPrincipal);
+        }
+      }
 
     } catch (final ServerSecurityException e) {
       // PASS SecurityException TO THE CLIENT
@@ -189,8 +195,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               SecurityException.class.getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 403, "Security error", e, null);
     } catch (final ServerIsNotTheLeaderException e) {
-      if (httpServer.getLeaderProxy().tryProxy(exchange, e.getLeaderAddress(), user))
-        return;
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                       e.getMessage());
@@ -254,24 +258,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                         realException.getMessage());
         sendErrorResponse(exchange, 400, "Query is not idempotent", realException, null);
-      } else if (realException instanceof NeedRetryException) {
-        LogManager.instance()
-                .log(this, Level.FINE, "Error on transaction execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 503, "Cannot execute command", realException, null);
-      } else if (realException instanceof DuplicatedKeyException dke) {
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 503, "Found duplicate key in index", realException,
-                dke.getIndexName() + "|" + dke.getKeys() + "|" + dke.getCurrentIndexedRID());
-      } else if (realException instanceof ServerIsNotTheLeaderException sle) {
-        if (httpServer.getLeaderProxy().tryProxy(exchange, sle.getLeaderAddress(), user))
-          return;
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", realException, sle.getLeaderAddress());
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
@@ -296,35 +282,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     } finally {
       LogManager.instance().setContext(null);
     }
-  }
-
-  /**
-   * Validates cluster-internal forwarded-auth headers.
-   * Returns the resolved user if both headers are valid, or {@code null} (after sending 401) if not.
-   */
-  private ServerSecurityUser validateClusterForwardedAuth(final HttpServerExchange exchange,
-      final String providedToken, final HeaderValues forwardedUserValues) {
-
-    final String clusterToken = httpServer.getServer().getConfiguration()
-        .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
-
-    if (clusterToken.isBlank() || !constantTimeEquals(clusterToken, providedToken)) {
-      sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
-      return null;
-    }
-
-    if (forwardedUserValues == null || forwardedUserValues.isEmpty()) {
-      sendErrorResponse(exchange, 401, "Missing forwarded user", null, null);
-      return null;
-    }
-
-    final ServerSecurityUser user = httpServer.getServer().getSecurity()
-        .getUser(forwardedUserValues.getFirst());
-    if (user == null) {
-      sendErrorResponse(exchange, 401, "Unknown forwarded user", null, null);
-      return null;
-    }
-    return user;
   }
 
   /**
@@ -401,14 +358,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
             Level.INFO :
             Level.FINE;
-  }
-
-  private static boolean constantTimeEquals(final String a, final String b) {
-    if (a == null || b == null)
-      return false;
-    final byte[] aBytes = a.getBytes(StandardCharsets.UTF_8);
-    final byte[] bBytes = b.getBytes(StandardCharsets.UTF_8);
-    return MessageDigest.isEqual(aBytes, bBytes);
   }
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,

@@ -26,11 +26,15 @@ import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
+import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.proto.RaftProtos;
+import org.apache.ratis.protocol.Message;
+import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
@@ -208,12 +212,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final boolean hadExistingStorage = hasExistingRaftStorage();
 
+    final Parameters parameters = buildParameters(configuration);
+
     raftServer = RaftServer.newBuilder()
         .setServerId(localPeerId)
         .setGroup(raftGroup)
         .setStateMachine(stateMachine)
         .setProperties(properties)
-        .setParameters(new Parameters())
+        .setParameters(parameters)
         .setOption(startupOption)
         .build();
 
@@ -317,7 +323,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             .setGroup(raftGroup)
             .setStateMachine(stateMachine)
             .setProperties(properties)
-            .setParameters(new Parameters())
+            .setParameters(buildParameters(configuration))
             .setOption(RaftStorage.StartupOption.RECOVER)
             .build();
         this.raftServer.start();
@@ -774,6 +780,61 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  /**
+   * Sends a ReadIndex RPC to the Raft leader and returns the confirmed commit index.
+   * The leader replies only after confirming its lease with a majority, guaranteeing
+   * that the returned index is committed and linearizable.
+   *
+   * @param expectSelfIsLeader if true and the reply indicates this node is not leader,
+   *                           a {@link ReplicationException} is thrown with leader info
+   */
+  public long fetchReadIndex(final boolean expectSelfIsLeader) {
+    try {
+      final RaftClientReply reply = raftClient.io().sendReadOnly(Message.EMPTY);
+      if (reply.isSuccess())
+        return reply.getLogIndex();
+
+      final NotLeaderException nle = reply.getNotLeaderException();
+      if (nle != null) {
+        final var suggestedLeader = nle.getSuggestedLeader();
+        if (expectSelfIsLeader) {
+          final String leaderAddr = suggestedLeader != null ? suggestedLeader.getId().toString() : null;
+          throw new ReplicationException("Lost leadership during ReadIndex" + (leaderAddr != null ? ", new leader: " + leaderAddr : ""));
+        }
+        throw new ReplicationException("ReadIndex failed: leader unavailable");
+      }
+      throw new ReplicationException("ReadIndex failed: " + reply);
+    } catch (final ReplicationException e) {
+      throw e;
+    } catch (final IOException e) {
+      throw new ReplicationException("ReadIndex RPC failed: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Ensures linearizable read consistency for the leader. Sends a ReadIndex RPC to
+   * confirm the leader lease, then waits for the local state machine to apply up to
+   * the confirmed commit index.
+   * <p>
+   * Throws {@link ReplicationException} if leadership is lost before or after the RPC.
+   */
+  public void ensureLinearizableRead() {
+    final long readIndex = fetchReadIndex(true);
+    if (!isLeader())
+      throw new ReplicationException("Lost leadership after ReadIndex confirmation");
+    waitForAppliedIndex(readIndex);
+  }
+
+  /**
+   * Ensures linearizable read consistency for a follower. Contacts the leader via
+   * ReadIndex RPC to obtain the current commit index, then waits for the local state
+   * machine to apply up to that index before allowing the read to proceed.
+   */
+  public void ensureLinearizableFollowerRead() {
+    final long readIndex = fetchReadIndex(false);
+    waitForAppliedIndex(readIndex);
+  }
+
   public List<Map<String, Object>> getFollowerStates() {
     if (raftServer == null || !isLeader())
       return List.of();
@@ -848,6 +909,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       lagMonitorExecutor.shutdownNow();
       lagMonitorExecutor = null;
     }
+  }
+
+  /**
+   * Builds a {@link Parameters} instance with the gRPC services customizer installed.
+   * The customizer adds a {@link PeerAddressAllowlistFilter} that rejects inbound Raft gRPC
+   * connections from IPs not listed in {@code arcadedb.ha.serverList}.
+   */
+  private static Parameters buildParameters(final ContextConfiguration configuration) {
+    final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
+    final long refreshMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_ALLOWLIST_REFRESH_MS);
+    final List<String> peerHosts = PeerAddressAllowlistFilter.extractPeerHosts(serverList);
+    final Parameters parameters = new Parameters();
+    if (!peerHosts.isEmpty()) {
+      final PeerAddressAllowlistFilter allowlistFilter = new PeerAddressAllowlistFilter(peerHosts, refreshMs);
+      GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(allowlistFilter));
+    }
+    return parameters;
   }
 
   private static void deleteRecursive(final File file) {

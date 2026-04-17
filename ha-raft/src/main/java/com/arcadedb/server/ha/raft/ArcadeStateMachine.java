@@ -97,7 +97,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile ArcadeDBServer server;
   private volatile RaftHAServer   raftHAServer;
 
-  private static final long SNAPSHOT_GAP_TOLERANCE = 10;
+  /** Multiplier applied to HA_ELECTION_TIMEOUT_MAX when flooring the watchdog timeout. */
+  static final int WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER = 4;
 
   private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(r -> {
     final Thread t = new Thread(r, "arcadedb-sm-lifecycle");
@@ -147,19 +148,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final var snapshotInfo = storage.getLatestSnapshot();
     if (snapshotInfo != null) {
       final long snapshotIndex = snapshotInfo.getIndex();
-      if (persistedApplied >= 0 && snapshotIndex > persistedApplied + SNAPSHOT_GAP_TOLERANCE) {
+      final long snapshotGapTolerance = server != null
+          ? server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_GAP_TOLERANCE)
+          : GlobalConfiguration.HA_SNAPSHOT_GAP_TOLERANCE.getValueAsLong();
+      if (persistedApplied >= 0 && snapshotIndex > persistedApplied + snapshotGapTolerance) {
         LogManager.instance().log(this, Level.INFO,
             "Snapshot index %d is ahead of persisted applied index %d, will download from leader when available",
             snapshotIndex, persistedApplied);
         needsSnapshotDownload.set(true);
 
-        // Watchdog: if notifyLeaderChanged() doesn't fire within 30 seconds, trigger download directly
+        final long watchdogTimeoutMs = computeSnapshotWatchdogTimeoutMs();
+        // Watchdog: if notifyLeaderChanged() doesn't fire within the configured timeout, trigger download directly
         lifecycleExecutor.submit(() -> {
           try {
-            Thread.sleep(30_000);
+            Thread.sleep(watchdogTimeoutMs);
             if (needsSnapshotDownload.compareAndSet(true, false)) {
               LogManager.instance().log(this, Level.WARNING,
-                  "Snapshot download watchdog: no leader change after 30s, triggering download directly");
+                  "Snapshot download watchdog: no leader change after %dms, triggering download directly", watchdogTimeoutMs);
               triggerSnapshotDownload();
             }
           } catch (final InterruptedException e) {
@@ -411,6 +416,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   public long getStartTime() {
     return startTime;
+  }
+
+  /**
+   * Returns the snapshot watchdog timeout in milliseconds. The value is the configured
+   * {@link GlobalConfiguration#HA_SNAPSHOT_WATCHDOG_TIMEOUT}, floored at
+   * {@link #WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER} times {@link GlobalConfiguration#HA_ELECTION_TIMEOUT_MAX}
+   * to avoid premature triggering on high-latency WAN clusters.
+   */
+  long computeSnapshotWatchdogTimeoutMs() {
+    final long configured = server != null
+        ? server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT)
+        : GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.getValueAsLong();
+    final long electionTimeoutMax = server != null
+        ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX)
+        : GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getValueAsInteger();
+    final long floor = electionTimeoutMax * WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER;
+    return Math.max(configured, floor);
   }
 
   /**

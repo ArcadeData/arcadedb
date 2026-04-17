@@ -63,14 +63,14 @@ public class SnapshotHttpHandler implements HttpHandler {
   private static final Semaphore CONCURRENCY_SEMAPHORE =
       new Semaphore(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger(), true);
 
-  private static final ScheduledExecutorService TIMEOUT_SCHEDULER =
+  private final ScheduledExecutorService watchdogExecutor =
       Executors.newSingleThreadScheduledExecutor(r -> {
-        final Thread t = new Thread(r, "arcadedb-snapshot-timeout");
+        final Thread t = new Thread(r, "arcadedb-snapshot-watchdog");
         t.setDaemon(true);
         return t;
       });
 
-  private static volatile boolean sslWarningLogged = false;
+  private volatile boolean plainHttpWarningLogged = false;
 
   private final HttpServer httpServer;
 
@@ -99,9 +99,9 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
-    if (!sslWarningLogged && !httpServer.getServer().getConfiguration().getValueAsBoolean(
+    if (!plainHttpWarningLogged && !httpServer.getServer().getConfiguration().getValueAsBoolean(
         GlobalConfiguration.NETWORK_USE_SSL)) {
-      sslWarningLogged = true;
+      plainHttpWarningLogged = true;
       LogManager.instance().log(this, Level.WARNING,
           "Serving database snapshots over plain HTTP. Consider enabling SSL for production clusters.");
     }
@@ -251,17 +251,19 @@ public class SnapshotHttpHandler implements HttpHandler {
   }
 
   private void serveSnapshotZip(final HttpServerExchange exchange, final DatabaseInternal db, final String databaseName) {
+    final long writeTimeoutMs = httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_WRITE_TIMEOUT);
     final AtomicBoolean completed = new AtomicBoolean(false);
-    final ScheduledFuture<?> watchdog = TIMEOUT_SCHEDULER.schedule(() -> {
+    final ScheduledFuture<?> watchdog = watchdogExecutor.schedule(() -> {
       if (!completed.get()) {
         LogManager.instance().log(this, Level.WARNING,
-            "Snapshot streaming for '%s' timed out after 5 minutes, closing connection", databaseName);
+            "Snapshot write for '%s' timed out after %dms, closing connection to release semaphore slot",
+            databaseName, writeTimeoutMs);
         try {
           exchange.getConnection().close();
         } catch (final Exception ignored) {
         }
       }
-    }, 5, TimeUnit.MINUTES);
+    }, writeTimeoutMs, TimeUnit.MILLISECONDS);
 
     try (final OutputStream out = exchange.getOutputStream();
         final ZipOutputStream zipOut = new ZipOutputStream(out)) {

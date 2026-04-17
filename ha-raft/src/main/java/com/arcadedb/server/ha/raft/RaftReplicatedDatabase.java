@@ -929,9 +929,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   private void waitForReadConsistency() {
-    if (isLeader())
-      return;
-
     if (raftHAServer == null)
       return;
 
@@ -944,13 +941,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return;
 
     if (consistency == Database.READ_CONSISTENCY.READ_YOUR_WRITES) {
-      if (ctx.readAfterIndex() >= 0)
+      if (!isLeader() && ctx.readAfterIndex() >= 0)
         raftHAServer.waitForAppliedIndex(ctx.readAfterIndex());
     } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
-      if (ctx.readAfterIndex() >= 0)
-        raftHAServer.waitForAppliedIndex(ctx.readAfterIndex());
+      if (isLeader())
+        raftHAServer.ensureLinearizableRead();
       else
-        raftHAServer.waitForLocalApply();
+        raftHAServer.ensureLinearizableFollowerRead();
     }
   }
 

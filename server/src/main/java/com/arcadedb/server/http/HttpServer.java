@@ -28,7 +28,6 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
 import com.arcadedb.server.http.handler.DeleteGroupHandler;
 import com.arcadedb.server.http.handler.DeleteUserHandler;
-import com.arcadedb.server.http.handler.LeaderProxy;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
 import com.arcadedb.server.http.handler.GetApiTokensHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
@@ -101,6 +100,7 @@ import java.net.*;
 import java.security.*;
 import java.security.cert.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.*;
 
 import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_KEYSTORE;
@@ -116,7 +116,8 @@ public class HttpServer implements ServerPlugin {
   private final    HttpSessionManager     sessionManager;
   private final    HttpAuthSessionManager authSessionManager;
   private final    WebSocketEventBus      webSocketEventBus;
-  private final    LeaderProxy            leaderProxy;
+  private final    IdempotencyCache       idempotencyCache;
+  private          ScheduledExecutorService idempotencyCleanupExecutor;
   private          Undertow               undertow;
   private volatile String                 listeningAddress;
   private          int                    httpPortListening;
@@ -129,16 +130,22 @@ public class HttpServer implements ServerPlugin {
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L,
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT) * 1_000L);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
-    this.leaderProxy = new LeaderProxy(this);
-  }
-
-  public LeaderProxy getLeaderProxy() {
-    return leaderProxy;
+    final long ttlMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS);
+    final int maxEntries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_ENTRIES);
+    this.idempotencyCache = new IdempotencyCache(ttlMs, maxEntries);
+    this.idempotencyCleanupExecutor = Executors.newSingleThreadScheduledExecutor(
+        r -> new Thread(r, "IdempotencyCache-cleanup"));
+    this.idempotencyCleanupExecutor.scheduleAtFixedRate(idempotencyCache::cleanupExpired, 30, 30, TimeUnit.SECONDS);
   }
 
   @Override
   public void stopService() {
     webSocketEventBus.stop();
+
+    if (idempotencyCleanupExecutor != null) {
+      idempotencyCleanupExecutor.shutdown();
+      idempotencyCleanupExecutor = null;
+    }
 
     if (undertow != null) {
       try {
@@ -378,6 +385,10 @@ public class HttpServer implements ServerPlugin {
 
   public WebSocketEventBus getWebSocketEventBus() {
     return webSocketEventBus;
+  }
+
+  public IdempotencyCache getIdempotencyCache() {
+    return idempotencyCache;
   }
 
   private SSLContext createSSLContext() throws Exception {
