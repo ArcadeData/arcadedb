@@ -75,6 +75,31 @@ public class SnapshotInstaller {
    */
   public static final String SNAPSHOT_COMPLETE_MARKER = ".snapshot-complete";
 
+  /**
+   * Outcome of {@link #performSnapshotSwap}. Drives whether the caller should attempt to
+   * reopen the database and whether the pending marker must be retained for startup recovery.
+   */
+  enum SwapOutcome {
+    /** Swap completed: {@code dbPath} contains the new snapshot, marker and backup cleaned up. */
+    SUCCESS,
+    /** Swap failed, but rollback restored {@code dbPath} from the backup; marker cleaned up. */
+    ROLLED_BACK,
+    /** Swap AND rollback both failed; {@code dbPath} may be missing or partial. The pending
+     *  marker has been retained so {@link #recoverPendingSnapshotSwaps(Path)} can retry on
+     *  the next startup. Callers must NOT attempt to reopen the database in this state. */
+    UNRECOVERABLE
+  }
+
+  /**
+   * Test seam for the single-argument path rename. Production code passes {@link Files#move}.
+   */
+  @FunctionalInterface
+  interface PathMover {
+    void move(Path src, Path dst) throws IOException;
+  }
+
+  private static final PathMover DEFAULT_MOVER = Files::move;
+
   private final ArcadeDBServer server;
   private final RaftHAServer   raftHA;
 
@@ -185,41 +210,12 @@ public class SnapshotInstaller {
 
     final Path markerFile = dbPath.resolveSibling(dbPath.getFileName() + ".snapshot-pending");
 
-    try {
-      // Write the pending marker BEFORE any destructive operation.
-      // If we crash after this, recoverPendingSnapshotSwaps() will finish the job.
-      Files.writeString(markerFile, databaseName);
+    final SwapOutcome outcome = performSnapshotSwap(dbPath, tempDir, backupDir, markerFile, databaseName, DEFAULT_MOVER);
 
-      if (Files.exists(dbPath)) {
-        FileUtils.deleteRecursively(backupDir.toFile());
-        Files.move(dbPath, backupDir);
-      }
-      Files.move(tempDir, dbPath);
-      deleteStaleWalFiles(dbPath);
-      Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_MARKER));
-
-      Files.deleteIfExists(markerFile);
-      FileUtils.deleteRecursively(backupDir.toFile());
-
-      LogManager.instance().log(this, Level.INFO, "Database snapshot for '%s' installed successfully", databaseName);
-
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Snapshot swap failed for '%s', attempting rollback...", databaseName);
-      try {
-        if (Files.exists(backupDir)) {
-          FileUtils.deleteRecursively(dbPath.toFile());
-          Files.move(backupDir, dbPath);
-        }
-      } catch (final Exception rollbackEx) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "CRITICAL: Failed to rollback snapshot swap for '%s'. Database may be unavailable. Error: %s",
-            databaseName, rollbackEx.getMessage());
-      }
-      Files.deleteIfExists(markerFile);
-      FileUtils.deleteRecursively(tempDir.toFile());
-      throw new ReplicationException("Snapshot installation failed during directory swap", e);
-    } finally {
-      // Force the server to drop the old (now-stale) database reference and reopen.
+    // Only reopen when the on-disk state is known-good. On UNRECOVERABLE, dbPath may be missing
+    // or partial and server.getDatabase() could silently open a corrupt or auto-created empty
+    // database, masking data loss. The retained pending marker lets startup recovery retry.
+    if (outcome != SwapOutcome.UNRECOVERABLE) {
       try {
         server.removeDatabase(databaseName);
         server.getDatabase(databaseName);
@@ -230,6 +226,87 @@ public class SnapshotInstaller {
                 + "This node may need to be restarted to recover. Error: %s",
             databaseName, e.getMessage());
       }
+    } else {
+      LogManager.instance().log(this, Level.SEVERE,
+          "CRITICAL: database '%s' left in inconsistent state (swap and rollback both failed). "
+              + "Path '%s' may be missing or partial. Pending marker '%s' retained for startup recovery. "
+              + "Manual recovery or node restart required.",
+          databaseName, dbPath, markerFile);
+    }
+
+    if (outcome != SwapOutcome.SUCCESS)
+      throw new ReplicationException(outcome == SwapOutcome.UNRECOVERABLE
+          ? "Snapshot installation failed and rollback also failed for database '" + databaseName
+              + "'; pending marker '" + markerFile + "' retained for startup recovery"
+          : "Snapshot installation failed during directory swap for database '" + databaseName + "' (rolled back)");
+  }
+
+  /**
+   * Atomically replaces {@code dbPath} with the contents of {@code tempDir} using a pending
+   * marker file for crash safety. Package-private and static to allow direct unit testing of
+   * the double-failure (swap + rollback) path via an injected {@link PathMover}.
+   * <p>
+   * Sequence:
+   * <ol>
+   *   <li>Write {@code markerFile} so a mid-operation crash is detected on startup.</li>
+   *   <li>Move {@code dbPath} to {@code backupDir} (if it exists).</li>
+   *   <li>Move {@code tempDir} to {@code dbPath} and clean up WAL / completion marker.</li>
+   *   <li>Delete {@code markerFile} and {@code backupDir}.</li>
+   * </ol>
+   * On any failure, attempts to restore {@code dbPath} from {@code backupDir}. The marker file
+   * is only deleted on successful completion or successful rollback; in the {@code UNRECOVERABLE}
+   * case it is left on disk so {@link #recoverPendingSnapshotSwaps(Path)} can retry.
+   *
+   * @param mover hook for the {@link Files#move(Path, Path, java.nio.file.CopyOption...)} call
+   *              used by every destructive rename; production passes {@link #DEFAULT_MOVER}
+   */
+  static SwapOutcome performSnapshotSwap(final Path dbPath, final Path tempDir, final Path backupDir,
+      final Path markerFile, final String databaseName, final PathMover mover) throws IOException {
+    try {
+      // Write the pending marker BEFORE any destructive operation.
+      // If we crash after this, recoverPendingSnapshotSwaps() will finish the job.
+      Files.writeString(markerFile, databaseName);
+
+      if (Files.exists(dbPath)) {
+        FileUtils.deleteRecursively(backupDir.toFile());
+        mover.move(dbPath, backupDir);
+      }
+      mover.move(tempDir, dbPath);
+      deleteStaleWalFiles(dbPath);
+      Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_MARKER));
+
+      Files.deleteIfExists(markerFile);
+      FileUtils.deleteRecursively(backupDir.toFile());
+
+      LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+          "Database snapshot for '%s' installed successfully", databaseName);
+      return SwapOutcome.SUCCESS;
+
+    } catch (final Exception e) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+          "Snapshot swap failed for '%s', attempting rollback...", databaseName);
+      boolean rollbackSucceeded = false;
+      try {
+        if (Files.exists(backupDir)) {
+          FileUtils.deleteRecursively(dbPath.toFile());
+          mover.move(backupDir, dbPath);
+        }
+        rollbackSucceeded = true;
+      } catch (final Exception rollbackEx) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "CRITICAL: Failed to rollback snapshot swap for '%s'. Database may be unavailable. "
+                + "Pending marker '%s' will be retained for startup recovery. Error: %s",
+            databaseName, markerFile, rollbackEx.getMessage());
+      }
+
+      FileUtils.deleteRecursively(tempDir.toFile());
+
+      if (rollbackSucceeded) {
+        // Only safe to drop the marker once dbPath has been restored to a consistent state.
+        Files.deleteIfExists(markerFile);
+        return SwapOutcome.ROLLED_BACK;
+      }
+      return SwapOutcome.UNRECOVERABLE;
     }
   }
 
