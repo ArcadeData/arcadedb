@@ -231,7 +231,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     // K8s auto-join: if running in Kubernetes with no existing storage, try to join an existing cluster
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S) && !hadExistingStorage)
-      new KubernetesAutoJoin(this).tryAutoJoinCluster();
+      new KubernetesAutoJoin(arcadeServer, raftGroup, localPeerId, raftProperties).tryAutoJoin();
 
     final long healthInterval = configuration.getValueAsLong(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL);
     this.healthMonitor = new HealthMonitor(this, healthInterval);

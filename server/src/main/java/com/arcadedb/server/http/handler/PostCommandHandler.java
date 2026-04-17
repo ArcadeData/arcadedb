@@ -91,8 +91,6 @@ public class PostCommandHandler extends AbstractQueryHandler {
       }
     }
 
-    final Map<String, Object> requestMap = json.toMap();
-
     if (requestMap.get("command") == null)
       throw new IllegalArgumentException("command missing");
 

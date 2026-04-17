@@ -633,6 +633,41 @@ public enum GlobalConfiguration {
       "Delay in milliseconds between RemoteDatabase election retries.",
       Long.class, 2000L),
 
+  HA_STOP_SERVER_ON_REPLICATION_FAILURE("arcadedb.ha.stopServerOnReplicationFailure", SCOPE.SERVER,
+      "If true, stops the JVM after exhausting step-down retries on a phase-2 replication failure. "
+          + "If false, logs CRITICAL but leaves the server running (useful for debugging).",
+      Boolean.class, true),
+
+  HA_SNAPSHOT_WRITE_TIMEOUT("arcadedb.ha.snapshotWriteTimeout", SCOPE.SERVER,
+      "Timeout in milliseconds for writing a snapshot to a follower. "
+          + "If the transfer stalls beyond this duration, the connection is force-closed to free the semaphore slot.",
+      Long.class, 300_000L),
+
+  HA_SNAPSHOT_WATCHDOG_TIMEOUT("arcadedb.ha.snapshotWatchdogTimeout", SCOPE.SERVER,
+      "Delay in milliseconds before the snapshot-gap watchdog triggers a download. "
+          + "Floored at 4x HA_ELECTION_TIMEOUT_MAX to avoid premature firing on WAN clusters.",
+      Long.class, 30_000L),
+
+  HA_SNAPSHOT_GAP_TOLERANCE("arcadedb.ha.snapshotGapTolerance", SCOPE.SERVER,
+      "Maximum acceptable gap between the snapshot index and persisted applied index before triggering a snapshot download.",
+      Long.class, 10L),
+
+  HA_SNAPSHOT_MAX_ENTRY_SIZE("arcadedb.ha.snapshotMaxEntrySize", SCOPE.SERVER,
+      "Maximum uncompressed size in bytes for a single entry in a snapshot ZIP file. Protects against decompression bombs.",
+      Long.class, 10_737_418_240L),
+
+  HA_IDEMPOTENCY_CACHE_TTL_MS("arcadedb.ha.idempotencyCacheTtlMs", SCOPE.SERVER,
+      "Time-to-live in milliseconds for entries in the HTTP idempotency cache.",
+      Long.class, 60_000L),
+
+  HA_IDEMPOTENCY_CACHE_MAX_ENTRIES("arcadedb.ha.idempotencyCacheMaxEntries", SCOPE.SERVER,
+      "Maximum number of entries in the HTTP idempotency cache. Oldest entry is evicted when full.",
+      Integer.class, 10_000),
+
+  HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,
+      "Rate-limiting interval in milliseconds for DNS re-resolution in the gRPC peer address allowlist filter.",
+      Long.class, 30_000L),
+
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),

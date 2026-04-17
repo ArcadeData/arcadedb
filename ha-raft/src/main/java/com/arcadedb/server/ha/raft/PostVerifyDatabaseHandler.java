@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -27,22 +28,48 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.protocol.RaftPeer;
 
-import java.io.File;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
+/**
+ * POST /api/v1/cluster/verify/{database} - verifies database consistency across cluster nodes.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
+  private static final int     PEER_CONNECT_TIMEOUT_MS = 30_000;
+  private static final int     PEER_READ_TIMEOUT_MS    = 60_000;
+  private static final int     MAX_PEER_RESPONSE_BYTES = 1024 * 1024; // 1 MB
+  /** Valid database name: alphanumeric, underscore, hyphen, dot. No path traversal sequences. */
+  static final         Pattern VALID_DATABASE_NAME     = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_\\-.]*");
 
-  static final Pattern VALID_DATABASE_NAME = Pattern.compile("[A-Za-z][A-Za-z0-9_\\-.]*");
-
-  private final RaftHAPlugin plugin;
+  private final RaftHAPlugin    plugin;
+  /**
+   * Dedicated pool for fanning peer verify calls out in parallel. Cached (threads idle out after
+   * 60 s by default) so a rarely-invoked endpoint does not keep N idle threads around, daemon so
+   * the JVM can shut down without an explicit close on this handler.
+   */
+  private final ExecutorService peerQueryExecutor;
 
   public PostVerifyDatabaseHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
     super(httpServer);
     this.plugin = plugin;
+    final AtomicInteger threadId = new AtomicInteger();
+    this.peerQueryExecutor = Executors.newCachedThreadPool(r -> {
+      final Thread t = new Thread(r, "arcadedb-verify-peer-" + threadId.incrementAndGet());
+      t.setDaemon(true);
+      return t;
+    });
   }
 
   @Override
@@ -53,101 +80,221 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
+    checkRootUser(user);
+
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
     if (raftHAServer == null)
-      return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
+      return new ExecutionResponse(400, "{ \"error\" : \"Raft HA is not enabled\"}");
 
-    final String relativePath = exchange.getRelativePath();
-    final String databaseName = relativePath.startsWith("/") ? relativePath.substring(1) : relativePath;
+    // Extract database name from path: /api/v1/cluster/verify/{database}
+    final String path = exchange.getRelativePath();
+    final String databaseName = (path.startsWith("/") ? path.substring(1) : path).trim();
+
     if (databaseName.isEmpty())
-      return new ExecutionResponse(400,
-          new JSONObject().put("error", "Missing database name in path").toString());
+      return new ExecutionResponse(400, "{ \"error\" : \"Database name is required in path\"}");
 
     if (!VALID_DATABASE_NAME.matcher(databaseName).matches())
-      return new ExecutionResponse(400,
-          new JSONObject().put("error", "Invalid database name: " + databaseName).toString());
+      return new ExecutionResponse(400, "{ \"error\" : \"Invalid database name\"}");
 
-    if (!httpServer.getServer().existsDatabase(databaseName))
-      return new ExecutionResponse(404,
-          new JSONObject().put("error", "Database '" + databaseName + "' not found").toString());
+    final var server = httpServer.getServer();
+    if (!server.existsDatabase(databaseName))
+      return new ExecutionResponse(404, "{ \"error\" : \"Database '" + databaseName + "' not found\"}");
+
+    final var db = (com.arcadedb.database.DatabaseInternal) server.getDatabase(databaseName);
+
+    // Compute local checksums with file type categorization
+    final JSONObject localChecksums = new JSONObject();
+    final JSONArray localFiles = new JSONArray();
+    db.executeInReadLock(() -> {
+      db.getPageManager().suspendFlushAndExecute(db, () -> {
+        for (final var file : db.getFileManager().getFiles())
+          if (file != null) {
+            final String name = file.getFileName();
+            try {
+              final long crc = file.calculateChecksum();
+              localChecksums.put(name, crc);
+
+              final JSONObject fileInfo = new JSONObject();
+              fileInfo.put("name", name);
+              fileInfo.put("checksum", crc);
+              fileInfo.put("size", file.getSize());
+              fileInfo.put("type", categorizeFile(name));
+              localFiles.put(fileInfo);
+            } catch (final Exception e) {
+              // skip files that cannot be checksummed (e.g. in-flight creation)
+            }
+          }
+      });
+      return null;
+    });
+
+    final JSONObject response = new JSONObject();
+
+    // Non-leader: return local checksums only
+    if (!raftHAServer.isLeader()) {
+      response.put("localChecksums", localChecksums);
+      response.put("files", localFiles);
+      response.put("localServer", server.getServerName());
+      return new ExecutionResponse(200, response.toString());
+    }
+
+    final JSONObject result = new JSONObject();
+    result.put("database", databaseName);
+    result.put("files", localFiles);
+    result.put("localServer", server.getServerName());
+    result.put("localPeerId", raftHAServer.getLocalPeerId().toString());
+    result.put("localChecksums", localChecksums);
+
+    // Fan out peer queries in parallel so wall-clock latency is max(peer) not sum(peers).
+    // Each queryPeer call catches its own exceptions and returns an error JSONObject, so the
+    // futures themselves never fail; join() below is safe.
+    final List<CompletableFuture<JSONObject>> futures = new ArrayList<>();
+    final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
+      if (peer.getId().equals(raftHAServer.getLocalPeerId()))
+        continue;
+      futures.add(CompletableFuture.supplyAsync(
+          () -> queryPeer(raftHAServer, peer, databaseName, localChecksums, user, useSsl),
+          peerQueryExecutor));
+    }
+
+    final JSONArray peerResults = new JSONArray();
+    for (final CompletableFuture<JSONObject> f : futures) {
+      try {
+        peerResults.put(f.join());
+      } catch (final CompletionException | CancellationException e) {
+        final Throwable cause = e.getCause() != null ? e.getCause() : e;
+        final JSONObject err = new JSONObject();
+        err.put("status", "ERROR");
+        err.put("error", "peer query failed: " + cause.getMessage());
+        peerResults.put(err);
+      }
+    }
+
+    result.put("peers", peerResults);
+
+    boolean allConsistent = true;
+    for (int i = 0; i < peerResults.length(); i++)
+      if (!"CONSISTENT".equals(peerResults.getJSONObject(i).getString("status", "ERROR")))
+        allConsistent = false;
+
+    result.put("overallStatus", allConsistent ? "ALL_CONSISTENT" : "INCONSISTENCY_DETECTED");
+    response.put("result", result);
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Queries a single peer for its checksums and compares them against the leader's. Always returns
+   * a JSONObject describing the outcome (CONSISTENT, INCONSISTENT, or ERROR); never throws so the
+   * caller can safely join on the CompletableFuture.
+   */
+  private JSONObject queryPeer(final RaftHAServer raftHAServer, final RaftPeer peer, final String databaseName,
+      final JSONObject localChecksums, final ServerSecurityUser user, final boolean useSsl) {
+    final JSONObject peerResult = new JSONObject();
+    peerResult.put("peerId", peer.getId().toString());
+    final String peerHttpAddr = raftHAServer.getPeerHttpAddress(peer.getId());
+    peerResult.put("httpAddress", peerHttpAddr);
 
     try {
-      final var db = httpServer.getServer().getDatabase(databaseName);
+      final String url = (useSsl ? "https" : "http") + "://" + peerHttpAddr
+          + "/api/v1/cluster/verify/" + databaseName;
+      final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
+      try {
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setConnectTimeout(PEER_CONNECT_TIMEOUT_MS);
+        conn.setReadTimeout(PEER_READ_TIMEOUT_MS);
 
-      // Flush pages and hold a read lock to ensure a consistent point-in-time view of database files
-      final Map<String, Long> localChecksums = db.executeInReadLock(() -> {
-        final java.util.concurrent.atomic.AtomicReference<Map<String, Long>> ref = new java.util.concurrent.atomic.AtomicReference<>();
-        db.getPageManager().suspendFlushAndExecute(db, () -> {
-          try {
-            ref.set(SnapshotManager.computeFileChecksums(new File(db.getDatabasePath())));
-          } catch (final Exception e) {
-            throw new RuntimeException(e);
-          }
-        });
-        return ref.get();
-      });
-
-      final JSONObject result = new JSONObject();
-      result.put("database", databaseName);
-      result.put("localNode", raftHAServer.getLocalPeerId().toString());
-
-      final JSONArray nodesResult = new JSONArray();
-
-      final String clusterToken = raftHAServer.getClusterToken();
-
-      for (final RaftPeer peer : raftHAServer.getLivePeers()) {
-        if (peer.getId().equals(raftHAServer.getLocalPeerId()))
-          continue;
-
-        final String httpAddr = raftHAServer.getPeerHttpAddress(peer.getId());
-        if (httpAddr == null)
-          continue;
-
-        final JSONObject nodeResult = new JSONObject();
-        nodeResult.put("peerId", peer.getId().toString());
-
-        try {
-          final String url = "http://" + httpAddr + "/api/v1/ha/snapshot/" + databaseName + "/checksums";
-          final HttpURLConnection conn = (HttpURLConnection) new URI(url).toURL().openConnection();
-          conn.setRequestMethod("GET");
-          conn.setConnectTimeout(10_000);
-          conn.setReadTimeout(30_000);
-          if (clusterToken != null && !clusterToken.isEmpty())
-            conn.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
-
-          if (conn.getResponseCode() == 200) {
-            final String body = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            final JSONObject remoteChecksums = new JSONObject(body);
-
-            boolean match = true;
-            final JSONArray diffs = new JSONArray();
-            for (final var entry : localChecksums.entrySet()) {
-              if (!remoteChecksums.has(entry.getKey()) ||
-                  remoteChecksums.getLong(entry.getKey()) != entry.getValue()) {
-                match = false;
-                diffs.put(entry.getKey());
-              }
-            }
-            nodeResult.put("match", match);
-            if (!match)
-              nodeResult.put("differingFiles", diffs);
-          } else {
-            nodeResult.put("error", "HTTP " + conn.getResponseCode());
-          }
-          conn.disconnect();
-        } catch (final Exception e) {
-          nodeResult.put("error", e.getMessage());
+        final String clusterToken = raftHAServer.getClusterToken();
+        if (clusterToken != null) {
+          conn.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
+          // Forward the initiating user's identity so that authorization on the peer evaluates
+          // against the actual caller (matching LeaderProxy's pattern).
+          conn.setRequestProperty("X-ArcadeDB-Forwarded-User", user.getName());
         }
 
-        nodesResult.put(nodeResult);
+        conn.setDoOutput(true);
+        try (final var os = conn.getOutputStream()) {
+          os.write("{}".getBytes(StandardCharsets.UTF_8));
+        }
+
+        if (conn.getResponseCode() == 200) {
+          final String body;
+          try (final var in = conn.getInputStream()) {
+            final byte[] bytes = in.readNBytes(MAX_PEER_RESPONSE_BYTES);
+            if (bytes.length == MAX_PEER_RESPONSE_BYTES && in.read() != -1) {
+              peerResult.put("status", "ERROR");
+              peerResult.put("error", "Peer response exceeds " + MAX_PEER_RESPONSE_BYTES + " bytes limit");
+              return peerResult;
+            }
+            body = new String(bytes, StandardCharsets.UTF_8);
+          }
+          final JSONObject peerResponse = new JSONObject(body);
+
+          if (peerResponse.has("localChecksums")) {
+            final JSONObject remoteChecksums = peerResponse.getJSONObject("localChecksums");
+
+            int matchCount = 0;
+            int mismatchCount = 0;
+            final JSONArray mismatches = new JSONArray();
+
+            for (final String fileName : localChecksums.keySet()) {
+              final long localCrc = localChecksums.getLong(fileName);
+              if (remoteChecksums.has(fileName)) {
+                final long remoteCrc = remoteChecksums.getLong(fileName);
+                if (localCrc == remoteCrc)
+                  matchCount++;
+                else {
+                  mismatchCount++;
+                  mismatches.put(new JSONObject()
+                      .put("file", fileName)
+                      .put("type", categorizeFile(fileName))
+                      .put("localChecksum", localCrc)
+                      .put("remoteChecksum", remoteCrc));
+                }
+              } else {
+                mismatchCount++;
+                mismatches.put(new JSONObject()
+                    .put("file", fileName)
+                    .put("type", categorizeFile(fileName))
+                    .put("localChecksum", localCrc)
+                    .put("remoteChecksum", "MISSING"));
+              }
+            }
+
+            peerResult.put("status", mismatchCount == 0 ? "CONSISTENT" : "INCONSISTENT");
+            peerResult.put("matchingFiles", matchCount);
+            peerResult.put("mismatchedFiles", mismatchCount);
+            if (mismatchCount > 0)
+              peerResult.put("mismatches", mismatches);
+          } else {
+            peerResult.put("status", "ERROR");
+            peerResult.put("error", "peer response missing 'localChecksums'");
+          }
+        } else {
+          peerResult.put("status", "ERROR");
+          peerResult.put("error", "HTTP " + conn.getResponseCode());
+        }
+      } finally {
+        conn.disconnect();
       }
-
-      result.put("nodes", nodesResult);
-      return new ExecutionResponse(200, result.toString());
-
     } catch (final Exception e) {
-      return new ExecutionResponse(500,
-          new JSONObject().put("error", "Verification failed: " + e.getMessage()).toString());
+      peerResult.put("status", "ERROR");
+      peerResult.put("error", e.getMessage());
     }
+    return peerResult;
+  }
+
+  private static String categorizeFile(final String fileName) {
+    if (fileName == null) return "unknown";
+    final String lower = fileName.toLowerCase();
+    if (lower.endsWith(".json") || lower.equals("configuration") || lower.contains("schema"))
+      return "config";
+    if (lower.contains("index") || lower.contains(".idx") || lower.contains(".ridx") || lower.contains(".notunique")
+        || lower.contains(".unique") || lower.contains(".dictionary"))
+      return "index";
+    if (lower.contains("bucket") || lower.contains(".pcf"))
+      return "bucket";
+    return "data";
   }
 }
