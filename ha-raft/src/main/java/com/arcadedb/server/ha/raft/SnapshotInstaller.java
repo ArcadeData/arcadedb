@@ -67,11 +67,14 @@ public class SnapshotInstaller {
   private static final int    SNAPSHOT_DOWNLOAD_MAX_RETRIES = 3;
   private static final long[] SNAPSHOT_DOWNLOAD_BACKOFF_MS  = { 5_000, 10_000, 20_000 };
 
-  /** Hard cap on uncompressed bytes per ZIP entry extracted from a snapshot. Protects the
-   *  follower from a malicious or corrupted leader entry that would inflate indefinitely; sized
-   *  well above the largest realistic ArcadeDB component file (pages, indexes) while keeping a
-   *  memoryless streaming check. Package-private for unit testing. */
-  static final long MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024;
+  /** Default cap on uncompressed bytes per ZIP entry extracted from a snapshot. Overridable via
+   *  {@link GlobalConfiguration#HA_SNAPSHOT_MAX_ENTRY_SIZE} for deployments whose largest
+   *  component file legitimately exceeds this size. Protects the follower from a malicious or
+   *  corrupted leader entry that would inflate indefinitely; sized well above the largest
+   *  realistic ArcadeDB component file while keeping a memoryless streaming check. The
+   *  per-entry compression-ratio guard below is the primary defense against decompression bombs;
+   *  this cap is a coarse secondary bound. Package-private for unit testing. */
+  static final long DEFAULT_MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024;
 
   /** Connect timeout for the snapshot HTTP GET. Read timeout is governed separately by
    *  {@link GlobalConfiguration#HA_SNAPSHOT_DOWNLOAD_TIMEOUT} because it must cover the full
@@ -413,6 +416,8 @@ public class SnapshotInstaller {
     connection.setConnectTimeout(SNAPSHOT_CONNECT_TIMEOUT_MS);
     connection.setReadTimeout(server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_DOWNLOAD_TIMEOUT));
 
+    final long maxEntrySize = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE);
+
     if (raftHA.getClusterToken() != null)
       connection.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
 
@@ -461,7 +466,7 @@ public class SnapshotInstaller {
               throw new ReplicationException("Symlink detected in snapshot extraction path: " + zipEntry.getName());
 
             try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile())) {
-              uncompressedBytes = copyWithLimit(zipIn, fos, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES, zipEntry.getName());
+              uncompressedBytes = copyWithLimit(zipIn, fos, maxEntrySize, zipEntry.getName());
             }
           }
           zipIn.closeEntry();

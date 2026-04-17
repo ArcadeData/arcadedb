@@ -39,6 +39,7 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
+import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.TimeDuration;
 
 import java.io.IOException;
@@ -282,9 +283,9 @@ public class RaftHAServer {
   /**
    * Returns the lifecycle state of the Ratis server (RUNNING, CLOSING, CLOSED, etc.).
    */
-  public org.apache.ratis.util.LifeCycle.State getRaftLifeCycleState() {
+  public LifeCycle.State getRaftLifeCycleState() {
     if (raftServer == null)
-      return org.apache.ratis.util.LifeCycle.State.CLOSED;
+      return LifeCycle.State.CLOSED;
     try {
       return raftServer.getDivision(raftGroup.getGroupId()).getInfo().getLifeCycleState();
     } catch (final Exception e) {
@@ -307,14 +308,14 @@ public class RaftHAServer {
 
     // Check the group-specific RaftServerImpl state, not the RaftServerProxy state.
     // The proxy can be RUNNING while the inner group impl is CLOSED after a network partition.
-    org.apache.ratis.util.LifeCycle.State state;
+    LifeCycle.State state;
     try {
       state = raftServer.getDivision(raftGroup.getGroupId()).getInfo().getLifeCycleState();
     } catch (final Exception e) {
       // getDivision can throw if the group is already removed
       state = raftServer.getLifeCycleState();
     }
-    if (state != org.apache.ratis.util.LifeCycle.State.CLOSED && state != org.apache.ratis.util.LifeCycle.State.CLOSING) {
+    if (state != LifeCycle.State.CLOSED && state != LifeCycle.State.CLOSING) {
       restartFailureCount = 0; // Reset on healthy state
       return;
     }
@@ -883,14 +884,6 @@ public class RaftHAServer {
       sb.append(getPeerHTTPAddress(peer.getId()));
     }
     return sb.toString();
-  }
-
-  /**
-   * Returns 0 - Ratis manages its own replication queue internally.
-   * Provided for compatibility with test infrastructure.
-   */
-  public int getMessagesInQueue() {
-    return 0;
   }
 
   /**

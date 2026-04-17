@@ -638,6 +638,13 @@ public enum GlobalConfiguration {
       "Read timeout in milliseconds for downloading a database snapshot from the leader during follower resync. "
           + "Increase for large databases or slow networks", Integer.class, 300_000),
 
+  HA_SNAPSHOT_MAX_ENTRY_SIZE("arcadedb.ha.snapshotMaxEntrySize", SCOPE.SERVER,
+      "Maximum uncompressed size in bytes of a single file extracted from a snapshot ZIP during follower resync. "
+          + "Sized well above the largest realistic ArcadeDB component file (pages, indexes) while keeping a "
+          + "memoryless streaming check. Complementary to the per-entry compression-ratio guard, which defends "
+          + "against decompression bombs. Raise only if a legitimate component file exceeds the default",
+      Long.class, 10L * 1024 * 1024 * 1024),
+
   HA_SNAPSHOT_WATCHDOG_TIMEOUT("arcadedb.ha.snapshotWatchdogTimeout", SCOPE.SERVER,
       "Delay in milliseconds after which a follower that detected a snapshot gap forces a direct "
           + "snapshot download if no leader change has fired. The effective value is at least "

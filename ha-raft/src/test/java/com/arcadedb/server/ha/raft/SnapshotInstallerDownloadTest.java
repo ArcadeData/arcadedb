@@ -156,10 +156,53 @@ class SnapshotInstallerDownloadTest {
     assertThat(Files.readString(dl.resolve("fresh-file"))).isEqualTo("new-content");
   }
 
+  /**
+   * Confirms the configurable per-entry size cap is honored: lowering
+   * {@link GlobalConfiguration#HA_SNAPSHOT_MAX_ENTRY_SIZE} below an entry's uncompressed size
+   * must reject the download.
+   */
+  @Test
+  void configuredMaxEntrySizeIsEnforced() throws Exception {
+    final byte[] oversized = new byte[2048];
+    for (int i = 0; i < oversized.length; i++)
+      oversized[i] = (byte) (i & 0xFF);
+    zipBytesToServe.set(buildZip(entry("data/oversized.pcf", oversized)));
+
+    final Path dl = tempDir.resolve("dl");
+    assertThatThrownBy(() -> newInstaller(512L).downloadSnapshot(snapshotUrl(), dl, "db"))
+        .hasMessageContaining("exceeds size limit of 512 bytes");
+
+    // Partial extraction must be cleaned up so it can't be mistaken for a valid snapshot.
+    assertThat(Files.exists(dl)).isFalse();
+  }
+
+  /**
+   * Confirms raising {@link GlobalConfiguration#HA_SNAPSHOT_MAX_ENTRY_SIZE} above an entry's
+   * uncompressed size permits the download to succeed. Guards against a regression where a
+   * hard-coded constant shadows the configured value.
+   */
+  @Test
+  void raisedMaxEntrySizeAllowsLargerEntry() throws Exception {
+    final byte[] payload = new byte[4096];
+    for (int i = 0; i < payload.length; i++)
+      payload[i] = (byte) (i & 0xFF);
+    zipBytesToServe.set(buildZip(entry("data/large.pcf", payload)));
+
+    final Path dl = tempDir.resolve("dl");
+    newInstaller(8192L).downloadSnapshot(snapshotUrl(), dl, "db");
+
+    assertThat(Files.readAllBytes(dl.resolve("data").resolve("large.pcf"))).isEqualTo(payload);
+    assertThat(Files.exists(dl.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_MARKER))).isTrue();
+  }
+
   // -- Test harness --
 
   private SnapshotInstaller newInstaller() {
-    final TestArcadeDBServer server = new TestArcadeDBServer(snapshotServerRoot);
+    return newInstaller(null);
+  }
+
+  private SnapshotInstaller newInstaller(final Long maxEntrySize) {
+    final TestArcadeDBServer server = new TestArcadeDBServer(snapshotServerRoot, maxEntrySize);
     final TestRaftHAServer raftHA = new TestRaftHAServer(null);
     return new SnapshotInstaller(server, raftHA);
   }
@@ -203,16 +246,18 @@ class SnapshotInstallerDownloadTest {
   private static final class TestArcadeDBServer extends ArcadeDBServer {
     private final ContextConfiguration configuration;
 
-    TestArcadeDBServer(final Path rootPath) {
-      super(buildConfig(rootPath));
-      this.configuration = buildConfig(rootPath);
+    TestArcadeDBServer(final Path rootPath, final Long maxEntrySize) {
+      super(buildConfig(rootPath, maxEntrySize));
+      this.configuration = buildConfig(rootPath, maxEntrySize);
     }
 
-    private static ContextConfiguration buildConfig(final Path rootPath) {
+    private static ContextConfiguration buildConfig(final Path rootPath, final Long maxEntrySize) {
       final ContextConfiguration c = new ContextConfiguration();
       c.setValue(GlobalConfiguration.SERVER_ROOT_PATH, rootPath.toAbsolutePath().toString());
       c.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
       c.setValue(GlobalConfiguration.HA_SNAPSHOT_DOWNLOAD_TIMEOUT, 30_000);
+      if (maxEntrySize != null)
+        c.setValue(GlobalConfiguration.HA_SNAPSHOT_MAX_ENTRY_SIZE, maxEntrySize);
       return c;
     }
 

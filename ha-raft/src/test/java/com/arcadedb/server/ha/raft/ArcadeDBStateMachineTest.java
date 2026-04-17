@@ -96,7 +96,7 @@ class ArcadeDBStateMachineTest {
     buf.putInt(segmentSize);
     buf.putLong(WALFile.MAGIC_NUMBER);
 
-    final WALFile.WALTransaction tx = ArcadeDBStateMachine.parseWalTransaction(new Binary(buf.array()));
+    final WALFile.WALTransaction tx = RaftLogEntryCodec.parseWalTransaction(new Binary(buf.array()));
 
     assertThat(tx.txId).isEqualTo(42L);
     assertThat(tx.timestamp).isEqualTo(1000L);
@@ -143,7 +143,7 @@ class ArcadeDBStateMachineTest {
     buf.putInt(segmentSize);
     buf.putLong(WALFile.MAGIC_NUMBER);
 
-    final WALFile.WALTransaction tx = ArcadeDBStateMachine.parseWalTransaction(new Binary(buf.array()));
+    final WALFile.WALTransaction tx = RaftLogEntryCodec.parseWalTransaction(new Binary(buf.array()));
 
     assertThat(tx.txId).isEqualTo(99L);
     assertThat(tx.timestamp).isEqualTo(2000L);
@@ -170,7 +170,7 @@ class ArcadeDBStateMachineTest {
     buf.putInt(segmentSize);
     buf.putLong(WALFile.MAGIC_NUMBER);
 
-    final WALFile.WALTransaction tx = ArcadeDBStateMachine.parseWalTransaction(new Binary(buf.array()));
+    final WALFile.WALTransaction tx = RaftLogEntryCodec.parseWalTransaction(new Binary(buf.array()));
 
     assertThat(tx.txId).isEqualTo(1L);
     assertThat(tx.timestamp).isEqualTo(500L);

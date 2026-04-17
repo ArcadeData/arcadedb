@@ -99,9 +99,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
    */
   static volatile Consumer<String> TEST_POST_REPLICATION_HOOK = null;
 
-  protected final ArcadeDBServer server;
-  protected final LocalDatabase proxied;
-  protected final long timeout;
+  private final ArcadeDBServer server;
+  private final LocalDatabase proxied;
+  private final long timeout;
 
   public ReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied) {
     if (!server.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL))

@@ -59,7 +59,7 @@ class RaftLogEntryCodecTest {
     assertThat(entry.filesToAdd()).isNull();
     assertThat(entry.filesToRemove()).isNull();
 
-    final WALFile.WALTransaction walTx = ArcadeDBStateMachine.parseWalTransaction(entry.walBuffer());
+    final WALFile.WALTransaction walTx = RaftLogEntryCodec.parseWalTransaction(entry.walBuffer());
     assertThat(walTx.txId).isEqualTo(42L);
     assertThat(walTx.timestamp).isEqualTo(1234567890L);
     assertThat(walTx.pages.length).isEqualTo(0);
@@ -203,7 +203,7 @@ class RaftLogEntryCodecTest {
   @Test
   void testParseWalTransactionRejectsTruncatedHeader() {
     final Binary truncated = new Binary(new byte[10]);
-    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(truncated))
+    assertThatThrownBy(() -> RaftLogEntryCodec.parseWalTransaction(truncated))
         .isInstanceOf(ReplicationException.class)
         .hasMessageContaining("truncated");
   }
@@ -211,7 +211,7 @@ class RaftLogEntryCodecTest {
   @Test
   void testParseWalTransactionRejectsEmptyBuffer() {
     final Binary empty = new Binary(new byte[0]);
-    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(empty))
+    assertThatThrownBy(() -> RaftLogEntryCodec.parseWalTransaction(empty))
         .isInstanceOf(ReplicationException.class)
         .hasMessageContaining("truncated");
   }
@@ -226,7 +226,7 @@ class RaftLogEntryCodecTest {
 
     final Binary truncated = sliceBuffer(full, headerEnd + 8);
 
-    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(truncated))
+    assertThatThrownBy(() -> RaftLogEntryCodec.parseWalTransaction(truncated))
         .isInstanceOf(ReplicationException.class)
         .hasMessageContaining("corrupted");
   }
@@ -241,7 +241,7 @@ class RaftLogEntryCodecTest {
 
     final Binary truncated = sliceBuffer(full, headerEnd + 6 * Binary.INT_SERIALIZED_SIZE + 3);
 
-    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(truncated))
+    assertThatThrownBy(() -> RaftLogEntryCodec.parseWalTransaction(truncated))
         .isInstanceOf(ReplicationException.class)
         .hasMessageContaining("corrupted");
   }
@@ -250,7 +250,7 @@ class RaftLogEntryCodecTest {
   void testParseWalTransactionWithValidPage() {
     final Binary buffer = createTestWalBufferWithOnePage(42L, 999L, 5, 100, 109);
 
-    final WALFile.WALTransaction tx = ArcadeDBStateMachine.parseWalTransaction(buffer);
+    final WALFile.WALTransaction tx = RaftLogEntryCodec.parseWalTransaction(buffer);
     assertThat(tx.txId).isEqualTo(42L);
     assertThat(tx.timestamp).isEqualTo(999L);
     assertThat(tx.pages.length).isEqualTo(1);
@@ -277,7 +277,7 @@ class RaftLogEntryCodecTest {
     padded[src.length + 2] = (byte) 0xBE;
     padded[src.length + 3] = (byte) 0xEF;
 
-    assertThatThrownBy(() -> ArcadeDBStateMachine.parseWalTransaction(new Binary(padded)))
+    assertThatThrownBy(() -> RaftLogEntryCodec.parseWalTransaction(new Binary(padded)))
         .isInstanceOf(ReplicationException.class)
         .hasMessageContaining("trailing");
   }

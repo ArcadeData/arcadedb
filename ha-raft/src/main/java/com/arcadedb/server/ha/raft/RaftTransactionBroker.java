@@ -134,7 +134,7 @@ class RaftTransactionBroker {
 
     // Use group committer to batch multiple concurrent transactions into fewer Raft round-trips
     if (groupCommitter != null) {
-      groupCommitter.submitAndWait(entry, haServer.getQuorumTimeout());
+      groupCommitter.submitAndWait(entry);
       return;
     }
 

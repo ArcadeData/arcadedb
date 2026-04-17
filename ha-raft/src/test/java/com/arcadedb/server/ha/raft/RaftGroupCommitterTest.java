@@ -61,8 +61,10 @@ class RaftGroupCommitterTest {
 
     // submitAndWait does a bounded wait (100ms) before throwing, so this should still fail
     // since nothing is draining the queue. The total time should be >= 100ms (the offer wait).
+    // The queue.offer path throws before haServer.getQuorumTimeout() is consulted, so passing
+    // a null haServer to the constructor is safe for this test.
     final long start = System.currentTimeMillis();
-    assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }, 1000))
+    assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
         .isInstanceOf(ReplicationQueueFullException.class)
         .hasMessageContaining("Replication queue is full");
     final long elapsed = System.currentTimeMillis() - start;

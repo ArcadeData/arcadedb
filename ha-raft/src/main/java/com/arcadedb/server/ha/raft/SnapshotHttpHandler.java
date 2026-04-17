@@ -186,7 +186,8 @@ public class SnapshotHttpHandler implements HttpHandler, Closeable {
           databaseName);
     }
 
-    if (!snapshotSemaphore.tryAcquire()) {
+    final boolean acquired = snapshotSemaphore.tryAcquire();
+    if (!acquired) {
       LogManager.instance().log(this, Level.WARNING,
           "Snapshot download rejected for '%s': %d concurrent downloads already in progress",
           databaseName, maxConcurrentSnapshots);
@@ -230,6 +231,20 @@ public class SnapshotHttpHandler implements HttpHandler, Closeable {
     // Schedule a watchdog that closes the connection if the transfer exceeds the deadline.
     // This prevents a stalled or disconnected follower from permanently holding a semaphore
     // slot and blocking all future snapshot-based catch-ups.
+    //
+    // Why we force-close the underlying connection instead of setting a cooperative "stop" flag
+    // and letting the writer call zipOut.finish():
+    //   - The watchdog fires precisely because the writer thread is blocked in out.write(...) on
+    //     an unresponsive socket. A flag cannot wake a thread stuck in a blocking syscall;
+    //     closing the underlying connection is the only mechanism that unblocks it.
+    //   - After the forced close, any subsequent write (including the final CEN records written
+    //     by ZipOutputStream.finish()) will fail with IOException, so writing a valid ZIP trailer
+    //     is not physically possible once the socket is gone.
+    //   - The follower side copes: SnapshotInstaller.downloadSnapshot writes the
+    //     SNAPSHOT_COMPLETE_MARKER only after every entry extracts cleanly, and
+    //     recoverPendingSnapshotSwaps discards temp directories that lack the marker. A
+    //     structurally invalid or truncated ZIP therefore surfaces as a retriable failure, never
+    //     as silent corruption.
     final String dbNameForLog = databaseName;
     watchdog = watchdogExecutor.schedule(() -> {
       LogManager.instance().log(this, Level.WARNING,
@@ -281,7 +296,8 @@ public class SnapshotHttpHandler implements HttpHandler, Closeable {
     } finally {
       if (watchdog != null)
         watchdog.cancel(false);
-      snapshotSemaphore.release();
+      if (acquired)
+        snapshotSemaphore.release();
     }
   }
 

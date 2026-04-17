@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
@@ -929,13 +928,4 @@ public class ArcadeDBStateMachine extends BaseStateMachine implements org.apache
     }
   }
 
-  // -- Utilities --
-
-  /**
-   * @deprecated Use {@link RaftLogEntryCodec#parseWalTransaction(Binary)} instead.
-   */
-  @Deprecated
-  static WALFile.WALTransaction parseWalTransaction(final Binary buffer) {
-    return RaftLogEntryCodec.parseWalTransaction(buffer);
-  }
 }
