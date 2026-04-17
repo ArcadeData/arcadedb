@@ -226,34 +226,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
                   + "Followers have applied this transaction but the leader has not. "
                   + "Stepping down to prevent stale reads. Error: %s",
               getName(), payload.tx, e.getMessage());
-        // Step down so a follower with correct state takes over.
-        // This node will self-heal on restart via Raft log replay.
-        try {
-          final HAPlugin raftHA = server.getHA();
-          if (raftHA != null && raftHA.isLeader())
-            raftHA.stepDown();
-        } catch (final Exception stepDownEx) {
-          LogManager.instance().log(this, Level.SEVERE,
-              "Failed to step down after phase 2 failure (db=%s, txId=%s). "
-                  + "Forcing server stop to prevent leader-follower divergence.",
-              getName(), payload.tx);
-          // If step-down fails, the leader is in an inconsistent state where
-          // followers applied the transaction but the leader did not. Force
-          // a server stop so Raft log replay corrects the state on restart.
-          // Schedule stop on a separate thread to avoid deadlock: we are inside
-          // executeInReadLock(), and server.stop() may acquire a write lock.
-          final Thread stopThread = new Thread(() -> {
-            try {
-              server.stop();
-            } catch (final Throwable t) {
-              LogManager.instance().log(this, Level.SEVERE,
-                  "Server stop also failed (db=%s). Manual intervention required: %s",
-                  getName(), t.getMessage());
-            }
-          }, "arcadedb-emergency-stop");
-          stopThread.setDaemon(true);
-          stopThread.start();
-        }
+        // Step down so a follower with correct state takes over. This node will self-heal on
+        // restart via Raft log replay. The stop-server fallback lives in recoverLeadershipAfterPhase2Failure,
+        // runs on a background thread (executeInReadLock is still active here), and is gated by
+        // HA_STOP_SERVER_ON_REPLICATION_FAILURE so a single transient CME cannot kill the JVM.
+        recoverLeadershipAfterPhase2Failure(payload.tx.toString());
         throw e;
       } finally {
         current.popIfNotLastTransaction();
@@ -261,6 +238,97 @@ public class ReplicatedDatabase implements DatabaseInternal {
       return null;
     });
   }
+
+  /**
+   * Background supervisor for post-replication phase-2 failures. Called while the caller still
+   * holds {@code executeInReadLock}, so all potentially-blocking work (step-down retries, optional
+   * server stop) runs on a dedicated thread to avoid deadlocking against the database write lock
+   * that {@link ArcadeDBServer#stop()} acquires.
+   * <p>
+   * Recovery policy:
+   * <ol>
+   *   <li>Attempt {@code stepDown()} up to {@value #STEP_DOWN_MAX_ATTEMPTS} times with a
+   *       {@value #STEP_DOWN_RETRY_DELAY_MS} ms delay between tries. Raft will elect a follower
+   *       as new leader; when this node rejoins, log replay reconciles its divergent state.</li>
+   *   <li>If every attempt fails, log CRITICAL. The server stays up by default so an operator
+   *       can inspect it - killing the JVM on a transient {@link ConcurrentModificationException}
+   *       (or any other step-down failure) is disproportionate and was an overly aggressive
+   *       default in earlier versions.</li>
+   *   <li>Operators who want fail-stop semantics (e.g., Kubernetes with a CrashLoopBackOff
+   *       policy that leans on log replay) can opt in via
+   *       {@link GlobalConfiguration#HA_STOP_SERVER_ON_REPLICATION_FAILURE}, which schedules
+   *       {@code server.stop()} after the retries are exhausted.</li>
+   * </ol>
+   */
+  private void recoverLeadershipAfterPhase2Failure(final String txId) {
+    final Thread recoveryThread = new Thread(() -> {
+      boolean steppedDown = false;
+      Exception lastError = null;
+      for (int attempt = 1; attempt <= STEP_DOWN_MAX_ATTEMPTS; attempt++) {
+        try {
+          final HAPlugin raftHA = server.getHA();
+          if (raftHA == null || !raftHA.isLeader()) {
+            steppedDown = true; // Nothing to do - we are no longer the leader.
+            break;
+          }
+          raftHA.stepDown();
+          steppedDown = true;
+          break;
+        } catch (final Exception stepDownEx) {
+          lastError = stepDownEx;
+          LogManager.instance().log(this, Level.WARNING,
+              "Step-down attempt %d/%d failed after phase 2 failure (db=%s, txId=%s): %s",
+              attempt, STEP_DOWN_MAX_ATTEMPTS, getName(), txId, stepDownEx.getMessage());
+          if (attempt < STEP_DOWN_MAX_ATTEMPTS) {
+            try {
+              Thread.sleep(STEP_DOWN_RETRY_DELAY_MS);
+            } catch (final InterruptedException ie) {
+              Thread.currentThread().interrupt();
+              return;
+            }
+          }
+        }
+      }
+
+      if (steppedDown) {
+        LogManager.instance().log(this, Level.INFO,
+            "Stepped down after phase 2 failure; Raft log replay will reconcile this node on next leadership change (db=%s, txId=%s)",
+            getName(), txId);
+        return;
+      }
+
+      final boolean stopOnFailure = server.getConfiguration()
+          .getValueAsBoolean(GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE);
+      if (!stopOnFailure) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "CRITICAL: Failed to step down after %d attempts following phase 2 failure (db=%s, txId=%s). "
+                + "This leader has diverged from the Raft quorum and may serve stale reads until another "
+                + "election fires. Manual intervention required (restart this node or set %s=true to "
+                + "automate restart). Last error: %s",
+            STEP_DOWN_MAX_ATTEMPTS, getName(), txId,
+            GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE.getKey(),
+            lastError != null ? lastError.getMessage() : "unknown");
+        return;
+      }
+
+      LogManager.instance().log(this, Level.SEVERE,
+          "Stop-server-on-replication-failure is enabled and all %d step-down attempts failed; stopping the server "
+              + "so Raft log replay corrects this node's state on restart (db=%s, txId=%s)",
+          STEP_DOWN_MAX_ATTEMPTS, getName(), txId);
+      try {
+        server.stop();
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Server stop also failed (db=%s): %s. Manual intervention required.",
+            getName(), t.getMessage());
+      }
+    }, "arcadedb-replication-recovery");
+    recoveryThread.setDaemon(true);
+    recoveryThread.start();
+  }
+
+  private static final int  STEP_DOWN_MAX_ATTEMPTS   = 3;
+  private static final long STEP_DOWN_RETRY_DELAY_MS = 250L;
 
   /**
    * Applies the transaction locally after MAJORITY quorum was committed but the ALL watch failed.
@@ -280,15 +348,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
             "Phase 2 commit failed during ALL-quorum recovery (db=%s, txId=%s). "
                 + "Leader database may be inconsistent. Stepping down so a node with correct state takes over. Error: %s",
             getName(), payload.tx, e.getMessage());
-        try {
-          final HAPlugin ha = server.getHA();
-          if (ha != null && ha.isLeader())
-            ha.stepDown();
-        } catch (final Exception stepDownEx) {
-          LogManager.instance().log(this, Level.SEVERE,
-              "Failed to step down after ALL-quorum recovery failure (db=%s): %s. Manual intervention required.",
-              getName(), stepDownEx.getMessage());
-        }
+        recoverLeadershipAfterPhase2Failure(payload.tx.toString());
       } finally {
         current.popIfNotLastTransaction();
       }

@@ -644,6 +644,15 @@ public enum GlobalConfiguration {
           + "4 x electionTimeoutMax so the watchdog cannot fire before elections can complete on "
           + "WAN clusters. Increase only when the automatic floor is insufficient", Integer.class, 30_000),
 
+  HA_STOP_SERVER_ON_REPLICATION_FAILURE("arcadedb.ha.stopServerOnReplicationFailure", SCOPE.SERVER,
+      "When a leader's phase-2 local commit fails AFTER the Raft entry has been replicated to the "
+          + "majority (i.e. followers have applied the transaction but the leader has not), the "
+          + "leader first tries to step down so a correct follower becomes leader. If every step-down "
+          + "attempt fails the node is in a divergent state. Set to true to also stop the JVM after "
+          + "exhausting step-down retries - useful when an orchestrator restarts the process to let "
+          + "Raft log replay correct the state. Default false: log the condition and keep the JVM up "
+          + "so operators can inspect it", Boolean.class, false),
+
   HA_SNAPSHOT_GAP_TOLERANCE("arcadedb.ha.snapshotGapTolerance", SCOPE.SERVER,
       "Maximum tolerated difference between the Ratis snapshot index and the persisted applied index "
           + "before a follower forces a full snapshot download on startup. A small positive value absorbs "
