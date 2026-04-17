@@ -19,11 +19,14 @@
 package com.arcadedb.function.sql.time;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Computes a sliding window moving average over accumulated values.
@@ -32,6 +35,8 @@ import java.util.List;
  */
 public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
   public static final String NAME = "ts.movingAvg";
+
+  private static final Set<String> OPTIONS = Set.of("window");
 
   private final List<Double> values = new ArrayList<>();
   private int windowSize = -1;
@@ -44,12 +49,20 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (windowSize < 0)
-      windowSize = ((Number) params[1]).intValue();
+      windowSize = parseWindow(params[1]);
 
     if (params[0] instanceof Number number)
       values.add(number.doubleValue());
 
     return null;
+  }
+
+  private int parseWindow(final Object arg) {
+    if (arg instanceof Map<?, ?> rawMap) {
+      final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+      return opts.getInt("window", -1);
+    }
+    return ((Number) arg).intValue();
   }
 
   @Override
@@ -78,6 +91,6 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
 
   @Override
   public String getSyntax() {
-    return NAME + "(<value>, <window_size>)";
+    return NAME + "(<value>, <window_size> | { window: <int> })";
   }
 }

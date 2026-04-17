@@ -245,6 +245,32 @@ class SQLFunctionPhase4Test extends TestHelper {
   }
 
   @Test
+  void multiVectorScoreWeightedWithOptionsMap() {
+    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    final float result = (float) function.execute(null, null, null,
+        new Object[] { new float[] { 0.9f, 0.7f, 0.8f }, "WEIGHTED",
+            java.util.Map.of("weights", new float[] { 0.5f, 0.3f, 0.2f }) },
+        context);
+
+    assertThat(result).isCloseTo(0.82f, Offset.offset(0.001f));
+  }
+
+  @Test
+  void multiVectorScoreRejectsUnknownOption() {
+    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> function.execute(null, null, null,
+        new Object[] { new float[] { 0.9f, 0.7f }, "WEIGHTED", java.util.Map.of("whoops", 1) }, context))
+        .hasMessageContaining("whoops")
+        .hasMessageContaining("vector.multiScore");
+  }
+
+  @Test
   void multiVectorScoreSingleValue() {
     final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
     final BasicCommandContext context = new BasicCommandContext();

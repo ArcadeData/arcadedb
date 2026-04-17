@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,7 @@ import java.util.Map;
 
 import static java.util.Arrays.asList;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SQLFunctionShortestPathTest {
 
@@ -178,6 +180,43 @@ class SQLFunctionShortestPathTest {
           new Object[] { vertices.get(1), vertices.get(20), null, null, additionalParams }, new BasicCommandContext());
 
       assertThat(result).isEmpty();
+    });
+  }
+
+  @Test
+  void consolidatedOptionsMap() throws Exception {
+    TestHelper.executeInNewDatabase("testConsolidatedOptions", (graph) -> {
+      setUpDatabase(graph);
+      function = new SQLFunctionShortestPath();
+
+      final Map<String, Object> options = new HashMap<>();
+      options.put("direction", "BOTH");
+      options.put("edgeTypeNames", asList("Edge1", "Edge2"));
+      options.put("maxDepth", 10);
+
+      final List<RID> result = function.execute(null, null, null,
+          new Object[] { vertices.get(1), vertices.get(4), options }, new BasicCommandContext());
+
+      assertThat(result).hasSize(3);
+      assertThat(result.getFirst()).isEqualTo(vertices.get(1).getIdentity());
+      assertThat(result.get(2)).isEqualTo(vertices.get(4).getIdentity());
+    });
+  }
+
+  @Test
+  void rejectsUnknownOption() throws Exception {
+    TestHelper.executeInNewDatabase("testShortestPathUnknownOption", (graph) -> {
+      setUpDatabase(graph);
+      function = new SQLFunctionShortestPath();
+
+      final Map<String, Object> options = new HashMap<>();
+      options.put("whoops", 1);
+
+      assertThatThrownBy(() -> function.execute(null, null, null,
+          new Object[] { vertices.get(1), vertices.get(4), options }, new BasicCommandContext()))
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("whoops")
+          .hasMessageContaining("shortestPath");
     });
   }
 

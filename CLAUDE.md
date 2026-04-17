@@ -42,6 +42,11 @@ General design principles:
 - do not commit on git, I will do it after a review
 - remove any System.out you used for debug when you have finished
 - For test cases, prefer this syntax: `assertThat(property.isMandatory()).isTrue();`
+- Annotate performance/benchmark tests so they're skipped from regular CI builds:
+  - Use `@Tag("benchmark")` for pure microbenchmarks (e.g., JMH-style or comparison runs)
+  - Use `@Tag("slow")` for functional regression tests that take noticeably long (large batches, multi-second elapsed time, big payloads)
+  - Apply at the class level when every method in the class is slow; at the method level when only some methods are slow
+  - Required imports: `import org.junit.jupiter.api.Tag;`
 - don't add Claude as author of any source code
 
 ## Build and Development Commands

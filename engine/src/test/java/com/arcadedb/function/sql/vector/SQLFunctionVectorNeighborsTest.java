@@ -1,15 +1,21 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SQLFunctionVectorNeighborsTest extends TestHelper {
 
@@ -328,5 +334,110 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
       }
       assertThat(count).isGreaterThan(0).isLessThanOrEqualTo(3);
     }
+  }
+
+  @Test
+  void sqlVectorNeighborsWithOptionsMapEfSearch() {
+    final String query = """
+        SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 3, { efSearch: 200 }) as neighbors
+        """;
+    try (ResultSet results = database.query("sql", query)) {
+      assertThat(results.hasNext()).isTrue();
+
+      final var result = results.next();
+      @SuppressWarnings("unchecked")
+      final List<Map<String, Object>> neighbors = result.getProperty("neighbors");
+
+      assertThat(neighbors).isNotNull().isNotEmpty();
+      assertThat(neighbors).hasSizeLessThanOrEqualTo(3);
+    }
+  }
+
+  @Test
+  void sqlVectorNeighborsWithOptionsMapFilter() {
+    final List<RID> allowed = collectRIDs("docA", "docB");
+    assertThat(allowed).hasSize(2);
+
+    @SuppressWarnings("unchecked") final List<Map<String, Object>> neighbors = (List<Map<String, Object>>) database.query("sql",
+            "SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, { filter: :allowed }) as neighbors",
+            Map.of("allowed", allowed))
+        .next().getProperty("neighbors");
+
+    assertThat(neighbors).isNotNull().isNotEmpty();
+    assertThat(neighbors).as("filter must restrict results to the provided RIDs").hasSizeLessThanOrEqualTo(2);
+
+    final Set<RID> returned = new HashSet<>();
+    for (final Map<String, Object> row : neighbors)
+      returned.add((RID) row.get("@rid"));
+
+    assertThat(returned).as("only filtered RIDs should appear").isSubsetOf(allowed);
+  }
+
+  @Test
+  void sqlVectorNeighborsWithOptionsMapEfSearchAndFilter() {
+    final List<RID> allowed = collectRIDs("docC", "docD");
+
+    @SuppressWarnings("unchecked") final List<Map<String, Object>> neighbors = (List<Map<String, Object>>) database.query("sql",
+            "SELECT `vector.neighbors`('Doc[embedding]', [0.0, 1.0, 0.0], 5, { efSearch: 300, filter: :allowed }) as neighbors",
+            Map.of("allowed", allowed))
+        .next().getProperty("neighbors");
+
+    assertThat(neighbors).isNotEmpty().hasSizeLessThanOrEqualTo(2);
+    for (final Map<String, Object> row : neighbors)
+      assertThat(allowed).contains((RID) row.get("@rid"));
+  }
+
+  @Test
+  void programmaticVectorNeighborsWithOptionsMap() {
+    final SQLFunctionVectorNeighbors function = new SQLFunctionVectorNeighbors();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    final List<RID> allowed = collectRIDs("docA", "docE");
+
+    @SuppressWarnings("unchecked") final List<Map<String, Object>> results = (List<Map<String, Object>>) function.execute(null,
+        null, null,
+        new Object[] { "Doc[embedding]", new float[] { 1.0f, 0.0f, 0.0f }, 5, Map.of("efSearch", 100, "filter", allowed) },
+        context);
+
+    assertThat(results).isNotEmpty().hasSizeLessThanOrEqualTo(2);
+    for (final Map<String, Object> row : results)
+      assertThat(allowed).contains((RID) row.get("@rid"));
+  }
+
+  @Test
+  void sqlVectorNeighborsWithUnknownOptionThrows() {
+    assertThatThrownBy(() -> database.query("sql",
+        "SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 3, { whoops: 1 }) as neighbors").next())
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("whoops")
+        .hasMessageContaining("vector.neighbors");
+  }
+
+  @Test
+  void sqlVectorNeighborsFilterAcceptsRIDStrings() {
+    final List<RID> allowed = collectRIDs("docB");
+    final List<String> asStrings = new ArrayList<>();
+    for (final RID r : allowed)
+      asStrings.add(r.toString());
+
+    @SuppressWarnings("unchecked") final List<Map<String, Object>> neighbors = (List<Map<String, Object>>) database.query("sql",
+            "SELECT `vector.neighbors`('Doc[embedding]', [1.0, 0.0, 0.0], 5, { filter: :allowed }) as neighbors",
+            Map.of("allowed", asStrings))
+        .next().getProperty("neighbors");
+
+    assertThat(neighbors).isNotEmpty().hasSize(1);
+    assertThat((RID) neighbors.getFirst().get("@rid")).isEqualTo(allowed.getFirst());
+  }
+
+  private List<RID> collectRIDs(final String... names) {
+    final List<RID> out = new ArrayList<>(names.length);
+    for (final String name : names) {
+      try (final ResultSet rs = database.query("sql", "SELECT @rid as r FROM Doc WHERE name = ?", name)) {
+        assertThat(rs.hasNext()).as("doc %s must exist", name).isTrue();
+        out.add(rs.next().getProperty("r"));
+      }
+    }
+    return out;
   }
 }

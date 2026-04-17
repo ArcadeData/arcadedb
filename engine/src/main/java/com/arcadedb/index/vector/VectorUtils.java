@@ -107,6 +107,12 @@ public final class VectorUtils {
   public static float[] convertToFloatArray(final Object vectorObj) {
     if (vectorObj instanceof float[] f)
       return f;
+    if (vectorObj instanceof double[] d) {
+      final float[] vector = new float[d.length];
+      for (int i = 0; i < d.length; i++)
+        vector[i] = (float) d[i];
+      return vector;
+    }
     if (vectorObj instanceof List<?> list) {
       final float[] vector = new float[list.size()];
       for (int i = 0; i < list.size(); i++)

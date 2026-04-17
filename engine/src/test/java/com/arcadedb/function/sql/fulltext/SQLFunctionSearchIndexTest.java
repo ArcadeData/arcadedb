@@ -157,4 +157,20 @@ class SQLFunctionSearchIndexTest extends TestHelper {
       assertThat(count).isEqualTo(1);
     });
   }
+
+  @Test
+  void basicSearchNamespaced() {
+    database.transaction(() -> {
+      final ResultSet result = database.query("sql",
+          "SELECT title FROM Article WHERE `fulltext.searchIndex`('Article[content]', 'java') = true");
+
+      int count = 0;
+      while (result.hasNext()) {
+        final Result r = result.next();
+        assertThat(r.getProperty("title").toString()).isIn("Doc1", "Doc2");
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    });
+  }
 }

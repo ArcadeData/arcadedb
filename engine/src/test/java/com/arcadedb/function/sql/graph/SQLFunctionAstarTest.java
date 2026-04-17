@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -32,6 +33,7 @@ import java.util.*;
 import java.util.stream.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /*
 * @author Saeed Tabrizi (saeed a_t  nowcando.com)
@@ -435,6 +437,26 @@ class SQLFunctionAstarTest {
       assertThat(result.get(1)).isEqualTo(v2.getIdentity());
       assertThat(result.get(2)).isEqualTo(v3.getIdentity());
       assertThat(result.get(3)).isEqualTo(v4.getIdentity());
+    });
+  }
+
+  @Test
+  void rejectsUnknownOption() throws Exception {
+    TestHelper.executeInNewDatabase("testAstarUnknownOption", (graph) -> {
+      setUpDatabase(graph);
+      functionAstar = new SQLFunctionAstar();
+
+      final Map<String, Object> options = new HashMap<>();
+      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
+      options.put("whoops", 1);
+
+      final BasicCommandContext ctx = new BasicCommandContext();
+      ctx.setDatabase(graph);
+
+      assertThatThrownBy(() -> functionAstar.execute(null, null, null, new Object[] { v1, v4, "'weight'", options }, ctx))
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("whoops")
+          .hasMessageContaining("astar");
     });
   }
 }

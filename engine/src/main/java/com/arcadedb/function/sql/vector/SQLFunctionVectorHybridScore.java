@@ -20,7 +20,11 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
+
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Combines vector similarity score with keyword search score (BM25) using weighted average.
@@ -37,6 +41,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
  */
 public class SQLFunctionVectorHybridScore extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.hybridScore";
+
+  private static final Set<String> OPTIONS = Set.of("alpha");
 
   public SQLFunctionVectorHybridScore() {
     super(NAME);
@@ -57,39 +63,38 @@ public class SQLFunctionVectorHybridScore extends SQLFunctionVectorAbstract {
 
     // Parse vector score
     final float vectorScore;
-    if (vectorScoreObj instanceof Number num1) {
+    if (vectorScoreObj instanceof Number num1)
       vectorScore = num1.floatValue();
-    } else {
+    else
       throw new CommandSQLParsingException("Vector score must be a number, found: " + vectorScoreObj.getClass().getSimpleName());
-    }
 
     // Parse keyword score
     final float keywordScore;
-    if (keywordScoreObj instanceof Number num2) {
+    if (keywordScoreObj instanceof Number num2)
       keywordScore = num2.floatValue();
-    } else {
+    else
       throw new CommandSQLParsingException("Keyword score must be a number, found: " + keywordScoreObj.getClass().getSimpleName());
-    }
 
-    // Parse alpha weight
+    // Parse alpha weight. Accept either a plain number or an options map { alpha: <float> }.
     final float alpha;
-    if (alphaObj instanceof Number num3) {
+    if (alphaObj instanceof Map<?, ?> rawMap) {
+      final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+      alpha = (float) opts.getDouble("alpha", Float.NaN);
+    } else if (alphaObj instanceof Number num3) {
       alpha = num3.floatValue();
     } else {
       throw new CommandSQLParsingException("Alpha weight must be a number, found: " + alphaObj.getClass().getSimpleName());
     }
 
     // Validate alpha is in [0, 1]
-    if (alpha < 0.0f || alpha > 1.0f)
+    if (Float.isNaN(alpha) || alpha < 0.0f || alpha > 1.0f)
       throw new CommandSQLParsingException("Alpha weight must be in [0.0, 1.0], found: " + alpha);
 
     // Calculate hybrid score: (vector_score * alpha) + (keyword_score * (1 - alpha))
-    final float hybridScore = (vectorScore * alpha) + (keywordScore * (1.0f - alpha));
-
-    return hybridScore;
+    return (vectorScore * alpha) + (keywordScore * (1.0f - alpha));
   }
 
   public String getSyntax() {
-    return NAME + "(<vector_score>, <keyword_score>, <alpha>)";
+    return NAME + "(<vector_score>, <keyword_score>, <alpha> | { alpha: <float> })";
   }
 }

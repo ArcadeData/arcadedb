@@ -83,6 +83,33 @@ class SQLFunctionPhase3Test extends TestHelper {
   }
 
   @Test
+  void vectorRRFScoreWithOptionsMap() {
+    final SQLFunctionVectorRRFScore function = new SQLFunctionVectorRRFScore();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    // Pass k explicitly via options map, no disambiguation heuristic involved.
+    final float result = (float) function.execute(null, null, null,
+        new Object[] { 1L, 5L, 10L, java.util.Map.of("k", 100L) },
+        context);
+
+    final float expected = (1.0f / 101) + (1.0f / 105) + (1.0f / 110);
+    assertThat(result).isCloseTo(expected, Offset.offset(0.01f));
+  }
+
+  @Test
+  void vectorRRFScoreRejectsUnknownOption() {
+    final SQLFunctionVectorRRFScore function = new SQLFunctionVectorRRFScore();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    assertThatThrownBy(() -> function.execute(null, null, null,
+        new Object[] { 1L, java.util.Map.of("whoops", 1) }, context))
+        .hasMessageContaining("whoops")
+        .hasMessageContaining("vector.rrfScore");
+  }
+
+  @Test
   void vectorNormalizeScores() {
     final SQLFunctionVectorNormalizeScores function = new SQLFunctionVectorNormalizeScores();
     final BasicCommandContext context = new BasicCommandContext();
@@ -204,6 +231,31 @@ class SQLFunctionPhase3Test extends TestHelper {
         context);
 
     assertThat(result).isCloseTo(0.68f, Offset.offset(0.001f));
+  }
+
+  @Test
+  void vectorHybridScoreWithOptionsMap() {
+    final SQLFunctionVectorHybridScore function = new SQLFunctionVectorHybridScore();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    final float result = (float) function.execute(null, null, null,
+        new Object[] { 0.8f, 0.4f, java.util.Map.of("alpha", 0.7) },
+        context);
+
+    assertThat(result).isCloseTo(0.68f, Offset.offset(0.001f));
+  }
+
+  @Test
+  void vectorHybridScoreRejectsUnknownOption() {
+    final SQLFunctionVectorHybridScore function = new SQLFunctionVectorHybridScore();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    assertThatThrownBy(() -> function.execute(null, null, null,
+        new Object[] { 0.8f, 0.4f, java.util.Map.of("whoops", 1) }, context))
+        .hasMessageContaining("whoops")
+        .hasMessageContaining("vector.hybridScore");
   }
 
   @Test

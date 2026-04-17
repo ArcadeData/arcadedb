@@ -81,6 +81,26 @@ class GeoMeasurementFunctionsTest {
           .execute(null, null, null, new Object[] { "NOT VALID WKT", 1.0 }, null))
           .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void optionsMap_squareCap() throws Exception {
+      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+        final ResultSet result = db.query("sql",
+            "select geo.buffer('POINT (10 20)', 1.0, { endCapStyle: 'SQUARE', quadrantSegments: 4 }) as wkt");
+        assertThat(result.hasNext()).isTrue();
+        final String wkt = result.next().getProperty("wkt");
+        // square cap produces a POLYGON with corners rather than the smooth circle from ROUND.
+        assertThat(wkt).startsWith("POLYGON");
+      });
+    }
+
+    @Test
+    void optionsMap_rejectsUnknownKey() {
+      assertThatThrownBy(() -> new SQLFunctionGeoBuffer()
+          .execute(null, null, null, new Object[] { "POINT (10 20)", 1.0, java.util.Map.of("whoops", 1) }, null))
+          .hasMessageContaining("whoops")
+          .hasMessageContaining("geo.buffer");
+    }
   }
 
   // ─── geo.distance ─────────────────────────────────────────────────────────────

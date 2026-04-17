@@ -368,14 +368,33 @@ public class JSONObject implements Map<String, Object> {
   }
 
   public Map<String, Object> toMap() {
+    return toMap(false);
+  }
+
+  /**
+   * Converts the object to a Java {@link Map}.
+   *
+   * @param optimizeNumericArrays when {@code true}, homogeneous numeric arrays found anywhere in
+   *                              the tree are returned as primitive {@code float[]} instead of
+   *                              {@code List<Number>}. This avoids per-element boxing and the
+   *                              downstream double-to-float narrowing for large vector payloads
+   *                              (issue #3864 follow-up). Used by the HTTP command handler when
+   *                              parsing {@code params}.
+   */
+  public Map<String, Object> toMap(final boolean optimizeNumericArrays) {
     final Map<String, JsonElement> map = object.asMap();
     final Map<String, Object> result = new LinkedHashMap<>(map.size());
     for (Map.Entry<String, JsonElement> entry : map.entrySet()) {
       Object value = elementToObject(entry.getValue());
       if (value instanceof JSONObject nObject)
-        value = nObject.toMap();
-      else if (value instanceof JSONArray array)
-        value = array.toList();
+        value = nObject.toMap(optimizeNumericArrays);
+      else if (value instanceof JSONArray array) {
+        if (optimizeNumericArrays) {
+          final float[] primitive = array.toPrimitiveNumericArrayOrNull();
+          value = (primitive != null) ? primitive : array.toList(true);
+        } else
+          value = array.toList();
+      }
 
       result.put(entry.getKey(), value);
     }

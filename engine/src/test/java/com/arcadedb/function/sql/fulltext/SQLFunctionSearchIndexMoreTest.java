@@ -223,4 +223,21 @@ class SQLFunctionSearchIndexMoreTest extends TestHelper {
     // (within floating point precision)
     assertThat(maxScore).isGreaterThan(0f);
   }
+
+  @Test
+  void namespacedName() {
+    final ResultSet rs = database.query("sql",
+      "SELECT FROM Article WHERE `fulltext.searchIndexMore`('Article[title,body]', [#1:0], { minTermFreq: 1, minDocFreq: 1 }) = true");
+    assertThat(rs.hasNext()).isTrue();
+  }
+
+  @Test
+  void rejectsUnknownOption() {
+    assertThatThrownBy(() ->
+      database.query("sql",
+          "SELECT FROM Article WHERE SEARCH_INDEX_MORE('Article[title,body]', [#1:0], { minTermFreq: 1, whoops: 42 }) = true")
+        .next())
+      .hasMessageContaining("whoops")
+      .hasMessageContaining("fulltext.searchIndexMore");
+  }
 }

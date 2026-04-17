@@ -222,4 +222,23 @@ class FunctionTest extends TestHelper {
       assertThat((Object) rs.nextIfAvailable().getProperty("date")).isNotNull();
     });
   }
+
+  @Test
+  void functionDateOptionsMap() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("SQL",
+          "SELECT date(\"2023-03-04 12:12:12\", { format: 'yyyy-MM-dd HH:mm:ss' }) as date");
+      assertThat((Object) rs.nextIfAvailable().getProperty("date")).isNotNull();
+    });
+  }
+
+  @Test
+  void functionDateRejectsUnknownOption() {
+    database.transaction(() -> {
+      org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+          database.query("SQL", "SELECT date(\"2023-03-04\", { whoops: 1 }) as date").next())
+          .hasMessageContaining("whoops")
+          .hasMessageContaining("date");
+    });
+  }
 }

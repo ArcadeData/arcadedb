@@ -265,6 +265,14 @@ public class HashIndex implements IndexInternal {
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
     checkIsValid();
+
+    // rid may be null when the transaction commit layer replays a remove-all-for-key operation
+    // (originally queued via remove(keys) without a specific RID) - fall back accordingly.
+    if (rid == null) {
+      remove(keys);
+      return;
+    }
+
     final Object[] convertedKeys = convertKeys(keys);
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)

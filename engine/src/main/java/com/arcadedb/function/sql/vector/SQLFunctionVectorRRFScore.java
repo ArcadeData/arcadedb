@@ -20,7 +20,11 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
+
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Reciprocal Rank Fusion (RRF) scoring function for combining multiple ranking lists.
@@ -34,8 +38,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vector.rrfScore";
-  private static final long DEFAULT_K = 60;
+  public static final String NAME      = "vector.rrfScore";
+  private static final long  DEFAULT_K = 60;
+
+  private static final Set<String> OPTIONS = Set.of("k");
 
   public SQLFunctionVectorRRFScore() {
     super(NAME);
@@ -50,16 +56,18 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
     long k = DEFAULT_K;
     int rankCount = params.length;
 
-    // Check if last parameter is 'k' constant (optional)
-    if (params.length >= 2) {
-      final Object lastParam = params[params.length - 1];
-      if (lastParam instanceof Number num) {
-        // If the last parameter is significantly larger than typical ranks (> 100), treat it as k
-        final long val = num.longValue();
-        if (val >= 60) {
-          k = val;
-          rankCount = params.length - 1;
-        }
+    // Trailing options map takes precedence over the legacy "last Number >= 60 is k" heuristic.
+    final Object lastParam = params[params.length - 1];
+    if (lastParam instanceof Map<?, ?> rawMap) {
+      final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+      k = opts.getLong("k", DEFAULT_K);
+      rankCount = params.length - 1;
+    } else if (params.length >= 2 && lastParam instanceof Number num) {
+      // Legacy disambiguation: treat a large trailing number as k.
+      final long val = num.longValue();
+      if (val >= 60) {
+        k = val;
+        rankCount = params.length - 1;
       }
     }
 
@@ -70,12 +78,11 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
       if (rankObj == null)
         continue;
 
-      long rank;
-      if (rankObj instanceof Number num) {
+      final long rank;
+      if (rankObj instanceof Number num)
         rank = num.longValue();
-      } else {
+      else
         throw new CommandSQLParsingException("Rank values must be numbers, found: " + rankObj.getClass().getSimpleName());
-      }
 
       if (rank <= 0)
         throw new CommandSQLParsingException("Rank values must be positive integers, found: " + rank);
@@ -87,6 +94,6 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<rank1>, <rank2>, ..., [<k>])";
+    return NAME + "(<rank1>, <rank2>, ..., [<k> | { k: <long> }])";
   }
 }

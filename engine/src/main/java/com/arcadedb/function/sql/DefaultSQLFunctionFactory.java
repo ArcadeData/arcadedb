@@ -262,10 +262,10 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     // Text
     register(SQLFunctionFormat.NAME, new SQLFunctionFormat());
     register(SQLFunctionConcat.NAME, SQLFunctionConcat.class);
-    register(SQLFunctionSearchFields.NAME, SQLFunctionSearchFields.class);
-    register(SQLFunctionSearchFieldsMore.NAME, SQLFunctionSearchFieldsMore.class);
-    register(SQLFunctionSearchIndex.NAME, SQLFunctionSearchIndex.class);
-    register(SQLFunctionSearchIndexMore.NAME, SQLFunctionSearchIndexMore.class);
+    register(SQLFunctionSearchFields.NAME, new SQLFunctionSearchFields());
+    register(SQLFunctionSearchFieldsMore.NAME, new SQLFunctionSearchFieldsMore());
+    register(SQLFunctionSearchIndex.NAME, new SQLFunctionSearchIndex());
+    register(SQLFunctionSearchIndexMore.NAME, new SQLFunctionSearchIndexMore());
     register(SQLFunctionStrcmpci.NAME, SQLFunctionStrcmpci.class);
 
     // Time
