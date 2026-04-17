@@ -941,13 +941,12 @@ public class ReplicatedDatabase implements DatabaseInternal {
    *           {@code ctx.readAfterIndex}. This is linearizable with respect to the caller's own
    *           prior writes (since the bookmark names a committed index) but is NOT globally
    *           linearizable across other clients' concurrent writes.</li>
-   *       <li><i>On a follower without a bookmark</i>: <b>KNOWN LIMITATION</b> - behaves
-   *           identically to {@code READ_YOUR_WRITES}, waiting for {@code lastAppliedIndex >=}
-   *           the follower's locally-known commit index. A follower lagging in its knowledge of
-   *           the global commit index can still return stale data. True linearizability in this
-   *           case would require a ReadIndex RPC to the leader or redirecting the read there.
-   *           Clients that need strict linearizability on every read should either (a) supply a
-   *           bookmark captured from their most recent write or (b) route reads to the leader.</li>
+   *       <li><i>On a follower without a bookmark</i>: issues a Ratis ReadIndex RPC to the
+   *           leader (which verifies it still holds a quorum) and waits for the local state
+   *           machine to catch up to the returned read index. This is globally linearizable:
+   *           any read served afterwards reflects every write committed before the call. Cost
+   *           is one follower-to-leader RTT plus apply-lag catch-up; concurrent ReadIndex
+   *           calls are amortized by Ratis onto a single leader heartbeat.</li>
    *     </ul>
    *   </li>
    * </ul>
@@ -958,11 +957,19 @@ public class ReplicatedDatabase implements DatabaseInternal {
     final HAPlugin raftHA = server.getHA();
     if (raftHA == null)
       return;
+    applyReadConsistencyBarrier(raftHA, ReadConsistencyContext.get(), isLeader());
+  }
 
-    final ReadConsistencyContext ctx = ReadConsistencyContext.get();
+  /**
+   * Package-private for direct unit testing of the consistency-to-barrier mapping without
+   * spinning up a full server. Exactly one barrier method (or none, for EVENTUAL) is invoked
+   * per call.
+   */
+  static void applyReadConsistencyBarrier(final HAPlugin raftHA, final ReadConsistencyContext ctx,
+      final boolean isLeader) {
     final Database.READ_CONSISTENCY consistency = ctx != null ? ctx.consistency : null;
 
-    if (isLeader()) {
+    if (isLeader) {
       if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
         // Full Raft read protocol: verify lease or send heartbeats to majority.
         // This guarantees linearizability even after SIGSTOP/SIGCONT.
@@ -987,14 +994,17 @@ public class ReplicatedDatabase implements DatabaseInternal {
         // Without this, a catching-up follower would silently degrade to EVENTUAL consistency.
         raftHA.waitForLocalApply();
     } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
-      // KNOWN LIMITATION: this follower path does not achieve strict linearizability without a
-      // bookmark, because waitForLocalApply() waits for the follower's own view of commitIndex
-      // which may lag the leader's. See the javadoc for the full contract; the behavior here is
-      // deliberately identical to READ_YOUR_WRITES until a ReadIndex-to-leader hop is added.
       if (ctx.readAfterIndex >= 0)
+        // A bookmark already names the committed index the reader wants to observe, so the
+        // cheaper local-apply wait suffices. This gives read-your-writes relative to the caller
+        // (linearizability for the caller's own sequence of operations) without a leader RTT.
         raftHA.waitForAppliedIndex(ctx.readAfterIndex);
       else
-        raftHA.waitForLocalApply();
+        // No bookmark: issue a ReadIndex RPC to the leader to learn the current global commit
+        // index, then wait for local apply to reach it. This is what makes LINEARIZABLE honest
+        // on a follower - without the round-trip the follower could serve data older than some
+        // other client's already-committed write.
+        raftHA.ensureLinearizableFollowerRead();
     }
   }
 

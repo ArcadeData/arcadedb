@@ -113,6 +113,19 @@ public interface HAPlugin extends ServerPlugin {
   }
 
   /**
+   * Linearizable read barrier for a follower. Issues a ReadIndex RPC to the cluster (Ratis
+   * routes it to the leader, which verifies it still holds a quorum), then blocks until this
+   * follower has applied up to the returned read index. After this call returns, any read
+   * served from local state is guaranteed to reflect every write committed before the call.
+   * <p>
+   * Unlike {@link #waitForAppliedIndex(long)} + a client bookmark (which only guarantees
+   * read-your-own-writes), this method provides global linearizability across all clients
+   * at the cost of one follower-to-leader RTT plus the leader's quorum heartbeat.
+   */
+  default void ensureLinearizableFollowerRead() {
+  }
+
+  /**
    * Waits until the local state machine has applied all currently committed entries.
    * Used as a leader read barrier and for READ_YOUR_WRITES on followers without a bookmark.
    */

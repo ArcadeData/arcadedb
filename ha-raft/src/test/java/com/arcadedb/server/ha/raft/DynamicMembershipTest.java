@@ -69,4 +69,22 @@ class DynamicMembershipTest extends BaseGraphServerTest {
     org.assertj.core.api.Assertions.assertThatThrownBy(() -> raftServer.removePeer("nonexistent"))
         .isInstanceOf(com.arcadedb.exception.ConfigurationException.class);
   }
+
+  @Test
+  void transferLeadershipToUnknownPeerFailsGracefully() {
+    final int leaderIndex = getLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer raftServer = ((RaftHAPlugin) getServer(leaderIndex).getHA()).getRaftServer();
+    // Ratis rejects the transfer request when the target peer is not in the configuration.
+    // The wrapper surfaces this as a ConfigurationException rather than leaking the raw IOException
+    // to callers; the cluster remains functional after the failed request.
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> raftServer.transferLeadership("nonexistent_9999", 2000))
+        .isInstanceOf(com.arcadedb.exception.ConfigurationException.class);
+
+    // Leader must still be the original one: the failed transfer must not have taken effect.
+    assertThat(raftServer.getLivePeers()).hasSize(3);
+    assertThat(raftServer.isLeader()).isTrue();
+  }
 }

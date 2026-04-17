@@ -380,8 +380,12 @@ public class SnapshotInstaller {
   /**
    * Downloads a snapshot ZIP from the leader and extracts it into the given temp directory.
    * The temp directory is created fresh (any leftover from a previous attempt is cleaned up).
+   * <p>
+   * Package-private to enable a local-{@code HttpServer}-based integration test of the download
+   * path (happy path, zip slip, non-200 response, HTTPS/SSL mismatch) without standing up a
+   * full Raft cluster.
    */
-  private void downloadSnapshot(final String snapshotUrl, final Path tempDir,
+  void downloadSnapshot(final String snapshotUrl, final Path tempDir,
       final String databaseName) throws IOException {
     LogManager.instance().log(this, Level.INFO, "Downloading database snapshot from %s...", snapshotUrl);
 

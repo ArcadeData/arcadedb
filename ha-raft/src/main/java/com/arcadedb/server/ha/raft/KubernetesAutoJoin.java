@@ -182,7 +182,15 @@ public class KubernetesAutoJoin {
    * does not end with a parseable integer.
    */
   private static long computeJitterMinMs() {
-    final String hostname = System.getenv("HOSTNAME");
+    return computeJitterMinMs(System.getenv("HOSTNAME"));
+  }
+
+  /**
+   * Package-private for unit testing. The public no-arg form reads HOSTNAME from the process
+   * environment, which cannot be mutated from Java; tests drive the logic directly through this
+   * variant.
+   */
+  static long computeJitterMinMs(final String hostname) {
     if (hostname != null) {
       final int dash = hostname.lastIndexOf('-');
       if (dash >= 0 && dash < hostname.length() - 1) {
@@ -195,6 +203,11 @@ public class KubernetesAutoJoin {
       }
     }
     return AUTO_JOIN_JITTER_FALLBACK_MIN_MS;
+  }
+
+  // Package-private for unit testing of the TLS / flow-control inheritance contract.
+  RaftProperties buildProbePropertiesForTest() {
+    return buildProbeProperties();
   }
 
   private RaftProperties buildProbeProperties() {

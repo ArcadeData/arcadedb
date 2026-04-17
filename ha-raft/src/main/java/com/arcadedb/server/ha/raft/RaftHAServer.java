@@ -575,36 +575,69 @@ public class RaftHAServer {
   public void ensureLinearizableRead() {
     if (raftClient == null)
       throw new ServerIsNotTheLeaderException("Raft client not initialized", getLeaderHTTPAddress());
+    final long readIndex = fetchReadIndex(true);
+    // Reply success means the leader lease is valid and the read index is confirmed.
+    // Double-check we're still the leader: after SIGSTOP/SIGCONT, the sendReadOnly heartbeat
+    // might briefly succeed before the old leader fully steps down.
+    if (!isLeader())
+      throw new ServerIsNotTheLeaderException("Leadership lost after read index confirmation",
+          getLeaderHTTPAddress());
+    if (readIndex > 0)
+      waitForAppliedIndex(readIndex);
+  }
+
+  /**
+   * Linearizable read barrier for a follower. Uses Ratis {@code sendReadOnly} to obtain the
+   * leader's current committed index (the leader verifies it still holds a quorum during the
+   * call), then waits for the local state machine to catch up to that index. After this
+   * returns, any read served from local state reflects every write committed before the call.
+   * <p>
+   * Cost: one follower-to-leader RTT + the leader's quorum heartbeat (amortized across
+   * concurrent ReadIndex calls by Ratis) + local apply-lag catch-up time. This is strictly
+   * more expensive than {@code waitForLocalApply()} because the local commit index on a
+   * follower may trail the leader's; without this round-trip a lagging follower would serve
+   * stale reads even when labelled LINEARIZABLE.
+   */
+  public void ensureLinearizableFollowerRead() {
+    if (raftClient == null)
+      throw new ReplicationException("Raft client not initialized on follower");
+    final long readIndex = fetchReadIndex(false);
+    if (readIndex > 0)
+      waitForAppliedIndex(readIndex);
+  }
+
+  /**
+   * Issues a Ratis {@code sendReadOnly} call to obtain the current committed log index from
+   * the leader. Returns the log index on success. Classifies failures depending on
+   * {@code expectSelfIsLeader}: the leader-side caller wants a {@link ServerIsNotTheLeaderException}
+   * with a redirect hint when the RPC reports a different leader; the follower-side caller
+   * surfaces the same situation as a generic {@link ReplicationException} because it never
+   * expected to be the leader.
+   */
+  private long fetchReadIndex(final boolean expectSelfIsLeader) {
     try {
       final RaftClientReply reply = raftClient.async()
           .sendReadOnly(Message.valueOf(ByteString.EMPTY))
           .get(quorumTimeout, TimeUnit.MILLISECONDS);
       if (!reply.isSuccess()) {
         final var ex = reply.getException();
-        if (ex instanceof org.apache.ratis.protocol.exceptions.NotLeaderException nle) {
+        if (ex instanceof org.apache.ratis.protocol.exceptions.NotLeaderException nle && expectSelfIsLeader) {
           final var suggestedLeader = nle.getSuggestedLeader();
           throw new ServerIsNotTheLeaderException("Not the leader (detected via read index)",
               suggestedLeader != null ? addressResolver.getPeerHTTPAddress(suggestedLeader.getId()) : null);
         }
-        throw new ReplicationException("Linearizable read check failed: " + ex.getMessage());
+        throw new ReplicationException("Linearizable read check failed: "
+            + (ex != null ? ex.getMessage() : "unknown"));
       }
-      // Reply success means the leader lease is valid and the read index is confirmed.
-      // Double-check we're still the leader: after SIGSTOP/SIGCONT, the sendReadOnly
-      // heartbeat might briefly succeed before the old leader fully steps down.
-      if (!isLeader())
-        throw new ServerIsNotTheLeaderException("Leadership lost after read index confirmation",
-            getLeaderHTTPAddress());
-      // Now wait for the local state machine to catch up to the read index.
-      final long readIndex = reply.getLogIndex();
-      if (readIndex > 0)
-        waitForAppliedIndex(readIndex);
-    } catch (final ServerIsNotTheLeaderException e) {
+      return reply.getLogIndex();
+    } catch (final ServerIsNotTheLeaderException | ReplicationException e) {
       throw e;
     } catch (final java.util.concurrent.TimeoutException e) {
-      HALog.log(this, HALog.BASIC, "ensureLinearizableRead timed out after %dms", quorumTimeout);
+      HALog.log(this, HALog.BASIC, "ReadIndex RPC timed out after %dms (expectSelfIsLeader=%s)",
+          quorumTimeout, expectSelfIsLeader);
       throw new ReplicationException("Linearizable read timed out after " + quorumTimeout + "ms");
     } catch (final Exception e) {
-      if (e.getCause() instanceof org.apache.ratis.protocol.exceptions.NotLeaderException nle) {
+      if (e.getCause() instanceof org.apache.ratis.protocol.exceptions.NotLeaderException nle && expectSelfIsLeader) {
         final var suggestedLeader = nle.getSuggestedLeader();
         throw new ServerIsNotTheLeaderException("Not the leader (detected via read index)",
             suggestedLeader != null ? addressResolver.getPeerHTTPAddress(suggestedLeader.getId()) : null);

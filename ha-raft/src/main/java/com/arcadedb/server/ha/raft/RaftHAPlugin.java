@@ -224,6 +224,11 @@ public class RaftHAPlugin implements HAPlugin {
   }
 
   @Override
+  public void ensureLinearizableFollowerRead() {
+    raftServer.ensureLinearizableFollowerRead();
+  }
+
+  @Override
   public void waitForLocalApply() {
     raftServer.waitForLocalApply();
   }
