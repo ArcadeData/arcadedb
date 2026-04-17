@@ -51,7 +51,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if (json == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
-    final Map<String, Object> requestMap = json.toMap();
+    // Issue #3864 follow-up: use the optimized toMap so JSON numeric arrays (e.g. vector
+    // embeddings inside `params.batch[*].vector`) are returned as primitive double[]/long[]
+    // instead of List<Double>, avoiding millions of boxed Number allocations per request.
+    final Map<String, Object> requestMap = json.toMap(true);
 
     if (requestMap.get("command") == null)
       throw new IllegalArgumentException("command missing");

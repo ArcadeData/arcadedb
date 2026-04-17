@@ -21,6 +21,7 @@ package com.arcadedb.serializer.json;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 
 import java.util.*;
 
@@ -69,19 +70,72 @@ public class JSONArray implements Iterable<Object> {
   }
 
   public List<Object> toList() {
+    return toList(false);
+  }
+
+  /**
+   * Converts the array to a Java {@link List}.
+   *
+   * @param optimizeNumericArrays when {@code true}, homogeneous numeric arrays are returned as
+   *                              primitive {@code float[]} instead of {@code List<Number>}. This
+   *                              avoids both per-element boxing and the downstream double-to-float
+   *                              narrowing required by {@link com.arcadedb.schema.Type#ARRAY_OF_FLOATS}
+   *                              vector properties (issue #3864 follow-up). Used by the HTTP
+   *                              command handler when receiving {@code params}. Note: callers
+   *                              that need {@code double} precision should use the default
+   *                              {@link #toList()} or convert downstream.
+   *
+   * @return the list (or a primitive array bag for nested numeric subtrees when optimized)
+   */
+  public List<Object> toList(final boolean optimizeNumericArrays) {
     final List<JsonElement> list = array.asList();
     final List<Object> result = new ArrayList<>(list.size());
     for (JsonElement e : list) {
       Object value = JSONObject.elementToObject(e);
 
       if (value instanceof JSONObject object)
-        value = object.toMap();
-      else if (value instanceof JSONArray nArray)
-        value = nArray.toList();
+        value = object.toMap(optimizeNumericArrays);
+      else if (value instanceof JSONArray nArray) {
+        if (optimizeNumericArrays) {
+          final float[] primitive = nArray.toPrimitiveNumericArrayOrNull();
+          value = (primitive != null) ? primitive : nArray.toList(true);
+        } else
+          value = nArray.toList();
+      }
 
       result.add(value);
     }
 
+    return result;
+  }
+
+  /**
+   * If this array contains only numeric primitive elements, returns a primitive {@code float[]}
+   * containing the values. Returns {@code null} if the array is empty or contains a non-numeric
+   * element, so callers can fall back to {@link #toList()}.
+   * <p>
+   * Single-pass: bails out as soon as a non-numeric element is found, avoiding any boxing for
+   * the common case of vector embeddings. Used by {@link JSONObject#toMap(boolean)} when
+   * parsing HTTP {@code params} (issue #3864 follow-up). Returns {@code float[]} (not
+   * {@code double[]}) because the dominant use case is {@code ARRAY_OF_FLOATS} vector
+   * properties; this also halves the memory footprint of large batches. Downstream
+   * {@link com.arcadedb.schema.Type#convert} promotes to {@code double[]} when a
+   * {@code ARRAY_OF_DOUBLES} property is targeted (with the precision loss inherent to JSON
+   * passing through {@code float}).
+   */
+  public float[] toPrimitiveNumericArrayOrNull() {
+    final List<JsonElement> list = array.asList();
+    final int size = list.size();
+    if (size == 0)
+      return null;
+
+    final float[] result = new float[size];
+    for (int i = 0; i < size; i++) {
+      final JsonElement e = list.get(i);
+      if (!(e instanceof JsonPrimitive p) || !p.isNumber())
+        return null;
+      result[i] = p.getAsFloat();
+    }
     return result;
   }
 

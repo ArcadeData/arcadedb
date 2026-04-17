@@ -194,6 +194,12 @@ public class UnwindStep extends AbstractExecutionStep {
                 for (final double i : (double[]) listValue) {
                   list.add(i);
                 }
+              } else if (listValue instanceof float[]) {
+                // Issue #3864 follow-up: HTTP numeric params arrive as float[] from the optimized
+                // JSON parser; UNWIND on such a param must iterate the primitive array.
+                for (final float i : (float[]) listValue) {
+                  list.add(i);
+                }
               } else if (listValue instanceof boolean[]) {
                 for (final boolean i : (boolean[]) listValue) {
                   list.add(i);

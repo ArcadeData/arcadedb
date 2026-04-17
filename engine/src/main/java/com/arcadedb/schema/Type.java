@@ -333,12 +333,34 @@ public enum Type {
         for (final Object item : collection)
           array[i++] = ((Number) item).floatValue();
         return array;
+      } else if (targetClass.equals(float[].class) && value instanceof double[] src) {
+        // Fast path: primitive narrowing copy
+        final float[] array = new float[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = (float) src[i];
+        return array;
+      } else if (targetClass.equals(float[].class) && value instanceof long[] src) {
+        final float[] array = new float[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = src[i];
+        return array;
       } else if (targetClass.equals(double[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to double[]
         final double[] array = new double[collection.size()];
         int i = 0;
         for (final Object item : collection)
           array[i++] = ((Number) item).doubleValue();
+        return array;
+      } else if (targetClass.equals(double[].class) && value instanceof float[] src) {
+        // Issue #3864 follow-up: HTTP vector params arrive as float[] from JSON parsing.
+        final double[] array = new double[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = src[i];
+        return array;
+      } else if (targetClass.equals(double[].class) && value instanceof long[] src) {
+        final double[] array = new double[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = src[i];
         return array;
       } else if (targetClass.equals(int[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to int[]
@@ -347,6 +369,21 @@ public enum Type {
         for (final Object item : collection)
           array[i++] = ((Number) item).intValue();
         return array;
+      } else if (targetClass.equals(int[].class) && value instanceof long[] src) {
+        final int[] array = new int[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = (int) src[i];
+        return array;
+      } else if (targetClass.equals(int[].class) && value instanceof double[] src) {
+        final int[] array = new int[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = (int) src[i];
+        return array;
+      } else if (targetClass.equals(int[].class) && value instanceof float[] src) {
+        final int[] array = new int[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = (int) src[i];
+        return array;
       } else if (targetClass.equals(long[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to long[]
         final long[] array = new long[collection.size()];
@@ -354,12 +391,37 @@ public enum Type {
         for (final Object item : collection)
           array[i++] = ((Number) item).longValue();
         return array;
+      } else if (targetClass.equals(long[].class) && value instanceof double[] src) {
+        final long[] array = new long[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = (long) src[i];
+        return array;
+      } else if (targetClass.equals(long[].class) && value instanceof float[] src) {
+        final long[] array = new long[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = (long) src[i];
+        return array;
       } else if (targetClass.equals(short[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to short[]
         final short[] array = new short[collection.size()];
         int i = 0;
         for (final Object item : collection)
           array[i++] = ((Number) item).shortValue();
+        return array;
+      } else if (targetClass.equals(short[].class) && value instanceof long[] src) {
+        final short[] array = new short[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = (short) src[i];
+        return array;
+      } else if (targetClass.equals(short[].class) && value instanceof double[] src) {
+        final short[] array = new short[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = (short) src[i];
+        return array;
+      } else if (targetClass.equals(short[].class) && value instanceof float[] src) {
+        final short[] array = new short[src.length];
+        for (int i = 0; i < src.length; i++)
+          array[i] = (short) src[i];
         return array;
       } else if (targetClass.isEnum()) {
         if (value instanceof Number number)
