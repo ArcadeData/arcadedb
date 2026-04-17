@@ -385,18 +385,19 @@ function updateLabelsForType(type) {
 }
 
 function assignTypeColor(type) {
+  // Preserve any color already set (either default or user override).
+  if (getOrCreateStyleTypeAttrib(type, "shapeColor") != null) return;
+
   let sidebarColor = typeof globalSidebarTypeColors !== "undefined" ? globalSidebarTypeColors[type] : null;
   if (sidebarColor != null) {
     getOrCreateStyleTypeAttrib(type, "shapeColor", sidebarColor);
-    getOrCreateStyleTypeAttrib(type, "labelColor", "white");
+    if (getOrCreateStyleTypeAttrib(type, "labelColor") == null)
+      getOrCreateStyleTypeAttrib(type, "labelColor", "white");
   } else {
-    let color = getOrCreateStyleTypeAttrib(type, "shapeColor");
-    if (color == null) {
-      if (globalLastColorIndex >= globalBgColors.length) globalLastColorIndex = 0;
-      getOrCreateStyleTypeAttrib(type, "labelColor", globalFgColors[globalLastColorIndex]);
-      getOrCreateStyleTypeAttrib(type, "shapeColor", globalBgColors[globalLastColorIndex]);
-      ++globalLastColorIndex;
-    }
+    if (globalLastColorIndex >= globalBgColors.length) globalLastColorIndex = 0;
+    getOrCreateStyleTypeAttrib(type, "labelColor", globalFgColors[globalLastColorIndex]);
+    getOrCreateStyleTypeAttrib(type, "shapeColor", globalBgColors[globalLastColorIndex]);
+    ++globalLastColorIndex;
   }
 }
 

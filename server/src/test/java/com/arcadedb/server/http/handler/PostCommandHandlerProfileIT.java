@@ -141,6 +141,55 @@ class PostCommandHandlerProfileIT extends BaseGraphServerTest {
     assertThat(plan.getString("type")).isEqualTo("OpenCypherExecutionPlan");
   }
 
+  @Test
+  void detailedProfileReturnsProtocolOverheadBreakdown() throws Exception {
+    final JSONObject response = executeCommandWithProfile("sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " LIMIT 10");
+
+    assertThat(response.has("profile")).isTrue();
+
+    final JSONObject profile = response.getJSONObject("profile");
+    assertThat(profile.has("deserializationNanos")).isTrue();
+    assertThat(profile.has("engineNanos")).isTrue();
+    assertThat(profile.has("serializationNanos")).isTrue();
+    assertThat(profile.has("overheadNanos")).isTrue();
+    assertThat(profile.has("totalNanos")).isTrue();
+    assertThat(profile.has("deserializationMs")).isTrue();
+    assertThat(profile.has("engineMs")).isTrue();
+    assertThat(profile.has("serializationMs")).isTrue();
+    assertThat(profile.has("overheadMs")).isTrue();
+    assertThat(profile.has("totalMs")).isTrue();
+
+    // Each phase must have done some measurable work on a real query. Nanos
+    // are monotonically non-negative; the sum must be consistent with the parts.
+    final long deser = profile.getLong("deserializationNanos");
+    final long engine = profile.getLong("engineNanos");
+    final long serial = profile.getLong("serializationNanos");
+    assertThat(deser).isGreaterThanOrEqualTo(0L);
+    assertThat(engine).isGreaterThan(0L);
+    assertThat(serial).isGreaterThan(0L);
+    assertThat(profile.getLong("overheadNanos")).isEqualTo(deser + serial);
+    assertThat(profile.getLong("totalNanos")).isEqualTo(deser + engine + serial);
+  }
+
+  @Test
+  void nonProfileQueryHasNoProfileField() throws Exception {
+    final JSONObject response = executeCommandWithoutProfile("sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " LIMIT 10");
+
+    assertThat(response.has("profile")).isFalse();
+  }
+
+  @Test
+  void detailedProfileReturnsResultsSameAsNonProfile() throws Exception {
+    // Verify materializing the ResultSet in profile mode does not lose rows.
+    final JSONObject profiled = executeCommandWithProfile("sql", "SELECT FROM " + VERTEX1_TYPE_NAME);
+    final JSONObject plain = executeCommandWithoutProfile("sql", "SELECT FROM " + VERTEX1_TYPE_NAME);
+
+    final JSONObject profiledResult = profiled.getJSONObject("result");
+    final JSONObject plainResult = plain.getJSONObject("result");
+    assertThat(profiledResult.getJSONArray("records").length())
+        .isEqualTo(plainResult.getJSONArray("records").length());
+  }
+
   private JSONObject executeCommandWithProfile(final String language, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:2480/api/v1/command/graph").toURL().openConnection();
