@@ -64,6 +64,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("IntegrationTest")
+@Tag("slow")
 class RaftLoadConvergenceIT extends BaseRaftHATest {
 
   // 3 concurrent loader threads hitting the leader with LOCK TYPE + COMMIT RETRY writes. This

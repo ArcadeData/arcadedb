@@ -508,6 +508,13 @@ public class SnapshotInstaller {
       conn.setReadTimeout(LEADER_METADATA_TIMEOUT_MS);
       if (raftHA.getClusterToken() != null) {
         conn.setRequestProperty("X-ArcadeDB-Cluster-Token", raftHA.getClusterToken());
+        // "root" is the correct identity here: this call is issued by the follower on its own
+        // behalf (to reconcile its local database list against the leader's), NOT on behalf of
+        // a user-initiated request. The cluster token already authenticates the hop; the
+        // forwarded-user header is redundant for authorization and is included only to satisfy
+        // the handler's requirement that every authenticated request name a user.
+        // Contrast with PostVerifyDatabaseHandler, which forwards the ORIGINAL caller's identity
+        // because it is proxying a user request across the cluster.
         conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
       }
       try {

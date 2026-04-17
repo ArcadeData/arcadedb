@@ -261,6 +261,17 @@ public class ReplicatedDatabase implements DatabaseInternal {
    * </ol>
    */
   private void recoverLeadershipAfterPhase2Failure(final String txId) {
+    recoverLeadershipAfterPhase2Failure(server, getName(), txId);
+  }
+
+  /**
+   * Package-private static variant. Exposed for unit testing so the phase-2 recovery policy
+   * (step-down retries, optional server stop) can be exercised without standing up a full
+   * {@link ReplicatedDatabase} around a real {@link LocalDatabase}. Returns the recovery thread
+   * so callers can join on it; production callers ignore the return value.
+   */
+  static Thread recoverLeadershipAfterPhase2Failure(final ArcadeDBServer server, final String databaseName,
+      final String txId) {
     final Thread recoveryThread = new Thread(() -> {
       boolean steppedDown = false;
       Exception lastError = null;
@@ -276,9 +287,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
           break;
         } catch (final Exception stepDownEx) {
           lastError = stepDownEx;
-          LogManager.instance().log(this, Level.WARNING,
+          LogManager.instance().log(ReplicatedDatabase.class, Level.WARNING,
               "Step-down attempt %d/%d failed after phase 2 failure (db=%s, txId=%s): %s",
-              attempt, STEP_DOWN_MAX_ATTEMPTS, getName(), txId, stepDownEx.getMessage());
+              attempt, STEP_DOWN_MAX_ATTEMPTS, databaseName, txId, stepDownEx.getMessage());
           if (attempt < STEP_DOWN_MAX_ATTEMPTS) {
             try {
               Thread.sleep(STEP_DOWN_RETRY_DELAY_MS);
@@ -291,40 +302,41 @@ public class ReplicatedDatabase implements DatabaseInternal {
       }
 
       if (steppedDown) {
-        LogManager.instance().log(this, Level.INFO,
+        LogManager.instance().log(ReplicatedDatabase.class, Level.INFO,
             "Stepped down after phase 2 failure; Raft log replay will reconcile this node on next leadership change (db=%s, txId=%s)",
-            getName(), txId);
+            databaseName, txId);
         return;
       }
 
       final boolean stopOnFailure = server.getConfiguration()
           .getValueAsBoolean(GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE);
       if (!stopOnFailure) {
-        LogManager.instance().log(this, Level.SEVERE,
+        LogManager.instance().log(ReplicatedDatabase.class, Level.SEVERE,
             "CRITICAL: Failed to step down after %d attempts following phase 2 failure (db=%s, txId=%s). "
                 + "This leader has diverged from the Raft quorum and may serve stale reads until another "
                 + "election fires. Manual intervention required (restart this node or set %s=true to "
                 + "automate restart). Last error: %s",
-            STEP_DOWN_MAX_ATTEMPTS, getName(), txId,
+            STEP_DOWN_MAX_ATTEMPTS, databaseName, txId,
             GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE.getKey(),
             lastError != null ? lastError.getMessage() : "unknown");
         return;
       }
 
-      LogManager.instance().log(this, Level.SEVERE,
+      LogManager.instance().log(ReplicatedDatabase.class, Level.SEVERE,
           "Stop-server-on-replication-failure is enabled and all %d step-down attempts failed; stopping the server "
               + "so Raft log replay corrects this node's state on restart (db=%s, txId=%s)",
-          STEP_DOWN_MAX_ATTEMPTS, getName(), txId);
+          STEP_DOWN_MAX_ATTEMPTS, databaseName, txId);
       try {
         server.stop();
       } catch (final Throwable t) {
-        LogManager.instance().log(this, Level.SEVERE,
+        LogManager.instance().log(ReplicatedDatabase.class, Level.SEVERE,
             "Server stop also failed (db=%s): %s. Manual intervention required.",
-            getName(), t.getMessage());
+            databaseName, t.getMessage());
       }
     }, "arcadedb-replication-recovery");
     recoveryThread.setDaemon(true);
     recoveryThread.start();
+    return recoveryThread;
   }
 
   private static final int  STEP_DOWN_MAX_ATTEMPTS   = 3;
@@ -919,10 +931,25 @@ public class ReplicatedDatabase implements DatabaseInternal {
    *   <li><b>EVENTUAL</b>: No waiting. Reads from local state (fastest, may be stale on followers).</li>
    *   <li><b>READ_YOUR_WRITES</b>: Followers wait until they've applied the client's last write (bookmark).
    *       Leader waits for lastAppliedIndex >= commitIndex (fast no-op in steady state).</li>
-   *   <li><b>LINEARIZABLE</b>: Leader verifies it still holds the Raft lease via {@code sendReadOnly()}
-   *       (Raft paper Section 6.4). If the lease is valid, returns immediately (no round-trip).
-   *       If the lease expired (e.g., after SIGSTOP/SIGCONT), sends heartbeats to a majority
-   *       before serving the read. Followers wait for all committed entries to be applied.</li>
+   *   <li><b>LINEARIZABLE</b>:
+   *     <ul>
+   *       <li><i>On the leader</i>: verifies it still holds the Raft lease via {@code sendReadOnly()}
+   *           (Raft paper Section 6.4). If the lease is valid, returns immediately (no round-trip).
+   *           If the lease expired (e.g., after SIGSTOP/SIGCONT), sends heartbeats to a majority
+   *           before serving the read. This path is strictly linearizable.</li>
+   *       <li><i>On a follower with a bookmark</i>: waits for the follower's local apply to reach
+   *           {@code ctx.readAfterIndex}. This is linearizable with respect to the caller's own
+   *           prior writes (since the bookmark names a committed index) but is NOT globally
+   *           linearizable across other clients' concurrent writes.</li>
+   *       <li><i>On a follower without a bookmark</i>: <b>KNOWN LIMITATION</b> - behaves
+   *           identically to {@code READ_YOUR_WRITES}, waiting for {@code lastAppliedIndex >=}
+   *           the follower's locally-known commit index. A follower lagging in its knowledge of
+   *           the global commit index can still return stale data. True linearizability in this
+   *           case would require a ReadIndex RPC to the leader or redirecting the read there.
+   *           Clients that need strict linearizability on every read should either (a) supply a
+   *           bookmark captured from their most recent write or (b) route reads to the leader.</li>
+   *     </ul>
+   *   </li>
    * </ul>
    * The consistency level comes from the per-request HTTP header ({@code X-ArcadeDB-Read-Consistency})
    * or the global config ({@code arcadedb.ha.readConsistency}).
@@ -960,6 +987,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
         // Without this, a catching-up follower would silently degrade to EVENTUAL consistency.
         raftHA.waitForLocalApply();
     } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
+      // KNOWN LIMITATION: this follower path does not achieve strict linearizability without a
+      // bookmark, because waitForLocalApply() waits for the follower's own view of commitIndex
+      // which may lag the leader's. See the javadoc for the full contract; the behavior here is
+      // deliberately identical to READ_YOUR_WRITES until a ReadIndex-to-leader hop is added.
       if (ctx.readAfterIndex >= 0)
         raftHA.waitForAppliedIndex(ctx.readAfterIndex);
       else

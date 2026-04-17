@@ -41,6 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("IntegrationTest")
+@Tag("slow")
 class RaftReplicaCrashAndRecoverIT extends BaseGraphServerTest {
 
   @Override
