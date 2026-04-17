@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DataEncryption;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
@@ -89,6 +90,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -116,6 +118,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private static final ThreadLocal<List<Map<Integer, Integer>>> schemaBucketDeltaBuffer = ThreadLocal.withInitial(ArrayList::new);
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
+
+  /**
+   * Test-only fault-injection hook. Fires after Raft replication succeeds but BEFORE phase-2
+   * commit runs. Set to a non-null Consumer to simulate leader crash in this narrow window.
+   * Always null in production.
+   */
+  static volatile Consumer<String> TEST_POST_REPLICATION_HOOK = null;
 
   public record ReadConsistencyContext(Database.READ_CONSISTENCY consistency, long readAfterIndex) {
   }
@@ -285,6 +294,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw new TransactionException("Error on commit distributed transaction (replication)", e);
     }
 
+    // Test-only fault injection: simulate leader crash between replication and phase-2
+    final Consumer<String> postReplicationHook = TEST_POST_REPLICATION_HOOK;
+    if (postReplicationHook != null)
+      postReplicationHook.accept(getName());
+
     // --- PHASE 2 (read lock on leader): quorum reached, apply locally ---
     if (!leader) {
       payload.tx().reset();
@@ -314,28 +328,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
                   + "Followers have applied this transaction but the leader has not. "
                   + "Stepping down to prevent stale reads. Error: %s",
               getName(), payload.tx(), e.getMessage());
-        // Step down so a follower with correct state takes over.
-        try {
-          if (raftHAServer != null && raftHAServer.isLeader())
-            raftHAServer.stepDown();
-        } catch (final Exception stepDownEx) {
-          LogManager.instance().log(this, Level.SEVERE,
-              "Failed to step down after phase 2 failure (db=%s, txId=%s). "
-                  + "Forcing server stop to prevent leader-follower divergence.",
-              getName(), payload.tx());
-          // Schedule stop on a separate thread to avoid deadlock (we hold the read lock)
-          final Thread stopThread = new Thread(() -> {
-            try {
-              server.stop();
-            } catch (final Throwable t) {
-              LogManager.instance().log(this, Level.SEVERE,
-                  "Server stop also failed (db=%s). Manual intervention required: %s",
-                  getName(), t.getMessage());
-            }
-          }, "arcadedb-emergency-stop");
-          stopThread.setDaemon(true);
-          stopThread.start();
-        }
+        recoverLeadershipAfterPhase2Failure(payload.tx().toString());
         throw e;
       } finally {
         current.popIfNotLastTransaction();
@@ -361,31 +354,67 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             "Phase 2 commit failed during ALL-quorum recovery (db=%s, txId=%s). "
                 + "Leader database may be inconsistent. Stepping down so a node with correct state takes over. Error: %s",
             getName(), payload.tx(), e.getMessage());
-        try {
-          if (raftHAServer != null && raftHAServer.isLeader())
-            raftHAServer.stepDown();
-        } catch (final Exception stepDownEx) {
-          LogManager.instance().log(this, Level.SEVERE,
-              "Failed to step down after ALL-quorum recovery failure (db=%s). "
-                  + "Forcing server stop to prevent leader-follower divergence.",
-              getName());
-          final Thread stopThread = new Thread(() -> {
-            try {
-              server.stop();
-            } catch (final Throwable t) {
-              LogManager.instance().log(this, Level.SEVERE,
-                  "Server stop also failed (db=%s). Manual intervention required: %s",
-                  getName(), t.getMessage());
-            }
-          }, "arcadedb-emergency-stop");
-          stopThread.setDaemon(true);
-          stopThread.start();
-        }
+        recoverLeadershipAfterPhase2Failure(payload.tx().toString());
       } finally {
         current.popIfNotLastTransaction();
       }
       return null;
     });
+  }
+
+  private static final int  STEP_DOWN_MAX_RETRIES    = 3;
+  private static final long STEP_DOWN_RETRY_DELAY_MS = 500;
+
+  private void recoverLeadershipAfterPhase2Failure(final String txDescription) {
+    if (raftHAServer == null || !raftHAServer.isLeader())
+      return;
+
+    for (int attempt = 1; attempt <= STEP_DOWN_MAX_RETRIES; attempt++) {
+      try {
+        raftHAServer.stepDown();
+        LogManager.instance().log(this, Level.WARNING,
+            "Step-down succeeded on attempt %d/%d after phase-2 failure (db=%s, tx=%s)",
+            attempt, STEP_DOWN_MAX_RETRIES, getName(), txDescription);
+        return;
+      } catch (final Exception stepDownEx) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Step-down attempt %d/%d failed after phase-2 failure (db=%s, tx=%s): %s",
+            attempt, STEP_DOWN_MAX_RETRIES, getName(), txDescription, stepDownEx.getMessage());
+        if (attempt < STEP_DOWN_MAX_RETRIES) {
+          try {
+            Thread.sleep(STEP_DOWN_RETRY_DELAY_MS);
+          } catch (final InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            break;
+          }
+        }
+      }
+    }
+
+    final boolean stopServer = server.getConfiguration()
+        .getValueAsBoolean(GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE);
+    if (stopServer) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "CRITICAL: All %d step-down attempts failed (db=%s, tx=%s). "
+              + "Forcing server stop to prevent leader-follower divergence.",
+          STEP_DOWN_MAX_RETRIES, getName(), txDescription);
+      final Thread stopThread = new Thread(() -> {
+        try {
+          server.stop();
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Server stop also failed (db=%s). Manual intervention required: %s",
+              getName(), t.getMessage());
+        }
+      }, "arcadedb-emergency-stop");
+      stopThread.setDaemon(true);
+      stopThread.start();
+    } else {
+      LogManager.instance().log(this, Level.SEVERE,
+          "CRITICAL: All %d step-down attempts failed (db=%s, tx=%s). "
+              + "HA_STOP_SERVER_ON_REPLICATION_FAILURE=false, server continues in degraded state.",
+          STEP_DOWN_MAX_RETRIES, getName(), txDescription);
+    }
   }
 
   @Override
