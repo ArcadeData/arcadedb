@@ -81,6 +81,12 @@ public final class SnapshotInstaller {
    */
   static final long MIN_RATIO_CHECK_BYTES = 64L * 1024L;
 
+  /**
+   * Maximum allowed uncompressed size for a single ZIP entry (10 GB). Entries exceeding this
+   * limit trigger a zip-bomb defense exception. Package-private for unit testing.
+   */
+  static final long MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024;
+
   private SnapshotInstaller() {
   }
 
@@ -122,20 +128,26 @@ public final class SnapshotInstaller {
     // Mark download as complete
     Files.writeString(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE), "");
 
-    // Swap: live -> backup, new -> live
-    atomicSwap(dbPath, snapshotNew, snapshotBackup);
+    // Set server-wide flag BEFORE closing databases so HTTP handlers return 503
+    server.setSnapshotInstallInProgress(true);
+    try {
+      // Swap: live -> backup, new -> live
+      atomicSwap(dbPath, snapshotNew, snapshotBackup);
 
-    // Cleanup
-    deleteDirectoryIfExists(snapshotBackup);
-    Files.deleteIfExists(pendingMarker);
-    cleanupWalFiles(dbPath);
-    // Remove the completion marker from the now-live directory
-    Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
+      // Cleanup
+      deleteDirectoryIfExists(snapshotBackup);
+      Files.deleteIfExists(pendingMarker);
+      cleanupWalFiles(dbPath);
+      // Remove the completion marker from the now-live directory
+      Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
 
-    // Re-open the database so the server registers it
-    server.getDatabase(databaseName);
+      // Re-open the database so the server registers it
+      server.getDatabase(databaseName);
 
-    HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
+      HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
+    } finally {
+      server.setSnapshotInstallInProgress(false);
+    }
   }
 
   /**
@@ -325,7 +337,7 @@ public final class SnapshotInstaller {
 
           final long compressedStart = rawCounter.getCount();
           try (final java.io.FileOutputStream fos = new java.io.FileOutputStream(targetFile.toFile())) {
-            final long uncompressedBytes = copyWithLimit(zipIn, fos, 10L * 1024 * 1024 * 1024, zipEntry.getName());
+            final long uncompressedBytes = copyWithLimit(zipIn, fos, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES, zipEntry.getName());
 
             // Decompression-bomb defense: check ratio for entries large enough to matter.
             // Uses raw counter delta (compressed bytes including headers) which slightly

@@ -278,7 +278,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
     try {
       final RaftHAServer raft = requireRaftServer();
-      raft.getTransactionBroker().replicateTransaction(getName(), payload.walData(), payload.bucketDeltas(), raft.getQuorumTimeout());
+      raft.getTransactionBroker().replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
     } catch (final MajorityCommittedAllFailedException e) {
       // MAJORITY committed (applyTransaction fired with origin-skip, lastAppliedIndex advanced)
       // but ALL-quorum watch failed. We MUST apply locally to prevent permanent divergence.
@@ -1089,8 +1089,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // replicas apply them immediately after creating the files - in the correct order.
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged) {
         final RaftHAServer raft = requireRaftServer();
-        raft.getTransactionBroker().replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
-            raft.getQuorumTimeout());
+        raft.getTransactionBroker().replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
         HALog.log(this, HALog.DETAILED,
             "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d",
             addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size());
@@ -1154,7 +1153,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   public void createInReplicas() {
     try {
       final RaftHAServer raft = requireRaftServer();
-      raft.getTransactionBroker().replicateInstallDatabase(getName(), false, raft.getQuorumTimeout());
+      raft.getTransactionBroker().replicateInstallDatabase(getName(), false);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -1167,7 +1166,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   public void createInReplicas(final boolean forceSnapshot) {
     try {
       final RaftHAServer raft = requireRaftServer();
-      raft.getTransactionBroker().replicateInstallDatabase(getName(), forceSnapshot, raft.getQuorumTimeout());
+      raft.getTransactionBroker().replicateInstallDatabase(getName(), forceSnapshot);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -1182,7 +1181,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   public void dropInReplicas() {
     try {
       final RaftHAServer raft = requireRaftServer();
-      raft.getTransactionBroker().replicateDropDatabase(getName(), raft.getQuorumTimeout());
+      raft.getTransactionBroker().replicateDropDatabase(getName());
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {

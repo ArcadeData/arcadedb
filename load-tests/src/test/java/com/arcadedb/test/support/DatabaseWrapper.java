@@ -157,7 +157,7 @@ public class DatabaseWrapper {
         """
             CREATE VERTEX TYPE User;
             CREATE PROPERTY User.id INTEGER;
-            CREATE INDEX ON User (id) UNIQUE;
+            CREATE INDEX ON User (id) UNIQUE_HASH;
 
             CREATE VERTEX TYPE Photo;
             CREATE PROPERTY Photo.id INTEGER;
@@ -165,7 +165,7 @@ public class DatabaseWrapper {
             CREATE PROPERTY Photo.tags LIST OF STRING;
             CREATE PROPERTY Photo.location STRING;
 
-            CREATE INDEX ON Photo (id) UNIQUE;
+            CREATE INDEX ON Photo (id) UNIQUE_HASH;
             CREATE INDEX ON Photo (tags BY ITEM) NOTUNIQUE;
             CREATE INDEX ON Photo (description) FULL_TEXT METADATA {
               "analyzer": "org.apache.lucene.analysis.en.EnglishAnalyzer"

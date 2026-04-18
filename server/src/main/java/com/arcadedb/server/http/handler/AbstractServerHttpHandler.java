@@ -81,6 +81,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    // Return 503 during snapshot installation to prevent cryptic errors
+    if (httpServer.getServer().isSnapshotInstallInProgress()) {
+      exchange.setStatusCode(503);
+      exchange.getResponseHeaders().put(io.undertow.util.HttpString.tryFromString("Retry-After"), "5");
+      exchange.getResponseSender().send(
+          error2json("Server is installing a snapshot, please retry", "", null, null, null));
+      return;
+    }
+
     try {
       LogManager.instance().setContext(httpServer.getServer().getServerName());
 

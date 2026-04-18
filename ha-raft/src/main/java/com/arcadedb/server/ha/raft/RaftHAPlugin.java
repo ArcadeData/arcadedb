@@ -113,7 +113,7 @@ public class RaftHAPlugin implements HAServerPlugin {
       throw new TransactionException("Raft HA server not started");
 
     try {
-      raftHAServer.getTransactionBroker().replicateSecurityUsers(usersJsonArray, raftHAServer.getQuorumTimeout());
+      raftHAServer.getTransactionBroker().replicateSecurityUsers(usersJsonArray);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {

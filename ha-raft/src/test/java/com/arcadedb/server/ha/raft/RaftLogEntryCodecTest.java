@@ -284,4 +284,35 @@ class RaftLogEntryCodecTest {
 
     assertThat(decoded.type()).isNull();
   }
+
+  @Test
+  void decodeTxEntryWithTrailingBytesThrows() {
+    final byte[] walData = new byte[] { 1, 2, 3 };
+    final ByteString valid = RaftLogEntryCodec.encodeTxEntry("testdb", walData, Map.of());
+
+    final byte[] corrupted = new byte[valid.size() + 5];
+    valid.copyTo(corrupted, 0);
+    corrupted[valid.size()] = 99;
+
+    final ByteString corruptedBS = ByteString.copyFrom(corrupted);
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> RaftLogEntryCodec.decode(corruptedBS))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("trailing");
+  }
+
+  @Test
+  void decodeDropDatabaseEntryWithTrailingBytesThrows() {
+    final ByteString valid = RaftLogEntryCodec.encodeDropDatabaseEntry("testdb");
+
+    final byte[] corrupted = new byte[valid.size() + 3];
+    valid.copyTo(corrupted, 0);
+    corrupted[valid.size()] = 1;
+
+    final ByteString corruptedBS = ByteString.copyFrom(corrupted);
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> RaftLogEntryCodec.decode(corruptedBS))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("trailing");
+  }
 }

@@ -22,6 +22,7 @@ cd adb2
 export JAVA_OPTS="-Darcadedb.ha.enabled=true \
 -Darcadedb.server.rootPassword=playwithdata \
 -Darcadedb.server.rootPath=./ \
+-Darcadedb.typeDefaultBuckets=5 \
 -Darcadedb.ha.raftPort=2435 \
 -Darcadedb.ha.clusterToken=123456789 \
 -Darcadedb.ha.implementation=raft \

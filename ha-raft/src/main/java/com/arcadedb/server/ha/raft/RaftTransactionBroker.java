@@ -30,7 +30,7 @@ import java.util.Map;
  * {@link RaftLogEntryCodec}, so callers never touch the codec directly.
  *
  * <p>The broker delegates to {@link RaftGroupCommitter#submitAndWait} which provides
- * batching and timeout cancellation (preventing phantom commits).
+ * batching and cancellation (preventing phantom commits).
  */
 public class RaftTransactionBroker {
 
@@ -49,9 +49,9 @@ public class RaftTransactionBroker {
    * Replicates a transaction (WAL data + bucket deltas) via Raft consensus.
    */
   public void replicateTransaction(final String dbName, final byte[] walData,
-      final Map<Integer, Integer> bucketDeltas, final long timeoutMs) {
+      final Map<Integer, Integer> bucketDeltas) {
     final ByteString entry = RaftLogEntryCodec.encodeTxEntry(dbName, walData, bucketDeltas);
-    groupCommitter.submitAndWait(entry.toByteArray(), timeoutMs);
+    groupCommitter.submitAndWait(entry.toByteArray());
   }
 
   /**
@@ -59,35 +59,34 @@ public class RaftTransactionBroker {
    */
   public void replicateSchema(final String dbName, final String schemaJson,
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
-      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
-      final long timeoutMs) {
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson,
         filesToAdd, filesToRemove, walEntries, bucketDeltas);
-    groupCommitter.submitAndWait(entry.toByteArray(), timeoutMs);
+    groupCommitter.submitAndWait(entry.toByteArray());
   }
 
   /**
    * Replicates an install-database entry so replicas create or snapshot-sync the database.
    */
-  public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot, final long timeoutMs) {
+  public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot) {
     final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(dbName, forceSnapshot);
-    groupCommitter.submitAndWait(entry.toByteArray(), timeoutMs);
+    groupCommitter.submitAndWait(entry.toByteArray());
   }
 
   /**
    * Replicates a drop-database entry so replicas remove the database.
    */
-  public void replicateDropDatabase(final String dbName, final long timeoutMs) {
+  public void replicateDropDatabase(final String dbName) {
     final ByteString entry = RaftLogEntryCodec.encodeDropDatabaseEntry(dbName);
-    groupCommitter.submitAndWait(entry.toByteArray(), timeoutMs);
+    groupCommitter.submitAndWait(entry.toByteArray());
   }
 
   /**
    * Replicates a security users entry so all nodes update their user files.
    */
-  public void replicateSecurityUsers(final String usersJson, final long timeoutMs) {
+  public void replicateSecurityUsers(final String usersJson) {
     final ByteString entry = RaftLogEntryCodec.encodeSecurityUsersEntry(usersJson);
-    groupCommitter.submitAndWait(entry.toByteArray(), timeoutMs);
+    groupCommitter.submitAndWait(entry.toByteArray());
   }
 
   /**

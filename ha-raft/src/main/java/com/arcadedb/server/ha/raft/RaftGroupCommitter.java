@@ -64,7 +64,8 @@ class RaftGroupCommitter {
     this.flusher.start();
   }
 
-  void submitAndWait(final byte[] entry, final long timeoutMs) {
+  void submitAndWait(final byte[] entry) {
+    final long timeoutMs = 2 * quorumTimeout;
     final CancellablePendingEntry pending = new CancellablePendingEntry(entry);
     queue.add(pending);
 

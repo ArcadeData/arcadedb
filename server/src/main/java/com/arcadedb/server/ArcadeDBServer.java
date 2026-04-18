@@ -96,6 +96,7 @@ public class ArcadeDBServer {
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
+  private final       java.util.concurrent.atomic.AtomicBoolean snapshotInstallInProgress            = new java.util.concurrent.atomic.AtomicBoolean(false);
   private             Function<LocalDatabase, DatabaseInternal> databaseWrapper;
 //  private             ServerMonitor                         serverMonitor;
 
@@ -129,6 +130,14 @@ public class ArcadeDBServer {
 
   public ContextConfiguration getConfiguration() {
     return configuration;
+  }
+
+  public void setSnapshotInstallInProgress(final boolean inProgress) {
+    snapshotInstallInProgress.set(inProgress);
+  }
+
+  public boolean isSnapshotInstallInProgress() {
+    return snapshotInstallInProgress.get();
   }
 
   public synchronized void start() {

@@ -251,7 +251,7 @@ public final class RaftLogEntryCodec {
         return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false);
       final String databaseName = dis.readUTF();
 
-      return switch (type) {
+      final DecodedEntry result = switch (type) {
         case TX_ENTRY -> decodeTxEntry(dis, databaseName);
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
         case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
@@ -259,6 +259,15 @@ public final class RaftLogEntryCodec {
             null, null, null, null, null, null, null, null, false);
         case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
       };
+
+      // Trailing-byte validation: detect truncated or corrupted entries.
+      // SCHEMA_ENTRY is excluded because older entries may lack the embedded WAL section
+      // and the decoder already handles that gracefully via IOException catch.
+      if (type != RaftLogEntryType.SCHEMA_ENTRY && dis.available() > 0)
+        throw new IllegalStateException(
+            "Corrupted Raft log entry: " + dis.available() + " trailing bytes after " + type + " decode");
+
+      return result;
     } catch (final IOException e) {
       throw new IllegalStateException("Failed to decode Raft log entry", e);
     }

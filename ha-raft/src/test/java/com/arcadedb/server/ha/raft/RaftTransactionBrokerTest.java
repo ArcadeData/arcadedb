@@ -50,7 +50,7 @@ class RaftTransactionBrokerTest {
   @Test
   void replicateTransactionEncodesCorrectEntryType() {
     assertThatThrownBy(() ->
-        broker.replicateTransaction("testdb", new byte[] { 1, 2, 3 }, Map.of(0, 1), 2_000))
+        broker.replicateTransaction("testdb", new byte[] { 1, 2, 3 }, Map.of(0, 1)))
         .isInstanceOf(QuorumNotReachedException.class);
   }
 
@@ -58,28 +58,28 @@ class RaftTransactionBrokerTest {
   void replicateSchemaEncodesCorrectEntryType() {
     assertThatThrownBy(() ->
         broker.replicateSchema("testdb", "{}", Map.of(1, "file1.dat"), Map.of(),
-            Collections.emptyList(), Collections.emptyList(), 2_000))
+            Collections.emptyList(), Collections.emptyList()))
         .isInstanceOf(QuorumNotReachedException.class);
   }
 
   @Test
   void replicateInstallDatabaseEncodesCorrectEntryType() {
     assertThatThrownBy(() ->
-        broker.replicateInstallDatabase("testdb", false, 2_000))
+        broker.replicateInstallDatabase("testdb", false))
         .isInstanceOf(QuorumNotReachedException.class);
   }
 
   @Test
   void replicateDropDatabaseEncodesCorrectEntryType() {
     assertThatThrownBy(() ->
-        broker.replicateDropDatabase("testdb", 2_000))
+        broker.replicateDropDatabase("testdb"))
         .isInstanceOf(QuorumNotReachedException.class);
   }
 
   @Test
   void replicateSecurityUsersEncodesCorrectEntryType() {
     assertThatThrownBy(() ->
-        broker.replicateSecurityUsers("[{\"name\":\"root\"}]", 2_000))
+        broker.replicateSecurityUsers("[{\"name\":\"root\"}]"))
         .isInstanceOf(QuorumNotReachedException.class);
   }
 
@@ -87,7 +87,7 @@ class RaftTransactionBrokerTest {
   void stopDelegates() {
     broker.stop();
     assertThatThrownBy(() ->
-        broker.replicateTransaction("testdb", new byte[] { 1 }, Map.of(), 1_000))
+        broker.replicateTransaction("testdb", new byte[] { 1 }, Map.of()))
         .isInstanceOf(QuorumNotReachedException.class);
     broker = null;
   }

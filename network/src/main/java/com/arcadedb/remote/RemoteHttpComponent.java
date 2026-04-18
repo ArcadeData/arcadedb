@@ -136,6 +136,23 @@ public class RemoteHttpComponent extends RWLockContext {
     }
   }
 
+  private HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {
+    final long watchdogMs = Math.max(timeout * 1000L, 30_000L);
+    try {
+      return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+          .get(watchdogMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+    } catch (final java.util.concurrent.TimeoutException e) {
+      throw new IOException("HTTP request watchdog timeout after " + watchdogMs + "ms: " + request.uri(), e);
+    } catch (final java.util.concurrent.ExecutionException e) {
+      final Throwable cause = e.getCause();
+      if (cause instanceof IOException ioe)
+        throw ioe;
+      if (cause instanceof InterruptedException ie)
+        throw ie;
+      throw new IOException("HTTP request failed: " + request.uri(), cause);
+    }
+  }
+
   public int getTimeout() {
     return timeout;
   }
@@ -254,7 +271,7 @@ public class RemoteHttpComponent extends RWLockContext {
           }
         }
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendWithWatchdog(request);
 
         // Capture commit-index from response for read-your-writes consistency.
         if (this instanceof RemoteDatabase remoteDb) {
@@ -381,7 +398,7 @@ public class RemoteHttpComponent extends RWLockContext {
           .GET()
           .build();
 
-      HttpResponse<String> httpResponse = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> httpResponse = sendWithWatchdog(request);
 
       if (httpResponse.statusCode() != 200) {
         final Exception detail = manageException(httpResponse, "cluster configuration");
