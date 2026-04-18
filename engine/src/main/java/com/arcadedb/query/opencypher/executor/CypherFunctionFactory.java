@@ -170,6 +170,9 @@ public class CypherFunctionFactory {
     // min/max handled as Cypher-specific to support mixed-type comparison
     mapping.put("stdev", "stddev");
     mapping.put("stdevp", "stddevp");
+    // Aliases for stdev/stdevp
+    mapping.put("stdev_samp", "stddev");
+    mapping.put("stdev_pop", "stddevp");
 
     // String functions - need to check if SQL has these
     mapping.put("toupper", "upper");
@@ -301,12 +304,12 @@ public class CypherFunctionFactory {
       // Graph functions
       case "id", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
       // Path functions
-      case "nodes", "relationships", "length" -> true;
+      case "nodes", "relationships", "length", "path_length" -> true;
       // Math functions
-      case "rand", "sign", "ceil", "floor", "abs", "sqrt", "round", "isnan",
+      case "rand", "sign", "ceil", "ceiling", "floor", "abs", "sqrt", "round", "isnan",
            "cosh", "sinh", "tanh", "cot", "coth", "pi", "e", "randomuuid",
            "acos", "asin", "atan", "atan2", "cos", "sin", "tan",
-           "degrees", "radians", "haversin", "exp", "log", "log10" -> true;
+           "degrees", "radians", "haversin", "exp", "log", "ln", "log10" -> true;
       // General functions
       case "coalesce" -> true;
       // Predicate functions
@@ -325,11 +328,11 @@ public class CypherFunctionFactory {
       // Scalar functions
       case "nullif", "valuetype" -> true;
       // Aggregation functions
-      case "collect", "percentiledisc", "percentilecont", "min", "max", "avg" -> true;
+      case "collect", "collect_list", "percentiledisc", "percentile_disc", "percentilecont", "percentile_cont", "min", "max", "avg" -> true;
       // Temporal functions
       case "timestamp" -> true;
       // Temporal constructor functions
-      case "date", "localtime", "time", "localdatetime", "datetime", "duration" -> true;
+      case "date", "localtime", "local_time", "time", "zoned_time", "localdatetime", "local_datetime", "datetime", "zoned_datetime", "duration", "duration_between" -> true;
       // Temporal truncation functions
       case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" -> true;
       // Temporal epoch functions
@@ -376,6 +379,7 @@ public class CypherFunctionFactory {
       case "randomuuid" -> new RandomUuidFunction();
       case "sign" -> new SignFunction();
       case "ceil" -> new MathUnaryFunction("ceil", Math::ceil);
+      case "ceiling" -> new MathUnaryFunction("ceiling", Math::ceil);
       case "floor" -> new MathUnaryFunction("floor", Math::floor);
       case "abs" -> new MathUnaryFunction("abs", Math::abs);
       case "sqrt" -> new MathUnaryFunction("sqrt", Math::sqrt);
@@ -401,7 +405,7 @@ public class CypherFunctionFactory {
       case "haversin" -> new MathUnaryFunction("haversin", v -> (1.0 - Math.cos(v)) / 2.0);
       // Logarithmic functions
       case "exp" -> new MathUnaryFunction("exp", Math::exp);
-      case "log" -> new MathUnaryFunction("log", Math::log);
+      case "log", "ln" -> new MathUnaryFunction("log", Math::log);
       case "log10" -> new MathUnaryFunction("log10", Math::log10);
       // General functions
       case "coalesce" -> new CoalesceFunction();
@@ -417,7 +421,7 @@ public class CypherFunctionFactory {
       // Path functions
       case "nodes" -> new NodesFunction();
       case "relationships" -> new RelationshipsFunction();
-      case "length" -> new LengthFunction();
+      case "length", "path_length" -> new LengthFunction();
       // List functions
       case "size" -> new SizeFunction();
       case "head" -> new HeadFunction();
@@ -460,11 +464,12 @@ public class CypherFunctionFactory {
       case "valuetype" -> new ValueTypeFunction();
       // Aggregation functions
       case "avg" -> distinct ? new DistinctAggregationWrapper(new CypherAvgFunction()) : new CypherAvgFunction();
-      case "collect" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
+      case "collect", "collect_list" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
       case "min" -> distinct ? new DistinctAggregationWrapper(new CypherMinFunction()) : new CypherMinFunction();
       case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
-      case "percentiledisc" -> new PercentileDiscFunction();
-      case "percentilecont" -> new PercentileContFunction();
+      case "percentiledisc", "percentile_disc" -> new PercentileDiscFunction();
+      case "percentilecont", "percentile_cont" -> new PercentileContFunction();
+      // stdev/stdevp are SQL functions, not Cypher-specific
       // Temporal functions
       case "timestamp" -> new TimestampFunction();
       // Temporal format function
@@ -492,10 +497,10 @@ public class CypherFunctionFactory {
       case "point.distance" -> new CypherPointDistanceFunction();
       // Temporal constructor functions
       case "date" -> new DateConstructorFunction();
-      case "localtime" -> new LocalTimeConstructorFunction();
-      case "time" -> new TimeConstructorFunction();
-      case "localdatetime" -> new LocalDateTimeConstructorFunction();
-      case "datetime" -> new DateTimeConstructorFunction();
+      case "localtime", "local_time" -> new LocalTimeConstructorFunction();
+      case "time", "zoned_time" -> new TimeConstructorFunction();
+      case "localdatetime", "local_datetime" -> new LocalDateTimeConstructorFunction();
+      case "datetime", "zoned_datetime" -> new DateTimeConstructorFunction();
       case "duration" -> new DurationConstructorFunction();
       // Temporal truncation functions
       case "date.truncate" -> new DateTruncateFunction();
@@ -507,7 +512,7 @@ public class CypherFunctionFactory {
       case "datetime.fromepoch" -> new DateTimeFromEpochFunction();
       case "datetime.fromepochmillis" -> new DateTimeFromEpochMillisFunction();
       // Duration calculation functions
-      case "duration.between" -> new DurationBetweenFunction();
+      case "duration.between", "duration_between" -> new DurationBetweenFunction();
       case "duration.inmonths" -> new DurationInMonthsFunction();
       case "duration.indays" -> new DurationInDaysFunction();
       case "duration.inseconds" -> new DurationInSecondsFunction();

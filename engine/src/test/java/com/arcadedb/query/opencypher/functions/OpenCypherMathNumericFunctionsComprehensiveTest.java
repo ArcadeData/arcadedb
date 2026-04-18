@@ -131,6 +131,43 @@ class OpenCypherMathNumericFunctionsComprehensiveTest {
     Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
+  // ==================== ceiling() Tests (alias of ceil()) ====================
+
+  @Test
+  void ceilingPositive() {
+    final ResultSet result = database.command("opencypher", "RETURN ceiling(3.14) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(4.0, within(0.001));
+  }
+
+  @Test
+  void ceilingNegative() {
+    final ResultSet result = database.command("opencypher", "RETURN ceiling(-3.14) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(-3.0, within(0.001));
+  }
+
+  @Test
+  void ceilingWholeNumber() {
+    final ResultSet result = database.command("opencypher", "RETURN ceiling(5.0) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(5.0, within(0.001));
+  }
+
+  @Test
+  void ceilingZero() {
+    final ResultSet result = database.command("opencypher", "RETURN ceiling(0.0) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(0.0, within(0.001));
+  }
+
+  @Test
+  void ceilingNull() {
+    final ResultSet result = database.command("opencypher", "RETURN ceiling(null) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
   // ==================== floor() Tests ====================
 
   @Test

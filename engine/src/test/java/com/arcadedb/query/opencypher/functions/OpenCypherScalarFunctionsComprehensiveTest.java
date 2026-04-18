@@ -333,6 +333,34 @@ class OpenCypherScalarFunctionsComprehensiveTest {
     Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
+  // ==================== path_length() Tests (alias of length()) ====================
+
+  @Test
+  void pathLengthPath() {
+    final ResultSet result = database.command("opencypher",
+        "MATCH p = (a)-->(b)-->(c) WHERE a.name = 'Alice' RETURN path_length(p) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    while (result.hasNext()) {
+      final var row = result.next();
+      assertThat(((Number) row.getProperty("result")).intValue()).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void pathLengthSingleHop() {
+    final ResultSet result = database.command("opencypher",
+        "MATCH p = (a)-->(b) WHERE a.name = 'Alice' RETURN path_length(p) AS result LIMIT 1");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    assertThat(((Number) result.next().getProperty("result")).intValue()).isEqualTo(1);
+  }
+
+  @Test
+  void pathLengthNull() {
+    final ResultSet result = database.command("opencypher", "RETURN path_length(null) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
   // ==================== nullIf() Tests ====================
 
   @Test

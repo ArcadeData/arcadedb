@@ -127,6 +127,40 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
     Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
   }
 
+  // ==================== duration_between() Tests (alias of duration.between()) ====================
+
+  @Test
+  void durationBetweenAliasDates() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN duration_between(date('1984-10-11'), date('1985-11-25')) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void durationBetweenAliasNegative() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN duration_between(date('1985-11-25'), date('1984-10-11')) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void durationBetweenAliasDateAndDatetime() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN duration_between(date('1984-10-11'), datetime('1984-10-12T21:40:32.142+0100')) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void durationBetweenAliasLocalDatetimes() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN duration_between(localdatetime('2015-07-21T21:40:32.142'), localdatetime('2016-07-21T21:45:22.142')) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
   // ==================== duration.inDays() Tests ====================
 
   @Test
@@ -380,6 +414,38 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
     Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
+  // ==================== zoned_datetime() Tests (alias of datetime()) ====================
+
+  @Test
+  void zonedDatetimeNow() {
+    final ResultSet result = database.command("opencypher", "RETURN zoned_datetime() AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void zonedDatetimeFromComponents() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN zoned_datetime({year: 1984, month: 10, day: 11, hour: 12, minute: 31, second: 14, timezone: '+01:00'}) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void zonedDatetimeFromString() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN zoned_datetime('2015-07-21T21:40:32.142+0100') AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void zonedDatetimeNull() {
+    final ResultSet result = database.command("opencypher", "RETURN zoned_datetime(null) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
   // ==================== datetime.fromEpoch() Tests ====================
 
   @Test
@@ -527,6 +593,38 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
     Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
+  // ==================== local_datetime() Tests (alias of localdatetime()) ====================
+
+  @Test
+  void localDatetimeNow() {
+    final ResultSet result = database.command("opencypher", "RETURN local_datetime() AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void localDatetimeFromComponents() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN local_datetime({year: 1984, month: 10, day: 11, hour: 12, minute: 31, second: 14}) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void localDatetimeFromString() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN local_datetime('2015-07-21T21:40:32.142') AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void localDatetimeNull() {
+    final ResultSet result = database.command("opencypher", "RETURN local_datetime(null) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
   // ==================== localdatetime.realtime() Tests ====================
 
   @Test
@@ -638,6 +736,38 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
     Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
+  // ==================== local_time() Tests (alias of localtime()) ====================
+
+  @Test
+  void localTimeNow() {
+    final ResultSet result = database.command("opencypher", "RETURN local_time() AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void localTimeFromComponents() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN local_time({hour: 12, minute: 31, second: 14}) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void localTimeFromString() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN local_time('21:40:32.142') AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void localTimeNull() {
+    final ResultSet result = database.command("opencypher", "RETURN local_time(null) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
   // ==================== localtime.realtime() Tests ====================
 
   @Test
@@ -745,6 +875,38 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
   @Test
   void timeNull() {
     final ResultSet result = database.command("opencypher", "RETURN time(null) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
+  // ==================== zoned_time() Tests (alias of time()) ====================
+
+  @Test
+  void zonedTimeNow() {
+    final ResultSet result = database.command("opencypher", "RETURN zoned_time() AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void zonedTimeFromComponents() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN zoned_time({hour: 12, minute: 31, second: 14, timezone: '+01:00'}) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void zonedTimeFromString() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN zoned_time('21:40:32.142+0100') AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") != null).isTrue();
+  }
+
+  @Test
+  void zonedTimeNull() {
+    final ResultSet result = database.command("opencypher", "RETURN zoned_time(null) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }

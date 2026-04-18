@@ -131,7 +131,7 @@ public class FunctionCallExpression implements Expression {
    */
   private static boolean isAggregationFunction(final String functionName) {
     return switch (functionName) {
-      case "count", "sum", "avg", "min", "max", "collect", "stdev", "stdevp", "percentilecont", "percentiledisc" -> true;
+      case "count", "sum", "avg", "min", "max", "collect", "collect_list", "stdev", "stdev_samp", "stdevp", "stdev_pop", "percentilecont", "percentile_cont", "percentiledisc", "percentile_disc" -> true;
       default -> false;
     };
   }

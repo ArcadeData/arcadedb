@@ -433,4 +433,132 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
     assertThat(names).hasSize(count);
     assertThat(count).isEqualTo(5);
   }
+
+  // ==================== collect_list() Tests (alias of collect()) ====================
+
+  @Test
+  void collectListBasic() {
+    final ResultSet result = database.command("opencypher",
+        "MATCH (p:Person) RETURN collect_list(p.age) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> ages = (List<Object>) result.next().getProperty("result");
+    assertThat(ages).hasSize(5);
+    assertThat(ages).contains(58, 70, 55, 71);
+  }
+
+  @Test
+  void collectListWithNulls() {
+    final ResultSet result = database.command("opencypher",
+        "UNWIND [1, 2, null, 3, null, 4] AS val RETURN collect_list(val) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> collected = (List<Object>) result.next().getProperty("result");
+    assertThat(collected).containsExactly(1L, 2L, 3L, 4L);
+  }
+
+  @Test
+  void collectListNull() {
+    final ResultSet result = database.command("opencypher",
+        "UNWIND [null, null] AS val RETURN collect_list(val) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> collected = (List<Object>) result.next().getProperty("result");
+    assertThat(collected).isEmpty();
+  }
+
+  // ==================== percentile_cont() Tests (alias of percentileCont()) ====================
+
+  @Test
+  void percentileContAliasBasic() {
+    final ResultSet result = database.command("opencypher",
+        "MATCH (p:Person) RETURN percentile_cont(p.age, 0.4) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    // Should use linear interpolation
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(56.8, within(1.0));
+  }
+
+  @Test
+  void percentileContAliasMedian() {
+    final ResultSet result = database.command("opencypher",
+        "MATCH (p:Person) RETURN percentile_cont(p.age, 0.5) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isGreaterThan(50.0);
+  }
+
+  @Test
+  void percentileContAliasNull() {
+    final ResultSet result = database.command("opencypher",
+        "UNWIND [null, null] AS val RETURN percentile_cont(val, 0.5) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
+  // ==================== percentile_disc() Tests (alias of percentileDisc()) ====================
+
+  @Test
+  void percentileDiscAliasBasic() {
+    final ResultSet result = database.command("opencypher",
+        "MATCH (p:Person) RETURN percentile_disc(p.age, 0.5) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    // Should return an actual value from the set
+    final int percentile = ((Number) result.next().getProperty("result")).intValue();
+    assertThat(percentile).isIn(55, 58, 70, 71);
+  }
+
+  @Test
+  void percentileDiscAliasLowPercentile() {
+    final ResultSet result = database.command("opencypher",
+        "MATCH (p:Person) RETURN percentile_disc(p.age, 0.0) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    assertThat(((Number) result.next().getProperty("result")).intValue()).isEqualTo(55);
+  }
+
+  @Test
+  void percentileDiscAliasNull() {
+    final ResultSet result = database.command("opencypher",
+        "UNWIND [null, null] AS val RETURN percentile_disc(val, 0.5) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
+  // ==================== stdev_samp() Tests (alias of stDev()) ====================
+
+  @Test
+  void stdevSampBasic() {
+    final ResultSet result = database.command("opencypher",
+        "MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] " +
+            "RETURN stdev_samp(p.age) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    // Sample standard deviation for ages 58, 70, 55
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(7.937, within(0.01));
+  }
+
+  @Test
+  void stdevSampNull() {
+    final ResultSet result = database.command("opencypher",
+        "UNWIND [null, null] AS val RETURN stdev_samp(val) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isEqualTo(0.0);
+  }
+
+  // ==================== stdev_pop() Tests (alias of stDevP()) ====================
+
+  @Test
+  void stdevPopBasic() {
+    final ResultSet result = database.command("opencypher",
+        "MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] " +
+            "RETURN stdev_pop(p.age) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    // Population standard deviation for ages 58, 70, 55
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(6.481, within(0.01));
+  }
+
+  @Test
+  void stdevPopNull() {
+    final ResultSet result = database.command("opencypher",
+        "UNWIND [null, null] AS val RETURN stdev_pop(val) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isEqualTo(0.0);
+  }
 }

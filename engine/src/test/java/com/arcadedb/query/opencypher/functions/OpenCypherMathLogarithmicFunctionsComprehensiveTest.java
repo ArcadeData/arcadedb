@@ -166,6 +166,55 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
     Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
+  // ==================== ln() Tests (alias of log()) ====================
+
+  @Test
+  void lnOne() {
+    final ResultSet result = database.command("opencypher", "RETURN ln(1.0) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(0.0, within(0.0001));
+  }
+
+  @Test
+  void lnE() {
+    final ResultSet result = database.command("opencypher", "RETURN ln(e()) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(1.0, within(0.0001));
+  }
+
+  @Test
+  void lnPositive() {
+    final ResultSet result = database.command("opencypher", "RETURN ln(10.0) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(Math.log(10.0), within(0.0001));
+  }
+
+  @Test
+  void lnZeroReturnsNegativeInfinity() {
+    final ResultSet result = database.command("opencypher", "RETURN ln(0.0) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    final Double value = (Double) result.next().getProperty("result");
+    assertThat(value).isEqualTo(Double.NEGATIVE_INFINITY);
+  }
+
+  @Test
+  void lnNegativeReturnsNaN() {
+    final ResultSet result = database.command("opencypher", "RETURN ln(-1.0) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isNaN();
+  }
+
+  @Test
+  void lnNull() {
+    final ResultSet result = database.command("opencypher", "RETURN ln(null) AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+  }
+
   // ==================== log10() Tests ====================
 
   @Test
