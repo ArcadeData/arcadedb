@@ -16,14 +16,20 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.http.handler;
+package com.arcadedb.server.monitor;
 
 import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class QueryProfileTest {
+
+  @AfterEach
+  void cleanThreadLocal() {
+    QueryProfile.popCurrent();
+  }
 
   @Test
   void accumulatesTimeAcrossMultipleCalls() {
@@ -87,5 +93,20 @@ class QueryProfileTest {
     assertThat(json.getDouble("serializationMs")).isEqualTo(0.5);
     assertThat(json.getDouble("overheadMs")).isEqualTo(2.0);
     assertThat(json.getDouble("totalMs")).isEqualTo(4.0);
+  }
+
+  @Test
+  void threadLocalPushAndPopExposesCurrentProfile() {
+    assertThat(QueryProfile.current()).isNull();
+
+    final QueryProfile profile = new QueryProfile();
+    QueryProfile.pushCurrent(profile);
+    try {
+      assertThat(QueryProfile.current()).isSameAs(profile);
+    } finally {
+      QueryProfile.popCurrent();
+    }
+
+    assertThat(QueryProfile.current()).isNull();
   }
 }

@@ -73,7 +73,9 @@ class LSMTreeIndexTest extends TestHelper {
 
       for (int i = 0; i < TOT; ++i) {
         final List<Integer> results = new ArrayList<>();
-        for (final Index index : indexes) {
+        for (final Ind
+
+             ex index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 

@@ -307,6 +307,9 @@ function profilerRenderQueryTable() {
       '<td>' + q.avgTimeMs + '</td>' +
       '<td>' + q.maxTimeMs + '</td>' +
       '<td>' + q.p99TimeMs + '</td>' +
+      '<td>' + (q.deserializationTotalTimeMs || 0) + '</td>' +
+      '<td>' + (q.engineTotalTimeMs || 0) + '</td>' +
+      '<td>' + (q.serializationTotalTimeMs || 0) + '</td>' +
       '</tr>'
     );
   }
@@ -318,7 +321,7 @@ function profilerRenderQueryTable() {
     ordering: true,
     order: [[4, "desc"]],
     columnDefs: [
-      { targets: [3, 4, 5, 6, 7], type: "num" }
+      { targets: [3, 4, 5, 6, 7, 8, 9, 10], type: "num" }
     ],
     responsive: true,
     dom: '<"d-flex justify-content-between"lf>rt<"d-flex justify-content-between"ip>'
@@ -344,7 +347,10 @@ function profilerShowDetail(index) {
     { label: "Avg", value: q.avgTimeMs + " ms" },
     { label: "Min", value: q.minTimeMs + " ms" },
     { label: "Max", value: q.maxTimeMs + " ms" },
-    { label: "P99", value: q.p99TimeMs + " ms" }
+    { label: "P99", value: q.p99TimeMs + " ms" },
+    { label: "Deser total", value: (q.deserializationTotalTimeMs || 0) + " ms" },
+    { label: "Engine total", value: (q.engineTotalTimeMs || 0) + " ms" },
+    { label: "Ser total", value: (q.serializationTotalTimeMs || 0) + " ms" }
   ];
   for (var i = 0; i < stats.length; i++) {
     statsHtml += '<div class="col"><div class="text-center"><div style="font-size:0.72rem;color:var(--text-lightest);text-transform:uppercase;">' +

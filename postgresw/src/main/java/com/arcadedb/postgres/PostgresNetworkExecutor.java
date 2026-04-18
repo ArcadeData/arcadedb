@@ -42,8 +42,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.monitor.QueryProfile;
+import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
@@ -65,6 +68,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -322,14 +326,19 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void executeCommand() {
+    final QueryProfile profile = new QueryProfile();
+    QueryProfile.pushCurrent(profile);
+    PostgresPortal portal = null;
     try {
+      final long deserStart = System.nanoTime();
       final String portalName = readString();
       final int limit = (int) channel.readUnsignedInt();
+      profile.addDeserializationNanos(System.nanoTime() - deserStart);
 
       if (errorInTransaction)
         return;
 
-      final PostgresPortal portal = getPortal(portalName, true);
+      portal = getPortal(portalName, true);
       if (portal == null) {
         writeNoData();
         return;
@@ -344,6 +353,7 @@ public class PostgresNetworkExecutor extends Thread {
         writeNoData();
       else {
         if (!portal.executed) {
+          final long engineStart = System.nanoTime();
           ResultSet resultSet;
           if (portal.sqlStatement != null) {
             final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
@@ -354,17 +364,23 @@ public class PostgresNetworkExecutor extends Thread {
           portal.executed = true;
           if (portal.isExpectingResult) {
             portal.cachedResultSet = browseAndCacheResultSet(resultSet, limit);
+            profile.addEngineNanos(System.nanoTime() - engineStart);
             // Only send RowDescription if not already sent during DESCRIBE
             // But always use columns from actual result for DataRows consistency
             if (!portal.rowDescriptionSent) {
+              final long serStart = System.nanoTime();
               portal.columns = getColumns(portal.cachedResultSet);
               writeRowDescription(portal.columns);
               portal.rowDescriptionSent = true;
+              profile.addSerializationNanos(System.nanoTime() - serStart);
             }
+          } else {
+            profile.addEngineNanos(System.nanoTime() - engineStart);
           }
         }
 
         if (portal.isExpectingResult && portal.cachedResultSet != null && !portal.cachedResultSet.isEmpty()) {
+          final long serStart = System.nanoTime();
           // Query returned results - send them
           final Map<String, PostgresType> dataRowColumns = getColumns(portal.cachedResultSet);
 
@@ -398,10 +414,13 @@ public class PostgresNetworkExecutor extends Thread {
           final Map<String, PostgresType> columnsToUse = portal.columns != null ? portal.columns : dataRowColumns;
           writeDataRows(portal.cachedResultSet, columnsToUse);
           writeCommandComplete(portal.query, portal.cachedResultSet.size());
+          profile.addSerializationNanos(System.nanoTime() - serStart);
         } else {
+          final long serStart = System.nanoTime();
           // Query doesn't return data (INSERT/UPDATE/DELETE without RETURNING) or empty result
           final int affectedRows = portal.cachedResultSet != null ? portal.cachedResultSet.size() : 0;
           writeCommandComplete(portal.query, affectedRows);
+          profile.addSerializationNanos(System.nanoTime() - serStart);
         }
       }
     } catch (final CommandParsingException e) {
@@ -410,6 +429,10 @@ public class PostgresNetworkExecutor extends Thread {
     } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
+    } finally {
+      if (portal != null)
+        recordPostgresProfile(profile, portal.language, portal.query);
+      QueryProfile.popCurrent();
     }
   }
 
@@ -420,23 +443,33 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void queryCommand() {
+    final QueryProfile profile = new QueryProfile();
+    QueryProfile.pushCurrent(profile);
+    Query query = null;
+    String queryText = null;
     try {
-      String queryText = readString().trim();
+      final long deserStart = System.nanoTime();
+      queryText = readString().trim();
       if (queryText.endsWith(";"))
         queryText = queryText.substring(0, queryText.length() - 1);
 
-      if (errorInTransaction)
+      if (errorInTransaction) {
+        profile.addDeserializationNanos(System.nanoTime() - deserStart);
         return;
+      }
 
       if (queryText.isEmpty()) {
+        profile.addDeserializationNanos(System.nanoTime() - deserStart);
         emptyQueryResponse();
         return;
       }
 
-      final Query query = getLanguageAndQuery(queryText);
+      query = getLanguageAndQuery(queryText);
+      profile.addDeserializationNanos(System.nanoTime() - deserStart);
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
 
+      final long engineStart = System.nanoTime();
       final ResultSet resultSet;
       if (query.query.toUpperCase(Locale.ENGLISH).startsWith("SET ")) {
         setConfiguration(query.query);
@@ -462,11 +495,14 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
       final List<Result> cachedResultSet = browseAndCacheResultSet(resultSet, 0);
+      profile.addEngineNanos(System.nanoTime() - engineStart);
 
+      final long serStart = System.nanoTime();
       final Map<String, PostgresType> columns = getColumns(cachedResultSet);
       writeRowDescription(columns);
       writeDataRows(cachedResultSet, columns);
       writeCommandComplete(queryText, cachedResultSet.size());
+      profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
@@ -476,7 +512,24 @@ public class PostgresNetworkExecutor extends Thread {
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
     } finally {
       writeReadyForQueryMessage();
+      if (query != null)
+        recordPostgresProfile(profile, query.language, query.query);
+      else if (queryText != null && !queryText.isEmpty())
+        recordPostgresProfile(profile, "sql", queryText);
+      QueryProfile.popCurrent();
     }
+  }
+
+  private void recordPostgresProfile(final QueryProfile profile, final String language, final String queryText) {
+    Metrics.counter("postgres.query").increment();
+    Metrics.timer("postgres.query.deserialization").record(profile.getDeserializationNanos(), TimeUnit.NANOSECONDS);
+    Metrics.timer("postgres.query.engine").record(profile.getEngineNanos(), TimeUnit.NANOSECONDS);
+    Metrics.timer("postgres.query.serialization").record(profile.getSerializationNanos(), TimeUnit.NANOSECONDS);
+
+    final ServerQueryProfiler serverProfiler = server.getQueryProfiler();
+    if (serverProfiler == null || !serverProfiler.isRecording())
+      return;
+    serverProfiler.recordQuery(database != null ? database.getName() : databaseName, language, queryText, profile, null);
   }
 
   private void writeReadyForQueryMessage() {

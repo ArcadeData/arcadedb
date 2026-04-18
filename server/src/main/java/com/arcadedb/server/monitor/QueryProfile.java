@@ -16,23 +16,32 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.http.handler;
+package com.arcadedb.server.monitor;
 
 import com.arcadedb.serializer.json.JSONObject;
 
 /**
- * Accumulates the per-phase wall-clock cost of an HTTP command execution:
- * deserialization of the incoming payload, engine execution (query plus
- * materialization of all rows) and serialization of the response.
+ * Accumulates the per-phase wall-clock cost of a query execution across any
+ * protocol (HTTP, Postgres wire, gRPC, ...): deserialization of the incoming
+ * payload, engine execution (query plus materialization of all rows) and
+ * serialization of the response.
  * <p>
  * Values are captured with {@link System#nanoTime()} and exposed as both raw
  * nanoseconds (lossless) and fractional milliseconds (human-readable).
  * Addition is cumulative, so the same phase can be timed across multiple
  * sections if needed.
+ * <p>
+ * A static {@link ThreadLocal} is provided so that inner layers (for example
+ * {@link ProfilingResultSet}) can pick up the current per-request profile
+ * without having to plumb it through method signatures. Callers are
+ * responsible for pairing {@link #pushCurrent(QueryProfile)} with
+ * {@link #popCurrent()} in a {@code try/finally}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class QueryProfile {
+  private static final ThreadLocal<QueryProfile> CURRENT = new ThreadLocal<>();
+
   private long deserializationNanos;
   private long engineNanos;
   private long serializationNanos;
@@ -82,6 +91,18 @@ public class QueryProfile {
     json.put("overheadNanos", getOverheadNanos());
     json.put("totalNanos", getTotalNanos());
     return json;
+  }
+
+  public static QueryProfile current() {
+    return CURRENT.get();
+  }
+
+  public static void pushCurrent(final QueryProfile profile) {
+    CURRENT.set(profile);
+  }
+
+  public static void popCurrent() {
+    CURRENT.remove();
   }
 
   private static double nanosToMs(final long nanos) {

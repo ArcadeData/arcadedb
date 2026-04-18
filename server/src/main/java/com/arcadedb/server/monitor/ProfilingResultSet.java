@@ -82,6 +82,17 @@ public class ProfilingResultSet implements ResultSet {
 
     final long elapsed = System.nanoTime() - startNanos;
 
+    // If a per-request QueryProfile is active on this thread (HTTP handler, Postgres, gRPC etc.)
+    // defer the recording to the caller so the full 3-phase timing lands in a single entry.
+    // We still surface the engine elapsed we just measured: the caller either already accounted
+    // for engine time around the executeCommand call (HTTP), or relies on us for it (Postgres).
+    final QueryProfile current = QueryProfile.current();
+    if (current != null) {
+      if (current.getEngineNanos() == 0L)
+        current.addEngineNanos(elapsed);
+      return;
+    }
+
     JSONObject planJson = null;
     try {
       final Optional<ExecutionPlan> plan = delegate.getExecutionPlan();
@@ -91,6 +102,6 @@ public class ProfilingResultSet implements ResultSet {
       LogManager.instance().log(this, Level.FINE, "Could not extract execution plan for profiling", e);
     }
 
-    profiler.recordQuery(database, language, queryText, elapsed, planJson);
+    profiler.recordQuery(database, language, queryText, 0L, elapsed, 0L, planJson);
   }
 }

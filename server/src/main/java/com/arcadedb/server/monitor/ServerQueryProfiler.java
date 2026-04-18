@@ -147,15 +147,31 @@ public class ServerQueryProfiler {
 
   public void recordQuery(final String database, final String language, final String queryText,
       final long executionTimeNanos, final JSONObject executionPlan) {
+    recordQuery(database, language, queryText, 0L, executionTimeNanos, 0L, executionPlan);
+  }
+
+  public void recordQuery(final String database, final String language, final String queryText,
+      final long deserializationNanos, final long engineNanos, final long serializationNanos,
+      final JSONObject executionPlan) {
     if (!recording)
       return;
 
     final ProfiledQueryEntry entry = new ProfiledQueryEntry(database, language, queryText,
-        System.currentTimeMillis(), executionTimeNanos, executionPlan);
+        System.currentTimeMillis(), deserializationNanos, engineNanos, serializationNanos, executionPlan);
 
     final int idx = writeIndex.getAndIncrement() % MAX_ENTRIES;
     entries[idx] = entry;
     totalRecorded++;
+  }
+
+  public void recordQuery(final String database, final String language, final String queryText,
+      final QueryProfile profile, final JSONObject executionPlan) {
+    if (profile == null) {
+      recordQuery(database, language, queryText, 0L, 0L, 0L, executionPlan);
+      return;
+    }
+    recordQuery(database, language, queryText, profile.getDeserializationNanos(), profile.getEngineNanos(),
+        profile.getSerializationNanos(), executionPlan);
   }
 
   public synchronized JSONObject getResults() {
@@ -258,18 +274,30 @@ public class ServerQueryProfiler {
       queryObj.put("database", first.database);
       queryObj.put("executionCount", entries.size());
 
-      // Compute time stats
-      final long[] times = new long[entries.size()];
-      for (int i = 0; i < entries.size(); i++)
-        times[i] = entries.get(i).executionTimeNanos;
-      Arrays.sort(times);
+      // Compute per-phase and total time stats
+      final long[] deserTimes = new long[entries.size()];
+      final long[] engineTimes = new long[entries.size()];
+      final long[] serTimes = new long[entries.size()];
+      final long[] totalTimes = new long[entries.size()];
+      for (int i = 0; i < entries.size(); i++) {
+        final ProfiledQueryEntry e = entries.get(i);
+        deserTimes[i] = e.deserializationNanos;
+        engineTimes[i] = e.engineNanos;
+        serTimes[i] = e.serializationNanos;
+        totalTimes[i] = e.getTotalNanos();
+      }
+      Arrays.sort(deserTimes);
+      Arrays.sort(engineTimes);
+      Arrays.sort(serTimes);
+      Arrays.sort(totalTimes);
 
-      final double totalMs = sumNanos(times) / 1_000_000.0;
-      queryObj.put("totalTimeMs", round(totalMs));
-      queryObj.put("minTimeMs", round(times[0] / 1_000_000.0));
-      queryObj.put("maxTimeMs", round(times[times.length - 1] / 1_000_000.0));
-      queryObj.put("avgTimeMs", round(totalMs / times.length));
-      queryObj.put("p99TimeMs", round(percentile(times, 99) / 1_000_000.0));
+      // Keep totalTimeMs/engineTimeMs backward compatible: "totalTimeMs" is now the end-to-end time
+      // (deser+engine+ser) so the Studio query table can sort by slowest request, while the engine
+      // breakdown stays available for users who only want the query-engine cost.
+      putTimeStats(queryObj, "", totalTimes);
+      putTimeStats(queryObj, "engine", engineTimes);
+      putTimeStats(queryObj, "deserialization", deserTimes);
+      putTimeStats(queryObj, "serialization", serTimes);
 
       // Aggregate execution plan steps
       queryObj.put("steps", aggregateSteps(entries));
@@ -400,6 +428,23 @@ public class ServerQueryProfiler {
 
   private File getProfilerDirectory() {
     return new File(server.getRootPath() + File.separator + "profiler");
+  }
+
+  private static void putTimeStats(final JSONObject queryObj, final String prefix, final long[] sortedNanos) {
+    // When prefix is empty we expose totalTimeMs/minTimeMs/... (end-to-end cost across all phases).
+    // When prefix is a phase name (engine/deserialization/serialization) we emit engineTimeMs, etc.
+    final String totalKey = prefix.isEmpty() ? "totalTimeMs" : prefix + "TotalTimeMs";
+    final String minKey = prefix.isEmpty() ? "minTimeMs" : prefix + "MinTimeMs";
+    final String maxKey = prefix.isEmpty() ? "maxTimeMs" : prefix + "MaxTimeMs";
+    final String avgKey = prefix.isEmpty() ? "avgTimeMs" : prefix + "AvgTimeMs";
+    final String p99Key = prefix.isEmpty() ? "p99TimeMs" : prefix + "P99TimeMs";
+
+    final double totalMs = sumNanos(sortedNanos) / 1_000_000.0;
+    queryObj.put(totalKey, round(totalMs));
+    queryObj.put(minKey, round(sortedNanos[0] / 1_000_000.0));
+    queryObj.put(maxKey, round(sortedNanos[sortedNanos.length - 1] / 1_000_000.0));
+    queryObj.put(avgKey, round(totalMs / sortedNanos.length));
+    queryObj.put(p99Key, round(percentile(sortedNanos, 99) / 1_000_000.0));
   }
 
   public static String normalizeQuery(final String query) {

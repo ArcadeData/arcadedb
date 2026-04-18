@@ -25,16 +25,24 @@ public class ProfiledQueryEntry {
   final String     language;
   final String     queryText;
   final long       timestampMs;
-  final long       executionTimeNanos;
+  final long       deserializationNanos;
+  final long       engineNanos;
+  final long       serializationNanos;
   final JSONObject executionPlan;
 
   public ProfiledQueryEntry(final String database, final String language, final String queryText, final long timestampMs,
-      final long executionTimeNanos, final JSONObject executionPlan) {
+      final long deserializationNanos, final long engineNanos, final long serializationNanos, final JSONObject executionPlan) {
     this.database = database;
     this.language = language;
     this.queryText = queryText;
     this.timestampMs = timestampMs;
-    this.executionTimeNanos = executionTimeNanos;
+    this.deserializationNanos = deserializationNanos;
+    this.engineNanos = engineNanos;
+    this.serializationNanos = serializationNanos;
     this.executionPlan = executionPlan;
+  }
+
+  public long getTotalNanos() {
+    return deserializationNanos + engineNanos + serializationNanos;
   }
 }

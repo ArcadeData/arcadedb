@@ -24,6 +24,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -220,6 +221,94 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
     // Clean up
     db.getEmbedded().drop();
     server.removeDatabase("profiler-test-db");
+  }
+
+  @Test
+  void recordThreePhasesAndAggregate() {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+
+    // deser=1ms, engine=2ms, ser=0.5ms twice for same query text
+    profiler.recordQuery("testdb", "sql", "SELECT FROM Person", 1_000_000L, 2_000_000L, 500_000L, null);
+    profiler.recordQuery("testdb", "sql", "SELECT FROM Person", 1_000_000L, 4_000_000L, 500_000L, null);
+
+    final JSONObject results = profiler.stop();
+    assertThat(results.getInt("totalQueries")).isEqualTo(2);
+
+    final JSONObject q = results.getJSONArray("queries").getJSONObject(0);
+    assertThat(q.getString("queryText")).isEqualTo("SELECT FROM Person");
+
+    // Total time is (deser+engine+ser) per execution, summed
+    assertThat(q.getDouble("totalTimeMs")).isEqualTo(9.0);
+
+    // Phase aggregates
+    assertThat(q.getDouble("deserializationTotalTimeMs")).isEqualTo(2.0);
+    assertThat(q.getDouble("engineTotalTimeMs")).isEqualTo(6.0);
+    assertThat(q.getDouble("serializationTotalTimeMs")).isEqualTo(1.0);
+    assertThat(q.getDouble("engineAvgTimeMs")).isEqualTo(3.0);
+  }
+
+  @Test
+  void legacyRecordQueryStoresInEnginePhase() {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+
+    // Legacy 5-argument overload: time is treated as engine nanos, deser/ser stay zero.
+    profiler.recordQuery("testdb", "sql", "SELECT 1", 3_000_000L, null);
+
+    final JSONObject results = profiler.stop();
+    final JSONObject q = results.getJSONArray("queries").getJSONObject(0);
+    assertThat(q.getDouble("totalTimeMs")).isEqualTo(3.0);
+    assertThat(q.getDouble("engineTotalTimeMs")).isEqualTo(3.0);
+    assertThat(q.getDouble("deserializationTotalTimeMs")).isEqualTo(0.0);
+    assertThat(q.getDouble("serializationTotalTimeMs")).isEqualTo(0.0);
+  }
+
+  @Test
+  void threadLocalQueryProfileCapturesEngineFromProfilingResultSet() {
+    server.createDatabase("profiler-thread-db", ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.getDatabase("profiler-thread-db");
+    db.command("sql", "CREATE VERTEX TYPE Person");
+
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+
+    // Push a per-request profile on the thread. ProfilingResultSet must not auto-record
+    // (the handler owns the record) but it must still populate profile.engineNanos.
+    final QueryProfile profile = new QueryProfile();
+    QueryProfile.pushCurrent(profile);
+    // Use values large enough to survive 2-decimal-place rounding in the results JSON.
+    profile.addDeserializationNanos(1_500_000L); // 1.5 ms
+    try (final ResultSet rs = db.command("sql", "INSERT INTO Person SET name = 'ThreadLocal'")) {
+      while (rs.hasNext())
+        rs.next();
+    } finally {
+      profile.addSerializationNanos(800_000L); // 0.8 ms
+      QueryProfile.popCurrent();
+    }
+
+    assertThat(profile.getEngineNanos()).isPositive();
+    assertThat(profile.getDeserializationNanos()).isEqualTo(1_500_000L);
+    assertThat(profile.getSerializationNanos()).isEqualTo(800_000L);
+
+    // ProfilingResultSet deferred recording to the caller, so the profiler must still be empty.
+    // The caller then records the full 3-phase entry.
+    profiler.recordQuery(db.getName(), "sql", "INSERT INTO Person SET name = 'ThreadLocal'", profile, null);
+
+    final JSONObject results = profiler.stop();
+    assertThat(results.getInt("totalQueries")).isEqualTo(1);
+    final JSONObject q = results.getJSONArray("queries").getJSONObject(0);
+    // Phase aggregates are rounded to two decimals so fast queries can surface as 0.0 in ms
+    // while being strictly positive in nanoseconds. The Java-side asserts above cover the nanos.
+    assertThat(q.has("deserializationTotalTimeMs")).isTrue();
+    assertThat(q.has("engineTotalTimeMs")).isTrue();
+    assertThat(q.has("serializationTotalTimeMs")).isTrue();
+    assertThat(q.getDouble("deserializationTotalTimeMs")).isGreaterThanOrEqualTo(0.0);
+    assertThat(q.getDouble("engineTotalTimeMs")).isGreaterThanOrEqualTo(0.0);
+    assertThat(q.getDouble("serializationTotalTimeMs")).isGreaterThanOrEqualTo(0.0);
+
+    db.getEmbedded().drop();
+    server.removeDatabase("profiler-thread-db");
   }
 
   @Test
