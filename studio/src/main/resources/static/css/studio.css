@@ -2981,6 +2981,65 @@ div.dt-search {
   margin-right: 4px;
 }
 
+.profile-breakdown .flame-graph-header i {
+  color: #1565c0 !important;
+}
+
+.profile-bar {
+  display: flex;
+  align-items: stretch;
+}
+
+.profile-seg {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 2px 8px;
+  overflow: hidden;
+  cursor: default;
+  transition: filter 0.1s;
+  border-right: 1px solid rgba(255,255,255,0.25);
+}
+
+.profile-seg:last-child {
+  border-right: none;
+}
+
+.profile-seg:hover {
+  filter: brightness(1.12);
+}
+
+.profile-seg-deser  { background-color: #6a1b9a; }
+.profile-seg-engine { background-color: #1565c0; }
+.profile-seg-ser    { background-color: #2e7d32; }
+
+.profile-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 8px 12px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-ddd);
+}
+
+.profile-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.profile-legend-item small {
+  opacity: 0.75;
+}
+
+.profile-legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
 /* ===== Materialized Views ===== */
 
 .mv-status-dot {
