@@ -21,7 +21,6 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
@@ -306,16 +305,13 @@ public class TransactionManager {
       final PageId pageId = new PageId(database, txPage.fileId, txPage.pageNumber);
 
       if (!database.getFileManager().existsFile(txPage.fileId)) {
-        // When ignoreErrors is true (Raft replay), referencing a deleted file is expected —
+        // Referencing a deleted file is expected during Raft replay and crash recovery -
         // schema changes may delete files before their prior TX entries are replayed.
+        // Always skip to avoid aborting the entire multi-page transaction.
         LogManager.instance()
-            .log(this, ignoreErrors ? Level.FINE : Level.WARNING,
-                "Error on restoring transaction: received operation on deleted file %d", null, txPage.fileId);
-        if (ignoreErrors)
-          continue;
-        throw new ConcurrentModificationException(
-            "Concurrent modification on page " + pageId + ". The file with id " + pageId.getFileId()
-                + " does not exist anymore. Please retry the operation");
+            .log(this, Level.FINE,
+                "Skipping page for deleted file %d during transaction apply", null, txPage.fileId);
+        continue;
       }
 
       try {
@@ -333,16 +329,18 @@ public class TransactionManager {
                 page.getVersion());
 
         if (txPage.currentPageVersion <= page.getVersion()) {
-          if (ignoreErrors) {
-            LogManager.instance().log(this, Level.FINE,
-                "Skipping already-applied page %s (log v.%d <= db v.%d)", null,
-                pageId, txPage.currentPageVersion, page.getVersion());
-            continue;
-          }
-          throw new ConcurrentModificationException(
-              "Concurrent modification on page " + pageId + " in file '" + database.getFileManager().getFile(pageId.getFileId())
-                  .getFileName() + "' (current v." + txPage.currentPageVersion + " <= database v." + page.getVersion()
-                  + "). Please retry the operation (threadId=" + Thread.currentThread().threadId() + ")");
+          // Always skip already-applied pages instead of aborting the entire transaction.
+          // During Raft state machine replay or crash recovery, a partial apply may have
+          // written some pages but not others. Skipping only the already-applied pages
+          // (instead of throwing ConcurrentModificationException and aborting the loop)
+          // ensures the remaining un-applied pages in the same transaction are still processed.
+          // This prevents version-gap cascades where skipping a multi-page transaction leaves
+          // some pages behind, causing WALVersionGapException on all subsequent transactions
+          // that touch those pages.
+          LogManager.instance().log(this, Level.FINE,
+              "Skipping already-applied page %s (log v.%d <= db v.%d)", null,
+              pageId, txPage.currentPageVersion, page.getVersion());
+          continue;
         }
 
         if (txPage.currentPageVersion > page.getVersion() + 1) {

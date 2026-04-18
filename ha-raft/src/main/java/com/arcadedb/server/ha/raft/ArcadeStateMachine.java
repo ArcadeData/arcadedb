@@ -23,7 +23,6 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
-import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
@@ -481,12 +480,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
           decoded.databaseName(), walTx.txId, e.getMessage());
       throw new ReplicationException(
           "WAL version gap detected - snapshot resync required (db=" + decoded.databaseName() + ")", e);
-    } catch (final ConcurrentModificationException e) {
-      // Benign replay: WAL page version <= DB page version - the entry was already applied
-      // (via WAL recovery or a prior commit). Expected after cold restart or snapshot install.
-      LogManager.instance().log(this, Level.WARNING,
-          "Skipping already-applied WAL entry on follower (db=%s, txId=%d): %s",
-          decoded.databaseName(), walTx.txId, e.getMessage());
     }
   }
 
