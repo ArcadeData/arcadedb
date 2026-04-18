@@ -16,25 +16,21 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.function.text;
+package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * trim() function - strips characters from a string.
- * <p>
- * Supports two forms:
- * <ul>
- *   <li>trim(source) - strips leading and trailing whitespace</li>
- *   <li>trim(mode, trimCharacter, source) - strips specified character from leading/trailing/both sides</li>
- * </ul>
- * Mode values: "BOTH", "LEADING", "TRAILING"
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * Cypher trim() and btrim() functions.
+ * Supports multiple forms:
+ * - trim(source) / btrim(source) - strips leading and trailing whitespace
+ * - btrim(source, trimCharacter) - strips specified character from both sides
+ * - trim(BOTH/LEADING/TRAILING char FROM string) - SQL-style trim syntax
+ * Returns null if any argument is null (Cypher behavior).
  */
-public class TrimFunction implements StatelessFunction {
+public class CypherTrimFunction implements StatelessFunction {
   @Override
   public String getName() {
     return "trim";
@@ -43,26 +39,40 @@ public class TrimFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length == 1) {
-      // Simple form: trim(source)
+      // Simple form: trim(source) or btrim(source)
       if (args[0] == null)
         return null;
       return args[0].toString().strip();
     }
 
+    if (args.length == 2) {
+      // 2-arg form: btrim(source, trimCharacter)
+      if (args[0] == null || args[1] == null)
+        return null;
+      final String source = args[0].toString();
+      final String trimChar = args[1].toString();
+      if (trimChar.isEmpty())
+        return source.strip();
+      return stripLeading(stripTrailing(source, trimChar), trimChar);
+    }
+
     if (args.length == 3) {
-      // Extended form: trim(mode, trimCharacter, source)
-      final String mode = args[0].toString();
+      // SQL-style: trim(BOTH/LEADING/TRAILING char FROM string)
+      final String mode = args[0] != null ? args[0].toString() : null;
+      final String trimChar = args[1] != null ? args[1].toString() : null;
       final String source = args[2] != null ? args[2].toString() : null;
+
       if (source == null)
         return null;
-
-      final String trimChar = args[1] != null ? args[1].toString() : null;
-      if (trimChar == null || trimChar.isEmpty())
+      if (trimChar == null)
+        return null;
+      if (trimChar.isEmpty()) {
         return switch (mode) {
           case "LEADING" -> source.stripLeading();
           case "TRAILING" -> source.stripTrailing();
           default -> source.strip();
         };
+      }
 
       return switch (mode) {
         case "LEADING" -> stripLeading(source, trimChar);
@@ -71,17 +81,17 @@ public class TrimFunction implements StatelessFunction {
       };
     }
 
-    throw new CommandExecutionException("trim() requires 1 or 3 arguments");
+    throw new CommandExecutionException("trim() and btrim() require 1, 2, or 3 arguments");
   }
 
-  static String stripLeading(final String source, final String trimChars) {
+  private static String stripLeading(final String source, final String trimChars) {
     int start = 0;
     while (start < source.length() && trimChars.indexOf(source.charAt(start)) >= 0)
       start++;
     return source.substring(start);
   }
 
-  static String stripTrailing(final String source, final String trimChars) {
+  private static String stripTrailing(final String source, final String trimChars) {
     int end = source.length();
     while (end > 0 && trimChars.indexOf(source.charAt(end - 1)) >= 0)
       end--;

@@ -16,32 +16,40 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.function.text;
+package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.List;
-import java.util.regex.Pattern;
-
 /**
- * split() function - splits a string by a delimiter.
+ * Cypher substring() function - returns a substring of the original string.
+ * Cypher uses 0-based indexing and raises error for negative start/length.
  */
-public class SplitFunction implements StatelessFunction {
+public class CypherSubstringFunction implements StatelessFunction {
   @Override
   public String getName() {
-    return "split";
+    return "substring";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw new CommandExecutionException("split() requires exactly 2 arguments: split(string, delimiter)");
-    if (args[0] == null)
+    if (args.length < 2 || args.length > 3)
+      throw new CommandExecutionException("substring() requires 2 or 3 arguments: substring(string, start[, length])");
+    if (args[0] == null || args[1] == null)
       return null;
     final String str = args[0].toString();
-    final String delimiter = args[1].toString();
-    return List.of(str.split(Pattern.quote(delimiter)));
+    final int start = ((Number) args[1]).intValue();
+    if (start < 0)
+      throw new CommandExecutionException("Cannot handle negative start index nor negative length");
+    if (start >= str.length())
+      return "";
+    if (args.length == 3 && args[2] != null) {
+      final int length = ((Number) args[2]).intValue();
+      if (length < 0)
+        throw new CommandExecutionException("Cannot handle negative start index nor negative length");
+      return str.substring(start, Math.min(start + length, str.length()));
+    }
+    return str.substring(start);
   }
 }

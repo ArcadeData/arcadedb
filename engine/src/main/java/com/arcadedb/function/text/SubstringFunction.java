@@ -39,9 +39,7 @@ public class SubstringFunction implements StatelessFunction {
       return null;
     final String str = args[0].toString();
     final int start = ((Number) args[1]).intValue();
-    if (start < 0)
-      throw new CommandExecutionException("substring(): negative start index is not supported: " + start);
-    if (start > str.length())
+    if (start < 0 || start > str.length())
       return "";
     if (args.length == 3 && args[2] != null) {
       final int length = ((Number) args[2]).intValue();

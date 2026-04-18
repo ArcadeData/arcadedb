@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.function.text;
+package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
@@ -26,9 +26,10 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 /**
- * split() function - splits a string by a delimiter.
+ * Cypher split() function - splits a string by a delimiter.
+ * Returns null if either string or delimiter is null (Cypher behavior).
  */
-public class SplitFunction implements StatelessFunction {
+public class CypherSplitFunction implements StatelessFunction {
   @Override
   public String getName() {
     return "split";
@@ -38,7 +39,7 @@ public class SplitFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 2)
       throw new CommandExecutionException("split() requires exactly 2 arguments: split(string, delimiter)");
-    if (args[0] == null)
+    if (args[0] == null || args[1] == null)
       return null;
     final String str = args[0].toString();
     final String delimiter = args[1].toString();
