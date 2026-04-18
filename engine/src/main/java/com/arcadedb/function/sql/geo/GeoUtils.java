@@ -72,7 +72,8 @@ public class GeoUtils {
       return shape;
     // Cypher point() returns a Map with x/y or longitude/latitude keys
     if (value instanceof Map<?, ?> map) {
-      double x, y;
+      double x;
+      double y;
       if (map.containsKey("x") && map.containsKey("y")) {
         x = ((Number) map.get("x")).doubleValue();
         y = ((Number) map.get("y")).doubleValue();
