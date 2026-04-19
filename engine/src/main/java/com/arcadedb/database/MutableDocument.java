@@ -375,7 +375,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   @Override
   public void setIdentity(final RID rid) {
-    this.rid = rid;
+    this.rid = upgradeRID(rid);
   }
 
   @Override

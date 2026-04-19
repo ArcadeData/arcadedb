@@ -32,13 +32,24 @@ public abstract class BaseRecord implements Record {
 
   protected BaseRecord(final Database database, final RID rid, final Binary buffer) {
     this.database = (DatabaseInternal) database;
-    this.rid = rid;
+    this.rid = upgradeRID(rid);
     this.buffer = buffer;
   }
 
   @Override
   public RID getIdentity() {
     return rid;
+  }
+
+  /**
+   * Ensures the stored RID is a {@link DatabaseRID} bound to this record's database so that callers of {@link #getIdentity()} always receive a RID that
+   * resolves against the owning database regardless of thread-local state. The 8-byte overhead vs a bare {@link RID} is negligible compared to the rest of
+   * the record (binary buffer, schema pointers, property maps).
+   */
+  protected RID upgradeRID(final RID rid) {
+    if (rid == null || rid instanceof DatabaseRID || database == null)
+      return rid;
+    return new DatabaseRID(database, rid.getBucketId(), rid.getPosition());
   }
 
   @Override

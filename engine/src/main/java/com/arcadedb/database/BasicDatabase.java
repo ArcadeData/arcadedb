@@ -173,6 +173,23 @@ public interface BasicDatabase extends AutoCloseable {
   Record lookupByRID(RID rid, boolean loadContent);
 
   /**
+   * Builds a {@link DatabaseRID} bound to this database. Prefer this factory over {@code new RID(...)} when the RID may be handed to user code or carried
+   * across threads: it ensures shortcut methods like {@link RID#asVertex()} resolve against this database even when multiple databases are open on the same
+   * thread.
+   */
+  default RID newRID(final int bucketId, final long offset) {
+    return new DatabaseRID(this, bucketId, offset);
+  }
+
+  /**
+   * Parses a textual RID (e.g. {@code "#12:345"}) into a {@link DatabaseRID} bound to this database. See {@link #newRID(int, long)} for when to prefer this
+   * over the plain {@link RID#RID(String)} constructor.
+   */
+  default RID newRID(final String value) {
+    return new DatabaseRID(this, value);
+  }
+
+  /**
    * Checks if the record exists.
    *
    * @param rid – @RID record id

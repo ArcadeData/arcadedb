@@ -163,6 +163,10 @@ public class ResultInternal implements Result {
 
     if (value instanceof Result result && result.isElement())
       content.put(name, result.getElement().get());
+    else if (database != null && value instanceof RID rid && !(value instanceof DatabaseRID))
+      // Egress wrap: a bare RID stored in a projection becomes user-visible, bind it to this result's database so shortcut methods like asVertex() route
+      // through the correct database even if the thread-local active database changes later.
+      content.put(name, new DatabaseRID(database, rid.getBucketId(), rid.getPosition()));
     else
       content.put(name, value);
 
@@ -325,7 +329,9 @@ public class ResultInternal implements Result {
       final Object rid = getProperty(RID_PROPERTY);
       if (rid == null)
         return Optional.empty();
-      return Optional.of((RID) (rid instanceof RID ? rid : new RID(rid.toString())));
+      if (rid instanceof RID r)
+        return Optional.of(r);
+      return Optional.of(database != null ? new DatabaseRID(database, rid.toString()) : new RID(rid.toString()));
     }
     return Optional.empty();
   }
