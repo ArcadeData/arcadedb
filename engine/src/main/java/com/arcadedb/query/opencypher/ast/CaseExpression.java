@@ -161,15 +161,13 @@ public class CaseExpression implements Expression {
   }
 
   /**
-   * Check if two values are equal, handling nulls properly.
+   * Check if two values are equal under Cypher's three-valued logic.
+   * Any comparison involving null yields null (treated as "not equal" here),
+   * so a WHEN branch never fires on a null operand.
    */
   private boolean valuesEqual(final Object a, final Object b) {
-    if (a == null && b == null) {
-      return true;
-    }
-    if (a == null || b == null) {
+    if (a == null || b == null)
       return false;
-    }
     return a.equals(b);
   }
 
