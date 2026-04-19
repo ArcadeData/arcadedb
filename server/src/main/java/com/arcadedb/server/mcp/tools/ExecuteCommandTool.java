@@ -75,7 +75,7 @@ public class ExecuteCommandTool {
     if (!user.canAccessToDatabase(databaseName))
       throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
 
-    final Database database = server.getDatabase(databaseName);
+    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
 
     // Analyze once for both permission checking and execution (avoids double parsing)
     final QueryEngine engine = database.getQueryEngine(language);

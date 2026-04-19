@@ -790,6 +790,46 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void queryUnknownDatabaseReturnsAvailableList() throws Exception {
+    final JSONObject response = callTool("query", new JSONObject()
+        .put("database", "nonexistent_db")
+        .put("language", "cypher")
+        .put("query", "RETURN 1"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("nonexistent_db");
+    assertThat(errorText).containsIgnoringCase("available databases");
+    assertThat(errorText).contains("graph");
+  }
+
+  @Test
+  void executeCommandUnknownDatabaseReturnsAvailableList() throws Exception {
+    final JSONObject response = callTool("execute_command", new JSONObject()
+        .put("database", "nonexistent_db")
+        .put("language", "cypher")
+        .put("command", "CREATE (n:Test) RETURN n"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("nonexistent_db");
+    assertThat(errorText).containsIgnoringCase("available databases");
+    assertThat(errorText).contains("graph");
+  }
+
+  @Test
+  void getSchemaUnknownDatabaseReturnsAvailableList() throws Exception {
+    final JSONObject response = callTool("get_schema", new JSONObject()
+        .put("database", "nonexistent_db"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("nonexistent_db");
+    assertThat(errorText).containsIgnoringCase("available databases");
+    assertThat(errorText).contains("graph");
+  }
+
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {

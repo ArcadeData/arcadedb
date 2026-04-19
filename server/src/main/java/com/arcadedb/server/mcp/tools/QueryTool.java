@@ -76,7 +76,7 @@ public class QueryTool {
     if (!user.canAccessToDatabase(databaseName))
       throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
 
-    final Database database = server.getDatabase(databaseName);
+    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
 
     // Verify the query is actually read-only using semantic analysis
     final QueryEngine engine = database.getQueryEngine(language);
