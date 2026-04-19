@@ -125,6 +125,14 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     capabilities.put("tools", new JSONObject().put("listChanged", false));
     result.put("capabilities", capabilities);
 
+    result.put("instructions",
+        "You are connected to an ArcadeDB multi-model database server. Follow these rules:\n"
+            + "1. ALWAYS call list_databases first when you do not know the target database name. Never guess it.\n"
+            + "2. Prefer Cypher (language: 'cypher') for graph queries unless SQL is explicitly requested.\n"
+            + "3. Use the 'query' tool for read-only operations (SELECT, MATCH, RETURN) and 'execute_command' for writes (CREATE, INSERT, UPDATE, DELETE, MERGE).\n"
+            + "4. Call get_schema before writing queries against an unfamiliar database to understand its types and properties.\n"
+            + "5. If a query returns no results, verify the type/property names with get_schema before concluding the data does not exist.");
+
     return jsonRpcResult(id, result);
   }
 
