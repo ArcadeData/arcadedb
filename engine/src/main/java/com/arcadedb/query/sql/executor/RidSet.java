@@ -23,8 +23,11 @@ import com.arcadedb.database.RID;
 import java.util.*;
 
 /**
- * Special implementation of Java Set&lt;ORID&gt; to efficiently handle memory and performance. It does not store actual RIDs, but
- * it only keeps track that a RID was stored, so the iterator will return new instances.
+ * Bitmap-based {@link Set} of RIDs. Stores presence as a bit per position per bucket ({@code content[bucket][block][word]}) so memory cost is proportional to
+ * the MAX offset seen per bucket, not the element count. Best choice when RIDs are dense and contiguous (e.g. type-scan results); falls off fast when RIDs
+ * are sparse and scattered across a wide offset range, in which case use {@link com.arcadedb.utility.RidHashSet} instead.
+ * <p>
+ * Iteration produces freshly allocated {@link RID} instances because the structure itself does not keep them.
  *
  * @author Luigi Dell'Aquila
  */
@@ -35,10 +38,8 @@ public class RidSet implements Set<RID> {
   protected static final int INITIAL_BLOCK_SIZE = 4096;
 
   /*
-   * bucket / offset / bitmask
-   * eg. inserting #12:0 you will have content[12][0][0] = 1
-   * eg. inserting #12:(63*maxArraySize + 1) you will have content[12][1][0] = 1
-   *
+   * Layout: content[bucketId][block][wordIndex], each long packs 64 consecutive bit positions.
+   * position -> wordIndex = position >>> 6, bitInWord = position & 63, block = wordIndex / maxArraySize.
    */
   protected long[][][] content = new long[8][][];
 
@@ -47,14 +48,14 @@ public class RidSet implements Set<RID> {
   protected final int maxArraySize;
 
   /**
-   * instantiates an ORidSet with a bucket size of Integer.MAX_VALUE / 10
+   * instantiates a RidSet with a bucket size of Integer.MAX_VALUE / 10
    */
   public RidSet() {
     this(Integer.MAX_VALUE / 10);
   }
 
   /**
-   * instantiates an ORidSet with a bucket size of Integer.MAX_VALUE / 10 and a CommandContext
+   * instantiates a RidSet with a bucket size of Integer.MAX_VALUE / 10 and a CommandContext
    *
    * @param context the command context for iterator support
    */
@@ -90,41 +91,37 @@ public class RidSet implements Set<RID> {
 
   @Override
   public boolean contains(final Object o) {
+    if (!(o instanceof RID rid))
+      throw new IllegalArgumentException();
+    return contains(rid.getBucketId(), rid.getPosition());
+  }
+
+  /**
+   * Primitive-pair contains check. Avoids the RID wrapper allocation on hot paths.
+   */
+  public boolean contains(final int bucket, final long position) {
     if (size == 0L)
       return false;
-
-    if (!(o instanceof RID identifiable))
-      throw new IllegalArgumentException();
-
-    final int bucket = identifiable.getBucketId();
-    final long position = identifiable.getPosition();
     if (bucket < 0 || position < 0)
       return false;
 
-    final long positionByte = (position / 63);
-    final int positionBit = (int) (position % 63);
-    final int block = (int) (positionByte / maxArraySize);
-    final int blockPositionByteInt = (int) (positionByte % maxArraySize);
+    final long wordIndex = position >>> 6;
+    final int bitInWord = (int) (position & 63L);
+    final int block = (int) (wordIndex / maxArraySize);
+    final int wordInBlock = (int) (wordIndex % maxArraySize);
 
     if (content.length <= bucket)
       return false;
 
-    if (content[bucket] == null)
+    final long[][] bucketBlocks = content[bucket];
+    if (bucketBlocks == null || bucketBlocks.length <= block)
       return false;
 
-    if (content[bucket].length <= block)
+    final long[] words = bucketBlocks[block];
+    if (words == null || words.length <= wordInBlock)
       return false;
 
-    if (content[bucket][block] == null)
-      return false;
-
-    if (content[bucket][block].length <= blockPositionByteInt)
-      return false;
-
-    final long currentMask = 1L << positionBit;
-    final long existed = content[bucket][block][blockPositionByteInt] & currentMask;
-
-    return existed > 0L;
+    return (words[wordInBlock] & (1L << bitInWord)) != 0L;
   }
 
   @Override
@@ -146,16 +143,20 @@ public class RidSet implements Set<RID> {
   public boolean add(final RID identifiable) {
     if (identifiable == null)
       throw new IllegalArgumentException();
+    return add(identifiable.getBucketId(), identifiable.getPosition());
+  }
 
-    final int bucket = identifiable.getBucketId();
-    final long position = identifiable.getPosition();
+  /**
+   * Primitive-pair add. Avoids the RID wrapper allocation on hot paths.
+   */
+  public boolean add(final int bucket, final long position) {
     if (bucket < 0 || position < 0)
-      throw new IllegalArgumentException("negative RID");//TODO
+      throw new IllegalArgumentException("negative RID");
 
-    final long positionByte = (position / 63);
-    final int positionBit = (int) (position % 63);
-    final int block = (int) (positionByte / maxArraySize);
-    final int blockPositionByteInt = (int) (positionByte % maxArraySize);
+    final long wordIndex = position >>> 6;
+    final int bitInWord = (int) (position & 63L);
+    final int block = (int) (wordIndex / maxArraySize);
+    final int wordInBlock = (int) (wordIndex % maxArraySize);
 
     if (content.length <= bucket) {
       final long[][][] oldContent = content;
@@ -164,40 +165,40 @@ public class RidSet implements Set<RID> {
     }
 
     if (content[bucket] == null)
-      content[bucket] = createClusterArray(block, blockPositionByteInt);
+      content[bucket] = createClusterArray(block, wordInBlock);
 
     if (content[bucket].length <= block)
-      content[bucket] = expandClusterBlocks(content[bucket], block, blockPositionByteInt);
+      content[bucket] = expandClusterBlocks(content[bucket], block, wordInBlock);
 
     if (content[bucket][block] == null)
-      content[bucket][block] = expandClusterArray(new long[INITIAL_BLOCK_SIZE], blockPositionByteInt);
+      content[bucket][block] = expandClusterArray(new long[INITIAL_BLOCK_SIZE], wordInBlock);
 
-    if (content[bucket][block].length <= blockPositionByteInt)
-      content[bucket][block] = expandClusterArray(content[bucket][block], blockPositionByteInt);
+    if (content[bucket][block].length <= wordInBlock)
+      content[bucket][block] = expandClusterArray(content[bucket][block], wordInBlock);
 
-    final long original = content[bucket][block][blockPositionByteInt];
-    final long currentMask = 1L << positionBit;
-    final long existed = content[bucket][block][blockPositionByteInt] & currentMask;
-    content[bucket][block][blockPositionByteInt] = original | currentMask;
-    if (existed == 0L)
+    final long mask = 1L << bitInWord;
+    final long original = content[bucket][block][wordInBlock];
+    final boolean isNew = (original & mask) == 0L;
+    if (isNew) {
+      content[bucket][block][wordInBlock] = original | mask;
       size++;
-
-    return existed == 0L;
+    }
+    return isNew;
   }
 
-  private static long[][] expandClusterBlocks(final long[][] longs, final int block, final int blockPositionByteInt) {
+  private static long[][] expandClusterBlocks(final long[][] longs, final int block, final int wordInBlock) {
     final long[][] result = new long[block + 1][];
     System.arraycopy(longs, 0, result, 0, longs.length);
-    result[block] = expandClusterArray(new long[INITIAL_BLOCK_SIZE], blockPositionByteInt);
+    result[block] = expandClusterArray(new long[INITIAL_BLOCK_SIZE], wordInBlock);
     return result;
   }
 
-  private static long[][] createClusterArray(final int block, final int positionByteInt) {
+  private static long[][] createClusterArray(final int block, final int wordInBlock) {
     int currentSize = INITIAL_BLOCK_SIZE;
-    while (currentSize <= positionByteInt) {
+    while (currentSize <= wordInBlock) {
       currentSize *= 2;
       if (currentSize < 0) {
-        currentSize = positionByteInt + 1;
+        currentSize = wordInBlock + 1;
         break;
       }
     }
@@ -207,12 +208,12 @@ public class RidSet implements Set<RID> {
     return result;
   }
 
-  private static long[] expandClusterArray(final long[] original, final int positionByteInt) {
+  private static long[] expandClusterArray(final long[] original, final int wordInBlock) {
     int currentSize = original.length;
-    while (currentSize <= positionByteInt) {
+    while (currentSize <= wordInBlock) {
       currentSize *= 2;
       if (currentSize < 0) {
-        currentSize = positionByteInt + 1;
+        currentSize = wordInBlock + 1;
         break;
       }
     }
@@ -224,40 +225,42 @@ public class RidSet implements Set<RID> {
 
   @Override
   public boolean remove(final Object o) {
-    if (!(o instanceof final RID identifiable))
+    if (!(o instanceof RID rid))
       throw new IllegalArgumentException();
+    return remove(rid.getBucketId(), rid.getPosition());
+  }
 
-    final int bucket = identifiable.getBucketId();
-    final long position = identifiable.getPosition();
-    if (bucket < 0 || position < 0) {
-      throw new IllegalArgumentException("negative RID");//TODO
-    }
-    final long positionByte = (position / 63);
-    final int positionBit = (int) (position % 63);
-    final int block = (int) (positionByte / maxArraySize);
-    final int blockPositionByteInt = (int) (positionByte % maxArraySize);
+  /**
+   * Primitive-pair remove. Avoids the RID wrapper allocation on hot paths.
+   */
+  public boolean remove(final int bucket, final long position) {
+    if (bucket < 0 || position < 0)
+      throw new IllegalArgumentException("negative RID");
+
+    final long wordIndex = position >>> 6;
+    final int bitInWord = (int) (position & 63L);
+    final int block = (int) (wordIndex / maxArraySize);
+    final int wordInBlock = (int) (wordIndex % maxArraySize);
 
     if (content.length <= bucket)
       return false;
 
-    if (content[bucket] == null)
+    final long[][] bucketBlocks = content[bucket];
+    if (bucketBlocks == null || bucketBlocks.length <= block)
       return false;
 
-    if (content[bucket].length <= block)
+    final long[] words = bucketBlocks[block];
+    if (words == null || words.length <= wordInBlock)
       return false;
 
-    if (content[bucket][block].length <= blockPositionByteInt)
-      return false;
-
-    final long original = content[bucket][block][blockPositionByteInt];
-    long currentMask = 1L << positionBit;
-    final long existed = content[bucket][block][blockPositionByteInt] & currentMask;
-    currentMask = ~currentMask;
-    content[bucket][block][blockPositionByteInt] = original & currentMask;
-    if (existed > 0)
+    final long mask = 1L << bitInWord;
+    final long original = words[wordInBlock];
+    final boolean existed = (original & mask) != 0L;
+    if (existed) {
+      words[wordInBlock] = original & ~mask;
       size--;
-
-    return existed > 0L;
+    }
+    return existed;
   }
 
   @Override

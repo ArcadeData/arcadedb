@@ -23,84 +23,91 @@ import com.arcadedb.database.RID;
 import java.util.*;
 
 /**
- * Created by luigidellaquila on 25/10/16.
+ * Iterator that walks a {@link RidSet}'s bitmap and materialises a fresh {@link RID} per set bit. Sparse regions are skipped in O(1) per zero-word using
+ * {@link Long#numberOfTrailingZeros(long)}, so iteration cost scales with the number of present bits rather than the max offset range.
+ *
+ * @author Luigi Dell'Aquila
  */
 public class RidSetIterator implements Iterator<RID> {
 
   final CommandContext context;
-
   private final RidSet set;
-  int  currentCluster = -1;
-  long currentId      = -1;
+
+  // -1 when exhausted; otherwise currentBucket is the bucket id and currentWordAbs is the ABSOLUTE word index (block * maxArraySize + wordInBlock) whose
+  // unconsumed bits are tracked in remainingWord.
+  private int  currentBucket  = -1;
+  private int  currentBlock   = 0;
+  private int  currentWordPos = 0;
+  private long remainingWord  = 0L;
+  private int  nextBit        = -1;
 
   RidSetIterator(final CommandContext context, final RidSet set) {
-    this.set = set;
     this.context = context;
-    fetchNext();
+    this.set = set;
+    advance();
   }
 
   @Override
   public boolean hasNext() {
-    return currentCluster >= 0;
+    return nextBit >= 0;
   }
 
   @Override
   public RID next() {
-    if (!hasNext()) {
+    if (nextBit < 0)
       throw new NoSuchElementException();
-    }
-    final RID result = new RID(context.getDatabase(), currentCluster, currentId);
-    currentId++;
-    fetchNext();
+    final long absoluteWord = (long) currentBlock * set.maxArraySize + currentWordPos;
+    final long position = (absoluteWord << 6) | nextBit;
+    final RID result = new RID(context == null ? null : context.getDatabase(), currentBucket, position);
+    // Clear the bit we just returned, then advance to the next set bit.
+    remainingWord &= remainingWord - 1;
+    advance();
     return result;
   }
 
-  private void fetchNext() {
-    if (currentCluster < 0) {
-      currentCluster = 0;
-      currentId = 0;
+  private void advance() {
+    // First try to consume more bits in the word we already have.
+    if (remainingWord != 0L) {
+      nextBit = Long.numberOfTrailingZeros(remainingWord);
+      return;
     }
 
-    long currentArrayPos = currentId / 63;
-    long currentBit = currentId % 63;
-    int block = (int) (currentArrayPos / set.maxArraySize);
-    int blockPositionByteInt = (int) (currentArrayPos % set.maxArraySize);
+    // Otherwise walk forward through words / blocks / buckets until we find a non-zero word.
+    if (currentBucket < 0) {
+      currentBucket = 0;
+      currentBlock = 0;
+      currentWordPos = 0;
+    } else {
+      // Move past the word we just finished.
+      currentWordPos++;
+    }
 
-    while (currentCluster < set.content.length) {
-      while (set.content[currentCluster] != null && block < set.content[currentCluster].length) {
-        while (set.content[currentCluster][block] != null && blockPositionByteInt < set.content[currentCluster][block].length) {
-          if (currentBit == 0 && set.content[currentCluster][block][blockPositionByteInt] == 0L) {
-            blockPositionByteInt++;
-            currentArrayPos++;
-            continue;
-          }
-          if (set.contains(new RID(context.getDatabase(), currentCluster, currentArrayPos * 63 + currentBit))) {
-            currentId = currentArrayPos * 63 + currentBit;
-            return;
-          } else {
-            currentBit++;
-            if (currentBit > 63) {
-              currentBit = 0;
-              blockPositionByteInt++;
-              currentArrayPos++;
+    while (currentBucket < set.content.length) {
+      final long[][] bucketBlocks = set.content[currentBucket];
+      if (bucketBlocks != null) {
+        while (currentBlock < bucketBlocks.length) {
+          final long[] words = bucketBlocks[currentBlock];
+          if (words != null) {
+            while (currentWordPos < words.length) {
+              final long w = words[currentWordPos];
+              if (w != 0L) {
+                remainingWord = w;
+                nextBit = Long.numberOfTrailingZeros(w);
+                return;
+              }
+              currentWordPos++;
             }
           }
+          currentBlock++;
+          currentWordPos = 0;
         }
-        if (set.content[currentCluster][block] == null && set.content[currentCluster].length >= block) {
-          currentArrayPos += set.maxArraySize;
-        }
-        block++;
-        blockPositionByteInt = 0;
-        currentBit = 0;
       }
-      block = 0;
-      currentBit = 0;
-      currentArrayPos = 0;
-      blockPositionByteInt = 0;
-      currentCluster++;
+      currentBucket++;
+      currentBlock = 0;
+      currentWordPos = 0;
     }
 
-    currentCluster = -1;
+    currentBucket = -1;
+    nextBit = -1;
   }
-
 }

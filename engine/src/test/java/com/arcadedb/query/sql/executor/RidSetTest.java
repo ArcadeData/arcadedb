@@ -55,6 +55,47 @@ class RidSetTest extends TestHelper {
   }
 
   @Test
+  void primitivePairApiMatchesRidApi() {
+    final RidSet set = new RidSet();
+    assertThat(set.add(4, 777)).isTrue();
+    assertThat(set.add(4, 777)).isFalse();
+    assertThat(set.contains(4, 777)).isTrue();
+    assertThat(set.contains(new RID(database, 4, 777))).isTrue();
+    assertThat(set.remove(4, 777)).isTrue();
+    assertThat(set.contains(4, 777)).isFalse();
+    assertThat(set.size()).isZero();
+  }
+
+  @Test
+  void allBitsIncludingBit63UsableAfter64BitPacking() {
+    final RidSet set = new RidSet();
+    // Position 63 was an unused slot under the old 63-bit-per-long packing (masked as Long.MIN_VALUE in a "> 0" compare). After switching to full 64-bit
+    // packing the bit is usable; this guards against a regression that would silently drop every 64th position.
+    for (int i = 0; i < 128; i++)
+      assertThat(set.add(7, i)).isTrue();
+    for (int i = 0; i < 128; i++)
+      assertThat(set.contains(7, i)).isTrue();
+    assertThat(set.size()).isEqualTo(128);
+  }
+
+  @Test
+  void iteratorVisitsEverySetBitOnceAcrossWordBoundaries() {
+    final RidSet set = new RidSet();
+    final long[] positions = { 0, 1, 63, 64, 65, 127, 128, 4096, 1_000_000 };
+    for (final long p : positions)
+      set.add(3, p);
+
+    final Set<Long> seen = new HashSet<>();
+    for (final RID rid : set) {
+      assertThat(rid.getBucketId()).isEqualTo(3);
+      assertThat(seen.add(rid.getPosition())).isTrue();
+    }
+    assertThat(seen).hasSize(positions.length);
+    for (final long p : positions)
+      assertThat(seen).contains(p);
+  }
+
+  @Test
   void remove() {
     final RidSet set = new RidSet();
     final RID rid1 = new RID(database, 1, 100);

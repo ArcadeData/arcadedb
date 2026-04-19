@@ -210,18 +210,28 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public int putUnsignedNumber(final long value) {
-    int bytesUsed = 0;
+    // Fast path: single-byte varint (0..127). Dominates in practice - property counts, small ids, short string lengths.
+    if ((value & ~0x7FL) == 0L) {
+      checkForAllocation(buffer.position(), 1);
+      buffer.put((byte) value);
+      return 1;
+    }
+    // Fast path: two-byte varint (128..16383). Covers most property ids and in-page offsets.
+    if ((value & ~0x3FFFL) == 0L) {
+      checkForAllocation(buffer.position(), 2);
+      buffer.put((byte) ((value & 0x7F) | 0x80));
+      buffer.put((byte) (value >>> 7));
+      return 2;
+    }
+    // Slow path: 3+ bytes. Compute total length once, do a single bounds/allocation check, then write bytes without re-checking.
+    final int bytesUsed = getUnsignedNumberSpace(value);
+    checkForAllocation(buffer.position(), bytesUsed);
     long v = value;
-    while ((v & 0xFFFFFFFFFFFFFF80L) != 0L) {
-      checkForAllocation(buffer.position(), BYTE_SERIALIZED_SIZE);
-      buffer.put((byte) (v & 0x7F | 0x80));
-      bytesUsed++;
+    for (int remaining = bytesUsed - 1; remaining > 0; remaining--) {
+      buffer.put((byte) ((v & 0x7F) | 0x80));
       v >>>= 7;
     }
-    checkForAllocation(buffer.position(), BYTE_SERIALIZED_SIZE);
-    buffer.put((byte) (v & 0x7F));
-    bytesUsed++;
-
+    buffer.put((byte) v);
     return bytesUsed;
   }
 
@@ -392,12 +402,17 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public long getUnsignedNumber() {
-    final int startPos = buffer.position();
-    long value = 0L;
-    int i = 0;
+    final long b0 = getByte();
+    // Fast path: single-byte varint (high bit clear). Dominates in practice.
+    if ((b0 & 0x80L) == 0L)
+      return b0;
+
+    final int startPos = buffer.position() - 1;
+    long value = b0 & 0x7FL;
+    int i = 7;
     long b;
     while (((b = getByte()) & 0x80L) != 0) {
-      value |= (b & 0x7F) << i;
+      value |= (b & 0x7FL) << i;
       i += 7;
       if (i > 63)
         throw new IllegalArgumentException(
@@ -413,13 +428,18 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    */
   @Override
   public long[] getUnsignedNumberAndSize() {
-    final int startPos = buffer.position();
-    long value = 0L;
-    int i = 0;
+    final long b0 = getByte();
+    // Fast path: single-byte varint.
+    if ((b0 & 0x80L) == 0L)
+      return new long[] { b0, 1 };
+
+    final int startPos = buffer.position() - 1;
+    long value = b0 & 0x7FL;
+    int i = 7;
     long b;
-    int byteRead = 1;
+    int byteRead = 2;
     while (((b = getByte()) & 0x80L) != 0) {
-      value |= (b & 0x7F) << i;
+      value |= (b & 0x7FL) << i;
       i += 7;
       if (i > 63)
         throw new IllegalArgumentException(
@@ -645,15 +665,12 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   }
 
   public static int getUnsignedNumberSpace(final long value) {
-    int bytesUsed = 0;
-    long v = value;
-    while ((v & 0xFFFFFFFFFFFFFF80L) != 0L) {
-      bytesUsed++;
-      v >>>= 7;
-    }
-    bytesUsed++;
-
-    return bytesUsed;
+    // O(1) branchless: bitsUsed = 64 - leading zeros, rounded up to a multiple of 7. Returns 1 for value == 0 (1 leading-zero slot = 64, 64/7 ceil = 10; but
+    // we want 1 byte for 0). Handle 0 as a special case so the ceil formula stays simple.
+    if (value == 0L)
+      return 1;
+    final int bitsUsed = 64 - Long.numberOfLeadingZeros(value);
+    return (bitsUsed + 6) / 7;
   }
 
   @Override

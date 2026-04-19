@@ -18,10 +18,10 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
 import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.*;
 import java.util.stream.*;
@@ -37,13 +37,15 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   protected       List<Result> entryPoints = null;
   protected final List<Result> results     = new ArrayList<>();
 
-  final Set<RID> traversed;
+  // Visited set for traversal dedup. Graph traversal is inherently sparse (RIDs scatter across buckets with random offsets), so RidHashSet's primitive-packed
+  // open-addressing hash wins over RidSet's bitmap on both memory and build time. See performance.RidDedupSetBenchmark.
+  final RidHashSet traversed;
 
   public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause,
       final PInteger maxDepth,
       final CommandContext context) {
     super(context);
-    this.traversed = new RidSet(context);
+    this.traversed = new RidHashSet();
     this.whileClause = whileClause;
     this.maxDepth = maxDepth;
     this.projections = projections.stream().map(TraverseProjectionItem::copy).collect(Collectors.toList());
