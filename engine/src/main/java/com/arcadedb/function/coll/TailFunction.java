@@ -38,6 +38,8 @@ public class TailFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
       throw new CommandExecutionException("tail() requires exactly one argument");
+    if (args[0] == null)
+      return null;
     if (args[0] instanceof List) {
       final List<?> list = (List<?>) args[0];
       return list.size() <= 1 ? Collections.emptyList() : list.subList(1, list.size());
