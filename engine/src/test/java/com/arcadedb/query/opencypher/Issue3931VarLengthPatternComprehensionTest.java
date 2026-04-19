@@ -84,10 +84,15 @@ public class Issue3931VarLengthPatternComprehensionTest {
   @SuppressWarnings("unchecked")
   @Test
   void variableLengthPatternComprehensionOneLength() {
-    // Only length-1 paths: alice->bob and alice->charlie
+    // GitHub issue #3930: within a pattern comprehension, the Cypher spec does not
+    // mandate a specific iteration order. Neo4j happens to return insertion order
+    // (["Bob", "Charlie"]); ArcadeDB walks its edge linked-list from newest to oldest
+    // so the order is reversed. The outer ORDER BY in the issue's query sorts rows
+    // (there is only one here), not the elements inside the list. Both orders are
+    // valid Cypher results - we only assert the set membership is correct.
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:VarLengthTest3 {name:'Alice'}) "
-            + "RETURN [(a)-[:KNOWS*1..1]->(f:VarLengthTest3) | f.name] AS result");
+            + "RETURN [(a)-[:KNOWS*1..1]->(f:VarLengthTest3) | f.name] AS result ORDER BY result");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result r = resultSet.next();
