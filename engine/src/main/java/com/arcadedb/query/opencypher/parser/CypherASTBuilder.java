@@ -1411,16 +1411,19 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<NodePattern> nodes = new ArrayList<>();
     final List<RelationshipPattern> relationships = new ArrayList<>();
 
-    // First node
-    if (!ctx.nodePattern().isEmpty()) {
-      nodes.add(visitNodePattern(ctx.nodePattern(0)));
-
-      // Relationships and subsequent nodes
-      for (int i = 0; i < ctx.relationshipPattern().size(); i++) {
-        relationships.add(visitRelationshipPattern(ctx.relationshipPattern(i)));
-        if (i + 1 < ctx.nodePattern().size()) {
-          nodes.add(visitNodePattern(ctx.nodePattern(i + 1)));
-        }
+    // Walk children in order so that each optional quantifier can be paired with
+    // the relationship pattern it follows (grammar: relationshipPattern quantifier? nodePattern).
+    for (int i = 0; i < ctx.getChildCount(); i++) {
+      final ParseTree child = ctx.getChild(i);
+      if (child instanceof Cypher25Parser.NodePatternContext) {
+        nodes.add(visitNodePattern((Cypher25Parser.NodePatternContext) child));
+      } else if (child instanceof Cypher25Parser.RelationshipPatternContext) {
+        relationships.add(visitRelationshipPattern((Cypher25Parser.RelationshipPatternContext) child));
+      } else if (child instanceof Cypher25Parser.QuantifierContext) {
+        if (relationships.isEmpty())
+          throw new CommandParsingException("InvalidSyntax: Quantifier has no preceding relationship");
+        final int last = relationships.size() - 1;
+        relationships.set(last, applyQuantifier(relationships.get(last), (Cypher25Parser.QuantifierContext) child));
       }
     }
 
@@ -1432,6 +1435,31 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Path with relationships
       return new PathPattern(nodes, relationships);
     }
+  }
+
+  /**
+   * Apply a Cypher 25 quantifier ({@code +}, {@code *}, {@code {n}}, {@code {n,m}}) to a
+   * relationship pattern, returning a new pattern with minHops/maxHops populated.
+   */
+  private RelationshipPattern applyQuantifier(final RelationshipPattern rel, final Cypher25Parser.QuantifierContext q) {
+    final Integer min;
+    final Integer max;
+    if (q.PLUS() != null) {
+      min = 1;
+      max = null;
+    } else if (q.TIMES() != null) {
+      min = 0;
+      max = null;
+    } else if (q.from != null || q.to != null) {
+      min = q.from != null ? Integer.parseInt(q.from.getText()) : 0;
+      max = q.to != null ? Integer.parseInt(q.to.getText()) : null;
+    } else {
+      final int exact = Integer.parseInt(q.UNSIGNED_DECIMAL_INTEGER(0).getText());
+      min = exact;
+      max = exact;
+    }
+    return new RelationshipPattern(rel.getVariable(), rel.getTypes().isEmpty() ? null : rel.getTypes(), rel.getDirection(),
+        rel.getProperties().isEmpty() ? null : rel.getProperties(), rel.getPropertiesParameterName(), min, max);
   }
 
   public NodePattern visitNodePattern(final Cypher25Parser.NodePatternContext ctx) {
