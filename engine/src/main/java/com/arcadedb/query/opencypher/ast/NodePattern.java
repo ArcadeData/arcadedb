@@ -29,10 +29,12 @@ import java.util.Map;
  * - (n:Person) - node with label
  * - (n:Person {name: 'John'}) - node with label and properties
  * - (:Person) - anonymous node with label
+ * - (n:$(label)) - node with a dynamic label resolved at runtime (Cypher 25)
  */
 public class NodePattern implements PatternElement {
   private final String variable;
   private final List<String> labels;
+  private final List<Expression> dynamicLabels;
   private final Map<String, Object> properties;
   private final boolean explicitProperties;
   private final String propertiesParameterName;
@@ -43,8 +45,14 @@ public class NodePattern implements PatternElement {
 
   public NodePattern(final String variable, final List<String> labels, final Map<String, Object> properties,
       final String propertiesParameterName) {
+    this(variable, labels, null, properties, propertiesParameterName);
+  }
+
+  public NodePattern(final String variable, final List<String> labels, final List<Expression> dynamicLabels,
+      final Map<String, Object> properties, final String propertiesParameterName) {
     this.variable = variable;
     this.labels = labels != null ? labels : Collections.emptyList();
+    this.dynamicLabels = dynamicLabels != null ? dynamicLabels : Collections.emptyList();
     this.properties = properties != null ? properties : Collections.emptyMap();
     this.explicitProperties = properties != null || propertiesParameterName != null;
     this.propertiesParameterName = propertiesParameterName;
@@ -80,6 +88,25 @@ public class NodePattern implements PatternElement {
    */
   public boolean hasLabels() {
     return !labels.isEmpty();
+  }
+
+  /**
+   * Returns dynamic label expressions (Cypher 25 {@code $(expression)} syntax) that must be
+   * evaluated at runtime against the current binding/parameters to produce additional labels.
+   *
+   * @return list of dynamic label expressions (may be empty)
+   */
+  public List<Expression> getDynamicLabels() {
+    return dynamicLabels;
+  }
+
+  /**
+   * Returns true if this node pattern has dynamic label expressions.
+   *
+   * @return true if has dynamic labels
+   */
+  public boolean hasDynamicLabels() {
+    return !dynamicLabels.isEmpty();
   }
 
   /**

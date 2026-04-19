@@ -180,7 +180,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 final Object boundValue = currentInputResult.getProperty(variable);
                 if (boundValue instanceof Vertex) {
                   final Vertex boundVertex = (Vertex) boundValue;
-                  if (matchesAllLabelsBound(boundVertex) && matchesProperties(boundVertex, currentInputResult))
+                  if (matchesAllLabelsBound(boundVertex, currentInputResult) && matchesProperties(boundVertex, currentInputResult))
                     iterator = Collections.singletonList((Identifiable) boundVertex).iterator();
                   else
                     iterator = Collections.<Identifiable>emptyList().iterator();
@@ -206,7 +206,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                   final Vertex vertex = (Vertex) record;
 
                   // Apply label and property filters
-                  if (!matchesAllLabels(vertex) || !matchesProperties(vertex, currentInputResult))
+                  if (!matchesAllLabels(vertex, currentInputResult) || !matchesProperties(vertex, currentInputResult))
                     continue;
 
                   // Copy input result and add our vertex
@@ -323,9 +323,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
       }
     }
 
-    if (pattern.hasLabels()) {
-      final List<String> labels = pattern.getLabels();
+    final List<String> labels = resolveEffectiveLabels(currentInputResult);
 
+    if (!labels.isEmpty()) {
       if (labels.size() == 1) {
         // Single label - polymorphic iteration (existing behavior)
         final String label = labels.get(0);
@@ -684,9 +684,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * For multi-label patterns (e.g., :A:B:C), checks type hierarchy.
    */
   private boolean matchesAllLabels(final Vertex vertex) {
-    if (!pattern.hasLabels() || pattern.getLabels().size() <= 1)
+    return matchesAllLabels(vertex, null);
+  }
+
+  private boolean matchesAllLabels(final Vertex vertex, final Result currentResult) {
+    final List<String> labels = resolveEffectiveLabels(currentResult);
+    if (labels.size() <= 1)
       return true; // Single label already filtered by iterator
-    for (final String label : pattern.getLabels())
+    for (final String label : labels)
       if (!Labels.hasLabel(vertex, label))
         return false;
     return true;
@@ -698,12 +703,52 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * because bound variables bypass the type-filtered iterator.
    */
   private boolean matchesAllLabelsBound(final Vertex vertex) {
-    if (!pattern.hasLabels())
+    return matchesAllLabelsBound(vertex, null);
+  }
+
+  private boolean matchesAllLabelsBound(final Vertex vertex, final Result currentResult) {
+    final List<String> labels = resolveEffectiveLabels(currentResult);
+    if (labels.isEmpty())
       return true;
-    for (final String label : pattern.getLabels())
+    for (final String label : labels)
       if (!Labels.hasLabel(vertex, label))
         return false;
     return true;
+  }
+
+  /**
+   * Returns the effective labels for this pattern, combining static labels with the results of
+   * evaluating any Cypher 25 dynamic {@code $(expression)} labels against the current binding.
+   * A dynamic label expression may yield a string (single label) or a list/iterable of strings
+   * (multiple labels, all required).
+   */
+  private List<String> resolveEffectiveLabels(final Result currentInputResult) {
+    final List<String> staticLabels = pattern.getLabels();
+    if (!pattern.hasDynamicLabels())
+      return staticLabels;
+
+    final List<String> result = new ArrayList<>(staticLabels.size() + pattern.getDynamicLabels().size());
+    result.addAll(staticLabels);
+    for (final Expression dynExpr : pattern.getDynamicLabels()) {
+      final Object resolved = evaluator.evaluate(dynExpr, currentInputResult, context);
+      appendResolvedLabels(result, resolved);
+    }
+    return result;
+  }
+
+  private static void appendResolvedLabels(final List<String> labels, final Object resolved) {
+    if (resolved == null)
+      return;
+    if (resolved instanceof String) {
+      labels.add((String) resolved);
+    } else if (resolved instanceof Iterable) {
+      for (final Object item : (Iterable<?>) resolved) {
+        if (item != null)
+          labels.add(item.toString());
+      }
+    } else {
+      labels.add(resolved.toString());
+    }
   }
 
   private boolean matchesProperties(final Vertex vertex) {

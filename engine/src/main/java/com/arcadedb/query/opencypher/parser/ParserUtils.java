@@ -21,6 +21,9 @@ package com.arcadedb.query.opencypher.parser;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 
+import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.tree.ParseTree;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -67,22 +70,88 @@ public class ParserUtils {
    * @return list of label names with backticks stripped
    */
   public static List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
-    // Use text-based parsing for now (can be improved with grammar traversal later)
+    // Walk the grammar tree for static label names; dynamic $(expression) labels are returned by
+    // collectDynamicLabelContexts and handled at runtime.
+    if (containsDynamicLabel(ctx))
+      return collectStaticLabels(ctx);
+
+    // Fast path: text-based parsing for the common case without dynamic labels.
     final String text = ctx.getText();
-
-    // Remove leading colon and split by both : and | to get all labels
     final String cleanText = text.replaceAll("^:+", "");
-
-    // Split by both : and | and & to handle multiple labels and alternatives
     final String[] parts = cleanText.split("[:&|]+");
 
-    // Strip backticks from each label if present
     final List<String> labels = new ArrayList<>();
     for (final String part : parts) {
       if (!part.isEmpty())
         labels.add(stripBackticks(part));
     }
     return labels;
+  }
+
+  /**
+   * Walks the label expression grammar tree collecting only static label names
+   * ({@code LabelNameContext}). Dynamic {@code $(expression)} labels are skipped.
+   */
+  public static List<String> collectStaticLabels(final ParserRuleContext ctx) {
+    final List<String> labels = new ArrayList<>();
+    collectStaticLabelsRecursive(ctx, labels);
+    return labels;
+  }
+
+  private static void collectStaticLabelsRecursive(final ParseTree node, final List<String> out) {
+    if (node instanceof Cypher25Parser.LabelNameContext) {
+      out.add(stripBackticks(node.getText()));
+      return;
+    }
+    if (node instanceof Cypher25Parser.DynamicLabelContext)
+      return; // skip dynamic labels; they are collected separately
+
+    for (int i = 0; i < node.getChildCount(); i++)
+      collectStaticLabelsRecursive(node.getChild(i), out);
+  }
+
+  /**
+   * Walks the label expression grammar tree collecting dynamic label expression contexts.
+   * Returns the inner {@link Cypher25Parser.ExpressionContext} of each {@code $(expression)}
+   * dynamic label, so callers can compile them into runtime expressions.
+   */
+  public static List<Cypher25Parser.ExpressionContext> collectDynamicLabelContexts(final ParserRuleContext ctx) {
+    final List<Cypher25Parser.ExpressionContext> out = new ArrayList<>();
+    collectDynamicLabelContextsRecursive(ctx, out);
+    return out;
+  }
+
+  private static void collectDynamicLabelContextsRecursive(final ParseTree node,
+      final List<Cypher25Parser.ExpressionContext> out) {
+    if (node instanceof Cypher25Parser.DynamicLabelContext) {
+      final Cypher25Parser.DynamicLabelContext dyn = (Cypher25Parser.DynamicLabelContext) node;
+      final Cypher25Parser.DynamicAnyAllExpressionContext inner = dyn.dynamicAnyAllExpression();
+      if (inner != null && inner.expression() != null)
+        out.add(inner.expression());
+      return;
+    }
+    if (node instanceof Cypher25Parser.LabelNameContext)
+      return;
+
+    for (int i = 0; i < node.getChildCount(); i++)
+      collectDynamicLabelContextsRecursive(node.getChild(i), out);
+  }
+
+  /**
+   * Returns true if the label expression contains any dynamic {@code $(expression)} label.
+   */
+  public static boolean containsDynamicLabel(final ParserRuleContext ctx) {
+    return containsDynamicLabelRecursive(ctx);
+  }
+
+  private static boolean containsDynamicLabelRecursive(final ParseTree node) {
+    if (node instanceof Cypher25Parser.DynamicLabelContext)
+      return true;
+    for (int i = 0; i < node.getChildCount(); i++) {
+      if (containsDynamicLabelRecursive(node.getChild(i)))
+        return true;
+    }
+    return false;
   }
 
   /**
