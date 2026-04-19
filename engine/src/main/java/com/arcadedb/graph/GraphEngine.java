@@ -867,8 +867,12 @@ public class GraphEngine {
               true));
         }
       } catch (final RecordNotFoundException e) {
+        // rid == null: the vertex itself was deleted concurrently (stale reference from a
+        //   prior traversal step). Expected under concurrent writes — log at FINE.
+        // rid != null: the edge chunk segment is orphaned — possible corruption, keep WARNING.
+        final Level level = rid == null ? Level.FINE : Level.WARNING;
         LogManager.instance()
-            .log(this, Level.WARNING, "Cannot load OUT edge list chunk (%s) for vertex %s", e, rid,
+            .log(this, level, "Cannot load OUT edge list chunk (%s) for vertex %s", e, rid,
                 vertex.getIdentity());
       }
     } else if (direction == Vertex.DIRECTION.IN) {
@@ -880,8 +884,9 @@ public class GraphEngine {
               true));
         }
       } catch (final RecordNotFoundException e) {
+        final Level level = rid == null ? Level.FINE : Level.WARNING;
         LogManager.instance()
-            .log(this, Level.WARNING, "Cannot load IN edge list chunk (%s) for vertex %s", e, rid,
+            .log(this, level, "Cannot load IN edge list chunk (%s) for vertex %s", e, rid,
                 vertex.getIdentity());
       }
     }
