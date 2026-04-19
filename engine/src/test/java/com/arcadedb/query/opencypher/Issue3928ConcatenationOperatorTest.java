@@ -88,6 +88,19 @@ public class Issue3928ConcatenationOperatorTest {
     assertThat(r.<String>getProperty("result")).isEqualTo("Hello World");
   }
 
+  @Test
+  void stringConcatenationWithSpaces() {
+    // GitHub issue #3927: 'Alpha' || 'Beta' and chained 'Alpha' || ' ' || 'Beta'
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN 'Alpha' || 'Beta' AS result1, 'Alpha' || ' ' || 'Beta' AS result2");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result r = resultSet.next();
+    assertThat(r.<String>getProperty("result1")).isEqualTo("AlphaBeta");
+    assertThat(r.<String>getProperty("result2")).isEqualTo("Alpha Beta");
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
   @SuppressWarnings("unchecked")
   @Test
   void listConcatenationChained() {
