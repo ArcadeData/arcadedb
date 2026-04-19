@@ -89,6 +89,17 @@ public class Issue3928ConcatenationOperatorTest {
   }
 
   @Test
+  void stringConcatenationWithPipeAndNull() {
+    // GitHub issue #3926: null propagates through || - 'Hello' || null returns null
+    final ResultSet resultSet = database.query("opencypher", "RETURN 'Hello' || null AS result");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result r = resultSet.next();
+    assertThat(r.<Object>getProperty("result")).isNull();
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  @Test
   void stringConcatenationWithSpaces() {
     // GitHub issue #3927: 'Alpha' || 'Beta' and chained 'Alpha' || ' ' || 'Beta'
     final ResultSet resultSet = database.query("opencypher",
