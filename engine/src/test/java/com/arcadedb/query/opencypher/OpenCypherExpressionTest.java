@@ -307,6 +307,27 @@ class OpenCypherExpressionTest {
   }
 
   @Test
+  void listComprehensionWhereNullComparison() {
+    // GitHub issue #3933: list comprehension with null comparison.
+    // Cypher spec: integer literals are 64-bit signed integers (Long in Java).
+    // Neo4j Java driver and ArcadeDB both return Long for such literals.
+    // The surviving element `4` originates from a Cypher integer literal and
+    // must therefore be returned as a Long.
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN [x IN [1, 2, null, 4] WHERE x > 2 | x] AS result");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    final Object listObj = result.getProperty("result");
+    assertThat(listObj).isInstanceOf(List.class);
+    @SuppressWarnings("unchecked")
+    final List<Object> list = (List<Object>) listObj;
+    assertThat(list).containsExactly(4L);
+    assertThat(list.get(0)).isInstanceOf(Long.class);
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  @Test
   void listComprehensionInWhereWithLabelsAndToLower() {
     // TCK List12 Scenario [6]: list comprehension in WHERE with labels() and toLower()
     // The filter references variables bound in later MATCH steps (b),
