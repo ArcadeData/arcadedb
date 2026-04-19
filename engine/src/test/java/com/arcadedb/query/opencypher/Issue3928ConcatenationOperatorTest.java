@@ -71,6 +71,7 @@ public class Issue3928ConcatenationOperatorTest {
   @SuppressWarnings("unchecked")
   @Test
   void listConcatenationBasic() {
+    // GitHub issue #3921 (duplicate of #3928): [1, 2] || [3, 4] must concatenate into [1, 2, 3, 4].
     final ResultSet resultSet = database.query("opencypher", "RETURN [1, 2] || [3, 4] AS result");
 
     assertThat(resultSet.hasNext()).isTrue();
