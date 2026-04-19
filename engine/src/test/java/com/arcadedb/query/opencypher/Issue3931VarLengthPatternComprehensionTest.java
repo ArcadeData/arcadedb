@@ -98,6 +98,21 @@ public class Issue3931VarLengthPatternComprehensionTest {
 
   @SuppressWarnings("unchecked")
   @Test
+  void variableLengthPatternComprehensionNonExistentLength() {
+    // GitHub issue #3932: no path of length 10 exists, must return empty list.
+    final ResultSet resultSet = database.query("opencypher",
+        "MATCH (a:VarLengthTest3 {name:'Alice'}) "
+            + "RETURN [(a)-[:KNOWS*10..10]->(f:VarLengthTest3) | f.name] AS result");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result r = resultSet.next();
+    final List<Object> list = (List<Object>) r.getProperty("result");
+    assertThat(list).isEmpty();
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
   void variableLengthPatternComprehensionRange() {
     // Length 1: alice->bob, alice->charlie. Length 2: alice->bob->charlie.
     final ResultSet resultSet = database.query("opencypher",
