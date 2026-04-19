@@ -328,6 +328,25 @@ class OpenCypherExpressionTest {
   }
 
   @Test
+  void listComprehensionFilteringNulls() {
+    // GitHub issue #3934: list comprehension filtering nulls with IS NOT NULL.
+    // Cypher spec: integer literals are 64-bit signed integers (Long in Java).
+    // Neo4j Java driver and ArcadeDB both return Long for such literals.
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN [x IN [1, 2, null, 4] WHERE x IS NOT NULL | x * 2] AS result");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    final Object listObj = result.getProperty("result");
+    assertThat(listObj).isInstanceOf(List.class);
+    @SuppressWarnings("unchecked")
+    final List<Object> list = (List<Object>) listObj;
+    assertThat(list).containsExactly(2L, 4L, 8L);
+    assertThat(list.get(0)).isInstanceOf(Long.class);
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  @Test
   void listComprehensionInWhereWithLabelsAndToLower() {
     // TCK List12 Scenario [6]: list comprehension in WHERE with labels() and toLower()
     // The filter references variables bound in later MATCH steps (b),
