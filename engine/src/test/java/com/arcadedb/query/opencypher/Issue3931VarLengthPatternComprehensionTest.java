@@ -98,6 +98,21 @@ public class Issue3931VarLengthPatternComprehensionTest {
 
   @SuppressWarnings("unchecked")
   @Test
+  void variableLengthPatternComprehensionZeroLength() {
+    // GitHub issue #3929: zero-length path returns the anchor node itself.
+    final ResultSet resultSet = database.query("opencypher",
+        "MATCH (a:VarLengthTest3 {name:'Alice'}) "
+            + "RETURN [(a)-[:KNOWS*0..0]->(f:VarLengthTest3) | f.name] AS result");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result r = resultSet.next();
+    final List<Object> list = (List<Object>) r.getProperty("result");
+    assertThat(list).containsExactly("Alice");
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
   void variableLengthPatternComprehensionNonExistentLength() {
     // GitHub issue #3932: no path of length 10 exists, must return empty list.
     final ResultSet resultSet = database.query("opencypher",
