@@ -194,7 +194,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
   @DisplayName("deleteRecord by Record object")
   void deleteRecordByObject() {
     final String rid = insertDocViaSql("toDelete", 0);
-    final RID ridObj = new RID(grpc, rid);
+    final RID ridObj = new RID(rid);
     final Record record = grpc.lookupByRID(ridObj);
 
     grpc.begin();
@@ -238,7 +238,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
   @DisplayName("lookupByRID returns the correct record")
   void lookupByRID() {
     final String rid = insertDocViaSql("lookup", 7);
-    final RID ridObj = new RID(grpc, rid);
+    final RID ridObj = new RID(rid);
 
     final Record record = grpc.lookupByRID(ridObj);
     assertThat(record).isNotNull();
@@ -251,7 +251,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
     // Insert and delete so we have a valid bucket but missing record
     final String rid = insertDocViaSql("willRemove", 0);
     grpc.deleteRecord(rid, 30_000);
-    final RID ridObj = new RID(grpc, rid);
+    final RID ridObj = new RID(rid);
 
     assertThatThrownBy(() -> grpc.lookupByRID(ridObj))
         .isInstanceOfAny(RecordNotFoundException.class, RemoteException.class);
@@ -268,7 +268,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
   @DisplayName("existsRecord returns true for existing record")
   void existsRecordTrue() {
     final String rid = insertDocViaSql("exists", 1);
-    final RID ridObj = new RID(grpc, rid);
+    final RID ridObj = new RID(rid);
 
     assertThat(grpc.existsRecord(ridObj)).isTrue();
   }

@@ -196,7 +196,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
       // SAVE THE RID TO BE RETRIEVED IN THE MGET
       final Object rid = doc.remove(RID_PROPERTY);
-      rids.add(new RID(database, rid.toString()));
+      rids.add(new RID(rid.toString()));
 
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
 

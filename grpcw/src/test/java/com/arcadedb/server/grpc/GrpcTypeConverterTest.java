@@ -262,7 +262,7 @@ class GrpcTypeConverterTest {
 
   @Test
   void toGrpcValueRID() {
-    RID rid = new RID(null, "#1:0");
+    RID rid = new RID("#1:0");
     GrpcValue result = GrpcTypeConverter.toGrpcValue(rid);
     assertThat(result.hasLinkValue()).isTrue();
     assertThat(result.getLinkValue().getRid()).isEqualTo("#1:0");

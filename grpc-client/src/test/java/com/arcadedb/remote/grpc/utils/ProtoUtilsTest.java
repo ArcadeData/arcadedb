@@ -115,7 +115,7 @@ class ProtoUtilsTest {
 
   @Test
   void toGrpcValueRID() {
-    final RID rid = new RID(null, "#10:5");
+    final RID rid = new RID("#10:5");
     final GrpcValue value = ProtoUtils.toGrpcValue(rid);
 
     assertThat(value.hasLinkValue()).isTrue();

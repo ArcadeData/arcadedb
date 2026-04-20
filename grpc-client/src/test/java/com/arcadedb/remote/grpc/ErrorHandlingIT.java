@@ -149,7 +149,7 @@ class ErrorHandlingIT extends BaseGraphServerTest {
 
     // Extract bucket ID and use a large position that won't exist
     int bucketId = Integer.parseInt(ridStr.split(":")[0].substring(1));
-    RID fakeRid = new RID(database, bucketId, 999999L);
+    RID fakeRid = new RID(bucketId, 999999L);
 
     // The server throws RecordNotFoundException or the client maps it to one
     assertThatThrownBy(() -> database.lookupByRID(fakeRid))

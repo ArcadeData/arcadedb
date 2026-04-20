@@ -424,7 +424,7 @@ class BoltStructureTest {
 
   @Test
   void mapperRID() {
-    final RID rid = new RID(null, 1, 100);
+    final RID rid = new RID(1, 100);
     assertThat(BoltStructureMapper.toPackStreamValue(rid)).isEqualTo("#1:100");
   }
 
@@ -442,7 +442,7 @@ class BoltStructureTest {
 
   @Test
   void ridToIdBasic() {
-    final RID rid = new RID(null, 1, 100);
+    final RID rid = new RID(1, 100);
     final long id = BoltStructureMapper.ridToId(rid);
     // Bucket 1 in high 16 bits, position 100 in low 48 bits
     assertThat(id).isEqualTo((1L << 48) | 100L);
@@ -456,17 +456,17 @@ class BoltStructureTest {
   @Test
   void ridToIdMaxValues() {
     // Maximum valid bucket ID (16 bits)
-    final RID ridMaxBucket = new RID(null, 0xFFFF, 0);
+    final RID ridMaxBucket = new RID(0xFFFF, 0);
     assertThat(BoltStructureMapper.ridToId(ridMaxBucket)).isEqualTo(0xFFFF_0000_0000_0000L);
 
     // Maximum valid position (48 bits)
-    final RID ridMaxPosition = new RID(null, 0, 0xFFFF_FFFF_FFFFL);
+    final RID ridMaxPosition = new RID(0, 0xFFFF_FFFF_FFFFL);
     assertThat(BoltStructureMapper.ridToId(ridMaxPosition)).isEqualTo(0xFFFF_FFFF_FFFFL);
   }
 
   @Test
   void ridToIdInvalidBucketNegative() {
-    final RID rid = new RID(null, -1, 100);
+    final RID rid = new RID(-1, 100);
     assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Bucket ID out of range");
@@ -474,7 +474,7 @@ class BoltStructureTest {
 
   @Test
   void ridToIdInvalidBucketTooLarge() {
-    final RID rid = new RID(null, 0x10000, 100); // 65536, exceeds 16-bit limit
+    final RID rid = new RID(0x10000, 100); // 65536, exceeds 16-bit limit
     assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Bucket ID out of range");
@@ -482,7 +482,7 @@ class BoltStructureTest {
 
   @Test
   void ridToIdInvalidPositionNegative() {
-    final RID rid = new RID(null, 1, -1);
+    final RID rid = new RID(1, -1);
     assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Position out of range");
