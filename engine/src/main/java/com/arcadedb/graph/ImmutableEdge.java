@@ -66,12 +66,12 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     if (recordInCache != null) {
       if (recordInCache instanceof MutableEdge edge)
         return edge;
-      else if (!database.getTransaction().hasPageForRecord(rid.getPageId())) {
+      else if (!database.getTransaction().hasPageForRecord(rid.getPageId(database))) {
         // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
         // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
         try {
           // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-          database.getTransaction().getPageToModify(rid.getPageId(),
+          database.getTransaction().getPageToModify(rid.getPageId(database),
               ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
           reload();
         } catch (final IOException e) {

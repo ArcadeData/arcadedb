@@ -85,7 +85,6 @@ public class DatabaseRID extends RID {
     return (Edge) database.lookupByRID(this, loadContent);
   }
 
-  @Override
   public PageId getPageId() {
     return new PageId(database, bucketId,
         (int) (getPosition() / ((LocalBucket) database.getSchema().getBucketById(bucketId)).getMaxRecordsInPage()));

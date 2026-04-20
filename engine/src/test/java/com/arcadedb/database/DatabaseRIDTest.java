@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -38,6 +39,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression coverage for the {@link DatabaseRID} wrap introduced to keep {@link RID#asVertex()} and friends routing to the correct database when multiple
@@ -183,6 +185,50 @@ class DatabaseRIDTest extends TestHelper {
       }
     } finally {
       database2.drop();
+    }
+  }
+
+  /**
+   * Regression for: a bare {@link RID} must keep resolving against the single active database on the thread, matching pre-26.4.1 user-visible behaviour.
+   * Only multi-DB ambiguity or missing context should trigger the throw.
+   */
+  @Test
+  void bareRidResolvesAgainstSingleActiveDatabase() {
+    database.getSchema().createVertexType("V");
+
+    final RID[] holder = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("V").set("flag", "single").save();
+      // Strip the DatabaseRID wrapper to simulate user code that constructed a RID via `new RID("#x:y")` instead of database.newRID(...).
+      holder[0] = new RID(v.getIdentity().getBucketId(), v.getIdentity().getPosition());
+    });
+
+    database.transaction(() -> {
+      final Vertex loaded = holder[0].asVertex();
+      assertThat(loaded.<String>get("flag")).isEqualTo("single");
+    });
+  }
+
+  @Test
+  void bareRidThrowsWhenNoActiveDatabaseContext() {
+    database.getSchema().createVertexType("V");
+
+    final RID[] holder = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("V").save();
+      holder[0] = new RID(v.getIdentity().getBucketId(), v.getIdentity().getPosition());
+    });
+
+    // Close the database so no thread-local context is left on this thread. Operating on a bare RID must now fail loudly.
+    database.close();
+    try {
+      assertThatThrownBy(() -> holder[0].asVertex())
+          .isInstanceOf(DatabaseOperationException.class)
+          .hasMessageContaining("asVertex")
+          .hasMessageContaining("DatabaseRID");
+    } finally {
+      // Re-open for the @AfterEach teardown that TestHelper performs.
+      database = (DatabaseInternal) new DatabaseFactory(getDatabasePath()).open();
     }
   }
 

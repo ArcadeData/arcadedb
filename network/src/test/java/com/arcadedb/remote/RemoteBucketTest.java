@@ -53,19 +53,19 @@ class RemoteBucketTest {
 
   @Test
   void getRecordThrowsUnsupportedOperationException() {
-    assertThatThrownBy(() -> bucket.getRecord(new RID(null, 0, 0)))
+    assertThatThrownBy(() -> bucket.getRecord(new RID(0, 0)))
         .isInstanceOf(UnsupportedOperationException.class);
   }
 
   @Test
   void existsRecordThrowsUnsupportedOperationException() {
-    assertThatThrownBy(() -> bucket.existsRecord(new RID(null, 0, 0)))
+    assertThatThrownBy(() -> bucket.existsRecord(new RID(0, 0)))
         .isInstanceOf(UnsupportedOperationException.class);
   }
 
   @Test
   void deleteRecordThrowsUnsupportedOperationException() {
-    assertThatThrownBy(() -> bucket.deleteRecord(new RID(null, 0, 0)))
+    assertThatThrownBy(() -> bucket.deleteRecord(new RID(0, 0)))
         .isInstanceOf(UnsupportedOperationException.class);
   }
 

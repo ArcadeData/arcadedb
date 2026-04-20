@@ -231,7 +231,7 @@ class ChannelBinaryTest {
 
   @Test
   void writeAndReadRID() throws Exception {
-    final RID rid = new RID(database, 5, 12345L);
+    final RID rid = new RID(5, 12345L);
     channel.writeRID(rid);
     channel.flush();
 

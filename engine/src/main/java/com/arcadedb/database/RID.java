@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.CodeUtils;
@@ -116,7 +117,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
 
   @Override
   public Record getRecord(final boolean loadContent) {
-    throw unboundRid("getRecord");
+    return resolveActiveDatabase("getRecord").lookupByRID(this, loadContent);
   }
 
   public Document asDocument() {
@@ -124,7 +125,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public Document asDocument(final boolean loadContent) {
-    throw unboundRid("asDocument");
+    return (Document) resolveActiveDatabase("asDocument").lookupByRID(this, loadContent);
   }
 
   public Vertex asVertex() {
@@ -132,7 +133,13 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public Vertex asVertex(final boolean loadContent) {
-    throw unboundRid("asVertex");
+    try {
+      return (Vertex) resolveActiveDatabase("asVertex").lookupByRID(this, loadContent);
+    } catch (final RecordNotFoundException e) {
+      throw e;
+    } catch (final ClassCastException e) {
+      throw new RecordNotFoundException("Record " + this + " not found", this, e);
+    }
   }
 
   public Edge asEdge() {
@@ -140,7 +147,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public Edge asEdge(final boolean loadContent) {
-    throw unboundRid("asEdge");
+    return (Edge) resolveActiveDatabase("asEdge").lookupByRID(this, loadContent);
   }
 
   @Override
@@ -187,28 +194,27 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     return bucketId > -1 && offset > -1;
   }
 
-  public PageId getPageId() {
-    final BasicDatabase db = requireDatabase();
-    return new PageId(db, bucketId,
-        (int) (getPosition() / ((LocalBucket) db.getSchema().getBucketById(bucketId)).getMaxRecordsInPage()));
-  }
-
   public PageId getPageId(final BasicDatabase db) {
     return new PageId(db, bucketId,
         (int) (getPosition() / ((LocalBucket) db.getSchema().getBucketById(bucketId)).getMaxRecordsInPage()));
   }
 
-  private BasicDatabase requireDatabase() {
+  /**
+   * Resolves the database to use for record loading. Returns the single active database on the current thread if exactly one is in scope (the common single-DB
+   * case, matching pre-26.4.1 behaviour); throws otherwise - either because no database context is active, or because multiple databases are open with
+   * ambiguous active transactions. In multi-DB scenarios callers should hold a {@link DatabaseRID} (produced by {@code database.newRID(...)}) which resolves
+   * directly against the owning database and does not enter this path.
+   */
+  private BasicDatabase resolveActiveDatabase(final String op) {
     final BasicDatabase db = DatabaseContext.INSTANCE.getActiveDatabase();
     if (db == null)
-      throw new DatabaseOperationException(
-          "No active database context for RID " + this + ". Use database.lookupByRID() instead or ensure a database context is active on the current thread");
+      throw unboundRid(op);
     return db;
   }
 
   private DatabaseOperationException unboundRid(final String op) {
     return new DatabaseOperationException(
         "Cannot call " + op + "() on bare RID " + this
-            + ": this RID is not bound to a database. Use database.lookupByRID(rid) or produce a DatabaseRID at the origin (e.g. database.newRID(...))");
+            + ": no unambiguous active database on this thread. Either open a transaction on the owning database before calling, or use a DatabaseRID (e.g. database.newRID(...)) / database.lookupByRID(rid)");
   }
 }
