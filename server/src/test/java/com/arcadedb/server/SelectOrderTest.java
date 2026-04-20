@@ -156,7 +156,7 @@ class SelectOrderTest {
         database.commit();
 
         sqlString = "SELECT from Order WHERE @rid < ? ORDER BY @rid DESC LIMIT 10";
-        parameter = new RID(database, "#3:1");
+        parameter = new RID("#3:1");
 
         database.begin();
         try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {

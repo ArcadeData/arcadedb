@@ -40,11 +40,18 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private              long        resultSetLimit    = -1;
   private              long        readTimeout       = -1;
   private final        boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
+  private final        boolean     denyAll;
 
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
+    this(databaseName, userName, groups, false);
+  }
+
+  public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups,
+      final boolean denyAll) {
     this.databaseName = databaseName;
     this.userName = userName;
     this.groups = groups;
+    this.denyAll = denyAll;
   }
 
   public String[] getGroups() {
@@ -77,11 +84,16 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
+    if (denyAll)
+      return false;
     return databaseAccessMap[access.ordinal()];
   }
 
   @Override
   public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
+    if (denyAll)
+      return false;
+
     final boolean[][] currentMap = fileAccessMap;
     if (currentMap == null)
       return true;

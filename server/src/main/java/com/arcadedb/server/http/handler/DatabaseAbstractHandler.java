@@ -63,6 +63,10 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       if (databaseName.isEmpty())
         return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
+      if (user != null && !user.canAccessToDatabase(databaseName.getFirst()))
+        throw new SecurityException(
+            "User '" + user.getName() + "' is not allowed to access database '" + databaseName.getFirst() + "'");
+
       database = httpServer.getServer().getDatabase(databaseName.getFirst(), false, false);
 
       current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());

@@ -92,8 +92,9 @@ public class ServerSecurityUser implements SecurityUser {
     }
 
     if (dbu == null)
-      // USER HAS NO ACCESS TO THE DATABASE, RETURN A USER WITH NO AX
-      dbu = new ServerSecurityDatabaseUser(databaseName, name, new String[0]);
+      // USER HAS NO ACCESS TO THE DATABASE: deny-all sentinel so record/database operations are rejected even if the
+      // caller bypasses the handler-level canAccessToDatabase gate.
+      dbu = new ServerSecurityDatabaseUser(databaseName, name, new String[0], true);
 
     final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(databaseName, dbu);
     if (prev != null)
