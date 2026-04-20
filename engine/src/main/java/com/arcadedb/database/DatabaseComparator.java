@@ -194,6 +194,11 @@ public class DatabaseComparator {
   }
 
   private static String indexStructuralKey(final Index index) {
-    return index.getAssociatedBucketId() + ":" + index.getPropertyNames();
+    final int bucketId = index.getAssociatedBucketId();
+    if (bucketId == -1)
+      // TypeIndex spans all buckets of a type; disambiguate by type name so that
+      // "User[id]" and "Photo[id]" don't collide on the same key "-1:[id]".
+      return "-1:" + index.getTypeName() + ":" + index.getPropertyNames();
+    return bucketId + ":" + index.getPropertyNames();
   }
 }

@@ -56,11 +56,15 @@ public class DatabaseComparatorErrorsReporter {
     compareBuckets((DatabaseInternal) db1, (DatabaseInternal) db2);
     compareIndexes(db1, db2);
 
-    return errors.isEmpty() ? null : errors.stream().map(ComparisonError::message).reduce((a, b) -> a + "\n" + b).orElse("");
+    return errors.isEmpty() ? "DBs are identical" : errors.stream().map(ComparisonError::message).reduce((a, b) -> a + "\n" + b).orElse("");
   }
 
   public void collect(String message, Object... args) {
     errors.add(new ComparisonError(message.formatted(args)));
+  }
+
+  public void resetCollector() {
+    errors.clear();
   }
 
   public void compareBuckets(final DatabaseInternal db1, final DatabaseInternal db2) {
@@ -207,6 +211,11 @@ public class DatabaseComparatorErrorsReporter {
   }
 
   private static String indexStructuralKey(final Index index) {
-    return index.getAssociatedBucketId() + ":" + index.getPropertyNames();
+    final int bucketId = index.getAssociatedBucketId();
+    if (bucketId == -1)
+      // TypeIndex spans all buckets of a type; disambiguate by type name so that
+      // "User[id]" and "Photo[id]" don't collide on the same key "-1:[id]".
+      return "-1:" + index.getTypeName() + ":" + index.getPropertyNames();
+    return bucketId + ":" + index.getPropertyNames();
   }
 }

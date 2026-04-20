@@ -1,8 +1,8 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseComparatorErrorsReporter;
+import com.arcadedb.database.DatabaseFactory;
 
 public class ClusterDatabaseChecker {
 
@@ -22,16 +22,15 @@ public class ClusterDatabaseChecker {
         "/Users/frank/projects/arcade/worktrees/ha-redesign/adb3/databases/playwithpictures");
     Database db3 = factory3.open();
 
-
+    
     System.out.println(comparator.compare(db1, db2));
+    comparator.resetCollector();
     System.out.println("--------");
-
     System.out.println(comparator.compare(db1, db3));
-
+    comparator.resetCollector();
     System.out.println("--------");
     System.out.println(comparator.compare(db2, db3));
 
-    System.out.println("\nDB1, DB2 and DB3 are identical");
     System.exit(0);
   }
 }
