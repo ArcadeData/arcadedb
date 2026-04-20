@@ -23,6 +23,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -140,6 +143,44 @@ class DatabaseRIDTest extends TestHelper {
         assertThat(loaded.<Integer>get("db")).isEqualTo(1);
         assertThat(loaded.getDatabase()).isSameAs(database);
       });
+    } finally {
+      database2.drop();
+    }
+  }
+
+  /**
+   * Regression for: `SELECT FROM T WHERE indexedProp = ?` from an index cursor resolved through the thread-local active database, which could be the wrong
+   * one when multiple databases were open on the same thread. The query must always resolve index RIDs through its own (command-context) database.
+   */
+  @Test
+  void indexedSelectResolvesAgainstQueryDatabaseNotThreadLocal() {
+    final DatabaseInternal database2 = (DatabaseInternal) new DatabaseFactory(getDatabasePath() + "2").create();
+    try {
+      // Different schemas (different bucket ids) to make a cross-database lookup fail loudly with SchemaException.
+      final VertexType t1 = database.getSchema().createVertexType("T1");
+      t1.createProperty("name", Type.STRING);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "T1", new String[] { "name" });
+
+      database2.getSchema().createVertexType("Unrelated");
+
+      database.transaction(() -> database.newVertex("T1").set("name", "brain-a").save());
+
+      // Open a tx on database2 on the same thread so both databases sit in the thread-local context map when the query runs.
+      database2.begin();
+      try {
+        database2.newVertex("Unrelated").save();
+
+        database.transaction(() -> {
+          try (final ResultSet rs = database.query("sql", "select from T1 where name = ?", "brain-a")) {
+            assertThat(rs.hasNext()).isTrue();
+            final Result row = rs.next();
+            assertThat(row.toElement().<String>get("name")).isEqualTo("brain-a");
+            assertThat(row.toElement().getDatabase()).isSameAs(database);
+          }
+        });
+      } finally {
+        database2.rollback();
+      }
     } finally {
       database2.drop();
     }

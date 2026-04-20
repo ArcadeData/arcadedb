@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -133,7 +134,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
             if (finalVal instanceof RID rid) {
               try {
-                nextItem = new ResultInternal(rid.asDocument());
+                // A DatabaseRID carries its origin database, so asDocument() resolves directly. For bare RIDs, route through the query's command-context
+                // database instead of rid.asDocument() — the latter falls back to the thread-local active database, which is ambiguous and can pick the wrong
+                // schema when multiple databases are open on the same thread.
+                nextItem = new ResultInternal(
+                    rid instanceof DatabaseRID ? rid.asDocument() : (Document) context.getDatabase().lookupByRID(rid, true));
               } catch (final RecordNotFoundException e) {
                 LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, finalVal);
                 continue;
