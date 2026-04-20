@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RecordEvents;
@@ -35,6 +36,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
@@ -398,6 +400,8 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public LocalProperty createProperty(final String propertyName, final Type propertyType, final String ofType) {
+    ((DatabaseInternal) schema.getDatabase()).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     if (properties.containsKey(propertyName))
       throw new SchemaException(
           "Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");

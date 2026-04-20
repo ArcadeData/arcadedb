@@ -94,6 +94,39 @@ class CrossDatabaseAccessIT extends BaseGraphServerTest {
   }
 
   @Test
+  void readOnlyApiTokenCannotInsertOnOwnDatabase() throws Exception {
+    // Mirrors the exact repro sent by the reporter (Art): a read-only token scoped to 'live' must not be able to
+    // INSERT INTO Memory on the very same 'live' database. Token payload uses no 'database' key inside permissions,
+    // matching the reporter's minimised token-only repro.
+    testEachServer((serverIndex) -> {
+      createDatabase(serverIndex, OTHER_DB);
+      try {
+        createType(serverIndex, OTHER_DB, "Memory");
+
+        final JSONObject permissions = new JSONObject()
+            .put("types", new JSONObject()
+                .put("*", new JSONObject().put("access", new JSONArray().put("readRecord"))));
+        final String token = createTokenForDatabase(serverIndex, "art-readonly-token", OTHER_DB, permissions);
+        final String tokenAuth = "Bearer " + token;
+
+        final int readStatus = commandStatus(serverIndex, OTHER_DB, tokenAuth, "SELECT FROM Memory");
+        assertThat(readStatus).as("read-only token must be allowed to SELECT on its own database").isEqualTo(200);
+
+        final int insertStatus = commandStatus(serverIndex, OTHER_DB, tokenAuth,
+            "INSERT INTO Memory SET content = 'token-write-attempt', salience = 0.2");
+        assertThat(insertStatus).as("read-only token must not INSERT on its own database").isGreaterThanOrEqualTo(400);
+
+        final int schemaStatus = commandStatus(serverIndex, OTHER_DB, tokenAuth,
+            "CREATE PROPERTY Memory.scope_probe_api_token STRING");
+        assertThat(schemaStatus).as("read-only token must not mutate schema on its own database").isGreaterThanOrEqualTo(400);
+      } finally {
+        deleteToken(serverIndex, "art-readonly-token");
+        dropDatabase(serverIndex, OTHER_DB);
+      }
+    });
+  }
+
+  @Test
   void scopedApiTokenCannotWriteOtherDatabase() throws Exception {
     testEachServer((serverIndex) -> {
       createDatabase(serverIndex, OTHER_DB);
@@ -159,6 +192,11 @@ class CrossDatabaseAccessIT extends BaseGraphServerTest {
   }
 
   private String createToken(final int serverIndex, final String name, final JSONObject permissions) throws Exception {
+    return createTokenForDatabase(serverIndex, name, getDatabaseName(), permissions);
+  }
+
+  private String createTokenForDatabase(final int serverIndex, final String name, final String database,
+      final JSONObject permissions) throws Exception {
     final ApiTokenConfiguration tokenConfig = getServer(serverIndex).getSecurity().getApiTokenConfiguration();
     tokenConfig.listTokens().stream()
         .filter(t -> name.equals(t.getString("name", "")))
@@ -170,7 +208,7 @@ class CrossDatabaseAccessIT extends BaseGraphServerTest {
 
     final JSONObject payload = new JSONObject();
     payload.put("name", name);
-    payload.put("database", getDatabaseName());
+    payload.put("database", database);
     payload.put("expiresAt", 0);
     payload.put("permissions", permissions);
     connection.getOutputStream().write(payload.toString().getBytes());

@@ -474,6 +474,8 @@ public class ArcadeDBServer {
           configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator
               + databaseName).setAutoTransaction(true);
 
+      factory.setSecurity(getSecurity());
+
       if (factory.exists())
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
