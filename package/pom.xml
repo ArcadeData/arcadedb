@@ -59,7 +59,6 @@
                                 <descriptor>./src/main/assembly/full.xml</descriptor>
                             </descriptors>
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
-                            <tarLongFileMode>gnu</tarLongFileMode>
                         </configuration>
                     </execution>
                     <execution>
@@ -75,7 +74,6 @@
                                 <descriptor>./src/main/assembly/minimal.xml</descriptor>
                             </descriptors>
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
-                            <tarLongFileMode>gnu</tarLongFileMode>
                         </configuration>
                     </execution>
                     <execution>
@@ -91,7 +89,6 @@
                                 <descriptor>./src/main/assembly/headless.xml</descriptor>
                             </descriptors>
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
-                            <tarLongFileMode>gnu</tarLongFileMode>
                         </configuration>
                     </execution>
                     <execution>
@@ -107,7 +104,6 @@
                                 <descriptor>./src/main/assembly/base.xml</descriptor>
                             </descriptors>
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
-                            <tarLongFileMode>gnu</tarLongFileMode>
                         </configuration>
                     </execution>
                 </executions>

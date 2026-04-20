@@ -201,7 +201,7 @@
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
                     <!-- ADD THIS LINE TO SKIP BENCHMARKS BY DEFAULT -->
-                    <excludedGroups>benchmark</excludedGroups>
+<!--                    <excludedGroups>benchmark</excludedGroups>-->
                     <properties>
                         <!-- Work around. Surefire does not include enough
                              information to disambiguate between different
@@ -210,7 +210,7 @@
                             cucumber.junit-platform.naming-strategy=long
                         </configurationParameters>
                     </properties>
-<!--                            cucumber.filter.name="not .*IT.*"-->
+                    <!--                            cucumber.filter.name="not .*IT.*"-->
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
                     <forkCount>1</forkCount>
                     <systemPropertyVariables>
@@ -335,7 +335,9 @@
                 <configuration>
                     <licenseMerges>
                         <!-- Group similar licenses to avoid duplicates -->
-                        <licenseMerge>Apache License 2.0|Apache 2.0|Apache License, Version 2.0|The Apache Software License, Version 2.0|Apache-2.0</licenseMerge>
+                        <licenseMerge>Apache License 2.0|Apache 2.0|Apache License, Version 2.0|The Apache Software License, Version
+                            2.0|Apache-2.0
+                        </licenseMerge>
                         <licenseMerge>MIT License|MIT|The MIT License</licenseMerge>
                         <licenseMerge>BSD 3-Clause|BSD-3-Clause|3-Clause BSD License|BSD 3-Clause License</licenseMerge>
                         <licenseMerge>BSD 2-Clause|BSD-2-Clause|2-Clause BSD License</licenseMerge>
@@ -361,6 +363,9 @@
                 <plugin>
                     <artifactId>maven-assembly-plugin</artifactId>
                     <version>${maven-assembly-plugin.version}</version>
+                    <configuration>
+                        <tarLongFileMode>posix</tarLongFileMode>
+                    </configuration>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -428,45 +433,45 @@
                     </configuration>
                 </plugin>
 
-	            <!-- gRPC Protobuf Plugin -->
-	            <plugin>
-	                <groupId>io.github.ascopes</groupId>
-	                <artifactId>protobuf-maven-plugin</artifactId>
-	                <version>${protobuf-maven-plugin.version}</version>
-	                <configuration>
-	                    <protoc>${protoc.version}</protoc>
-	                    <embedSourcesInClassOutputs>true</embedSourcesInClassOutputs>
+                <!-- gRPC Protobuf Plugin -->
+                <plugin>
+                    <groupId>io.github.ascopes</groupId>
+                    <artifactId>protobuf-maven-plugin</artifactId>
+                    <version>${protobuf-maven-plugin.version}</version>
+                    <configuration>
+                        <protoc>${protoc.version}</protoc>
+                        <embedSourcesInClassOutputs>true</embedSourcesInClassOutputs>
                         <plugins>
                             <plugin kind="binary-maven">
-	                            <groupId>io.grpc</groupId>
-	                            <artifactId>protoc-gen-grpc-java</artifactId>
-	                            <version>${grpc.version}</version>
+                                <groupId>io.grpc</groupId>
+                                <artifactId>protoc-gen-grpc-java</artifactId>
+                                <version>${grpc.version}</version>
                             </plugin>
                         </plugins>
-	                    <sourceDirectories>
-	                        <sourceDirectory>${project.basedir}/src/main/proto</sourceDirectory>
-	                        <sourceDirectory>${project.basedir}/src/generated/proto</sourceDirectory>
-	                    </sourceDirectories>
-	                    <outputDirectory>src/generated/protobuf/java</outputDirectory>
-	                    <includes>
-	                        <include>*.proto</include>
-	                        <include>**/*.proto</include>
-	                    </includes>
-	                </configuration>
-	                <executions>
-	                    <execution>
-	                        <goals>
-	                            <goal>generate</goal>
-	                        </goals>
-	                        <configuration>
-	                            <sourceDirectories>
-	                                <sourceDirectory>${project.basedir}/src/generated/proto</sourceDirectory>
-	                                <sourceDirectory>${project.basedir}/src/main/proto</sourceDirectory>
-	                            </sourceDirectories>
-	                        </configuration>
-	                    </execution>
-	                </executions>
-	            </plugin>
+                        <sourceDirectories>
+                            <sourceDirectory>${project.basedir}/src/main/proto</sourceDirectory>
+                            <sourceDirectory>${project.basedir}/src/generated/proto</sourceDirectory>
+                        </sourceDirectories>
+                        <outputDirectory>src/generated/protobuf/java</outputDirectory>
+                        <includes>
+                            <include>*.proto</include>
+                            <include>**/*.proto</include>
+                        </includes>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>generate</goal>
+                            </goals>
+                            <configuration>
+                                <sourceDirectories>
+                                    <sourceDirectory>${project.basedir}/src/generated/proto</sourceDirectory>
+                                    <sourceDirectory>${project.basedir}/src/main/proto</sourceDirectory>
+                                </sourceDirectories>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
 
             </plugins>
         </pluginManagement>

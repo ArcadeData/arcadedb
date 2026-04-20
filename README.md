@@ -200,6 +200,37 @@ Docker images are available on ghcr.io too:
 docker pull ghcr.io/arcadedata/arcadedb:26.3.1-java17
 ```
 
+### Building and Testing
+
+Build the entire project (skipping tests):
+
+```bash
+mvn clean install -DskipTests
+```
+
+Run the full test suite:
+
+```bash
+mvn test
+```
+
+Some tests are tagged to indicate their cost:
+
+- `slow` - functional tests that take noticeably long (large batches, multi-second elapsed time, big payloads)
+- `benchmark` - microbenchmarks not intended for regular CI runs
+
+To skip these and run only the fast tests:
+
+```bash
+mvn test -DexcludedGroups="slow,benchmark"
+```
+
+To run only a specific tag (e.g. benchmark tests in isolation):
+
+```bash
+mvn test -Dgroups="benchmark"
+```
+
 ### Community
 
 Join our growing community around the world, for ideas, discussions and help regarding ArcadeDB.
