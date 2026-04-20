@@ -332,4 +332,112 @@ class OpenCypherPatternPredicateTest {
       }
     }
   }
+
+  /** See issue #3938: existential pattern predicate must filter by target-node properties too. */
+  @Nested
+  class ExistentialPatternPredicateTargetPropertiesRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      database = new DatabaseFactory("./target/databases/test-issue3938").create();
+      database.getSchema().createVertexType("Person");
+      database.getSchema().createVertexType("Country");
+      database.getSchema().createEdgeType("LIVING_IN");
+
+      database.transaction(() -> {
+        database.command("opencypher",
+            """
+            CREATE (:Country {name: 'Germany'}), \
+            (:Country {name: 'United Kingdom'}), \
+            (:Person {name: 'Alice'}), \
+            (:Person {name: 'Bob'}), \
+            (:Person {name: 'Charlie'})""");
+        database.command("opencypher",
+            """
+            MATCH (p:Person {name: 'Alice'}), (c:Country {name: 'Germany'}) \
+            CREATE (p)-[:LIVING_IN]->(c)""");
+        database.command("opencypher",
+            """
+            MATCH (p:Person {name: 'Bob'}), (c:Country {name: 'United Kingdom'}) \
+            CREATE (p)-[:LIVING_IN]->(c)""");
+        database.command("opencypher",
+            """
+            MATCH (p:Person {name: 'Charlie'}), (c:Country {name: 'Germany'}) \
+            CREATE (p)-[:LIVING_IN]->(c)""");
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    @Test
+    void patternPredicateFiltersByTargetNodeProperties() {
+      // Only people living in Germany must pass the predicate.
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (p:Person) \
+          WHERE (p)-[:LIVING_IN]->(:Country {name: 'Germany'}) \
+          RETURN p.name AS name ORDER BY name""")) {
+        final Set<String> names = new HashSet<>();
+        while (rs.hasNext())
+          names.add((String) rs.next().getProperty("name"));
+        assertThat(names).containsExactlyInAnyOrder("Alice", "Charlie");
+      }
+    }
+
+    @Test
+    void patternPredicateFiltersByTargetNodePropertiesAnonymousEnd() {
+      // Anonymous end node with property constraint only.
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (p:Person) \
+          WHERE (p)-[:LIVING_IN]->({name: 'Germany'}) \
+          RETURN p.name AS name ORDER BY name""")) {
+        final Set<String> names = new HashSet<>();
+        while (rs.hasNext())
+          names.add((String) rs.next().getProperty("name"));
+        assertThat(names).containsExactlyInAnyOrder("Alice", "Charlie");
+      }
+    }
+
+    @Test
+    void patternPredicateFilteredRowDoesNotLeakIntoDownstreamMatch() {
+      // The predicate must cut Bob off, so a later MATCH cannot reintroduce United Kingdom.
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (p:Person) \
+          WHERE (p)-[:LIVING_IN]->(:Country {name: 'Germany'}) \
+          WITH p \
+          MATCH (p)-[:LIVING_IN]->(c:Country) \
+          RETURN c.name AS country, count(*) AS cnt \
+          ORDER BY country""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat((String) row.getProperty("country")).isEqualTo("Germany");
+        assertThat(((Number) row.getProperty("cnt")).longValue()).isEqualTo(2L);
+        assertThat(rs.hasNext()).isFalse();
+      }
+    }
+
+    @Test
+    void negatedPatternPredicateHonorsTargetNodeProperties() {
+      // Only people NOT living in Germany must pass.
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (p:Person) \
+          WHERE NOT (p)-[:LIVING_IN]->(:Country {name: 'Germany'}) \
+          RETURN p.name AS name ORDER BY name""")) {
+        final Set<String> names = new HashSet<>();
+        while (rs.hasNext())
+          names.add((String) rs.next().getProperty("name"));
+        assertThat(names).containsExactlyInAnyOrder("Bob");
+      }
+    }
+  }
 }

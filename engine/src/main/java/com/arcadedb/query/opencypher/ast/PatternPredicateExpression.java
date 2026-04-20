@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -29,6 +30,7 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Represents a pattern predicate expression in a WHERE clause.
@@ -81,7 +83,7 @@ public class PatternPredicateExpression implements BooleanExpression {
 
     // Handle variable-length patterns (e.g., -[:REL*2]-, -[:REL*]-)
     if (relPattern.isVariableLength())
-      return evaluateVLPPattern(startVertex, relPattern, result);
+      return evaluateVLPPattern(startVertex, relPattern, result, context);
 
     final List<String> relationshipTypesList = relPattern.getTypes();
     final String[] relationshipTypes = relationshipTypesList != null && !relationshipTypesList.isEmpty()
@@ -95,20 +97,17 @@ public class PatternPredicateExpression implements BooleanExpression {
     final NodePattern endNodePattern = pathPattern.getNode(1);
     final Vertex endVertex = getVertexFromPattern(endNodePattern, result);
 
-    // Get target node labels (if specified) for filtering
-    final List<String> targetLabels = endNodePattern != null ? endNodePattern.getLabels() : null;
-
     // Check if the pattern exists
     if (endVertex != null) {
       // We have a specific end node - check if relationship exists between them
-      // Also verify target labels if specified (e.g., (a)-[:T]->(b:Label))
-      if (targetLabels != null && !targetLabels.isEmpty() && !matchesTargetLabels(endVertex, targetLabels))
+      // Also verify target labels and inline properties if specified (e.g., (a)-[:T]->(b:Label {k:v}))
+      if (!matchesNodePattern(endVertex, endNodePattern, context))
         return false;
       return checkRelationshipExists(startVertex, endVertex, relationshipTypes, isOutgoing, isIncoming);
     } else {
       // No specific end node - check if any relationship of the specified type exists
-      // Also filter by target node labels if specified
-      return checkAnyRelationshipExists(startVertex, relationshipTypes, targetLabels, isOutgoing, isIncoming);
+      // Also filter by target node labels and inline properties if specified
+      return checkAnyRelationshipExists(startVertex, relationshipTypes, endNodePattern, isOutgoing, isIncoming, context);
     }
   }
 
@@ -116,7 +115,8 @@ public class PatternPredicateExpression implements BooleanExpression {
    * Evaluates a variable-length pattern predicate using the VLP traverser.
    * Handles patterns like (n)-[:REL*2]-() or (n)-[:REL*]-(m).
    */
-  private boolean evaluateVLPPattern(final Vertex startVertex, final RelationshipPattern relPattern, final Result result) {
+  private boolean evaluateVLPPattern(final Vertex startVertex, final RelationshipPattern relPattern, final Result result,
+      final CommandContext context) {
     final List<String> typesList = relPattern.getTypes();
     final String[] types = typesList != null && !typesList.isEmpty() ? typesList.toArray(new String[0]) : null;
 
@@ -128,7 +128,6 @@ public class PatternPredicateExpression implements BooleanExpression {
     // Get the end node (if bound)
     final NodePattern endNodePattern = pathPattern.getNode(1);
     final Vertex endVertex = getVertexFromPattern(endNodePattern, result);
-    final List<String> targetLabels = endNodePattern != null ? endNodePattern.getLabels() : null;
 
     final Iterator<TraversalPath> paths = traverser.traversePaths(startVertex);
     while (paths.hasNext()) {
@@ -138,11 +137,10 @@ public class PatternPredicateExpression implements BooleanExpression {
         continue;
       final Vertex target = path.getEndVertex();
       if (endVertex != null) {
-        if (target.getIdentity().equals(endVertex.getIdentity())
-            && (targetLabels == null || targetLabels.isEmpty() || matchesTargetLabels(target, targetLabels)))
+        if (target.getIdentity().equals(endVertex.getIdentity()) && matchesNodePattern(target, endNodePattern, context))
           return true;
       } else {
-        if (targetLabels == null || targetLabels.isEmpty() || matchesTargetLabels(target, targetLabels))
+        if (matchesNodePattern(target, endNodePattern, context))
           return true;
       }
     }
@@ -220,14 +218,15 @@ public class PatternPredicateExpression implements BooleanExpression {
 
   /**
    * Check if any relationship of the specified type exists from the start vertex.
-   * Also filters by target node labels if specified.
+   * Also filters by the target node pattern (labels and inline properties) if specified.
    */
   private boolean checkAnyRelationshipExists(
       final Vertex startVertex,
       final String[] relationshipTypes,
-      final List<String> targetLabels,
+      final NodePattern endNodePattern,
       final boolean isOutgoing,
-      final boolean isIncoming
+      final boolean isIncoming,
+      final CommandContext context
   ) {
     // Check outgoing edges
     if (isOutgoing) {
@@ -240,7 +239,7 @@ public class PatternPredicateExpression implements BooleanExpression {
 
       while (outEdges.hasNext()) {
         final Edge edge = outEdges.next();
-        if (matchesTargetLabels(edge.getInVertex(), targetLabels))
+        if (matchesNodePattern(edge.getInVertex(), endNodePattern, context))
           return true;
       }
     }
@@ -256,12 +255,24 @@ public class PatternPredicateExpression implements BooleanExpression {
 
       while (inEdges.hasNext()) {
         final Edge edge = inEdges.next();
-        if (matchesTargetLabels(edge.getOutVertex(), targetLabels))
+        if (matchesNodePattern(edge.getOutVertex(), endNodePattern, context))
           return true;
       }
     }
 
     return false;
+  }
+
+  /**
+   * Check if a vertex matches the target node pattern: both its labels and its inline properties.
+   * A null or empty pattern component matches anything.
+   */
+  private boolean matchesNodePattern(final Vertex vertex, final NodePattern nodePattern, final CommandContext context) {
+    if (nodePattern == null)
+      return true;
+    if (!matchesTargetLabels(vertex, nodePattern.getLabels()))
+      return false;
+    return matchesTargetProperties(vertex, nodePattern, context);
   }
 
   /**
@@ -276,6 +287,59 @@ public class PatternPredicateExpression implements BooleanExpression {
     for (final String label : targetLabels) {
       if (!Labels.hasLabel(vertex, label))
         return false;
+    }
+    return true;
+  }
+
+  /**
+   * Check if a vertex matches the inline property constraints on a node pattern, e.g. {name: 'Germany'}.
+   * If no property constraints are specified, returns true.
+   */
+  private boolean matchesTargetProperties(final Vertex vertex, final NodePattern nodePattern, final CommandContext context) {
+    if (nodePattern == null || !nodePattern.hasProperties())
+      return true;
+
+    final Map<String, Object> properties = nodePattern.getProperties();
+    if (properties == null || properties.isEmpty())
+      return true;
+
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+      final String key = entry.getKey();
+      Object expectedValue = entry.getValue();
+
+      // Resolve parameter references (e.g., $name -> actual value from context)
+      if (expectedValue instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) expectedValue).getName();
+        if (context != null && context.getInputParameters() != null)
+          expectedValue = context.getInputParameters().get(paramName);
+      } else if (expectedValue instanceof String) {
+        final String strValue = (String) expectedValue;
+        if (strValue.startsWith("$")) {
+          final String paramName = strValue.substring(1);
+          if (context != null && context.getInputParameters() != null) {
+            final Object paramValue = context.getInputParameters().get(paramName);
+            if (paramValue != null)
+              expectedValue = paramValue;
+          }
+        } else if (strValue.length() >= 2
+            && ((strValue.charAt(0) == '\'' && strValue.charAt(strValue.length() - 1) == '\'')
+                || (strValue.charAt(0) == '"' && strValue.charAt(strValue.length() - 1) == '"'))) {
+          // Strip surrounding quotes left in place by the AST builder for string literals
+          expectedValue = strValue.substring(1, strValue.length() - 1);
+        }
+      }
+
+      final Object actualValue = vertex.get(key);
+      if (actualValue == null)
+        return false;
+      if (!actualValue.equals(expectedValue)) {
+        // Numeric type-safe comparison (Integer vs Long)
+        if (actualValue instanceof Number && expectedValue instanceof Number) {
+          if (((Number) actualValue).longValue() != ((Number) expectedValue).longValue())
+            return false;
+        } else
+          return false;
+      }
     }
     return true;
   }
