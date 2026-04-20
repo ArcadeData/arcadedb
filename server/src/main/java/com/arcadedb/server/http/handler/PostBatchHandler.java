@@ -225,7 +225,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         throw new IllegalArgumentException("Malformed RID '" + ref + "' at line " + lineNumber);
       final int bucketId = Integer.parseInt(ref.substring(1, colonIdx));
       final long position = Long.parseLong(ref.substring(colonIdx + 1));
-      return new RID(null, bucketId, position);
+      return new RID(bucketId, position);
     }
 
     // Temporary ID reference

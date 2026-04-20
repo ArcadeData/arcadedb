@@ -541,7 +541,7 @@ public class Neo4jImporter {
 
   /** Unpacks a long back into a RID. */
   private RID unpackRID(final long packed) {
-    return new RID(null, (int) (packed >>> (64 - bucketBits)), packed & posMask);
+    return new RID((int) (packed >>> (64 - bucketBits)), packed & posMask);
   }
 
   // ═══════════════════════════════════════════════════════════════════

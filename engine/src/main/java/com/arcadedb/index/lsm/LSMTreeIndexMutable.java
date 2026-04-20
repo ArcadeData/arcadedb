@@ -602,6 +602,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   protected RID getRemovedRID(final Identifiable record) {
     final RID rid = record.getIdentity();
-    return new RID(database, (rid.getBucketId() + 2) * -1, rid.getPosition());
+    return new RID((rid.getBucketId() + 2) * -1, rid.getPosition());
   }
 }

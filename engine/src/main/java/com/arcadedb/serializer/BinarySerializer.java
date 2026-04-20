@@ -717,10 +717,10 @@ public class BinarySerializer {
       value = new BigDecimal(new BigInteger(unscaledValue), scale);
       break;
     case BinaryTypes.TYPE_COMPRESSED_RID:
-      value = new RID(database, (int) deserialized.getNumber(), deserialized.getNumber());
+      value = RID.create(database, (int) deserialized.getNumber(), deserialized.getNumber());
       break;
     case BinaryTypes.TYPE_RID:
-      value = new RID(database, deserialized.getInt(), deserialized.getLong());
+      value = RID.create(database, deserialized.getInt(), deserialized.getLong());
       break;
     case BinaryTypes.TYPE_UUID:
       value = new UUID(content.getNumber(), content.getNumber());

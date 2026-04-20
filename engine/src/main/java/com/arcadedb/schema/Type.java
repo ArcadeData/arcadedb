@@ -656,7 +656,7 @@ public enum Type {
               result.add((Identifiable) resultObj.getElement().get());
             } else if (o instanceof String) {
               try {
-                result.add(new RID(database, value.toString()));
+                result.add(RID.create(database, value.toString()));
               } catch (final Exception e) {
                 LogManager.instance()
                     .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
@@ -670,7 +670,7 @@ public enum Type {
           return result;
         } else if (value instanceof String string) {
           try {
-            return new RID(database, string);
+            return RID.create(database, string);
           } catch (final Exception e) {
             LogManager.instance()
                 .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);

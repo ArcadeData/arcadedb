@@ -137,7 +137,7 @@ public class GraphEngine {
 
     final EdgeType edgeType = (EdgeType) database.getSchema().getType(edgeTypeName);
 
-    final RID edgeRID = new RID(database, edgeType.getFirstBucketId(), -1l);
+    final RID edgeRID = new RID(edgeType.getFirstBucketId(), -1l);
 
     final ImmutableLightEdge edge = new ImmutableLightEdge(database, database.getSchema().getType(edgeTypeName),
         edgeRID,

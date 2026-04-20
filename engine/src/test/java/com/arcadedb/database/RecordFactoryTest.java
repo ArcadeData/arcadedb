@@ -43,7 +43,7 @@ class RecordFactoryTest extends TestHelper {
 
   @Test
   void newImmutableRecord() {
-    final RID EMPTY_RID = new RID(database, 0, 0);
+    final RID EMPTY_RID = new RID(0, 0);
 
     final DocumentType documentType = database.getSchema().createDocumentType("Document");
     final Record document = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, documentType, EMPTY_RID, Document.RECORD_TYPE);
@@ -70,7 +70,7 @@ class RecordFactoryTest extends TestHelper {
 
   @Test
   void testNewImmutableRecord() {
-    final RID EMPTY_RID = new RID(database, 0, 0);
+    final RID EMPTY_RID = new RID(0, 0);
 
     final Binary binary = new Binary();
     binary.putByte(Document.RECORD_TYPE);
@@ -127,7 +127,7 @@ class RecordFactoryTest extends TestHelper {
 
   @Test
   void newMutableRecord() {
-    final RID EMPTY_RID = new RID(database, 0, 0);
+    final RID EMPTY_RID = new RID(0, 0);
 
     final Binary binary = new Binary();
     binary.putByte(Document.RECORD_TYPE);

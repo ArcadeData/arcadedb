@@ -228,7 +228,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
-            final RID rid = new RID(database, fileId, ((long) pageId) * maxRecordsInPage + recordIdInPage);
+            final RID rid = new RID(fileId, ((long) pageId) * maxRecordsInPage + recordIdInPage);
 
             try {
               final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
@@ -249,7 +249,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
               } else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
                 // LOAD PLACEHOLDER CONTENT
-                final RID placeHolderPointer = new RID(database, fileId,
+                final RID placeHolderPointer = new RID(fileId,
                         page.readLong((int) (recordPositionInPage + recordSize[1])));
                 final Binary view = getRecordInternal(placeHolderPointer, true);
                 if (view != null && !callback.onRecord(rid, view))
@@ -417,7 +417,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         int pageChunks = 0;
 
         for (int positionInPage = 0; positionInPage < recordCountInPage; ++positionInPage) {
-          final RID rid = new RID(database, file.getFileId(), pageId * maxRecordsInPage + positionInPage);
+          final RID rid = new RID(file.getFileId(), pageId * maxRecordsInPage + positionInPage);
 
           final int recordPositionInPage = (int) page.readUnsignedInt(
                   PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
@@ -610,7 +610,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
         // FOUND PLACEHOLDER, LOAD THE REAL RECORD
-        final RID placeHolderPointer = new RID(database, rid.getBucketId(),
+        final RID placeHolderPointer = new RID(rid.getBucketId(),
                 page.readLong((int) (recordPositionInPage + recordSize[1])));
         return getRecordInternal(placeHolderPointer, true);
       } else if (recordSize[0] == FIRST_CHUNK) {
@@ -676,8 +676,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       LogManager.instance()
               .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, availablePositionIndex,
-                      Thread.currentThread().getId());
-      final RID rid = new RID(database, file.getFileId(),
+                      Thread.currentThread().threadId());
+      final RID rid = new RID(file.getFileId(),
               ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
       final int spaceAvailableInCurrentPage = selectedPage.getMaxContentSize() - newRecordPositionInPage;
@@ -706,7 +706,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       LogManager.instance()
               .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage,
-                      Thread.currentThread().getId());
+                      Thread.currentThread().threadId());
 
       if (!discardRecordAfter)
         ((RecordInternal) record).setBuffer(buffer.getNotReusable());
@@ -775,7 +775,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
 
         // Assign RID
-        ridsOut[i - from] = new RID(database, file.getFileId(),
+        ridsOut[i - from] = new RID(file.getFileId(),
             ((long) currentPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
         recordPositionInPage += sizeBytes + actualSize;
@@ -821,13 +821,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
 //      LogManager.instance()
-//          .log(this, Level.SEVERE, "UPDATE %s pageV=%d content %s (threadId=%d)", rid, page.getVersion(), record.toJSON(), Thread.currentThread().getId());
+//          .log(this, Level.SEVERE, "UPDATE %s pageV=%d content %s (threadId=%d)", rid, page.getVersion(), record.toJSON(), Thread.currentThread().threadId());
 
       boolean isPlaceHolder = false;
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
 
         // FOUND A RECORD POINTED FROM A PLACEHOLDER
-        final RID placeHolderContentRID = new RID(database, fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
+        final RID placeHolderContentRID = new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
         if (updateRecordInternal(record, placeHolderContentRID, true, discardRecordAfter)) {
           // UPDATE PLACEHOLDER CONTENT, THE PLACEHOLDER POINTER STAY THE SAME
           if (!discardRecordAfter)
@@ -921,7 +921,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           LogManager.instance()
                   .log(this, Level.FINE, "Updated record %s by allocating new space on the same page (%s threadId=%d)", null, rid, page,
-                          Thread.currentThread().getId());
+                          Thread.currentThread().threadId());
 
           updatePageStatistics(pageId, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
 
@@ -944,14 +944,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             LogManager.instance()
                     .log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (%s threadId=%d)", null, rid,
-                            page, Thread.currentThread().getId());
+                            page, Thread.currentThread().threadId());
           } else {
             // SPLIT THE RECORD IN CHUNKS AS LINKED LIST AND STORE THE FIRST PART ON CURRENT PAGE ISSUE https://github.com/ArcadeData/arcadedb/issues/332
             writeMultiPageRecord(rid, buffer, page, recordPositionInPage, availableSpaceInCurrentPage);
 
             LogManager.instance().log(this, Level.FINE,
                     "Updated record %s by splitting it in multiple chunks to be saved in multiple pages (%s threadId=%d)", null, rid,
-                    page, Thread.currentThread().getId());
+                    page, Thread.currentThread().threadId());
           }
         }
       } else {
@@ -963,7 +963,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         LogManager.instance()
                 .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page,
-                        Thread.currentThread().getId());
+                        Thread.currentThread().threadId());
       }
 
       if (!discardRecordAfter)
@@ -1010,7 +1010,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
           // FOUND PLACEHOLDER POINTER: DELETE THE PLACEHOLDER CONTENT FIRST
-          final RID placeHolderContentRID = new RID(database, fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
+          final RID placeHolderContentRID = new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
           try {
             deleteRecordInternal(placeHolderContentRID, true, false);
           } catch (RecordNotFoundException e) {
@@ -1049,7 +1049,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       "Multi-page record " + rid + " chunk " + chunkId + " was modified concurrently. Please retry");
 
             try {
-              deleteRecordInternal(new RID(database, fileId, nextChunkPointer), false, true);
+              deleteRecordInternal(new RID(fileId, nextChunkPointer), false, true);
             } catch (RecordNotFoundException e) {
               // PARTIAL RECORD NOT FOUND
             }
@@ -1097,7 +1097,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       LogManager.instance()
-              .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
+              .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().threadId());
 
     } catch (final RecordNotFoundException e) {
       throw e;
@@ -1220,7 +1220,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int[] pointer = orderedRecordContentInPage.get(i);
       final int lastPointerEnd = lastPointer[0] + lastPointer[1];
       if (pointer[0] != lastPointerEnd) {
-        final int[] lastHole = holes.isEmpty() ? null : holes.get(holes.size() - 1);
+        final int[] lastHole = holes.isEmpty() ? null : holes.getLast();
         if (lastHole != null && lastHole[0] + lastHole[1] == pointer[0]) {
           // UPDATE PREVIOUS HOLE
           lastHole[1] += pointer[1];
@@ -1767,7 +1767,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int recordPositionInPage = getRecordPositionInPage(pageAnalysis.page, i);
       if (recordPositionInPage == 0) {
         // Check if this position was deleted in the current transaction
-        final RID potentialRID = new RID(database, file.getFileId(),
+        final RID potentialRID = new RID(file.getFileId(),
                 ((long) pageAnalysis.page.getPageId().getPageNumber()) * maxRecordsInPage + i);
 
         if (!database.getTransaction().isDeletedInTransaction(potentialRID)) {
@@ -1942,7 +1942,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             int freeSpaceInPage = getPageSize() - contentHeaderSize;
             if (!orderedRecordContentInPage.isEmpty()) {
-              final int[] lastRecord = orderedRecordContentInPage.get(orderedRecordContentInPage.size() - 1);
+              final int[] lastRecord = orderedRecordContentInPage.getLast();
               freeSpaceInPage = getPageSize() - (lastRecord[0] + lastRecord[1]);
             }
 

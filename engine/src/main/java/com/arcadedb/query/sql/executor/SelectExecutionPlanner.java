@@ -1182,7 +1182,7 @@ public class SelectExecutionPlanner {
         if (variableValue != null) {
           // Handle variable containing a RID string (e.g., '#1:143')
           if (variableValue instanceof String strValue && strValue.startsWith("#")) {
-            final RID rid = new RID(context.getDatabase(), strValue);
+            final RID rid = context.getDatabase().newRID(strValue);
             info.fetchExecutionPlan.chain(new FetchFromRidsStep(List.of(rid), context));
             return;
           }
@@ -1207,7 +1207,7 @@ public class SelectExecutionPlanner {
               else if (item instanceof Result resultItem && resultItem.getIdentity().isPresent())
                 rids.add(resultItem.getIdentity().get());
               else if (item instanceof String strItem && strItem.startsWith("#"))
-                rids.add(new RID(context.getDatabase(), strItem));
+                rids.add(context.getDatabase().newRID(strItem));
             }
             if (!rids.isEmpty()) {
               info.fetchExecutionPlan.chain(new FetchFromRidsStep(rids, context));
@@ -1388,7 +1388,7 @@ public class SelectExecutionPlanner {
     Object paramValue = inputParam.getValue(context.getInputParameters());
 
     if (paramValue instanceof String string && RID.is(paramValue))
-      paramValue = new RID(context.getDatabase(), string);
+      paramValue = context.getDatabase().newRID(string);
 
     if (paramValue == null) {
       result.chain(new EmptyStep(context));//nothing to return
@@ -1923,7 +1923,7 @@ public class SelectExecutionPlanner {
     // Direct RID literal: #X:Y
     if (expr.getRid() != null) {
       final Rid rid = expr.getRid();
-      return new RID(context.getDatabase(), rid.getBucket().getValue().intValue(), rid.getPosition().getValue().longValue());
+      return context.getDatabase().newRID(rid.getBucket().getValue().intValue(), rid.getPosition().getValue().longValue());
     }
     // Evaluate the expression (handles string parameters like "#215:45086720")
     try {
@@ -1931,7 +1931,7 @@ public class SelectExecutionPlanner {
       if (value instanceof RID rid)
         return rid;
       if (value instanceof String s && s.startsWith("#"))
-        return new RID(context.getDatabase(), s);
+        return context.getDatabase().newRID(s);
     } catch (final Exception e) {
       // Cannot evaluate at plan time
     }
@@ -3527,7 +3527,7 @@ public class SelectExecutionPlanner {
         if (value != null) {
           // Handle RID string (e.g., '#1:143') - Issue #2350
           if (value instanceof String strValue && strValue.startsWith("#")) {
-            final RID rid = new RID(db, strValue);
+            final RID rid = db.newRID(strValue);
             if (item.getRids() == null) {
               item.setRids(new ArrayList<>());
             }

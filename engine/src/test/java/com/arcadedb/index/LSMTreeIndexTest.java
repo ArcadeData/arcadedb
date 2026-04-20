@@ -614,7 +614,7 @@ class LSMTreeIndexTest extends TestHelper {
           final IndexCursor value = index.get(key);
           if (value.hasNext()) {
             assertThatThrownBy(() -> {
-              index.put(key, new RID[] { new RID(database, 10, 10) });
+              index.put(key, new RID[] { new RID(10, 10) });
               database.commit();
             }).isInstanceOf(DuplicatedKeyException.class);
             database.begin();

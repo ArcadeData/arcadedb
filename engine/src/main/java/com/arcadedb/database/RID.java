@@ -21,7 +21,6 @@ package com.arcadedb.database;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.CodeUtils;
@@ -45,11 +44,6 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     this.offset = offset;
   }
 
-  public RID(final BasicDatabase database, final int bucketId, final long offset) {
-    this.bucketId = bucketId;
-    this.offset = offset;
-  }
-
   public RID(final String value) {
     if (!value.startsWith("#"))
       throw new IllegalArgumentException("The RID '" + value + "' is not valid");
@@ -60,8 +54,20 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     this.offset = Long.parseLong(parts.get(1));
   }
 
-  public RID(final BasicDatabase database, final String value) {
-    this(value);
+  /**
+   * Factory that returns a {@link DatabaseRID} when {@code database} is non-null, otherwise a bare {@link RID}. Use this at boundaries where the database
+   * reference is optional (e.g. deserialization paths, SQL conversions with nullable {@link com.arcadedb.query.sql.executor.CommandContext}) to avoid
+   * repeating the null-check at every call site.
+   */
+  public static RID create(final BasicDatabase database, final int bucketId, final long offset) {
+    return database != null ? database.newRID(bucketId, offset) : new RID(bucketId, offset);
+  }
+
+  /**
+   * String-form counterpart of {@link #create(BasicDatabase, int, long)}.
+   */
+  public static RID create(final BasicDatabase database, final String value) {
+    return database != null ? database.newRID(value) : new RID(value);
   }
 
   public static boolean is(final Object value) {
@@ -110,7 +116,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
 
   @Override
   public Record getRecord(final boolean loadContent) {
-    return requireDatabase().lookupByRID(this, loadContent);
+    throw unboundRid("getRecord");
   }
 
   public Document asDocument() {
@@ -118,7 +124,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public Document asDocument(final boolean loadContent) {
-    return (Document) requireDatabase().lookupByRID(this, loadContent);
+    throw unboundRid("asDocument");
   }
 
   public Vertex asVertex() {
@@ -126,13 +132,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public Vertex asVertex(final boolean loadContent) {
-    try {
-      return (Vertex) requireDatabase().lookupByRID(this, loadContent);
-    } catch (final RecordNotFoundException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new RecordNotFoundException("Record " + this + " not found", this, e);
-    }
+    throw unboundRid("asVertex");
   }
 
   public Edge asEdge() {
@@ -140,7 +140,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public Edge asEdge(final boolean loadContent) {
-    return (Edge) requireDatabase().lookupByRID(this, loadContent);
+    throw unboundRid("asEdge");
   }
 
   @Override
@@ -204,5 +204,11 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
       throw new DatabaseOperationException(
           "No active database context for RID " + this + ". Use database.lookupByRID() instead or ensure a database context is active on the current thread");
     return db;
+  }
+
+  private DatabaseOperationException unboundRid(final String op) {
+    return new DatabaseOperationException(
+        "Cannot call " + op + "() on bare RID " + this
+            + ": this RID is not bound to a database. Use database.lookupByRID(rid) or produce a DatabaseRID at the origin (e.g. database.newRID(...))");
   }
 }

@@ -47,7 +47,7 @@ class SQLMethodSizeTest {
   @Test
   void sizeOfIdentifiable() {
     final Database db = Mockito.mock(Database.class);
-    final RID rid = new RID(db, 1, 1);
+    final RID rid = new RID(1, 1);
     final Object result = method.execute(rid, null, null, null);
     assertThat(result).isInstanceOf(Number.class);
     assertThat(result).isEqualTo(0);
@@ -56,7 +56,7 @@ class SQLMethodSizeTest {
   @Test
   void sizeOfMultiValue() {
     final Database db = Mockito.mock(Database.class);
-    final RID rid = new RID(db, 1, 1);
+    final RID rid = new RID(1, 1);
     final Collection<RID> multiValue = List.of(rid, rid, rid);
     final Object result = method.execute(multiValue, null, null, null);
     assertThat(result).isInstanceOf(Number.class);

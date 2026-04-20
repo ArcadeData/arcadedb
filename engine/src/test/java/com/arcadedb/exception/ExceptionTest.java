@@ -139,7 +139,7 @@ class ExceptionTest {
 
   @Test
   void duplicatedKeyException() {
-    final RID rid = new RID(null, 1, 100);
+    final RID rid = new RID(1, 100);
     // DuplicatedKeyException takes String keys, not Object[]
     final DuplicatedKeyException ex = new DuplicatedKeyException("testIndex", "[key1, key2]", rid);
 
@@ -151,7 +151,7 @@ class ExceptionTest {
 
   @Test
   void duplicatedKeyExceptionMessage() {
-    final RID rid = new RID(null, 1, 100);
+    final RID rid = new RID(1, 100);
     final DuplicatedKeyException ex = new DuplicatedKeyException("myIndex", "myKey", rid);
 
     assertThat(ex.getMessage()).contains("myIndex");
@@ -161,7 +161,7 @@ class ExceptionTest {
 
   @Test
   void recordNotFoundException() {
-    final RID rid = new RID(null, 1, 100);
+    final RID rid = new RID(1, 100);
     final RecordNotFoundException ex = new RecordNotFoundException("Record not found", rid);
 
     assertThat(ex.getMessage()).isEqualTo("Record not found");
@@ -171,7 +171,7 @@ class ExceptionTest {
 
   @Test
   void recordNotFoundExceptionWithCause() {
-    final RID rid = new RID(null, 1, 100);
+    final RID rid = new RID(1, 100);
     final RuntimeException cause = new RuntimeException("Root cause");
     final RecordNotFoundException ex = new RecordNotFoundException("Record not found", rid, cause);
 

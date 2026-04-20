@@ -1125,7 +1125,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final MutableDocument doc = database.newDocument("testFetchFromSingleRidParam");
     doc.save();
     database.commit();
-    final ResultSet result = database.query("sql", "select from ?", new RID(database, 1, 0));
+    final ResultSet result = database.query("sql", "select from ?", new RID(1, 0));
     assertThat(result.hasNext()).isTrue();
     assertThat(result.next()).isNotNull();
     assertThat(result.hasNext()).isFalse();
@@ -3617,7 +3617,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.commit();
 
     final Map<String, Object> params = new HashMap<>();
-    params.put("rid", new RID(database, clusterIds[1], 0));
+    params.put("rid", new RID(clusterIds[1], 0));
     final ResultSet result = database.query("sql", "select from " + className + " where @rid >= :rid", params);
     final ExecutionPlan execPlan = result.getExecutionPlan().get();
     for (final ExecutionStep ExecutionStep : execPlan.getSteps()) {

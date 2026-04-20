@@ -31,9 +31,9 @@ class RidSetTest extends TestHelper {
   @Test
   void addAndContains() {
     final RidSet set = new RidSet();
-    final RID rid1 = new RID(database, 1, 100);
-    final RID rid2 = new RID(database, 1, 200);
-    final RID rid3 = new RID(database, 2, 100);
+    final RID rid1 = new RID(1, 100);
+    final RID rid2 = new RID(1, 200);
+    final RID rid3 = new RID(2, 100);
 
     // Test add() returns true when adding new element
     assertThat(set.add(rid1)).isTrue();
@@ -48,7 +48,7 @@ class RidSetTest extends TestHelper {
     assertThat(set.contains(rid1)).isTrue();
     assertThat(set.contains(rid2)).isTrue();
     assertThat(set.contains(rid3)).isTrue();
-    assertThat(set.contains(new RID(database, 3, 300))).isFalse();
+    assertThat(set.contains(new RID(3, 300))).isFalse();
 
     // Test size()
     assertThat(set.size()).isEqualTo(3);
@@ -60,7 +60,7 @@ class RidSetTest extends TestHelper {
     assertThat(set.add(4, 777)).isTrue();
     assertThat(set.add(4, 777)).isFalse();
     assertThat(set.contains(4, 777)).isTrue();
-    assertThat(set.contains(new RID(database, 4, 777))).isTrue();
+    assertThat(set.contains(new RID(4, 777))).isTrue();
     assertThat(set.remove(4, 777)).isTrue();
     assertThat(set.contains(4, 777)).isFalse();
     assertThat(set.size()).isZero();
@@ -98,8 +98,8 @@ class RidSetTest extends TestHelper {
   @Test
   void remove() {
     final RidSet set = new RidSet();
-    final RID rid1 = new RID(database, 1, 100);
-    final RID rid2 = new RID(database, 1, 200);
+    final RID rid1 = new RID(1, 100);
+    final RID rid2 = new RID(1, 200);
 
     set.add(rid1);
     set.add(rid2);
@@ -121,9 +121,9 @@ class RidSetTest extends TestHelper {
   @Test
   void addAll() {
     final RidSet set = new RidSet();
-    final RID rid1 = new RID(database, 1, 100);
-    final RID rid2 = new RID(database, 1, 200);
-    final RID rid3 = new RID(database, 2, 100);
+    final RID rid1 = new RID(1, 100);
+    final RID rid2 = new RID(1, 200);
+    final RID rid3 = new RID(2, 100);
 
     final List<RID> rids = Arrays.asList(rid1, rid2, rid3);
 
@@ -136,7 +136,7 @@ class RidSetTest extends TestHelper {
     assertThat(set.size()).isEqualTo(3);
 
     // Test addAll() returns true when at least one element is new
-    final List<RID> moreRids = Arrays.asList(rid2, new RID(database, 3, 100));
+    final List<RID> moreRids = Arrays.asList(rid2, new RID(3, 100));
     assertThat(set.addAll(moreRids)).isTrue();
     assertThat(set.size()).isEqualTo(4);
   }
@@ -147,9 +147,9 @@ class RidSetTest extends TestHelper {
     context.setDatabase(database);
 
     final RidSet set = new RidSet(context);
-    final RID rid1 = new RID(database, 1, 100);
-    final RID rid2 = new RID(database, 1, 200);
-    final RID rid3 = new RID(database, 2, 100);
+    final RID rid1 = new RID(1, 100);
+    final RID rid2 = new RID(1, 200);
+    final RID rid3 = new RID(2, 100);
 
     set.add(rid1);
     set.add(rid2);
@@ -170,8 +170,8 @@ class RidSetTest extends TestHelper {
   @Test
   void clear() {
     final RidSet set = new RidSet();
-    final RID rid1 = new RID(database, 1, 100);
-    final RID rid2 = new RID(database, 1, 200);
+    final RID rid1 = new RID(1, 100);
+    final RID rid2 = new RID(1, 200);
 
     set.add(rid1);
     set.add(rid2);
@@ -190,9 +190,9 @@ class RidSetTest extends TestHelper {
   @Test
   void containsAll() {
     final RidSet set = new RidSet();
-    final RID rid1 = new RID(database, 1, 100);
-    final RID rid2 = new RID(database, 1, 200);
-    final RID rid3 = new RID(database, 2, 100);
+    final RID rid1 = new RID(1, 100);
+    final RID rid2 = new RID(1, 200);
+    final RID rid3 = new RID(2, 100);
 
     set.add(rid1);
     set.add(rid2);
@@ -204,9 +204,9 @@ class RidSetTest extends TestHelper {
   @Test
   void removeAll() {
     final RidSet set = new RidSet();
-    final RID rid1 = new RID(database, 1, 100);
-    final RID rid2 = new RID(database, 1, 200);
-    final RID rid3 = new RID(database, 2, 100);
+    final RID rid1 = new RID(1, 100);
+    final RID rid2 = new RID(1, 200);
+    final RID rid3 = new RID(2, 100);
 
     set.add(rid1);
     set.add(rid2);

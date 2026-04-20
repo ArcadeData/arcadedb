@@ -84,7 +84,7 @@ class LSMTreeGeoIndexTest extends TestHelper {
     final LSMTreeGeoIndex idx = createAndRegisterIndex("test-geo");
 
     // Index a point in central Italy (lat=45, lon=10)
-    final RID rid = new RID(database, 1, 0);
+    final RID rid = new RID(1, 0);
     database.transaction(() -> idx.put(new Object[]{"POINT (10.0 45.0)"}, new RID[]{rid}));
 
     // Query with a bounding box covering Italy (read-only, outside any transaction)
@@ -101,7 +101,7 @@ class LSMTreeGeoIndexTest extends TestHelper {
     final LSMTreeGeoIndex idx = createAndRegisterIndex("test-geo2");
 
     // Pacific coast point, far from Europe
-    final RID rid = new RID(database, 1, 0);
+    final RID rid = new RID(1, 0);
     database.transaction(() -> idx.put(new Object[]{"POINT (140.0 35.0)"}, new RID[]{rid}));
 
     // Search in Europe bounding box
@@ -122,7 +122,7 @@ class LSMTreeGeoIndexTest extends TestHelper {
   void transactionReplayWithPreTokenizedGeohashStrings() throws Exception {
     final LSMTreeGeoIndex idx = createAndRegisterIndex("test-geo-replay");
 
-    final RID rid = new RID(database, 1, 0);
+    final RID rid = new RID(1, 0);
 
     // Normal WKT put — this indexes the point and generates GeoHash tokens
     database.transaction(() -> idx.put(new Object[]{"POINT (10.0 45.0)"}, new RID[]{rid}));
@@ -144,7 +144,7 @@ class LSMTreeGeoIndexTest extends TestHelper {
     final LSMTreeGeoIndex idx = createAndRegisterIndex("test-geo3");
 
     // Should not throw for null WKT — index stays empty (null is skipped)
-    final RID rid = new RID(database, 1, 0);
+    final RID rid = new RID(1, 0);
     database.transaction(() -> idx.put(new Object[]{null}, new RID[]{rid}));
 
     // World bounding box query — nothing was indexed

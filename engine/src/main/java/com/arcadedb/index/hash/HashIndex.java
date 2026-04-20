@@ -19,6 +19,7 @@
 package com.arcadedb.index.hash;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -213,9 +214,11 @@ public class HashIndex implements IndexInternal {
       if (rids.isEmpty())
         return EMPTY_CURSOR;
 
+      // Upgrade bare RIDs from bucket storage to DatabaseRIDs at the cursor (user API) boundary so cursor.next().asDocument() resolves correctly.
+      final DatabaseInternal db = getDatabase();
       final List<IndexCursorEntry> entries = new ArrayList<>(rids.size());
       for (final RID rid : rids)
-        entries.add(new IndexCursorEntry(convertedKeys, rid, 1));
+        entries.add(new IndexCursorEntry(convertedKeys, rid instanceof DatabaseRID ? rid : db.newRID(rid.getBucketId(), rid.getPosition()), 1));
       return new TempIndexCursor(entries);
     } catch (final IOException e) {
       throw new IndexException("Error on hash index lookup for '" + name + "'", e);

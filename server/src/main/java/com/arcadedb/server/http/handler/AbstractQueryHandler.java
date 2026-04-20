@@ -223,7 +223,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
         if (prop.equals(RID_PROPERTY) && RID.is(value)) {
           analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges,
-              new RID(database, value.toString()), limit);
+              database.newRID(value.toString()), limit);
         } else
           analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, value, limit);
       } catch (Exception e) {

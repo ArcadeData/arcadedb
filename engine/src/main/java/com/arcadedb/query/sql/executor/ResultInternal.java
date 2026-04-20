@@ -331,7 +331,7 @@ public class ResultInternal implements Result {
         return Optional.empty();
       if (rid instanceof RID r)
         return Optional.of(r);
-      return Optional.of(database != null ? new DatabaseRID(database, rid.toString()) : new RID(rid.toString()));
+      return Optional.of(RID.create(database, rid.toString()));
     }
     return Optional.empty();
   }

@@ -21,6 +21,7 @@ package com.arcadedb.redis.query;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -478,7 +479,7 @@ public class RedisQueryEngine implements QueryEngine {
 
     // Check if it's a RID
     if (firstArg.startsWith("#")) {
-      return new RID(database, firstArg).asDocument();
+      return (Document) database.lookupByRID(new RID(firstArg), true);
     }
 
     // It's an index lookup
@@ -512,7 +513,7 @@ public class RedisQueryEngine implements QueryEngine {
         if (!rid.startsWith("#")) {
           throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
         }
-        results.add(new RID(database, rid).asDocument());
+        results.add((Document) database.lookupByRID(new RID(rid), true));
       }
     } else {
       // It's an index lookup
@@ -544,7 +545,7 @@ public class RedisQueryEngine implements QueryEngine {
     // Check if it's a RID
     if (firstArg.startsWith("#")) {
       try {
-        final Record record = new RID(database, firstArg).getRecord();
+        final Record record = database.lookupByRID(new RID(firstArg), true);
         return record != null ? 1 : 0;
       } catch (Exception e) {
         return 0;
@@ -585,7 +586,7 @@ public class RedisQueryEngine implements QueryEngine {
             throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
           }
           try {
-            new RID(database, rid).getRecord().delete();
+            database.lookupByRID(new RID(rid), true).delete();
             deleted[0]++;
           } catch (Exception e) {
             // Record not found, ignore

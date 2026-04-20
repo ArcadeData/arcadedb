@@ -314,7 +314,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // would create a Cartesian product of ALL vertices before filtering
     if (effectiveIdFilter != null && !effectiveIdFilter.isEmpty()) {
       try {
-        final RID rid = new RID(context.getDatabase(), effectiveIdFilter);
+        final RID rid = context.getDatabase().newRID(effectiveIdFilter);
         final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
         return List.of(vertex).iterator();
       } catch (final Exception e) {

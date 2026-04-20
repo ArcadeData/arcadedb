@@ -196,7 +196,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       var imported = database.newDocument(document.getString("t"));
       loadProperties(database, imported, properties);
       imported.save();
-      var oldRid = new RID(database, document.getString("r"));
+      var oldRid = new RID(document.getString("r"));
       ridIndex.put(oldRid, imported.getIdentity());
       context.createdDocuments.incrementAndGet();
     } catch (Exception e) {
@@ -214,7 +214,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       var imported = database.newVertex(vertex.getString("t"));
       loadProperties(database, imported, properties);
       imported.save();
-      var oldRid = new RID(database, vertex.getString("r"));
+      var oldRid = new RID(vertex.getString("r"));
       ridIndex.put(oldRid, imported.getIdentity());
       context.createdVertices.incrementAndGet();
     } catch (Exception e) {
@@ -229,7 +229,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       var properties = edge.getJSONObject("p");
       var edgeType = edge.getString("t");
 
-      var out = new RID(database, edge.getString("o"));
+      var out = new RID(edge.getString("o"));
       var newOut = ridIndex.get(out);
 
       if (newOut == null) {
@@ -237,7 +237,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         return;
       }
 
-      var in = new RID(database, edge.getString("i"));
+      var in = new RID(edge.getString("i"));
       var newIn = ridIndex.get(in);
 
       if (newIn == null) {

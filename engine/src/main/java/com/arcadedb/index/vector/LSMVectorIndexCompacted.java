@@ -316,7 +316,7 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
           final long position = positionAndSize[0];
           currentOffset += (int) positionAndSize[1];
 
-          final RID rid = new RID(database, bucketId, position);
+          final RID rid = new RID(bucketId, position);
 
           // Read deleted flag (fixed 1 byte)
           final boolean deleted = page.readByte(currentOffset) == 1;

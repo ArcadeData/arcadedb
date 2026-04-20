@@ -314,7 +314,9 @@ public class NodeIdMapping {
     final int naturalId = newToOld != null ? newToOld[globalId] : globalId;
     final int bucketIdx = bucketIdxForNaturalId(naturalId);
     final int localId = naturalId - bucketBase[bucketIdx];
-    return new RID(database, bucketIds[bucketIdx], positions[bucketIdx][localId]);
+    return database != null
+        ? database.newRID(bucketIds[bucketIdx], positions[bucketIdx][localId])
+        : new RID(bucketIds[bucketIdx], positions[bucketIdx][localId]);
   }
 
   /**

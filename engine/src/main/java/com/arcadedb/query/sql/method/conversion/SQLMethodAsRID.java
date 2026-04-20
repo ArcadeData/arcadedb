@@ -43,7 +43,7 @@ public class SQLMethodAsRID extends AbstractSQLMethod {
       if (value instanceof Identifiable identifiable)
         return identifiable.getIdentity();
       else if (value instanceof String string && RID.is(value))
-        return new RID(context != null ? context.getDatabase() : null, string);
+        return RID.create(context != null ? context.getDatabase() : null, string);
     }
     return null;
   }

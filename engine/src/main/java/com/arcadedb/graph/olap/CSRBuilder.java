@@ -1056,7 +1056,7 @@ public class CSRBuilder {
   static RID unpackRid(final long packed) {
     final int bucketId = (int) (packed >>> 32);
     final long position = (int) packed; // sign-extend for lightweight edges (negative positions)
-    return new RID(null, bucketId, position);
+    return new RID(bucketId, position);
   }
 
   static Column.Type detectColumnType(final Object value) {

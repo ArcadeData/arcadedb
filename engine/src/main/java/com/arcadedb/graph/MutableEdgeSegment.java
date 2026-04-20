@@ -38,13 +38,13 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   public MutableEdgeSegment(final Database database, final RID rid) {
     super(database, rid, null);
-    NULL_RID = new RID(database, -1, -1);
+    NULL_RID = new RID(-1, -1);
     this.buffer = null;
   }
 
   public MutableEdgeSegment(final Database database, final RID rid, final Binary buffer) {
     super(database, rid, buffer);
-    NULL_RID = new RID(database, -1, -1);
+    NULL_RID = new RID(-1, -1);
     this.buffer = buffer;
     if (buffer != null) {
       this.buffer.setAutoResizable(false);
@@ -54,7 +54,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   public MutableEdgeSegment(final DatabaseInternal database, final int bufferSize) {
     super(database, null, new Binary(bufferSize));
-    NULL_RID = new RID(database, -1, -1);
+    NULL_RID = new RID(-1, -1);
     this.buffer.setAutoResizable(false);
     this.bufferSize = bufferSize;
     buffer.putByte(0, RECORD_TYPE);
@@ -239,10 +239,10 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
           // FILTER BY EDGE BUCKETS
           for (int i = 0; i < edgeBucketFilter.length; i++) {
             if (currEdgeBucketId == edgeBucketFilter[i])
-              return new RID(database, currEdgeBucketId, currEdgePositionInBucket);
+              return new RID(currEdgeBucketId, currEdgePositionInBucket);
           }
         } else
-          return new RID(database, currEdgeBucketId, currEdgePositionInBucket);
+          return new RID(currEdgeBucketId, currEdgePositionInBucket);
       }
     }
 

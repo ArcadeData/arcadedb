@@ -53,7 +53,7 @@ public class SQLMethodAsRecord extends AbstractSQLMethod {
         return list;
 
       } else if (obj instanceof String string && RID.is(obj))
-        return new RID(context != null ? context.getDatabase() : null, string).getRecord();
+        return RID.create(context != null ? context.getDatabase() : null, string).getRecord();
     }
     return null;
   }

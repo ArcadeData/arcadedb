@@ -504,7 +504,7 @@ public class OrientDBImporter {
   }
 
   private RID convertRID(final Object value) {
-    final RID rid = value instanceof RID rid1 ? rid1 : new RID(database, value.toString());
+    final RID rid = value instanceof RID rid1 ? rid1 : new RID(value.toString());
     return compressedRecordsRidMap.get(rid);
   }
 
@@ -574,7 +574,7 @@ public class OrientDBImporter {
       // EMBEDDED RECORD?
       return null;
 
-    final RID recordRid = new RID(database, rid);
+    final RID recordRid = new RID(rid);
     final String recordType = (String) attributes.get(Property.TYPE_PROPERTY);
     if (recordType != null) {
       switch (recordType) {
@@ -772,7 +772,7 @@ public class OrientDBImporter {
         properties.put(attr.getKey(), attr.getValue());
       }
 
-    final RID out = new RID(database, (String) attributes.get("out"));
+    final RID out = new RID((String) attributes.get("out"));
     final RID newOut = compressedRecordsRidMap.get(out);
     if (newOut == null) {
       ++skippedEdgeBecauseMissingVertex;
@@ -789,7 +789,7 @@ public class OrientDBImporter {
       return;
     }
 
-    final RID in = new RID(database, (String) attributes.get("in"));
+    final RID in = new RID((String) attributes.get("in"));
     final RID newIn = compressedRecordsRidMap.get(in);
     if (newIn == null) {
       ++skippedEdgeBecauseMissingVertex;

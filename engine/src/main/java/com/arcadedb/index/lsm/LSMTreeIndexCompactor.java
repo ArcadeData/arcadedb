@@ -254,7 +254,7 @@ public class LSMTreeIndexCompactor {
               final List<MutablePage> newRootPages = compactedIndex.appendDuringCompaction(keyValueContent, rootPage,
                   rootPageBuffer,
                   compactedPageNumberInSeries,
-                  minorKey, new RID[] { new RID(database, 0, newPageNum) });
+                  minorKey, new RID[] { new RID(0, newPageNum) });
 
               LogManager.instance()
                   .log(mainIndex, Level.FINE,
@@ -290,7 +290,7 @@ public class LSMTreeIndexCompactor {
         // WRITE THE MAX KEY
         compactedIndex.appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer, compactedPageNumberInSeries,
             lastPageMaxKey,
-            new RID[] { new RID(database, 0, 0) });
+            new RID[] { new RID(0, 0) });
         LogManager.instance()
             .log(mainIndex, Level.FINE, "- Creating last entry in index '%s' root page %s (entriesInRootPage=%d, threadId=%d)",
                 null, mutableIndex,

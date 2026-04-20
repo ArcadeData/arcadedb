@@ -169,7 +169,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
         final String[] hosts = new String[remoteAddresses.size()];
         for (int i = 0; i < remoteAddresses.size(); i++)
-          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(0), "" + GREMLIN_SERVER_PORT)[0];
+          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.getFirst(), "" + GREMLIN_SERVER_PORT)[0];
 
         final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
             new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
@@ -285,18 +285,19 @@ public class ArcadeGraph implements Graph, Closeable {
 
     for (final Object o : vertexIds) {
       final RID rid;
-      if (o instanceof RID iD) {
-        rid = iD;
-      } else if (o instanceof Vertex vertex) {
-        final Object objectId = vertex.id();
-        if (objectId != null)
-          rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
-        else
+      switch (o) {
+        case RID iD -> rid = iD;
+        case Vertex vertex -> {
+          final Object objectId = vertex.id();
+          if (objectId != null)
+            rid = objectId instanceof RID rid1 ? rid1 : new RID(objectId.toString());
+          else
+            continue;
+        }
+        case String string -> rid = new RID(string);
+        case null, default -> {
           continue;
-      } else if (o instanceof String string) {
-        rid = new RID(database, string);
-      } else {
-        continue;
+        }
       }
 
       try {
@@ -350,18 +351,19 @@ public class ArcadeGraph implements Graph, Closeable {
 
     for (final Object o : edgeIds) {
       final RID rid;
-      if (o instanceof RID iD) {
-        rid = iD;
-      } else if (o instanceof Edge edge) {
-        final Object objectId = edge.id();
-        if (objectId != null)
-          rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
-        else
+      switch (o) {
+        case RID iD -> rid = iD;
+        case Edge edge -> {
+          final Object objectId = edge.id();
+          if (objectId != null)
+            rid = objectId instanceof RID rid1 ? rid1 : new RID(objectId.toString());
+          else
+            continue;
+        }
+        case String string -> rid = new RID(string);
+        case null, default -> {
           continue;
-      } else if (o instanceof String string) {
-        rid = new RID(database, string);
-      } else {
-        continue;
+        }
       }
 
       try {

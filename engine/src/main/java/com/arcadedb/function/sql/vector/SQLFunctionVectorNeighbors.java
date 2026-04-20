@@ -136,7 +136,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       else if (item instanceof Identifiable id)
         out.add(id.getIdentity());
       else if (item instanceof String s)
-        out.add(new RID(db, s));
+        out.add(db.newRID(s));
       else
         throw new CommandSQLParsingException(
             "Option 'filter' for function '" + NAME + "' must contain RIDs, got: " + item.getClass().getSimpleName());
@@ -205,7 +205,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
       final Document record;
       try {
-        record = rid.asDocument();
+        record = (Document) context.getDatabase().lookupByRID(rid, true);
       } catch (final RecordNotFoundException e) {
         // Skip records that no longer exist in the bucket (issue #3717).
         // This can happen when the vector index has stale entries pointing to deleted records,

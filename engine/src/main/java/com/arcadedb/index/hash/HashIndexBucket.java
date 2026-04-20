@@ -1459,7 +1459,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final Binary view = page.getImmutableView(offset, 20); // max ~20 bytes for 2 varInts
     final long bucketId = view.getNumber();
     final long position = view.getNumber();
-    return new RID(database, (int) bucketId, position);
+    return new RID((int) bucketId, position);
   }
 
   private int compressedRIDSize(final RID rid) {

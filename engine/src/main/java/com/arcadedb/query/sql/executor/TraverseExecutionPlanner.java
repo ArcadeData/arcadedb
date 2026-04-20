@@ -121,7 +121,7 @@ public class TraverseExecutionPlanner {
     Object paramValue = inputParam.getValue(context.getInputParameters());
 
     if (paramValue instanceof String string && RID.is(paramValue))
-      paramValue = new RID(context.getDatabase(), string);
+      paramValue = context.getDatabase().newRID(string);
 
     if (paramValue == null) {
       result.chain(new EmptyStep(context));//nothing to return

@@ -713,13 +713,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           throw new DatabaseOperationException("Failed to create record (empty RID)");
         }
 
-        // Construct a RID from the returned string
-        try {
-          return new RID(ridStr);
-        } catch (NoSuchMethodError | IllegalArgumentException ex) {
-          // Fallback for older APIs expecting (Database, String)
-          return new RID(this, ridStr);
-        }
+        // Construct a DatabaseRID bound to this remote database so asX() resolves correctly.
+        return newRID(ridStr);
       } catch (StatusRuntimeException | StatusException e) {
         handleGrpcException(e);
         return null;

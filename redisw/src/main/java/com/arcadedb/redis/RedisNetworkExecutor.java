@@ -284,7 +284,7 @@ public class RedisNetworkExecutor extends Thread {
       final Database database = server.getDatabase(databaseName);
 
       if (keyType.startsWith("#")) {
-        new RID(database, keyType).getRecord().delete();
+        database.lookupByRID(new RID(keyType), true).delete();
         deleted[0]++;
       } else {
         final Index index = database.getSchema().getIndexByName(keyType);
@@ -363,7 +363,7 @@ public class RedisNetworkExecutor extends Thread {
         if (key.startsWith("#")) {
           // BY RID - persistent mode
           final Database database = server.getDatabase(bucketName);
-          final Record record = new RID(database, key).asDocument();
+          final Record record = database.lookupByRID(new RID(key), true);
           respondValue(record != null ? record.toJSON(true) : null, true);
         } else {
           // Transient mode
@@ -689,7 +689,7 @@ public class RedisNetworkExecutor extends Thread {
 
       if (key.startsWith("#")) {
         // BY RID
-        record = new RID(database, key).asDocument();
+        record = (Document) database.lookupByRID(new RID(key), true);
       } else {
         throw new RedisException(
             "Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. Example: #13:432");
@@ -738,7 +738,7 @@ public class RedisNetworkExecutor extends Thread {
       for (final Object key : keys) {
         final String k = key.toString();
         if (k.startsWith("#"))
-          records.add(new RID(database, k).asDocument());
+          records.add((Document) database.lookupByRID(new RID(k), true));
         else
           throw new RedisException("""
               Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. \

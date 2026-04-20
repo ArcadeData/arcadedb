@@ -145,7 +145,7 @@ public class BucketIterator implements Iterator<Record> {
             final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
             if (recordSize[0] > 0 || recordSize[0] == LocalBucket.FIRST_CHUNK) {
               // NOT DELETED
-              final RID rid = new RID(database, bucket.fileId,
+              final RID rid = new RID(bucket.fileId,
                   ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
               if (!bucket.existsRecord(rid))
@@ -155,11 +155,11 @@ public class BucketIterator implements Iterator<Record> {
 
             } else if (recordSize[0] == LocalBucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER
-              final RID rid = new RID(database, bucket.fileId,
+              final RID rid = new RID(bucket.fileId,
                   ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
               final Binary view = bucket.getRecordInternal(
-                  new RID(database, bucket.fileId,
+                  new RID(bucket.fileId,
                       currentPage.readLong((int) (recordPositionInPage + recordSize[1]))), true);
 
               if (view == null)

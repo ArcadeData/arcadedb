@@ -115,7 +115,7 @@ public class JavaBinarySerializer {
     final DatabaseInternal db = ((DatabaseInternal) document.getDatabase());
 
     // RID
-    final RID rid = new RID(db, in.readInt(), in.readLong());
+    final RID rid = db.newRID(in.readInt(), in.readLong());
     mutable.setIdentity(rid.isValid() ? rid : null);
 
     // PROPERTIES
@@ -138,17 +138,19 @@ public class JavaBinarySerializer {
 
     // SPECIAL OPERATION FOR VERTICES AND EDGES
     if (document instanceof Vertex) {
-      final RID outRID = new RID(db, in.readInt(), in.readLong());
+      // Edge-chain head chunks are internal pointers; bare RID is sufficient since they never leak to user code as identities.
+      final RID outRID = new RID(in.readInt(), in.readLong());
       ((MutableVertex) document).setOutEdgesHeadChunk(outRID.isValid() ? outRID : null);
 
-      final RID inRID = new RID(db, in.readInt(), in.readLong());
+      final RID inRID = new RID(in.readInt(), in.readLong());
       ((MutableVertex) document).setInEdgesHeadChunk(inRID.isValid() ? inRID : null);
 
     } else if (document instanceof Edge) {
-      final RID outRID = new RID(db, in.readInt(), in.readLong());
+      // Edge endpoints are user-facing via edge.getOut()/getIn(): bind to the database so asVertex() works across threads.
+      final RID outRID = db.newRID(in.readInt(), in.readLong());
       ((MutableEdge) document).setOut(outRID.isValid() ? outRID : null);
 
-      final RID inRID = new RID(db, in.readInt(), in.readLong());
+      final RID inRID = db.newRID(in.readInt(), in.readLong());
       ((MutableEdge) document).setIn(inRID.isValid() ? inRID : null);
     }
   }

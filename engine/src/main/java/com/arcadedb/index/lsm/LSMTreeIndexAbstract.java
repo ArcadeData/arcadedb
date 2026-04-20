@@ -123,7 +123,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       this.binaryKeyTypes[i] = keyTypes[i].getBinaryType();
 
     this.nullStrategy = nullStrategy;
-    REMOVED_ENTRY_RID = new RID(database, -1, -1L);
+    REMOVED_ENTRY_RID = new RID(-1, -1L);
   }
 
   /**
@@ -139,7 +139,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     this.unique = unique;
     this.keyTypes = keyTypes;
     this.binaryKeyTypes = binaryKeyTypes;
-    REMOVED_ENTRY_RID = new RID(database, -1, -1L);
+    REMOVED_ENTRY_RID = new RID(-1, -1L);
   }
 
   /**
@@ -153,7 +153,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
-    REMOVED_ENTRY_RID = new RID(database, -1, -1L);
+    REMOVED_ENTRY_RID = new RID(-1, -1L);
   }
 
   /**
@@ -633,7 +633,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   protected RID getOriginalRID(final RID rid) {
-    return new RID(database, (rid.getBucketId() * -1) - 2, rid.getPosition());
+    return new RID((rid.getBucketId() * -1) - 2, rid.getPosition());
   }
 
   private int findEntryOfSameKey(final Binary currentPageBuffer, final Object[] keys, final int startIndexArray, int mid, int start,

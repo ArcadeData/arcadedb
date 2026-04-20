@@ -64,7 +64,7 @@ public class Rid extends SimpleNode {
 
   public RID toRecordId(final Result target, final CommandContext context) {
     if (legacy) {
-      return new RID(context.getDatabase(), bucket.value.intValue(), position.value.longValue());
+      return context.getDatabase().newRID(bucket.value.intValue(), position.value.longValue());
     } else {
       final Object result = expression.execute(target, context);
       if (result == null)
@@ -82,7 +82,7 @@ public class Rid extends SimpleNode {
           throw new CommandExecutionException("Cannot convert to RID: " + result);
 
         try {
-          return new RID(context.getDatabase(), Integer.parseInt(parts.get(0)), Integer.parseInt(parts.get(1)));
+          return context.getDatabase().newRID(Integer.parseInt(parts.getFirst()), Integer.parseInt(parts.get(1)));
         } catch (final Exception e) {
           throw new CommandExecutionException("Cannot convert to RID: " + result);
         }
@@ -93,7 +93,7 @@ public class Rid extends SimpleNode {
 
   public RID toRecordId(final Identifiable target, final CommandContext context) {
     if (legacy) {
-      return new RID(context.getDatabase(), bucket.value.intValue(), position.value.longValue());
+      return context.getDatabase().newRID(bucket.value.intValue(), position.value.longValue());
     } else {
       final Object result = expression.execute(target, context);
       if (result == null)

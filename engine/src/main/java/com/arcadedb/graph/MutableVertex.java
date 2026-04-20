@@ -259,10 +259,10 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   private void init() {
     if (buffer != null) {
       buffer.position(1);
-      this.outEdges = new RID(database, buffer.getInt(), buffer.getLong());
+      this.outEdges = new RID(buffer.getInt(), buffer.getLong());
       if (this.outEdges.getBucketId() == -1)
         this.outEdges = null;
-      this.inEdges = new RID(database, buffer.getInt(), buffer.getLong());
+      this.inEdges = new RID(buffer.getInt(), buffer.getLong());
       if (this.inEdges.getBucketId() == -1)
         this.inEdges = null;
 

@@ -58,7 +58,7 @@ public class RidSetIterator implements Iterator<RID> {
       throw new NoSuchElementException();
     final long absoluteWord = (long) currentBlock * set.maxArraySize + currentWordPos;
     final long position = (absoluteWord << 6) | nextBit;
-    final RID result = new RID(context == null ? null : context.getDatabase(), currentBucket, position);
+    final RID result = RID.create(context != null ? context.getDatabase() : null, currentBucket, position);
     // Clear the bit we just returned, then advance to the next set bit.
     remainingWord &= remainingWord - 1;
     advance();

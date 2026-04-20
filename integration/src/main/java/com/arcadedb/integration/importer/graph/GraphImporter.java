@@ -1006,8 +1006,8 @@ public class GraphImporter implements AutoCloseable {
       final boolean hasProps = ec.hasProperties();
 
       for (int i = 0; i < sSrc.length; i++) {
-        final RID src = new RID(null, srcTs.buckets[sSrc[i]], srcTs.positions[sSrc[i]]);
-        final RID dst = new RID(null, dstTs.buckets[sDst[i]], dstTs.positions[sDst[i]]);
+        final RID src = new RID(srcTs.buckets[sSrc[i]], srcTs.positions[sSrc[i]]);
+        final RID dst = new RID(dstTs.buckets[sDst[i]], dstTs.positions[sDst[i]]);
         if (hasProps) {
           final List<Object> props = new ArrayList<>();
           ec.appendProperties(props, i);

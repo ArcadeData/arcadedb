@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
@@ -2684,7 +2685,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         case DOT_PRODUCT -> -score;
         default -> score;
       };
-      results.add(new Pair<>(delta.rid, distance));
+      results.add(new Pair<>(bindRid(delta.rid), distance));
       added = true;
     }
 
@@ -2730,7 +2731,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         case DOT_PRODUCT -> -score;
         default -> score;
       };
-      results.add(new Pair<>(loc.rid, distance));
+      results.add(new Pair<>(bindRid(loc.rid), distance));
       added = true;
     }
 
@@ -2928,7 +2929,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                     -score;
                 default -> score;
               };
-              results.add(new Pair<>(loc.rid, distance));
+              results.add(new Pair<>(bindRid(loc.rid), distance));
             } else {
               skippedDeletedOrNull++;
             }
@@ -3103,7 +3104,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 case DOT_PRODUCT -> -score;
                 default -> score;
               };
-              results.add(new Pair<>(loc.rid, distance));
+              results.add(new Pair<>(bindRid(loc.rid), distance));
             } else {
               skippedDeletedOrNull++;
             }
@@ -3518,6 +3519,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   public DatabaseInternal getDatabase() {
     return mutable.getDatabase();
+  }
+
+  /**
+   * Upgrade a bare internal-storage RID to a {@link DatabaseRID} bound to this index's database so callers can do {@code result.getFirst().asDocument()} without
+   * relying on thread-local database context.
+   */
+  private RID bindRid(final RID rid) {
+    return rid instanceof DatabaseRID ? rid : getDatabase().newRID(rid.getBucketId(), rid.getPosition());
   }
 
   public String getComponentName() {
@@ -4424,7 +4433,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final long position = positionAndSize[0];
         currentOffset += (int) positionAndSize[1];
 
-        final RID rid = new RID(getDatabase(), bucketId, position);
+        final RID rid = new RID(bucketId, position);
 
         // Read deleted flag (fixed 1 byte)
         final boolean deleted = page.readByte(currentOffset) == 1;
@@ -4712,7 +4721,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             entryOffset += 4;
             final long position = currentPage.readLong(entryOffset);
             entryOffset += 8;
-            final RID rid = new RID(mutable.getDatabase(), bucketId, position);
+            final RID rid = new RID(bucketId, position);
 
             final byte flags = currentPage.readByte(entryOffset);
             entryOffset += 1;

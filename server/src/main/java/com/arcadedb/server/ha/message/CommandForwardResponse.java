@@ -90,7 +90,7 @@ public class CommandForwardResponse extends HAAbstractCommand {
 
     while (stream.getByte() == 1) {
       final String ridAsString = stream.getString();
-      final RID rid = ridAsString.isEmpty() ? null : new RID(database, ridAsString);
+      final RID rid = ridAsString.isEmpty() ? null : database.newRID(ridAsString);
 
       if (rid == null) {
         // PROJECTION

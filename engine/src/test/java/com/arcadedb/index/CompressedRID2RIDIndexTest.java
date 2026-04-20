@@ -32,10 +32,10 @@ class CompressedRID2RIDIndexTest extends TestHelper {
     final CompressedRID2RIDIndex index = new CompressedRID2RIDIndex(database, TOT, TOT);
 
     for (int i = 0; i < TOT; i++)
-      index.put(new RID(database, 3, i), new RID(database, 4, i));
+      index.put(new RID(3, i), new RID(4, i));
 
     for (int i = 0; i < TOT; i++)
-      assertThat(index.get(new RID(database, 3, i))).isEqualTo(new RID(database, 4, i));
+      assertThat(index.get(new RID(3, i))).isEqualTo(new RID(4, i));
 
     int found = 0;
     for (CompressedRID2RIDIndex.EntryIterator it = index.entryIterator(); it.hasNext(); ) {

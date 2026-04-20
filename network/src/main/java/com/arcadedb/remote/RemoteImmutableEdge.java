@@ -37,8 +37,8 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
   public RemoteImmutableEdge(final RemoteDatabase database, final Map<String, Object> properties) {
     super(database, properties);
-    this.out = new RID(remoteDatabase, (String) properties.get(RemoteProperty.OUT_PROPERTY));
-    this.in = new RID(remoteDatabase, (String) properties.get(RemoteProperty.IN_PROPERTY));
+    this.out = remoteDatabase.newRID((String) properties.get(RemoteProperty.OUT_PROPERTY));
+    this.in = remoteDatabase.newRID((String) properties.get(RemoteProperty.IN_PROPERTY));
   }
 
   @Override

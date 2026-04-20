@@ -387,7 +387,7 @@ public class GraphBatch implements AutoCloseable {
     int nonLightCount = 0;
     for (int i = 0; i < edgeCount; i++) {
       if (lightEdges && !edgeHasProperties[i])
-        edgeRIDs[i] = new RID(database, edgeTypeBucketIds[i], -1L);
+        edgeRIDs[i] = new RID(edgeTypeBucketIds[i], -1L);
       else
         nonLightCount++;
     }
@@ -684,8 +684,8 @@ public class GraphBatch implements AutoCloseable {
       for (int k = 0; k < nonLightCount; k++) {
         final int i = nonLightIndices[k];
         final EdgeType edgeType = (EdgeType) database.getSchema().getTypeByBucketId(edgeTypeBucketIds[i]);
-        final RID srcRID = new RID(database, edgeSrcBucketIds[i], edgeSrcPositions[i]);
-        final RID dstRID = new RID(database, edgeDstBucketIds[i], edgeDstPositions[i]);
+        final RID srcRID = new RID(edgeSrcBucketIds[i], edgeSrcPositions[i]);
+        final RID dstRID = new RID(edgeDstBucketIds[i], edgeDstPositions[i]);
 
         final MutableEdge edge = new MutableEdge(database, edgeType, srcRID, dstRID);
         if (edgeHasProperties[i])
@@ -773,7 +773,7 @@ public class GraphBatch implements AutoCloseable {
       final int bucketId = (int) (vertexKey >>> 40);
       final long position = vertexKey & 0xFFFFFFFFFFL;
 
-      MutableVertex vertex = new RID(database, bucketId, position).asVertex().modify();
+      MutableVertex vertex = ((Vertex) database.lookupByRID(new RID(bucketId, position), true)).modify();
 
       final RID outHead = deferredOutHead.get(vertexKey);
       if (outHead != null)
@@ -1138,7 +1138,7 @@ public class GraphBatch implements AutoCloseable {
         inChunk = new MutableEdgeSegment(database, segmentSize);
         isNew = true;
       } else {
-        final MutableVertex dstVertex = new RID(database, dstBucket, dstPos).asVertex().modify();
+        final MutableVertex dstVertex = ((Vertex) database.lookupByRID(new RID(dstBucket, dstPos), true)).modify();
         inChunk = getOrCreateInEdgeChunk(dstVertex);
         isNew = false;
       }
@@ -1297,7 +1297,7 @@ public class GraphBatch implements AutoCloseable {
 
     // For known-new vertices, skip loading — we know there's no existing segment
     if (!knownNewVertexKeys.contains(vertexKey)) {
-      final VertexInternal vertex = (VertexInternal) new RID(database, bucketId, position).asVertex();
+      final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getOutEdgesHeadChunk();
       if (headChunk != null) {
         outChunkRIDCache.put(vertexKey, headChunk);
@@ -1326,7 +1326,7 @@ public class GraphBatch implements AutoCloseable {
     }
 
     if (!knownNewVertexKeys.contains(vertexKey)) {
-      final VertexInternal vertex = (VertexInternal) new RID(database, bucketId, position).asVertex();
+      final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getInEdgesHeadChunk();
       if (headChunk != null) {
         inChunkRIDCache.put(vertexKey, headChunk);
@@ -1804,7 +1804,7 @@ public class GraphBatch implements AutoCloseable {
         outChunk = new MutableEdgeSegment(database, segmentSize);
         isNew = true;
       } else {
-        final MutableVertex srcVertex = new RID(database, srcBucket, srcPos).asVertex().modify();
+        final MutableVertex srcVertex = ((Vertex) database.lookupByRID(new RID(srcBucket, srcPos), true)).modify();
         outChunk = getOrCreateOutEdgeChunk(srcVertex);
         isNew = false;
       }

@@ -51,10 +51,10 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     super(database, type, rid, buffer);
     if (buffer != null) {
       buffer.position(1); // SKIP RECORD TYPE
-      outEdges = new RID(database, buffer.getInt(), buffer.getLong());
+      outEdges = new RID(buffer.getInt(), buffer.getLong());
       if (outEdges.getBucketId() == -1)
         outEdges = null;
-      inEdges = new RID(database, buffer.getInt(), buffer.getLong());
+      inEdges = new RID(buffer.getInt(), buffer.getLong());
       if (inEdges.getBucketId() == -1)
         inEdges = null;
       propertiesStartingPosition = buffer.position();
@@ -234,10 +234,10 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   protected boolean checkForLazyLoading() {
     if (super.checkForLazyLoading() || buffer != null && buffer.position() == 1) {
       buffer.position(1); // SKIP RECORD TYPE
-      outEdges = new RID(database, buffer.getInt(), buffer.getLong());
+      outEdges = new RID(buffer.getInt(), buffer.getLong());
       if (outEdges.getBucketId() == -1)
         outEdges = null;
-      inEdges = new RID(database, buffer.getInt(), buffer.getLong());
+      inEdges = new RID(buffer.getInt(), buffer.getLong());
       if (inEdges.getBucketId() == -1)
         inEdges = null;
       propertiesStartingPosition = buffer.position();

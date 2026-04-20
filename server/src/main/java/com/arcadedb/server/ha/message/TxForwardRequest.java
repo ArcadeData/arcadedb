@@ -216,14 +216,14 @@ public class TxForwardRequest extends TxRequestAbstract {
         for (int i = 0; i < totalKeyEntries; ++i) {
           final TransactionIndexContext.IndexKey.IndexKeyOperation operation = TransactionIndexContext.IndexKey.IndexKeyOperation.values()[uniqueKeysBuffer.getByte()];
 
-          final RID rid = new RID(database, (int) uniqueKeysBuffer.getUnsignedNumber(), uniqueKeysBuffer.getUnsignedNumber());
+          final RID rid = database.newRID((int) uniqueKeysBuffer.getUnsignedNumber(), uniqueKeysBuffer.getUnsignedNumber());
 
           final TransactionIndexContext.IndexKey v = new TransactionIndexContext.IndexKey(index.isUnique(), operation, keyValues,
               rid);
           if (operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REPLACE) {
             final byte hasOldRidFlag = uniqueKeysBuffer.getByte();
             if (hasOldRidFlag == 1)
-              v.oldRid = new RID(database, (int) uniqueKeysBuffer.getUnsignedNumber(), uniqueKeysBuffer.getUnsignedNumber());
+              v.oldRid = database.newRID((int) uniqueKeysBuffer.getUnsignedNumber(), uniqueKeysBuffer.getUnsignedNumber());
           }
           values.put(v, v);
         }

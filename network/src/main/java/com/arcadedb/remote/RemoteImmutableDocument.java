@@ -73,7 +73,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
     final String ridAsString = (String) attributes.get(RID_PROPERTY);
     if (ridAsString != null)
-      this.rid = new RID(remoteDatabase, ridAsString);
+      this.rid = remoteDatabase.newRID(ridAsString);
     else
       this.rid = null;
   }
