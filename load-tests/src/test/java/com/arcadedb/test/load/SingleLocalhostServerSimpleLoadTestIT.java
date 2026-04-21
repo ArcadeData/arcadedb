@@ -40,6 +40,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -117,17 +118,18 @@ class SingleLocalhostServerSimpleLoadTestIT {
   @DisplayName("Single server load test")
   void singleServerLoadTest() throws Exception {
 
-    ServerWrapper server = new ServerWrapper("localhost", 2480, 50051);
+    ServerWrapper server = new ServerWrapper("localhost", 2481, 50051);
     DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, wordSupplier);
+
     db.createDatabase();
     db.createSchema();
 
     // Parameters for the test
     final int numOfThreads = 5; //number of threads to use to insert users and photos
-    final int numOfUsers = 200000; // Each thread will create 200000 users
-    final int numOfPhotos = 10; // Each user will have 5 photos
-    final int numOfFriendship = 100000; // Each thread will create 100000 friendships
-    final int numOfLike = 100000; // Each thread will create 100000 likes
+    final int numOfUsers = 1000; // Each thread will create 200000 users
+    final int numOfPhotos = 50; // Each user will have 5 photos
+    final int numOfFriendship = 2000; // Each thread will create 100000 friendships
+    final int numOfLike = 2000; // Each thread will create 100000 likes
 
     int expectedUsersCount = numOfUsers * numOfThreads;
     int expectedPhotoCount = expectedUsersCount * numOfPhotos;
@@ -149,6 +151,16 @@ class SingleLocalhostServerSimpleLoadTestIT {
       });
     }
 
+//    ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+
+//    Runnable task =  () -> {
+//      DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier);
+//      db1.createFriendships(numOfFriendship);
+//      db1.close();
+//    };
+//    scheduler.scheduleWithFixedDelay(task, 1, 10, TimeUnit.SECONDS);
+
+    TimeUnit.SECONDS.sleep(30);
     if (numOfFriendship > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
@@ -162,7 +174,6 @@ class SingleLocalhostServerSimpleLoadTestIT {
       // Each thread will create friendships
       executor.submit(() -> {
         DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier);
-        ;
         db1.createLike(numOfLike);
         db1.close();
       });

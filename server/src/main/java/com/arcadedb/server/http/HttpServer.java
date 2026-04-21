@@ -100,6 +100,7 @@ import java.net.*;
 import java.security.*;
 import java.security.cert.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.*;
 
 import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_KEYSTORE;
@@ -115,6 +116,8 @@ public class HttpServer implements ServerPlugin {
   private final    HttpSessionManager     sessionManager;
   private final    HttpAuthSessionManager authSessionManager;
   private final    WebSocketEventBus      webSocketEventBus;
+  private final    IdempotencyCache       idempotencyCache;
+  private          ScheduledExecutorService idempotencyCleanupExecutor;
   private          Undertow               undertow;
   private volatile String                 listeningAddress;
   private          int                    httpPortListening;
@@ -127,11 +130,22 @@ public class HttpServer implements ServerPlugin {
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L,
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT) * 1_000L);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
+    final long ttlMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS);
+    final int maxEntries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_ENTRIES);
+    this.idempotencyCache = new IdempotencyCache(ttlMs, maxEntries);
+    this.idempotencyCleanupExecutor = Executors.newSingleThreadScheduledExecutor(
+        r -> new Thread(r, "IdempotencyCache-cleanup"));
+    this.idempotencyCleanupExecutor.scheduleAtFixedRate(idempotencyCache::cleanupExpired, 30, 30, TimeUnit.SECONDS);
   }
 
   @Override
   public void stopService() {
     webSocketEventBus.stop();
+
+    if (idempotencyCleanupExecutor != null) {
+      idempotencyCleanupExecutor.shutdown();
+      idempotencyCleanupExecutor = null;
+    }
 
     if (undertow != null) {
       try {
@@ -310,7 +324,7 @@ public class HttpServer implements ServerPlugin {
   private void handleServerStartException(final Exception e, int httpsPortListening) {
     undertow = null;
 
-    if (e.getCause() instanceof BindException) {
+    if (hasCause(e, BindException.class)) {
       LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available", httpPortListening);
       if (httpsPortListening > 0) {
         ++httpsPortListening;
@@ -318,6 +332,15 @@ public class HttpServer implements ServerPlugin {
     } else {
       throw new ServerException("Error on starting HTTP Server", e);
     }
+  }
+
+  private static boolean hasCause(Throwable t, final Class<? extends Throwable> causeClass) {
+    while (t != null) {
+      if (causeClass.isInstance(t))
+        return true;
+      t = t.getCause();
+    }
+    return false;
   }
 
   private void handleServerStartFailure(final int[] httpPortRange) {
@@ -371,6 +394,10 @@ public class HttpServer implements ServerPlugin {
 
   public WebSocketEventBus getWebSocketEventBus() {
     return webSocketEventBus;
+  }
+
+  public IdempotencyCache getIdempotencyCache() {
+    return idempotencyCache;
   }
 
   private SSLContext createSSLContext() throws Exception {

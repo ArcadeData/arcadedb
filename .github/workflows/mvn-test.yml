@@ -40,7 +40,14 @@ jobs:
         with:
           distribution: "temurin"
           java-version: 21
-          cache: "maven"
+
+      - name: Cache local Maven repository
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
@@ -223,7 +230,7 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Integration Tests with Coverage
-        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl !e2e,!load-tests
+        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl !e2e,!load-tests,!e2e-ha
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

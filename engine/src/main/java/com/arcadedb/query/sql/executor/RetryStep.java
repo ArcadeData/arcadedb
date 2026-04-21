@@ -64,7 +64,13 @@ public class RetryStep extends AbstractExecutionStep {
           return result.syncPull(ctx, nRecords);
         }
         break;
-      } catch (NeedRetryException ex) {
+      } catch (final NeedRetryException | TimeoutException ex) {
+        // TimeoutException is also retried because the primary source under concurrent writes is
+        // TransactionManager's file-lock timeout during commit (see
+        // TransactionManager.lockFilesInOrder). That contention is transient and almost always
+        // clears after a short backoff, so retrying inside a COMMIT RETRY block is the right
+        // behavior. Query-level timeouts wrapped in RETRY will also retry, which is consistent
+        // with the user's explicit RETRY N directive.
         try {
           ctx.getDatabase().rollback();
         } catch (Exception e) {

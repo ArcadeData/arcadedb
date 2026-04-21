@@ -24,4 +24,8 @@ public class QuorumNotReachedException extends NeedRetryException {
   public QuorumNotReachedException(final String s) {
     super(s);
   }
+
+  public QuorumNotReachedException(final String s, final Throwable e) {
+    super(s, e);
+  }
 }

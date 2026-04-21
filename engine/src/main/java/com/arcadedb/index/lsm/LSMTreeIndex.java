@@ -289,7 +289,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return false;
 
     try {
-      return new LSMTreeIndexCompactor().compact(this);
+      return database.getWrappedDatabaseInstance().runWithCompactionReplication(
+          () -> new LSMTreeIndexCompactor().compact(this));
     } catch (final TimeoutException e) {
       // IGNORE IT, WILL RETRY LATER
       return false;

@@ -38,8 +38,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
-import com.arcadedb.server.ha.HAServer;
-import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
@@ -72,6 +70,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
@@ -88,7 +87,7 @@ public class ArcadeDBServer {
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
-  private             HAServer                              haServer;
+  private             HAServerPlugin                        haServer;
   private             ServerSecurity                        security;
   private             HttpServer                            httpServer;
   private             MCPConfiguration                      mcpConfiguration;
@@ -97,6 +96,9 @@ public class ArcadeDBServer {
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
+  private final       java.util.concurrent.atomic.AtomicBoolean snapshotInstallInProgress            = new java.util.concurrent.atomic.AtomicBoolean(false);
+  private             Function<LocalDatabase, DatabaseInternal> databaseWrapper;
+//  private             ServerMonitor                         serverMonitor;
 
   static {
     // must be called before any Logger method is used.
@@ -128,6 +130,14 @@ public class ArcadeDBServer {
 
   public ContextConfiguration getConfiguration() {
     return configuration;
+  }
+
+  public void setSnapshotInstallInProgress(final boolean inProgress) {
+    snapshotInstallInProgress.set(inProgress);
+  }
+
+  public boolean isSnapshotInstallInProgress() {
+    return snapshotInstallInProgress.get();
   }
 
   public synchronized void start() {
@@ -222,10 +232,7 @@ public class ArcadeDBServer {
 
     httpServer.startService();
 
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-      haServer = new HAServer(this, configuration);
-      haServer.startService();
-    }
+    // HA is started via the plugin manager (RaftHAPlugin discovered via ServiceLoader)
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
 
@@ -486,8 +493,8 @@ public class ArcadeDBServer {
         embeddedDatabase = (DatabaseInternal) factory.open(mode);
       }
 
-      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-        embeddedDatabase = new ReplicatedDatabase(this, (LocalDatabase) embeddedDatabase);
+      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) && databaseWrapper != null)
+        embeddedDatabase = databaseWrapper.apply((LocalDatabase) embeddedDatabase);
 
       serverDatabase = new ServerDatabase(this, embeddedDatabase);
 
@@ -521,8 +528,56 @@ public class ArcadeDBServer {
     return hostAddress;
   }
 
-  public HAServer getHA() {
+  public HAServerPlugin getHA() {
     return haServer;
+  }
+
+  public void setHA(final HAServerPlugin ha) {
+    this.haServer = ha;
+  }
+
+  /**
+   * Sets a custom database wrapper function used by HA plugins (e.g., Raft) to wrap
+   * LocalDatabase instances with a replicated database implementation.
+   */
+  public void setDatabaseWrapper(final Function<LocalDatabase, DatabaseInternal> wrapper) {
+    this.databaseWrapper = wrapper;
+  }
+
+  /**
+   * Re-wraps all already-loaded databases using the current databaseWrapper.
+   * Called by HA plugins (e.g., Raft) that start after databases are already loaded,
+   * to replace the plain LocalDatabase with a replicated database implementation.
+   */
+  public void rewrapDatabases() {
+    if (databaseWrapper == null)
+      return;
+
+    synchronized (databases) {
+      for (final var entry : databases.entrySet()) {
+        final ServerDatabase serverDb = entry.getValue();
+        final DatabaseInternal wrapped = serverDb.getWrappedDatabaseInstance();
+
+        // Get the underlying LocalDatabase, whether it's plain or already wrapped by an HA layer.
+        // On server restart the old wrapper may hold a stale/null raftHAServer reference, so we
+        // must always unwrap to the LocalDatabase and re-wrap with the current wrapper.
+        final LocalDatabase localDb;
+        if (wrapped instanceof LocalDatabase ld)
+          localDb = ld;
+        else if (wrapped.getEmbedded() instanceof LocalDatabase ld)
+          localDb = ld;
+        else
+          localDb = null;
+
+        if (localDb == null)
+          continue;
+
+        final DatabaseInternal newWrapped = databaseWrapper.apply(localDb);
+        final ServerDatabase newServerDb = new ServerDatabase(this, newWrapped);
+        databases.put(entry.getKey(), newServerDb);
+        LogManager.instance().log(this, Level.INFO, "Re-wrapped database '%s' with HA wrapper", entry.getKey());
+      }
+    }
   }
 
   public ServerSecurity getSecurity() {
@@ -613,8 +668,8 @@ public class ArcadeDBServer {
             embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
         }
 
-        if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-          embDatabase = new ReplicatedDatabase(this, (LocalDatabase) embDatabase);
+        if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) && databaseWrapper != null)
+          embDatabase = databaseWrapper.apply((LocalDatabase) embDatabase);
 
         db = new ServerDatabase(this, embDatabase);
 

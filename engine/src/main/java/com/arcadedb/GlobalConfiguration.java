@@ -108,7 +108,7 @@ public enum GlobalConfiguration {
         ASYNC_TX_BATCH_SIZE.setValue(8);
         PAGE_FLUSH_QUEUE.setValue(8);
         SQL_STATEMENT_CACHE.setValue(16);
-        HA_REPLICATION_QUEUE_SIZE.setValue(8);
+
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(10_000);
@@ -515,16 +515,15 @@ public enum GlobalConfiguration {
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, the operation will be retried a specific amount of times on the next server in the list. 0 (default) is to retry against all the configured servers",
       Integer.class, 0),
 
-  HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
-      "Server role between ANY (default) OR REPLICA to configure replica only servers", String.class, "any",
-      Set.of((Object[]) new String[]{"any", "replica"})),
-
   HA_CLUSTER_NAME("arcadedb.ha.clusterName", SCOPE.SERVER,
       "Cluster name. By default is 'arcadedb'. Useful in case of multiple clusters in the same network", String.class,
       Constants.PRODUCT.toLowerCase(Locale.ENGLISH)),
 
   HA_SERVER_LIST("arcadedb.ha.serverList", SCOPE.SERVER,
-      "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424",
+      "Servers in the cluster as a list of <hostname/ip-address:raftPort:httpPort[:priority]> items separated by comma. " +
+          "The httpPort is required for replica-to-leader HTTP command forwarding. " +
+          "The optional priority (integer, default 0) sets the preferred leader: the node with the highest priority is preferred during elections. " +
+          "Example: localhost:2434:2480:10,192.168.0.1:2434:2480:0",
       String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
@@ -533,22 +532,20 @@ public enum GlobalConfiguration {
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
-  HA_REPLICATION_QUEUE_SIZE("arcadedb.ha.replicationQueueSize", SCOPE.SERVER, "Queue size for replicating messages between servers",
-      Integer.class, 512),
+  HA_ELECTION_TIMEOUT_MIN("arcadedb.ha.electionTimeoutMin", SCOPE.SERVER,
+      "Minimum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 2000),
 
-  // TODO: USE THIS FOR CREATING NEW FILES
-  HA_REPLICATION_FILE_MAXSIZE("arcadedb.ha.replicationFileMaxSize", SCOPE.SERVER,
-      "Maximum file size for replicating messages between servers. Default is 1GB", Long.class, 1024 * 1024 * 1024),
+  HA_ELECTION_TIMEOUT_MAX("arcadedb.ha.electionTimeoutMax", SCOPE.SERVER,
+      "Maximum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 5000),
+
+  HA_LOG_SEGMENT_SIZE("arcadedb.ha.logSegmentSize", SCOPE.SERVER,
+      "Maximum Raft log segment size (e.g. '64MB', '128MB')", String.class, "64MB"),
+
+  HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
+      "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),
 
   HA_REPLICATION_CHUNK_MAXSIZE("arcadedb.ha.replicationChunkMaxSize", SCOPE.SERVER,
       "Maximum channel chunk size for replicating messages between servers. Default is 16777216", Integer.class, 16384 * 1024),
-
-  HA_REPLICATION_INCOMING_HOST("arcadedb.ha.replicationIncomingHost", SCOPE.SERVER,
-      "TCP/IP host name used for incoming replication connections. By default is 0.0.0.0 (listens to all the configured network interfaces)",
-      String.class, "0.0.0.0"),
-
-  HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", SCOPE.SERVER,
-      "TCP/IP port number used for incoming replication connections", String.class, "2424-2433"),
 
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
@@ -556,6 +553,120 @@ public enum GlobalConfiguration {
   HA_K8S_DNS_SUFFIX("arcadedb.ha.k8sSuffix", SCOPE.SERVER,
       "When running inside Kubernetes use this suffix to reach the other servers. Example: arcadedb.default.svc.cluster.local",
       String.class, ""),
+
+  HA_READ_CONSISTENCY("arcadedb.ha.readConsistency", SCOPE.SERVER,
+      "Default read consistency for follower reads: eventual, read_your_writes, linearizable",
+      String.class, "read_your_writes",
+      Set.of((Object[]) new String[] { "eventual", "read_your_writes", "linearizable" })),
+
+  // RAFT HA
+  HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
+      "Raft log index gap threshold for replication lag warnings. When a replica falls behind by more than this many entries, a warning is logged",
+      Long.class, 1000L),
+
+  HA_RAFT_PORT("arcadedb.ha.raftPort", SCOPE.SERVER,
+      "TCP/IP port for Raft gRPC communication. Used as the default port when HA_SERVER_LIST entries do not specify an explicit port",
+      Integer.class, 2434),
+
+  HA_RAFT_PERSIST_STORAGE("arcadedb.ha.raftPersistStorage", SCOPE.SERVER,
+      "If true, the Raft storage directory is preserved across server restarts, enabling node rejoin " +
+      "without a full snapshot resync. Defaults to false (ephemeral) for testing convenience; " +
+      "set to true for durable deployments.",
+      Boolean.class, false),
+
+  HA_RAFT_SNAPSHOT_THRESHOLD("arcadedb.ha.raftSnapshotThreshold", SCOPE.SERVER,
+      "Number of Raft log entries after which the leader automatically takes a snapshot. " +
+      "Lower values cause more frequent snapshots and earlier log compaction.",
+      Long.class, 10000L),
+
+  HA_LOG_VERBOSE("arcadedb.ha.logVerbose", SCOPE.SERVER,
+      "HA verbose logging level: 0=off, 1=basic (elections, leader changes), 2=detailed (replication, forwarding), 3=trace (every state machine apply)",
+      Integer.class, 0),
+
+  HA_RAFT_GROUP_COMMIT_BATCH_SIZE("arcadedb.ha.raftGroupCommitBatchSize", SCOPE.SERVER,
+      "Maximum number of Raft log entries to batch in a single group commit flush. Higher values improve throughput under concurrent load.",
+      Integer.class, 500),
+
+  HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
+      "Shared secret for inter-node request forwarding authentication. " +
+      "Must be identical on all cluster nodes. " +
+      "If empty, a random token is auto-generated and stored in raft-storage at startup.",
+      String.class, ""),
+
+  HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
+      "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
+      Long.class, 3000L),
+
+  HA_GRPC_FLOW_CONTROL_WINDOW("arcadedb.ha.grpcFlowControlWindow", SCOPE.SERVER,
+      "gRPC flow control window size in bytes for Ratis append-entries traffic. Larger values help catch-up replication after partitions.",
+      Long.class, 4L * 1024 * 1024),
+
+  HA_SNAPSHOT_MAX_CONCURRENT("arcadedb.ha.snapshotMaxConcurrent", SCOPE.SERVER,
+      "Maximum number of concurrent snapshot downloads served by the leader. Requests over this limit receive HTTP 503.",
+      Integer.class, 2),
+
+  HA_SNAPSHOT_INSTALL_RETRIES("arcadedb.ha.snapshotInstallRetries", SCOPE.SERVER,
+      "Maximum retry attempts for snapshot download from the leader during snapshot installation.",
+      Integer.class, 3),
+
+  HA_SNAPSHOT_INSTALL_RETRY_BASE_MS("arcadedb.ha.snapshotInstallRetryBaseMs", SCOPE.SERVER,
+      "Base delay in milliseconds for exponential backoff between snapshot download retries. Actual delay is baseMs * 2^attempt.",
+      Long.class, 5000L),
+
+  HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
+      "Read timeout in milliseconds for the leader proxy in AbstractServerHttpHandler. Covers long-running queries proxied from a follower to the leader.",
+      Long.class, 30000L),
+
+  HA_PROXY_CONNECT_TIMEOUT("arcadedb.ha.proxyConnectTimeout", SCOPE.SERVER,
+      "Connect timeout in milliseconds for the leader proxy in AbstractServerHttpHandler.",
+      Long.class, 5000L),
+
+  HA_PROXY_MAX_BODY_SIZE("arcadedb.ha.proxyMaxBodySize", SCOPE.SERVER,
+      "Maximum request body size in bytes that the leader proxy will buffer and forward. Larger requests fall back to HTTP 400.",
+      Integer.class, 16 * 1024 * 1024),
+
+  HA_CLIENT_ELECTION_RETRY_COUNT("arcadedb.ha.clientElectionRetryCount", SCOPE.SERVER,
+      "Number of retries performed by RemoteDatabase after receiving HTTP 503 NeedRetryException during an election.",
+      Integer.class, 3),
+
+  HA_CLIENT_ELECTION_RETRY_DELAY_MS("arcadedb.ha.clientElectionRetryDelayMs", SCOPE.SERVER,
+      "Delay in milliseconds between RemoteDatabase election retries.",
+      Long.class, 2000L),
+
+  HA_STOP_SERVER_ON_REPLICATION_FAILURE("arcadedb.ha.stopServerOnReplicationFailure", SCOPE.SERVER,
+      "If true, stops the JVM after exhausting step-down retries on a phase-2 replication failure. "
+          + "If false, logs CRITICAL but leaves the server running (useful for debugging).",
+      Boolean.class, true),
+
+  HA_SNAPSHOT_WRITE_TIMEOUT("arcadedb.ha.snapshotWriteTimeout", SCOPE.SERVER,
+      "Timeout in milliseconds for writing a snapshot to a follower. "
+          + "If the transfer stalls beyond this duration, the connection is force-closed to free the semaphore slot.",
+      Long.class, 300_000L),
+
+  HA_SNAPSHOT_WATCHDOG_TIMEOUT("arcadedb.ha.snapshotWatchdogTimeout", SCOPE.SERVER,
+      "Delay in milliseconds before the snapshot-gap watchdog triggers a download. "
+          + "Floored at 4x HA_ELECTION_TIMEOUT_MAX to avoid premature firing on WAN clusters.",
+      Long.class, 30_000L),
+
+  HA_SNAPSHOT_GAP_TOLERANCE("arcadedb.ha.snapshotGapTolerance", SCOPE.SERVER,
+      "Maximum acceptable gap between the snapshot index and persisted applied index before triggering a snapshot download.",
+      Long.class, 10L),
+
+  HA_SNAPSHOT_MAX_ENTRY_SIZE("arcadedb.ha.snapshotMaxEntrySize", SCOPE.SERVER,
+      "Maximum uncompressed size in bytes for a single entry in a snapshot ZIP file. Protects against decompression bombs.",
+      Long.class, 10_737_418_240L),
+
+  HA_IDEMPOTENCY_CACHE_TTL_MS("arcadedb.ha.idempotencyCacheTtlMs", SCOPE.SERVER,
+      "Time-to-live in milliseconds for entries in the HTTP idempotency cache.",
+      Long.class, 60_000L),
+
+  HA_IDEMPOTENCY_CACHE_MAX_ENTRIES("arcadedb.ha.idempotencyCacheMaxEntries", SCOPE.SERVER,
+      "Maximum number of entries in the HTTP idempotency cache. Oldest entry is evicted when full.",
+      Integer.class, 10_000),
+
+  HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,
+      "Rate-limiting interval in milliseconds for DNS re-resolution in the gRPC peer address allowlist filter.",
+      Long.class, 30_000L),
 
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
@@ -931,7 +1042,7 @@ public enum GlobalConfiguration {
   }
 
   public boolean isHidden() {
-    return hidden;
+    return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password");
   }
 
   public Object getDefValue() {

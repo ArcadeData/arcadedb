@@ -19,7 +19,6 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
@@ -35,21 +34,23 @@ import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.backup.DatabaseBackupConfig;
-import com.arcadedb.server.ha.HAServer;
-import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
-import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
-import com.arcadedb.server.ha.ReplicatedDatabase;
-import com.arcadedb.server.ha.message.ServerShutdownRequest;
+import com.arcadedb.server.HAReplicatedDatabase;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 import io.undertow.util.StatusCodes;
 
 import java.io.*;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.rmi.*;
@@ -60,6 +61,7 @@ import java.util.concurrent.atomic.*;
 import java.util.regex.*;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
+  private static final HttpClient HTTP_CLIENT           = HttpClient.newHttpClient();
   private static final String LIST_DATABASES       = "list databases";
   private static final String SHUTDOWN             = "shutdown";
   private static final String CREATE_DATABASE      = "create database";
@@ -107,6 +109,15 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return listDatabases(user);
     else
       checkRootUser(user);
+
+    // Write commands that must run on the leader: forward if this node is a replica
+    if (command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE) ||
+        command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
+        command_lc.startsWith(RESTORE_DATABASE) || command_lc.startsWith(IMPORT_DATABASE)) {
+      final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload, user);
+      if (forwarded != null)
+        return forwarded;
+    }
 
     if (command_lc.startsWith(SHUTDOWN))
       shutdownServer(extractTarget(command, SHUTDOWN));
@@ -194,14 +205,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         }
       }, 1000);
     } else {
-      final HAServer ha = getHA();
-      final Leader2ReplicaNetworkExecutor replica = ha.getReplica(serverName);
-      if (replica == null)
-        throw new ServerException("Cannot contact server '" + serverName + "' from the current server");
-
-      final Binary buffer = new Binary();
-      ha.getMessageFactory().serializeCommand(new ServerShutdownRequest(), buffer, -1);
-      replica.sendMessage(buffer);
+      getHA().shutdownRemoteServer(serverName);
     }
   }
 
@@ -216,10 +220,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-      final ReplicatedDatabase replicatedDatabase = (ReplicatedDatabase) db.getWrappedDatabaseInstance();
-      replicatedDatabase.createInReplicas();
-    }
+    final DatabaseInternal wrappedDb = db.getWrappedDatabaseInstance();
+    if (wrappedDb instanceof HAReplicatedDatabase haDb)
+      haDb.createInReplicas();
   }
 
   /**
@@ -271,7 +274,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
         sendSSE(out, new JSONObject().put("status", "progress").put("message", "Downloading and restoring " + databaseName + "..."));
         clazz.getMethod("restoreDatabase").invoke(restorer);
-        server.getDatabase(databaseName);
+        final ServerDatabase restoredSse = server.getDatabase(databaseName);
+        replicateRestoredDatabase(server, restoredSse, databaseName);
         sendSSE(out, new JSONObject().put("status", "completed").put("message", databaseName + " restored successfully"));
       } catch (final Exception e) {
         final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
@@ -294,7 +298,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       throw new CommandExecutionException("Error restoring database", e.getTargetException());
     }
 
-    server.getDatabase(databaseName);
+    final ServerDatabase restored = server.getDatabase(databaseName);
+    replicateRestoredDatabase(server, restored, databaseName);
     return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
   }
 
@@ -318,9 +323,26 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.import-database").increment();
 
-    // Create the database
-    server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-    final Database database = server.getDatabase(databaseName);
+    // Create the database cluster-wide. In HA mode this submits an INSTALL_DATABASE_ENTRY
+    // via Raft so every replica creates the database locally before we start importing.
+    // The importer's subsequent transactions then replicate as normal TX_ENTRY stream.
+    final ServerDatabase createdDb = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    final DatabaseInternal wrapped = createdDb.getWrappedDatabaseInstance();
+    if (wrapped instanceof HAReplicatedDatabase haDb) {
+      try {
+        haDb.createInReplicas();
+      } catch (final RuntimeException e) {
+        // Compensate: drop the just-created local database so the operator can retry cleanly.
+        try {
+          createdDb.getEmbedded().drop();
+          server.removeDatabase(databaseName);
+        } catch (final Exception ignored) {
+          // best-effort
+        }
+        throw e;
+      }
+    }
+    final Database database = createdDb;
 
     if (isSSERequested(exchange)) {
       startSSE(exchange);
@@ -433,12 +455,26 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty())
       throw new IllegalArgumentException("Database name empty");
 
-    final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
+    checkServerIsLeaderIfInHA();
 
+    final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.drop-database").increment();
 
-    database.getEmbedded().drop();
-    httpServer.getServer().removeDatabase(database.getName());
+    if (!server.existsDatabase(databaseName))
+      throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
+
+    final ServerDatabase database = server.getDatabase(databaseName);
+    final DatabaseInternal wrappedDb = database.getWrappedDatabaseInstance();
+
+    if (wrappedDb instanceof HAReplicatedDatabase haDb) {
+      // Raft-first: do NOT drop locally. The state machine apply on every peer
+      // (including this leader) performs the actual drop once the entry is committed.
+      haDb.dropInReplicas();
+    } else {
+      // Non-HA mode: drop locally as before.
+      database.getEmbedded().drop();
+      server.removeDatabase(databaseName);
+    }
   }
 
   private void closeDatabase(final String databaseName) {
@@ -473,11 +509,30 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (userPassword.length() > 256)
       throw new ServerSecurityException("User password cannot be longer than 256 characters");
 
-    json.put("password", httpServer.getServer().getSecurity().encodePassword(userPassword));
+    final ArcadeDBServer server = httpServer.getServer();
+    json.put("password", server.getSecurity().encodePassword(userPassword));
 
     Metrics.counter("http.create-user").increment();
 
-    httpServer.getServer().getSecurity().createUser(json);
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null) {
+      // Non-HA mode: direct local mutation.
+      server.getSecurity().createUser(json);
+      return;
+    }
+
+    // HA mode: compute the new users payload and submit a Raft entry.
+    // The `synchronized` block serialises the read-compute-submit sequence with
+    // any other user mutation running on this leader, so two concurrent createUser
+    // calls cannot overwrite each other's in-flight changes.
+    synchronized (server.getSecurity()) {
+      if (server.getSecurity().getUser(json.getString("name")) != null)
+        throw new ServerSecurityException("User '" + json.getString("name") + "' already exists");
+
+      final JSONArray currentUsers = new JSONArray(server.getSecurity().getUsersJsonPayload());
+      currentUsers.put(json);
+      ha.replicateSecurityUsers(currentUsers.toString());
+    }
   }
 
   private void dropUser(final String userName) {
@@ -486,33 +541,46 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     Metrics.counter("http.drop-user").increment();
 
-    final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
-    if (!result)
-      throw new IllegalArgumentException("User '" + userName + "' not found on server");
+    final ArcadeDBServer server = httpServer.getServer();
+    final HAServerPlugin ha = server.getHA();
+
+    if (ha == null) {
+      // Non-HA mode: direct local mutation.
+      final boolean result = server.getSecurity().dropUser(userName);
+      if (!result)
+        throw new IllegalArgumentException("User '" + userName + "' not found on server");
+      return;
+    }
+
+    // HA mode: compute the new users payload and submit a Raft entry.
+    // Serialises read-compute-submit with other user mutations on this leader so
+    // two concurrent drops (or a concurrent createUser) cannot lose each other's changes.
+    synchronized (server.getSecurity()) {
+      if (server.getSecurity().getUser(userName) == null)
+        throw new IllegalArgumentException("User '" + userName + "' not found on server");
+
+      final JSONArray currentUsers = new JSONArray(server.getSecurity().getUsersJsonPayload());
+      final JSONArray filtered = new JSONArray();
+      for (int i = 0; i < currentUsers.length(); i++) {
+        final JSONObject user = currentUsers.getJSONObject(i);
+        if (!userName.equals(user.getString("name", "")))
+          filtered.put(user);
+      }
+      ha.replicateSecurityUsers(filtered.toString());
+    }
   }
 
   private boolean connectCluster(final String serverAddress, final HttpServerExchange exchange) {
-    final HAServer ha = getHA();
-
     Metrics.counter("http.connect-cluster").increment();
 
-    return ha.connectToLeader(serverAddress, exception -> {
-      exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
-      exchange.getResponseSender().send("{ \"error\" : \"" + exception.getMessage() + "\"}");
-      return null;
-    });
+    throw new CommandExecutionException(
+        "Connect cluster operation is not supported by the current HA implementation. Use the cluster configuration to join nodes.");
   }
 
   private void disconnectCluster() {
     Metrics.counter("http.server-disconnect").increment();
 
-    final HAServer ha = getHA();
-
-    final Replica2LeaderNetworkExecutor leader = ha.getLeader();
-    if (leader != null)
-      leader.close();
-    else
-      ha.disconnectAllReplicas();
+    getHA().disconnectCluster();
   }
 
   private void setDatabaseSetting(final String triple) throws IOException {
@@ -871,18 +939,87 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     return null;
   }
 
+  /**
+   * If this node is an HA replica, forwards the server command to the leader and returns its response.
+   * Returns null if this node is the leader or HA is not enabled (caller should execute locally).
+   */
+  private ExecutionResponse forwardToLeaderIfReplica(final HttpServerExchange exchange, final JSONObject payload,
+      final ServerSecurityUser user) throws IOException {
+    final HAServerPlugin ha = httpServer.getServer().getHA();
+    if (ha == null || ha.isLeader())
+      return null;
+
+    final String leaderHttpAddress = ha.getLeaderAddress();
+    if (leaderHttpAddress == null)
+      throw new ServerIsNotTheLeaderException("Leader address is unknown", ha.getLeaderName());
+
+    final HeaderValues authValues = exchange.getRequestHeaders().get("Authorization");
+    final String authHeader = authValues != null ? authValues.getFirst() : null;
+
+    final HttpRequest.Builder builder = HttpRequest.newBuilder()
+        .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/server"))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(payload.toString()));
+
+    if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
+      // Per-node session token: convert to cluster-internal identity headers
+      final String clusterToken = httpServer.getServer().getConfiguration()
+          .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+      final String userName = user != null ? user.getName() : null;
+      if (userName != null)
+        builder.header("X-ArcadeDB-Forwarded-User", userName);
+      if (clusterToken != null && !clusterToken.isBlank())
+        builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+    } else if (authHeader != null) {
+      // Basic or API token: stateless, forward as-is
+      builder.header("Authorization", authHeader);
+    }
+
+    try {
+      final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      return new ExecutionResponse(response.statusCode(), response.body());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("Interrupted while forwarding server command to leader at " + leaderHttpAddress, e);
+    }
+  }
+
   private void checkServerIsLeaderIfInHA() {
-    final HAServer ha = httpServer.getServer().getHA();
+    final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha != null && !ha.isLeader())
-      // NOT THE LEADER
       throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
   }
 
-  private HAServer getHA() {
-    final HAServer ha = httpServer.getServer().getHA();
+  private HAServerPlugin getHA() {
+    final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha == null)
       throw new CommandExecutionException(
           "ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");
     return ha;
+  }
+
+  /**
+   * Post-restore HA hook. In HA mode, submits an install-database Raft entry with
+   * forceSnapshot=true so every replica pulls the restored files. On any failure,
+   * drops the just-restored local database so the operator can retry cleanly.
+   */
+  private void replicateRestoredDatabase(final ArcadeDBServer server, final ServerDatabase restored,
+      final String databaseName) {
+    if (!(restored.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb))
+      return;
+
+    try {
+      haDb.createInReplicas(true);
+    } catch (final RuntimeException e) {
+      // Compensate: drop the locally-restored database so the operator can retry cleanly.
+      try {
+        restored.getEmbedded().drop();
+        server.removeDatabase(databaseName);
+      } catch (final Exception inner) {
+        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+            "Compensating drop after failed restore replication failed for '%s'", inner, databaseName);
+      }
+      throw e;
+    }
   }
 }

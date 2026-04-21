@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseStats;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -40,9 +39,7 @@ import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
-import java.net.Authenticator;
 import java.net.ConnectException;
-import java.net.PasswordAuthentication;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -127,12 +124,6 @@ public class RemoteHttpComponent extends RWLockContext {
     httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(60))
         .version(HttpClient.Version.HTTP_2)
-        .authenticator(new Authenticator() {
-          @Override
-          protected PasswordAuthentication getPasswordAuthentication() {
-            return new PasswordAuthentication(userName, userPassword.toCharArray());
-          }
-        })
         .build();
 
     requestClusterConfiguration();
@@ -140,10 +131,28 @@ public class RemoteHttpComponent extends RWLockContext {
 
   public void close() {
     if (httpClient != null) {
-//      httpClient.shutdownNow();
-//      httpClient.close();
+      httpClient.shutdownNow();
+      httpClient.close();
     }
   }
+
+  private HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {
+    final long watchdogMs = Math.max(timeout * 1000L, 30_000L);
+    try {
+      return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+          .get(watchdogMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+    } catch (final java.util.concurrent.TimeoutException e) {
+      throw new IOException("HTTP request watchdog timeout after " + watchdogMs + "ms: " + request.uri(), e);
+    } catch (final java.util.concurrent.ExecutionException e) {
+      final Throwable cause = e.getCause();
+      if (cause instanceof IOException ioe)
+        throw ioe;
+      if (cause instanceof InterruptedException ie)
+        throw ie;
+      throw new IOException("HTTP request failed: " + request.uri(), cause);
+    }
+  }
+
   public int getTimeout() {
     return timeout;
   }
@@ -201,8 +210,11 @@ public class RemoteHttpComponent extends RWLockContext {
     if (maxRetry < 1)
       maxRetry = 1;
 
-    Pair<String, Integer> connectToServer =
-        leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
+    Pair<String, Integer> connectToServer;
+    if (connectionStrategy == CONNECTION_STRATEGY.FIXED)
+      connectToServer = new Pair<>(originalServer, originalPort);
+    else
+      connectToServer = leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
     String server = null;
 
@@ -215,6 +227,19 @@ public class RemoteHttpComponent extends RWLockContext {
 
       try {
         HttpRequest.Builder requestBuilder = createRequestBuilder(method, url);
+
+        // Inject HA read-consistency headers when used from a RemoteDatabase.
+        if (this instanceof RemoteDatabase remoteDb) {
+          final ReadConsistency rc = remoteDb.getReadConsistency();
+          if (rc != ReadConsistency.EVENTUAL)
+            requestBuilder = requestBuilder.header("X-ArcadeDB-Read-Consistency", rc.name().toLowerCase());
+          if (rc == ReadConsistency.READ_YOUR_WRITES) {
+            final long last = remoteDb.getLastCommitIndex();
+            if (last >= 0)
+              requestBuilder = requestBuilder.header("X-ArcadeDB-Commit-Index", String.valueOf(last));
+          }
+        }
+
         HttpRequest request;
 
         if (payloadCommand != null) {
@@ -246,7 +271,18 @@ public class RemoteHttpComponent extends RWLockContext {
           }
         }
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendWithWatchdog(request);
+
+        // Capture commit-index from response for read-your-writes consistency.
+        if (this instanceof RemoteDatabase remoteDb) {
+          response.headers().firstValue("X-ArcadeDB-Commit-Index").ifPresent(val -> {
+            try {
+              remoteDb.updateLastCommitIndex(Long.parseLong(val));
+            } catch (final NumberFormatException ignored) {
+              // server sent an invalid header; ignore
+            }
+          });
+        }
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
@@ -297,7 +333,23 @@ public class RemoteHttpComponent extends RWLockContext {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new RemoteException("Request interrupted", e);
-      } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException |
+      } catch (final NeedRetryException e) {
+        // Election in progress - retry with delay.
+        final int maxElectionRetries = (this instanceof RemoteDatabase db) ? db.getElectionRetryCount() : 3;
+        final long delayMs = (this instanceof RemoteDatabase db) ? db.getElectionRetryDelayMs() : 2000L;
+        if (retry + 1 >= maxRetry || retry >= maxElectionRetries) {
+          lastException = e;
+          break;
+        }
+        try {
+          Thread.sleep(delayMs);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new RemoteException("Request interrupted during election retry", ie);
+        }
+        LogManager.instance().log(this, Level.WARNING,
+            "Election in progress, retrying after %dms (retry=%d/%d)...", null, delayMs, retry, maxRetry);
+      } catch (final RemoteException | DuplicatedKeyException | TransactionException | TimeoutException |
                      SecurityException | RecordNotFoundException e) {
         throw e;
       } catch (final Exception e) {
@@ -346,7 +398,7 @@ public class RemoteHttpComponent extends RWLockContext {
           .GET()
           .build();
 
-      HttpResponse<String> httpResponse = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> httpResponse = sendWithWatchdog(request);
 
       if (httpResponse.statusCode() != 200) {
         final Exception detail = manageException(httpResponse, "cluster configuration");
@@ -362,7 +414,15 @@ public class RemoteHttpComponent extends RWLockContext {
     } catch (final SecurityException e) {
       throw e;
     } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on connecting to the server", e);
+      // Fall back to the original server when the cluster configuration is unavailable.
+      // This allows the client to work against any reachable node without requiring
+      // the full cluster topology (which may contain internal addresses unreachable from the client).
+      LogManager.instance()
+          .log(this, Level.WARNING, "Unable to fetch cluster configuration from %s:%d, using direct connection (%s)",
+              null, currentServer, currentPort, e.getMessage());
+      leaderServer = new Pair<>(originalServer, originalPort);
+      replicaServerList.clear();
+      return;
     }
 
     try {
@@ -407,7 +467,13 @@ public class RemoteHttpComponent extends RWLockContext {
     } catch (final SecurityException e) {
       throw e;
     } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on requesting cluster configuration", e);
+      // Cluster configuration response was malformed or contained unresolvable addresses.
+      // Fall back to direct connection.
+      LogManager.instance()
+          .log(this, Level.WARNING, "Unable to parse cluster configuration, using direct connection (%s)",
+              null, e.getMessage());
+      leaderServer = new Pair<>(originalServer, originalPort);
+      replicaServerList.clear();
     }
   }
 
@@ -524,6 +590,8 @@ public class RemoteHttpComponent extends RWLockContext {
       } else if (exception.equals(ConnectException.class.getName())) {
         return new NeedRetryException(detail);
       } else if (exception.equals("com.arcadedb.server.ha.ReplicationException")) {
+        return new NeedRetryException(detail);
+      } else if (exception.equals(NeedRetryException.class.getName())) {
         return new NeedRetryException(detail);
       } else
         // ELSE

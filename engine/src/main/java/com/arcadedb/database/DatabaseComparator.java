@@ -159,30 +159,46 @@ public class DatabaseComparator {
       throw new DatabaseAreNotIdentical("Indexes: DB1 %d:" + Arrays.toString(indexes1) + " <> DB2 %d:" + Arrays.toString(indexes2),
           indexes1.length, indexes2.length);
 
+    // Match indexes by structural key (bucket + properties) instead of by name,
+    // because index names contain timestamps that differ across HA nodes.
     final HashMap<String, Index> indexes1Map = new HashMap<>(indexes1.length);
     final HashMap<String, Index> indexes2Map = new HashMap<>(indexes2.length);
 
     for (final Index entry : indexes1)
-      indexes1Map.put(entry.getName(), entry);
+      indexes1Map.put(indexStructuralKey(entry), entry);
 
     for (final Index entry : indexes2) {
-      if (!indexes1Map.containsKey(entry.getName()))
-        throw new DatabaseAreNotIdentical("Index '%s' is not present in DB2", entry.getName());
-      indexes2Map.put(entry.getName(), entry);
+      final String key = indexStructuralKey(entry);
+      if (!indexes1Map.containsKey(key))
+        throw new DatabaseAreNotIdentical("Index '%s' (bucket=%d, properties=%s) is not present in DB1",
+            entry.getName(), entry.getAssociatedBucketId(), entry.getPropertyNames());
+      indexes2Map.put(key, entry);
     }
 
-    for (final Index entry : indexes1)
-      if (!indexes2Map.containsKey(entry.getName()))
-        throw new DatabaseAreNotIdentical("Index '%s' is not present in DB1", entry.getName());
+    for (final Index entry : indexes1) {
+      final String key = indexStructuralKey(entry);
+      if (!indexes2Map.containsKey(key))
+        throw new DatabaseAreNotIdentical("Index '%s' (bucket=%d, properties=%s) is not present in DB2",
+            entry.getName(), entry.getAssociatedBucketId(), entry.getPropertyNames());
+    }
 
-    // AT THIS POINT BOTH DBS HAVE THE SAME INDEX NAMES, CHECKING INDEXED ENTRIES
+    // AT THIS POINT BOTH DBS HAVE STRUCTURALLY MATCHING INDEXES, CHECKING INDEXED ENTRIES
     for (final Index entry1 : indexes1) {
-      final Index entry2 = indexes2Map.get(entry1.getName());
+      final Index entry2 = indexes2Map.get(indexStructuralKey(entry1));
 
       final long count1 = entry1.countEntries();
       final long count2 = entry2.countEntries();
       if (count1 != count2)
         throw new DatabaseAreNotIdentical("Index '%s' contains %d entries in DB1 <> %d of DB2", entry1.getName(), count1, count2);
     }
+  }
+
+  private static String indexStructuralKey(final Index index) {
+    final int bucketId = index.getAssociatedBucketId();
+    if (bucketId == -1)
+      // TypeIndex spans all buckets of a type; disambiguate by type name so that
+      // "User[id]" and "Photo[id]" don't collide on the same key "-1:[id]".
+      return "-1:" + index.getTypeName() + ":" + index.getPropertyNames();
+    return bucketId + ":" + index.getPropertyNames();
   }
 }

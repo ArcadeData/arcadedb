@@ -82,20 +82,35 @@ public class PluginManager {
   }
 
   private void discoverPluginsOnMainClassLoader() {
-    final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, getClass().getClassLoader());
+    final boolean autoDiscoverRaft = isHAEnabled();
+
+    // Use the thread context class loader so that modules on the classpath (e.g. ha-raft)
+    // that are not in the server module's own class loader are still discovered.
+    final ClassLoader cl = Thread.currentThread().getContextClassLoader() != null
+        ? Thread.currentThread().getContextClassLoader()
+        : getClass().getClassLoader();
+    final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, cl);
 
     for (ServerPlugin pluginInstance : serviceLoader) {
       final String name = pluginInstance.getName();
-      if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getSimpleName())
-          || configuredPlugins.contains(pluginInstance.getClass().getName())) {
-        // Register the plugin
+      final boolean configured = configuredPlugins.contains(name)
+          || configuredPlugins.contains(pluginInstance.getClass().getSimpleName())
+          || configuredPlugins.contains(pluginInstance.getClass().getName());
+      final boolean isRaftPlugin = autoDiscoverRaft && "RaftHAPlugin".equals(name);
+
+      if (configured || isRaftPlugin) {
         final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
         descriptor.setPluginInstance(pluginInstance);
         plugins.put(name, descriptor);
 
-        LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s", name);
+        LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s%s",
+            name, isRaftPlugin && !configured ? " (auto-discovered for Raft HA)" : "");
       }
     }
+  }
+
+  private boolean isHAEnabled() {
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED);
   }
 
   /**

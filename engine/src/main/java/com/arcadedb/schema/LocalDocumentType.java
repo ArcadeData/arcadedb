@@ -841,8 +841,7 @@ public class LocalDocumentType implements DocumentType {
 
         if (m1.getAssociatedBucketId() != m2.getAssociatedBucketId())
           return false;
-        if (!m1.getName().equals(m2.getName()))
-          return false;
+        // Index names contain timestamps that differ across HA nodes, so compare structurally
         if (m1.getPropertyNames().size() != m2.getPropertyNames().size())
           return false;
 

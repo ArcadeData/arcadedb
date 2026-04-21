@@ -21,10 +21,10 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
@@ -159,7 +159,7 @@ public class TransactionManager {
     final long begin = System.currentTimeMillis();
 
     while (true) {
-      final WALFile file = activeWALFilePool[(int) (Thread.currentThread().getId() % activeWALFilePool.length)];
+      final WALFile file = activeWALFilePool[(int) (Thread.currentThread().threadId() % activeWALFilePool.length)];
 
       if (file != null && file.acquire(() -> {
         file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
@@ -305,13 +305,13 @@ public class TransactionManager {
       final PageId pageId = new PageId(database, txPage.fileId, txPage.pageNumber);
 
       if (!database.getFileManager().existsFile(txPage.fileId)) {
+        // Referencing a deleted file is expected during Raft replay and crash recovery -
+        // schema changes may delete files before their prior TX entries are replayed.
+        // Always skip to avoid aborting the entire multi-page transaction.
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on restoring transaction: received operation on deleted file %d", null, txPage.fileId);
-        if (ignoreErrors)
-          continue;
-        throw new ConcurrentModificationException(
-            "Concurrent modification on page " + pageId + ". The file with id " + pageId.getFileId()
-                + " does not exist anymore. Please retry the operation");
+            .log(this, Level.FINE,
+                "Skipping page for deleted file %d during transaction apply", null, txPage.fileId);
+        continue;
       }
 
       try {
@@ -329,28 +329,34 @@ public class TransactionManager {
                 page.getVersion());
 
         if (txPage.currentPageVersion <= page.getVersion()) {
-          if (ignoreErrors)
-            // SKIP IT
-            continue;
-          throw new ConcurrentModificationException(
-              "Concurrent modification on page " + pageId + " in file '" + database.getFileManager().getFile(pageId.getFileId())
-                  .getFileName() + "' (current v." + txPage.currentPageVersion + " <= database v." + page.getVersion()
-                  + "). Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
+          // Always skip already-applied pages instead of aborting the entire transaction.
+          // During Raft state machine replay or crash recovery, a partial apply may have
+          // written some pages but not others. Skipping only the already-applied pages
+          // (instead of throwing ConcurrentModificationException and aborting the loop)
+          // ensures the remaining un-applied pages in the same transaction are still processed.
+          // This prevents version-gap cascades where skipping a multi-page transaction leaves
+          // some pages behind, causing WALVersionGapException on all subsequent transactions
+          // that touch those pages.
+          LogManager.instance().log(this, Level.FINE,
+              "Skipping already-applied page %s (log v.%d <= db v.%d)", null,
+              pageId, txPage.currentPageVersion, page.getVersion());
+          continue;
         }
 
         if (txPage.currentPageVersion > page.getVersion() + 1) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Cannot apply changes to the database because modified page %s version in WAL (" + txPage.currentPageVersion
-                  + ") does not match with existent version (" + page.getVersion() + ") fileId=" + txPage.fileId, null, pageId);
-          if (ignoreErrors)
-            continue;
-          throw new ConcurrentModificationException(
-              "Cannot apply changes to the database because modified page " + pageId + " version in WAL ("
-                  + txPage.currentPageVersion + ") does not match with existent version (" + page.getVersion() + ") fileId="
-                  + txPage.fileId);
+          if (!tx.forceApply) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot apply changes to the database because modified page %s version in WAL (%d) does not match with existent version (%d) fileId=%d",
+                null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
+            if (ignoreErrors)
+              continue;
+            throw new WALVersionGapException(
+                "Cannot apply changes to the database because modified page " + pageId + " version in WAL ("
+                    + txPage.currentPageVersion + ") does not match with existent version (" + page.getVersion() + ") fileId="
+                    + txPage.fileId);
+          }
+          // forceApply: compaction page replication - write at the leader's version regardless of gap
         }
-//          throw new WALException("Cannot apply changes to the database because modified page version in WAL (" + txPage.currentPageVersion
-//              + ") does not match with existent version (" + page.getVersion() + ") fileId=" + txPage.fileId);
 
         LogManager.instance().log(this, Level.FINE, "Updating page %s versionInLog=%d versionInDB=%d (txId=%d)", null, pageId,
             txPage.currentPageVersion, page.getVersion(), tx.txId);
@@ -366,13 +372,12 @@ public class TransactionManager {
 
         database.getPageManager().removePageFromCache(modifiedPage.pageId);
 
-        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(txPage.fileId);
+        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(txPage.fileId);
         if (component != null) {
           component.updatePageCount(modifiedPage.pageId.getPageNumber() + 1);
 
-          // Phase 5: For LSMVectorIndex, incrementally update VectorLocationIndex during replication
-          // This keeps in-memory metadata synchronized with replicated pages
-          // Note: LSMVectorIndexMutable is what gets registered with Schema (via index.getComponent())
+          // For LSMVectorIndex, incrementally update VectorLocationIndex during replication
+          // to keep in-memory metadata synchronized with replicated pages.
           if (component instanceof LSMVectorIndexMutable) {
             final LSMVectorIndexMutable vectorMutable =
                 (LSMVectorIndexMutable) component;
@@ -408,11 +413,13 @@ public class TransactionManager {
       }
     }
 
-    for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
-      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
-      if (bucket.getCachedRecordCount() > -1)
-        // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
-        bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
+    if (changed) {
+      for (final Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
+        final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(entry.getKey());
+        if (bucket.getCachedRecordCount() > -1)
+          // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
+          bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
+      }
     }
 
     if (involveDictionary) {
@@ -505,7 +512,7 @@ public class TransactionManager {
 
     // OK: ALL LOCKED
     LogManager.instance()
-        .log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().getId());
+        .log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().threadId());
     // RETURN ONLY THE LOCKED FILES
     return lockedFiles;
   }
@@ -516,7 +523,7 @@ public class TransactionManager {
         unlockFile(fileId, requester);
 
       LogManager.instance()
-          .log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().getId());
+          .log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().threadId());
     }
   }
 

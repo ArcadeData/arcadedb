@@ -67,6 +67,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final Map<String, Object> requestMap = json.toMap(true);
     profile.addDeserializationNanos(System.nanoTime() - deserializationStart);
 
+    // No HTTP-level leader forwarding here: reads run locally on replicas, and writes are
+    // forwarded at the engine level by RaftReplicatedDatabase.command() when
+    // QueryEngine.isExecutedByTheLeader() or analyze(query).isDDL() is true.
+
     if (requestMap.get("command") == null)
       throw new IllegalArgumentException("command missing");
 
