@@ -128,7 +128,7 @@ class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Three-node Raft HA: replication across all nodes with consistency check")
-  void threeNodeReplicationMulti() throws InterruptedException {
+  void threeNodeReplicationMulti() throws Exception {
     createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
     createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);

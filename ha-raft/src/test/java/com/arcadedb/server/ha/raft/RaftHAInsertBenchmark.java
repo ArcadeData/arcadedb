@@ -48,7 +48,7 @@ import java.util.logging.Level;
  * Run with: {@code mvn test -pl ha-raft -Dtest=RaftHAInsertBenchmark -Dtag=benchmark}
  */
 @Tag("benchmark")
-public class RaftHAInsertBenchmark {
+class RaftHAInsertBenchmark {
 
   private static final int    BASE_RAFT_PORT = 3434;
   private static final int    BASE_HTTP_PORT = 3480;

@@ -83,7 +83,7 @@ class RollingRestartIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Rolling restart: restart each node sequentially, verify zero downtime")
-  void testRollingRestart() throws InterruptedException {
+  void rollingRestart() throws Exception {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -287,7 +287,7 @@ class RollingRestartIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Rapid rolling restart: minimal wait between restarts")
-  void testRapidRollingRestart() throws InterruptedException {
+  void rapidRollingRestart() throws Exception {
     logger.info("Creating 3-node Raft HA cluster");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -390,7 +390,7 @@ class RollingRestartIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Rolling restart with continuous writes: verify no data loss")
-  void testRollingRestartWithContinuousWrites() throws InterruptedException {
+  void rollingRestartWithContinuousWrites() throws Exception {
     logger.info("Creating 3-node Raft HA cluster");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);

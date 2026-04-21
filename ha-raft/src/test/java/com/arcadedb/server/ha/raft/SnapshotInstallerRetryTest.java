@@ -58,7 +58,7 @@ class SnapshotInstallerRetryTest {
   }
 
   @Test
-  void testSuccessOnFirstAttempt(@TempDir final Path tempDir) throws IOException {
+  void successOnFirstAttempt(@TempDir final Path tempDir) throws Exception {
     final AtomicInteger callCount = new AtomicInteger(0);
     httpServer.createContext("/api/v1/ha/snapshot/testdb", exchange -> {
       callCount.incrementAndGet();
@@ -81,7 +81,7 @@ class SnapshotInstallerRetryTest {
   }
 
   @Test
-  void testSuccessAfterTransientFailure(@TempDir final Path tempDir) throws IOException {
+  void successAfterTransientFailure(@TempDir final Path tempDir) throws Exception {
     final AtomicInteger callCount = new AtomicInteger(0);
     httpServer.createContext("/api/v1/ha/snapshot/testdb", exchange -> {
       final int attempt = callCount.incrementAndGet();
@@ -108,7 +108,7 @@ class SnapshotInstallerRetryTest {
   }
 
   @Test
-  void testExhaustedRetriesThrows(@TempDir final Path tempDir) throws IOException {
+  void exhaustedRetriesThrows(@TempDir final Path tempDir) throws Exception {
     final AtomicInteger callCount = new AtomicInteger(0);
     httpServer.createContext("/api/v1/ha/snapshot/testdb", exchange -> {
       callCount.incrementAndGet();
@@ -130,7 +130,7 @@ class SnapshotInstallerRetryTest {
   }
 
   @Test
-  void testPartialDownloadCleanedUpBeforeRetry(@TempDir final Path tempDir) throws IOException {
+  void partialDownloadCleanedUpBeforeRetry(@TempDir final Path tempDir) throws Exception {
     final AtomicInteger callCount = new AtomicInteger(0);
     httpServer.createContext("/api/v1/ha/snapshot/testdb", exchange -> {
       final int attempt = callCount.incrementAndGet();
@@ -161,7 +161,7 @@ class SnapshotInstallerRetryTest {
   }
 
   @Test
-  void testBackoffTimingIncreases(@TempDir final Path tempDir) throws IOException {
+  void backoffTimingIncreases(@TempDir final Path tempDir) throws Exception {
     final AtomicInteger callCount = new AtomicInteger(0);
     httpServer.createContext("/api/v1/ha/snapshot/testdb", exchange -> {
       callCount.incrementAndGet();

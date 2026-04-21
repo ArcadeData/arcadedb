@@ -54,7 +54,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void testCILookupWithExactCase() {
+  void cILookupWithExactCase() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name = 'Hello World'");
       // CI index: all 3 case variants of "hello world" should match
@@ -63,7 +63,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void testCILookupWithDifferentCase() {
+  void cILookupWithDifferentCase() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name = 'HELLO WORLD'");
       assertThat(rs.stream().count()).isEqualTo(3);
@@ -71,7 +71,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void testCILookupWithToLowerCase() {
+  void cILookupWithToLowerCase() {
     // This is the main use case: Name.toLowerCase() = 'value' should use the CI index
     database.transaction(() -> {
       final ResultSet rs = database.query("sql",
@@ -81,7 +81,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void testCIIndexUsedInExecutionPlan() {
+  void cIIndexUsedInExecutionPlan() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql",
           "SELECT FROM Product WHERE Name.toLowerCase() = 'hello world'");
@@ -92,7 +92,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void testCINonMatchingValue() {
+  void cINonMatchingValue() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name = 'nonexistent'");
       assertThat(rs.stream().count()).isEqualTo(0);
@@ -100,7 +100,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void testCILookupDistinctValue() {
+  void cILookupDistinctValue() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name = 'arcadedb'");
       assertThat(rs.stream().count()).isEqualTo(1);
@@ -108,7 +108,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void testCIPersistenceAcrossReopen() {
+  void cIPersistenceAcrossReopen() {
     database.close();
     database = factory.open();
 
@@ -120,7 +120,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void testCIUniqueIndex() {
+  void cIUniqueIndex() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("UniqueCI")
           .createProperty("Code", Type.STRING);
@@ -138,7 +138,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void testCompositeIndexPartialCI() {
+  void compositeIndexPartialCI() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("Composite")
           .createProperty("Name", Type.STRING);

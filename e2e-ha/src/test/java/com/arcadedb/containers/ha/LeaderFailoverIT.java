@@ -76,7 +76,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test leader failover: kill leader, verify new election and data consistency")
-  void testLeaderFailover() throws InterruptedException {
+  void leaderFailover() throws Exception {
     logger.info("Creating 3-node Raft HA cluster with majority quorum");
     final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -181,7 +181,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test repeated leader failures: verify cluster stability under continuous failover")
-  void testRepeatedLeaderFailures() throws InterruptedException {
+  void repeatedLeaderFailures() throws Exception {
     logger.info("Creating 3-node Raft HA cluster");
     final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -317,7 +317,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test leader failover with active writes: verify no data loss during failover")
-  void testLeaderFailoverDuringWrites() throws InterruptedException {
+  void leaderFailoverDuringWrites() throws Exception {
     logger.info("Creating 3-node Raft HA cluster");
     final GenericContainer<?> arcade0 = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);

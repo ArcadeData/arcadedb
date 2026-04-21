@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Created by luigidellaquila on 02/07/15.
@@ -47,12 +47,9 @@ class ProjectionTest {
     final SelectStatement stm = (SelectStatement) new SQLAntlrParser(null).parse("select expand(foo)  from V");
     stm.getProjection().validate();
 
-    try {
+    assertThatThrownBy(() -> {
       final SelectStatement stmInvalid = (SelectStatement) new SQLAntlrParser(null).parse("select expand(foo), bar  from V");
-      stmInvalid.getProjection().validate(); // this should throw
-      fail("Expected validate() to throw");
-    } catch (final CommandSQLParsingException ex) {
-      // expected
-    }
+      stmInvalid.getProjection().validate();
+    }).isInstanceOf(CommandSQLParsingException.class);
   }
 }

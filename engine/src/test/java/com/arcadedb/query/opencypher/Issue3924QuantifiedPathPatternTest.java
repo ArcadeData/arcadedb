@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue3924QuantifiedPathPatternTest {
+class Issue3924QuantifiedPathPatternTest {
   private Database database;
 
   @BeforeEach

@@ -55,7 +55,7 @@ class SnapshotInstallerIntegrationIT extends BaseRaftHATest {
   }
 
   @Test
-  void testFollowerInstallsSnapshotViaCrashSafeFlow() {
+  void followerInstallsSnapshotViaCrashSafeFlow() {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final int replicaIndex = (leaderIndex + 1) % getServerCount();

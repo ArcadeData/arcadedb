@@ -21,7 +21,6 @@ package com.arcadedb.server.ha.raft;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -31,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SnapshotManagerTest {
 
   @Test
-  void computeFileChecksumsForDirectory(@TempDir final Path tempDir) throws IOException {
+  void computeFileChecksumsForDirectory(@TempDir final Path tempDir) throws Exception {
     Files.writeString(tempDir.resolve("file1.dat"), "hello");
     Files.writeString(tempDir.resolve("file2.dat"), "world");
 
@@ -43,7 +42,7 @@ class SnapshotManagerTest {
   }
 
   @Test
-  void identicalFilesHaveSameChecksum(@TempDir final Path tempDir) throws IOException {
+  void identicalFilesHaveSameChecksum(@TempDir final Path tempDir) throws Exception {
     Files.writeString(tempDir.resolve("a.dat"), "same content");
     Files.writeString(tempDir.resolve("b.dat"), "same content");
 
@@ -53,7 +52,7 @@ class SnapshotManagerTest {
   }
 
   @Test
-  void differentFilesHaveDifferentChecksums(@TempDir final Path tempDir) throws IOException {
+  void differentFilesHaveDifferentChecksums(@TempDir final Path tempDir) throws Exception {
     Files.writeString(tempDir.resolve("a.dat"), "content A");
     Files.writeString(tempDir.resolve("b.dat"), "content B");
 

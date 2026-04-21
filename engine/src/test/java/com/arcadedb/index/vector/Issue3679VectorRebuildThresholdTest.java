@@ -110,7 +110,7 @@ class Issue3679VectorRebuildThresholdTest extends TestHelper {
   }
 
   @Test
-  void searchShouldTriggerAsyncRebuildAtThreshold() throws InterruptedException {
+  void searchShouldTriggerAsyncRebuildAtThreshold() throws Exception {
     // Low threshold of 5 so we can easily trigger async rebuild
     final int lowThreshold = 5;
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, lowThreshold);

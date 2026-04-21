@@ -37,7 +37,7 @@ class GetClusterHandlerIT extends BaseRaftHATest {
   }
 
   @Test
-  void testClusterEndpointReturnsStatus() throws Exception {
+  void clusterEndpointReturnsStatus() throws Exception {
     final JSONObject response = queryClusterEndpoint(0);
 
     assertThat(response.getString("implementation")).isEqualTo("raft");
@@ -58,7 +58,7 @@ class GetClusterHandlerIT extends BaseRaftHATest {
   }
 
   @Test
-  void testExactlyOneLeaderInCluster() throws Exception {
+  void exactlyOneLeaderInCluster() throws Exception {
     int leaderCount = 0;
     for (int i = 0; i < getServerCount(); i++) {
       final JSONObject response = queryClusterEndpoint(i);
@@ -69,7 +69,7 @@ class GetClusterHandlerIT extends BaseRaftHATest {
   }
 
   @Test
-  void testAllNodesAgreeOnLeader() throws Exception {
+  void allNodesAgreeOnLeader() throws Exception {
     final JSONObject response0 = queryClusterEndpoint(0);
     final JSONObject response1 = queryClusterEndpoint(1);
 

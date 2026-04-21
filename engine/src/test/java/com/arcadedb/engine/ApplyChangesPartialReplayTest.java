@@ -45,7 +45,7 @@ class ApplyChangesPartialReplayTest extends TestHelper {
   }
 
   @Test
-  void testPartialReplayAppliesRemainingPages() throws Exception {
+  void partialReplayAppliesRemainingPages() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
 
     // Insert records to ensure we have pages with known versions

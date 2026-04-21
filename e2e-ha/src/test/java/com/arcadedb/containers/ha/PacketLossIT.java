@@ -29,7 +29,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -41,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Toxiproxy intercepts the Raft gRPC consensus port (2434) to inject faults.
  */
 @Testcontainers
-public class PacketLossIT extends ContainersTestTemplate {
+class PacketLossIT extends ContainersTestTemplate {
 
   // Proxy ports for Raft (consensus) traffic per node
   private static final int RAFT_PROXY_PORT_0 = 8660;
@@ -65,7 +64,7 @@ public class PacketLossIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test low packet loss (5%): cluster should remain stable")
-  void testLowPacketLoss() throws IOException {
+  void lowPacketLoss() throws Exception {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
     final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
     final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
@@ -131,7 +130,7 @@ public class PacketLossIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test moderate packet loss (20%): replication should succeed with retries")
-  void testModeratePacketLoss() throws IOException {
+  void moderatePacketLoss() throws Exception {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
     final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
     final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
@@ -195,7 +194,7 @@ public class PacketLossIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test high packet loss (50%): verify connection resilience")
-  void testHighPacketLoss() throws IOException {
+  void highPacketLoss() throws Exception {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
     final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
     final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
@@ -262,7 +261,7 @@ public class PacketLossIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test directional packet loss: loss only in one direction")
-  void testDirectionalPacketLoss() throws IOException {
+  void directionalPacketLoss() throws Exception {
     logger.info("Creating Raft and HTTP proxies for 3-node cluster");
     final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
     toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
@@ -332,7 +331,7 @@ public class PacketLossIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test intermittent packet loss: verify recovery from transient issues")
-  void testIntermittentPacketLoss() throws IOException, InterruptedException {
+  void intermittentPacketLoss() throws Exception {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
     final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
     toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");

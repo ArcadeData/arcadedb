@@ -50,7 +50,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testJaroWinklerIdenticalStrings() {
+  void jaroWinklerIdenticalStrings() {
     final ResultSet rs = database.query("sql", "SELECT text.jaroWinklerDistance('hello', 'hello') AS score");
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -58,7 +58,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testJaroWinklerSimilarStrings() {
+  void jaroWinklerSimilarStrings() {
     final ResultSet rs = database.query("sql", "SELECT text.jaroWinklerDistance('John', 'Jon') AS score");
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -68,7 +68,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testJaroWinklerWithProperty() {
+  void jaroWinklerWithProperty() {
     final ResultSet rs = database.query("sql",
         "SELECT name, text.jaroWinklerDistance(name, 'John') AS score FROM Person ORDER BY score DESC");
     final List<Result> results = rs.stream().toList();
@@ -79,7 +79,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testJaroWinklerInWhereClause() {
+  void jaroWinklerInWhereClause() {
     final ResultSet rs = database.query("sql",
         "SELECT name FROM Person WHERE text.jaroWinklerDistance(name, 'John') > 0.85");
     final List<Result> results = rs.stream().toList();
@@ -92,7 +92,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testLevenshteinDistance() {
+  void levenshteinDistance() {
     final ResultSet rs = database.query("sql", "SELECT text.levenshteinDistance('kitten', 'sitting') AS dist");
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -100,7 +100,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testLevenshteinSimilarity() {
+  void levenshteinSimilarity() {
     final ResultSet rs = database.query("sql", "SELECT text.levenshteinSimilarity('hello', 'hello') AS score");
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -108,7 +108,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testHammingDistance() {
+  void hammingDistance() {
     final ResultSet rs = database.query("sql", "SELECT text.hammingDistance('karolin', 'kathrin') AS dist");
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -116,7 +116,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testSorensenDiceSimilarity() {
+  void sorensenDiceSimilarity() {
     final ResultSet rs = database.query("sql", "SELECT text.sorensenDiceSimilarity('night', 'nacht') AS score");
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -125,7 +125,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testMathSigmoid() {
+  void mathSigmoid() {
     final ResultSet rs = database.query("sql", "SELECT math.sigmoid(0.0) AS result");
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -133,7 +133,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testUnknownNamespacedFunctionThrows() {
+  void unknownNamespacedFunctionThrows() {
     // Use a known namespace with a non-existent function name
     try {
       database.query("sql", "SELECT text.nonExistentFunc('a') AS result");
@@ -144,7 +144,7 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
   }
 
   @Test
-  void testNativeSqlFunctionsStillWork() {
+  void nativeSqlFunctionsStillWork() {
     final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM Person");
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();

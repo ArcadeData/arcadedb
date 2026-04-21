@@ -108,7 +108,7 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
   }
 
   @Test
-  void testSelectWithPartialCompositeKeyOrCondition() {
+  void selectWithPartialCompositeKeyOrCondition() {
     // Client's exact query pattern (simplified)
     database.transaction(() -> {
       final ResultSet result = database.query("sql",
@@ -126,7 +126,7 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
   }
 
   @Test
-  void testSelectWithSingleConditionOnCompositeIndex() {
+  void selectWithSingleConditionOnCompositeIndex() {
     // Simplest case: single equality on first field of composite index
     database.transaction(() -> {
       final ResultSet result = database.query("sql",
@@ -142,7 +142,7 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
   }
 
   @Test
-  void testSelectWithNullSecondFieldInCompositeIndex() {
+  void selectWithNullSecondFieldInCompositeIndex() {
     // Insert a record without ModifiedOn (null second index field)
     database.transaction(() -> {
       database.newVertex("Study")
@@ -167,7 +167,7 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
   }
 
   @Test
-  void testSelectViaCommandEndpoint() {
+  void selectViaCommandEndpoint() {
     // Simulate what happens via POST /command - command() instead of query()
     database.transaction(() -> {
       final ResultSet result = database.command("sql",
@@ -185,7 +185,7 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
   }
 
   @Test
-  void testSelectWithPartialKeyAndModificationInSameTransaction() {
+  void selectWithPartialKeyAndModificationInSameTransaction() {
     // Test if a modification + select in the same tx causes issues
     database.transaction(() -> {
       // First modify a record
@@ -212,7 +212,7 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
   }
 
   @Test
-  void testPartialKeyRangeOnCompositeIndexAfterCompaction() throws Exception {
+  void partialKeyRangeOnCompositeIndexAfterCompaction() throws Exception {
     // Regression test for: "key is composed of 1 items, while the index defined 2 items"
     // The bug occurs in LSMTreeIndexCompacted.newIterators() which calls lookupInPage
     // with purpose=1 (retrieve) that rejects partial keys on composite indexes.

@@ -70,7 +70,7 @@ class Issue3714BatchUpsertVLQTest {
    * ConcurrentModificationException retries.
    */
   @Test
-  void testConcurrentBatchUpsertsDoNotCorruptIndex() throws Exception {
+  void concurrentBatchUpsertsDoNotCorruptIndex() throws Exception {
     // Use 2 threads to reduce contention while still testing concurrency
     final int threads = 2;
     final int batchesPerThread = 500;
@@ -141,7 +141,7 @@ class Issue3714BatchUpsertVLQTest {
    * This stresses the index with many modifications to the same page.
    */
   @Test
-  void testRepeatedBatchUpsertsOnSameKeys() {
+  void repeatedBatchUpsertsOnSameKeys() {
     final int totalKeys = 1000;
     final int iterations = 100;
 

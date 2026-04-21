@@ -22,6 +22,7 @@ import com.arcadedb.network.binary.QuorumNotReachedException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class RaftGroupCommitterTest {
 
@@ -93,7 +94,7 @@ class RaftGroupCommitterTest {
 
     try {
       committer.submitAndWait(new byte[] { 1, 2, 3 });
-      org.junit.jupiter.api.Assertions.fail("Expected exception");
+      fail("Expected exception");
     } catch (final QuorumNotReachedException e) {
       assertThat(e.getMessage()).contains("not available");
     } finally {
