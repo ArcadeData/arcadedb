@@ -68,7 +68,7 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
     // Disable log compaction so a restarted peer can catch up via log replay.
     // The test creates ~15000 entries; keeping them all in the log avoids the need
     // for snapshot-based resync (which is not yet fully wired).
-    config.setValue(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD, 100_000L);
+    config.setValue(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD, 100_000L);
   }
 
   @Test

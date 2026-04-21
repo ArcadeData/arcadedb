@@ -116,14 +116,18 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       // Must be inside the try block so the finally always clears the ThreadLocal.
       if (haDbForRead != null) {
         final HeaderValues readConsistencyHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Read-Consistency");
-        final HeaderValues commitIndexHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Commit-Index");
+        // X-ArcadeDB-Read-After is the canonical request-side bookmark header (since v26.4.1).
+        // X-ArcadeDB-Commit-Index is accepted only as a legacy fallback; it is the response echo header.
+        HeaderValues bookmarkHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Read-After");
+        if (bookmarkHeader == null || bookmarkHeader.isEmpty())
+          bookmarkHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Commit-Index");
 
         final String consistencyStr = readConsistencyHeader != null && !readConsistencyHeader.isEmpty()
             ? readConsistencyHeader.getFirst()
             : database.getConfiguration().getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY);
 
-        final long bookmarkIndex = commitIndexHeader != null && !commitIndexHeader.isEmpty()
-            ? Long.parseLong(commitIndexHeader.getFirst()) : -1;
+        final long bookmarkIndex = bookmarkHeader != null && !bookmarkHeader.isEmpty()
+            ? Long.parseLong(bookmarkHeader.getFirst()) : -1;
 
         try {
           final Database.READ_CONSISTENCY consistency = Database.READ_CONSISTENCY.valueOf(consistencyStr.toUpperCase(java.util.Locale.ROOT));

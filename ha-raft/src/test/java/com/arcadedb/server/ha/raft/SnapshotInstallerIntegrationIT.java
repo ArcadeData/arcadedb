@@ -46,7 +46,7 @@ class SnapshotInstallerIntegrationIT extends BaseRaftHATest {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
     // Low threshold to trigger log compaction quickly
-    config.setValue(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD, 10L);
+    config.setValue(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD, 10L);
   }
 
   @Override

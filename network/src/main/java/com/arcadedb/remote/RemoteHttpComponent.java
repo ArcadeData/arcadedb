@@ -229,6 +229,14 @@ public class RemoteHttpComponent extends RWLockContext {
         HttpRequest.Builder requestBuilder = createRequestBuilder(method, url);
 
         // Inject HA read-consistency headers when used from a RemoteDatabase.
+        // Semantics:
+        //   X-ArcadeDB-Read-Consistency : consistency level requested by the client.
+        //   X-ArcadeDB-Read-After       : client-supplied bookmark - the commit index
+        //                                 the follower must have applied before serving
+        //                                 the read (read-your-writes barrier).
+        //   X-ArcadeDB-Commit-Index     : response-only - the server echoes its current
+        //                                 last-applied commit index so the client can
+        //                                 use it as the next Read-After bookmark.
         if (this instanceof RemoteDatabase remoteDb) {
           final ReadConsistency rc = remoteDb.getReadConsistency();
           if (rc != ReadConsistency.EVENTUAL)
@@ -236,7 +244,7 @@ public class RemoteHttpComponent extends RWLockContext {
           if (rc == ReadConsistency.READ_YOUR_WRITES) {
             final long last = remoteDb.getLastCommitIndex();
             if (last >= 0)
-              requestBuilder = requestBuilder.header("X-ArcadeDB-Commit-Index", String.valueOf(last));
+              requestBuilder = requestBuilder.header("X-ArcadeDB-Read-After", String.valueOf(last));
           }
         }
 

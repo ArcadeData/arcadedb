@@ -106,6 +106,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile LifeCycle.State           forcedStateForTesting = null;
   private          HealthMonitor             healthMonitor;
   private          ClusterTokenProvider      tokenProvider;
+  private volatile int                       restartFailureCount   = 0;
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -118,11 +119,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final int raftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
 
     final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList(serverList, raftPort);
-    final List<RaftPeer> peers = parsed.peers();
+    List<RaftPeer> peers = parsed.peers();
     final String serverName = arcadeServer.getServerName();
 
     this.httpAddresses.putAll(parsed.httpAddresses());
     this.localPeerId = RaftPeerAddressResolver.findLocalPeerId(peers, serverName, arcadeServer);
+
+    // If this node is configured as a replica, override its Raft peer priority to 0
+    // so Ratis never elects it as leader (useful for read-scale or witness nodes).
+    final String serverRole = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_ROLE);
+    if ("replica".equalsIgnoreCase(serverRole)) {
+      final List<RaftPeer> rebuilt = new ArrayList<>(peers.size());
+      for (final RaftPeer p : peers) {
+        if (p.getId().equals(localPeerId)) {
+          rebuilt.add(RaftPeer.newBuilder().setId(p.getId()).setAddress(p.getAddress()).setPriority(0).build());
+          LogManager.instance().log(this, Level.INFO,
+              "Node configured as replica (priority=0, will not become leader): %s", localPeerId);
+        } else
+          rebuilt.add(p);
+      }
+      peers = Collections.unmodifiableList(rebuilt);
+    }
+
     this.raftGroup = RaftGroup.valueOf(
         RaftGroupId.valueOf(UUID.nameUUIDFromBytes(clusterName.getBytes(StandardCharsets.UTF_8))),
         peers);
@@ -232,8 +250,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     LogManager.instance()
         .log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
 
-    final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
-    transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize);
+    final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
+    final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
+    final int offerTimeout = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT);
+    transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize, offerTimeout);
 
     // K8s auto-join: if running in Kubernetes with no existing storage, try to join an existing cluster
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S) && !hadExistingStorage)
@@ -287,6 +307,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         return;
       }
 
+      final int maxRetries = configuration.getValueAsInteger(GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES);
+      if (restartFailureCount >= maxRetries) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Ratis restart failed %d consecutive times (max=%d). Stopping server for cluster-level recovery",
+            restartFailureCount, maxRetries);
+        final Thread stopThread = new Thread(() -> {
+          try { arcadeServer.stop(); } catch (final Exception ignored) {}
+        }, "arcadedb-restart-failure-stop");
+        stopThread.setDaemon(true);
+        stopThread.start();
+        return;
+      }
+
       final RaftClient oldClient = this.raftClient;
       final RaftServer oldServer = this.raftServer;
       final RaftTransactionBroker oldBroker = this.transactionBroker;
@@ -330,12 +363,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         this.raftProperties = properties;
         this.raftClient = buildRaftClient(raftGroup, properties);
 
-        final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
-        this.transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize);
+        final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
+        final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
+        final int offerTimeout = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT);
+        this.transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize,
+            offerTimeout);
 
+        restartFailureCount = 0;
         HALog.log(this, HALog.BASIC, "Ratis recovered successfully");
       } catch (final Throwable t) {
-        LogManager.instance().log(this, Level.SEVERE, "HealthMonitor recovery failed: %s", t, t.getMessage());
+        restartFailureCount++;
+        LogManager.instance().log(this, Level.SEVERE,
+            "HealthMonitor recovery failed (attempt %d/%d): %s",
+            t, restartFailureCount,
+            configuration.getValueAsInteger(GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES),
+            t.getMessage());
       }
     }
   }
@@ -491,9 +533,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     raftClient = buildRaftClient(raftGroup, raftProperties, knownLeaderId);
 
     if (transactionBroker != null) {
-      final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_GROUP_COMMIT_BATCH_SIZE);
+      final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
+      final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
+      final int offerTimeout = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT);
       final RaftTransactionBroker oldBroker = transactionBroker;
-      transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize);
+      transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize,
+          offerTimeout);
       oldBroker.stop();
     }
 
@@ -917,14 +962,20 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * connections from IPs not listed in {@code arcadedb.ha.serverList}.
    */
   private static Parameters buildParameters(final ContextConfiguration configuration) {
+    final Parameters parameters = new Parameters();
+    if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
+      return parameters;
+
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     final long refreshMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_ALLOWLIST_REFRESH_MS);
     final List<String> peerHosts = PeerAddressAllowlistFilter.extractPeerHosts(serverList);
-    final Parameters parameters = new Parameters();
-    if (!peerHosts.isEmpty()) {
-      final PeerAddressAllowlistFilter allowlistFilter = new PeerAddressAllowlistFilter(peerHosts, refreshMs);
-      GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(allowlistFilter));
+    if (peerHosts.isEmpty()) {
+      LogManager.instance().log(RaftHAServer.class, Level.WARNING,
+          "arcadedb.ha.peerAllowlist.enabled=true but arcadedb.ha.serverList is empty; allowlist not installed");
+      return parameters;
     }
+    final PeerAddressAllowlistFilter allowlistFilter = new PeerAddressAllowlistFilter(peerHosts, refreshMs);
+    GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(allowlistFilter));
     return parameters;
   }
 

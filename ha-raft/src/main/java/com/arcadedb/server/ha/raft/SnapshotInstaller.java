@@ -303,7 +303,9 @@ public final class SnapshotInstaller {
 
     connection.setRequestMethod("GET");
     connection.setConnectTimeout(30_000);
-    connection.setReadTimeout(300_000);
+    connection.setReadTimeout(
+        server != null ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_DOWNLOAD_TIMEOUT)
+            : 300_000);
 
     if (clusterToken != null && !clusterToken.isEmpty())
       connection.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);

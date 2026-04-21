@@ -526,9 +526,16 @@ public enum GlobalConfiguration {
           "Example: localhost:2434:2480:10,192.168.0.1:2434:2480:0",
       String.class, ""),
 
+  HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
+      "Enforces a role in a cluster. 'any' (default) means this node can be elected leader. "
+          + "'replica' sets the Raft peer priority to 0 so the node is never elected leader "
+          + "(useful for read-scale or witness deployments).",
+      String.class, "any", Set.of("any", "replica")),
+
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
-      "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority", String.class, "majority",
-      Set.of("none", "one", "two", "three", "majority", "all")),
+      "Write quorum: 'majority' (standard Raft, default) or 'all' (every configured peer must acknowledge). "
+          + "Legacy values 'none', 'one', 'two', 'three' are no longer supported.",
+      String.class, "majority", Set.of("majority", "all")),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
@@ -543,6 +550,21 @@ public enum GlobalConfiguration {
 
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
       "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),
+
+  HA_WRITE_BUFFER_SIZE("arcadedb.ha.writeBufferSize", SCOPE.SERVER,
+      "Raft log write buffer size (e.g. '8MB'). Must be at least appendBufferSize + 8 bytes, "
+          + "otherwise the server fails to start with ConfigurationException.",
+      String.class, "8MB"),
+
+  HA_LOG_PURGE_GAP("arcadedb.ha.logPurgeGap", SCOPE.SERVER,
+      "Number of Raft log entries retained after a snapshot as a buffer for slightly lagging followers. "
+          + "Lower values free disk faster but raise the chance a slow follower needs a full snapshot resync.",
+      Integer.class, 1024),
+
+  HA_LOG_PURGE_UPTO_SNAPSHOT("arcadedb.ha.logPurgeUptoSnapshot", SCOPE.SERVER,
+      "When true (default), deletes old Raft log segments after each snapshot to bound disk growth. "
+          + "Set to false to retain full log history for debugging/auditing.",
+      Boolean.class, true),
 
   HA_REPLICATION_CHUNK_MAXSIZE("arcadedb.ha.replicationChunkMaxSize", SCOPE.SERVER,
       "Maximum channel chunk size for replicating messages between servers. Default is 16777216", Integer.class, 16384 * 1024),
@@ -574,18 +596,29 @@ public enum GlobalConfiguration {
       "set to true for durable deployments.",
       Boolean.class, false),
 
-  HA_RAFT_SNAPSHOT_THRESHOLD("arcadedb.ha.raftSnapshotThreshold", SCOPE.SERVER,
-      "Number of Raft log entries after which the leader automatically takes a snapshot. " +
-      "Lower values cause more frequent snapshots and earlier log compaction.",
-      Long.class, 10000L),
+  HA_SNAPSHOT_THRESHOLD("arcadedb.ha.snapshotThreshold", SCOPE.SERVER,
+      "Number of Raft log entries after which the leader automatically takes a snapshot. "
+          + "Lower values cause more frequent snapshots and earlier log compaction.",
+      Long.class, 100_000L),
 
   HA_LOG_VERBOSE("arcadedb.ha.logVerbose", SCOPE.SERVER,
       "HA verbose logging level: 0=off, 1=basic (elections, leader changes), 2=detailed (replication, forwarding), 3=trace (every state machine apply)",
       Integer.class, 0),
 
-  HA_RAFT_GROUP_COMMIT_BATCH_SIZE("arcadedb.ha.raftGroupCommitBatchSize", SCOPE.SERVER,
-      "Maximum number of Raft log entries to batch in a single group commit flush. Higher values improve throughput under concurrent load.",
+  HA_GROUP_COMMIT_BATCH_SIZE("arcadedb.ha.groupCommitBatchSize", SCOPE.SERVER,
+      "Maximum number of Raft log entries to batch in a single group commit flush. "
+          + "Higher values improve throughput under concurrent load.",
       Integer.class, 500),
+
+  HA_GROUP_COMMIT_QUEUE_SIZE("arcadedb.ha.groupCommitQueueSize", SCOPE.SERVER,
+      "Maximum pending transactions allowed in the Raft group-commit queue. "
+          + "When the queue is full, the server applies backpressure by throwing ReplicationQueueFullException "
+          + "(a NeedRetryException that clients can retry).",
+      Integer.class, 10_000),
+
+  HA_GROUP_COMMIT_OFFER_TIMEOUT("arcadedb.ha.groupCommitOfferTimeout", SCOPE.SERVER,
+      "Timeout in ms waiting for space in the group-commit queue before throwing ReplicationQueueFullException.",
+      Integer.class, 100),
 
   HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
       "Shared secret for inter-node request forwarding authentication. " +
@@ -604,6 +637,10 @@ public enum GlobalConfiguration {
   HA_SNAPSHOT_MAX_CONCURRENT("arcadedb.ha.snapshotMaxConcurrent", SCOPE.SERVER,
       "Maximum number of concurrent snapshot downloads served by the leader. Requests over this limit receive HTTP 503.",
       Integer.class, 2),
+
+  HA_SNAPSHOT_DOWNLOAD_TIMEOUT("arcadedb.ha.snapshotDownloadTimeout", SCOPE.SERVER,
+      "Read timeout in ms for downloading a database snapshot from the leader during follower resync.",
+      Integer.class, 300_000),
 
   HA_SNAPSHOT_INSTALL_RETRIES("arcadedb.ha.snapshotInstallRetries", SCOPE.SERVER,
       "Maximum retry attempts for snapshot download from the leader during snapshot installation.",
@@ -633,10 +670,17 @@ public enum GlobalConfiguration {
       "Delay in milliseconds between RemoteDatabase election retries.",
       Long.class, 2000L),
 
+  HA_RATIS_RESTART_MAX_RETRIES("arcadedb.ha.ratisRestartMaxRetries", SCOPE.SERVER,
+      "Maximum consecutive Ratis restart attempts by the health monitor before the server shuts down "
+          + "for cluster-level recovery. Raise when partition-recovery scenarios cause legitimate rapid restarts.",
+      Integer.class, 10),
+
   HA_STOP_SERVER_ON_REPLICATION_FAILURE("arcadedb.ha.stopServerOnReplicationFailure", SCOPE.SERVER,
-      "If true, stops the JVM after exhausting step-down retries on a phase-2 replication failure. "
-          + "If false, logs CRITICAL but leaves the server running (useful for debugging).",
-      Boolean.class, true),
+      "After a phase-2 local commit fails on the leader while followers have applied the entry, step-down "
+          + "is attempted first. If every step-down fails and this flag is true, the JVM exits so an "
+          + "orchestrator can restart and let Raft log replay correct the state. "
+          + "Default is false: the server keeps running and logs CRITICAL, useful for debugging without an orchestrator.",
+      Boolean.class, false),
 
   HA_SNAPSHOT_WRITE_TIMEOUT("arcadedb.ha.snapshotWriteTimeout", SCOPE.SERVER,
       "Timeout in milliseconds for writing a snapshot to a follower. "
@@ -663,6 +707,12 @@ public enum GlobalConfiguration {
   HA_IDEMPOTENCY_CACHE_MAX_ENTRIES("arcadedb.ha.idempotencyCacheMaxEntries", SCOPE.SERVER,
       "Maximum number of entries in the HTTP idempotency cache. Oldest entry is evicted when full.",
       Integer.class, 10_000),
+
+  HA_PEER_ALLOWLIST_ENABLED("arcadedb.ha.peerAllowlist.enabled", SCOPE.SERVER,
+      "Reject inbound Raft gRPC connections whose remote address does not resolve to a host in "
+          + "arcadedb.ha.serverList. Loopback is always allowed. Does not provide peer identity or encryption: "
+          + "use mTLS on untrusted networks.",
+      Boolean.class, true),
 
   HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,
       "Rate-limiting interval in milliseconds for DNS re-resolution in the gRPC peer address allowlist filter.",

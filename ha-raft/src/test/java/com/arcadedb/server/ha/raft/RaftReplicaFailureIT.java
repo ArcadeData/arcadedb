@@ -43,7 +43,7 @@ class RaftReplicaFailureIT extends BaseRaftHATest {
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
-    config.setValue(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD, 10L);
+    config.setValue(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD, 10L);
   }
 
   @Override

@@ -61,7 +61,7 @@ class RaftFullSnapshotResyncIT extends BaseRaftHATest {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
     // Trigger a snapshot every 10 log entries so the leader compacts before the replica restarts
-    config.setValue(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD, 10L);
+    config.setValue(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD, 10L);
   }
 
   @Override

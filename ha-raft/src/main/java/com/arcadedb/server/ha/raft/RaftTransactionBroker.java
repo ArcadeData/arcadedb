@@ -37,12 +37,18 @@ public class RaftTransactionBroker {
   private final RaftGroupCommitter groupCommitter;
 
   public RaftTransactionBroker(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout) {
-    this(raftClient, quorum, quorumTimeout, 500);
+    this(raftClient, quorum, quorumTimeout, 500, 10_000, 100);
   }
 
   public RaftTransactionBroker(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
       final int maxBatchSize) {
-    this.groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, maxBatchSize);
+    this(raftClient, quorum, quorumTimeout, maxBatchSize, 10_000, 100);
+  }
+
+  public RaftTransactionBroker(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
+      final int maxBatchSize, final int maxQueueSize, final int offerTimeoutMs) {
+    this.groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, maxBatchSize, maxQueueSize,
+        offerTimeoutMs);
   }
 
   /**

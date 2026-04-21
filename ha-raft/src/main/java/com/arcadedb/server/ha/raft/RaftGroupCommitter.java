@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.network.binary.ReplicationQueueFullException;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;
@@ -41,24 +42,32 @@ import java.util.logging.Level;
  */
 class RaftGroupCommitter {
 
-  private final    RaftClient                                 raftClient;
-  private final    Quorum                                     quorum;
-  private final    long                                       quorumTimeout;
-  private final    int                                        maxBatchSize;
-  private final    LinkedBlockingQueue<CancellablePendingEntry> queue   = new LinkedBlockingQueue<>();
-  private final    Thread                                     flusher;
-  private volatile boolean                                    running = true;
+  private final    RaftClient                                   raftClient;
+  private final    Quorum                                       quorum;
+  private final    long                                         quorumTimeout;
+  private final    int                                          maxBatchSize;
+  private final    int                                          offerTimeoutMs;
+  private final    LinkedBlockingQueue<CancellablePendingEntry> queue;
+  private final    Thread                                       flusher;
+  private volatile boolean                                      running = true;
 
   RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout) {
-    this(raftClient, quorum, quorumTimeout, 500);
+    this(raftClient, quorum, quorumTimeout, 500, 10_000, 100);
   }
 
   RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
       final int maxBatchSize) {
+    this(raftClient, quorum, quorumTimeout, maxBatchSize, 10_000, 100);
+  }
+
+  RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
+      final int maxBatchSize, final int maxQueueSize, final int offerTimeoutMs) {
     this.raftClient = raftClient;
     this.quorum = quorum;
     this.quorumTimeout = quorumTimeout;
     this.maxBatchSize = maxBatchSize;
+    this.offerTimeoutMs = offerTimeoutMs;
+    this.queue = new LinkedBlockingQueue<>(maxQueueSize);
     this.flusher = new Thread(this::flushLoop, "arcadedb-raft-group-committer");
     this.flusher.setDaemon(true);
     this.flusher.start();
@@ -67,7 +76,15 @@ class RaftGroupCommitter {
   void submitAndWait(final byte[] entry) {
     final long timeoutMs = 2 * quorumTimeout;
     final CancellablePendingEntry pending = new CancellablePendingEntry(entry);
-    queue.add(pending);
+    try {
+      if (!queue.offer(pending, offerTimeoutMs, TimeUnit.MILLISECONDS))
+        throw new ReplicationQueueFullException(
+            "Replication queue is full (" + queue.remainingCapacity() + " remaining of " + (queue.size()
+                + queue.remainingCapacity()) + " max). Server is overloaded, retry later");
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new ReplicationQueueFullException("Interrupted while waiting for replication queue space");
+    }
 
     try {
       final Exception error = pending.future.get(timeoutMs, TimeUnit.MILLISECONDS);

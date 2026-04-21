@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ConfigurationException;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.server.RaftServerConfigKeys;
@@ -62,9 +63,14 @@ class RaftPropertiesBuilder {
     // config change. This bounds how long the leader waits for the new peer to catch up.
     RaftServerConfigKeys.setStagingTimeout(properties, TimeDuration.valueOf(30, TimeUnit.SECONDS));
 
-    final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD);
+    final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD);
     RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, snapshotThreshold);
-    RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
+
+    // Log purging: controls how aggressively old log segments are deleted after snapshots
+    final int purgeGap = configuration.getValueAsInteger(GlobalConfiguration.HA_LOG_PURGE_GAP);
+    RaftServerConfigKeys.Log.setPurgeGap(properties, purgeGap);
+    final boolean purgeUptoSnapshot = configuration.getValueAsBoolean(GlobalConfiguration.HA_LOG_PURGE_UPTO_SNAPSHOT);
+    RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, purgeUptoSnapshot);
 
     // Disable Ratis built-in snapshot transfer; use notification mode
     // so ArcadeDB controls the snapshot transfer via HTTP
@@ -73,13 +79,23 @@ class RaftPropertiesBuilder {
 
     // AppendEntries batching: allow multiple entries per gRPC call to followers
     final String appendBufferSize = configuration.getValueAsString(GlobalConfiguration.HA_APPEND_BUFFER_SIZE);
-    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, SizeInBytes.valueOf(appendBufferSize));
+    final SizeInBytes appendBuffer = SizeInBytes.valueOf(appendBufferSize);
+    RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, appendBuffer);
     RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, 256);
 
-    // Log segment and write buffer sizes
+    // Log segment size
     final String logSegmentSize = configuration.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE);
     RaftServerConfigKeys.Log.setSegmentSizeMax(properties, SizeInBytes.valueOf(logSegmentSize));
-    RaftServerConfigKeys.Log.setWriteBufferSize(properties, SizeInBytes.valueOf("8MB"));
+
+    // Write buffer: must be >= appendBufferSize + 8 bytes (Ratis internal framing)
+    final SizeInBytes writeBuffer = SizeInBytes.valueOf(
+        configuration.getValueAsString(GlobalConfiguration.HA_WRITE_BUFFER_SIZE));
+    final long minWriteBuffer = appendBuffer.getSize() + 8;
+    if (writeBuffer.getSize() < minWriteBuffer)
+      throw new ConfigurationException(
+          "arcadedb.ha.writeBufferSize (" + writeBuffer + ") must be >= arcadedb.ha.appendBufferSize + 8 ("
+              + minWriteBuffer + " bytes). Increase writeBufferSize or decrease appendBufferSize");
+    RaftServerConfigKeys.Log.setWriteBufferSize(properties, writeBuffer);
 
     // Leader lease: consistent reads without round-trip
     RaftServerConfigKeys.Read.setLeaderLeaseEnabled(properties, true);
