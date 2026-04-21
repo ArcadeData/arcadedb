@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.schema.Property;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,6 +48,7 @@ class RemoteImmutableEdgeTest {
     when(mockSchema.getType("TestEdge")).thenReturn(mockType);
     when(mockType.getName()).thenReturn("TestEdge");
     when(mockType.getPolymorphicPropertyIfExists(ArgumentMatchers.anyString())).thenReturn(null);
+    when(mockDatabase.newRID(ArgumentMatchers.anyString())).thenAnswer(inv -> new RID(inv.getArgument(0)));
 
     final Map<String, Object> attributes = new HashMap<>();
     attributes.put(Property.TYPE_PROPERTY, "TestEdge");
