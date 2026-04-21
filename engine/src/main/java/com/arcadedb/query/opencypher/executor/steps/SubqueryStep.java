@@ -343,9 +343,7 @@ public class SubqueryStep extends AbstractExecutionStep {
     if (innerStatement.getReturnClause() == null) {
       while (resultSet.hasNext())
         resultSet.next();
-      final List<Result> single = new ArrayList<>(1);
-      single.add(new ResultInternal());
-      return single;
+      return List.of(new ResultInternal());
     }
 
     final List<Result> results = new ArrayList<>();
