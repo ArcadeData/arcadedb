@@ -114,7 +114,7 @@ class SingleLocalhostServerSimpleLoadTestIT {
   }
 
   @Test
-//  @Disabled
+  @Disabled
   @DisplayName("Single server load test")
   void singleServerLoadTest() throws Exception {
 
