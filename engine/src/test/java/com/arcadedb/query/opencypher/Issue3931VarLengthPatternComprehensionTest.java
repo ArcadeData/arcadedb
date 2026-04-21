@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue3931VarLengthPatternComprehensionTest {
+class Issue3931VarLengthPatternComprehensionTest {
   private Database database;
 
   @BeforeEach

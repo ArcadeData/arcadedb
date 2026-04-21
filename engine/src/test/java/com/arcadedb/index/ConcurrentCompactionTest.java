@@ -39,7 +39,7 @@ class ConcurrentCompactionTest extends TestHelper {
   private static final int RECORDS_PER_TYPE = 5_000;
 
   @Test
-  void testConcurrentCompactionDoesNotCorruptFilesList() throws Exception {
+  void concurrentCompactionDoesNotCorruptFilesList() throws Exception {
     final int origRam = GlobalConfiguration.INDEX_COMPACTION_RAM_MB.getValueAsInteger();
     final int origMinPages = GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.getValueAsInteger();
     try {

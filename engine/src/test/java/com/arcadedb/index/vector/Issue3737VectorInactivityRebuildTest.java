@@ -43,7 +43,7 @@ class Issue3737VectorInactivityRebuildTest extends TestHelper {
   private static final int EMBEDDING_DIM = 32;
 
   @Test
-  void deltaBufferShouldFlushAfterInactivityTimeout() throws InterruptedException {
+  void deltaBufferShouldFlushAfterInactivityTimeout() throws Exception {
     // High threshold so we never reach it, low timeout so the timer fires quickly
     final int highThreshold = 10_000;
     final int timeoutMs = 2_000; // 2 seconds
@@ -99,7 +99,7 @@ class Issue3737VectorInactivityRebuildTest extends TestHelper {
   }
 
   @Test
-  void timerShouldResetOnNewMutations() throws InterruptedException {
+  void timerShouldResetOnNewMutations() throws Exception {
     // High threshold, short timeout
     final int highThreshold = 10_000;
     final int timeoutMs = 3_000; // 3 seconds
@@ -156,7 +156,7 @@ class Issue3737VectorInactivityRebuildTest extends TestHelper {
   }
 
   @Test
-  void noTimerWhenTimeoutIsZero() throws InterruptedException {
+  void noTimerWhenTimeoutIsZero() throws Exception {
     // Disable the inactivity timeout
     final int highThreshold = 10_000;
 

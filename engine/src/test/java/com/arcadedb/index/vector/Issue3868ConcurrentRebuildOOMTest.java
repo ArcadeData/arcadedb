@@ -57,7 +57,7 @@ class Issue3868ConcurrentRebuildOOMTest extends TestHelper {
    * and verifies that only one rebuild runs at a time.
    */
   @Test
-  void concurrentAsyncRebuildsShouldBeSerialized() throws InterruptedException {
+  void concurrentAsyncRebuildsShouldBeSerialized() throws Exception {
     // Use a very low threshold so rebuilds trigger quickly
     final int threshold = 5;
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, threshold);

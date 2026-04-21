@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue3928ConcatenationOperatorTest {
+class Issue3928ConcatenationOperatorTest {
   private Database database;
 
   @BeforeEach

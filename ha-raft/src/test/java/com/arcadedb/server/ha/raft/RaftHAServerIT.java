@@ -141,7 +141,7 @@ class RaftHAServerIT {
   }
 
   @Test
-  void testLeaderElection() throws Exception {
+  void leaderElection() throws Exception {
     // Verify exactly one leader exists
     int leaderCount = 0;
     for (final RaftServer server : servers)
@@ -152,7 +152,7 @@ class RaftHAServerIT {
   }
 
   @Test
-  void testBasicReplication() throws Exception {
+  void basicReplication() throws Exception {
     try (final RaftClient client = createClient()) {
       // Send a single entry
       final byte[] data = "hello-raft".getBytes();
@@ -172,7 +172,7 @@ class RaftHAServerIT {
   }
 
   @Test
-  void testMultipleEntries() throws Exception {
+  void multipleEntries() throws Exception {
     final int entryCount = 10;
 
     try (final RaftClient client = createClient()) {

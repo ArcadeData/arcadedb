@@ -48,7 +48,7 @@ class Issue3722VectorNeighborsMissingAfterIncrementalInsertTest extends TestHelp
   private static final int EMBEDDING_DIM = 32;
 
   @Test
-  void vectorNeighborsShouldReturnCorrectCountAfterIncrementalInsertAndRebuild() throws InterruptedException {
+  void vectorNeighborsShouldReturnCorrectCountAfterIncrementalInsertAndRebuild() throws Exception {
     // Set high threshold so automatic rebuild doesn't trigger during inserts, low timeout for quick inactivity rebuild
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 100_000);
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 2_000);

@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class CreateEdgeStatementTest extends AbstractParserTest {
+class CreateEdgeStatementTest extends AbstractParserTest {
 
   @Test
   void simpleCreate() {
@@ -53,14 +53,14 @@ public class CreateEdgeStatementTest extends AbstractParserTest {
   }
 
   @Test
-  public void testInputVariables() {
+  void inputVariables() {
     checkRightSyntax("create edge Foo from ? to ?");
     checkRightSyntax("create edge Foo from :a to :b");
     checkRightSyntax("create edge Foo from [:a, :b] to [:b, :c]");
   }
 
   @Test
-  public void testSubStatements() {
+  void subStatements() {
     checkRightSyntax("create edge Foo from (select from Foo) to (select from bar)");
     checkRightSyntax("create edge Foo from (traverse out() from #12:0) to (select from bar)");
     checkRightSyntax("create edge Foo from (MATCH {type:Person, as:A} return $elements) to (select from bar)");

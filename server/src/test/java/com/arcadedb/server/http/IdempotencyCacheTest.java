@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class IdempotencyCacheTest {
 
   @Test
-  void testPutAndGetSuccess() {
+  void putAndGetSuccess() {
     final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
     cache.putSuccess("req-1", 200, "{\"result\":\"ok\"}", null, "alice");
 
@@ -38,7 +38,7 @@ class IdempotencyCacheTest {
   }
 
   @Test
-  void testNon2xxNotCached() {
+  void non2xxNotCached() {
     final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
     cache.putSuccess("req-2", 400, "Bad Request", null, "alice");
     assertThat(cache.get("req-2")).isNull();
@@ -51,7 +51,7 @@ class IdempotencyCacheTest {
   }
 
   @Test
-  void testNullRequestIdIgnored() {
+  void nullRequestIdIgnored() {
     final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
     cache.putSuccess(null, 200, "body", null, "alice");
     assertThat(cache.size()).isEqualTo(0);
@@ -61,7 +61,7 @@ class IdempotencyCacheTest {
   }
 
   @Test
-  void testTtlExpiration() throws InterruptedException {
+  void ttlExpiration() throws Exception {
     final IdempotencyCache cache = new IdempotencyCache(50, 100);
     cache.putSuccess("req-5", 200, "body", null, "alice");
     assertThat(cache.get("req-5")).isNotNull();
@@ -71,7 +71,7 @@ class IdempotencyCacheTest {
   }
 
   @Test
-  void testMaxSizeEviction() {
+  void maxSizeEviction() {
     final IdempotencyCache cache = new IdempotencyCache(60_000, 3);
     cache.putSuccess("req-a", 200, "a", null, "alice");
     cache.putSuccess("req-b", 200, "b", null, "alice");
@@ -84,7 +84,7 @@ class IdempotencyCacheTest {
   }
 
   @Test
-  void testCleanupExpired() throws InterruptedException {
+  void cleanupExpired() throws Exception {
     final IdempotencyCache cache = new IdempotencyCache(50, 100);
     cache.putSuccess("req-x", 200, "x", null, "alice");
     cache.putSuccess("req-y", 200, "y", null, "alice");
@@ -96,7 +96,7 @@ class IdempotencyCacheTest {
   }
 
   @Test
-  void testBinaryResponseCached() {
+  void binaryResponseCached() {
     final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
     final byte[] data = new byte[] { 1, 2, 3 };
     cache.putSuccess("req-bin", 200, null, data, "bob");
@@ -108,7 +108,7 @@ class IdempotencyCacheTest {
   }
 
   @Test
-  void testHeaderConstant() {
+  void headerConstant() {
     assertThat(IdempotencyCache.HEADER_REQUEST_ID).isEqualTo("X-Request-Id");
   }
 }

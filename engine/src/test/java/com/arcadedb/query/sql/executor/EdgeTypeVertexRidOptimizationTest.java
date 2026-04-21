@@ -67,7 +67,7 @@ class EdgeTypeVertexRidOptimizationTest extends TestHelper {
   }
 
   @Test
-  void testSelectFromEdgeWhereOutEqualsRid() {
+  void selectFromEdgeWhereOutEqualsRid() {
     database.transaction(() -> {
       // This should use vertex-centric traversal, not full edge type scan
       final ResultSet result = database.query("sql",
@@ -84,7 +84,7 @@ class EdgeTypeVertexRidOptimizationTest extends TestHelper {
   }
 
   @Test
-  void testSelectFromEdgeWhereInEqualsRid() {
+  void selectFromEdgeWhereInEqualsRid() {
     database.transaction(() -> {
       final ResultSet result = database.query("sql",
           "SELECT FROM Knows WHERE @in = " + v3Rid);
@@ -100,7 +100,7 @@ class EdgeTypeVertexRidOptimizationTest extends TestHelper {
   }
 
   @Test
-  void testSelectFromEdgeWhereOutEqualsRidWithAdditionalFilter() {
+  void selectFromEdgeWhereOutEqualsRidWithAdditionalFilter() {
     database.transaction(() -> {
       // @out = RID AND since > 2020
       final ResultSet result = database.query("sql",
@@ -118,7 +118,7 @@ class EdgeTypeVertexRidOptimizationTest extends TestHelper {
   }
 
   @Test
-  void testSelectFromEdgeWhereOutAndInEqualsRid() {
+  void selectFromEdgeWhereOutAndInEqualsRid() {
     database.transaction(() -> {
       // Both @out and @in specified — the optimizer picks the first one (@out)
       final ResultSet result = database.query("sql",
@@ -136,7 +136,7 @@ class EdgeTypeVertexRidOptimizationTest extends TestHelper {
   }
 
   @Test
-  void testSelectFromEdgeWhereOutEqualsRidString() {
+  void selectFromEdgeWhereOutEqualsRidString() {
     database.transaction(() -> {
       // RID as quoted string (common in HTTP API calls)
       final ResultSet result = database.query("sql",
@@ -152,7 +152,7 @@ class EdgeTypeVertexRidOptimizationTest extends TestHelper {
   }
 
   @Test
-  void testExecutionPlanUsesVertexFetch() {
+  void executionPlanUsesVertexFetch() {
     database.transaction(() -> {
       final ResultSet result = database.query("sql",
           "SELECT FROM Knows WHERE @out = " + v1Rid + " AND since > 2020");

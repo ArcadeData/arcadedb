@@ -21,7 +21,6 @@ package com.arcadedb.server.ha.raft;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -34,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SnapshotSwapRecoveryTest {
 
   @Test
-  void testRecoveryCompletesInterruptedSwap(@TempDir final Path databasesDir) throws IOException {
+  void recoveryCompletesInterruptedSwap(@TempDir final Path databasesDir) throws Exception {
     // Simulate: download completed, swap started (backup created) but process crashed before cleanup
     final Path dbDir = databasesDir.resolve("mydb");
     final Path snapshotNew = dbDir.resolve(".snapshot-new");
@@ -59,7 +58,7 @@ class SnapshotSwapRecoveryTest {
   }
 
   @Test
-  void testRecoveryRollsBackIncompleteDownload(@TempDir final Path databasesDir) throws IOException {
+  void recoveryRollsBackIncompleteDownload(@TempDir final Path databasesDir) throws Exception {
     // Simulate: download was interrupted (no .snapshot-complete), backup exists
     final Path dbDir = databasesDir.resolve("mydb");
     final Path snapshotNew = dbDir.resolve(".snapshot-new");
@@ -83,7 +82,7 @@ class SnapshotSwapRecoveryTest {
   }
 
   @Test
-  void testRecoveryCleansUpOrphanedNewDir(@TempDir final Path databasesDir) throws IOException {
+  void recoveryCleansUpOrphanedNewDir(@TempDir final Path databasesDir) throws Exception {
     // Simulate: download interrupted before backup was created
     final Path dbDir = databasesDir.resolve("mydb");
     final Path snapshotNew = dbDir.resolve(".snapshot-new");
@@ -104,7 +103,7 @@ class SnapshotSwapRecoveryTest {
   }
 
   @Test
-  void testNoMarkerNoAction(@TempDir final Path databasesDir) throws IOException {
+  void noMarkerNoAction(@TempDir final Path databasesDir) throws Exception {
     // Clean database directory with no markers - should be a no-op
     final Path dbDir = databasesDir.resolve("mydb");
     Files.createDirectories(dbDir);
@@ -116,7 +115,7 @@ class SnapshotSwapRecoveryTest {
   }
 
   @Test
-  void testMultipleDatabasesRecoveredIndependently(@TempDir final Path databasesDir) throws IOException {
+  void multipleDatabasesRecoveredIndependently(@TempDir final Path databasesDir) throws Exception {
     // db1: needs swap completion; db2: needs rollback
     final Path db1 = databasesDir.resolve("db1");
     final Path db1New = db1.resolve(".snapshot-new");
@@ -150,7 +149,7 @@ class SnapshotSwapRecoveryTest {
   }
 
   @Test
-  void incompleteExtractionWithoutMarkerIsDiscarded(@TempDir final Path databasesDir) throws IOException {
+  void incompleteExtractionWithoutMarkerIsDiscarded(@TempDir final Path databasesDir) throws Exception {
     // Simulate: .snapshot-new exists (extraction started) but no .snapshot-complete marker inside it,
     // meaning extraction was interrupted before completing. No backup exists either.
     final Path dbDir = databasesDir.resolve("mydb");
@@ -175,7 +174,7 @@ class SnapshotSwapRecoveryTest {
   }
 
   @Test
-  void testRecoveryHandlesSwapCompletedButCleanupIncomplete(@TempDir final Path databasesDir) throws IOException {
+  void recoveryHandlesSwapCompletedButCleanupIncomplete(@TempDir final Path databasesDir) throws Exception {
     // Simulate: swap was completed (.snapshot-new renamed to live) but .snapshot-pending marker
     // and leftover .snapshot-new dir (with .snapshot-complete) still exist. No backup.
     final Path dbDir = databasesDir.resolve("mydb");

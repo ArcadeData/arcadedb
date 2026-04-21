@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue3925ReturnAllTest {
+class Issue3925ReturnAllTest {
   private Database database;
 
   @BeforeEach

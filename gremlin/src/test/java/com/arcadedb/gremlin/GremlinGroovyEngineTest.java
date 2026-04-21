@@ -23,8 +23,6 @@ import org.apache.tinkerpop.gremlin.jsr223.CoreGremlinPlugin;
 import org.apache.tinkerpop.gremlin.jsr223.Customizer;
 import org.junit.jupiter.api.Test;
 
-import javax.script.ScriptException;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -40,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GremlinGroovyEngineTest {
 
   @Test
-  void groovyEngineInitializesWithCoreImports() throws ScriptException {
+  void groovyEngineInitializesWithCoreImports() throws Exception {
     final Customizer[] customizers = CoreGremlinPlugin.instance()
         .getCustomizers("gremlin-groovy")
         .orElse(new Customizer[0]);

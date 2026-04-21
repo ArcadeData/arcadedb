@@ -31,7 +31,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -41,7 +40,7 @@ import java.util.concurrent.TimeUnit;
  * Toxiproxy intercepts the Raft gRPC consensus port (2434) to inject faults.
  */
 @Testcontainers
-public class NetworkDelayIT extends ContainersTestTemplate {
+class NetworkDelayIT extends ContainersTestTemplate {
 
   // Proxy ports for Raft (consensus) traffic per node
   private static final int RAFT_PROXY_PORT_0 = 8660;
@@ -65,7 +64,7 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test symmetric network delay: all nodes experience same latency")
-  void testSymmetricDelay() throws IOException {
+  void symmetricDelay() throws Exception {
     logger.info("Creating Raft and HTTP proxies for 3-node cluster");
     final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
     final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
@@ -144,7 +143,7 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test asymmetric delay: leader has higher latency than followers")
-  void testAsymmetricLeaderDelay() throws IOException, InterruptedException {
+  void asymmetricLeaderDelay() throws Exception {
     logger.info("Creating Raft and HTTP proxies for 3-node cluster");
     final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
     toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
@@ -219,7 +218,7 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test high latency with jitter: variable delays simulate unstable network")
-  void testHighLatencyWithJitter() throws IOException {
+  void highLatencyWithJitter() throws Exception {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
     final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
     final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
@@ -283,7 +282,7 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test extreme latency: verify timeout handling")
-  void testExtremeLatency() throws IOException {
+  void extremeLatency() throws Exception {
     logger.info("Creating Raft and HTTP proxies for 2-node cluster");
     final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
     toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");

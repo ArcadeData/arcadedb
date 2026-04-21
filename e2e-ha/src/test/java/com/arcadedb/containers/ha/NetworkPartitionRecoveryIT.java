@@ -80,7 +80,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test partition recovery: 2+1 split, heal partition, verify Raft log catch-up")
-  void testPartitionRecovery() throws InterruptedException {
+  void partitionRecovery() throws Exception {
     logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -185,7 +185,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test multiple partition cycles: repeated split and heal with Raft log catch-up")
-  void testMultiplePartitionCycles() throws InterruptedException {
+  void multiplePartitionCycles() throws Exception {
     logger.info("Creating 3-node Raft HA cluster (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -281,7 +281,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test asymmetric partition recovery: follower isolated then resyncs")
-  void testAsymmetricPartitionRecovery() throws InterruptedException {
+  void asymmetricPartitionRecovery() throws Exception {
     logger.info("Creating 3-node Raft HA cluster (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);

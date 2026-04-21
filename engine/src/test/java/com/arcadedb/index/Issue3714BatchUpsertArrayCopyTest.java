@@ -77,7 +77,7 @@ class Issue3714BatchUpsertArrayCopyTest {
    * many page splits and compactions.
    */
   @Test
-  void testConcurrentBatchUpsertsWithCompactionDoNotCorruptPages() throws Exception {
+  void concurrentBatchUpsertsWithCompactionDoNotCorruptPages() throws Exception {
     final int threads = 4;
     final int batchesPerThread = 1500;
     final int recordsPerBatch = 20;
@@ -145,7 +145,7 @@ class Issue3714BatchUpsertArrayCopyTest {
    * in LocalBucket.updateRecordInternal().
    */
   @Test
-  void testHighVolumeRepeatedUpsertsWithGrowingRecords() {
+  void highVolumeRepeatedUpsertsWithGrowingRecords() {
     final int totalKeys = 2000;
     final int iterations = 200;
 

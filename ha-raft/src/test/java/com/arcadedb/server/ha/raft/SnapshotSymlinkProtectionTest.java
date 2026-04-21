@@ -22,7 +22,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -42,7 +41,7 @@ class SnapshotSymlinkProtectionTest {
   }
 
   @Test
-  void copyWithLimitAllowsEntryWithinBounds() throws IOException {
+  void copyWithLimitAllowsEntryWithinBounds() throws Exception {
     final byte[] data = new byte[50];
     final ByteArrayInputStream in = new ByteArrayInputStream(data);
     final ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -54,7 +53,7 @@ class SnapshotSymlinkProtectionTest {
   }
 
   @Test
-  void countingInputStreamTracksBytes() throws IOException {
+  void countingInputStreamTracksBytes() throws Exception {
     final byte[] data = new byte[] { 1, 2, 3, 4, 5 };
     final SnapshotInstaller.CountingInputStream cis =
         new SnapshotInstaller.CountingInputStream(new ByteArrayInputStream(data));

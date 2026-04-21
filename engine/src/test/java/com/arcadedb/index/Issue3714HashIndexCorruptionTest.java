@@ -73,7 +73,7 @@ class Issue3714HashIndexCorruptionTest {
    * - "Hash index bucket full when adding RID to existing entry"
    */
   @Test
-  void testNonUniqueHashIndexPageFragmentation() {
+  void nonUniqueHashIndexPageFragmentation() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("FragDoc");
       type.createProperty("category", String.class);
@@ -115,7 +115,7 @@ class Issue3714HashIndexCorruptionTest {
    * in hash index pages. This simulates the user's scenario of batch UPSERTs.
    */
   @Test
-  void testRepeatedUpsertsWithNonUniqueHashIndex() {
+  void repeatedUpsertsWithNonUniqueHashIndex() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("UpsertDoc");
       type.createProperty("recordId", String.class);
@@ -167,7 +167,7 @@ class Issue3714HashIndexCorruptionTest {
    * exercises the removeRIDFromEntry code path.
    */
   @Test
-  void testRemoveRIDFromEntryUnderFragmentation() {
+  void removeRIDFromEntryUnderFragmentation() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("RemoveDoc");
       type.createProperty("tag", String.class);
@@ -258,7 +258,7 @@ class Issue3714HashIndexCorruptionTest {
    * that the physical record count and the SELECT result count stay consistent.
    */
   @Test
-  void testNoDuplicatesAfterBatchUpsertsWithHashIndexes() {
+  void noDuplicatesAfterBatchUpsertsWithHashIndexes() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("Metadata");
       type.createProperty("recordId", String.class);
@@ -344,7 +344,7 @@ class Issue3714HashIndexCorruptionTest {
    * entire overflow chain and remove ALL matching entries, not stop at the first matching page.
    */
   @Test
-  void testRemoveAllEntriesForKeyAcrossOverflowChain() {
+  void removeAllEntriesForKeyAcrossOverflowChain() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("OrphanDoc");
       type.createProperty("key", String.class);
@@ -390,7 +390,7 @@ class Issue3714HashIndexCorruptionTest {
    * Uses very small page size to force many overflow pages.
    */
   @Test
-  void testDeepOverflowChainDoesNotStackOverflow() {
+  void deepOverflowChainDoesNotStackOverflow() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("OverflowDoc");
       type.createProperty("key", String.class);

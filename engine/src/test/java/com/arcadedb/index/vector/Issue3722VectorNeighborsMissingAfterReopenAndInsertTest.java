@@ -203,7 +203,7 @@ class Issue3722VectorNeighborsMissingAfterReopenAndInsertTest extends TestHelper
   }
 
   @Test
-  void vectorSearchShouldReturnCorrectCountWithInactivityRebuildAfterReopen() throws InterruptedException {
+  void vectorSearchShouldReturnCorrectCountWithInactivityRebuildAfterReopen() throws Exception {
     // Disable automatic rebuilds during initial setup
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 100_000);
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, -1);

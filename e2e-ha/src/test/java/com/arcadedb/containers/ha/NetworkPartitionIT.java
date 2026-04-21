@@ -79,7 +79,7 @@ class NetworkPartitionIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test leader partition: isolate leader from cluster, verify new election in majority")
-  void testLeaderPartitionWithQuorum() throws InterruptedException {
+  void leaderPartitionWithQuorum() throws Exception {
     logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -197,7 +197,7 @@ class NetworkPartitionIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test single follower partition: one follower isolated, cluster continues")
-  void testSingleFollowerPartition() throws InterruptedException {
+  void singleFollowerPartition() throws Exception {
     logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -299,7 +299,7 @@ class NetworkPartitionIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test no-quorum partition: cluster cannot accept writes when quorum is lost")
-  void testNoQuorumScenario() throws Exception {
+  void noQuorumScenario() throws Exception {
     logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);

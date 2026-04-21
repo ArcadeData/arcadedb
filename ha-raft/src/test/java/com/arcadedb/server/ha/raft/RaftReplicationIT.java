@@ -151,7 +151,7 @@ class RaftReplicationIT {
   }
 
   @Test
-  void testLeaderElection() {
+  void leaderElection() {
     // Verify exactly one Ratis leader exists
     int leaderCount = 0;
     for (final ArcadeDBServer server : servers)
@@ -162,7 +162,7 @@ class RaftReplicationIT {
   }
 
   @Test
-  void testWriteOnLeader() {
+  void writeOnLeader() {
     // Find the leader server
     ArcadeDBServer leader = null;
     for (final ArcadeDBServer server : servers)
@@ -207,7 +207,7 @@ class RaftReplicationIT {
   }
 
   @Test
-  void testWriteOnFollowerForwardsThroughRaft() {
+  void writeOnFollowerForwardsThroughRaft() {
     // Find a follower server (not the leader)
     ArcadeDBServer follower = null;
     for (final ArcadeDBServer server : servers)
@@ -231,7 +231,7 @@ class RaftReplicationIT {
   }
 
   @Test
-  void testClusterStatus() {
+  void clusterStatus() {
     // Verify cluster status API
     for (final ArcadeDBServer server : servers) {
       final RaftHAServer raftHA = ((RaftHAPlugin) server.getHA()).getRaftHAServer();
@@ -250,7 +250,7 @@ class RaftReplicationIT {
   }
 
   @Test
-  void testPeerReplicaAddresses() {
+  void peerReplicaAddresses() {
     // Verify replica addresses are populated
     for (final ArcadeDBServer server : servers) {
       final RaftHAServer raftHA = ((RaftHAPlugin) server.getHA()).getRaftHAServer();

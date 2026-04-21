@@ -61,7 +61,7 @@ class RaftHealthMonitorRecoveryIT extends BaseRaftHATest {
   }
 
   @Test
-  void healthMonitorRecoversFollowerFromClosedState() throws InterruptedException {
+  void healthMonitorRecoversFollowerFromClosedState() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 

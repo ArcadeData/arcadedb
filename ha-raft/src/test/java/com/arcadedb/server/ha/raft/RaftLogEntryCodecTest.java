@@ -220,7 +220,7 @@ class RaftLogEntryCodecTest {
   }
 
   @Test
-  void decodeLegacyInstallDatabaseEntryWithoutFlag() throws java.io.IOException {
+  void decodeLegacyInstallDatabaseEntryWithoutFlag() throws Exception {
     // Hand-crafted byte layout matching the pre-forceSnapshot codec:
     // type byte + UTF(databaseName), no trailing boolean.
     final java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
@@ -273,7 +273,7 @@ class RaftLogEntryCodecTest {
   }
 
   @Test
-  void decodeUnknownTypeReturnsNullTypeEntry() throws java.io.IOException {
+  void decodeUnknownTypeReturnsNullTypeEntry() throws Exception {
     // Build an entry with an unknown type byte (99)
     final java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
     try (final java.io.DataOutputStream dos = new java.io.DataOutputStream(baos)) {

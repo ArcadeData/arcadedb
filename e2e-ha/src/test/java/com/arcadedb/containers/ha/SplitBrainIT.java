@@ -82,7 +82,7 @@ class SplitBrainIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test split-brain prevention: verify minority partition cannot accept writes (Raft leader steps down)")
-  void testSplitBrainPrevention() throws Exception {
+  void splitBrainPrevention() throws Exception {
     logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -207,7 +207,7 @@ class SplitBrainIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test 1+1+1 partition: verify no writes possible without majority (all leaders step down)")
-  void testCompletePartitionNoQuorum() throws Exception {
+  void completePartitionNoQuorum() throws Exception {
     logger.info("Creating 3-node Raft HA cluster with majority quorum (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -329,7 +329,7 @@ class SplitBrainIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test cluster reformation: verify proper Raft leader election after partition healing")
-  void testClusterReformation() throws Exception {
+  void clusterReformation() throws Exception {
     logger.info("Creating 3-node Raft HA cluster (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
@@ -436,7 +436,7 @@ class SplitBrainIT extends ContainersTestTemplate {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test quorum loss recovery: verify cluster recovers after temporary quorum loss")
-  void testQuorumLossRecovery() throws Exception {
+  void quorumLossRecovery() throws Exception {
     logger.info("Creating 3-node Raft HA cluster with majority quorum (2/3) (persistent for restart)");
     final GenericContainer<?> arcade0 = createPersistentArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     final GenericContainer<?> arcade1 = createPersistentArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);

@@ -23,7 +23,6 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,7 +43,7 @@ class SnapshotCompressionRatioTest {
   // -- CountingInputStream tests --
 
   @Test
-  void countingInputStream_tracksReadBytes() throws IOException {
+  void countingInputStream_tracksReadBytes() throws Exception {
     final byte[] data = new byte[1024];
     Arrays.fill(data, (byte) 0x42);
 
@@ -62,7 +61,7 @@ class SnapshotCompressionRatioTest {
   }
 
   @Test
-  void countingInputStream_tracksReadAllBytes() throws IOException {
+  void countingInputStream_tracksReadAllBytes() throws Exception {
     final byte[] data = new byte[4096];
     Arrays.fill(data, (byte) 0xAB);
 
@@ -74,7 +73,7 @@ class SnapshotCompressionRatioTest {
   }
 
   @Test
-  void countingInputStream_tracksSingleByteRead() throws IOException {
+  void countingInputStream_tracksSingleByteRead() throws Exception {
     final byte[] data = { 0x01, 0x02, 0x03 };
     final SnapshotInstaller.CountingInputStream counter = new SnapshotInstaller.CountingInputStream(
         new ByteArrayInputStream(data));
@@ -87,7 +86,7 @@ class SnapshotCompressionRatioTest {
   }
 
   @Test
-  void countingInputStream_tracksAcrossMultipleReads() throws IOException {
+  void countingInputStream_tracksAcrossMultipleReads() throws Exception {
     final byte[] data = new byte[512];
     final SnapshotInstaller.CountingInputStream counter = new SnapshotInstaller.CountingInputStream(
         new ByteArrayInputStream(data));
@@ -104,7 +103,7 @@ class SnapshotCompressionRatioTest {
   }
 
   @Test
-  void countingInputStream_eofDoesNotIncrementCount() throws IOException {
+  void countingInputStream_eofDoesNotIncrementCount() throws Exception {
     final SnapshotInstaller.CountingInputStream counter = new SnapshotInstaller.CountingInputStream(
         new ByteArrayInputStream(new byte[0]));
 
@@ -114,7 +113,7 @@ class SnapshotCompressionRatioTest {
   }
 
   @Test
-  void countingInputStream_markNotSupported() throws IOException {
+  void countingInputStream_markNotSupported() throws Exception {
     final SnapshotInstaller.CountingInputStream counter = new SnapshotInstaller.CountingInputStream(
         new ByteArrayInputStream(new byte[10]));
     assertThat(counter.markSupported()).isFalse();
@@ -123,7 +122,7 @@ class SnapshotCompressionRatioTest {
   // -- copyWithLimit tests --
 
   @Test
-  void copyWithLimit_returnsExactByteCopied() throws IOException {
+  void copyWithLimit_returnsExactByteCopied() throws Exception {
     final byte[] data = new byte[1000];
     Arrays.fill(data, (byte) 0x55);
 
@@ -151,7 +150,7 @@ class SnapshotCompressionRatioTest {
   }
 
   @Test
-  void copyWithLimit_exactlyAtLimitSucceeds() throws IOException {
+  void copyWithLimit_exactlyAtLimitSucceeds() throws Exception {
     final byte[] data = new byte[100];
 
     final long copied = SnapshotInstaller.copyWithLimit(
@@ -176,7 +175,7 @@ class SnapshotCompressionRatioTest {
    * compresses at ~946:1 with DEFLATE. The ratio guard must not reject it.
    */
   @Test
-  void sparsePageSizedEntry_doesNotExceedRatioLimit() throws IOException {
+  void sparsePageSizedEntry_doesNotExceedRatioLimit() throws Exception {
     // Dictionary.DEF_PAGE_SIZE = 65536 * 5 = 327 680 bytes, freshly initialised → mostly zeros
     final int dictionaryPageSize = 65_536 * 5;
     final byte[] sparseData = new byte[dictionaryPageSize]; // all-zeros: highly compressible
@@ -215,7 +214,7 @@ class SnapshotCompressionRatioTest {
   // -- Integration: CountingInputStream with ZipInputStream --
 
   @Test
-  void countingInputStream_measuresCompressedBytesPerEntry() throws IOException {
+  void countingInputStream_measuresCompressedBytesPerEntry() throws Exception {
     // Build a small ZIP in memory
     final byte[] uncompressedData = new byte[10_000];
     Arrays.fill(uncompressedData, (byte) 0xCC); // highly compressible

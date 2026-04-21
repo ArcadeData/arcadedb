@@ -47,7 +47,7 @@ class Issue3683AsyncRebuildRetriggerTest extends TestHelper {
   private static final int LARGE_INDEX_VECTORS = 1100;
 
   @Test
-  void asyncRebuildShouldBeRetriggeredForMutationsDuringBuild() throws InterruptedException {
+  void asyncRebuildShouldBeRetriggeredForMutationsDuringBuild() throws Exception {
     final int threshold = 5;
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, threshold);
 

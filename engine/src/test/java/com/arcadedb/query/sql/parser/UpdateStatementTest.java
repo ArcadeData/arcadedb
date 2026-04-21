@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class UpdateStatementTest extends AbstractParserTest {
+class UpdateStatementTest extends AbstractParserTest {
 
   @Test
   void simpleInsert() {
@@ -56,22 +56,22 @@ public class UpdateStatementTest extends AbstractParserTest {
   }
 
   @Test
-  public void testIncrementOld() {
+  void incrementOld() {
     checkRightSyntax("update  Foo increment a = 2");
   }
 
   @Test
-  public void testIncrement() {
+  void increment() {
     checkRightSyntax("update  Foo set a += 2");
   }
 
   @Test
-  public void testDecrement() {
+  void decrement() {
     checkRightSyntax("update  Foo set a -= 2");
   }
 
   @Test
-  public void testQuotedJson() {
+  void quotedJson() {
     checkRightSyntax("UPDATE V SET key = \"test\", value = {\"f12\":\"test\\\\\"} UPSERT WHERE key = \"test\"");
   }
 

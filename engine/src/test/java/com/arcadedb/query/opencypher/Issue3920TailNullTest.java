@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue3920TailNullTest {
+class Issue3920TailNullTest {
   private Database database;
 
   @BeforeEach
