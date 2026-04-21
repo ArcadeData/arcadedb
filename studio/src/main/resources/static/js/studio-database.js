@@ -1819,7 +1819,7 @@ function populateHistoryPanel() {
 
   // Quick-select with latest 10 queries
   let html = "<div class='history-quick-select'>";
-  html += "<select class='form-select form-select-sm history-quick-dropdown' onchange='executeQuickHistoryEntry(this)' title='Recent queries'>";
+  html += "<select class='form-select form-select-sm history-quick-dropdown' onchange='loadQuickHistoryEntry(this)' title='Load a recent query into the editor'>";
   html += "<option value='' selected disabled>Recent queries...</option>";
   let quickCount = Math.min(filtered.length, 10);
   for (let i = 0; i < quickCount; i++) {
@@ -1897,7 +1897,7 @@ function renderHistoryEntries(entries) {
 
     html += "<div class='history-entry' data-index='" + idx + "' data-cmd='" + cmd.toLowerCase() + "'>";
     html += "<input type='checkbox' class='history-checkbox history-item-check' data-index='" + idx + "' onclick='event.stopPropagation()'>";
-    html += "<div class='history-entry-content' onclick='executeHistoryEntry(" + idx + ")'>";
+    html += "<div class='history-entry-content' title='Click to load into the editor' onclick='loadHistoryEntry(" + idx + ")'>";
     html += "<div class='history-meta'>";
     if (time) html += "<span class='history-time'>" + time + "</span>";
     html += "<span class='history-lang'>" + lang + "</span>";
@@ -1908,16 +1908,20 @@ function renderHistoryEntries(entries) {
   return html;
 }
 
-function executeHistoryEntry(index) {
+function loadHistoryEntry(index) {
   let queryHistory = getQueryHistory();
   let q = queryHistory[index];
-  if (q) executeCommand(q.l, q.c);
+  if (!q) return;
+  if (q.l) $("#inputLanguage").val(q.l);
+  editor.setValue(q.c || "");
+  globalActivateTab("tab-query");
+  editor.focus();
 }
 
-function executeQuickHistoryEntry(selectEl) {
+function loadQuickHistoryEntry(selectEl) {
   let index = parseInt(selectEl.value);
   if (!isNaN(index)) {
-    executeHistoryEntry(index);
+    loadHistoryEntry(index);
     selectEl.selectedIndex = 0;
   }
 }
@@ -2633,7 +2637,7 @@ function browseType(typeName) {
   if (!database) return;
 
   let limit = parseInt($("#inputLimit").val()) || 100;
-  let query = "select from `" + typeName + "` limit " + limit;
+  let query = "select from `" + typeName + "`";
 
   // If a graph already exists, append results to it
   if (globalCy != null && globalResultset != null) {
