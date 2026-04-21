@@ -108,7 +108,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
           command(serverIndex, "create vertex V1 content {\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}"))
           .getJSONArray("result").getJSONObject(0).getString(RID_PROPERTY);
 
-      waitForReplicationIsCompleted(serverIndex);
+      waitForAllServers();
 
       testEachServer((checkServer) ->
           assertThat(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result")).isNotEmpty());
@@ -117,7 +117,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
           command(serverIndex, "create vertex V1 content {\"name\":\"John\",\"surname\":\"Red\",\"age\":50}"))
           .getJSONArray("result").getJSONObject(0).getString(RID_PROPERTY);
 
-      waitForReplicationIsCompleted(serverIndex);
+      waitForAllServers();
 
       testEachServer((checkServer) ->
           assertThat(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result")).isNotEmpty());
@@ -125,16 +125,13 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
       final String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2))
           .getJSONArray("result").getJSONObject(0).getString(RID_PROPERTY);
 
-      waitForReplicationIsCompleted(serverIndex);
+      waitForAllServers();
 
       testEachServer((checkServer) ->
           assertThat(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result")).isNotEmpty());
 
       command(serverIndex, "delete from " + v1);
-      waitForReplicationIsCompleted(serverIndex);
-      for (int i = 0; i < getServerCount(); i++)
-        if (i != serverIndex)
-          waitForReplicationIsCompleted(i);
+      waitForAllServers();
 
       testEachServer((checkServer) -> {
         try {

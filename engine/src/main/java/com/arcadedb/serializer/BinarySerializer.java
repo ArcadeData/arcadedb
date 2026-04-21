@@ -209,7 +209,7 @@ public class BinarySerializer {
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
-    return null;
+    return Collections.emptySet();
   }
 
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,

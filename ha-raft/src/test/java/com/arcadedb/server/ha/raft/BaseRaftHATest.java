@@ -236,6 +236,18 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   }
 
   /**
+   * Waits for every running server in the cluster to apply entries up to the current
+   * leader's last-applied index. Use this after a write before reading from all servers
+   * to avoid timing windows where Raft followers haven't applied the entries yet.
+   */
+  protected void waitForAllServers() {
+    for (int i = 0; i < getServerCount(); i++) {
+      if (getServer(i) != null && getServer(i).isStarted())
+        waitForReplicationIsCompleted(i);
+    }
+  }
+
+  /**
    * Waits for replication to propagate across the cluster, then verifies
    * that all server databases are identical.
    */
