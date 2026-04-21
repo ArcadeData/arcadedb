@@ -167,8 +167,49 @@ class SnapshotCompressionRatioTest {
 
   @Test
   void compressionRatioConstants_haveExpectedValues() {
-    assertThat(SnapshotInstaller.MAX_COMPRESSION_RATIO).isEqualTo(200);
+    assertThat(SnapshotInstaller.MAX_COMPRESSION_RATIO).isEqualTo(100_000);
     assertThat(SnapshotInstaller.MIN_RATIO_CHECK_BYTES).isEqualTo(64L * 1024L);
+  }
+
+  /**
+   * Regression: a freshly-initialised ArcadeDB dictionary page (327 680 bytes, mostly zeros)
+   * compresses at ~946:1 with DEFLATE. The ratio guard must not reject it.
+   */
+  @Test
+  void sparsePageSizedEntry_doesNotExceedRatioLimit() throws IOException {
+    // Dictionary.DEF_PAGE_SIZE = 65536 * 5 = 327 680 bytes, freshly initialised → mostly zeros
+    final int dictionaryPageSize = 65_536 * 5;
+    final byte[] sparseData = new byte[dictionaryPageSize]; // all-zeros: highly compressible
+
+    final byte[] zipped;
+    try (final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        final ZipOutputStream zos = new ZipOutputStream(baos)) {
+      zos.putNextEntry(new ZipEntry("dictionary.0.327680.v0.dict"));
+      zos.write(sparseData);
+      zos.closeEntry();
+      zos.finish();
+      zipped = baos.toByteArray();
+    }
+
+    final SnapshotInstaller.CountingInputStream rawCounter = new SnapshotInstaller.CountingInputStream(
+        new ByteArrayInputStream(zipped));
+
+    try (final ZipInputStream zipIn = new ZipInputStream(rawCounter)) {
+      final ZipEntry entry = zipIn.getNextEntry();
+      assertThat(entry).isNotNull();
+
+      final long compressedStart = rawCounter.getCount();
+      final long extracted = SnapshotInstaller.copyWithLimit(zipIn, OutputStream.nullOutputStream(), Long.MAX_VALUE, entry.getName());
+      zipIn.closeEntry();
+
+      final long compressedBytes = Math.max(1L, rawCounter.getCount() - compressedStart);
+      final long ratio = extracted / compressedBytes;
+
+      // Confirm this is genuinely a high-ratio entry (must exceed old too-tight threshold of 200)
+      assertThat(ratio).isGreaterThan(200L);
+      // Confirm it stays within the updated limit
+      assertThat(ratio).isLessThan(SnapshotInstaller.MAX_COMPRESSION_RATIO);
+    }
   }
 
   // -- Integration: CountingInputStream with ZipInputStream --

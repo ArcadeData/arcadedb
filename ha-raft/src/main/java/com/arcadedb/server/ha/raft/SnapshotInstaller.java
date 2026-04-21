@@ -68,11 +68,14 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
 
   /**
-   * Maximum tolerated uncompressed:compressed size ratio per ZIP entry. 200:1 comfortably
-   * accommodates real-world page data (DEFLATE typically compresses 5-20x) while rejecting
-   * crafted decompression bombs that inflate 1000:1+. Package-private for unit testing.
+   * Maximum tolerated uncompressed:compressed size ratio per ZIP entry.
+   * ArcadeDB page files (e.g. dictionary pages of 327 680 bytes) are fixed-size and freshly
+   * initialised with mostly-zero content, so legitimate DEFLATE ratios can exceed 900:1.
+   * 100 000:1 provides comfortable headroom above any real page while still catching
+   * crafted decompression bombs; the 10 GB absolute limit is the primary protection.
+   * Package-private for unit testing.
    */
-  static final int MAX_COMPRESSION_RATIO = 200;
+  static final int MAX_COMPRESSION_RATIO = 100_000;
 
   /**
    * Minimum uncompressed entry size before applying the ratio check. Tiny entries (schema JSON,

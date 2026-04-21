@@ -324,7 +324,7 @@ public class HttpServer implements ServerPlugin {
   private void handleServerStartException(final Exception e, int httpsPortListening) {
     undertow = null;
 
-    if (e.getCause() instanceof BindException) {
+    if (hasCause(e, BindException.class)) {
       LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available", httpPortListening);
       if (httpsPortListening > 0) {
         ++httpsPortListening;
@@ -332,6 +332,15 @@ public class HttpServer implements ServerPlugin {
     } else {
       throw new ServerException("Error on starting HTTP Server", e);
     }
+  }
+
+  private static boolean hasCause(Throwable t, final Class<? extends Throwable> causeClass) {
+    while (t != null) {
+      if (causeClass.isInstance(t))
+        return true;
+      t = t.getCause();
+    }
+    return false;
   }
 
   private void handleServerStartFailure(final int[] httpPortRange) {

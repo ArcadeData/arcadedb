@@ -52,7 +52,7 @@ class RaftVerifyDatabaseIT extends BaseRaftHATest {
 
     assertClusterConsistency();
 
-    final int httpPort = 2480 + leaderIndex;
+    final int httpPort = getServer(leaderIndex).getHttpServer().getPort();
     final HttpURLConnection conn = (HttpURLConnection) new URI(
         "http://localhost:" + httpPort + "/api/v1/cluster/verify/" + getDatabaseName()).toURL().openConnection();
     conn.setRequestMethod("POST");
@@ -63,15 +63,17 @@ class RaftVerifyDatabaseIT extends BaseRaftHATest {
     final String responseBody = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     final JSONObject response = new JSONObject(responseBody);
 
-    assertThat(response.getString("database")).isEqualTo(getDatabaseName());
-    final JSONArray nodes = response.getJSONArray("nodes");
-    assertThat(nodes.length()).isGreaterThan(0);
+    // Leader response wraps everything under "result"
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getString("database")).isEqualTo(getDatabaseName());
+    final JSONArray peers = result.getJSONArray("peers");
+    assertThat(peers.length()).isGreaterThan(0);
 
-    for (int i = 0; i < nodes.length(); i++) {
-      final JSONObject node = nodes.getJSONObject(i);
-      assertThat(node.getBoolean("match"))
-          .as("Checksum mismatch on node %s: %s", node.getString("peerId", ""), node)
-          .isTrue();
+    for (int i = 0; i < peers.length(); i++) {
+      final JSONObject peer = peers.getJSONObject(i);
+      assertThat(peer.getString("status", "ERROR"))
+          .as("Checksum mismatch on peer %s: %s", peer.getString("peerId", ""), peer)
+          .isEqualTo("CONSISTENT");
     }
 
     conn.disconnect();

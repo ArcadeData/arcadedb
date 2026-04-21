@@ -65,7 +65,7 @@ class FollowerSessionTokenQueryIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final int followerIndex = firstFollowerIndex(leaderIndex);
-    final int followerPort = 2480 + followerIndex;
+    final int followerPort = getServer(followerIndex).getHttpServer().getPort();
 
     final String token = loginAndGetToken(followerPort);
 
@@ -83,7 +83,7 @@ class FollowerSessionTokenQueryIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final int followerIndex = firstFollowerIndex(leaderIndex);
-    final int followerPort = 2480 + followerIndex;
+    final int followerPort = getServer(followerIndex).getHttpServer().getPort();
 
     final String token = loginAndGetToken(followerPort);
 

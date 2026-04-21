@@ -26,7 +26,10 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.utility.FileUtils;
 
+import org.apache.ratis.protocol.RaftPeerId;
+
 import java.io.File;
+import java.util.Map;
 import java.util.logging.Level;
 
 /**
@@ -93,6 +96,8 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   protected String getServerAddresses() {
     // For Raft HA, the server list uses host:raftPort:httpPort so that follower nodes can
     // forward write commands to the leader via HTTP when needed.
+    // The HTTP port here is a best-effort hint used before servers start; after startup
+    // startServers() patches httpAddresses with the actual bound ports.
     final StringBuilder sb = new StringBuilder();
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
@@ -100,6 +105,24 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       sb.append("localhost:").append(BASE_RAFT_PORT + i).append(":").append(2480 + i);
     }
     return sb.toString();
+  }
+
+  @Override
+  protected void startServers() {
+    super.startServers();
+    // Patch every server's httpAddresses map with the ports the HTTP server actually bound to.
+    // This corrects stale values from getServerAddresses() when dynamic port assignment shifted
+    // any server away from its expected port (e.g. port already taken by another process).
+    for (int i = 0; i < getServerCount(); i++) {
+      final RaftHAPlugin plugin = getRaftPlugin(i);
+      if (plugin == null || plugin.getRaftHAServer() == null)
+        continue;
+      final Map<RaftPeerId, String> httpAddresses = plugin.getRaftHAServer().getHttpAddresses();
+      for (int j = 0; j < getServerCount(); j++) {
+        final RaftPeerId peerId = RaftPeerId.valueOf(peerIdForIndex(j));
+        httpAddresses.put(peerId, "localhost:" + getServer(j).getHttpServer().getPort());
+      }
+    }
   }
 
   @Override
