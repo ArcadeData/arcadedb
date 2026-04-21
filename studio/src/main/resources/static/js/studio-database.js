@@ -2674,7 +2674,7 @@ function browseType(typeName) {
   if (!database) return;
 
   let limit = parseInt($("#inputLimit").val()) || 100;
-  let query = "select from `" + typeName + "` limit " + limit;
+  let query = "select from `" + typeName + "`";
 
   $("#inputLanguage").val("sql");
   editor.setValue(query);
