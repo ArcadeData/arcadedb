@@ -31,22 +31,29 @@ import java.util.stream.*;
  */
 public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   protected final WhereClause                  whileClause;
+  // Optional emit filter pushed down from an outer SELECT's WHERE. Non-matching vertices still drive expansion, they just don't appear in the results. Null
+  // means "emit everything traversed", preserving the historical behavior.
+  protected final WhereClause                  postFilter;
   protected final List<TraverseProjectionItem> projections;
   protected final PInteger                     maxDepth;
 
-  protected       List<Result> entryPoints = null;
-  protected final List<Result> results     = new ArrayList<>();
+  // ArrayDeque, not ArrayList: entryPoints is used as a stack (addFirst/removeFirst in the hot loop). ArrayList would make both O(n), turning the traversal into
+  // O(n^2) on the queue depth and was the main cause of slow TRAVERSE on deep/wide subgraphs.
+  protected       Deque<Result> entryPoints = null;
+  protected final List<Result>  results     = new ArrayList<>();
 
   // Visited set for traversal dedup. Graph traversal is inherently sparse (RIDs scatter across buckets with random offsets), so RidHashSet's primitive-packed
   // open-addressing hash wins over RidSet's bitmap on both memory and build time. See performance.RidDedupSetBenchmark.
   final RidHashSet traversed;
 
   public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause,
+      final WhereClause postFilter,
       final PInteger maxDepth,
       final CommandContext context) {
     super(context);
     this.traversed = new RidHashSet();
     this.whileClause = whileClause;
+    this.postFilter = postFilter;
     this.maxDepth = maxDepth;
     this.projections = projections.stream().map(TraverseProjectionItem::copy).collect(Collectors.toList());
   }
@@ -93,7 +100,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   private void fetchNextBlock(final CommandContext context, final int nRecords) {
     if (this.entryPoints == null)
-      this.entryPoints = new ArrayList<>();
+      this.entryPoints = new ArrayDeque<>();
 
     while (this.results.isEmpty()) {
       if (this.entryPoints.isEmpty())

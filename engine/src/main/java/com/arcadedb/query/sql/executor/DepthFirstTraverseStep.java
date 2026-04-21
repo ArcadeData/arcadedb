@@ -35,7 +35,12 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
   public DepthFirstTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth,
       final CommandContext context) {
-    super(projections, whileClause, maxDepth, context);
+    this(projections, whileClause, null, maxDepth, context);
+  }
+
+  public DepthFirstTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final WhereClause postFilter,
+      final PInteger maxDepth, final CommandContext context) {
+    super(projections, whileClause, postFilter, maxDepth, context);
   }
 
   @Override
@@ -99,8 +104,9 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
   @Override
   protected void fetchNextResults(final CommandContext context, final int nRecords) {
     if (!this.entryPoints.isEmpty()) {
-      final TraverseResult item = (TraverseResult) this.entryPoints.remove(0);
-      this.results.add(item);
+      final TraverseResult item = (TraverseResult) this.entryPoints.removeFirst();
+      if (postFilter == null || postFilter.matchesFilters(item, context))
+        this.results.add(item);
       for (final TraverseProjectionItem proj : projections) {
         final Object nextStep = proj.execute(item, context);
         final Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
@@ -191,7 +197,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
   private void tryAddEntryPoint(final Result res, final CommandContext context) {
     if (whileClause == null || whileClause.matchesFilters(res, context)) {
-      this.entryPoints.add(0,res);
+      this.entryPoints.addFirst(res);
     }
 
     if (res.isElement())

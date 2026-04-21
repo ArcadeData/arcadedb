@@ -68,6 +68,7 @@ import com.arcadedb.query.sql.parser.SchemaIdentifier;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
@@ -1250,7 +1251,7 @@ public class SelectExecutionPlanner {
       }
       handleBucketsAsTarget(info.fetchExecutionPlan, info, buckets, context);
     } else if (target.getStatement() != null) {
-      handleSubqueryAsTarget(info.fetchExecutionPlan, target.getStatement(), context);
+      handleSubqueryAsTarget(info.fetchExecutionPlan, maybePushWhereIntoTraverse(target.getStatement(), info), context);
     } else if (target.getFunctionCall() != null) {
       //        handleFunctionCallAsTarget(result, target.getFunctionCall(), context);//TODO
       throw new CommandExecutionException("function call as target is not supported yet");
@@ -3456,6 +3457,33 @@ public class SelectExecutionPlanner {
     subCtx.setParent(context);
     final InternalExecutionPlan subExecutionPlan = subQuery.createExecutionPlan(subCtx);
     plan.chain(new SubQueryStep(subExecutionPlan, context, subCtx));
+  }
+
+  /**
+   * When the outer SELECT has shape `SELECT ... FROM (TRAVERSE ...) WHERE <row-local cond>`, push the WHERE into the TRAVERSE step as a post-emit filter.
+   * Non-matching vertices still drive expansion (the sub-graph is fully walked), they are just not emitted. This avoids materializing every intermediate vertex
+   * as a Result and running each through a separate FilterStep, which is the dominant cost on the common pattern `... WHERE @type = 'X'` that filters a minority
+   * class out of a multi-type traversal.
+   * <p>
+   * The original TraverseStatement node is not mutated: a copy is returned and the outer WHERE is cleared when consumed.
+   */
+  private Statement maybePushWhereIntoTraverse(final Statement subQuery, final QueryPlanningInfo info) {
+    if (!(subQuery instanceof TraverseStatement traverse))
+      return subQuery;
+    if (info.whereClause == null || info.whereClause.getBaseExpression() == null)
+      return subQuery;
+    // Conservative: skip if WHERE references parent scope, LET variables, or $current/$parent (anything starting with '$').
+    if (info.whereClause.refersToParent())
+      return subQuery;
+    if (info.whereClause.toString().contains("$"))
+      return subQuery;
+
+    final TraverseStatement copy = (TraverseStatement) traverse.copy();
+    copy.setPostFilter(info.whereClause.copy());
+    // WHERE has been consumed by the inner TRAVERSE, so the outer plan must not add another FilterStep for it.
+    info.whereClause = null;
+    info.flattenedWhereClause = null;
+    return copy;
   }
 
   private boolean isOrderByRidDesc(final QueryPlanningInfo info) {

@@ -42,6 +42,9 @@ public class TraverseStatement extends Statement {
   protected Skip                         skip;
   protected Strategy                     strategy;
   protected PInteger                     maxDepth;
+  // Optional emit filter set by the outer SELECT planner when `SELECT ... FROM (TRAVERSE ...) WHERE <row-local cond>` is detected. Evaluated per visited vertex
+  // before emission only: non-matching vertices still drive expansion, they are just not returned as results. Not exposed in grammar.
+  protected WhereClause                  postFilter;
 
   public TraverseStatement(final int id) {
     super(id);
@@ -159,6 +162,7 @@ public class TraverseStatement extends Statement {
     result.limit = limit == null ? null : limit.copy();
     result.strategy = strategy;
     result.maxDepth = maxDepth == null ? null : maxDepth.copy();
+    result.postFilter = postFilter == null ? null : postFilter.copy();
     return result;
   }
 
@@ -181,7 +185,9 @@ public class TraverseStatement extends Statement {
       return false;
     if (strategy != that.strategy)
       return false;
-    return Objects.equals(maxDepth, that.maxDepth);
+    if (!Objects.equals(maxDepth, that.maxDepth))
+      return false;
+    return Objects.equals(postFilter, that.postFilter);
   }
 
   @Override
@@ -192,6 +198,7 @@ public class TraverseStatement extends Statement {
     result = 31 * result + (limit != null ? limit.hashCode() : 0);
     result = 31 * result + (strategy != null ? strategy.hashCode() : 0);
     result = 31 * result + (maxDepth != null ? maxDepth.hashCode() : 0);
+    result = 31 * result + (postFilter != null ? postFilter.hashCode() : 0);
     return result;
   }
 
@@ -246,6 +253,14 @@ public class TraverseStatement extends Statement {
 
   public void setSkip(final Skip skip) {
     this.skip = skip;
+  }
+
+  public WhereClause getPostFilter() {
+    return postFilter;
+  }
+
+  public void setPostFilter(final WhereClause postFilter) {
+    this.postFilter = postFilter;
   }
 }
 /* JavaCC - OriginalChecksum=47399a3a3d5a423768bbdc70ee957464 (do not edit this line) */

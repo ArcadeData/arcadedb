@@ -202,6 +202,109 @@ class TraverseStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void branchingTreeTraverse() {
+    // Regression test for the ArrayList->ArrayDeque swap on entryPoints. A shallow but wide tree stresses the deque depth more than any linear chain covered by
+    // the other tests; with the old ArrayList the addFirst/removeFirst hot path was O(n) and the full traversal was O(n^2), which made non-trivial subgraphs
+    // visibly slow even though the visited count was small. Correctness (total visited, per-depth count) must be unchanged.
+    database.transaction(() -> {
+      final String v = "BranchingTreeV";
+      final String e = "BranchingTreeE";
+      database.getSchema().createVertexType(v);
+      database.getSchema().createEdgeType(e);
+
+      final int fanout = 20;
+      final RID root = database.command("sql", "create vertex " + v + " set name = 'root'").next().getIdentity().get();
+      final Map<String, Object> params = new HashMap<>();
+      params.put("from", root);
+
+      int expectedTotal = 1;
+      for (int i = 0; i < fanout; i++) {
+        final RID child = database.command("sql", "create vertex " + v + " set name = 'c" + i + "'").next().getIdentity().get();
+        params.put("to", child);
+        database.command("sql", "create edge " + e + " from :from to :to", params).close();
+        expectedTotal++;
+        for (int j = 0; j < fanout; j++) {
+          final RID grand = database.command("sql", "create vertex " + v + " set name = 'g" + i + "_" + j + "'").next().getIdentity().get();
+          params.put("from", child);
+          params.put("to", grand);
+          database.command("sql", "create edge " + e + " from :from to :to", params).close();
+          expectedTotal++;
+        }
+        params.put("from", root);
+      }
+
+      params.clear();
+      params.put("root", root);
+      try (final ResultSet rs = database.query("sql", "select count(*) as c from (traverse out('" + e + "') from :root)", params)) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(expectedTotal);
+      }
+    });
+  }
+
+  @Test
+  void postFilterPushdownByType() {
+    // Outer `SELECT ... FROM (TRAVERSE ...) WHERE @type = 'X'` should evaluate the @type filter inside the traverse step, so non-matching vertices are visited
+    // (to keep expansion correct) but not emitted. Correctness is what this test guards; the perf win is that the outer SubQueryStep no longer shuttles every
+    // intermediate vertex through a FilterStep.
+    database.transaction(() -> {
+      final String folder = "PushdownFolderV";
+      final String leaf = "PushdownLeafV";
+      final String edge = "PushdownE";
+      database.getSchema().createVertexType(folder);
+      database.getSchema().createVertexType(leaf);
+      database.getSchema().createEdgeType(edge);
+
+      final RID root = database.command("sql", "create vertex " + folder + " set name = 'root'").next().getIdentity().get();
+      final Map<String, Object> params = new HashMap<>();
+      int expectedLeaves = 0;
+      for (int i = 0; i < 5; i++) {
+        final RID sub = database.command("sql", "create vertex " + folder + " set name = 'sub" + i + "'").next().getIdentity().get();
+        params.clear();
+        params.put("from", root);
+        params.put("to", sub);
+        database.command("sql", "create edge " + edge + " from :from to :to", params).close();
+        for (int j = 0; j < 4; j++) {
+          final RID l = database.command("sql", "create vertex " + leaf + " set name = 'leaf" + i + "_" + j + "'").next().getIdentity().get();
+          params.clear();
+          params.put("from", sub);
+          params.put("to", l);
+          database.command("sql", "create edge " + edge + " from :from to :to", params).close();
+          expectedLeaves++;
+        }
+      }
+
+      params.clear();
+      params.put("root", root);
+      try (final ResultSet rs = database.query("sql",
+          "select @rid as rid, @type as t from (traverse out('" + edge + "') from :root) where @type = '" + leaf + "'", params)) {
+        int count = 0;
+        while (rs.hasNext()) {
+          final Result r = rs.next();
+          assertThat((String) r.getProperty("t")).isEqualTo(leaf);
+          count++;
+        }
+        assertThat(count).isEqualTo(expectedLeaves);
+      }
+
+      // Count form - the pushdown should not change count-aggregation semantics.
+      try (final ResultSet rs = database.query("sql",
+          "select count(*) as c from (traverse out('" + edge + "') from :root) where @type = '" + leaf + "'", params)) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(expectedLeaves);
+      }
+
+      // Safety: when outer WHERE references a LET variable, pushdown must NOT fire (because the LET lives in the outer scope) and behavior must still be
+      // correct.
+      try (final ResultSet rs = database.query("sql",
+          "select count(*) as c from (traverse out('" + edge + "') from :root) let $t = '" + leaf + "' where @type = $t", params)) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(expectedLeaves);
+      }
+    });
+  }
+
+  @Test
   void traverseFromRID() {
     database.command("sql", "CREATE VERTEX TYPE TVtx IF NOT EXISTS");
     database.command("sql", "CREATE EDGE TYPE TEdg IF NOT EXISTS");

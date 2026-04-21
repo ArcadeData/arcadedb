@@ -37,6 +37,7 @@ public class TraverseExecutionPlanner {
   private final List<TraverseProjectionItem> projections;
   private final FromClause                   target;
   private final WhereClause                  whileClause;
+  private final WhereClause                  postFilter;
   private final TraverseStatement.Strategy   strategy;
   private final PInteger                     maxDepth;
   private final Skip                         skip;
@@ -50,6 +51,7 @@ public class TraverseExecutionPlanner {
 
     this.target = statement.getTarget();
     this.whileClause = statement.getWhileClause() == null ? null : statement.getWhileClause().copy();
+    this.postFilter = statement.getPostFilter() == null ? null : statement.getPostFilter().copy();
 
     this.strategy = statement.getStrategy() == null ? TraverseStatement.Strategy.DEPTH_FIRST : statement.getStrategy();
     this.maxDepth = statement.getMaxDepth() == null ? null : statement.getMaxDepth().copy();
@@ -78,10 +80,10 @@ public class TraverseExecutionPlanner {
   private void handleTraversal(final SelectExecutionPlan result, final CommandContext context) {
     switch (strategy) {
       case BREADTH_FIRST:
-        result.chain(new BreadthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context));
+        result.chain(new BreadthFirstTraverseStep(this.projections, this.whileClause, this.postFilter, maxDepth, context));
         break;
       case DEPTH_FIRST:
-        result.chain(new DepthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context));
+        result.chain(new DepthFirstTraverseStep(this.projections, this.whileClause, this.postFilter, maxDepth, context));
         break;
     }
     //TODO
