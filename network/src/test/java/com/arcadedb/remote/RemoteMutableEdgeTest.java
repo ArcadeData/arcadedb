@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -50,6 +51,7 @@ class RemoteMutableEdgeTest {
     when(mockDatabase.getSchema()).thenReturn(mockSchema);
     when(mockSchema.getType("TestEdge")).thenReturn(mockEdgeType);
     when(mockEdgeType.getName()).thenReturn("TestEdge");
+    when(mockDatabase.newRID(ArgumentMatchers.anyString())).thenAnswer(inv -> new RID(inv.getArgument(0)));
 
     // Build an immutable edge to use as source for the mutable edge
     final Map<String, Object> attributes = new HashMap<>();
