@@ -320,8 +320,8 @@ public class DatabaseWrapper {
       Integer userId = userIdSupplier.get();
       Integer photoId = photoIdSupplier.get();
       if (userId == null || photoId == null) {
-        userIdSupplier = new TypeIdSupplier(db, "User", count);
-        photoIdSupplier = new TypeIdSupplier(db, "Phote", count);
+//        userIdSupplier = new TypeIdSupplier(db, "User", count);
+//        photoIdSupplier = new TypeIdSupplier(db, "Phote", count);
         continue; // No more users or photos available
       }
       addLike(userId, photoId);
