@@ -199,9 +199,13 @@ public class DatabaseComparatorErrorsReporter {
             entry.getName(), entry.getAssociatedBucketId(), entry.getPropertyNames());
     }
 
-    // AT THIS POINT BOTH DBS HAVE STRUCTURALLY MATCHING INDEXES, CHECKING INDEXED ENTRIES
+    // Compare entry counts for indexes that are present in both databases.
+    // Indexes missing from DB2 were already reported in the loop above; skip them here
+    // to avoid a NullPointerException that would suppress all collected error messages.
     for (final Index entry1 : indexes1) {
       final Index entry2 = indexes2Map.get(indexStructuralKey(entry1));
+      if (entry2 == null)
+        continue;
 
       final long count1 = entry1.countEntries();
       final long count2 = entry2.countEntries();
