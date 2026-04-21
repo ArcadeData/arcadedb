@@ -533,30 +533,35 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
         db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
 
-      // Reload the schema from disk so types, buckets, and file IDs are registered in memory
+      // Apply WAL entries BEFORE the schema reload. New files created above are initially empty;
+      // reloading before writing pages would see empty files and silently ignore them, leaving
+      // compaction indexes unregistered in the schema after this method returns. Writing the
+      // page content first ensures load() finds valid data and registers the files properly.
+      // applyChanges() uses getFileByIdIfExists() so it safely skips the page-count update for
+      // files not yet registered in the schema (they will be registered by the load() below).
+      final List<byte[]> walEntries = decoded.walEntries();
+      if (walEntries != null && !walEntries.isEmpty()) {
+        final List<Map<Integer, Integer>> bucketDeltas = decoded.bucketDeltas();
+        for (int i = 0; i < walEntries.size(); i++) {
+          final byte[] walData = walEntries.get(i);
+          final Map<Integer, Integer> bucketDelta = (bucketDeltas != null && i < bucketDeltas.size())
+              ? bucketDeltas.get(i)
+              : Collections.emptyMap();
+          final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
+          // ignoreErrors=true: same rationale as applyTxEntry - replay safety during node restart
+          db.getTransactionManager().applyChanges(walTx, bucketDelta, true);
+        }
+        HALog.log(this, HALog.DETAILED,
+            "Applied %d buffered WAL entries from schema entry to database '%s'",
+            walEntries.size(), decoded.databaseName());
+      }
+
+      // Reload schema after WAL pages are on disk so new index files have valid content
+      // and are correctly registered (page counts, type links, in-memory structures).
       db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
 
     } catch (final IOException e) {
       throw new RuntimeException("Failed to apply schema entry for database '" + decoded.databaseName() + "'", e);
-    }
-
-    // Apply any WAL entries buffered during schema recording (e.g., initial index page writes)
-    // These must be applied after file creation so the target files already exist on the replica
-    final List<byte[]> walEntries = decoded.walEntries();
-    if (walEntries != null && !walEntries.isEmpty()) {
-      final List<Map<Integer, Integer>> bucketDeltas = decoded.bucketDeltas();
-      for (int i = 0; i < walEntries.size(); i++) {
-        final byte[] walData = walEntries.get(i);
-        final Map<Integer, Integer> bucketDelta = (bucketDeltas != null && i < bucketDeltas.size())
-            ? bucketDeltas.get(i)
-            : Collections.emptyMap();
-        final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
-        // ignoreErrors=true: same rationale as applyTxEntry - replay safety during node restart
-        db.getTransactionManager().applyChanges(walTx, bucketDelta, true);
-      }
-      HALog.log(this, HALog.DETAILED,
-          "Applied %d buffered WAL entries from schema entry to database '%s'",
-          walEntries.size(), decoded.databaseName());
     }
 
     HALog.log(this, HALog.DETAILED, "Applied schema change to database '%s'", decoded.databaseName());
