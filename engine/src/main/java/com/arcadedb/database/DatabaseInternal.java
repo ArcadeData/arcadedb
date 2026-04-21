@@ -166,6 +166,23 @@ public interface DatabaseInternal extends Database {
   }
 
   /**
+   * Runs index compaction, wrapping it in HA replication if this is a Raft leader.
+   * The default (standalone) implementation just calls the compaction directly.
+   * The HA override captures new files and page content, then replicates them to followers.
+   */
+  default boolean runWithCompactionReplication(final Callable<Boolean> compaction) throws IOException, InterruptedException {
+    try {
+      return compaction.call();
+    } catch (final IOException | InterruptedException e) {
+      throw e;
+    } catch (final RuntimeException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new IOException("Compaction failed", e);
+    }
+  }
+
+  /**
    * Gets a global variable value by name.
    * @param name Variable name (with or without $ prefix)
    * @return The variable value, or null if not set

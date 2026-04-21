@@ -742,6 +742,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     tx.txId = buf.getLong();
     tx.timestamp = buf.getLong();
+    tx.forceApply = (tx.txId < 0); // negative txId signals compaction page replication
     final int pageCount = buf.getInt();
     buf.getInt(); // segmentSize - not needed for deserialization
 

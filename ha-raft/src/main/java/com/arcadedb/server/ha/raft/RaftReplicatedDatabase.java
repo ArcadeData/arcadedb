@@ -40,10 +40,12 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
@@ -78,12 +80,14 @@ import com.arcadedb.server.HAServerPlugin;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -1101,6 +1105,120 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       schemaBucketDeltaBuffer.get().clear();
       proxied.getFileManager().stopRecordingChanges();
     }
+  }
+
+  @Override
+  public boolean runWithCompactionReplication(final Callable<Boolean> compaction) throws IOException, InterruptedException {
+    if (!isLeader()) {
+      // Followers receive compacted state from the leader; running compaction independently
+      // would create different file IDs and diverge from the leader's replication stream.
+      return false;
+    }
+
+    if (!proxied.getFileManager().startRecordingChanges()) {
+      // Already recording (nested schema change): run compaction locally only
+      return invokeCompaction(compaction);
+    }
+
+    try {
+      final boolean result = invokeCompaction(compaction);
+      if (!result)
+        return false;
+
+      final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
+      if (changes == null)
+        return result;
+
+      final Map<Integer, String> addFiles = new HashMap<>();
+      final Map<Integer, String> removeFiles = new HashMap<>();
+      for (final FileManager.FileChange change : changes) {
+        if (change.create)
+          addFiles.put(change.fileId, change.fileName);
+        else
+          removeFiles.put(change.fileId, change.fileName);
+      }
+
+      if (addFiles.isEmpty() && removeFiles.isEmpty())
+        return result;
+
+      // Serialize all pages of each newly created compaction file as synthetic WAL.
+      // txId=-1 on followers signals forceApply to bypass version-gap checks when writing
+      // pages whose version exceeds 1 (which is common after repeated page updates in compaction).
+      final List<byte[]> walEntries = new ArrayList<>();
+      for (final int fileId : addFiles.keySet()) {
+        final byte[] wal = serializeFilePagesAsWal(fileId);
+        if (wal != null)
+          walEntries.add(wal);
+      }
+
+      final String serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
+      requireRaftServer().getTransactionBroker()
+          .replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, Collections.emptyList());
+
+      HALog.log(this, HALog.DETAILED,
+          "Compaction for database '%s' replicated via Raft: addFiles=%d, removeFiles=%d, walEntries=%d",
+          getName(), addFiles.size(), removeFiles.size(), walEntries.size());
+
+      return result;
+    } finally {
+      proxied.getFileManager().stopRecordingChanges();
+    }
+  }
+
+  private static boolean invokeCompaction(final Callable<Boolean> compaction) throws IOException, InterruptedException {
+    try {
+      return compaction.call();
+    } catch (final IOException | InterruptedException e) {
+      throw e;
+    } catch (final RuntimeException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new IOException("Compaction failed", e);
+    }
+  }
+
+  private byte[] serializeFilePagesAsWal(final int fileId) throws IOException {
+    final PaginatedComponentFile file = (PaginatedComponentFile) proxied.getFileManager().getFile(fileId);
+    final int pageSize = file.getPageSize();
+    final int totalPages = (int) file.getTotalPages();
+
+    if (totalPages == 0)
+      return null;
+
+    final int deltaSize = pageSize - BasePage.PAGE_HEADER_SIZE;
+    // Per-page WAL record: fileId(4) + pageNum(4) + changesFrom(4) + changesTo(4) + version(4) + contentSize(4) + delta
+    final int perPageWalSize = 6 * Integer.BYTES + deltaSize;
+    final int segmentSize = totalPages * perPageWalSize;
+    // Full buffer: txId(8) + timestamp(8) + pageCount(4) + segmentSize(4) + pages + segmentSize(4) + MAGIC(8)
+    final int totalSize = 2 * Long.BYTES + 2 * Integer.BYTES + segmentSize + Integer.BYTES + Long.BYTES;
+
+    final ByteBuffer walBuf = ByteBuffer.allocate(totalSize);
+    walBuf.putLong(-1L); // txId=-1 → forceApply on followers
+    walBuf.putLong(System.currentTimeMillis());
+    walBuf.putInt(totalPages);
+    walBuf.putInt(segmentSize);
+
+    final ByteBuffer pageBuf = ByteBuffer.allocate(pageSize);
+    for (int pageNum = 0; pageNum < totalPages; pageNum++) {
+      file.readPage(pageNum, pageBuf);
+
+      final int version = pageBuf.getInt(0);                 // PAGE_VERSION_OFFSET
+      final int rawContentSize = pageBuf.getInt(Integer.BYTES); // PAGE_CONTENTSIZE_OFFSET (stored as full size)
+
+      walBuf.putInt(fileId);
+      walBuf.putInt(pageNum);
+      walBuf.putInt(BasePage.PAGE_HEADER_SIZE);  // changesFrom = 8
+      walBuf.putInt(pageSize - 1);               // changesTo
+      walBuf.putInt(version);
+      walBuf.putInt(rawContentSize - BasePage.PAGE_HEADER_SIZE); // contentSize in WAL = stored minus header
+
+      walBuf.put(pageBuf.array(), BasePage.PAGE_HEADER_SIZE, deltaSize);
+    }
+
+    walBuf.putInt(segmentSize);
+    walBuf.putLong(WALFile.MAGIC_NUMBER);
+
+    return walBuf.array();
   }
 
   @Override

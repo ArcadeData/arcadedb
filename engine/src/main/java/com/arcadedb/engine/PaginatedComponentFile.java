@@ -201,6 +201,11 @@ public class PaginatedComponentFile extends ComponentFile {
     }
   }
 
+  public void readPage(final int pageNum, final ByteBuffer buf) throws IOException {
+    buf.clear();
+    channel.read(buf, pageSize * (long) pageNum);
+  }
+
   public int getPageSize() {
     return pageSize;
   }

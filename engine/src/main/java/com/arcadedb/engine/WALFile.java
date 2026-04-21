@@ -69,6 +69,8 @@ public class WALFile extends LockContext {
     public WALPage[] pages;
     public long      startPositionInLog;
     public long      endPositionInLog;
+    // When true, the version-gap check in applyChanges() is bypassed (used for compaction page replication)
+    public boolean   forceApply = false;
   }
 
   public static class WALPage {

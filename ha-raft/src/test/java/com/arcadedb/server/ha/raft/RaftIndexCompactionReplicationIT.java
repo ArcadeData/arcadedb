@@ -54,12 +54,10 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
   }
 
   /**
-   * Tests that LSM Tree index compaction does not corrupt data on the leader.
-   * Cross-server compaction replication is not yet implemented in Raft HA
-   * (no COMPACT log entry type in RaftLogEntryType), so follower consistency
-   * after compaction is not verified here.
+   * Tests that LSM Tree index compaction is replicated to all follower nodes.
+   * After the leader compacts, all followers must have matching index entry counts
+   * and be able to query the compacted index.
    */
-  @Disabled("Index compaction is not replicated via Raft log entries - RaftLogEntryType has no COMPACT entry type")
   @Test
   void lsmTreeCompactionReplication() throws Exception {
     final int leaderIndex = findLeaderIndex();
@@ -77,6 +75,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     database.transaction(() -> insertPersonRecords(database));
 
     final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(indexName);
+    index.scheduleCompaction();
     index.compact();
 
     for (int i = 0; i < getServerCount(); i++)
@@ -201,10 +200,9 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
   }
 
   /**
-   * Tests that index compaction does not corrupt data and subsequent writes are replicated.
-   * Cross-server replication of the compacted index state is not yet implemented in Raft HA.
+   * Tests that index compaction is replicated and subsequent writes after compaction
+   * are also correctly replicated to all follower nodes.
    */
-  @Disabled("Index compaction is not replicated via Raft log entries - RaftLogEntryType has no COMPACT entry type")
   @Test
   void compactionReplicationWithConcurrentWrites() throws Exception {
     final int leaderIndex = findLeaderIndex();
@@ -225,6 +223,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     });
 
     final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(indexName);
+    index.scheduleCompaction();
     index.compact();
 
     database.transaction(() -> {

@@ -344,15 +344,18 @@ public class TransactionManager {
         }
 
         if (txPage.currentPageVersion > page.getVersion() + 1) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Cannot apply changes to the database because modified page %s version in WAL (%d) does not match with existent version (%d) fileId=%d",
-              null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
-          if (ignoreErrors)
-            continue;
-          throw new WALVersionGapException(
-              "Cannot apply changes to the database because modified page " + pageId + " version in WAL ("
-                  + txPage.currentPageVersion + ") does not match with existent version (" + page.getVersion() + ") fileId="
-                  + txPage.fileId);
+          if (!tx.forceApply) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot apply changes to the database because modified page %s version in WAL (%d) does not match with existent version (%d) fileId=%d",
+                null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
+            if (ignoreErrors)
+              continue;
+            throw new WALVersionGapException(
+                "Cannot apply changes to the database because modified page " + pageId + " version in WAL ("
+                    + txPage.currentPageVersion + ") does not match with existent version (" + page.getVersion() + ") fileId="
+                    + txPage.fileId);
+          }
+          // forceApply: compaction page replication - write at the leader's version regardless of gap
         }
 
         LogManager.instance().log(this, Level.FINE, "Updating page %s versionInLog=%d versionInDB=%d (txId=%d)", null, pageId,
