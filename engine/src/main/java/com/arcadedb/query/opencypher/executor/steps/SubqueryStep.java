@@ -325,6 +325,10 @@ public class SubqueryStep extends AbstractExecutionStep {
   /**
    * Executes the inner query with the outer row as the initial seed.
    * The seed row provides variables for the inner query's WITH clause.
+   * <p>
+   * For unit subqueries (no RETURN clause), the inner query is consumed entirely
+   * for side effects (e.g. CREATE, DELETE) and a single empty result is returned
+   * so the outer row count is preserved exactly once per input row.
    */
   private List<Result> executeInnerQuery(final Result outerRow, final CommandContext context) {
     final CypherStatement innerStatement = subqueryClause.getInnerStatement();
@@ -333,6 +337,14 @@ public class SubqueryStep extends AbstractExecutionStep {
         database, innerStatement, parameters, database.getConfiguration(), null, expressionEvaluator);
 
     final ResultSet resultSet = innerPlan.executeWithSeedRow(outerRow);
+
+    // Unit subquery: no RETURN clause — consume all inner rows for side effects only.
+    // The outer row count must be preserved (one output row per outer row).
+    if (innerStatement.getReturnClause() == null) {
+      while (resultSet.hasNext())
+        resultSet.next();
+      return List.of(new ResultInternal());
+    }
 
     final List<Result> results = new ArrayList<>();
     while (resultSet.hasNext())

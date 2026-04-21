@@ -301,4 +301,74 @@ class OpenCypherSubqueryTest {
     assertThat(((Number) row2.getProperty("success2")).intValue()).isEqualTo(2);
     assertThat(result2.hasNext()).isFalse();
   }
+
+  /**
+   * Issue #3944: Unit CALL subquery (no RETURN) with inner UNWIND must not multiply outer rows.
+   * Each outer row should appear exactly once regardless of inner UNWIND cardinality.
+   */
+  @Test
+  void unitCallSubqueryWithUnwindPreservesOuterRowCount() {
+    database.getSchema().createVertexType("Person3944");
+    database.getSchema().createVertexType("Clone3944");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person3944 {name: 'Alice'})");
+      database.command("opencypher", "CREATE (:Person3944 {name: 'Bob'})");
+      database.command("opencypher", "CREATE (:Person3944 {name: 'Charlie'})");
+    });
+
+    database.transaction(() -> {
+      final ResultSet result = database.command("opencypher",
+          "MATCH (p:Person3944) " +
+          "CALL { " +
+          "  WITH p " +
+          "  UNWIND range(1, 2) AS i " +
+          "  CREATE (:Clone3944 {name: p.name, id: i}) " +
+          "} " +
+          "RETURN p.name AS person " +
+          "ORDER BY person");
+
+      final List<Result> rows = new ArrayList<>();
+      while (result.hasNext())
+        rows.add(result.next());
+
+      assertThat(rows).as("Unit CALL subquery must not multiply outer rows by inner UNWIND cardinality").hasSize(3);
+      assertThat((String) rows.get(0).getProperty("person")).isEqualTo("Alice");
+      assertThat((String) rows.get(1).getProperty("person")).isEqualTo("Bob");
+      assertThat((String) rows.get(2).getProperty("person")).isEqualTo("Charlie");
+    });
+  }
+
+  /**
+   * Issue #3944 control: Unit CALL subquery without UNWIND should still work correctly (one row per outer row).
+   */
+  @Test
+  void unitCallSubqueryWithoutUnwindPreservesOuterRowCount() {
+    database.getSchema().createVertexType("Person3944b");
+    database.getSchema().createVertexType("Clone3944b");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person3944b {name: 'Alice'})");
+      database.command("opencypher", "CREATE (:Person3944b {name: 'Bob'})");
+    });
+
+    database.transaction(() -> {
+      final ResultSet result = database.command("opencypher",
+          "MATCH (p:Person3944b) " +
+          "CALL { " +
+          "  WITH p " +
+          "  CREATE (:Clone3944b {name: p.name}) " +
+          "} " +
+          "RETURN p.name AS person " +
+          "ORDER BY person");
+
+      final List<Result> rows = new ArrayList<>();
+      while (result.hasNext())
+        rows.add(result.next());
+
+      assertThat(rows).as("Unit CALL subquery must produce exactly one row per outer row").hasSize(2);
+      assertThat((String) rows.get(0).getProperty("person")).isEqualTo("Alice");
+      assertThat((String) rows.get(1).getProperty("person")).isEqualTo("Bob");
+    });
+  }
 }

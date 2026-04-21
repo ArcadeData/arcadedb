@@ -1726,10 +1726,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
         } catch (final Exception e) {
           errorSent[0] = true;
+          // Null batchRef so onCompleted skips processing; skip closeQuietly to avoid blocking the
+          // gRPC thread via async.waitCompletion() (buffered edges have no open transaction).
+          batchRef.set(null);
           resp.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
-          // Note: closeQuietly may flush/commit partial data. GraphBatch has no rollback path by design
-          // (same as the HTTP batch endpoint). Callers should treat batch loading as non-atomic.
-          closeQuietly(batchRef.get());
           return;
         } finally {
           if (!cancelled.get() && !errorSent[0])
@@ -1739,11 +1739,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       @Override
       public void onError(final Throwable t) {
-        closeQuietly(batchRef.get());
+        closeQuietly(batchRef.getAndSet(null));
       }
 
       @Override
       public void onCompleted() {
+        if (errorSent[0])
+          return;
         try {
           final GraphBatch batch = batchRef.get();
           if (batch == null) {
