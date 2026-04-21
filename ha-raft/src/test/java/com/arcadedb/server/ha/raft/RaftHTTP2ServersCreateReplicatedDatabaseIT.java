@@ -84,7 +84,8 @@ class RaftHTTP2ServersCreateReplicatedDatabaseIT extends BaseRaftHATest {
                 + " content {\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}"))
             .getJSONArray("result").getJSONObject(0).getString(RID_PROPERTY);
 
-        waitForReplicationIsCompleted(serverIndex);
+        for (int s = 0; s < getServerCount(); s++)
+          waitForReplicationIsCompleted(s);
 
         testEachServer((checkServer) ->
             assertThat(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result"))

@@ -190,13 +190,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * can identify entries that were originated (and pre-applied) by this node in the current
    * lifecycle, without relying on a runtime {@code isLeader()} check that is susceptible to
    * TOCTOU races if leadership changes between submission and apply.
+   * <p>
+   * Only requests submitted by THIS node's own {@code RaftClient} are marked as locally-originated.
+   * Requests forwarded from a follower's {@code RaftClient} carry a different {@code ClientId} and
+   * must NOT be marked, because Phase 2 never ran on this node for follower-submitted transactions.
    */
   @Override
   public TransactionContext startTransaction(final RaftClientRequest request) throws IOException {
+    final RaftHAServer raft = this.raftHAServer;
+    final boolean isLocalOrigin = raft != null
+        && raft.getClient() != null
+        && raft.getClient().getId().equals(request.getClientId());
+
     return TransactionContext.newBuilder()
         .setStateMachine(this)
         .setClientRequest(request)
-        .setStateMachineContext(Boolean.TRUE)
+        .setStateMachineContext(isLocalOrigin ? Boolean.TRUE : null)
         .build();
   }
 

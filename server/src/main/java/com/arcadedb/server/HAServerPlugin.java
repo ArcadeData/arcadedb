@@ -63,6 +63,15 @@ public interface HAServerPlugin extends ServerPlugin {
   int getConfiguredServers();
 
   /**
+   * Returns the cluster token used for inter-node request authentication.
+   * May be explicitly configured or auto-derived from cluster name and root password.
+   * Returns null when HA is not active or the token is not yet initialized.
+   */
+  default String getClusterToken() {
+    return null;
+  }
+
+  /**
    * Returns the HTTP address (host:port) of the current leader, or null if unknown.
    */
   String getLeaderAddress();

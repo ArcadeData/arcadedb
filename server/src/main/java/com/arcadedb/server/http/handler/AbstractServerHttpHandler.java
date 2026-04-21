@@ -316,8 +316,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private ServerSecurityUser validateClusterForwardedAuth(final HttpServerExchange exchange,
       final String providedToken, final HeaderValues forwardedUserValues) {
 
-    final String clusterToken = httpServer.getServer().getConfiguration()
-        .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+    // Prefer the HA plugin's effective token (which may be PBKDF2-derived when not explicitly
+    // configured) over the raw config value. Falls back to the raw config for non-Raft setups.
+    String clusterToken = null;
+    final var ha = httpServer.getServer().getHA();
+    if (ha != null)
+      clusterToken = ha.getClusterToken();
+    if (clusterToken == null || clusterToken.isBlank())
+      clusterToken = httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
 
     if (clusterToken == null || clusterToken.isBlank()
         || !constantTimeEquals(clusterToken, providedToken)) {

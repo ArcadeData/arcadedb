@@ -158,6 +158,11 @@ public class RaftHAPlugin implements HAServerPlugin {
   }
 
   @Override
+  public String getClusterToken() {
+    return raftHAServer != null ? raftHAServer.getClusterToken() : null;
+  }
+
+  @Override
   public String getClusterName() {
     return raftHAServer != null ? raftHAServer.getClusterName() : null;
   }
