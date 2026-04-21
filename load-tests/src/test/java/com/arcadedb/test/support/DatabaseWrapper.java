@@ -294,7 +294,8 @@ public class DatabaseWrapper {
       Integer userId1 = userIdSupplier.get();
       Integer userId2 = userIdSupplier.get();
       if (userId1 == null || userId2 == null || userId1.equals(userId2)) {
-        continue; // Skip if no more users or same user
+        userIdSupplier = new TypeIdSupplier(db, "User", count);
+        continue;// Skip if no more users or same user
       }
       addFriendship(userId1, userId2);
       count++;
@@ -319,6 +320,8 @@ public class DatabaseWrapper {
       Integer userId = userIdSupplier.get();
       Integer photoId = photoIdSupplier.get();
       if (userId == null || photoId == null) {
+        userIdSupplier = new TypeIdSupplier(db, "User", count);
+        photoIdSupplier = new TypeIdSupplier(db, "Phote", count);
         continue; // No more users or photos available
       }
       addLike(userId, photoId);

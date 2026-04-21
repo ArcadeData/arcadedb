@@ -120,6 +120,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   // SCHEMA_ENTRY so replicas receive them atomically with the file-creation step.
   private static final ThreadLocal<List<byte[]>>                schemaWalBuffer         = ThreadLocal.withInitial(ArrayList::new);
   private static final ThreadLocal<List<Map<Integer, Integer>>> schemaBucketDeltaBuffer = ThreadLocal.withInitial(ArrayList::new);
+  // Set to TRUE only on the thread executing a recordFileChanges() DDL callback, so that
+  // commit() knows to buffer WAL to schemaWalBuffer rather than replicate via Raft.
+  // This MUST be thread-local: using the shared getRecordedChanges() != null check would
+  // cause concurrent user-transaction threads to buffer their WAL and lose it, producing
+  // WALVersionGapException on followers (version gap from unreplicated writes).
+  private static final ThreadLocal<Boolean>                     isSchemaCommitThread    = new ThreadLocal<>();
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
 
@@ -218,11 +224,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     final boolean leader = isLeader();
 
-    // When commit() is called from inside a recordFileChanges() callback on the leader,
+    // When commit() is called from inside a recordFileChanges() DDL callback on the leader,
     // the files being created do not yet exist on replicas. Sending a TX_ENTRY now would
     // fail on replicas because the target files are missing. Instead, buffer the WAL data
     // here and embed it in the SCHEMA_ENTRY that recordFileChanges() sends after the callback.
-    if (leader && proxied.getFileManager().getRecordedChanges() != null) {
+    // NOTE: we check the thread-local flag (not the shared getRecordedChanges() != null) so that
+    // concurrent user transactions on OTHER threads are never affected by an active recording
+    // session (e.g. compaction) and continue to replicate normally via TX_ENTRY.
+    if (leader && Boolean.TRUE.equals(isSchemaCommitThread.get())) {
       proxied.executeInReadLock(() -> {
         proxied.checkTransactionIsActive(false);
         final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
@@ -1059,9 +1068,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final Map<Integer, String> removeFiles = new HashMap<>();
     String serializedSchema = "";
 
-    // Clear thread-local WAL buffers so any commits inside the callback are captured fresh
+    // Clear thread-local WAL buffers so any commits inside the callback are captured fresh,
+    // and mark THIS thread as the schema-commit thread so commit() buffers rather than replicates.
     schemaWalBuffer.get().clear();
     schemaBucketDeltaBuffer.get().clear();
+    isSchemaCommitThread.set(Boolean.TRUE);
 
     try {
       final RET result = proxied.recordFileChanges(callback);
@@ -1101,6 +1112,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       return result;
     } finally {
+      isSchemaCommitThread.remove();
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
       proxied.getFileManager().stopRecordingChanges();

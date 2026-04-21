@@ -39,9 +39,13 @@ public class TypeIdSupplier implements Supplier<Integer> {
   private       int               skip;
 
   public TypeIdSupplier(RemoteDatabase db, String type) {
+    this(db, type, 0);
+  }
+
+  public TypeIdSupplier(RemoteDatabase db, String type, int skip) {
     this.db = db;
     query = String.format("SELECT id FROM %s ORDER BY id SKIP ? LIMIT ?", type);
-    skip = 0;
+    this.skip = skip;
     batchSize = 100;
   }
 
