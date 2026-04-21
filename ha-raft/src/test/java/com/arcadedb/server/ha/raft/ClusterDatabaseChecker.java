@@ -22,13 +22,15 @@ public class ClusterDatabaseChecker {
         "/Users/frank/projects/arcade/worktrees/ha-redesign/adb3/databases/playwithpictures");
     Database db3 = factory3.open();
 
-    
+    System.out.println(db1.getDatabasePath() + "<-->" + db2.getDatabasePath());
     System.out.println(comparator.compare(db1, db2));
     comparator.resetCollector();
     System.out.println("--------");
+    System.out.println(db1.getDatabasePath() + "<-->" + db3.getDatabasePath());
     System.out.println(comparator.compare(db1, db3));
     comparator.resetCollector();
     System.out.println("--------");
+    System.out.println(db2.getDatabasePath() + "<-->" + db3.getDatabasePath());
     System.out.println(comparator.compare(db2, db3));
 
     System.exit(0);

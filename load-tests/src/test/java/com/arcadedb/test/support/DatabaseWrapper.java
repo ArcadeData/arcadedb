@@ -300,6 +300,7 @@ public class DatabaseWrapper {
       count++;
       if (count % pauseEvery == 0) {
         try {
+          logger.info("Created {} friendships, pausing for 5 seconds...", count);
           TimeUnit.SECONDS.sleep(5);
         } catch (InterruptedException e) {
           // Ignore the interruption
@@ -324,6 +325,7 @@ public class DatabaseWrapper {
       count++;
       if (count % pauseEvery == 0) {
         try {
+          logger.info("Created {} likes, pausing for 5 seconds...", count);
           TimeUnit.SECONDS.sleep(5);
         } catch (InterruptedException e) {
           // Ignore the interruption
