@@ -39,6 +39,11 @@ public class MaterializedViewRefresher {
     try {
       final String backingTypeName = view.getBackingTypeName();
 
+      // Use joinCurrentTx=false to always create a dedicated transaction for the refresh.
+      // This ensures changes are committed immediately even when called from an async context
+      // (e.g. HTTP API with awaitResponse=false), where a long-running batched transaction
+      // would otherwise defer the commit indefinitely.
+      // See: https://github.com/ArcadeData/arcadedb/issues/3941
       database.transaction(() -> {
         // Truncate existing data — faster than DELETE FROM (no per-record WAL entries)
         database.command("sql", "TRUNCATE TYPE `" + backingTypeName + "` UNSAFE");
@@ -55,7 +60,7 @@ public class MaterializedViewRefresher {
             doc.save();
           }
         }
-      });
+      }, false);
 
       final long durationMs = (System.nanoTime() - startNs) / 1_000_000;
       view.recordRefreshSuccess(durationMs);
