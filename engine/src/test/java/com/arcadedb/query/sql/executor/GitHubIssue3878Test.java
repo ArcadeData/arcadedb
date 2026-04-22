@@ -32,15 +32,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public class GitHubIssue3878Test extends TestHelper {
 
-  public GitHubIssue3878Test() {
-    autoStartTx = true;
-  }
-
   @Override
   public void beginTest() {
     database.command("sql", "CREATE DOCUMENT TYPE TestDoc");
-    database.command("sql", "INSERT INTO TestDoc SET name = 'Alice', active = true");
-    database.command("sql", "INSERT INTO TestDoc SET name = 'Bob', active = false");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO TestDoc SET name = 'Alice', active = true");
+      database.command("sql", "INSERT INTO TestDoc SET name = 'Bob', active = false");
+    });
   }
 
   /**
