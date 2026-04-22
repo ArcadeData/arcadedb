@@ -24,6 +24,9 @@ function renderTable() {
   if (tableFitInPage == true) $("#result").css({ width: "100%", "table-layout": "fixed", "white-space": "normal" });
   else $("#result").css({ width: "100%", "table-layout": "auto", "white-space": "nowrap" });
 
+  let tablePageLength = parseInt(globalStorageLoad("table.pageLength"));
+  if (isNaN(tablePageLength)) tablePageLength = 20;
+
   if ($.fn.dataTable.isDataTable("#result"))
     try {
       $("#result").DataTable().destroy();
@@ -107,11 +110,11 @@ function renderTable() {
   }
 
   if (globalResultset.records.length > 0) {
-    $("#result").DataTable({
+    const dataTable = $("#result").DataTable({
       orderCellsTop: true,
       fixedHeader: true,
       paging: true,
-      pageLength: 20,
+      pageLength: tablePageLength,
       lengthChange: true,
       columns: tableColumns,
       data: tableRecords,
@@ -160,6 +163,10 @@ function renderTable() {
             wrapper.prepend(exportEl);
         }, 50);
       },
+    });
+
+    dataTable.on("length.dt", function (e, settings, len) {
+      globalStorageSave("table.pageLength", len);
     });
 
     $(".dt-length").css("padding", "7px");
