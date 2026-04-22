@@ -733,6 +733,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           callback.onDocumentIndexed((Document) record, total.get());
 
         return true;
+      }, (rid, exception) -> {
+        // Propagate callback failures (e.g. DuplicatedKeyException from a unique-index build on pre-existing duplicates)
+        // instead of swallowing them with a SEVERE log, which would leave the index silently inconsistent.
+        if (exception instanceof RuntimeException re)
+          throw re;
+        throw new IndexException("Error on building index '" + name + "' at record " + rid, exception);
       });
 
       // Completion logging
