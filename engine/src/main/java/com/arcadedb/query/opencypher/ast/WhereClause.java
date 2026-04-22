@@ -167,10 +167,18 @@ public class WhereClause {
         collectExpressionVariables(arg, vars);
     } else if (expr instanceof ListComprehensionExpression listComp) {
       collectExpressionVariables(listComp.getListExpression(), vars);
-      if (listComp.getWhereExpression() != null)
-        collectExpressionVariables(listComp.getWhereExpression(), vars);
-      if (listComp.getMapExpression() != null)
-        collectExpressionVariables(listComp.getMapExpression(), vars);
+      if (listComp.getWhereExpression() != null) {
+        final Set<String> innerVars = new HashSet<>();
+        collectExpressionVariables(listComp.getWhereExpression(), innerVars);
+        innerVars.remove(listComp.getVariable()); // exclude loop-scoped iterator
+        vars.addAll(innerVars);
+      }
+      if (listComp.getMapExpression() != null) {
+        final Set<String> innerVars = new HashSet<>();
+        collectExpressionVariables(listComp.getMapExpression(), innerVars);
+        innerVars.remove(listComp.getVariable()); // exclude loop-scoped iterator
+        vars.addAll(innerVars);
+      }
     } else if (expr instanceof ArithmeticExpression arith) {
       collectExpressionVariables(arith.getLeft(), vars);
       collectExpressionVariables(arith.getRight(), vars);
@@ -179,6 +187,14 @@ public class WhereClause {
         collectExpressionVariables(element, vars);
     } else if (expr instanceof BooleanWrapperExpression bwe) {
       collectVariablesRecursive(bwe.getBooleanExpression(), vars);
+    } else if (expr instanceof ListPredicateExpression listPred) {
+      collectExpressionVariables(listPred.getListExpression(), vars);
+      if (listPred.getWhereExpression() != null) {
+        final Set<String> innerVars = new HashSet<>();
+        collectExpressionVariables(listPred.getWhereExpression(), innerVars);
+        innerVars.remove(listPred.getVariable());
+        vars.addAll(innerVars);
+      }
     }
   }
 

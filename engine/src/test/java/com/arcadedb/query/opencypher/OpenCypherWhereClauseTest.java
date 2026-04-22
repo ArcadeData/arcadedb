@@ -18,24 +18,26 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 
 ;
 
@@ -928,6 +930,68 @@ public class OpenCypherWhereClauseTest {
 
       assertThat(count1).isEqualTo(count2)
           .withFailMessage("Complex query with triple parentheses: Expected both queries to return the same number of results");
+    }
+  }
+
+  @Nested
+  class ListPredicateFilterPushdownTest {
+
+    @BeforeEach
+    void preparePersonNodes() {
+      // Clean up first in case previous test left data, then create fresh
+      database.command("opencypher", "MATCH (n:Person) DETACH DELETE n");
+      database.command("opencypher",
+          "CREATE (:Person {name:'Alice'}), (:Person {name:'Bob'}), (:Person {name:'Charlie'})");
+    }
+
+    @Test
+    void testAnyPredicateInWhere() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE any(x IN ['Alice'] WHERE x = p.name) RETURN p.name AS name ORDER BY name");
+      final List<String> names = new ArrayList<>();
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+      assertThat(names).containsExactly("Alice");
+    }
+
+    @Test
+    void testNotAnyPredicateInWhere() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE NOT any(x IN ['Alice'] WHERE x = p.name) RETURN p.name AS name ORDER BY name");
+      final List<String> names = new ArrayList<>();
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+      assertThat(names).containsExactly("Bob", "Charlie");
+    }
+
+    @Test
+    void testAllPredicateInWhere() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE all(x IN ['Alice', 'Bob'] WHERE x <> p.name) RETURN p.name AS name ORDER BY name");
+      final List<String> names = new ArrayList<>();
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+      assertThat(names).containsExactly("Charlie");
+    }
+
+    @Test
+    void testNonePredicateInWhere() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE none(x IN ['Alice'] WHERE x = p.name) RETURN p.name AS name ORDER BY name");
+      final List<String> names = new ArrayList<>();
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+      assertThat(names).containsExactly("Bob", "Charlie");
+    }
+
+    @Test
+    void testSinglePredicateInWhere() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE single(x IN ['Alice'] WHERE x = p.name) RETURN p.name AS name ORDER BY name");
+      final List<String> names = new ArrayList<>();
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+      assertThat(names).containsExactly("Alice");
     }
   }
 }
