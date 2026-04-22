@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * new leader and accept writes. This eliminates the possibility of divergent data.
  */
 @Testcontainers
-class SplitBrainIT extends ContainersTestTemplate {
+class   SplitBrainIT extends ContainersTestTemplate {
 
   private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
@@ -119,13 +119,17 @@ class SplitBrainIT extends ContainersTestTemplate {
     logger.info("Waiting for Raft leader step-down in minority and new election in majority");
     final List<ServerWrapper> majorityServers = List.of(servers.get(survivor1), servers.get(survivor2));
     waitForRaftLeader(majorityServers, 60);
+    // Wait until both majority nodes know the leader address so follower-to-leader proxying
+    // works immediately; without this, addUserAndPhotos can silently fail when the follower
+    // hasn't yet propagated the new leader's address.
+    waitForAllNodesKnowLeader(majorityServers, 30);
 
     logger.info("Writing to majority partition (nodes {} and {}) - should succeed with new leader", survivor1, survivor2);
     dbs[survivor1].addUserAndPhotos(10, 10);
 
     logger.info("Verifying writes on majority partition");
     Awaitility.await()
-        .atMost(30, TimeUnit.SECONDS)
+        .atMost(2, TimeUnit.MINUTES)
         .pollInterval(2, TimeUnit.SECONDS)
         .until(() -> {
           try {

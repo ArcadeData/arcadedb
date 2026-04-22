@@ -286,6 +286,61 @@ public abstract class ContainersTestTemplate {
   }
 
   /**
+   * Waits until every node in the list reports a non-null {@code leaderHttpAddress} via
+   * {@code GET /api/v1/cluster}. Call this after {@link #waitForRaftLeader} when you need
+   * all followers to know the leader before issuing write commands, so that follower-to-leader
+   * proxying works immediately without silent failures caused by a null leader address.
+   *
+   * @param servers        the server wrappers to check
+   * @param timeoutSeconds maximum time to wait
+   */
+  protected void waitForAllNodesKnowLeader(final List<ServerWrapper> servers, final int timeoutSeconds) {
+    final long deadline = System.currentTimeMillis() + (timeoutSeconds * 1000L);
+    while (System.currentTimeMillis() < deadline) {
+      boolean allKnow = true;
+      for (final ServerWrapper server : servers) {
+        try {
+          final HttpURLConnection conn = (HttpURLConnection) URI.create(
+              "http://" + server.host() + ":" + server.httpPort() + "/api/v1/cluster").toURL().openConnection();
+          conn.setRequestProperty("Authorization",
+              "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes()));
+          conn.setConnectTimeout(2000);
+          conn.setReadTimeout(2000);
+          try {
+            if (conn.getResponseCode() == 200) {
+              final String body = new String(conn.getInputStream().readAllBytes());
+              final JSONObject json = new JSONObject(body);
+              if (json.isNull("leaderHttpAddress")) {
+                allKnow = false;
+                break;
+              }
+            } else {
+              allKnow = false;
+              break;
+            }
+          } finally {
+            conn.disconnect();
+          }
+        } catch (final Exception e) {
+          allKnow = false;
+          break;
+        }
+      }
+      if (allKnow) {
+        logger.info("All {} nodes know the Raft leader", servers.size());
+        return;
+      }
+      try {
+        Thread.sleep(500);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
+    logger.warn("Not all nodes know the Raft leader after {}s — proceeding anyway", timeoutSeconds);
+  }
+
+  /**
    * Creates a standalone ArcadeDB container without HA.
    */
   protected GenericContainer<?> createArcadeContainer(String name, Network network) {
