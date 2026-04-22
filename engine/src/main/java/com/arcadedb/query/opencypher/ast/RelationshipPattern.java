@@ -39,15 +39,22 @@ public class RelationshipPattern implements PatternElement {
   private final String propertiesParameterName;
   private final Integer minHops;
   private final Integer maxHops;
+  private final BooleanExpression whereExpression;
 
   public RelationshipPattern(final String variable, final List<String> types, final Direction direction,
       final Map<String, Object> properties, final Integer minHops, final Integer maxHops) {
-    this(variable, types, direction, properties, null, minHops, maxHops);
+    this(variable, types, direction, properties, null, minHops, maxHops, null);
   }
 
   public RelationshipPattern(final String variable, final List<String> types, final Direction direction,
       final Map<String, Object> properties, final String propertiesParameterName, final Integer minHops,
       final Integer maxHops) {
+    this(variable, types, direction, properties, propertiesParameterName, minHops, maxHops, null);
+  }
+
+  public RelationshipPattern(final String variable, final List<String> types, final Direction direction,
+      final Map<String, Object> properties, final String propertiesParameterName, final Integer minHops,
+      final Integer maxHops, final BooleanExpression whereExpression) {
     this.variable = variable;
     this.types = types != null ? types : Collections.emptyList();
     this.direction = direction != null ? direction : Direction.BOTH;
@@ -55,6 +62,7 @@ public class RelationshipPattern implements PatternElement {
     this.propertiesParameterName = propertiesParameterName;
     this.minHops = minHops;
     this.maxHops = maxHops;
+    this.whereExpression = whereExpression;
   }
 
   @Override
@@ -141,6 +149,20 @@ public class RelationshipPattern implements PatternElement {
    */
   public String getPropertiesParameterName() {
     return propertiesParameterName;
+  }
+
+  /**
+   * Returns the inline WHERE predicate on the relationship pattern, or null if absent.
+   */
+  public BooleanExpression getWhereExpression() {
+    return whereExpression;
+  }
+
+  /**
+   * Returns true if this relationship pattern has an inline WHERE predicate.
+   */
+  public boolean hasWhereExpression() {
+    return whereExpression != null;
   }
 
   /**

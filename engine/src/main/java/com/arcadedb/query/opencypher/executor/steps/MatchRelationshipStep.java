@@ -26,6 +26,7 @@ import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -487,6 +488,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             // Filter by inline relationship properties if specified
             if (pattern.hasProperties() && !matchesEdgeProperties(edge))
+              continue;
+
+            // Filter by inline WHERE predicate on the relationship (e.g., [r:KNOWS WHERE r.since < 2019])
+            if (pattern.hasWhereExpression() && !matchesEdgeWhereExpression(edge, lastResult))
               continue;
 
             // Relationship uniqueness: Cypher requires each relationship in a pattern
@@ -988,6 +993,26 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       }
     }
     return true;
+  }
+
+  /**
+   * Evaluates the inline WHERE predicate on a relationship pattern against the given edge.
+   * A temporary result is built with the relationship variable bound to the edge so that
+   * expressions like {@code r.since < 2019} resolve correctly.
+   */
+  private boolean matchesEdgeWhereExpression(final Edge edge, final Result currentResult) {
+    final BooleanExpression whereExpr = pattern.getWhereExpression();
+    if (whereExpr == null)
+      return true;
+
+    final ResultInternal tempResult = new ResultInternal();
+    for (final String prop : currentResult.getPropertyNames())
+      tempResult.setProperty(prop, currentResult.getProperty(prop));
+
+    if (relationshipVariable != null && !relationshipVariable.isEmpty())
+      tempResult.setProperty(relationshipVariable, edge);
+
+    return whereExpr.evaluate(tempResult, context);
   }
 
   @Override

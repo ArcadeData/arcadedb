@@ -1553,7 +1553,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       direction = Direction.BOTH;
     }
 
-    return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops);
+    // Inline WHERE predicate (e.g., [r:KNOWS WHERE r.since < 2019])
+    BooleanExpression whereExpression = null;
+    if (ctx.expression() != null)
+      whereExpression = parseBooleanExpression(ctx.expression());
+
+    return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,
+        whereExpression);
   }
 
   public Map<String, Object> visitProperties(final Cypher25Parser.PropertiesContext ctx) {
