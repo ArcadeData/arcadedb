@@ -105,9 +105,6 @@ import com.arcadedb.function.text.ReplaceFunction;
 import com.arcadedb.function.text.RightFunction;
 import com.arcadedb.function.text.ToLowerFunction;
 import com.arcadedb.function.text.ToUpperFunction;
-import com.arcadedb.query.opencypher.executor.CypherSplitFunction;
-import com.arcadedb.query.opencypher.executor.CypherSubstringFunction;
-import com.arcadedb.query.opencypher.executor.CypherTrimFunction;
 import com.arcadedb.function.vector.VectorCreateFunction;
 import com.arcadedb.function.vector.VectorDimensionCountFunction;
 import com.arcadedb.function.vector.VectorDistanceCosineFunction;
@@ -302,7 +299,7 @@ public class CypherFunctionFactory {
   private boolean isCypherSpecificFunction(final String functionName) {
     return switch (functionName) {
       // Graph functions
-      case "id", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
+      case "id", "elementid", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
       // Path functions
       case "nodes", "relationships", "length", "path_length" -> true;
       // Math functions
@@ -328,11 +325,13 @@ public class CypherFunctionFactory {
       // Scalar functions
       case "nullif", "valuetype" -> true;
       // Aggregation functions
-      case "collect", "collect_list", "percentiledisc", "percentile_disc", "percentilecont", "percentile_cont", "min", "max", "avg" -> true;
+      case "collect", "collect_list", "percentiledisc", "percentile_disc", "percentilecont", "percentile_cont", "min", "max",
+           "avg" -> true;
       // Temporal functions
       case "timestamp" -> true;
       // Temporal constructor functions
-      case "date", "localtime", "local_time", "time", "zoned_time", "localdatetime", "local_datetime", "datetime", "zoned_datetime", "duration", "duration_between" -> true;
+      case "date", "localtime", "local_time", "time", "zoned_time", "localdatetime", "local_datetime", "datetime", "zoned_datetime",
+           "duration", "duration_between" -> true;
       // Temporal truncation functions
       case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" -> true;
       // Temporal epoch functions
