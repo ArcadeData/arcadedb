@@ -18,24 +18,32 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.LineProtocolParser;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Precision;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.Headers;
+import io.undertow.util.StatusCodes;
 
-import java.util.ArrayList;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.util.Deque;
-import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.zip.GZIPInputStream;
 
 /**
  * HTTP handler for InfluxDB Line Protocol ingestion.
@@ -64,8 +72,34 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
 
   @Override
   protected String parseRequestPayload(final HttpServerExchange e) {
-    // Store the raw payload for Line Protocol parsing
-    rawPayload = super.parseRequestPayload(e);
+    if (!e.isInIoThread() && !e.isBlocking())
+      e.startBlocking();
+
+    final AtomicReference<byte[]> bytesRef = new AtomicReference<>();
+    e.getRequestReceiver().receiveFullBytes(
+        (exchange, data) -> bytesRef.set(data),
+        (exchange, err) -> {
+          LogManager.instance().log(this, Level.SEVERE, "receiveFullBytes completed with an error: %s", err, err.getMessage());
+          exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
+          exchange.getResponseSender().send("Invalid Request");
+        });
+
+    final byte[] rawBytes = bytesRef.get();
+    if (rawBytes == null) {
+      rawPayload = null;
+      return null;
+    }
+
+    final var contentEncoding = e.getRequestHeaders().get(Headers.CONTENT_ENCODING);
+    if (contentEncoding != null && !contentEncoding.isEmpty() && "gzip".equalsIgnoreCase(contentEncoding.getFirst())) {
+      try (final GZIPInputStream gzip = new GZIPInputStream(new ByteArrayInputStream(rawBytes))) {
+        rawPayload = new String(gzip.readAllBytes(), DatabaseFactory.getDefaultCharset());
+      } catch (final IOException ex) {
+        throw new IllegalArgumentException("Failed to decompress gzip body: " + ex.getMessage(), ex);
+      }
+    } else {
+      rawPayload = new String(rawBytes, DatabaseFactory.getDefaultCharset());
+    }
     return rawPayload;
   }
 
@@ -94,55 +128,75 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
     if (samples.isEmpty())
       return new ExecutionResponse(204, "");
 
-    // Group samples by measurement so every measurement type is written in one
-    // engine.appendBatch() call instead of one call per sample.
-    // appendBatch() groups the samples by target shard and writes each shard's
-    // sub-batch in a single transaction, then dispatches all active shards in
-    // parallel — reducing transaction overhead from O(N) to O(shardCount) per request.
-    final Map<String, List<Sample>> byMeasurement = new HashMap<>();
-    for (final Sample sample : samples) {
-      final String measurement = sample.getMeasurement();
-      if (!database.getSchema().existsType(measurement))
-        continue; // skip unknown measurement types
-      final DocumentType docType = database.getSchema().getType(measurement);
-      if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
-        continue; // skip non-timeseries types
-      byMeasurement.computeIfAbsent(measurement, k -> new ArrayList<>()).add(sample);
-    }
-
-    if (byMeasurement.isEmpty())
-      return new ExecutionResponse(204, "");
-
+    // Group by measurement and insert
     int inserted = 0;
-    for (final Map.Entry<String, List<Sample>> entry : byMeasurement.entrySet()) {
-      final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(entry.getKey());
-      final TimeSeriesEngine engine = tsType.getEngine();
-      final List<ColumnDefinition> columns = tsType.getTsColumns();
-      final List<Sample> measurementSamples = entry.getValue();
-      final int n = measurementSamples.size();
-      final int colCount = columns.size() - 1; // exclude timestamp column
+    final Set<String> unknownTypes = new LinkedHashSet<>();
+    final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
+    database.begin();
+    try {
+      for (final Sample sample : samples) {
+        final String measurement = sample.getMeasurement();
 
-      final long[] allTimestamps = new long[n];
-      final Object[][] allColumnValues = new Object[colCount][n];
-      for (int c = 0; c < colCount; c++)
-        allColumnValues[c] = new Object[n];
+        if (!database.getSchema().existsType(measurement)) {
+          unknownTypes.add(measurement);
+          continue;
+        }
 
-      for (int i = 0; i < n; i++) {
-        final Sample sample = measurementSamples.get(i);
-        allTimestamps[i] = sample.getTimestampMs();
+        final DocumentType docType = database.getSchema().getType(measurement);
+        if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
+          nonTimeSeriesTypes.add(measurement);
+          continue;
+        }
+
+        final TimeSeriesEngine engine = tsType.getEngine();
+        final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+        final long[] timestamps = new long[] { sample.getTimestampMs() };
+        final Object[][] columnValues = new Object[columns.size() - 1][1]; // exclude timestamp
+
         int colIdx = 0;
-        for (final ColumnDefinition col : columns) {
+        for (int i = 0; i < columns.size(); i++) {
+          final ColumnDefinition col = columns.get(i);
           if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
             continue;
-          allColumnValues[colIdx][i] = col.getRole() == ColumnDefinition.ColumnRole.TAG
-              ? sample.getTags().get(col.getName())
-              : sample.getFields().get(col.getName());
+
+          Object value;
+          if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+            value = sample.getTags().get(col.getName());
+          else
+            value = sample.getFields().get(col.getName());
+
+          columnValues[colIdx][0] = value;
           colIdx++;
         }
-      }
 
-      engine.appendBatch(allTimestamps, allColumnValues);
-      inserted += n;
+        engine.appendSamples(timestamps, columnValues);
+        inserted++;
+      }
+      database.commit();
+    } catch (final Exception e) {
+      database.rollback();
+      throw e;
+    }
+
+    if (!unknownTypes.isEmpty())
+      LogManager.instance().log(this, Level.WARNING,
+          "Skipped line protocol samples for unknown timeseries type(s): %s", null, unknownTypes);
+
+    if (!nonTimeSeriesTypes.isEmpty())
+      LogManager.instance().log(this, Level.WARNING,
+          "Skipped line protocol samples for non-timeseries type(s): %s", null, nonTimeSeriesTypes);
+
+    if (inserted == 0 && (!unknownTypes.isEmpty() || !nonTimeSeriesTypes.isEmpty())) {
+      final StringBuilder msg = new StringBuilder();
+      if (!unknownTypes.isEmpty())
+        msg.append("Unknown timeseries type(s): ").append(String.join(", ", unknownTypes)).append(". Create the type first with CREATE TIMESERIES TYPE.");
+      if (!nonTimeSeriesTypes.isEmpty()) {
+        if (msg.length() > 0)
+          msg.append(" ");
+        msg.append("Non-timeseries type(s): ").append(String.join(", ", nonTimeSeriesTypes)).append(". Only TIMESERIES types can receive line protocol data.");
+      }
+      return new ExecutionResponse(400, new JSONObject().put("error", msg.toString()).toString());
     }
 
     return new ExecutionResponse(204, "");

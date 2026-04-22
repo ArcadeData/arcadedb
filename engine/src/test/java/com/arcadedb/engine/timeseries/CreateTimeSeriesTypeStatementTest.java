@@ -187,4 +187,5 @@ class CreateTimeSeriesTypeStatementTest extends TestHelper {
     assertThat(tsType.getShardCount()).isEqualTo(expectedShards);
     assertThat(tsType.getRetentionMs()).isEqualTo(0L);
   }
+
 }

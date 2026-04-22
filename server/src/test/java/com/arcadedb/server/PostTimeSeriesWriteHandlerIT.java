@@ -22,11 +22,13 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.zip.GZIPOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -89,6 +91,57 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  @Test
+  void unknownMeasurementTypeReturnsError() throws Exception {
+    // When all samples reference measurement types that have no matching TIMESERIES TYPE,
+    // the handler must NOT silently return 204 - that hides data loss from the caller.
+    testEachServer((serverIndex) -> {
+      final String lineProtocol = "ghost_metric,host=srv1 value=1.0 1000\n";
+      final int statusCode = postLineProtocol(serverIndex, lineProtocol, "ms");
+      assertThat(statusCode).isEqualTo(400);
+    });
+  }
+
+  @Test
+  void nonTimeSeriesTypeReturnsError() throws Exception {
+    // When all samples reference a type that exists but is NOT a TIMESERIES type,
+    // the handler must return 400 - not silently return 204 with zero rows written.
+    testEachServer((serverIndex) -> {
+      command(serverIndex, "CREATE DOCUMENT TYPE plain_doc");
+      final String lineProtocol = "plain_doc,host=srv1 value=1.0 1000\n";
+      final int statusCode = postLineProtocol(serverIndex, lineProtocol, "ms");
+      assertThat(statusCode).isEqualTo(400);
+    });
+  }
+
+  @Test
+  void gzipCompressedBodyIsAccepted() throws Exception {
+    // Telegraf's [[outputs.influxdb]] plugin sends Content-Encoding: gzip by default.
+    // The write handler must decompress the body before parsing it.
+    testEachServer((serverIndex) -> {
+      command(serverIndex,
+          "CREATE TIMESERIES TYPE disk TIMESTAMP ts TAGS (host STRING) FIELDS (used DOUBLE)");
+
+      final String lineProtocol = "disk,host=server1 used=42.0 1000000000\ndisk,host=server2 used=77.5 2000000000\n";
+
+      final byte[] compressed;
+      try (final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+          final GZIPOutputStream gzip = new GZIPOutputStream(baos)) {
+        gzip.write(lineProtocol.getBytes(StandardCharsets.UTF_8));
+        gzip.finish();
+        compressed = baos.toByteArray();
+      }
+
+      final int statusCode = postLineProtocolGzip(serverIndex, compressed, "ns");
+      assertThat(statusCode).isEqualTo(204);
+
+      final JSONObject result = executeCommand(serverIndex, "sql", "SELECT FROM disk");
+      assertThat(result).isNotNull();
+      final JSONArray records = result.getJSONObject("result").getJSONArray("records");
+      assertThat(records.length()).isEqualTo(2);
+    });
+  }
+
   private int postLineProtocol(final int serverIndex, final String body, final String precision) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/write?precision=" + precision)
@@ -103,6 +156,27 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
 
     try (final OutputStream os = connection.getOutputStream()) {
       os.write(body.getBytes(StandardCharsets.UTF_8));
+      os.flush();
+    }
+
+    return connection.getResponseCode();
+  }
+
+  private int postLineProtocolGzip(final int serverIndex, final byte[] compressedBody, final String precision) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/write?precision=" + precision)
+        .toURL()
+        .openConnection();
+
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    connection.setRequestProperty("Content-Type", "text/plain");
+    connection.setRequestProperty("Content-Encoding", "gzip");
+    connection.setDoOutput(true);
+
+    try (final OutputStream os = connection.getOutputStream()) {
+      os.write(compressedBody);
       os.flush();
     }
 
