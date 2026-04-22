@@ -26,7 +26,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
 
 /**
  * Expression representing EXISTS predicate.
@@ -213,9 +212,7 @@ public class ExistsExpression implements Expression {
       return false;
     // Check word boundary after
     final int end = pos + keyword.length();
-    if (end < upper.length() && isCypherIdentifierChar(upper.charAt(end)))
-      return false;
-    return true;
+    return end >= upper.length() || !isCypherIdentifierChar(upper.charAt(end));
   }
 
   private static boolean isCypherIdentifierChar(final char c) {
