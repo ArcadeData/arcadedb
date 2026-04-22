@@ -40,18 +40,28 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies that `import database` on a Raft leader creates the database cluster-wide
- * via the INSTALL_DATABASE_ENTRY Raft log entry, and the importer's subsequent
- * transactions replicate to every peer as normal TX_ENTRY stream. At the end, every
- * peer should have the same type set and matching record counts.
+ * Regression test for issue #3887 "Import Database issues with HA".
+ * <p>
+ * Imports an OrientDB-format export (Person + Friend, ~10k edges) into an empty database
+ * on the Raft leader. The user report was that a 10k-record Whisky import against a 3-node
+ * HA cluster timed out at the Raft quorum after minutes, while the same import on a
+ * single node completed in seconds.
+ * <p>
+ * This test exercises the full OrientDB importer path through Raft: schema creation,
+ * batch record inserts, edge creation, and index creation. Expected completion well under
+ * one minute on a 3-node in-process cluster.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class RaftImportDatabase3NodesIT extends BaseRaftHATest {
+class RaftImportOrientDB3NodesIT extends BaseRaftHATest {
 
-  private static final String DB_NAME = "RaftImportTest";
+  private static final String DB_NAME             = "RaftImportOrientDBTest";
+  // Issue #3887 reported a 10k-record import taking 10+ minutes on HA while a single-node
+  // import completed in 2 seconds. A 60-second budget on a 3-node in-process cluster is
+  // well above the ~2 second steady-state baseline and still catches any severe regression.
+  private static final long   IMPORT_TIMEOUT_SECS = 60;
 
-  RaftImportDatabase3NodesIT() {
+  RaftImportOrientDB3NodesIT() {
     FileUtils.deleteRecursively(new File("./target/config"));
     FileUtils.deleteRecursively(new File("./target/databases"));
     for (int i = 0; i < 3; i++)
@@ -88,25 +98,29 @@ class RaftImportDatabase3NodesIT extends BaseRaftHATest {
 
   @Override
   protected void checkDatabasesAreIdentical() {
-    // The default "graph" database is never created in this test (isCreateDatabases=false).
-    // Page-level comparison of the imported database is not meaningful because bucket
-    // file IDs are assigned independently by the importer on each node - logical counts
-    // match but page contents may differ. The test asserts logical equality explicitly below.
+    // Page-level comparison across nodes is not meaningful for the imported database because
+    // bucket file IDs are assigned per node. The test asserts logical equality (type set + counts).
   }
 
   @Test
-  void importDatabasePropagatesAcrossCluster() throws Exception {
-    final File fixture = new File("src/test/resources/raft-import-fixture.jsonl.tgz");
-    assertThat(fixture.exists()).as("import fixture should be present at %s", fixture.getAbsolutePath()).isTrue();
+  void importOrientDBPropagatesAcrossCluster() throws Exception {
+    final File fixture = new File("src/test/resources/orientdb-export-small.gz");
+    assertThat(fixture.exists()).as("orientdb fixture should be present at %s", fixture.getAbsolutePath()).isTrue();
     final String fixtureUrl = "file://" + fixture.getAbsolutePath();
 
-    // Step A: issue `import database` via HTTP on the leader
     final int leader = findLeaderIndex();
     assertThat(leader).isGreaterThanOrEqualTo(0);
-    postServerCommand(leader, "import database " + DB_NAME + " " + fixtureUrl);
 
-    // Step B: wait until every peer sees the new database
-    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
+    final long start = System.currentTimeMillis();
+    postServerCommand(leader, "import database " + DB_NAME + " " + fixtureUrl);
+    final long elapsedMs = System.currentTimeMillis() - start;
+
+    assertThat(elapsedMs)
+        .as("IMPORT DATABASE should complete in under %d seconds on a 3-node Raft cluster (actual: %d ms)",
+            IMPORT_TIMEOUT_SECS, elapsedMs)
+        .isLessThan(IMPORT_TIMEOUT_SECS * 1000);
+
+    Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .until(() -> {
           for (int i = 0; i < getServerCount(); i++)
             if (!getServer(i).existsDatabase(DB_NAME))
@@ -114,24 +128,21 @@ class RaftImportDatabase3NodesIT extends BaseRaftHATest {
           return true;
         });
 
-    // Step C: wait for replication to catch up on every peer
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
-    // Step D: compute a reference snapshot of (type name, count) pairs from the leader
     final Database leaderDb = getServer(leader).getDatabase(DB_NAME);
     final Map<String, Long> leaderCounts = new HashMap<>();
     for (final DocumentType type : leaderDb.getSchema().getTypes())
       leaderCounts.put(type.getName(), leaderDb.countType(type.getName(), false));
 
-    assertThat(leaderCounts).as("leader should have at least one imported type").isNotEmpty();
-    assertThat(leaderCounts.values())
-        .as("every type should have a non-negative record count")
-        .allMatch(n -> n >= 0);
-    final long totalRecords = leaderCounts.values().stream().mapToLong(Long::longValue).sum();
-    assertThat(totalRecords).as("imported database should have at least one record").isGreaterThan(0L);
+    assertThat(leaderCounts.get("Person"))
+        .as("Person vertex count on the leader")
+        .isEqualTo(500L);
+    assertThat(leaderCounts.get("Friend"))
+        .as("Friend edge count on the leader")
+        .isEqualTo(10_000L);
 
-    // Step E: assert every other peer has the same type set and matching counts
     for (int i = 0; i < getServerCount(); i++) {
       if (i == leader)
         continue;
@@ -150,9 +161,6 @@ class RaftImportDatabase3NodesIT extends BaseRaftHATest {
     }
   }
 
-  /**
-   * POSTs a server command against /api/v1/server and asserts HTTP 200.
-   */
   private void postServerCommand(final int serverIndex, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
