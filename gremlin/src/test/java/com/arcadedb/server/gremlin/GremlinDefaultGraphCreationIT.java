@@ -20,6 +20,7 @@ package com.arcadedb.server.gremlin;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.test.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
@@ -47,24 +48,26 @@ class GremlinDefaultGraphCreationIT extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
+    GlobalConfiguration.SERVER_PLUGINS.setValue("GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
+    GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(Runtime.getRuntime().availableProcessors());
+  }
 
+  /**
+   * Write Gremlin config files here, AFTER deleteDatabaseFolders() has run (which clears ./target/config/)
+   * but BEFORE server.start() — so the plugin finds the yaml and properties on disk.
+   */
+  @Override
+  protected void onBeforeStarting(final ArcadeDBServer server) {
     new File("./target/config").mkdirs();
-
     try {
       FileUtils.writeFile(new File("./target/config/gremlin-server.yaml"),
           FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.yaml"), "utf8"));
-
       FileUtils.writeFile(new File("./target/config/gremlin-server.properties"),
           FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.properties"), "utf8"));
-
       FileUtils.writeFile(new File("./target/config/gremlin-server.groovy"),
           FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.groovy"), "utf8"));
-
-      GlobalConfiguration.SERVER_PLUGINS.setValue("GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
-      GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(Runtime.getRuntime().availableProcessors());
-
     } catch (final IOException e) {
-      fail("Failed to configure test settings", e);
+      fail("Failed to write Gremlin config files", e);
     }
   }
 
