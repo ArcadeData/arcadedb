@@ -19,9 +19,15 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.OrderByClause;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -134,14 +140,26 @@ class ClauseDispatcher {
                                       final CypherASTBuilder astBuilder) {
     final Cypher25Parser.OrderBySkipLimitClauseContext orderBySkipLimit = ctx.orderBySkipLimitClause();
 
-    if (orderBySkipLimit.orderBy() != null)
-      builder.setOrderBy(astBuilder.visitOrderBy(orderBySkipLimit.orderBy()));
+    // Cypher 25 allows a standalone ORDER BY / SKIP / LIMIT as a clause on its own.
+    // It applies to the rows produced by the preceding clauses and forwards them to the
+    // following clauses, which is semantically equivalent to an implicit `WITH *`.
+    // Representing it as a WithClause guarantees the sort/skip/limit is applied at the
+    // correct position in clausesInOrder instead of being deferred to the end of the
+    // statement (issue #3950).
+    final OrderByClause orderBy = orderBySkipLimit.orderBy() != null
+        ? astBuilder.visitOrderBy(orderBySkipLimit.orderBy())
+        : null;
+    final Expression skipExpr = orderBySkipLimit.skip() != null
+        ? (Expression) astBuilder.visitSkip(orderBySkipLimit.skip())
+        : null;
+    final Expression limitExpr = orderBySkipLimit.limit() != null
+        ? (Expression) astBuilder.visitLimit(orderBySkipLimit.limit())
+        : null;
 
-    if (orderBySkipLimit.skip() != null)
-      builder.setSkip((Expression) astBuilder.visitSkip(orderBySkipLimit.skip()));
-
-    if (orderBySkipLimit.limit() != null)
-      builder.setLimit((Expression) astBuilder.visitLimit(orderBySkipLimit.limit()));
+    final List<ReturnClause.ReturnItem> starItems = new ArrayList<>();
+    starItems.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
+    final WithClause implicitWith = new WithClause(starItems, false, null, orderBy, skipExpr, limitExpr);
+    builder.addWith(implicitWith);
   }
 
   private void handleCall(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
