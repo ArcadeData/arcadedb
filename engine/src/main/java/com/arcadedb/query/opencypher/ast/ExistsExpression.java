@@ -26,7 +26,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
 
 /**
  * Expression representing EXISTS predicate.
@@ -101,10 +100,10 @@ public class ExistsExpression implements Expression {
     if (idx < 0)
       return false;
     // Verify it's a word boundary (not part of a longer identifier)
-    if (idx > 0 && Character.isLetterOrDigit(subquery.charAt(idx - 1)))
+    if (idx > 0 && isCypherIdentifierChar(subquery.charAt(idx - 1)))
       return false;
     final int end = idx + varName.length();
-    if (end < subquery.length() && Character.isLetterOrDigit(subquery.charAt(end)))
+    if (end < subquery.length() && isCypherIdentifierChar(subquery.charAt(end)))
       return false;
     return true;
   }
@@ -199,21 +198,35 @@ public class ExistsExpression implements Expression {
 
   /**
    * Checks if the uppercase query string has a keyword at the given position,
-   * ensuring it's a word boundary (not part of a longer identifier).
+   * ensuring it's a word boundary (not part of a longer identifier or Cypher token).
+   * Underscore is treated as an identifier character, and ':', '.', '$' are treated as
+   * non-boundary token prefixes, so that patterns like [:WORKS_WITH], n.with, or $with
+   * do not falsely match a keyword fragment.
    */
   private static boolean matchesKeywordAt(final String upper, final int pos, final String keyword) {
     if (pos + keyword.length() > upper.length())
       return false;
     if (!upper.startsWith(keyword, pos))
       return false;
-    // Check word boundary before
-    if (pos > 0 && Character.isLetterOrDigit(upper.charAt(pos - 1)))
-      return false;
+    // Check word boundary before — reject if preceded by an identifier char or a Cypher token
+    // prefix (: for labels/types, . for property access, $ for parameters)
+    if (pos > 0) {
+      final char before = upper.charAt(pos - 1);
+      if (isCypherIdentifierChar(before) || before == ':' || before == '.' || before == '$')
+        return false;
+    }
     // Check word boundary after
     final int end = pos + keyword.length();
-    if (end < upper.length() && Character.isLetterOrDigit(upper.charAt(end)))
-      return false;
+    if (end < upper.length()) {
+      final char after = upper.charAt(end);
+      if (isCypherIdentifierChar(after) || after == ':' || after == '.' || after == '$')
+        return false;
+    }
     return true;
+  }
+
+  private static boolean isCypherIdentifierChar(final char c) {
+    return Character.isLetterOrDigit(c) || c == '_';
   }
 
   @Override
