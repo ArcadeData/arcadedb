@@ -179,11 +179,6 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
       throw e;
     }
 
-    if (inserted == 0 && !unknownTypes.isEmpty())
-      return new ExecutionResponse(400,
-          new JSONObject().put("error", "Unknown timeseries type(s): " + String.join(", ", unknownTypes)
-              + ". Create the type first with CREATE TIMESERIES TYPE.").toString());
-
     if (!unknownTypes.isEmpty())
       LogManager.instance().log(this, Level.WARNING,
           "Skipped line protocol samples for unknown timeseries type(s): %s", null, unknownTypes);
@@ -191,6 +186,18 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
     if (!nonTimeSeriesTypes.isEmpty())
       LogManager.instance().log(this, Level.WARNING,
           "Skipped line protocol samples for non-timeseries type(s): %s", null, nonTimeSeriesTypes);
+
+    if (inserted == 0 && (!unknownTypes.isEmpty() || !nonTimeSeriesTypes.isEmpty())) {
+      final StringBuilder msg = new StringBuilder();
+      if (!unknownTypes.isEmpty())
+        msg.append("Unknown timeseries type(s): ").append(String.join(", ", unknownTypes)).append(". Create the type first with CREATE TIMESERIES TYPE.");
+      if (!nonTimeSeriesTypes.isEmpty()) {
+        if (msg.length() > 0)
+          msg.append(" ");
+        msg.append("Non-timeseries type(s): ").append(String.join(", ", nonTimeSeriesTypes)).append(". Only TIMESERIES types can receive line protocol data.");
+      }
+      return new ExecutionResponse(400, new JSONObject().put("error", msg.toString()).toString());
+    }
 
     return new ExecutionResponse(204, "");
   }

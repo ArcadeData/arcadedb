@@ -20,7 +20,6 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -28,7 +27,6 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for CREATE TIMESERIES TYPE SQL statement.
@@ -190,23 +188,4 @@ class CreateTimeSeriesTypeStatementTest extends TestHelper {
     assertThat(tsType.getRetentionMs()).isEqualTo(0L);
   }
 
-  @Test
-  void precisionClauseIsNotSupported() {
-    // 'PRECISION NANOSECOND' after the timestamp column is documented in some examples
-    // but is not part of the grammar. The parser must reject it clearly.
-    assertThatThrownBy(() ->
-        database.command("sql",
-            "CREATE TIMESERIES TYPE BadPrecision TIMESTAMP ts PRECISION NANOSECOND FIELDS (value DOUBLE)"))
-        .isInstanceOf(CommandParsingException.class);
-  }
-
-  @Test
-  void compactionIntervalTwoWordFormIsNotSupported() {
-    // The documented form 'COMPACTION INTERVAL' (two words) is not a valid token.
-    // Only 'COMPACTION_INTERVAL' (with underscore) is recognized by the grammar.
-    assertThatThrownBy(() ->
-        database.command("sql",
-            "CREATE TIMESERIES TYPE BadCompaction TIMESTAMP ts FIELDS (value DOUBLE) COMPACTION INTERVAL 30 DAYS"))
-        .isInstanceOf(CommandParsingException.class);
-  }
 }

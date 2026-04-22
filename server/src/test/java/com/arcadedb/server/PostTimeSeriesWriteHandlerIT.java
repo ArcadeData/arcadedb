@@ -103,6 +103,18 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
+  void nonTimeSeriesTypeReturnsError() throws Exception {
+    // When all samples reference a type that exists but is NOT a TIMESERIES type,
+    // the handler must return 400 - not silently return 204 with zero rows written.
+    testEachServer((serverIndex) -> {
+      command(serverIndex, "CREATE DOCUMENT TYPE plain_doc");
+      final String lineProtocol = "plain_doc,host=srv1 value=1.0 1000\n";
+      final int statusCode = postLineProtocol(serverIndex, lineProtocol, "ms");
+      assertThat(statusCode).isEqualTo(400);
+    });
+  }
+
+  @Test
   void gzipCompressedBodyIsAccepted() throws Exception {
     // Telegraf's [[outputs.influxdb]] plugin sends Content-Encoding: gzip by default.
     // The write handler must decompress the body before parsing it.
