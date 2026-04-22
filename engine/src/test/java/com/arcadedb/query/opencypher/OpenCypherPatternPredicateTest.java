@@ -27,9 +27,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -437,6 +437,82 @@ class OpenCypherPatternPredicateTest {
         while (rs.hasNext())
           names.add((String) rs.next().getProperty("name"));
         assertThat(names).containsExactlyInAnyOrder("Bob");
+      }
+    }
+  }
+
+  @Nested
+  class InlineRelationshipPredicate {
+    private Database db;
+
+    @BeforeEach
+    void setUp() {
+      db = new DatabaseFactory("./databases/test-inline-rel-predicate").create();
+      db.getSchema().createVertexType("Person");
+      db.getSchema().createEdgeType("KNOWS");
+      db.command("opencypher",
+          """
+          CREATE (a:Person {name: 'Alice'}), \
+          (b:Person {name: 'Bob'}), \
+          (c:Person {name: 'Charlie'}), \
+          (a)-[:KNOWS {since: 2018}]->(b), \
+          (a)-[:KNOWS {since: 2020}]->(c)""");
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (db != null)
+        db.drop();
+    }
+
+    @Test
+    void inlineWhereOnRelationshipIsApplied() {
+      // Only the 2018 relationship must match in each direction
+      try (final ResultSet rs = db.query("opencypher",
+          """
+          MATCH (a:Person)-[r:KNOWS WHERE r.since < 2019]-(b) \
+          RETURN DISTINCT a.name AS person, b.name AS friend, r.since AS knowsSince \
+          ORDER BY knowsSince, person, friend""")) {
+        final List<String> rows = new ArrayList<>();
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          rows.add(row.getProperty("person") + "->" + row.getProperty("friend") + ":" + row.getProperty("knowsSince"));
+        }
+        assertThat(rows).containsExactlyInAnyOrder("Alice->Bob:2018", "Bob->Alice:2018");
+      }
+    }
+
+    @Test
+    void inlineWhereOnRelationshipDirected() {
+      // Directed pattern: only Alice->Bob (since=2018) must be returned
+      try (final ResultSet rs = db.query("opencypher",
+          """
+          MATCH (a:Person)-[r:KNOWS WHERE r.since < 2019]->(b) \
+          RETURN a.name AS person, b.name AS friend, r.since AS knowsSince""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat((String) row.getProperty("person")).isEqualTo("Alice");
+        assertThat((String) row.getProperty("friend")).isEqualTo("Bob");
+        assertThat(((Number) row.getProperty("knowsSince")).intValue()).isEqualTo(2018);
+        assertThat(rs.hasNext()).isFalse();
+      }
+    }
+
+    @Test
+    void inlineWhereWithExternalWhereClause() {
+      // Combined: inline relationship predicate AND an outer WHERE clause
+      try (final ResultSet rs = db.query("opencypher",
+          """
+          MATCH (a:Person)-[r:KNOWS WHERE r.since < 2019]-(b) \
+          WHERE NOT (b:NonexistentLabel) \
+          RETURN DISTINCT a.name AS person, b.name AS friend, r.since AS knowsSince \
+          ORDER BY knowsSince""")) {
+        final List<String> rows = new ArrayList<>();
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          rows.add(row.getProperty("person") + "->" + row.getProperty("friend") + ":" + row.getProperty("knowsSince"));
+        }
+        assertThat(rows).containsExactlyInAnyOrder("Alice->Bob:2018", "Bob->Alice:2018");
       }
     }
   }

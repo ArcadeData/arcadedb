@@ -466,6 +466,15 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       }
 
       private void processStandardPath(final int n) {
+        // Pre-populate once per source vertex; matchesEdgeWhereExpression only updates the edge binding per iteration
+        final ResultInternal whereEvalResult;
+        if (pattern.hasWhereExpression()) {
+          whereEvalResult = new ResultInternal();
+          for (final String prop : lastResult.getPropertyNames())
+            whereEvalResult.setProperty(prop, lastResult.getProperty(prop));
+        } else
+          whereEvalResult = null;
+
         while (currentEdges.hasNext() && buffer.size() < n) {
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
@@ -487,6 +496,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             // Filter by inline relationship properties if specified
             if (pattern.hasProperties() && !matchesEdgeProperties(edge))
+              continue;
+
+            // Filter by inline WHERE predicate on the relationship (e.g., [r:KNOWS WHERE r.since < 2019])
+            if (whereEvalResult != null && !matchesEdgeWhereExpression(edge, whereEvalResult))
               continue;
 
             // Relationship uniqueness: Cypher requires each relationship in a pattern
@@ -612,8 +625,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     if (relationshipVariable != null && !relationshipVariable.isEmpty())
       return false;
 
-    // 2. Edge property filter — GAV doesn't store edge properties
-    if (pattern.hasProperties())
+    // 2. Edge property filter or inline WHERE — GAV doesn't store edge properties
+    if (pattern.hasProperties() || pattern.hasWhereExpression())
       return false;
 
     // 3. Path variable — path reconstruction needs edge objects
@@ -988,6 +1001,17 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       }
     }
     return true;
+  }
+
+  /**
+   * Evaluates the inline WHERE predicate against a pre-populated result.
+   * The caller pre-populates {@code evalResult} with the current scope properties once
+   * per source vertex; this method only updates the relationship variable binding per edge.
+   */
+  private boolean matchesEdgeWhereExpression(final Edge edge, final ResultInternal evalResult) {
+    if (relationshipVariable != null && !relationshipVariable.isEmpty())
+      evalResult.setProperty(relationshipVariable, edge);
+    return pattern.getWhereExpression().evaluate(evalResult, context);
   }
 
   @Override
