@@ -133,6 +133,63 @@ class RaftLeaderProxyIT extends BaseRaftHATest {
     }
   }
 
+  /**
+   * Regression test for the bug where positional params serialized as a JSON array [110]
+   * were converted to float[]{110.0} by toMap(true) on the leader, causing
+   * ClassCastException: [F cannot be cast to Map when PostCommandHandler tried to cast it.
+   */
+  @Test
+  void positionalParamsViaFollowerIsProxiedToLeader() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected before the test").isGreaterThanOrEqualTo(0);
+
+    final int followerIndex = firstFollowerIndex(leaderIndex);
+    final int followerPort = 2480 + followerIndex;
+    final String dbName = getDatabaseName();
+
+    final JSONObject body = new JSONObject()
+        .put("language", "sql")
+        .put("command", "INSERT INTO V1 SET id = ?, name = ?")
+        .put("params", new com.arcadedb.serializer.json.JSONArray().put(42).put("positional-test"));
+
+    final HttpResponse<String> response = postCommandWithBody(followerPort, dbName, body.toString());
+    assertThat(response.statusCode())
+        .as("INSERT with positional params proxied via follower should return 200, body: " + response.body())
+        .isEqualTo(200);
+
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    for (int i = 0; i < getServerCount(); i++) {
+      final Database db = getServerDatabase(i, dbName);
+      final long[] found = { 0 };
+      db.transaction(() -> {
+        try (final com.arcadedb.query.sql.executor.ResultSet rs = db.query("sql",
+            "SELECT FROM V1 WHERE name = 'positional-test'")) {
+          while (rs.hasNext()) {
+            rs.next();
+            found[0]++;
+          }
+        }
+      });
+      assertThat(found[0])
+          .as("Server %d should have the positional-param-inserted record after replication", i)
+          .isEqualTo(1L);
+    }
+
+    // Also test the float[] code path: an all-numeric JSON array [42] is converted to float[]
+    // by toMap(true) on the leader. This previously caused ClassCastException before the fix.
+    final JSONObject numericBody = new JSONObject()
+        .put("language", "sql")
+        .put("command", "SELECT FROM V1 WHERE id = ?")
+        .put("params", new com.arcadedb.serializer.json.JSONArray().put(42));
+
+    final HttpResponse<String> numericResponse = postCommandWithBody(followerPort, dbName, numericBody.toString());
+    assertThat(numericResponse.statusCode())
+        .as("SELECT with all-numeric positional params (float[] path) should not throw ClassCastException, body: " + numericResponse.body())
+        .isEqualTo(200);
+  }
+
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
@@ -153,19 +210,20 @@ class RaftLeaderProxyIT extends BaseRaftHATest {
    * at {@code port}, using Basic authentication.
    */
   private HttpResponse<String> postCommand(final int port, final String dbName, final String sql) throws Exception {
+    return postCommandWithBody(port, dbName, new JSONObject().put("language", "sql").put("command", sql).toString());
+  }
+
+  private HttpResponse<String> postCommandWithBody(final int port, final String dbName, final String jsonBody)
+      throws Exception {
     final String authHeader = "Basic " + Base64.getEncoder()
         .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
-    final String body = new JSONObject()
-        .put("language", "sql")
-        .put("command", sql)
-        .toString();
 
     final HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create("http://127.0.0.1:" + port + "/api/v1/command/" + dbName))
         .timeout(Duration.ofSeconds(30))
         .header("Authorization", authHeader)
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+        .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
         .build();
 
     return HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));

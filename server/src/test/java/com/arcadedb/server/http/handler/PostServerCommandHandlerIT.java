@@ -124,6 +124,11 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void userCommandsCaseSensitivity() throws Exception {
+    // Drop users first to ensure idempotency (stale state from prior test runs)
+    executeServerCommand("DROP USER testuser");
+    executeServerCommand("DROP USER testuser2");
+    executeServerCommand("DROP USER testuser3");
+
     // CREATE USER expects JSON payload format
     HttpResponse<String> response = executeServerCommand("""
         CREATE USER {"name":"testuser","password":"testpass"}

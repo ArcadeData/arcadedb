@@ -1337,8 +1337,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     body.put("command", query);
     if (mapArgs != null && !mapArgs.isEmpty())
       body.put("params", new JSONObject(mapArgs));
-    else if (positionalArgs != null && positionalArgs.length > 0)
-      body.put("params", new com.arcadedb.serializer.json.JSONArray(Arrays.asList(positionalArgs)));
+    else if (positionalArgs != null && positionalArgs.length > 0) {
+      // Use ordinal-map format {"0": v0, "1": v1, ...} so the leader's PostCommandHandler
+      // can safely parse params as a Map regardless of the toMap(true) numeric-array optimization.
+      // Sending a plain JSON array like [110] causes toMap(true) to return float[]{110.0},
+      // which then cannot be cast to Map at the params-extraction site.
+      final JSONObject ordinalParams = new JSONObject();
+      for (int i = 0; i < positionalArgs.length; i++)
+        ordinalParams.put("" + i, positionalArgs[i]);
+      body.put("params", ordinalParams);
+    }
 
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create("http://" + leaderHttpAddress + "/api/v1/command/" + getName()))

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.test.support;
 
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteHttpComponent;
@@ -105,11 +106,13 @@ public class DatabaseWrapper {
   }
 
   public void createDatabase() {
-    RemoteServer httpServer = new RemoteServer(
+    final RemoteServer httpServer = new RemoteServer(
         server.host(),
         server.httpPort(),
         "root",
         PASSWORD);
+    // FIXED strategy prevents the client from following cluster-reported internal Docker
+    // addresses (arcadedb-N:2480) after a failure; those are unreachable from the test host.
     httpServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
 
     if (httpServer.exists(DATABASE)) {
@@ -117,7 +120,31 @@ public class DatabaseWrapper {
       httpServer.drop(DATABASE);
     }
     logger.info("Creating  database {}", DATABASE);
-    httpServer.create(DATABASE);
+
+    // Retry when:
+    //  (a) leader address not yet propagated after election (ServerIsNotTheLeaderException, null leader)
+    //  (b) server temporarily unavailable during rolling restart (RemoteException / ConnectException)
+    final int maxAttempts = 30;
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        httpServer.create(DATABASE);
+        return;
+      } catch (final ServerIsNotTheLeaderException e) {
+        if (e.getLeaderAddress() != null || attempt == maxAttempts)
+          throw e;
+        logger.info("Leader address not yet known (attempt {}/{}), retrying in 2s...", attempt, maxAttempts);
+      } catch (final Exception e) {
+        if (attempt == maxAttempts)
+          throw e;
+        logger.info("Database creation attempt {}/{} failed ({}), retrying in 2s...", attempt, maxAttempts, e.getMessage());
+      }
+      try {
+        Thread.sleep(2_000);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
   }
 
   /**
