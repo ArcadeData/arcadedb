@@ -21,9 +21,14 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -33,10 +38,13 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Execution step for CALL subquery clause.
@@ -57,10 +65,14 @@ import java.util.NoSuchElementException;
  * Produces: {x:1, y:10}, {x:2, y:20}, {x:3, y:30}
  */
 public class SubqueryStep extends AbstractExecutionStep {
+  private static final String STAR_SCOPE = "*";
+
   private final SubqueryClause subqueryClause;
   private final DatabaseInternal database;
   private final Map<String, Object> parameters;
   private final ExpressionEvaluator expressionEvaluator;
+  private final Set<String> importedVariables;
+  private final boolean importAllVariables;
 
   public SubqueryStep(final SubqueryClause subqueryClause, final CommandContext context,
                        final DatabaseInternal database, final Map<String, Object> parameters,
@@ -70,6 +82,69 @@ public class SubqueryStep extends AbstractExecutionStep {
     this.database = database;
     this.parameters = parameters;
     this.expressionEvaluator = expressionEvaluator;
+    this.importedVariables = computeImportedVariables(subqueryClause);
+    this.importAllVariables = importedVariables == null;
+  }
+
+  /**
+   * Computes the set of outer variables that the inner query is allowed to reference.
+   * <p>
+   * Cypher defines two scope modes for CALL subqueries:
+   * <ul>
+   *   <li><b>Explicit scope</b> {@code CALL (v1, v2) { ... }} imports only the listed variables.
+   *   {@code CALL (*) { ... }} imports all outer variables.</li>
+   *   <li><b>Implicit scope</b> {@code CALL { ... }} requires an <i>importing WITH</i> as the first
+   *   clause of the body; that clause may only reference outer variables (no expressions, no aggregations).
+   *   Without such an importing WITH, no outer variable is visible inside the subquery.</li>
+   * </ul>
+   * Returning {@code null} signals "import all" (used for {@code CALL (*)}).
+   *
+   * @return set of imported variable names, or {@code null} to import all outer variables
+   */
+  private static Set<String> computeImportedVariables(final SubqueryClause clause) {
+    final List<String> scope = clause.getScopeVariables();
+    if (scope != null) {
+      if (scope.size() == 1 && STAR_SCOPE.equals(scope.get(0)))
+        return null; // sentinel: import everything
+      return new LinkedHashSet<>(scope);
+    }
+    // Implicit scope: look for an importing WITH as the first clause of each branch.
+    return collectImportingWithVariables(clause.getInnerStatement());
+  }
+
+  private static Set<String> collectImportingWithVariables(final CypherStatement statement) {
+    if (statement instanceof UnionStatement union) {
+      final Set<String> combined = new LinkedHashSet<>();
+      for (final CypherStatement branch : union.getQueries()) {
+        final Set<String> branchImports = collectImportingWithVariables(branch);
+        if (branchImports != null)
+          combined.addAll(branchImports);
+      }
+      return combined;
+    }
+
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null || clauses.isEmpty())
+      return Collections.emptySet();
+
+    final ClauseEntry first = clauses.get(0);
+    if (first.getType() != ClauseEntry.ClauseType.WITH)
+      return Collections.emptySet();
+
+    final WithClause withClause = first.getTypedClause();
+    final Set<String> imports = new LinkedHashSet<>();
+    for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      if (!(item.getExpression() instanceof VariableExpression var))
+        continue;
+      final String name = var.getVariableName();
+      if (STAR_SCOPE.equals(name))
+        continue; // WITH * handled by caller if desired; treat as non-importing here
+      final String alias = item.getAlias();
+      if (alias != null && !alias.equals(name))
+        continue; // aliased projection, not a pure import
+      imports.add(name);
+    }
+    return imports;
   }
 
   @Override
@@ -336,7 +411,7 @@ public class SubqueryStep extends AbstractExecutionStep {
     final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
         database, innerStatement, parameters, database.getConfiguration(), null, expressionEvaluator);
 
-    final ResultSet resultSet = innerPlan.executeWithSeedRow(outerRow);
+    final ResultSet resultSet = innerPlan.executeWithSeedRow(filterSeedRow(outerRow));
 
     // Unit subquery: no RETURN clause — consume all inner rows for side effects only.
     // The outer row count must be preserved (one output row per outer row).
@@ -351,6 +426,27 @@ public class SubqueryStep extends AbstractExecutionStep {
       results.add(resultSet.next());
 
     return results;
+  }
+
+  /**
+   * Returns a seed row exposing only the outer variables that the subquery is allowed to
+   * see. For {@code CALL (*)} the whole outer row is passed through; for explicit or
+   * implicit imports only the declared variables are retained; otherwise an empty row is
+   * returned so inner MATCH variables sharing a name with an outer variable are not
+   * silently bound to the outer value (issue #3959).
+   */
+  private Result filterSeedRow(final Result outerRow) {
+    if (importAllVariables)
+      return outerRow;
+    if (importedVariables.isEmpty())
+      return new ResultInternal();
+
+    final ResultInternal filtered = new ResultInternal();
+    for (final String name : importedVariables) {
+      if (outerRow.hasProperty(name))
+        filtered.setProperty(name, outerRow.getProperty(name));
+    }
+    return filtered;
   }
 
   /**

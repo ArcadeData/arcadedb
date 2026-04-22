@@ -371,4 +371,82 @@ class OpenCypherSubqueryTest {
       assertThat((String) rows.get(1).getProperty("person")).isEqualTo("Bob");
     });
   }
+
+  /**
+   * Issue #3959: Reusing an outer variable name for an inner MATCH variable inside a
+   * non-importing CALL subquery must not leak the outer binding into the inner MATCH.
+   * The implicit scope CALL (no scope list, no importing WITH) runs with a fresh
+   * scope for inner variables, so the inner {@code MATCH (p:Person)} should scan all
+   * Person vertices, produce a cross product against the single outer row, and return
+   * three rows.
+   */
+  @Test
+  void callSubqueryShadowingOuterVariableWithoutImport() {
+    database.getSchema().createVertexType("Person3959");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person3959 {name: 'Bob', age: 30, role: 'Employee'})");
+      database.command("opencypher", "CREATE (:Person3959 {name: 'X', city: 'Berlin'})");
+      database.command("opencypher", "CREATE (:Person3959 {name: 'Y', city: 'Paris'})");
+      database.command("opencypher", "CREATE (:Person3959 {name: 'Z', city: 'London'})");
+    });
+
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person3959 {name: 'Bob'}) " +
+            "CALL { " +
+            "  MATCH (p:Person3959) " +
+            "  WHERE p.city IS NOT NULL " +
+            "  RETURN p.city AS location " +
+            "} " +
+            "RETURN p.name AS outerName, location " +
+            "ORDER BY location");
+
+    final List<Result> rows = new ArrayList<>();
+    while (result.hasNext())
+      rows.add(result.next());
+
+    assertThat(rows).as("Implicit-scope CALL with inner MATCH reusing outer name must scan all persons")
+        .hasSize(3);
+    assertThat((String) rows.get(0).getProperty("outerName")).isEqualTo("Bob");
+    assertThat((String) rows.get(0).getProperty("location")).isEqualTo("Berlin");
+    assertThat((String) rows.get(1).getProperty("outerName")).isEqualTo("Bob");
+    assertThat((String) rows.get(1).getProperty("location")).isEqualTo("London");
+    assertThat((String) rows.get(2).getProperty("outerName")).isEqualTo("Bob");
+    assertThat((String) rows.get(2).getProperty("location")).isEqualTo("Paris");
+  }
+
+  /**
+   * Issue #3959 control: renaming the inner variable yields the same expected behavior.
+   */
+  @Test
+  void callSubqueryWithRenamedInnerVariableMatchesNeo4j() {
+    database.getSchema().createVertexType("Person3959b");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person3959b {name: 'Bob', age: 30, role: 'Employee'})");
+      database.command("opencypher", "CREATE (:Person3959b {name: 'X', city: 'Berlin'})");
+      database.command("opencypher", "CREATE (:Person3959b {name: 'Y', city: 'Paris'})");
+      database.command("opencypher", "CREATE (:Person3959b {name: 'Z', city: 'London'})");
+    });
+
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person3959b {name: 'Bob'}) " +
+            "CALL { " +
+            "  MATCH (q:Person3959b) " +
+            "  WHERE q.city IS NOT NULL " +
+            "  RETURN q.city AS location " +
+            "} " +
+            "RETURN p.name AS outerName, location " +
+            "ORDER BY location");
+
+    final List<Result> rows = new ArrayList<>();
+    while (result.hasNext())
+      rows.add(result.next());
+
+    assertThat(rows).hasSize(3);
+    assertThat((String) rows.get(0).getProperty("outerName")).isEqualTo("Bob");
+    assertThat((String) rows.get(0).getProperty("location")).isEqualTo("Berlin");
+    assertThat((String) rows.get(1).getProperty("location")).isEqualTo("London");
+    assertThat((String) rows.get(2).getProperty("location")).isEqualTo("Paris");
+  }
 }
