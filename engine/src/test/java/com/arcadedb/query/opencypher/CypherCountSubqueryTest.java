@@ -112,6 +112,36 @@ class CypherCountSubqueryTest {
   }
 
   /**
+   * Issue #3955: COUNT { (person)-[:HAS_DOG]->(dog:Dog) WHERE dog.breed = 'Labrador' }
+   * pattern with inline WHERE must count only matches satisfying the filter.
+   */
+  @Test
+  void countPatternWithInlineWhere() {
+    database.transaction(() -> {
+      final MutableVertex labrador = database.newVertex("Dog").set("name", "Rex2").set("breed", "Labrador").save();
+      database.newVertex("Dog").set("name", "Fido2").set("breed", "Poodle").save();
+      database.newVertex("Dog").set("name", "Spot2").set("breed", "Dalmatian").save();
+    });
+
+    final ResultSet results = database.query("opencypher",
+        "MATCH (person:Person) "
+            + "OPTIONAL MATCH (person)-[:OWNS]->(:Dog) "
+            + "RETURN person.name AS name, "
+            + "       COUNT { (person)-[:OWNS]->(dog:Dog) WHERE dog.name = 'Rex' } AS rexCount "
+            + "ORDER BY name");
+
+    final List<Result> rows = collect(results);
+
+    assertThat(rows).hasSize(3);
+    assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
+    assertThat(((Number) rows.get(0).getProperty("rexCount")).longValue()).isEqualTo(1L);
+    assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Bob");
+    assertThat(((Number) rows.get(1).getProperty("rexCount")).longValue()).isEqualTo(0L);
+    assertThat((String) rows.get(2).getProperty("name")).isEqualTo("Charlie");
+    assertThat(((Number) rows.get(2).getProperty("rexCount")).longValue()).isEqualTo(0L);
+  }
+
+  /**
    * COUNT { ... } with a full inner MATCH clause and WHERE filter.
    */
   @Test
