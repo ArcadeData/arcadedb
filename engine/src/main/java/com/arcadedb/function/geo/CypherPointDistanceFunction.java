@@ -51,10 +51,15 @@ public class CypherPointDistanceFunction implements StatelessFunction {
 
     // WGS-84: use Haversine formula
     if (p1.containsKey("longitude") && p1.containsKey("latitude") &&
-        p2.containsKey("longitude") && p2.containsKey("latitude"))
-      return haversineDistance(
-          ((Number) p1.get("latitude")).doubleValue(), ((Number) p1.get("longitude")).doubleValue(),
-          ((Number) p2.get("latitude")).doubleValue(), ((Number) p2.get("longitude")).doubleValue());
+        p2.containsKey("longitude") && p2.containsKey("latitude")) {
+      final Number lat1n = (Number) p1.get("latitude");
+      final Number lon1n = (Number) p1.get("longitude");
+      final Number lat2n = (Number) p2.get("latitude");
+      final Number lon2n = (Number) p2.get("longitude");
+      if (lat1n == null || lon1n == null || lat2n == null || lon2n == null)
+        return null;
+      return haversineDistance(lat1n.doubleValue(), lon1n.doubleValue(), lat2n.doubleValue(), lon2n.doubleValue());
+    }
 
     // Cartesian: use Euclidean distance
     final Number x1n = (Number) p1.get("x");
@@ -68,7 +73,9 @@ public class CypherPointDistanceFunction implements StatelessFunction {
     double sumSq = dx * dx + dy * dy;
     final Number z1n = (Number) p1.get("z");
     final Number z2n = (Number) p2.get("z");
-    if (z1n != null && z2n != null) {
+    if ((z1n == null) != (z2n == null))
+      return null;
+    if (z1n != null) {
       final double dz = z2n.doubleValue() - z1n.doubleValue();
       sumSq += dz * dz;
     }

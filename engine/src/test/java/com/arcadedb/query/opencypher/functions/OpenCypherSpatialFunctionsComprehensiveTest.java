@@ -256,6 +256,15 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
     Assertions.assertThat(result.next().getProperty("distance") == null).isTrue();
   }
 
+  @Test
+  void pointDistanceMixedDimensions() {
+    // Per Cypher spec, mixing 2D and 3D points returns null
+    final ResultSet result = database.command("opencypher",
+        "RETURN point.distance(point({x: 1.0, y: 2.0}), point({x: 1.0, y: 2.0, z: 3.0})) AS distance");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.next().getProperty("distance") == null).isTrue();
+  }
+
   // ==================== point.withinBBox() Tests ====================
 
   @Test

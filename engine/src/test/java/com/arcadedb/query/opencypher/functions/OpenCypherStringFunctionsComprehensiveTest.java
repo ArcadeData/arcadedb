@@ -442,6 +442,15 @@ class OpenCypherStringFunctionsComprehensiveTest {
   }
 
   @Test
+  void splitTrailingDelimiter() {
+    final ResultSet result = database.command("opencypher", "RETURN split('a,b,', ',') AS result");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<String> parts = (List<String>) result.next().getProperty("result");
+    assertThat(parts).containsExactly("a", "b", "");
+  }
+
+  @Test
   void splitNullHandling() {
     ResultSet result = database.command("opencypher", "RETURN split(null, ',') AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();

@@ -43,6 +43,6 @@ public class CypherSplitFunction implements StatelessFunction {
       return null;
     final String str = args[0].toString();
     final String delimiter = args[1].toString();
-    return List.of(str.split(Pattern.quote(delimiter)));
+    return List.of(str.split(Pattern.quote(delimiter), -1));
   }
 }
