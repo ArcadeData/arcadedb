@@ -96,13 +96,13 @@ public class PostCommandHandler extends AbstractQueryHandler {
       paramMap = typed;
     } else if (rawParams instanceof List<?> list) {
       // Positional params forwarded as a JSON array [v0, v1, ...] — convert to ordinal map
-      paramMap = new HashMap<>(list.size());
+      paramMap = new HashMap<>((int) (list.size() / 0.75f) + 1);
       for (int i = 0; i < list.size(); i++)
         paramMap.put("" + i, list.get(i));
     } else if (rawParams != null && rawParams.getClass().isArray()) {
       // Positional params converted to a primitive array by toMap(true) — convert to ordinal map
       final int len = java.lang.reflect.Array.getLength(rawParams);
-      paramMap = new HashMap<>(len);
+      paramMap = new HashMap<>((int) (len / 0.75f) + 1);
       for (int i = 0; i < len; i++)
         paramMap.put("" + i, java.lang.reflect.Array.get(rawParams, i));
     } else {

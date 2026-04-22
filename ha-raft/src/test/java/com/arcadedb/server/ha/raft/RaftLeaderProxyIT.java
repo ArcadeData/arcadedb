@@ -176,6 +176,18 @@ class RaftLeaderProxyIT extends BaseRaftHATest {
           .as("Server %d should have the positional-param-inserted record after replication", i)
           .isEqualTo(1L);
     }
+
+    // Also test the float[] code path: an all-numeric JSON array [42] is converted to float[]
+    // by toMap(true) on the leader. This previously caused ClassCastException before the fix.
+    final JSONObject numericBody = new JSONObject()
+        .put("language", "sql")
+        .put("command", "SELECT FROM V1 WHERE id = ?")
+        .put("params", new com.arcadedb.serializer.json.JSONArray().put(42));
+
+    final HttpResponse<String> numericResponse = postCommandWithBody(followerPort, dbName, numericBody.toString());
+    assertThat(numericResponse.statusCode())
+        .as("SELECT with all-numeric positional params (float[] path) should not throw ClassCastException, body: " + numericResponse.body())
+        .isEqualTo(200);
   }
 
   // -------------------------------------------------------------------------
