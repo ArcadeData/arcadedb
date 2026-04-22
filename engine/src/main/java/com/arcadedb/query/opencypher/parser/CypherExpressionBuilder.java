@@ -260,6 +260,11 @@ class CypherExpressionBuilder {
     if (existsCtx != null && existsCtx.getText().length() >= nodeText.length() - 2)
       return parseExistsExpression(existsCtx);
 
+    // Check for COLLECT { ... } subqueries
+    final Cypher25Parser.CollectExpressionContext collectCtx = findCollectExpressionRecursive(node);
+    if (collectCtx != null && collectCtx.getText().length() >= nodeText.length() - 2)
+      return parseCollectExpression(collectCtx);
+
     // Check for logical expressions (AND, OR, XOR, NOT) in the parse tree
     // This handles cases like (a AND b) appearing as children of comparisons
     if (node instanceof Cypher25Parser.ExpressionContext)
@@ -374,6 +379,8 @@ class CypherExpressionBuilder {
         return parseAllReduceExpression(e1.allReduceExpression());
       if (e1.existsExpression() != null)
         return parseExistsExpression(e1.existsExpression());
+      if (e1.collectExpression() != null)
+        return parseCollectExpression(e1.collectExpression());
       if (e1.countStar() != null) {
         final List<Expression> e1Args = new ArrayList<>();
         e1Args.add(new StarExpression());
@@ -876,6 +883,26 @@ class CypherExpressionBuilder {
       if (found != null) {
         return found;
       }
+    }
+
+    return null;
+  }
+
+  /**
+   * Recursively find COLLECT { ... } subquery expression in the parse tree.
+   */
+  Cypher25Parser.CollectExpressionContext findCollectExpressionRecursive(
+      final ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.CollectExpressionContext)
+      return (Cypher25Parser.CollectExpressionContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.CollectExpressionContext found = findCollectExpressionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
     }
 
     return null;
@@ -1704,6 +1731,32 @@ class CypherExpressionBuilder {
     }
 
     return new ExistsExpression(subquery, text);
+  }
+
+  /**
+   * Parse a COLLECT { ... } subquery expression.
+   * Example: COLLECT { MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name }
+   */
+  CollectExpression parseCollectExpression(final Cypher25Parser.CollectExpressionContext ctx) {
+    final String originalText = CypherASTBuilder.getOriginalText(ctx);
+    final String text = originalText;
+
+    final int openBrace = originalText.indexOf('{');
+    final int closeBrace = originalText.lastIndexOf('}');
+    String subquery;
+    if (openBrace >= 0 && closeBrace > openBrace)
+      subquery = originalText.substring(openBrace + 1, closeBrace).trim();
+    else
+      subquery = originalText.substring(8, originalText.length() - 1).trim(); // fallback "COLLECT{" prefix
+
+    // Update clauses are not allowed inside a COLLECT subquery
+    final String upper = subquery.toUpperCase();
+    if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ")
+        || upper.contains("MERGE ") || upper.contains("REMOVE "))
+      throw new CommandParsingException(
+          "InvalidClauseComposition: COLLECT subquery cannot contain update clauses");
+
+    return new CollectExpression(subquery, text);
   }
 
   /**
