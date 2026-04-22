@@ -167,7 +167,7 @@ class TextStatelessFunctionsTest {
   void lTrimWrongArgCount() {
     final LTrimFunction fn = new LTrimFunction();
 
-    assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b"}, null))
+    assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b", "c"}, null))
         .isInstanceOf(CommandExecutionException.class);
   }
 
@@ -192,7 +192,7 @@ class TextStatelessFunctionsTest {
   void rTrimWrongArgCount() {
     final RTrimFunction fn = new RTrimFunction();
 
-    assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b"}, null))
+    assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b", "c"}, null))
         .isInstanceOf(CommandExecutionException.class);
   }
 

@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Map;
 
 /**
@@ -48,8 +49,18 @@ public class DateConstructorFunction implements StatelessFunction {
       return CypherFunctionHelper.getStatementTime(context).get("date");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String)
-      return CypherDate.parse((String) args[0]);
+    if (args[0] instanceof String) {
+      final String str = (String) args[0];
+      try {
+        return CypherDate.parse(str);
+      } catch (final Exception e) {
+        try {
+          return new CypherDate(LocalDate.now(ZoneId.of(str)));
+        } catch (final Exception e2) {
+          throw new CommandExecutionException("date() cannot parse '" + str + "' as a date or timezone");
+        }
+      }
+    }
     if (args[0] instanceof Map)
       return CypherDate.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherDate)

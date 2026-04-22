@@ -33,10 +33,24 @@ public class RTrimFunction implements StatelessFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("rTrim() requires exactly one argument");
-    if (args[0] == null)
-      return null;
-    return args[0].toString().stripTrailing();
+    if (args.length == 1) {
+      if (args[0] == null)
+        return null;
+      return args[0].toString().stripTrailing();
+    }
+    if (args.length == 2) {
+      if (args[0] == null || args[1] == null)
+        return null;
+      final String source = args[0].toString();
+      final String trimChar = args[1].toString();
+      if (trimChar.isEmpty())
+        return source.stripTrailing();
+      return stripTrailing(source, trimChar);
+    }
+    throw new CommandExecutionException("rTrim() requires 1 or 2 arguments");
+  }
+
+  private static String stripTrailing(final String source, final String trimChars) {
+    return TrimFunction.stripTrailing(source, trimChars);
   }
 }

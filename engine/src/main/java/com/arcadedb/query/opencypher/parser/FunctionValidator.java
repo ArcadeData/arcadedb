@@ -108,6 +108,7 @@ public class FunctionValidator {
     registerFunction("properties", 1, 1, "All properties of entity", false);
     registerFunction("size", 1, 1, "Size of list/string", false);
     registerFunction("length", 1, 1, "Length of path", false);
+    registerFunction("path_length", 1, 1, "Length of path (alias for length)", false);
     registerFunction("reverse", 1, 1, "Reverse list/string", false);
 
     // String functions
@@ -115,8 +116,8 @@ public class FunctionValidator {
     registerFunction("tolower", 1, 1, "Convert to lowercase", false);
     registerFunction("toupper", 1, 1, "Convert to uppercase", false);
     registerFunction("trim", 1, 3, "Trim whitespace", false);
-    registerFunction("ltrim", 1, 1, "Trim left whitespace", false);
-    registerFunction("rtrim", 1, 1, "Trim right whitespace", false);
+    registerFunction("ltrim", 1, 2, "Trim left whitespace", false);
+    registerFunction("rtrim", 1, 2, "Trim right whitespace", false);
     registerFunction("substring", 2, 3, "Extract substring", false);
     registerFunction("replace", 3, 3, "Replace string", false);
     registerFunction("split", 2, 2, "Split string", false);
@@ -126,12 +127,14 @@ public class FunctionValidator {
     // Math functions
     registerFunction("abs", 1, 1, "Absolute value", false);
     registerFunction("ceil", 1, 1, "Ceiling", false);
+    registerFunction("ceiling", 1, 1, "Ceiling (alias for ceil)", false);
     registerFunction("floor", 1, 1, "Floor", false);
-    registerFunction("round", 1, 2, "Round to integer or precision", false);
+    registerFunction("round", 1, 3, "Round to integer or precision", false);
     registerFunction("sign", 1, 1, "Sign of number", false);
     registerFunction("rand", 0, 0, "Random number", false);
     registerFunction("sqrt", 1, 1, "Square root", false);
     registerFunction("log", 1, 1, "Natural logarithm", false);
+    registerFunction("ln", 1, 1, "Natural logarithm (alias for log)", false);
     registerFunction("log10", 1, 1, "Base-10 logarithm", false);
     registerFunction("exp", 1, 1, "Exponential", false);
     registerFunction("sin", 1, 1, "Sine", false);
@@ -161,6 +164,13 @@ public class FunctionValidator {
     registerFunction("upper", 1, 1, "Convert to uppercase (alias for toUpper)", false);
     registerFunction("btrim", 1, 3, "Trim both sides (alias for trim)", false);
 
+    // Aggregation function aliases (GQL conformance)
+    registerFunction("collect_list", 1, 1, "Collect values into list (alias for collect)", true);
+    registerFunction("stdev_samp", 1, 1, "Sample standard deviation (alias for stdev)", true);
+    registerFunction("stdev_pop", 1, 1, "Population standard deviation (alias for stdevp)", true);
+    registerFunction("percentile_cont", 2, 2, "Continuous percentile (alias for percentilecont)", true);
+    registerFunction("percentile_disc", 2, 2, "Discrete percentile (alias for percentiledisc)", true);
+
     // List conversion functions
     registerFunction("tobooleanlist", 1, 1, "Convert list elements to booleans", false);
     registerFunction("tofloatlist", 1, 1, "Convert list elements to floats", false);
@@ -170,6 +180,7 @@ public class FunctionValidator {
     // Vector functions
     registerFunction("vector", 1, 2, "Create vector from list (alias for vector.create)", false);
     registerFunction("vector.dimension.count", 1, 1, "Return dimension count of vector", false);
+    registerFunction("vector_dimension_count", 1, 1, "Return dimension count of vector", false);
     registerFunction("vector.distance", 2, 3, "Calculate distance between vectors", false);
     registerFunction("vector.distance.euclidean", 2, 2, "Euclidean distance between vectors", false);
     registerFunction("vector.norm", 1, 1, "L2 norm (magnitude) of vector", false);
@@ -180,11 +191,16 @@ public class FunctionValidator {
     // Temporal functions
     registerFunction("timestamp", 0, 0, "Current timestamp", false);
     registerFunction("datetime", 0, 1, "Current or parsed datetime", false);
+    registerFunction("zoned_datetime", 0, 1, "Current or parsed datetime (alias for datetime)", false);
     registerFunction("date", 0, 1, "Current or parsed date", false);
     registerFunction("time", 0, 1, "Current or parsed time", false);
+    registerFunction("zoned_time", 0, 1, "Current or parsed time (alias for time)", false);
     registerFunction("localtime", 0, 1, "Current or parsed local time", false);
+    registerFunction("local_time", 0, 1, "Current or parsed local time (alias for localtime)", false);
     registerFunction("localdatetime", 0, 1, "Current or parsed local datetime", false);
+    registerFunction("local_datetime", 0, 1, "Current or parsed local datetime (alias for localdatetime)", false);
     registerFunction("duration", 1, 1, "Duration value", false);
+    registerFunction("duration_between", 2, 2, "Duration between two temporal values (alias for duration.between)", false);
 
     // Temporal format function
     registerFunction("format", 1, 2, "Format temporal value as string", false);
@@ -200,6 +216,7 @@ public class FunctionValidator {
 
     // Geo-spatial functions
     registerFunction("point.withinbbox", 3, 3, "Check if point is within bounding box", false);
+    registerFunction("point.distance", 2, 2, "Distance between two points", false);
 
     // Path/Graph functions
     registerFunction("nodes", 1, 1, "Nodes in path", false);
@@ -217,7 +234,7 @@ public class FunctionValidator {
     registerFunction("randomuuid", 0, 0, "Random UUID", false);
     registerFunction("pi", 0, 0, "Pi constant", false);
     registerFunction("e", 0, 0, "Euler's number", false);
-    registerFunction("point", 1, 1, "Create point", false);
+    registerFunction("point", 1, 2, "Create point (map or latitude,longitude)", false);
     registerFunction("distance", 2, 2, "Distance between points", false);
     registerFunction("degrees", 1, 1, "Radians to degrees", false);
     registerFunction("radians", 1, 1, "Degrees to radians", false);
@@ -228,6 +245,8 @@ public class FunctionValidator {
     registerFunction("cot", 1, 1, "Cotangent", false);
     registerFunction("coth", 1, 1, "Hyperbolic cotangent", false);
     registerFunction("charlength", 1, 1, "Character length", false);
+    registerFunction("char_length", 1, 1, "Character length", false);
+    registerFunction("character_length", 1, 1, "Character length", false);
     registerFunction("charat", 2, 2, "Character at position", false);
     registerFunction("normalize", 1, 2, "Normalize string", false);
     registerFunction("isnormalized", 1, 2, "Check if normalized", false);

@@ -47,6 +47,7 @@ import com.arcadedb.function.cypher.CustomFunctionAdapter;
 import com.arcadedb.function.cypher.LoadCSVFileFunction;
 import com.arcadedb.function.cypher.LoadCSVLineNumberFunction;
 import com.arcadedb.function.cypher.SQLFunctionBridge;
+import com.arcadedb.function.geo.CypherPointDistanceFunction;
 import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.function.geo.PointWithinBBoxFunction;
 import com.arcadedb.function.graph.ElementIdFunction;
@@ -102,11 +103,8 @@ import com.arcadedb.function.text.NormalizeFunction;
 import com.arcadedb.function.text.RTrimFunction;
 import com.arcadedb.function.text.ReplaceFunction;
 import com.arcadedb.function.text.RightFunction;
-import com.arcadedb.function.text.SplitFunction;
-import com.arcadedb.function.text.SubstringFunction;
 import com.arcadedb.function.text.ToLowerFunction;
 import com.arcadedb.function.text.ToUpperFunction;
-import com.arcadedb.function.text.TrimFunction;
 import com.arcadedb.function.vector.VectorCreateFunction;
 import com.arcadedb.function.vector.VectorDimensionCountFunction;
 import com.arcadedb.function.vector.VectorDistanceCosineFunction;
@@ -169,6 +167,9 @@ public class CypherFunctionFactory {
     // min/max handled as Cypher-specific to support mixed-type comparison
     mapping.put("stdev", "stddev");
     mapping.put("stdevp", "stddevp");
+    // Aliases for stdev/stdevp
+    mapping.put("stdev_samp", "stddev");
+    mapping.put("stdev_pop", "stddevp");
 
     // String functions - need to check if SQL has these
     mapping.put("toupper", "upper");
@@ -300,12 +301,12 @@ public class CypherFunctionFactory {
       // Graph functions
       case "id", "elementid", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
       // Path functions
-      case "nodes", "relationships", "length" -> true;
+      case "nodes", "relationships", "length", "path_length" -> true;
       // Math functions
-      case "rand", "sign", "ceil", "floor", "abs", "sqrt", "round", "isnan",
+      case "rand", "sign", "ceil", "ceiling", "floor", "abs", "sqrt", "round", "isnan",
            "cosh", "sinh", "tanh", "cot", "coth", "pi", "e", "randomuuid",
            "acos", "asin", "atan", "atan2", "cos", "sin", "tan",
-           "degrees", "radians", "haversin", "exp", "log", "log10" -> true;
+           "degrees", "radians", "haversin", "exp", "log", "ln", "log10" -> true;
       // General functions
       case "coalesce" -> true;
       // Predicate functions
@@ -316,7 +317,7 @@ public class CypherFunctionFactory {
       case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "lower", "upper", "ltrim", "rtrim", "btrim" ->
           true;
       // String functions (additional)
-      case "trim", "replace", "char.length", "character.length", "normalize" -> true;
+      case "trim", "replace", "char.length", "character.length", "char_length", "character_length", "normalize" -> true;
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean",
            "tostringornull", "tointegerornull", "tofloatornull", "tobooleanornull",
@@ -324,11 +325,13 @@ public class CypherFunctionFactory {
       // Scalar functions
       case "nullif", "valuetype" -> true;
       // Aggregation functions
-      case "collect", "percentiledisc", "percentilecont", "min", "max", "avg" -> true;
+      case "collect", "collect_list", "percentiledisc", "percentile_disc", "percentilecont", "percentile_cont", "min", "max",
+           "avg" -> true;
       // Temporal functions
       case "timestamp" -> true;
       // Temporal constructor functions
-      case "date", "localtime", "time", "localdatetime", "datetime", "duration" -> true;
+      case "date", "localtime", "local_time", "time", "zoned_time", "localdatetime", "local_datetime", "datetime", "zoned_datetime",
+           "duration", "duration_between" -> true;
       // Temporal truncation functions
       case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" -> true;
       // Temporal epoch functions
@@ -345,13 +348,13 @@ public class CypherFunctionFactory {
       // Note: vector_norm and vector_distance with EUCLIDEAN/DOT metrics delegate to SQL functions
       // (vector.magnitude, vector.l1Norm, vector.l2Distance, vector.dotProduct) via the SQL bridge
       case "vector.create", "vector.distance.manhattan", "vector.distance.cosine",
-           "vector", "vector.dimension.count", "vector.distance" -> true;
+           "vector", "vector.dimension.count", "vector_dimension_count", "vector.distance" -> true;
       // Vector distance functions
       case "vector.distance.euclidean" -> true;
       // Vector norm function
       case "vector.norm" -> true;
       // Geo-spatial functions
-      case "point", "distance", "point.withinbbox" -> true;
+      case "point", "distance", "point.withinbbox", "point.distance" -> true;
       // Temporal clock functions (realtime/statement/transaction are aliases for current instant)
       case "date.realtime", "date.statement", "date.transaction" -> true;
       case "localtime.realtime", "localtime.statement", "localtime.transaction" -> true;
@@ -375,6 +378,7 @@ public class CypherFunctionFactory {
       case "randomuuid" -> new RandomUuidFunction();
       case "sign" -> new SignFunction();
       case "ceil" -> new MathUnaryFunction("ceil", Math::ceil);
+      case "ceiling" -> new MathUnaryFunction("ceiling", Math::ceil);
       case "floor" -> new MathUnaryFunction("floor", Math::floor);
       case "abs" -> new MathUnaryFunction("abs", Math::abs);
       case "sqrt" -> new MathUnaryFunction("sqrt", Math::sqrt);
@@ -400,7 +404,7 @@ public class CypherFunctionFactory {
       case "haversin" -> new MathUnaryFunction("haversin", v -> (1.0 - Math.cos(v)) / 2.0);
       // Logarithmic functions
       case "exp" -> new MathUnaryFunction("exp", Math::exp);
-      case "log" -> new MathUnaryFunction("log", Math::log);
+      case "log", "ln" -> new MathUnaryFunction("log", Math::log);
       case "log10" -> new MathUnaryFunction("log10", Math::log10);
       // General functions
       case "coalesce" -> new CoalesceFunction();
@@ -416,7 +420,7 @@ public class CypherFunctionFactory {
       // Path functions
       case "nodes" -> new NodesFunction();
       case "relationships" -> new RelationshipsFunction();
-      case "length" -> new LengthFunction();
+      case "length", "path_length" -> new LengthFunction();
       // List functions
       case "size" -> new SizeFunction();
       case "head" -> new HeadFunction();
@@ -430,15 +434,15 @@ public class CypherFunctionFactory {
       case "left" -> new LeftFunction();
       case "right" -> new RightFunction();
       case "reverse" -> new ReverseFunction();
-      case "split" -> new SplitFunction();
-      case "substring" -> new SubstringFunction();
+      case "split" -> new CypherSplitFunction();
+      case "substring" -> new CypherSubstringFunction();
       case "tolower", "lower" -> new ToLowerFunction();
       case "toupper", "upper" -> new ToUpperFunction();
       case "ltrim" -> new LTrimFunction();
       case "rtrim" -> new RTrimFunction();
-      case "trim", "btrim" -> new TrimFunction();
+      case "trim", "btrim" -> new CypherTrimFunction();
       case "replace" -> new ReplaceFunction();
-      case "char.length", "character.length" -> new CharLengthFunction();
+      case "char.length", "character.length", "char_length", "character_length" -> new CharLengthFunction();
       case "normalize" -> new NormalizeFunction();
       // Type conversion functions
       case "tostring" -> new ToStringFunction();
@@ -459,11 +463,12 @@ public class CypherFunctionFactory {
       case "valuetype" -> new ValueTypeFunction();
       // Aggregation functions
       case "avg" -> distinct ? new DistinctAggregationWrapper(new CypherAvgFunction()) : new CypherAvgFunction();
-      case "collect" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
+      case "collect", "collect_list" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
       case "min" -> distinct ? new DistinctAggregationWrapper(new CypherMinFunction()) : new CypherMinFunction();
       case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
-      case "percentiledisc" -> new PercentileDiscFunction();
-      case "percentilecont" -> new PercentileContFunction();
+      case "percentiledisc", "percentile_disc" -> new PercentileDiscFunction();
+      case "percentilecont", "percentile_cont" -> new PercentileContFunction();
+      // stdev/stdevp are SQL functions, not Cypher-specific
       // Temporal functions
       case "timestamp" -> new TimestampFunction();
       // Temporal format function
@@ -478,7 +483,7 @@ public class CypherFunctionFactory {
       case "vector", "vector.create" -> new VectorCreateFunction();
       case "vector.distance.manhattan" -> new VectorDistanceManhattanFunction();
       case "vector.distance.cosine" -> new VectorDistanceCosineFunction();
-      case "vector.dimension.count" -> new VectorDimensionCountFunction();
+      case "vector.dimension.count", "vector_dimension_count" -> new VectorDimensionCountFunction();
       case "vector.distance" -> new VectorDistanceFunction();
       // Vector distance functions
       case "vector.distance.euclidean" -> new VectorDistanceEuclideanFunction();
@@ -488,12 +493,13 @@ public class CypherFunctionFactory {
       case "point" -> new CypherPointFunction();
       case "distance" -> new SQLFunctionBridge(sqlFunctionFactory.getFunctionInstance(SQLFunctionGeoDistance.NAME), "distance");
       case "point.withinbbox" -> new PointWithinBBoxFunction();
+      case "point.distance" -> new CypherPointDistanceFunction();
       // Temporal constructor functions
       case "date" -> new DateConstructorFunction();
-      case "localtime" -> new LocalTimeConstructorFunction();
-      case "time" -> new TimeConstructorFunction();
-      case "localdatetime" -> new LocalDateTimeConstructorFunction();
-      case "datetime" -> new DateTimeConstructorFunction();
+      case "localtime", "local_time" -> new LocalTimeConstructorFunction();
+      case "time", "zoned_time" -> new TimeConstructorFunction();
+      case "localdatetime", "local_datetime" -> new LocalDateTimeConstructorFunction();
+      case "datetime", "zoned_datetime" -> new DateTimeConstructorFunction();
       case "duration" -> new DurationConstructorFunction();
       // Temporal truncation functions
       case "date.truncate" -> new DateTruncateFunction();
@@ -505,7 +511,7 @@ public class CypherFunctionFactory {
       case "datetime.fromepoch" -> new DateTimeFromEpochFunction();
       case "datetime.fromepochmillis" -> new DateTimeFromEpochMillisFunction();
       // Duration calculation functions
-      case "duration.between" -> new DurationBetweenFunction();
+      case "duration.between", "duration_between" -> new DurationBetweenFunction();
       case "duration.inmonths" -> new DurationInMonthsFunction();
       case "duration.indays" -> new DurationInDaysFunction();
       case "duration.inseconds" -> new DurationInSecondsFunction();

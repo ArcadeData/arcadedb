@@ -58,9 +58,13 @@ public class CollRemove extends AbstractCollFunction {
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
+    if (args[1] == null)
+      return null;
 
     final int index = ((Number) args[1]).intValue();
-    if (index < 0 || index >= list.size())
+    if (index < 0)
+      throw new CommandExecutionException("coll.remove() does not support negative index: " + index);
+    if (index >= list.size())
       throw new CommandExecutionException("coll.remove() index " + index + " is out of range for list of size " + list.size());
     final int count = args.length > 2 ? ((Number) args[2]).intValue() : 1;
     final List<Object> result = new ArrayList<>(list);

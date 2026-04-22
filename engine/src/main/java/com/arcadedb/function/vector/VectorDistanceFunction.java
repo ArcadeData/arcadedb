@@ -51,10 +51,25 @@ public class VectorDistanceFunction implements StatelessFunction {
 
     return switch (metric) {
       case "EUCLIDEAN" -> (double) VectorUtils.l2Distance(a, b);
+      case "EUCLIDEAN_SQUARED" -> {
+        double sum = 0.0;
+        for (int i = 0; i < a.length; i++) {
+          final double diff = a[i] - b[i];
+          sum += diff * diff;
+        }
+        yield sum;
+      }
       case "COSINE" -> 1.0 - (double) VectorUtils.cosineSimilarity(a, b);
       case "MANHATTAN" -> (double) VectorUtils.manhattanDistance(a, b);
+      case "HAMMING" -> {
+        int count = 0;
+        for (int i = 0; i < a.length; i++)
+          if (a[i] != b[i])
+            count++;
+        yield (double) count;
+      }
       default -> throw new CommandExecutionException("vector_distance(): unsupported metric: " + metric
-          + ". Supported metrics: EUCLIDEAN, COSINE, MANHATTAN");
+          + ". Supported metrics: EUCLIDEAN, EUCLIDEAN_SQUARED, COSINE, MANHATTAN, HAMMING");
     };
   }
 }

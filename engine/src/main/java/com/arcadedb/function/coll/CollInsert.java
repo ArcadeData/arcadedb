@@ -57,7 +57,13 @@ public class CollInsert extends AbstractCollFunction {
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
+    if (args[1] == null)
+      return null;
     final int index = ((Number) args[1]).intValue();
+    if (index < 0)
+      throw new CommandExecutionException("coll.insert() does not support negative index: " + index);
+    if (index > list.size())
+      throw new CommandExecutionException("coll.insert() index " + index + " is out of range for list of size " + list.size());
     final List<Object> result = new ArrayList<>(list);
     result.add(index, args[2]);
     return result;

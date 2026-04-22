@@ -35,10 +35,12 @@ public class RightFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 2)
       throw new CommandExecutionException("right() requires exactly 2 arguments: right(string, length)");
-    if (args[0] == null)
+    if (args[0] == null || args[1] == null)
       return null;
     final String str = args[0].toString();
     final int length = ((Number) args[1]).intValue();
+    if (length < 0)
+      throw new CommandExecutionException("right(): negative length is not supported: " + length);
     return str.substring(Math.max(0, str.length() - length));
   }
 }
