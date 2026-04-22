@@ -65,6 +65,11 @@ class ExpressionTypeDetector {
     if (existsCtx != null && existsCtx.getText().length() >= exprText.length() - 2)
       return builder.parseExistsExpression(existsCtx);
 
+    // COLLECT { ... } subquery expression
+    final Cypher25Parser.CollectExpressionContext collectCtx = builder.findCollectExpressionRecursive(ctx);
+    if (collectCtx != null && collectCtx.getText().length() >= exprText.length() - 2)
+      return builder.parseCollectExpression(collectCtx);
+
     // CASE expressions (both forms)
     final Cypher25Parser.CaseExpressionContext caseCtx = builder.findCaseExpressionRecursive(ctx);
     if (caseCtx != null && caseCtx.getText().length() >= exprText.length() - 2)
