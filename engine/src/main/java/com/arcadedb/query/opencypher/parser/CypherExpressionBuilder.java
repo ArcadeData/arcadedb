@@ -265,6 +265,11 @@ class CypherExpressionBuilder {
     if (collectCtx != null && collectCtx.getText().length() >= nodeText.length() - 2)
       return parseCollectExpression(collectCtx);
 
+    // Check for COUNT { ... } subqueries
+    final Cypher25Parser.CountExpressionContext countCtx = findCountExpressionRecursive(node);
+    if (countCtx != null && countCtx.getText().length() >= nodeText.length() - 2)
+      return parseCountExpression(countCtx);
+
     // Check for logical expressions (AND, OR, XOR, NOT) in the parse tree
     // This handles cases like (a AND b) appearing as children of comparisons
     if (node instanceof Cypher25Parser.ExpressionContext)
@@ -381,6 +386,8 @@ class CypherExpressionBuilder {
         return parseExistsExpression(e1.existsExpression());
       if (e1.collectExpression() != null)
         return parseCollectExpression(e1.collectExpression());
+      if (e1.countExpression() != null)
+        return parseCountExpression(e1.countExpression());
       if (e1.countStar() != null) {
         final List<Expression> e1Args = new ArrayList<>();
         e1Args.add(new StarExpression());
@@ -901,6 +908,26 @@ class CypherExpressionBuilder {
 
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.CollectExpressionContext found = findCollectExpressionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
+   * Recursively find COUNT { ... } subquery expression in the parse tree.
+   */
+  Cypher25Parser.CountExpressionContext findCountExpressionRecursive(
+      final ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.CountExpressionContext)
+      return (Cypher25Parser.CountExpressionContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.CountExpressionContext found = findCountExpressionRecursive(node.getChild(i));
       if (found != null)
         return found;
     }
@@ -1757,6 +1784,43 @@ class CypherExpressionBuilder {
           "InvalidClauseComposition: COLLECT subquery cannot contain update clauses");
 
     return new CollectExpression(subquery, text);
+  }
+
+  /**
+   * Parse a COUNT { ... } pattern / subquery expression.
+   * Examples:
+   * - COUNT { (a)-[:KNOWS]->(b) }
+   * - COUNT { MATCH (a)-[:KNOWS]->(b) WHERE b.age > 18 }
+   */
+  CountExpression parseCountExpression(final Cypher25Parser.CountExpressionContext ctx) {
+    final String originalText = CypherASTBuilder.getOriginalText(ctx);
+    final String text = originalText;
+
+    final int openBrace = originalText.indexOf('{');
+    final int closeBrace = originalText.lastIndexOf('}');
+    String subquery;
+    if (openBrace >= 0 && closeBrace > openBrace)
+      subquery = originalText.substring(openBrace + 1, closeBrace).trim();
+    else
+      subquery = originalText.substring(6, originalText.length() - 1).trim(); // fallback "COUNT{" prefix
+
+    final String upper = subquery.toUpperCase();
+    if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ")
+        || upper.contains("MERGE ") || upper.contains("REMOVE "))
+      throw new CommandParsingException(
+          "InvalidClauseComposition: COUNT subquery cannot contain update clauses");
+
+    // Pattern-only form: wrap with MATCH and add RETURN 1 so the outer evaluator can count rows.
+    final String upperTrimmed = subquery.toUpperCase();
+    if (!upperTrimmed.startsWith("MATCH")
+        && !upperTrimmed.startsWith("WITH")
+        && !upperTrimmed.startsWith("RETURN")) {
+      subquery = "MATCH " + subquery + " RETURN 1";
+    } else if (!upperTrimmed.contains("RETURN ")) {
+      subquery = subquery + " RETURN 1";
+    }
+
+    return new CountExpression(subquery, text);
   }
 
   /**
