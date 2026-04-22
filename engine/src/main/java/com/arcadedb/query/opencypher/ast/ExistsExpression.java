@@ -200,6 +200,8 @@ public class ExistsExpression implements Expression {
   /**
    * Checks if the uppercase query string has a keyword at the given position,
    * ensuring it's a word boundary (not part of a longer identifier).
+   * Underscore is treated as an identifier character so that relationship type names
+   * such as WORKS_WITH are not falsely split at embedded keyword fragments (e.g. "WITH").
    */
   private static boolean matchesKeywordAt(final String upper, final int pos, final String keyword) {
     if (pos + keyword.length() > upper.length())
@@ -207,13 +209,17 @@ public class ExistsExpression implements Expression {
     if (!upper.startsWith(keyword, pos))
       return false;
     // Check word boundary before
-    if (pos > 0 && Character.isLetterOrDigit(upper.charAt(pos - 1)))
+    if (pos > 0 && isCypherIdentifierChar(upper.charAt(pos - 1)))
       return false;
     // Check word boundary after
     final int end = pos + keyword.length();
-    if (end < upper.length() && Character.isLetterOrDigit(upper.charAt(end)))
+    if (end < upper.length() && isCypherIdentifierChar(upper.charAt(end)))
       return false;
     return true;
+  }
+
+  private static boolean isCypherIdentifierChar(final char c) {
+    return Character.isLetterOrDigit(c) || c == '_';
   }
 
   @Override
