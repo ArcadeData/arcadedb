@@ -19,6 +19,9 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.test.BaseGraphServerTest;
 
 import org.assertj.core.data.Offset;
@@ -1394,6 +1397,65 @@ public class BoltProtocolIT extends BaseGraphServerTest {
           assertThat(records5.get(0).get("name").asString()).isEqualTo("delta");
         } finally {
           session.run("MATCH (t:WhereParamNode) DETACH DELETE t");
+        }
+      }
+    }
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3963
+   * Bolt: Query with two parameters in inline property maps of two connected node patterns fails.
+   * Example: MATCH (:User {id: $userId})-[:ASSIGNED_TO]-&gt;(:SiteSurvey {id: $siteSurveyId}) RETURN 1
+   */
+  @Test
+  void twoParametersInlineRelationshipPattern() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    db.transaction(() -> {
+      if (!db.getSchema().existsType("TpUser")) {
+        final var userType = db.getSchema().createVertexType("TpUser");
+        userType.createProperty("id", Type.STRING);
+        db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "TpUser", "id");
+      }
+      if (!db.getSchema().existsType("TpSite")) {
+        final var siteType = db.getSchema().createVertexType("TpSite");
+        siteType.createProperty("id", Type.STRING);
+        db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "TpSite", "id");
+      }
+      if (!db.getSchema().existsType("TpAssignedTo"))
+        db.getSchema().createEdgeType("TpAssignedTo");
+    });
+
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        try {
+          session.run("CREATE (:TpUser {id: 'u1'})-[:TpAssignedTo]->(:TpSite {id: 's1'})");
+          session.run("CREATE (:TpUser {id: 'u2'})-[:TpAssignedTo]->(:TpSite {id: 's2'})");
+
+          final Result r1 = session.run(
+              "MATCH (:TpUser {id: $userId})-[:TpAssignedTo]->(:TpSite {id: $siteSurveyId}) RETURN 1 AS found LIMIT 1",
+              Map.of("userId", "u1", "siteSurveyId", "s1"));
+          assertThat(r1.hasNext()).as("Two-parameter inline pattern should match").isTrue();
+          assertThat(r1.next().get("found").asLong()).isEqualTo(1L);
+
+          final Result r2 = session.run(
+              "MATCH (:TpUser {id: $userId})-[:TpAssignedTo]->(:TpSite {id: $siteSurveyId}) RETURN 1 AS found LIMIT 1",
+              Map.of("userId", "u1", "siteSurveyId", "s2"));
+          assertThat(r2.hasNext()).as("Mismatched parameters should return no results").isFalse();
+
+          final Result r3 = session.run(
+              "MATCH (u:TpUser {id: $userId})-[:TpAssignedTo]->(s:TpSite {id: $siteSurveyId}) RETURN u.id AS uid, s.id AS sid",
+              Map.of("userId", "u2", "siteSurveyId", "s2"));
+          assertThat(r3.hasNext()).isTrue();
+          final Record row = r3.next();
+          assertThat(row.get("uid").asString()).isEqualTo("u2");
+          assertThat(row.get("sid").asString()).isEqualTo("s2");
+
+          final Result r4 = session.run(
+              "MATCH (:TpUser {id: $userId})-[:TpAssignedTo]->(:TpSite {id: $siteSurveyId}) RETURN 1",
+              Map.of("userId", "u1", "siteSurveyId", "s1"));
+          assertThat(r4.hasNext()).as("RETURN 1 (no alias) should still return a row").isTrue();
+        } finally {
+          session.run("MATCH (n) WHERE n:TpUser OR n:TpSite DETACH DELETE n");
         }
       }
     }
