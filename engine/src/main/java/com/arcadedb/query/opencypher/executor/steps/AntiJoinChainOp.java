@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -107,7 +108,7 @@ public final class AntiJoinChainOp implements CountOp {
     final int hops = edgeTypes.length;
 
     // Pre-compute valid bucket sets for type filtering
-    final Set<Integer>[] validBuckets = new Set[hops + 1];
+    final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
     for (int i = 0; i <= hops; i++)
       validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
 
@@ -160,7 +161,7 @@ public final class AntiJoinChainOp implements CountOp {
     final int[] bucketIds = new int[nodeCount];
     for (int v = 0; v < nodeCount; v++)
       bucketIds[v] = provider.getRID(v).getBucketId();
-    final Set<Integer> anchorBuckets = CSRCountUtils.buildValidBuckets(db, anchorLabel);
+    final IntHashSet anchorBuckets = CSRCountUtils.buildValidBuckets(db, anchorLabel);
     if (anchorBuckets == null || anchorBuckets.isEmpty())
       return 0;
 
@@ -199,7 +200,7 @@ public final class AntiJoinChainOp implements CountOp {
    * @return count, or -1 if NeighborViews unavailable (caller should fall back)
    */
   private long executeEdgeScanAlgebraic(final GraphTraversalProvider provider,
-      final int nodeCount, final Set<Integer>[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets) {
     final Vertex.DIRECTION revDir0 = directions[0] == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN
         : directions[0] == Vertex.DIRECTION.IN ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
     final NeighborView viewA = provider.getNeighborView(revDir0, edgeTypes[0]);
@@ -215,8 +216,8 @@ public final class AntiJoinChainOp implements CountOp {
 
     // Optional type filtering
     final int[] bucketIds;
-    final Set<Integer> pos1Buckets = validBuckets[1];
-    final Set<Integer> pos2Buckets = validBuckets[2];
+    final IntHashSet pos1Buckets = validBuckets[1];
+    final IntHashSet pos2Buckets = validBuckets[2];
     if ((pos1Buckets != null && !pos1Buckets.isEmpty()) || (pos2Buckets != null && !pos2Buckets.isEmpty())) {
       bucketIds = new int[nodeCount];
       for (int v = 0; v < nodeCount; v++)
@@ -285,7 +286,7 @@ public final class AntiJoinChainOp implements CountOp {
    * Uses dense propagation + per-node anti-join checking.
    */
   private long executeGenericAntiJoin(final GraphTraversalProvider provider, final Database db,
-      final int nodeCount, final Set<Integer>[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets) {
     // Fall back to OLTP for this rare case
     return executeOLTP(db);
   }
@@ -302,7 +303,7 @@ public final class AntiJoinChainOp implements CountOp {
    */
   private long countWithAntiJoin(final GraphTraversalProvider provider, final int anchorId,
       final int[] anchorAntiNbrs, final boolean anchorIsSource,
-      final int checkPosition, final Set<Integer>[] validBuckets, final int[] bucketIds,
+      final int checkPosition, final IntHashSet[] validBuckets, final int[] bucketIds,
       final NeighborView[] hopViews) {
     long count = 0;
 
@@ -337,7 +338,7 @@ public final class AntiJoinChainOp implements CountOp {
       }
 
       // Apply type filter using pre-computed bucket IDs
-      final Set<Integer> midBuckets = validBuckets[h + 1];
+      final IntHashSet midBuckets = validBuckets[h + 1];
       if (midBuckets != null && !midBuckets.isEmpty()) {
         int writePos = 0;
         for (int i = 0; i < pos; i++) {
@@ -420,7 +421,7 @@ public final class AntiJoinChainOp implements CountOp {
    * For single remaining hops, uses O(1) degree lookup.
    */
   private long computeTailCount(final GraphTraversalProvider provider, final int nodeId,
-      final Set<Integer>[] validBuckets) {
+      final IntHashSet[] validBuckets) {
     final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
     long tailCount = 1;
     for (int h = checkPos; h < edgeTypes.length; h++) {
@@ -449,11 +450,14 @@ public final class AntiJoinChainOp implements CountOp {
     }
 
     // Pre-compute valid bucket IDs for type filtering at each position
-    @SuppressWarnings("unchecked")
-    final Set<Integer>[] validBuckets = new Set[hops + 1];
+    final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
     for (int i = 0; i <= hops; i++) {
-      if (nodeLabels[i] != null && db.getSchema().existsType(nodeLabels[i]))
-        validBuckets[i] = new HashSet<>(db.getSchema().getType(nodeLabels[i]).getBucketIds(true));
+      if (nodeLabels[i] != null && db.getSchema().existsType(nodeLabels[i])) {
+        final IntHashSet s = new IntHashSet();
+        for (final int bid : db.getSchema().getType(nodeLabels[i]).getBucketIds(true))
+          s.add(bid);
+        validBuckets[i] = s;
+      }
     }
 
     // Phase 1: Build neighbor RID maps for hops 0..checkPos-1.
@@ -561,7 +565,7 @@ public final class AntiJoinChainOp implements CountOp {
    * Uses the RID-only iterator to avoid loading neighbor vertex records from disk.
    */
   private Map<RID, RID[]> buildNeighborRIDMap(final Database db, final String sourceLabel,
-      final String edgeType, final Vertex.DIRECTION direction, final Set<Integer> targetBuckets) {
+      final String edgeType, final Vertex.DIRECTION direction, final IntHashSet targetBuckets) {
     final Map<RID, RID[]> map = new HashMap<>();
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return map;
@@ -673,10 +677,12 @@ public final class AntiJoinChainOp implements CountOp {
     }
 
     final String targetLabel = nodeLabels[hopIndex + 1];
-    final Set<Integer> targetBuckets;
-    if (targetLabel != null && db.getSchema().existsType(targetLabel))
-      targetBuckets = new HashSet<>(db.getSchema().getType(targetLabel).getBucketIds(true));
-    else
+    final IntHashSet targetBuckets;
+    if (targetLabel != null && db.getSchema().existsType(targetLabel)) {
+      targetBuckets = new IntHashSet();
+      for (final int bid : db.getSchema().getType(targetLabel).getBucketIds(true))
+        targetBuckets.add(bid);
+    } else
       targetBuckets = null;
 
     long count = 0;

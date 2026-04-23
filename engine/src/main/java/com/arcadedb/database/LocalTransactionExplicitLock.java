@@ -23,18 +23,18 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.IntHashSet;
 
-import java.util.*;
 import java.util.logging.Level;
 
 /**
  * Explicit lock on a transaction to lock buckets and types in pessimistic way. This avoids the retry mechanism of default implicit locking.
  *
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class LocalTransactionExplicitLock implements TransactionExplicitLock {
   private final TransactionContext transactionContext;
-  private final Set<Integer>       filesToLock = new HashSet<>();
+  private final IntHashSet         filesToLock = new IntHashSet();
 
   public LocalTransactionExplicitLock(final TransactionContext transactionContext) {
     this.transactionContext = transactionContext;
@@ -43,15 +43,13 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
   @Override
   public LocalTransactionExplicitLock bucket(final String bucketName) {
     final Bucket bucket = transactionContext.getDatabase().getSchema().getBucketByName(bucketName);
-    filesToLock.add(bucket.getFileId());
+    addNonNegative(bucket.getFileId());
     final DocumentType associatedType = transactionContext.getDatabase().getSchema().getInvolvedTypeByBucketId(bucket.getFileId());
     if (associatedType != null)
-      filesToLock.addAll(associatedType.getAllIndexes(true).stream()
-          .flatMap(i -> Arrays.stream(i.getIndexesOnBuckets()))
-          .map(b -> b.getFileId())
-          .toList());
+      for (final var typeIndex : associatedType.getAllIndexes(true))
+        for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
+          addNonNegative(idx.getFileId());
 
-    filesToLock.removeIf((f) -> f < 0); // Remove negative file IDs (e.g., for virtual buckets)
     return this;
   }
 
@@ -60,19 +58,18 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
     final DocumentType type = transactionContext.getDatabase().getSchema().getType(typeName);
 
     // Lock all indexes for this type
-    filesToLock.addAll(type.getAllIndexes(true).stream()
-        .flatMap(i -> Arrays.stream(i.getIndexesOnBuckets()))
-        .map(IndexInternal::getFileId)
-        .toList());
+    for (final var typeIndex : type.getAllIndexes(true))
+      for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
+        addNonNegative(idx.getFileId());
 
     // Lock all currently involved buckets for this type
-    filesToLock.addAll(type.getInvolvedBuckets().stream().map(b -> b.getFileId()).toList());
+    for (final Bucket b : type.getInvolvedBuckets())
+      addNonNegative(b.getFileId());
 
     // COMPREHENSIVE BUCKET LOCKING: Also lock all polymorphic buckets (includes subtypes)
     // This helps handle cases where records might be created in buckets not initially involved
-    filesToLock.addAll(type.getBuckets(true).stream().map(b -> b.getFileId()).toList());
-
-    filesToLock.removeIf((f) -> f < 0); // Remove negative file IDs (e.g., for virtual buckets)
+    for (final Bucket b : type.getBuckets(true))
+      addNonNegative(b.getFileId());
 
     LogManager.instance().log(this, Level.FINE,
       "Explicit lock for type '%s' will lock %d bucket files (threadId=%d)",
@@ -84,5 +81,10 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
   @Override
   public void lock() {
     transactionContext.explicitLock(filesToLock);
+  }
+
+  private void addNonNegative(final int fileId) {
+    if (fileId >= 0)
+      filesToLock.add(fileId);
   }
 }

@@ -517,6 +517,41 @@ public class TransactionManager {
     return lockedFiles;
   }
 
+  /**
+   * Primitive-array overload to avoid Integer boxing on the per-commit hot path. The
+   * passed-in {@code fileIds} array is sorted in place to acquire locks in deadlock-safe order.
+   */
+  public List<Integer> tryLockFiles(final int[] fileIds, final long timeout, final Object requester) {
+    // ORDER THE FILES TO AVOID DEADLOCK
+    Arrays.sort(fileIds);
+
+    final List<Integer> lockedFiles = new ArrayList<>(fileIds.length);
+
+    int attemptFileId = -1;
+    for (final int fileId : fileIds) {
+      attemptFileId = fileId;
+
+      final LockManager.LOCK_STATUS lock = tryLockFile(fileId, timeout, requester);
+
+      if (lock == LockManager.LOCK_STATUS.YES)
+        lockedFiles.add(fileId);
+      else if (lock == LockManager.LOCK_STATUS.NO) {
+        // ERROR: UNLOCK LOCKED FILES
+        unlockFilesInOrder(lockedFiles, requester);
+
+        throw new TimeoutException(
+            "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName()
+                + ") during commit (fileIds=" + Arrays.toString(fileIds) + ", timeout=" + timeout + "ms");
+      }
+    }
+
+    // OK: ALL LOCKED
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance().log(this, Level.FINE, "Locked files %s (threadId=%d)", null, Arrays.toString(fileIds),
+          Thread.currentThread().threadId());
+    return lockedFiles;
+  }
+
   public void unlockFilesInOrder(final List<Integer> lockedFileIds, final Object requester) {
     if (lockedFileIds != null && !lockedFileIds.isEmpty()) {
       for (final Integer fileId : lockedFileIds)

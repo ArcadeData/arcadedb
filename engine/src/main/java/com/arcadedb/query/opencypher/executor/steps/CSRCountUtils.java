@@ -24,9 +24,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
-
-import java.util.HashSet;
-import java.util.Set;
+import com.arcadedb.utility.IntHashSet;
 
 /**
  * Shared static utilities for CSR count-push-down operators.
@@ -77,7 +75,7 @@ public final class CSRCountUtils {
    * Zeros out entries in counts where the node's bucket ID is not in the valid set.
    */
   public static void filterByBuckets(final GraphTraversalProvider provider, final long[] counts,
-      final Set<Integer> validBuckets) {
+      final IntHashSet validBuckets) {
     if (validBuckets == null || validBuckets.isEmpty())
       return;
     for (int v = 0; v < counts.length; v++) {
@@ -93,7 +91,7 @@ public final class CSRCountUtils {
    * Zeros out entries using pre-computed bucket IDs (avoids per-node getRID calls).
    */
   public static void filterByBuckets(final int[] bucketIds, final long[] counts,
-      final Set<Integer> validBuckets) {
+      final IntHashSet validBuckets) {
     if (validBuckets == null || validBuckets.isEmpty())
       return;
     for (int v = 0; v < counts.length; v++) {
@@ -107,10 +105,10 @@ public final class CSRCountUtils {
    *
    * @return bucket ID set, or null if no filtering needed
    */
-  public static Set<Integer> buildValidBuckets(final Database db, final String label) {
+  public static IntHashSet buildValidBuckets(final Database db, final String label) {
     if (label == null || !db.getSchema().existsType(label))
       return null;
-    final Set<Integer> buckets = new HashSet<>();
+    final IntHashSet buckets = new IntHashSet();
     for (final var b : db.getSchema().getType(label).getBuckets(true))
       buckets.add(b.getFileId());
     return buckets;
@@ -135,7 +133,7 @@ public final class CSRCountUtils {
    */
   public static int[] walkArm(final GraphTraversalProvider provider, final int startId,
       final String[] edgeTypes, final Vertex.DIRECTION[] directions,
-      final Set<Integer>[] intermediateValidBuckets) {
+      final IntHashSet[] intermediateValidBuckets) {
     int[] current = new int[]{startId};
     for (int hop = 0; hop < edgeTypes.length; hop++) {
       int totalNext = 0;

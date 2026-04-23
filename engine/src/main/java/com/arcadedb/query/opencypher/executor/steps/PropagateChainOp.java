@@ -25,12 +25,11 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidLongHashMap;
 
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Iterator;
-import java.util.Set;
 
 /**
  * Count operator for linear chain patterns (Q1, Q5, Q6).
@@ -65,7 +64,7 @@ public final class PropagateChainOp implements CountOp {
     final int hops = edgeTypes.length;
 
     // Pre-compute valid bucket sets for type filtering at each level
-    final Set<Integer>[] validBuckets = new Set[hops + 1];
+    final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
     for (int i = 0; i <= hops; i++)
       validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
 
@@ -90,7 +89,7 @@ public final class PropagateChainOp implements CountOp {
 
     // Initialize anchor counts via bucket filtering (avoids OLTP iterateType)
     long[] current = new long[nodeCount];
-    final Set<Integer> anchorBuckets = validBuckets[0];
+    final IntHashSet anchorBuckets = validBuckets[0];
     if (anchorBuckets != null) {
       for (int v = 0; v < nodeCount; v++)
         if (anchorBuckets.contains(bucketIds[v]))
@@ -124,7 +123,7 @@ public final class PropagateChainOp implements CountOp {
    * For Q6 (10K persons × ~1.7K frontier nodes each): ~17M CSR ops (comparable to dense + self-loop).
    */
   private long executePerSourceInequality(final GraphTraversalProvider provider, final Database db,
-      final int nodeCount, final Set<Integer>[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets) {
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
 
     // Pre-fetch NeighborViews for hops up to the inequality target
@@ -137,7 +136,7 @@ public final class PropagateChainOp implements CountOp {
     final int[] bucketIds = precomputeBucketIds(provider, nodeCount);
 
     // Identify anchor nodes via bucket filtering (avoids db.iterateType OLTP reads)
-    final Set<Integer> anchorBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[0]);
+    final IntHashSet anchorBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[0]);
     if (anchorBuckets == null || anchorBuckets.isEmpty())
       return 0;
 
@@ -183,7 +182,7 @@ public final class PropagateChainOp implements CountOp {
   }
 
   private long countSelfLoopPaths(final GraphTraversalProvider provider, final Database db,
-      final Set<Integer>[] validBuckets) {
+      final IntHashSet[] validBuckets) {
     final int nodeCount = provider.getNodeCount();
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
@@ -259,7 +258,7 @@ public final class PropagateChainOp implements CountOp {
    * Avg ~2 merge comparisons per edge → ~5M ops total at ~3-5ns = ~15-25ms.
    */
   private long countSelfLoop3HopEdgeScan(final GraphTraversalProvider provider,
-      final int nodeCount, final Set<Integer>[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets) {
     // E0: edge from pos0 to pos1, direction directions[0]
     // E1: edge from pos1 to pos2, direction directions[1] (middle, iterated)
     // E2: edge from pos2 to pos3, direction directions[2]
@@ -284,8 +283,8 @@ public final class PropagateChainOp implements CountOp {
 
     // Optional: filter middle edge endpoints by type
     final int[] bucketIds;
-    final Set<Integer> pos1Buckets = validBuckets[1];
-    final Set<Integer> pos2Buckets = validBuckets[2];
+    final IntHashSet pos1Buckets = validBuckets[1];
+    final IntHashSet pos2Buckets = validBuckets[2];
     if ((pos1Buckets != null && !pos1Buckets.isEmpty()) || (pos2Buckets != null && !pos2Buckets.isEmpty())) {
       bucketIds = precomputeBucketIds(provider, nodeCount);
     } else {
@@ -357,7 +356,7 @@ public final class PropagateChainOp implements CountOp {
    * Fallback per-anchor self-loop when NeighborViews are unavailable.
    */
   private long countSelfLoopPerAnchorFallback(final GraphTraversalProvider provider,
-      final int nodeCount, final Set<Integer>[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets) {
     // Reuse existing per-anchor expansion logic
     final int subChainLength = Math.max(inequalityIdxA, inequalityIdxB);
     final NeighborView[] subViews = new NeighborView[subChainLength];
@@ -365,7 +364,7 @@ public final class PropagateChainOp implements CountOp {
       subViews[h] = provider.getNeighborView(directions[h], edgeTypes[h]);
 
     final int[] bucketIds = precomputeBucketIds(provider, nodeCount);
-    final Set<Integer> anchorBuckets = validBuckets[0];
+    final IntHashSet anchorBuckets = validBuckets[0];
     if (anchorBuckets == null || anchorBuckets.isEmpty())
       return 0;
 
@@ -390,7 +389,7 @@ public final class PropagateChainOp implements CountOp {
    */
   private long countLoopsFromNode(final GraphTraversalProvider provider, final int vId,
       final NeighborView[] subViews, final int startHop, final int subChainLength,
-      final Set<Integer>[] validBuckets) {
+      final IntHashSet[] validBuckets) {
     if (subChainLength == 0)
       return 1;
 
@@ -408,7 +407,7 @@ public final class PropagateChainOp implements CountOp {
     // Last hop: instead of expanding fully, count only paths that arrive back at vId.
     // Use binary search on sorted CSR neighbor arrays for O(log d) per frontier node.
     final int lastHopIdx = startHop + subChainLength - 1;
-    final Set<Integer> lastBuckets = validBuckets[lastHopIdx + 1];
+    final IntHashSet lastBuckets = validBuckets[lastHopIdx + 1];
     // If there are type filters at the target position and vId doesn't match, no self-loops possible
     if (lastBuckets != null && !lastBuckets.isEmpty()) {
       final RID vRid = provider.getRID(vId);
@@ -442,7 +441,7 @@ public final class PropagateChainOp implements CountOp {
    * Applies type filtering at the target position if needed.
    */
   private int[] expandFrontier(final GraphTraversalProvider provider, final int[] frontier,
-      final NeighborView view, final int hopIdx, final Set<Integer> targetBuckets) {
+      final NeighborView view, final int hopIdx, final IntHashSet targetBuckets) {
     // Count total next-level nodes
     int totalNext = 0;
     if (view != null) {
@@ -490,7 +489,7 @@ public final class PropagateChainOp implements CountOp {
    * Eliminates per-node getRID calls (~200ns each × millions of nodes).
    */
   private int[] expandFrontierFast(final GraphTraversalProvider provider, final int[] frontier,
-      final NeighborView view, final int hopIdx, final Set<Integer> targetBuckets,
+      final NeighborView view, final int hopIdx, final IntHashSet targetBuckets,
       final int[] bucketIds) {
     int totalNext = 0;
     if (view != null) {
@@ -560,10 +559,12 @@ public final class PropagateChainOp implements CountOp {
 
     for (int hop = 0; hop < edgeTypes.length; hop++) {
       final String targetLabel = nodeLabels[hop + 1];
-      final Set<Integer> targetBuckets;
-      if (targetLabel != null && db.getSchema().existsType(targetLabel))
-        targetBuckets = new HashSet<>(db.getSchema().getType(targetLabel).getBucketIds(true));
-      else
+      final IntHashSet targetBuckets;
+      if (targetLabel != null && db.getSchema().existsType(targetLabel)) {
+        targetBuckets = new IntHashSet();
+        for (final int bid : db.getSchema().getType(targetLabel).getBucketIds(true))
+          targetBuckets.add(bid);
+      } else
         targetBuckets = null;
 
       final RidLongHashMap next = new RidLongHashMap();
@@ -595,7 +596,7 @@ public final class PropagateChainOp implements CountOp {
    */
   private static void expandNeighbors(final Database db, final GraphTraversalProvider provider,
       final RID vertexRid, final Vertex.DIRECTION direction, final String edgeType,
-      final Set<Integer> targetBuckets, final java.util.function.Consumer<RID> consumer) {
+      final IntHashSet targetBuckets, final java.util.function.Consumer<RID> consumer) {
     if (provider != null) {
       final int nodeId = provider.getNodeId(vertexRid);
       if (nodeId >= 0) {
@@ -639,10 +640,12 @@ public final class PropagateChainOp implements CountOp {
       for (int h = 0; h < subLength; h++) {
         final int hopIdx = idxA + h;
         final String targetLabel = nodeLabels[hopIdx + 1];
-        final Set<Integer> targetBuckets;
-        if (targetLabel != null && db.getSchema().existsType(targetLabel))
-          targetBuckets = new HashSet<>(db.getSchema().getType(targetLabel).getBucketIds(true));
-        else
+        final IntHashSet targetBuckets;
+        if (targetLabel != null && db.getSchema().existsType(targetLabel)) {
+          targetBuckets = new IntHashSet();
+          for (final int bid : db.getSchema().getType(targetLabel).getBucketIds(true))
+            targetBuckets.add(bid);
+        } else
           targetBuckets = null;
 
         final RidLongHashMap next = new RidLongHashMap();

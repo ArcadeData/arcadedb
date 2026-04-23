@@ -34,6 +34,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.LongHashSet;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -755,15 +756,17 @@ public class GraphBatch implements AutoCloseable {
 
     final long startNs = System.nanoTime();
 
-    // Collect all vertex keys that need updating
-    final Set<Long> allKeys = new HashSet<>(deferredOutHead.keySet());
-    allKeys.addAll(deferredInHead.keySet());
+    // Collect all vertex keys that need updating. Using LongHashSet (zero-boxing,
+    // open-addressing) instead of HashSet<Long> avoids ~70 bytes/entry of overhead
+    // and Long boxing on every addAll, which matters during 100K+ entry bulk loads.
+    final LongHashSet allKeys = new LongHashSet(deferredOutHead.size() + deferredInHead.size());
+    for (final Long k : deferredOutHead.keySet())
+      allKeys.add(k);
+    for (final Long k : deferredInHead.keySet())
+      allKeys.add(k);
 
     // Sort by vertex key for page locality
-    final long[] sortedKeys = new long[allKeys.size()];
-    int ki = 0;
-    for (final long key : allKeys)
-      sortedKeys[ki++] = key;
+    final long[] sortedKeys = allKeys.toArray();
     Arrays.parallelSort(sortedKeys);
 
     beginTx();

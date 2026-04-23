@@ -26,6 +26,7 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LongLongHashMap;
 
 import java.util.ArrayList;
@@ -86,11 +87,11 @@ public final class PairHashJoinOp implements CountOp {
     final int nodeCount = provider.getNodeCount();
 
     // Pre-compute intermediate label bucket sets ONCE (not per vertex!)
-    final Set<Integer>[] arm1Buckets = buildValidBucketSets(db, arm1IntermediateLabels);
-    final Set<Integer>[] arm2Buckets = buildValidBucketSets(db, arm2IntermediateLabels);
+    final IntHashSet[] arm1Buckets = buildValidBucketSets(db, arm1IntermediateLabels);
+    final IntHashSet[] arm2Buckets = buildValidBucketSets(db, arm2IntermediateLabels);
 
     // Identify build-start nodes via bucket filtering on CSR (avoids OLTP iterateType)
-    final Set<Integer> buildBuckets = CSRCountUtils.buildValidBuckets(db, buildStartLabel);
+    final IntHashSet buildBuckets = CSRCountUtils.buildValidBuckets(db, buildStartLabel);
     if (buildBuckets == null || buildBuckets.isEmpty())
       return 0;
 
@@ -200,11 +201,13 @@ public final class PairHashJoinOp implements CountOp {
       final Vertex.DIRECTION[] directions, final String[] intermediateLabels) {
     List<RID> current = List.of(start.getIdentity());
     for (int hop = 0; hop < edgeTypes.length; hop++) {
-      final Set<Integer> labelBuckets;
+      final IntHashSet labelBuckets;
       final String label = intermediateLabels != null ? intermediateLabels[hop] : null;
-      if (label != null && db.getSchema().existsType(label))
-        labelBuckets = new HashSet<>(db.getSchema().getType(label).getBucketIds(true));
-      else
+      if (label != null && db.getSchema().existsType(label)) {
+        labelBuckets = new IntHashSet();
+        for (final int bid : db.getSchema().getType(label).getBucketIds(true))
+          labelBuckets.add(bid);
+      } else
         labelBuckets = null;
 
       final List<RID> next = new ArrayList<>();
@@ -233,7 +236,7 @@ public final class PairHashJoinOp implements CountOp {
    * check inline to avoid allocating an intermediate int[] per build node.
    */
   private long buildAndProbeInline(final NeighborView arm1View, final NeighborView[] arm2Views,
-      final Set<Integer>[] arm2Buckets, final NeighborView probeView,
+      final IntHashSet[] arm2Buckets, final NeighborView probeView,
       final int nodeCount, final int[] bucketIds) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] probeNbrs = probeView.neighbors();
@@ -243,8 +246,8 @@ public final class PairHashJoinOp implements CountOp {
     if (arm2Views.length == 2) {
       final int[] arm2Nbrs0 = arm2Views[0].neighbors();
       final int[] arm2Nbrs1 = arm2Views[1].neighbors();
-      final Set<Integer> arm2Filter0 = arm2Buckets != null ? arm2Buckets[0] : null;
-      final Set<Integer> arm2Filter1 = arm2Buckets != null ? arm2Buckets[1] : null;
+      final IntHashSet arm2Filter0 = arm2Buckets != null ? arm2Buckets[0] : null;
+      final IntHashSet arm2Filter1 = arm2Buckets != null ? arm2Buckets[1] : null;
 
       for (int startId = 0; startId < nodeCount; startId++) {
         final int a1Start = arm1View.offset(startId);
@@ -312,7 +315,7 @@ public final class PairHashJoinOp implements CountOp {
    * But for simpler pair-joins where both arms are 1 hop, this avoids all per-node method calls.
    */
   private void buildWithViews(final NeighborView arm1View, final NeighborView arm2View,
-      final Set<Integer>[] arm2Buckets, final LongLongHashMap pairCounts,
+      final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
       final int nodeCount, final GraphTraversalProvider provider) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] arm2Nbrs = arm2View.neighbors();
@@ -336,7 +339,7 @@ public final class PairHashJoinOp implements CountOp {
    * For Q2: arm1=HAS_CREATOR OUT (Comment→Person), arm2=REPLY_OF+HAS_CREATOR (Comment→Post→Person).
    */
   private void buildWithArm1View(final NeighborView arm1View, final GraphTraversalProvider provider,
-      final Set<Integer>[] arm2Buckets, final LongLongHashMap pairCounts,
+      final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
       final int nodeCount) {
     final int[] arm1Nbrs = arm1View.neighbors();
 
@@ -379,7 +382,7 @@ public final class PairHashJoinOp implements CountOp {
    * Walks an arm using pre-fetched NeighborViews (zero per-node method dispatch).
    */
   private static int[] walkArmWithViews(final int startId, final NeighborView[] views,
-      final Set<Integer>[] intermediateBuckets, final int[] bucketIds) {
+      final IntHashSet[] intermediateBuckets, final int[] bucketIds) {
     int[] current = new int[]{startId};
     for (int hop = 0; hop < views.length; hop++) {
       final NeighborView view = views[hop];
@@ -415,7 +418,7 @@ public final class PairHashJoinOp implements CountOp {
    * Builds valid bucket sets from intermediate labels for use with CSRCountUtils.walkArm.
    */
   @SuppressWarnings("unchecked")
-  private static Set<Integer>[] buildValidBucketSets(final Database db, final String[] intermediateLabels) {
+  private static IntHashSet[] buildValidBucketSets(final Database db, final String[] intermediateLabels) {
     if (intermediateLabels == null)
       return null;
     boolean hasAny = false;
@@ -423,7 +426,7 @@ public final class PairHashJoinOp implements CountOp {
       if (label != null) { hasAny = true; break; }
     if (!hasAny)
       return null;
-    final Set<Integer>[] result = new Set[intermediateLabels.length];
+    final IntHashSet[] result = new IntHashSet[intermediateLabels.length];
     for (int i = 0; i < intermediateLabels.length; i++)
       result[i] = CSRCountUtils.buildValidBuckets(db, intermediateLabels[i]);
     return result;

@@ -31,6 +31,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.IntHashSet;
 
 import java.util.*;
 import java.util.logging.*;
@@ -244,7 +245,7 @@ public class TransactionIndexContext {
     indexEntries.clear();
   }
 
-  public void addFilesToLock(final Set<Integer> modifiedFiles) {
+  public void addFilesToLock(final IntHashSet modifiedFiles) {
     final Schema schema = database.getSchema();
 
     final Set<Index> lockedIndexes = new HashSet<>(indexEntries.size());
@@ -266,7 +267,8 @@ public class TransactionIndexContext {
         // LOCK ALL THE FILES IMPACTED BY THE INDEX KEYS TO CHECK FOR UNIQUE CONSTRAINT
         // TODO: OPTIMIZE LOCKING IF STRATEGY IS PARTITIONED: LOCK ONLY THE RELEVANT INDEX
         final DocumentType type = schema.getType(index.getTypeName());
-        modifiedFiles.addAll(type.getBucketIds(false));
+        for (final int bid : type.getBucketIds(false))
+          modifiedFiles.add(bid);
 
         for (final TypeIndex typeIndex : type.getAllIndexes(true))
           for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())

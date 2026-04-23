@@ -33,6 +33,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
@@ -113,8 +114,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
           "No vector index found on property '" + propertyName + "' for type '" + specifiedTypeName + "' or its parent types");
     }
 
-    // Get the bucket IDs that belong to the specified type (not polymorphic - just this type's own buckets)
-    final Set<Integer> allowedBucketIds = new HashSet<>();
+    // Get the bucket IDs that belong to the specified type (not polymorphic - just this type's own buckets).
+    // IntHashSet is zero-boxing - the contains() in executeWithTypeIndex runs once per bucket index per
+    // vector query, and avoiding Integer boxing on every probe matters under sustained ANN workloads.
+    final IntHashSet allowedBucketIds = new IntHashSet();
     for (final Bucket bucket : specifiedType.getBuckets(false)) {
       allowedBucketIds.add(bucket.getFileId());
     }
@@ -144,7 +147,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     return out;
   }
 
-  private Object executeWithTypeIndex(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds, final Object key,
+  private Object executeWithTypeIndex(final TypeIndex typeIndex, final IntHashSet allowedBucketIds, final Object key,
       final int limit, final int efSearch, final Set<RID> allowedRIDs, final CommandContext context) {
     final var bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0) {
