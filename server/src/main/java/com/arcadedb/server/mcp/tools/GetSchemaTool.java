@@ -57,10 +57,7 @@ public class GetSchemaTool {
 
     final String databaseName = args.getString("database");
 
-    if (!user.canAccessToDatabase(databaseName))
-      throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
-
-    final Database database = server.getDatabase(databaseName);
+    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
 
     final Schema schema = database.getSchema();
     final JSONArray types = new JSONArray();

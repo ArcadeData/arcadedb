@@ -20,13 +20,13 @@ package com.arcadedb.server.mcp.tools;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.Collections;
@@ -73,10 +73,7 @@ public class QueryTool {
     final String query = args.getString("query");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
-    if (!user.canAccessToDatabase(databaseName))
-      throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
-
-    final Database database = server.getDatabase(databaseName);
+    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
 
     // Verify the query is actually read-only using semantic analysis
     final QueryEngine engine = database.getQueryEngine(language);
