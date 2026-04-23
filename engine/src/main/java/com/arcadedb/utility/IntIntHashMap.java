@@ -29,12 +29,16 @@ import java.util.Arrays;
  * Designed for graph algorithms and GAV overlay operations where node IDs (int)
  * map to counts, community labels, or other integer values.
  * <p>
- * Load factor: resizes at 75% occupancy. Tombstones not needed (no deletes).
+ * Supports {@link #remove(int, int)} via tombstones. Reserved sentinel keys:
+ * {@link Integer#MIN_VALUE} (empty slot) and {@code Integer.MIN_VALUE + 1} (tombstone).
+ * Resize threshold counts both live entries and tombstones to bound probe length;
+ * the rebuild after resize drops tombstones, reclaiming probe distance.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class IntIntHashMap {
   private static final int   EMPTY       = Integer.MIN_VALUE;
+  private static final int   TOMBSTONE   = Integer.MIN_VALUE + 1;
   private static final float LOAD_FACTOR = 0.75f;
 
   private int[] keys;
@@ -42,6 +46,7 @@ public final class IntIntHashMap {
   private int   capacity;
   private int   mask;
   private int   size;
+  private int   tombstones;
   private int   threshold;
 
   public IntIntHashMap() {
@@ -61,6 +66,8 @@ public final class IntIntHashMap {
    * Returns the value for the given key, or the defaultValue if not present.
    */
   public int get(final int key, final int defaultValue) {
+    if (key == EMPTY || key == TOMBSTONE)
+      return defaultValue;
     int idx = hash(key) & mask;
     while (true) {
       final int k = keys[idx];
@@ -68,15 +75,20 @@ public final class IntIntHashMap {
         return values[idx];
       if (k == EMPTY)
         return defaultValue;
+      // k == TOMBSTONE: keep probing
       idx = (idx + 1) & mask;
     }
   }
 
   /**
-   * Sets the value for the given key. Returns the previous value, or defaultValue if not present.
+   * Sets the value for the given key. Returns the previous value, or {@link Integer#MIN_VALUE}
+   * if not present (the empty-slot sentinel — callers that need to distinguish "absent" from
+   * "present with value Integer.MIN_VALUE" should use {@link #containsKey(int)}).
    */
   public int put(final int key, final int value) {
+    rejectSentinel(key);
     int idx = hash(key) & mask;
+    int firstTomb = -1;
     while (true) {
       final int k = keys[idx];
       if (k == key) {
@@ -85,12 +97,47 @@ public final class IntIntHashMap {
         return old;
       }
       if (k == EMPTY) {
-        keys[idx] = key;
-        values[idx] = value;
-        if (++size >= threshold)
+        if (firstTomb >= 0) {
+          // Reuse the earlier tombstone slot - reduces tombstone count without growing the table.
+          keys[firstTomb] = key;
+          values[firstTomb] = value;
+          tombstones--;
+        } else {
+          keys[idx] = key;
+          values[idx] = value;
+        }
+        size++;
+        if (size + tombstones >= threshold)
           resize();
-        return Integer.MIN_VALUE;
+        return EMPTY;
       }
+      if (k == TOMBSTONE && firstTomb < 0)
+        firstTomb = idx;
+      idx = (idx + 1) & mask;
+    }
+  }
+
+  /**
+   * Removes the entry for the given key. Returns the previous value, or {@code defaultValue}
+   * if the key was absent.
+   */
+  public int remove(final int key, final int defaultValue) {
+    if (key == EMPTY || key == TOMBSTONE)
+      return defaultValue;
+    int idx = hash(key) & mask;
+    while (true) {
+      final int k = keys[idx];
+      if (k == EMPTY)
+        return defaultValue;
+      if (k == key) {
+        final int old = values[idx];
+        keys[idx] = TOMBSTONE;
+        values[idx] = 0;
+        size--;
+        tombstones++;
+        return old;
+      }
+      // k == TOMBSTONE or another key: keep probing
       idx = (idx + 1) & mask;
     }
   }
@@ -99,29 +146,16 @@ public final class IntIntHashMap {
    * Increments the value for the given key by 1. If not present, inserts with value 1.
    */
   public void increment(final int key) {
-    int idx = hash(key) & mask;
-    while (true) {
-      final int k = keys[idx];
-      if (k == key) {
-        values[idx]++;
-        return;
-      }
-      if (k == EMPTY) {
-        keys[idx] = key;
-        values[idx] = 1;
-        if (++size >= threshold)
-          resize();
-        return;
-      }
-      idx = (idx + 1) & mask;
-    }
+    add(key, 1);
   }
 
   /**
    * Adds delta to the value for the given key. If not present, inserts with delta as value.
    */
   public void add(final int key, final int delta) {
+    rejectSentinel(key);
     int idx = hash(key) & mask;
+    int firstTomb = -1;
     while (true) {
       final int k = keys[idx];
       if (k == key) {
@@ -129,12 +163,21 @@ public final class IntIntHashMap {
         return;
       }
       if (k == EMPTY) {
-        keys[idx] = key;
-        values[idx] = delta;
-        if (++size >= threshold)
+        if (firstTomb >= 0) {
+          keys[firstTomb] = key;
+          values[firstTomb] = delta;
+          tombstones--;
+        } else {
+          keys[idx] = key;
+          values[idx] = delta;
+        }
+        size++;
+        if (size + tombstones >= threshold)
           resize();
         return;
       }
+      if (k == TOMBSTONE && firstTomb < 0)
+        firstTomb = idx;
       idx = (idx + 1) & mask;
     }
   }
@@ -143,6 +186,8 @@ public final class IntIntHashMap {
    * Returns true if the key is present.
    */
   public boolean containsKey(final int key) {
+    if (key == EMPTY || key == TOMBSTONE)
+      return false;
     int idx = hash(key) & mask;
     while (true) {
       final int k = keys[idx];
@@ -158,13 +203,19 @@ public final class IntIntHashMap {
     return size;
   }
 
+  public boolean isEmpty() {
+    return size == 0;
+  }
+
   /**
-   * Iterates over all entries. No object allocation during iteration.
+   * Iterates over all live entries. No object allocation during iteration.
    */
   public void forEach(final EntryConsumer consumer) {
-    for (int i = 0; i < capacity; i++)
-      if (keys[i] != EMPTY)
-        consumer.accept(keys[i], values[i]);
+    for (int i = 0; i < capacity; i++) {
+      final int k = keys[i];
+      if (k != EMPTY && k != TOMBSTONE)
+        consumer.accept(k, values[i]);
+    }
   }
 
   /**
@@ -173,11 +224,13 @@ public final class IntIntHashMap {
   public int keyWithMaxValue(final int defaultKey) {
     int maxKey = defaultKey;
     int maxVal = Integer.MIN_VALUE;
-    for (int i = 0; i < capacity; i++)
-      if (keys[i] != EMPTY && values[i] > maxVal) {
+    for (int i = 0; i < capacity; i++) {
+      final int k = keys[i];
+      if (k != EMPTY && k != TOMBSTONE && values[i] > maxVal) {
         maxVal = values[i];
-        maxKey = keys[i];
+        maxKey = k;
       }
+    }
     return maxKey;
   }
 
@@ -187,11 +240,18 @@ public final class IntIntHashMap {
   public void clear() {
     Arrays.fill(keys, EMPTY);
     size = 0;
+    tombstones = 0;
   }
 
   @FunctionalInterface
   public interface EntryConsumer {
     void accept(int key, int value);
+  }
+
+  private static void rejectSentinel(final int key) {
+    if (key == EMPTY || key == TOMBSTONE)
+      throw new IllegalArgumentException(
+          "Integer.MIN_VALUE and Integer.MIN_VALUE+1 are reserved sentinels and cannot be used as keys");
   }
 
   private static int hash(final int key) {
@@ -206,7 +266,9 @@ public final class IntIntHashMap {
   }
 
   private void resize() {
-    final int newCapacity = capacity << 1;
+    // Grow when the table is half live entries and half tombstones, to bound probe length.
+    // If most of the threshold is tombstones, keep the same capacity and just rebuild.
+    final int newCapacity = (size > (threshold >>> 1)) ? capacity << 1 : capacity;
     final int newMask = newCapacity - 1;
     final int[] newKeys = new int[newCapacity];
     final int[] newValues = new int[newCapacity];
@@ -214,7 +276,7 @@ public final class IntIntHashMap {
 
     for (int i = 0; i < capacity; i++) {
       final int k = keys[i];
-      if (k != EMPTY) {
+      if (k != EMPTY && k != TOMBSTONE) {
         int idx = hash(k) & newMask;
         while (newKeys[idx] != EMPTY)
           idx = (idx + 1) & newMask;
@@ -228,6 +290,7 @@ public final class IntIntHashMap {
     capacity = newCapacity;
     mask = newMask;
     threshold = (int) (newCapacity * LOAD_FACTOR);
+    tombstones = 0;
   }
 
   private static int nextPowerOfTwo(final int v) {

@@ -22,9 +22,11 @@ package performance;
 
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LongHashSet;
+import com.arcadedb.utility.LongObjectHashMap;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
@@ -193,6 +195,57 @@ class PrimitiveSetBenchmark {
       long c = 0;
       final LongHashSet hs = (LongHashSet) s;
       for (final long v : data) if (hs.contains(v)) c++;
+      return c;
+    });
+  }
+
+  // ---------------- Long-keyed maps ----------------
+
+  /** Marker value for the map benchmarks - mimics RID stored as the map value. */
+  private static final Object MARKER = new Object();
+
+  @Test
+  void longObjectMapVertexHeadShape() {
+    System.out.println("\n=== LONG-KEYED MAP: 100k vertex keys -> RID (GraphBatch.deferredOutHead shape) ===");
+    final int n = 100_000;
+    final long[] data = new long[n];
+    final ThreadLocalRandom rnd = ThreadLocalRandom.current();
+    for (int i = 0; i < n; i++)
+      data[i] = ((long) rnd.nextInt(1 << 12) << 40) | (rnd.nextLong() & 0xFFFFFFFFFFL);
+
+    runMeasure("HashMap<Long, V>             ", () -> {
+      final HashMap<Long, Object> m = new HashMap<>();
+      for (final long v : data) m.put(v, MARKER);
+      return m;
+    }, m -> {
+      long c = 0;
+      @SuppressWarnings("unchecked")
+      final HashMap<Long, Object> hm = (HashMap<Long, Object>) m;
+      for (final long v : data) if (hm.get(v) != null) c++;
+      return c;
+    });
+
+    runMeasure("ConcurrentHashMap<Long, V>   ", () -> {
+      final ConcurrentHashMap<Long, Object> m = new ConcurrentHashMap<>();
+      for (final long v : data) m.put(v, MARKER);
+      return m;
+    }, m -> {
+      long c = 0;
+      @SuppressWarnings("unchecked")
+      final ConcurrentHashMap<Long, Object> hm = (ConcurrentHashMap<Long, Object>) m;
+      for (final long v : data) if (hm.get(v) != null) c++;
+      return c;
+    });
+
+    runMeasure("LongObjectHashMap<V>         ", () -> {
+      final LongObjectHashMap<Object> m = new LongObjectHashMap<>(n);
+      for (final long v : data) m.put(v, MARKER);
+      return m;
+    }, m -> {
+      long c = 0;
+      @SuppressWarnings("unchecked")
+      final LongObjectHashMap<Object> hm = (LongObjectHashMap<Object>) m;
+      for (final long v : data) if (hm.get(v) != null) c++;
       return c;
     });
   }

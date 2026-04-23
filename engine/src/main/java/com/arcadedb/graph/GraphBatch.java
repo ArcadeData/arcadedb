@@ -35,6 +35,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.LongHashSet;
+import com.arcadedb.utility.LongObjectHashMap;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -152,13 +153,34 @@ public class GraphBatch implements AutoCloseable {
   private final Map<Long, RID> inChunkRIDCache = new ConcurrentHashMap<>();
 
   // --- Deferred vertex head chunk updates: persisted in one batch pass at close() ---
-  // vertexKey → latest segment RID that needs to be set on the vertex record
-  private final Map<Long, RID> deferredOutHead = new ConcurrentHashMap<>();
-  private final Map<Long, RID> deferredInHead = new ConcurrentHashMap<>();
+  // vertexKey → latest segment RID that needs to be set on the vertex record.
+  //
+  // Lifecycle (matters for the choice of non-concurrent collection):
+  //   1. Sequential put() calls happen from connectOutgoingEdgesSorted /
+  //      connectIncomingEdgesSequential (single-threaded paths).
+  //   2. The PARALLEL paths (connectOutEdgesRangeLocal, connectIncomingEdgesRangeLocal)
+  //      do NOT touch these fields directly - they write to per-flush local
+  //      ConcurrentHashMap parameters (parallelDeferredOutHead / parallelDeferredInHead)
+  //      which are merged into these fields via putAll() AFTER async.waitCompletion(),
+  //      establishing a happens-before barrier.
+  //   3. batchUpdateVertexHeadChunks() reads these single-threaded at flush end.
+  // LongObjectHashMap (zero-boxing, ~5x less memory than ConcurrentHashMap<Long, RID>)
+  // is safe because no concurrent writes ever hit these fields.
+  private final LongObjectHashMap<RID> deferredOutHead = new LongObjectHashMap<>();
+  private final LongObjectHashMap<RID> deferredInHead = new LongObjectHashMap<>();
 
   // --- Known-new vertices: created by createVertices(), guaranteed no existing segments ---
-  // Allows skipping vertex record loads when creating first segment
-  private final Set<Long> knownNewVertexKeys = ConcurrentHashMap.newKeySet();
+  // Allows skipping vertex record loads when creating first segment.
+  //
+  // Lifecycle (matters for the choice of non-concurrent collection):
+  //   1. add() is only called from createVertices(), single-threaded, terminated by database.commit()
+  //      which establishes happens-before with subsequent reads.
+  //   2. contains() is called during edge-connect phases that may run with parallelFlush=true,
+  //      but at that point the set is fully populated and never mutated (read-only).
+  //   3. clear() runs at end of flush, single-threaded after another database.commit().
+  // Plain LongHashSet (zero-boxing, ~7x less memory than ConcurrentHashMap.newKeySet()) is safe
+  // because the only concurrent access is read-only after a publishing barrier.
+  private final LongHashSet knownNewVertexKeys = new LongHashSet();
 
   // --- Statistics ---
   private long totalVerticesCreated;
@@ -760,10 +782,8 @@ public class GraphBatch implements AutoCloseable {
     // open-addressing) instead of HashSet<Long> avoids ~70 bytes/entry of overhead
     // and Long boxing on every addAll, which matters during 100K+ entry bulk loads.
     final LongHashSet allKeys = new LongHashSet(deferredOutHead.size() + deferredInHead.size());
-    for (final Long k : deferredOutHead.keySet())
-      allKeys.add(k);
-    for (final Long k : deferredInHead.keySet())
-      allKeys.add(k);
+    deferredOutHead.forEach((k, v) -> allKeys.add(k));
+    deferredInHead.forEach((k, v) -> allKeys.add(k));
 
     // Sort by vertex key for page locality
     final long[] sortedKeys = allKeys.toArray();
@@ -1064,8 +1084,9 @@ public class GraphBatch implements AutoCloseable {
     async.setTransactionUseWAL(savedAsyncWAL);
     async.setTransactionSync(savedAsyncSync);
 
-    // Merge deferred head pointers back
-    deferredInHead.putAll(parallelDeferredInHead);
+    // Merge deferred head pointers back into the (non-concurrent) shared maps.
+    // putAll is unavailable on LongObjectHashMap by design; iterate and put.
+    parallelDeferredInHead.forEach(deferredInHead::put);
     inChunkRIDCache.putAll(parallelInChunkCache);
 
     final Throwable t = error.get();
@@ -1732,8 +1753,9 @@ public class GraphBatch implements AutoCloseable {
     async.setTransactionUseWAL(savedAsyncWAL);
     async.setTransactionSync(savedAsyncSync);
 
-    // Merge deferred head pointers back
-    deferredOutHead.putAll(parallelDeferredOutHead);
+    // Merge deferred head pointers back into the (non-concurrent) shared maps.
+    // putAll is unavailable on LongObjectHashMap by design; iterate and put.
+    parallelDeferredOutHead.forEach(deferredOutHead::put);
     outChunkRIDCache.putAll(parallelOutChunkCache);
 
     final Throwable t = error.get();

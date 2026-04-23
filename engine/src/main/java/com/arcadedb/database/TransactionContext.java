@@ -39,6 +39,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.IntHashSet;
+import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.RidHashSet;
 
 import java.io.*;
@@ -61,7 +62,9 @@ import java.util.stream.*;
 public class TransactionContext implements Transaction {
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
-  private final Map<Integer, AtomicInteger>          bucketRecordDelta     = new HashMap<>();
+  // Per-tx record-count delta per bucket. Single-threaded (HashMap was used, not ConcurrentHashMap),
+  // so AtomicInteger was only a mutable-cell trick. IntIntHashMap.add(key, delta) covers it directly.
+  private final IntIntHashMap                        bucketRecordDelta     = new IntIntHashMap();
   private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
   private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
   private final TransactionIndexContext              indexChanges;
@@ -501,8 +504,7 @@ public class TransactionContext implements Transaction {
 
   public Map<Integer, Integer> getBucketRecordDelta() {
     final Map<Integer, Integer> map = new HashMap<>(bucketRecordDelta.size());
-    for (Map.Entry<Integer, AtomicInteger> entry : bucketRecordDelta.entrySet())
-      map.put(entry.getKey(), entry.getValue().get());
+    bucketRecordDelta.forEach((k, v) -> map.put(k, v));
     return map;
   }
 
@@ -510,22 +512,14 @@ public class TransactionContext implements Transaction {
    * Returns the delta of records considering the pending changes in transaction.
    */
   public long getBucketRecordDelta(final int bucketId) {
-    final AtomicInteger delta = bucketRecordDelta.get(bucketId);
-    if (delta != null)
-      return delta.get();
-    return 0;
+    return bucketRecordDelta.get(bucketId, 0);
   }
 
   /**
    * Updates the record counter for buckets. At transaction commit, the delta is updated into the schema.
    */
   public void updateBucketRecordDelta(final int bucketId, final int delta) {
-    AtomicInteger counter = bucketRecordDelta.get(bucketId);
-    if (counter == null) {
-      counter = new AtomicInteger(delta);
-      bucketRecordDelta.put(bucketId, counter);
-    } else
-      counter.addAndGet(delta);
+    bucketRecordDelta.add(bucketId, delta);
   }
 
   /**
@@ -536,7 +530,7 @@ public class TransactionContext implements Transaction {
       final Map<Integer, Integer> bucketRecordDelta) throws TransactionException {
 
     for (Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet())
-      this.bucketRecordDelta.put(entry.getKey(), new AtomicInteger(entry.getValue()));
+      this.bucketRecordDelta.put(entry.getKey(), entry.getValue());
 
     final int totalImpactedPages = buffer.pages.length;
     if (totalImpactedPages == 0 && keysTx.isEmpty()) {
@@ -753,13 +747,13 @@ public class TransactionContext implements Transaction {
         ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());
 
       // UPDATE RECORD COUNT
-      for (Map.Entry<Integer, AtomicInteger> entry : bucketRecordDelta.entrySet()) {
+      bucketRecordDelta.forEach((bucketId, delta) -> {
         // THE BUCKET/FILE COULD HAVE BEEN REMOVED IN THE CURRENT TRANSACTION
-        final LocalBucket bucket = (LocalBucket) database.getSchema().getFileByIdIfExists(entry.getKey());
+        final LocalBucket bucket = (LocalBucket) database.getSchema().getFileByIdIfExists(bucketId);
         if (bucket != null && bucket.getCachedRecordCount() > -1)
           // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
-          bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue().get());
-      }
+          bucket.setCachedRecordCount(bucket.getCachedRecordCount() + delta);
+      });
 
       for (final Record r : modifiedRecordsCache.values())
         ((RecordInternal) r).unsetDirty();
