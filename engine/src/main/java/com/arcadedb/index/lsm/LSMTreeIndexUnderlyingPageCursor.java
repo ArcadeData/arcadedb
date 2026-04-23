@@ -64,7 +64,49 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
     if (currentEntryIndex < 0)
       throw new IllegalStateException("Invalid page cursor index " + currentEntryIndex);
 
-    int contentPos = buffer.getInt(keyStartPosition + (currentEntryIndex * INT_SERIALIZED_SIZE));
+    int readPos = currentEntryIndex;
+
+    // For DESC iteration, scan backward to find the leftmost occurrence of the key at
+    // currentEntryIndex. We then read from the leftmost and merge forward, so that:
+    //  1. value insertion order is preserved (oldest first), keeping the deletion
+    //     semantics in LSMTreeIndexCursor.next() correct;
+    //  2. after the merge, currentEntryIndex is reset to the leftmost position so that
+    //     the next call to next() skips past the entire duplicate group. Without this
+    //     reset, next() would decrement by 1 and re-enter the same merge group,
+    //     causing an infinite loop and returning duplicate entries.
+    if (!ascendingOrder) {
+      int currentContentPos = buffer.getInt(keyStartPosition + (currentEntryIndex * INT_SERIALIZED_SIZE));
+      buffer.position(currentContentPos);
+      final Object[] currentKey = new Object[keyTypes.length];
+      for (int k = 0; k < keyTypes.length; ++k) {
+        final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
+        if (notNull)
+          currentKey[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+        else
+          currentKey[k] = null;
+      }
+
+      for (int pos = currentEntryIndex - 1; pos >= 0; --pos) {
+        final int prevContentPos = buffer.getInt(keyStartPosition + (pos * INT_SERIALIZED_SIZE));
+        buffer.position(prevContentPos);
+
+        final Object[] adjacentKeys = new Object[keyTypes.length];
+        for (int k = 0; k < keyTypes.length; ++k) {
+          final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
+          if (notNull)
+            adjacentKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+          else
+            adjacentKeys[k] = null;
+        }
+
+        if (LSMTreeIndexMutable.compareKeys(index.comparator, keyTypes, currentKey, adjacentKeys) != 0)
+          break;
+
+        readPos = pos;
+      }
+    }
+
+    int contentPos = buffer.getInt(keyStartPosition + (readPos * INT_SERIALIZED_SIZE));
     buffer.position(contentPos);
 
     nextKeys = new Object[keyTypes.length];
@@ -79,7 +121,9 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
     valuePosition = buffer.position();
     nextValue = index.readEntryValues(buffer);
 
-    for (int pos = currentEntryIndex + 1; pos < totalKeys; ++pos) {
+    final int leftmost = readPos;
+
+    for (int pos = readPos + 1; pos < totalKeys; ++pos) {
       contentPos = buffer.getInt(keyStartPosition + (pos * INT_SERIALIZED_SIZE));
       buffer.position(contentPos);
 
@@ -109,6 +153,9 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
         nextValue = newArray;
       }
     }
+
+    if (!ascendingOrder)
+      currentEntryIndex = leftmost;
 
     return nextKeys;
   }

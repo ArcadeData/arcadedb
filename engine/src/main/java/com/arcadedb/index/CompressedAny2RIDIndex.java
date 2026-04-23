@@ -157,7 +157,11 @@ public class CompressedAny2RIDIndex<K> {
       return null;
 
     // SLOT OCCUPIED, CHECK FOR THE KEY
+    // Termination invariant: each iteration either returns (key found), breaks
+    // (chain terminator), or jumps to a strictly greater nextPos because put()
+    // always appends new entries at chunk.size().
     threadBuffer.position(pos);
+    int lastChainPos = pos;
     while (true) {
       final Object slotKey = serializer.deserializeValue(database, threadBuffer, keyBinaryType, null);
 
@@ -170,6 +174,8 @@ public class CompressedAny2RIDIndex<K> {
       if (nextPos <= 0)
         break;
 
+      assert nextPos > lastChainPos : "CompressedAny2RIDIndex.get chain must move forward to terminate";
+      lastChainPos = nextPos;
       threadBuffer.position(nextPos);
     }
 
@@ -205,8 +211,12 @@ public class CompressedAny2RIDIndex<K> {
 
       } else {
         // SLOT OCCUPIED, CHECK FOR THE KEY
+        // Termination invariant: each iteration either throws (duplicate), breaks
+        // (chain terminator), or jumps to a strictly greater nextPos because new
+        // entries are always appended at chunk.size().
         chunk.position(pos);
         int lastNextPos;
+        int lastChainPos = pos;
         while (true) {
           final Object slotKey = serializer.deserializeValue(database, chunk, keyBinaryType, null);
 
@@ -219,6 +229,8 @@ public class CompressedAny2RIDIndex<K> {
           if (nextPos <= 0)
             break;
 
+          assert nextPos > lastChainPos : "CompressedAny2RIDIndex.put chain must move forward to terminate";
+          lastChainPos = nextPos;
           chunk.position(nextPos);
         }
 

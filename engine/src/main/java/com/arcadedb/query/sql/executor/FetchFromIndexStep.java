@@ -133,7 +133,19 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   private void fetchNextEntry() {
     nextEntry = null;
+    // Defensive loop guard: each iteration either returns, drops one element from
+    // nextCursors, or toggles `cursor` between null and the next pending entry.
+    // The bound is therefore proportional to the initial nextCursors size; a small
+    // generous multiplier protects against any future cursor implementation that
+    // misbehaves without depending on the underlying LSM/MultiIndex guards.
+    int safetyCounter = 0;
+    final int safetyLimit = (nextCursors.size() + 2) * 4;
     while (true) {
+      if (++safetyCounter > safetyLimit)
+        throw new IllegalStateException(
+            "Detected infinite loop while fetching from index '" + indexName + "' (iterations=" + safetyCounter
+                + "). The index may be corrupted, please rebuild it.");
+
       if (cursor == null) {
         if (nextCursors.isEmpty()) {
           if (nextEntry == null && customIterator != null && customIterator.hasNext()) {

@@ -195,7 +195,15 @@ public class CompressedRID2RIDsIndex {
       return null;
 
     // SLOT OCCUPIED, CHECK FOR THE KEY
+    // Termination invariants:
+    //  - outer loop: each iteration either returns (key found), breaks (chain
+    //    terminator), or jumps to a strictly greater nextPos (new entries always
+    //    appended at chunk.size()).
+    //  - inner value-list loop: each iteration jumps to a strictly SMALLER
+    //    nextEntryPos because every put() appends the new entry at chunk.size()
+    //    and stores the previous (older, lower-positioned) entry as its back-pointer.
     chunk.position(pos);
+    int lastChainPos = pos;
     while (true) {
       final Object slotKey = serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
@@ -211,7 +219,10 @@ public class CompressedRID2RIDsIndex {
         RID vertexRid = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
         list.add(new Pair<>(edgeRid, vertexRid));
 
+        int lastEntryPos = Integer.MAX_VALUE;
         while (nextEntryPos > 0) {
+          assert nextEntryPos < lastEntryPos : "CompressedRID2RIDsIndex value-list must move backward to terminate";
+          lastEntryPos = nextEntryPos;
           chunk.position(nextEntryPos);
 
           edgeRid = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
@@ -229,6 +240,8 @@ public class CompressedRID2RIDsIndex {
       if (nextPos <= 0)
         break;
 
+      assert nextPos > lastChainPos : "CompressedRID2RIDsIndex.get chain must move forward to terminate";
+      lastChainPos = nextPos;
       chunk.position(nextPos);
     }
 
@@ -271,8 +284,12 @@ public class CompressedRID2RIDsIndex {
 
     } else {
       // SLOT OCCUPIED, CHECK FOR THE KEY
+      // Termination invariant: each iteration either returns (key found, after
+      // appending the new value), breaks (chain terminator), or jumps to a strictly
+      // greater nextPos (new entries always appended at chunk.size()).
       chunk.position(pos);
       int lastNextPos;
+      int lastChainPos = pos;
       while (true) {
         final RID slotKey = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
@@ -308,6 +325,8 @@ public class CompressedRID2RIDsIndex {
         if (nextPos <= 0)
           break;
 
+        assert nextPos > lastChainPos : "CompressedRID2RIDsIndex.put chain must move forward to terminate";
+        lastChainPos = nextPos;
         chunk.position(nextPos);
       }
 

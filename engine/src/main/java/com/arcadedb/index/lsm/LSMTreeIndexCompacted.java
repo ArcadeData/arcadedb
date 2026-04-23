@@ -117,6 +117,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     RID[] values = rids;
 
     // REPEAT TO WRITE ALL THE RIDS (SPLIT THEM IF THEY DON'T FIT IN THE CURRENT PAGE)
+    // Termination invariant: each iteration either breaks (all values written) or
+    // strictly shrinks `values` via Arrays.copyOfRange(values, writtenValues, values.length)
+    // where writtenValues > 0 (when 0, writeEntryMultipleValues throws/returns 0 for a
+    // single value that doesn't fit and we restart on a fresh page). The loop therefore
+    // runs at most O(rids.length) times.
     do {
       int writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
           currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());
@@ -158,7 +163,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
             "Splitting key values. Total values=%d, written values=%d in page %s",
             values.length, writtenValues, currentPage.getPageId());
 
+        final int prevLen = values.length;
         values = Arrays.copyOfRange(values, writtenValues, values.length);
+        assert values.length < prevLen : "compacted writeNewPages must shrink values each iteration to terminate";
 
         // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
         database.getPageManager().updatePageVersion(currentPage, true);

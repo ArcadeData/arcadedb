@@ -173,7 +173,18 @@ public class LSMTreeIndexCursor implements IndexCursor {
     for (int i = 0; i < pageCursors.length; ++i) {
 
       LSMTreeIndexUnderlyingAbstractCursor pageCursor = pageCursors[i];
+      // Defensive loop guard: each iteration either returns, breaks, or strictly advances
+      // pageCursor by one position. The bound is therefore the page entry count; we use 2x
+      // for safety in case an entry is legitimately skipped via two separate paths
+      // (removedKeys and fromKeys non-inclusive).
+      int safetyCounter = 0;
+      final int safetyLimit = pageCursor != null ? Math.max(1024, pageCursor.totalKeys * 2) : 0;
       while (pageCursor != null) {
+        if (++safetyCounter > safetyLimit)
+          throw new IllegalStateException(
+              "Detected infinite loop while initializing cursor on index '" + index.getName() + "' (DESC=" + (!ascendingOrder)
+                  + ", iterations=" + safetyCounter + "). The index may be corrupted, please rebuild it.");
+
         final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(pageCursor.getKeys());
         if (removedKeys.contains(keys)) {
           if (pageCursor.hasNext()) {
@@ -281,7 +292,18 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
   @Override
   public RID next() {
+    // Defensive loop guard: a corrupted or buggy cursor should never iterate this body
+    // more than a small multiple of (totalCursors + tx changes). If it does, we are
+    // stuck and must surface the problem instead of hanging the thread; the index can
+    // be rebuilt to recover.
+    int safetyCounter = 0;
+    final int safetyLimit = Math.max(1024, (totalCursors + 1) * 1024);
     do {
+      if (++safetyCounter > safetyLimit)
+        throw new IllegalStateException(
+            "Detected infinite loop while iterating index '" + index.getName() + "' (DESC=" + (!ascendingOrder)
+                + ", iterations=" + safetyCounter + "). The index may be corrupted, please rebuild it.");
+
       if (currentValues != null && currentValueIndex < currentValues.length) {
         final RID value = currentValues[currentValueIndex++];
         if (value != null && !index.isDeletedEntry(value))

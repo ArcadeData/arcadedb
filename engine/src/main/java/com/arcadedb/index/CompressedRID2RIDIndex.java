@@ -176,7 +176,12 @@ public class CompressedRID2RIDIndex {
       return null;
 
     // SLOT OCCUPIED, CHECK FOR THE KEY
+    // Termination invariant: each iteration either returns (key found), breaks
+    // (chain terminator nextPos <= 0), or jumps to a strictly greater nextPos
+    // because put() always appends new entries at chunk.size(). The loop is
+    // therefore bounded by the number of collisions in this hash bucket.
     chunk.position(pos);
+    int lastChainPos = pos;
     while (true) {
       final Object slotKey = serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
       if (BinaryComparator.equals(slotKey, key)) {
@@ -189,6 +194,8 @@ public class CompressedRID2RIDIndex {
       if (nextPos <= 0)
         break;
 
+      assert nextPos > lastChainPos : "CompressedRID2RIDIndex.get chain must move forward to terminate";
+      lastChainPos = nextPos;
       chunk.position(nextPos);
     }
 
@@ -227,8 +234,13 @@ public class CompressedRID2RIDIndex {
 
     } else {
       // SLOT OCCUPIED, CHECK FOR THE KEY
+      // Termination invariant: each iteration either throws (duplicate key), breaks
+      // (chain terminator nextPos <= 0), or jumps to a strictly greater nextPos
+      // because new entries are always appended at chunk.size(). The loop is bounded
+      // by the number of collisions in this hash bucket.
       chunk.position(pos);
       int lastNextPos;
+      int lastChainPos = pos;
       while (true) {
         final RID slotKey = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
@@ -241,6 +253,8 @@ public class CompressedRID2RIDIndex {
         if (nextPos <= 0)
           break;
 
+        assert nextPos > lastChainPos : "CompressedRID2RIDIndex.put chain must move forward to terminate";
+        lastChainPos = nextPos;
         chunk.position(nextPos);
       }
 

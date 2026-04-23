@@ -528,6 +528,11 @@ public class HashIndexBucket extends PaginatedComponent {
         serializedKey.length + varIntSize(1) + serializedRID.length;
     final int totalNeeded = entryDataSize + SLOT_SIZE;
 
+    // Defensive cycle detection: a corrupted overflow chain that loops back to a
+    // previously-seen page would otherwise spin forever. Track visited page numbers.
+    final java.util.Set<Integer> visited = new java.util.HashSet<>();
+    visited.add(currentPageNum);
+
     while (true) {
       int overflowPageNum = currentPage.readInt(BUCKET_OVERFLOW_PAGE);
 
@@ -536,6 +541,11 @@ public class HashIndexBucket extends PaginatedComponent {
         overflowPageNum = allocateOverflowPage(localDepth);
         currentPage.writeInt(BUCKET_OVERFLOW_PAGE, overflowPageNum);
       }
+
+      if (!visited.add(overflowPageNum))
+        throw new IllegalStateException(
+            "Detected cycle in hash index '" + getName() + "' overflow chain at page " + overflowPageNum
+                + ". The index is corrupted, please rebuild it.");
 
       final MutablePage overflowPage = database.getTransaction()
           .getPageToModify(new PageId(database, fileId, overflowPageNum), pageSize, false);
@@ -892,7 +902,15 @@ public class HashIndexBucket extends PaginatedComponent {
   private void insertRawEntry(final int bucketPageNum, final byte[] rawEntry) throws IOException {
     int currentPageNum = bucketPageNum;
 
+    // Defensive cycle detection on the overflow chain (see insertIntoOverflow above).
+    final java.util.Set<Integer> visited = new java.util.HashSet<>();
+
     while (true) {
+      if (!visited.add(currentPageNum))
+        throw new IllegalStateException(
+            "Detected cycle in hash index '" + getName() + "' overflow chain at page " + currentPageNum
+                + ". The index is corrupted, please rebuild it.");
+
       final MutablePage page = database.getTransaction()
           .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
       final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;

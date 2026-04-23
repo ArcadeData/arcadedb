@@ -202,6 +202,9 @@ public class LSMTreeIndexCompactor {
           final LSMTreeIndexUnderlyingPageCursor iter = iterators[idx];
 
           // BROWSE THE SAME ITERATOR TO CHECK IF NEXT VALUES HAVE THE SAME KEY
+          // Termination invariant: each iteration either breaks (different key, no more
+          // entries, or iter == null) or strictly advances `iter` via iter.next(). The
+          // loop is therefore bounded by the number of remaining entries in the page.
           while (true) {
             if (iter == null)
               break;
@@ -220,7 +223,10 @@ public class LSMTreeIndexCompactor {
 
             // CHECK IF THE NEXT ELEMENT HAS THE SAME KEY
             if (iter.hasNext()) {
+              final int prevPos = iter.getCurrentPositionInPage();
               iter.next();
+              assert iter.getCurrentPositionInPage() != prevPos :
+                  "compactor iterator must advance position on next() to terminate";
               keys[idx] = iter.getKeys();
 
               if (LSMTreeIndexMutable.compareKeys(comparator, keyTypes, keys[idx], minorKey) != 0)

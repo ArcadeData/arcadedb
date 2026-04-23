@@ -337,6 +337,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected int writeEntryMultipleValues(final Binary buffer, final Object[] keys, Object[] rids, final int availableSpaceInPage,
       final int pageUsableSpace, final PageId pageId) {
     Object[] values = rids;
+    // Termination invariant: each iteration either breaks (all values written),
+    // returns (single value still doesn't fit), or strictly shrinks `values` via
+    // Arrays.copyOf(values, written) where written < values.length. Therefore the
+    // loop runs at most O(rids.length) times.
     do {
       buffer.clear();
       writeKeys(buffer, keys);
@@ -358,7 +362,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
               values.length, pageId, written);
 
       // NOT ENOUGH SPACE: Split the array with the max number of values that fit in the page
+      final int prevLen = values.length;
       values = Arrays.copyOf(values, written);
+      assert values.length < prevLen : "writeEntryMultipleValues must shrink values each iteration to terminate";
 
     } while (true);
 
