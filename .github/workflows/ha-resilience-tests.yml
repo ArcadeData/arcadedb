@@ -1,13 +1,9 @@
-name: E2E HA Tests
+name: HA Resilence Tests
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "0 0 * * *" # Runs daily at midnight
-  pull_request:
-    branches:
-      - main
-
 
 jobs:
   setup:
