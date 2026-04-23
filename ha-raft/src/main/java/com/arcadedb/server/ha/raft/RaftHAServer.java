@@ -70,6 +70,8 @@ import java.util.logging.Logger;
  * <p>
  * <b>Thread-safety:</b> {@link #recoveryLock} synchronizes recovery attempts in
  * {@link #restartRatisIfNeeded()} to prevent concurrent restart races. The
+ * {@link #stateMachine} field is volatile so readers (HTTP handlers, status exporter)
+ * always see the latest instance after a recovery restart. The
  * {@link #shutdownRequested} volatile flag prevents recovery during shutdown.
  * <p>
  * <b>Security note (K8s mode):</b> When {@code HA_K8S} is enabled and gRPC is bound
@@ -82,7 +84,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   private final ArcadeDBServer          arcadeServer;
   private final ContextConfiguration    configuration;
-  private       ArcadeStateMachine      stateMachine;
+  private volatile ArcadeStateMachine    stateMachine;
   private final ClusterMonitor          clusterMonitor;
   private final Quorum                  quorum;
   private final long                    quorumTimeout;

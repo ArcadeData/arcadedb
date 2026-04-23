@@ -254,22 +254,26 @@ public class PageManager extends LockContext {
       final List<MutablePage> pagesToWrite = new ArrayList<>((newPages != null ? newPages.size() : 0) + modifiedPages.size());
 
       if (newPages != null)
-        for (final MutablePage p : newPages.values()) {
+        for (final MutablePage p : newPages.values())
           pagesToWrite.add(updatePageVersion(p, true));
 
-          // Update page count eagerly so getTotalPages() reflects new pages immediately,
-          // even before the async flush thread writes them to disk
+      for (final MutablePage p : modifiedPages.values())
+        pagesToWrite.add(updatePageVersion(p, false));
+
+      // Write pages (and put in readCache) BEFORE updating pageCount, otherwise concurrent
+      // transactions can observe pageCount > readCache state and treat the new page as a
+      // pre-existing empty page (sparse-file semantics), allowing two records' chunk chains
+      // to land on the same physical slot.
+      writePages(pagesToWrite, asyncFlush);
+
+      if (newPages != null)
+        for (final MutablePage p : newPages.values()) {
           final PageId pid = p.getPageId();
           final PaginatedComponent component = (PaginatedComponent) ((DatabaseInternal) pid.getDatabase()).getSchema()
                   .getFileByIdIfExists(pid.getFileId());
           if (component != null)
             component.updatePageCount(pid.getPageNumber() + 1);
         }
-
-      for (final MutablePage p : modifiedPages.values())
-        pagesToWrite.add(updatePageVersion(p, false));
-
-      writePages(pagesToWrite, asyncFlush);
 
     } finally {
       unlock();

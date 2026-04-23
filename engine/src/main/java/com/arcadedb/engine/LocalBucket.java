@@ -673,7 +673,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final MutablePage selectedPage;
       if (createNewPage) {
-        selectedPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), txPageCounter), pageSize);
+        // Atomically reserve the next page number to prevent two concurrent transactions
+        // from allocating the same page number (which would cause silent data corruption
+        // when their commits both succeed and overwrite each other's chunks).
+        final int reservedPageNumber = reservedPageCounter.getAndIncrement();
+        selectedPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), reservedPageNumber), pageSize);
         newRecordPositionInPage = contentHeaderSize;
         availablePositionIndex = 0;
       } else
@@ -735,12 +739,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @param ridsOut    output array for assigned RIDs (must have length >= to - from)
    */
   public void createRecordsBulk(final Binary[] buffers, final int from, final int to, final RID[] ridsOut) {
-    int txPageCounter = getTotalPages();
-
-      // Always start from a fresh new page for bulk writes
+      // Always start from a fresh new page for bulk writes.
+      // Atomically reserve the next page number to prevent two concurrent transactions
+      // from allocating the same page number (which would cause silent data corruption).
       MutablePage currentPage = database.getTransaction()
-          .addPage(new PageId(database, file.getFileId(), txPageCounter), pageSize);
-      txPageCounter++;
+          .addPage(new PageId(database, file.getFileId(), reservedPageCounter.getAndIncrement()), pageSize);
       int recordPositionInPage = contentHeaderSize;
       int availablePositionIndex = 0;
       final int maxContent = currentPage.getMaxContentSize();
@@ -763,8 +766,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           // Create a new page
           currentPage = database.getTransaction()
-              .addPage(new PageId(database, file.getFileId(), txPageCounter), pageSize);
-          txPageCounter++;
+              .addPage(new PageId(database, file.getFileId(), reservedPageCounter.getAndIncrement()), pageSize);
           recordPositionInPage = contentHeaderSize;
           availablePositionIndex = 0;
         }
@@ -1499,7 +1501,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (nextPage == null) {
         // CREATE A NEW PAGE
-        nextPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), txPageCounter++), pageSize);
+        // Atomically reserve the next page number to prevent two concurrent transactions
+        // from allocating the same page number (which would cause silent data corruption
+        // when their commits both succeed and overwrite each other's chunks).
+        final int reservedPageNumber = reservedPageCounter.getAndIncrement();
+        nextPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), reservedPageNumber), pageSize);
+        txPageCounter = reservedPageNumber + 1;
         newPosition = contentHeaderSize;
         nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET, newPosition);
         nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
@@ -1640,7 +1647,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (nextPage == null) {
           // CREATE A NEW PAGE
-          nextPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), txPageCounter), pageSize);
+          // Atomically reserve the next page number to prevent two concurrent transactions
+          // from allocating the same page number (which would cause silent data corruption).
+          final int reservedPageNumber = reservedPageCounter.getAndIncrement();
+          nextPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), reservedPageNumber), pageSize);
           newPosition = contentHeaderSize;
           nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET, newPosition);
           nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
@@ -1901,10 +1911,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     PageAnalysis bestPageAnalysis = null;
     int[] pagesToRemove = null;
     int pagesToRemoveCount = 0;
+    // Visible page horizon: the tx can see committed pages PLUS any pages it has added itself
+    // (tracked via tx.getPageCounter on this file). Pages beyond this are "phantoms" reserved
+    // by other concurrent transactions, not yet committed and not visible via readCache; reusing
+    // them at slot 0 would collide with the reserving tx and silently corrupt that record's chain.
+    final int txVisiblePageHorizon = getTotalPages();
     for (int s = 0; s < snapSize; s++) {
       final int pageId = snapPageIds[s];
       if (pageId == currentPageId)
         // ALREADY EVALUATED
+        continue;
+
+      if (pageId >= txVisiblePageHorizon)
         continue;
 
       final int pageStats = snapPageStats[s];

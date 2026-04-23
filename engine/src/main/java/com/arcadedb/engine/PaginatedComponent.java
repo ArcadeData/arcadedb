@@ -34,9 +34,20 @@ import java.util.concurrent.atomic.*;
  */
 public abstract class PaginatedComponent extends Component {
   public static final String                 TEMP_EXT  = "temp_";
-  protected final        PaginatedComponentFile file;
-  protected final        int                    pageSize;
-  protected final        AtomicInteger          pageCount = new AtomicInteger();
+  protected final     PaginatedComponentFile file;
+  protected final     int                    pageSize;
+  protected final     AtomicInteger          pageCount = new AtomicInteger();
+  /**
+   * Atomic counter used by allocators (e.g., {@link LocalBucket}) to reserve unique page numbers
+   * across concurrent transactions <b>before</b> a tx commits. Unlike {@code pageCount}, which
+   * reflects committed pages and is exposed via {@link #getTotalPages()}, this counter advances
+   * eagerly at allocation time and is invisible to other transactions doing space lookups.
+   * <p>
+   * Without this separation, two concurrent transactions could both compute the same "next page
+   * number" and end up writing different chunks to the same physical page slot &mdash; a silent
+   * data-corruption bug that the MVCC version check did not catch reliably.
+   */
+  protected final     AtomicInteger          reservedPageCounter = new AtomicInteger();
 
   protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext,
       final ComponentFile.MODE mode,
@@ -66,6 +77,7 @@ public abstract class PaginatedComponent extends Component {
       pageCount.set(0);
     else
       pageCount.set((int) (fileSize / pageSize));
+    reservedPageCounter.set(pageCount.get());
   }
 
   public void rename(final String newName) throws IOException {
@@ -100,6 +112,8 @@ public abstract class PaginatedComponent extends Component {
     // USE IF TO SPEED UP THE CHECK
     if (totalPages > pageCount.get())
       pageCount.updateAndGet(current -> Math.max(totalPages, current));
+    if (totalPages > reservedPageCounter.get())
+      reservedPageCounter.updateAndGet(current -> Math.max(totalPages, current));
   }
 
   @Override
