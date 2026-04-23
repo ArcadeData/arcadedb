@@ -39,13 +39,13 @@ public class MCPToolUtils {
       final String databaseName) {
     if (!server.existsDatabase(databaseName)) {
       final Set<String> installed = new TreeSet<>(server.getDatabaseNames());
-      final Set<String> allowed = user.getAuthorizedDatabases();
-      if (!allowed.contains("*"))
-        installed.retainAll(allowed);
+      installed.removeIf(db -> !user.canAccessToDatabase(db));
       throw new IllegalArgumentException(
           "Database '" + databaseName + "' does not exist. Available databases: " + installed
               + ". Use one of these names or call list_databases to refresh the list.");
     }
+    if (!user.canAccessToDatabase(databaseName))
+      throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
     return server.getDatabase(databaseName);
   }
 }
