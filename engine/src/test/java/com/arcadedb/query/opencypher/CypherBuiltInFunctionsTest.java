@@ -957,7 +957,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat(proc).isNotNull();
     assertThat(proc.getName()).isEqualTo("algo.allsimplepaths");
     assertThat(proc.getMinArgs()).isEqualTo(4);
-    assertThat(proc.getMaxArgs()).isEqualTo(4);
+    assertThat(proc.getMaxArgs()).isEqualTo(5);
     assertThat(proc.getYieldFields()).contains("path");
   }
 

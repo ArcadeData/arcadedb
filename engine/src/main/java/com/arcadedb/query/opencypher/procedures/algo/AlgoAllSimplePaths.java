@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -34,20 +35,26 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 /**
- * Procedure: algo.allSimplePaths(startNode, endNode, relTypes, maxDepth)
+ * Procedure: algo.allSimplePaths(startNode, endNode, relTypes, maxDepth, [options])
  * <p>
  * Finds all simple paths (paths without repeated nodes) between two nodes.
+ * </p>
+ * <p>
+ * The optional 5th argument is a configuration map. Supported keys:
+ * <ul>
+ *   <li>{@code skipRelTypes} - a relationship type (string) or list of types to exclude from traversal</li>
+ * </ul>
  * </p>
  * <p>
  * Example Cypher usage:
  * <pre>
  * MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})
- * CALL algo.allSimplePaths(a, b, 'KNOWS', 5)
+ * CALL algo.allSimplePaths(a, b, ['KNOWS','FRIEND'], 5, { skipRelTypes: ['FRIEND'] })
  * YIELD path
  * </pre>
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
   public static final String NAME = "algo.allsimplepaths";
@@ -64,12 +71,13 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
 
   @Override
   public int getMaxArgs() {
-    return 4;
+    return 5;
   }
 
   @Override
   public String getDescription() {
-    return "Find all simple paths (without repeated nodes) between two nodes up to a maximum depth";
+    return "Find all simple paths (without repeated nodes) between two nodes up to a maximum depth, "
+        + "optionally excluding relationship types via { skipRelTypes: [...] }";
   }
 
   @Override
@@ -85,11 +93,11 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     final Vertex endNode = extractVertex(args[1], "endNode");
     final String[] relTypes = extractRelTypes(args[2]);
     final int maxDepth = ((Number) args[3]).intValue();
+    final Set<String> skipRelTypes = args.length > 4 ? extractSkipRelTypes(args[4]) : Collections.emptySet();
 
     if (maxDepth < 1)
       throw new IllegalArgumentException(getName() + "(): maxDepth must be at least 1");
 
-    // Find all simple paths using DFS
     final List<List<Object>> allPaths = new ArrayList<>();
     final List<Object> currentPath = new ArrayList<>();
     final Set<RID> visited = new HashSet<>();
@@ -97,9 +105,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     currentPath.add(startNode);
     visited.add(startNode.getIdentity());
 
-    findPaths(startNode, endNode, relTypes, maxDepth, currentPath, visited, allPaths, context);
+    findPaths(startNode, endNode, relTypes, skipRelTypes, maxDepth, currentPath, visited, allPaths, context);
 
-    // Convert paths to results
     return allPaths.stream().map(pathElements -> {
       final List<Object> nodes = new ArrayList<>();
       final List<Object> relationships = new ArrayList<>();
@@ -124,26 +131,48 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     });
   }
 
+  private Set<String> extractSkipRelTypes(final Object arg) {
+    if (arg == null)
+      return Collections.emptySet();
+
+    final Map<String, Object> options = extractMap(arg, "options");
+    if (options == null || options.isEmpty())
+      return Collections.emptySet();
+
+    final Object value = options.get("skipRelTypes");
+    if (value == null)
+      return Collections.emptySet();
+
+    final String[] types = extractRelTypes(value);
+    if (types == null || types.length == 0)
+      return Collections.emptySet();
+
+    final Set<String> result = new HashSet<>(types.length);
+    Collections.addAll(result, types);
+    return result;
+  }
+
   private void findPaths(final Vertex current, final Vertex target, final String[] relTypes,
-      final int remainingDepth, final List<Object> currentPath, final Set<RID> visited,
-      final List<List<Object>> allPaths, final CommandContext context) {
+                         final Set<String> skipRelTypes, final int remainingDepth,
+                         final List<Object> currentPath, final Set<RID> visited,
+                         final List<List<Object>> allPaths, final CommandContext context) {
 
     if (current.getIdentity().equals(target.getIdentity())) {
-      // Found a path - copy it
       allPaths.add(new ArrayList<>(currentPath));
       return;
     }
 
-    if (remainingDepth <= 0) {
+    if (remainingDepth <= 0)
       return;
-    }
 
-    // Explore neighbors
     final Iterable<Edge> edges = relTypes != null && relTypes.length > 0
         ? current.getEdges(Vertex.DIRECTION.OUT, relTypes)
         : current.getEdges(Vertex.DIRECTION.OUT);
 
     for (final Edge edge : edges) {
+      if (!skipRelTypes.isEmpty() && skipRelTypes.contains(edge.getTypeName()))
+        continue;
+
       final Vertex neighbor = edge.getInVertex();
       final RID neighborId = neighbor.getIdentity();
 
@@ -152,21 +181,22 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         currentPath.add(edge);
         currentPath.add(neighbor);
 
-        findPaths(neighbor, target, relTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+        findPaths(neighbor, target, relTypes, skipRelTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
 
-        // Backtrack
-        currentPath.remove(currentPath.size() - 1);
-        currentPath.remove(currentPath.size() - 1);
+        currentPath.removeLast();
+        currentPath.removeLast();
         visited.remove(neighborId);
       }
     }
 
-    // Also check incoming edges for bidirectional traversal
     final Iterable<Edge> inEdges = relTypes != null && relTypes.length > 0
         ? current.getEdges(Vertex.DIRECTION.IN, relTypes)
         : current.getEdges(Vertex.DIRECTION.IN);
 
     for (final Edge edge : inEdges) {
+      if (!skipRelTypes.isEmpty() && skipRelTypes.contains(edge.getTypeName()))
+        continue;
+
       final Vertex neighbor = edge.getOutVertex();
       final RID neighborId = neighbor.getIdentity();
 
@@ -175,11 +205,10 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         currentPath.add(edge);
         currentPath.add(neighbor);
 
-        findPaths(neighbor, target, relTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+        findPaths(neighbor, target, relTypes, skipRelTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
 
-        // Backtrack
-        currentPath.remove(currentPath.size() - 1);
-        currentPath.remove(currentPath.size() - 1);
+        currentPath.removeLast();
+        currentPath.removeLast();
         visited.remove(neighborId);
       }
     }
