@@ -409,6 +409,9 @@
       let activeTab = $("#tabs-command .active").attr("id");
       if (activeTab == "tab-table-sel") renderTable();
       else if (activeTab == "tab-graph-sel" && globalCy == null) renderGraph();
+
+      if ($(e.target).closest("#tabs-command").length > 0 && activeTab != null)
+        globalStorageSave("query.tab", activeTab);
     });
 
     $("#inputLanguage").change(function () {
@@ -435,6 +438,11 @@
     loadFunctionReference();
     initSidebarPanels();
     populateQuerySidebar();
+
+    let savedQueryTab = globalStorageLoad("query.tab", null);
+    if (savedQueryTab != null && savedQueryTab != "tab-table-sel" && $("#" + savedQueryTab).length > 0)
+      $("#" + savedQueryTab).tab("show");
+
     executeCommand();
 
     var dbPar = getURLParameter("db");
