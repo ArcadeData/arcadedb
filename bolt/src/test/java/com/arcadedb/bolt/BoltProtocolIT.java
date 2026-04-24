@@ -1460,4 +1460,159 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       }
     }
   }
+
+  /**
+   * Regression test: SHOW INDEXES must return real indexes from ArcadeDB schema,
+   * not an empty synthetic list.
+   */
+  @Test
+  void showIndexesListsRealIndexes() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    db.transaction(() -> {
+      if (!db.getSchema().existsType("IdxVertex")) {
+        final var t = db.getSchema().createVertexType("IdxVertex");
+        t.createProperty("email", Type.STRING);
+        t.createProperty("name", Type.STRING);
+        db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "IdxVertex", "email");
+        db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "IdxVertex", "name");
+      }
+      if (!db.getSchema().existsType("IdxEdge")) {
+        final var e = db.getSchema().createEdgeType("IdxEdge");
+        e.createProperty("weight", Type.INTEGER);
+        db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "IdxEdge", "weight");
+      }
+    });
+
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        final List<Record> rows = session.run("SHOW INDEXES").list();
+
+        assertThat(rows).as("SHOW INDEXES should return at least 3 indexes").hasSizeGreaterThanOrEqualTo(3);
+
+        final Record emailRow = rows.stream()
+            .filter(r -> r.get("labelsOrTypes").asList().contains("IdxVertex")
+                && r.get("properties").asList().contains("email"))
+            .findFirst().orElseThrow();
+        assertThat(emailRow.get("state").asString()).isEqualTo("ONLINE");
+        assertThat(emailRow.get("populationPercent").asDouble()).isEqualTo(100.0);
+        assertThat(emailRow.get("entityType").asString()).isEqualTo("NODE");
+        assertThat(emailRow.get("type").asString()).isEqualTo("RANGE");
+        assertThat(emailRow.get("owningConstraint").isNull()).as("Unique index should report its own owning constraint").isFalse();
+
+        final Record nameRow = rows.stream()
+            .filter(r -> r.get("labelsOrTypes").asList().contains("IdxVertex")
+                && r.get("properties").asList().contains("name"))
+            .findFirst().orElseThrow();
+        assertThat(nameRow.get("owningConstraint").isNull()).as("Non-unique index should have null owningConstraint").isTrue();
+
+        final Record edgeRow = rows.stream()
+            .filter(r -> r.get("labelsOrTypes").asList().contains("IdxEdge"))
+            .findFirst().orElseThrow();
+        assertThat(edgeRow.get("entityType").asString()).isEqualTo("RELATIONSHIP");
+
+        assertThat(rows.get(0).keys()).containsExactly("id", "name", "state", "populationPercent", "type",
+            "entityType", "labelsOrTypes", "properties", "indexProvider", "owningConstraint", "lastRead", "readCount");
+      }
+    }
+  }
+
+  /**
+   * Regression test: SHOW CONSTRAINTS must return real constraints from ArcadeDB schema
+   * (uniqueness, existence, property type), not an error.
+   */
+  @Test
+  void showConstraintsListsRealConstraints() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    db.transaction(() -> {
+      if (!db.getSchema().existsType("ConV")) {
+        final var t = db.getSchema().createVertexType("ConV");
+        t.createProperty("uid", Type.STRING).setMandatory(true).setNotNull(true);
+        t.createProperty("fullname", Type.STRING);
+        db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "ConV", "uid");
+      }
+      if (!db.getSchema().existsType("ConE")) {
+        final var e = db.getSchema().createEdgeType("ConE");
+        e.createProperty("since", Type.INTEGER).setMandatory(true);
+      }
+    });
+
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        final List<Record> rows = session.run("SHOW CONSTRAINTS").list();
+        assertThat(rows).as("SHOW CONSTRAINTS should return constraints").isNotEmpty();
+        assertThat(rows.get(0).keys()).containsExactly("id", "name", "type", "entityType", "labelsOrTypes",
+            "properties", "ownedIndex", "propertyType");
+
+        final Record uniqueness = rows.stream()
+            .filter(r -> r.get("labelsOrTypes").asList().contains("ConV")
+                && "UNIQUENESS".equals(r.get("type").asString()))
+            .findFirst().orElseThrow();
+        assertThat(uniqueness.get("entityType").asString()).isEqualTo("NODE");
+        assertThat(uniqueness.get("properties").asList()).contains("uid");
+        assertThat(uniqueness.get("ownedIndex").isNull()).isFalse();
+
+        final Record existence = rows.stream()
+            .filter(r -> r.get("labelsOrTypes").asList().contains("ConV")
+                && "NODE_PROPERTY_EXISTENCE".equals(r.get("type").asString())
+                && r.get("properties").asList().contains("uid"))
+            .findFirst().orElseThrow();
+        assertThat(existence.get("entityType").asString()).isEqualTo("NODE");
+
+        final Record edgeExistence = rows.stream()
+            .filter(r -> r.get("labelsOrTypes").asList().contains("ConE")
+                && "RELATIONSHIP_PROPERTY_EXISTENCE".equals(r.get("type").asString()))
+            .findFirst().orElseThrow();
+        assertThat(edgeExistence.get("properties").asList()).contains("since");
+
+        final Record propertyType = rows.stream()
+            .filter(r -> r.get("labelsOrTypes").asList().contains("ConV")
+                && "NODE_PROPERTY_TYPE".equals(r.get("type").asString())
+                && r.get("properties").asList().contains("fullname"))
+            .findFirst().orElseThrow();
+        assertThat(propertyType.get("propertyType").asString()).isEqualTo("STRING");
+      }
+    }
+  }
+
+  /**
+   * Regression test: SHOW UNIQUE CONSTRAINTS filters to only uniqueness constraints.
+   */
+  @Test
+  void showUniqueConstraintsFiltersByType() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    db.transaction(() -> {
+      if (!db.getSchema().existsType("UniqV")) {
+        final var t = db.getSchema().createVertexType("UniqV");
+        t.createProperty("code", Type.STRING).setMandatory(true);
+        db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "UniqV", "code");
+      }
+    });
+
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        final List<Record> rows = session.run("SHOW UNIQUE CONSTRAINTS").list();
+        assertThat(rows).isNotEmpty();
+        for (final Record r : rows)
+          assertThat(r.get("type").asString()).endsWith("UNIQUENESS");
+      }
+    }
+  }
+
+  /**
+   * Regression test: SHOW VECTOR INDEXES filters to only vector indexes; when there are
+   * none, the result is empty but the response shape is preserved.
+   */
+  @Test
+  void showVectorIndexesReturnsEmptyWithoutVectorIndexes() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        final Result result = session.run("SHOW VECTOR INDEXES");
+        assertThat(result.keys()).containsExactly("id", "name", "state", "populationPercent", "type",
+            "entityType", "labelsOrTypes", "properties", "indexProvider", "owningConstraint", "lastRead", "readCount");
+        final List<Record> rows = result.list();
+        for (final Record r : rows)
+          assertThat(r.get("type").asString()).isEqualTo("VECTOR");
+      }
+    }
+  }
 }

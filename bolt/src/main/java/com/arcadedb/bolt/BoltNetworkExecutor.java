@@ -38,9 +38,13 @@ import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -65,6 +69,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -1070,11 +1075,42 @@ public class BoltNetworkExecutor extends Thread {
       }
       return true;
 
-    } else if (normalized.startsWith("show index") || normalized.startsWith("show vector index")) {
-      // SHOW INDEXES / SHOW VECTOR INDEXES - return empty list
+    } else if (normalized.startsWith("show index")
+        || normalized.startsWith("show all index")
+        || normalized.startsWith("show range index")
+        || normalized.startsWith("show text index")
+        || normalized.startsWith("show point index")
+        || normalized.startsWith("show lookup index")
+        || normalized.startsWith("show fulltext index")
+        || normalized.startsWith("show vector index")) {
+      // SHOW INDEXES / SHOW ... INDEXES - list indexes from ArcadeDB schema
       currentFields = List.of("id", "name", "state", "populationPercent", "type", "entityType",
           "labelsOrTypes", "properties", "indexProvider", "owningConstraint", "lastRead", "readCount");
-      syntheticResults = new ArrayList<>();
+      syntheticResults = buildShowIndexesResults(normalized);
+      return true;
+
+    } else if (normalized.startsWith("show constraint")
+        || normalized.startsWith("show all constraint")
+        || normalized.startsWith("show unique constraint")
+        || normalized.startsWith("show uniqueness constraint")
+        || normalized.startsWith("show exist constraint")
+        || normalized.startsWith("show existence constraint")
+        || normalized.startsWith("show node exist constraint")
+        || normalized.startsWith("show node existence constraint")
+        || normalized.startsWith("show node key constraint")
+        || normalized.startsWith("show relationship exist constraint")
+        || normalized.startsWith("show relationship existence constraint")
+        || normalized.startsWith("show relationship key constraint")
+        || normalized.startsWith("show rel exist constraint")
+        || normalized.startsWith("show rel key constraint")
+        || normalized.startsWith("show key constraint")
+        || normalized.startsWith("show property type constraint")
+        || normalized.startsWith("show node property type constraint")
+        || normalized.startsWith("show relationship property type constraint")) {
+      // SHOW CONSTRAINTS / SHOW ... CONSTRAINTS - list constraints from ArcadeDB schema
+      currentFields = List.of("id", "name", "type", "entityType", "labelsOrTypes", "properties",
+          "ownedIndex", "propertyType");
+      syntheticResults = buildShowConstraintsResults(normalized);
       return true;
 
     } else if (normalized.contains("dbms.licenseagreementdetails")) {
@@ -1086,6 +1122,205 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     return false;
+  }
+
+  /**
+   * Builds the SHOW INDEXES result rows by iterating the ArcadeDB schema.
+   * <p>
+   * Each row mirrors Neo4j's SHOW INDEXES output shape so the Neo4j driver can parse it.
+   * The {@code filter} argument is the normalized query text and is used to honor typed
+   * variants like {@code SHOW VECTOR INDEXES}, {@code SHOW FULLTEXT INDEXES}, etc.
+   */
+  private List<List<Object>> buildShowIndexesResults(final String filter) {
+    final List<List<Object>> rows = new ArrayList<>();
+    if (database == null)
+      return rows;
+
+    final Schema schema = database.getSchema();
+    final Set<String> visited = new HashSet<>();
+    int idSeq = 1;
+
+    for (final DocumentType type : schema.getTypes()) {
+      if (type.getName().contains("~"))
+        continue;
+
+      final String entityType = type instanceof EdgeType ? "RELATIONSHIP" : "NODE";
+      for (final TypeIndex typeIndex : type.getAllIndexes(false)) {
+        if (!visited.add(typeIndex.getName()))
+          continue;
+
+        final String neoType = mapIndexTypeToNeo4j(typeIndex.getType());
+        if (!indexTypeMatchesFilter(filter, neoType))
+          continue;
+
+        final String owningConstraint = typeIndex.isUnique() ? typeIndex.getName() : null;
+        final List<Object> row = new ArrayList<>(12);
+        row.add((long) idSeq++);
+        row.add(typeIndex.getName());
+        row.add("ONLINE");
+        row.add(100.0);
+        row.add(neoType);
+        row.add(entityType);
+        row.add(List.of(type.getName()));
+        row.add(new ArrayList<>(typeIndex.getPropertyNames()));
+        row.add(mapIndexTypeToProvider(typeIndex.getType()));
+        row.add(owningConstraint);
+        row.add(null);
+        row.add(null);
+        rows.add(row);
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * Builds the SHOW CONSTRAINTS result rows by iterating the ArcadeDB schema.
+   * <p>
+   * ArcadeDB models constraints on the {@link Property} object: {@code mandatory},
+   * {@code notNull}, and indirectly unique via a unique {@link Index}. This method
+   * maps those to Neo4j constraint types so the Neo4j driver can parse the result.
+   */
+  private List<List<Object>> buildShowConstraintsResults(final String filter) {
+    final List<List<Object>> rows = new ArrayList<>();
+    if (database == null)
+      return rows;
+
+    final Schema schema = database.getSchema();
+    int idSeq = 1;
+
+    for (final DocumentType type : schema.getTypes()) {
+      if (type.getName().contains("~"))
+        continue;
+
+      final boolean isEdge = type instanceof EdgeType;
+      final String entityType = isEdge ? "RELATIONSHIP" : "NODE";
+
+      // Uniqueness constraints: derived from unique indexes.
+      for (final TypeIndex typeIndex : type.getAllIndexes(false)) {
+        if (!typeIndex.isUnique())
+          continue;
+
+        final String constraintType = isEdge ? "RELATIONSHIP_UNIQUENESS" : "UNIQUENESS";
+        if (!constraintTypeMatchesFilter(filter, constraintType))
+          continue;
+
+        final List<Object> row = new ArrayList<>(8);
+        row.add((long) idSeq++);
+        row.add(typeIndex.getName());
+        row.add(constraintType);
+        row.add(entityType);
+        row.add(List.of(type.getName()));
+        row.add(new ArrayList<>(typeIndex.getPropertyNames()));
+        row.add(typeIndex.getName());
+        row.add(null);
+        rows.add(row);
+      }
+
+      // Property existence (mandatory / notNull) and property type constraints.
+      for (final Property property : type.getProperties()) {
+        final boolean mandatory = property.isMandatory();
+        final boolean notNull = property.isNotNull();
+
+        if (mandatory || notNull) {
+          final String constraintType = isEdge ? "RELATIONSHIP_PROPERTY_EXISTENCE" : "NODE_PROPERTY_EXISTENCE";
+          if (constraintTypeMatchesFilter(filter, constraintType)) {
+            final List<Object> row = new ArrayList<>(8);
+            row.add((long) idSeq++);
+            row.add(buildConstraintName(type.getName(), property.getName(), "existence"));
+            row.add(constraintType);
+            row.add(entityType);
+            row.add(List.of(type.getName()));
+            row.add(List.of(property.getName()));
+            row.add(null);
+            row.add(null);
+            rows.add(row);
+          }
+        }
+
+        if (property.getType() != null) {
+          final String constraintType = isEdge ? "RELATIONSHIP_PROPERTY_TYPE" : "NODE_PROPERTY_TYPE";
+          if (constraintTypeMatchesFilter(filter, constraintType)) {
+            final List<Object> row = new ArrayList<>(8);
+            row.add((long) idSeq++);
+            row.add(buildConstraintName(type.getName(), property.getName(), "type"));
+            row.add(constraintType);
+            row.add(entityType);
+            row.add(List.of(type.getName()));
+            row.add(List.of(property.getName()));
+            row.add(null);
+            row.add(property.getType().name());
+            rows.add(row);
+          }
+        }
+      }
+    }
+    return rows;
+  }
+
+  private static String mapIndexTypeToNeo4j(final Schema.INDEX_TYPE type) {
+    if (type == null)
+      return "RANGE";
+    return switch (type) {
+      case LSM_TREE -> "RANGE";
+      case HASH -> "HASH";
+      case FULL_TEXT -> "FULLTEXT";
+      case LSM_VECTOR -> "VECTOR";
+      case GEOSPATIAL -> "POINT";
+    };
+  }
+
+  private static String mapIndexTypeToProvider(final Schema.INDEX_TYPE type) {
+    if (type == null)
+      return "range-1.0";
+    return switch (type) {
+      case LSM_TREE -> "range-1.0";
+      case HASH -> "hash-1.0";
+      case FULL_TEXT -> "fulltext-1.0";
+      case LSM_VECTOR -> "vector-2.0";
+      case GEOSPATIAL -> "point-1.0";
+    };
+  }
+
+  private static boolean indexTypeMatchesFilter(final String filter, final String neoType) {
+    if (filter.startsWith("show range index"))
+      return "RANGE".equals(neoType);
+    if (filter.startsWith("show text index"))
+      return "TEXT".equals(neoType);
+    if (filter.startsWith("show point index"))
+      return "POINT".equals(neoType);
+    if (filter.startsWith("show lookup index"))
+      return "LOOKUP".equals(neoType);
+    if (filter.startsWith("show fulltext index"))
+      return "FULLTEXT".equals(neoType);
+    if (filter.startsWith("show vector index"))
+      return "VECTOR".equals(neoType);
+    return true;
+  }
+
+  private static boolean constraintTypeMatchesFilter(final String filter, final String neoType) {
+    if (filter.startsWith("show unique constraint") || filter.startsWith("show uniqueness constraint"))
+      return neoType.endsWith("UNIQUENESS");
+    if (filter.startsWith("show node exist") || filter.startsWith("show node existence"))
+      return "NODE_PROPERTY_EXISTENCE".equals(neoType);
+    if (filter.startsWith("show relationship exist") || filter.startsWith("show relationship existence")
+        || filter.startsWith("show rel exist"))
+      return "RELATIONSHIP_PROPERTY_EXISTENCE".equals(neoType);
+    if (filter.startsWith("show exist constraint") || filter.startsWith("show existence constraint"))
+      return neoType.endsWith("PROPERTY_EXISTENCE");
+    if (filter.startsWith("show key constraint") || filter.startsWith("show node key constraint")
+        || filter.startsWith("show relationship key constraint") || filter.startsWith("show rel key constraint"))
+      return neoType.endsWith("_KEY");
+    if (filter.startsWith("show node property type"))
+      return "NODE_PROPERTY_TYPE".equals(neoType);
+    if (filter.startsWith("show relationship property type"))
+      return "RELATIONSHIP_PROPERTY_TYPE".equals(neoType);
+    if (filter.startsWith("show property type constraint"))
+      return neoType.endsWith("PROPERTY_TYPE");
+    return true;
+  }
+
+  private static String buildConstraintName(final String typeName, final String propertyName, final String kind) {
+    return "constraint_" + typeName + "_" + propertyName + "_" + kind;
   }
 
   /**
