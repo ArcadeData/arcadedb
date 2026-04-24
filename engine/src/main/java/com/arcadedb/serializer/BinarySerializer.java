@@ -805,8 +805,7 @@ public class BinarySerializer {
     }
 
     default:
-      LogManager.instance().log(this, Level.INFO, "Error on deserializing value of type " + type);
-      value = null;
+      throw new SerializationException("Error on deserializing value of unknown type " + type);
     }
     return value;
   }

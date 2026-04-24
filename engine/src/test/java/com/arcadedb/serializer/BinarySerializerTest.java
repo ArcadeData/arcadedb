@@ -27,6 +27,7 @@ import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.EmbeddedModifierProperty;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 
@@ -37,6 +38,7 @@ import java.nio.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BinarySerializerTest extends TestHelper {
 
@@ -564,5 +566,14 @@ class BinarySerializerTest extends TestHelper {
         assertThat(d.getValue() instanceof EmbeddedDocument).isTrue();
       }
     });
+  }
+
+  @Test
+  void deserializeUnknownTypeThrows() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+    final Binary empty = new Binary();
+    assertThatThrownBy(() -> serializer.deserializeValue(database, empty, (byte) 101, null))
+        .isInstanceOf(SerializationException.class)
+        .hasMessageContaining("101");
   }
 }
