@@ -26,6 +26,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -111,10 +112,14 @@ public final class RaftLogEntryCodec {
   /**
    * Encodes a schema entry into a ByteString.
    * <p>
-   * Binary format: type byte, databaseName (UTF), schemaJson (UTF),
+   * Binary format: type byte, databaseName (UTF), schemaJson length (int) and UTF-8 bytes,
    * filesToAdd map, filesToRemove map,
    * walEntries count (int), then for each WAL entry: length (int) + bytes,
    * then for each bucket delta: entry count (int) + pairs of fileId (int) and delta (int).
+   * <p>
+   * The schemaJson is length-prefixed rather than written via {@code writeUTF} because the
+   * modified-UTF-8 format used by {@code DataOutputStream.writeUTF} is capped at 65535 bytes,
+   * which realistic schemas (many types) can exceed.
    */
   public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
@@ -125,7 +130,9 @@ public final class RaftLogEntryCodec {
 
       dos.writeByte(RaftLogEntryType.SCHEMA_ENTRY.getId());
       dos.writeUTF(databaseName);
-      dos.writeUTF(schemaJson != null ? schemaJson : "");
+      final byte[] schemaBytes = (schemaJson != null ? schemaJson : "").getBytes(StandardCharsets.UTF_8);
+      dos.writeInt(schemaBytes.length);
+      dos.write(schemaBytes);
 
       writeFileMap(dos, filesToAdd);
       writeFileMap(dos, filesToRemove);
@@ -296,7 +303,11 @@ public final class RaftLogEntryCodec {
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
-    final String schemaJson = dis.readUTF();
+    final int schemaLen = dis.readInt();
+    checkByteLength(schemaLen, "SCHEMA_ENTRY schemaJson");
+    final byte[] schemaBytes = new byte[schemaLen];
+    dis.readFully(schemaBytes);
+    final String schemaJson = new String(schemaBytes, StandardCharsets.UTF_8);
     final Map<Integer, String> filesToAdd = readFileMap(dis);
     final Map<Integer, String> filesToRemove = readFileMap(dis);
 

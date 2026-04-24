@@ -145,6 +145,44 @@ class RaftLogEntryCodecTest {
   }
 
   @Test
+  void roundTripSchemaEntryWithLargeSchemaJsonOver64Kb() {
+    // Regression: DataOutputStream.writeUTF has a 64KB limit on the UTF-8 encoded length.
+    // Real-world schemas with many types can exceed it (e.g., OrientDB-to-ArcadeDB
+    // migrations that create hundreds of vertex types). Reproduces the reported
+    // "encoded string ... too long: 65660 bytes" IllegalStateException from cluster mode.
+    final StringBuilder builder = new StringBuilder("{\"types\":{");
+    for (int i = 0; builder.length() < 70_000; i++) {
+      if (i > 0)
+        builder.append(',');
+      builder.append("\"Type").append(i)
+          .append("\":{\"parentType\":\"AbstractType").append(i)
+          .append("\",\"fields\":[\"id\",\"name\",\"timestamp\",\"payload\"]}");
+    }
+    builder.append("}}");
+    final String largeSchemaJson = builder.toString();
+    assertThat(largeSchemaJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).isGreaterThan(65535);
+
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", largeSchemaJson, Map.of(), Map.of());
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
+    assertThat(decoded.databaseName()).isEqualTo("testdb");
+    assertThat(decoded.schemaJson()).isEqualTo(largeSchemaJson);
+  }
+
+  @Test
+  void roundTripSchemaEntryWithMultiByteUtf8Schema() {
+    // Ensures the schema-JSON codec handles multi-byte UTF-8 correctly
+    // (non-ASCII identifiers like accented type names).
+    final String schemaJson = "{\"types\":{\"Usuário\":{\"parentType\":\"Persona\"},\"Ünicode\":{\"fields\":[\"naïve\",\"café\"]}}}";
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("dbñame", schemaJson, Map.of(), Map.of());
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.schemaJson()).isEqualTo(schemaJson);
+    assertThat(decoded.databaseName()).isEqualTo("dbñame");
+  }
+
+  @Test
   void roundTripTxEntryCompressesWalData() {
     // Create a WAL-like payload with repetitive data that compresses well
     final byte[] walData = new byte[4096];
