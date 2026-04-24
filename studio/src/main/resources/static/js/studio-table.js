@@ -21,8 +21,8 @@ function renderTable() {
   if (tableFitInPageChecked == true) tableFitInPageChecked = "checked";
   else tableFitInPageChecked = "";
 
-  if (tableFitInPage == true) $("#result").css({ width: "100%", "table-layout": "fixed", "white-space": "normal" });
-  else $("#result").css({ width: "100%", "table-layout": "auto", "white-space": "nowrap" });
+  if (tableFitInPage == true) $("#result").css({ width: "100%", "min-width": "", "table-layout": "fixed", "white-space": "normal" });
+  else $("#result").css({ width: "max-content", "min-width": "100%", "table-layout": "auto", "white-space": "nowrap" });
 
   let tablePageLength = parseInt(globalStorageLoad("table.pageLength"));
   if (isNaN(tablePageLength)) tablePageLength = 20;
@@ -112,13 +112,14 @@ function renderTable() {
   if (globalResultset.records.length > 0) {
     const dataTable = $("#result").DataTable({
       orderCellsTop: true,
-      fixedHeader: true,
+      fixedHeader: tableFitInPage,
       paging: true,
       pageLength: tablePageLength,
       lengthChange: true,
       columns: tableColumns,
       data: tableRecords,
       deferRender: true,
+      autoWidth: tableFitInPage,
       dom: "<Blf>rt<ip>",
       order: [],
       lengthMenu: [
@@ -162,6 +163,8 @@ function renderTable() {
           else
             wrapper.prepend(exportEl);
         }, 50);
+
+        attachColumnResizers($("#result"));
       },
     });
 
@@ -175,6 +178,59 @@ function renderTable() {
 
   // FORCE RESET OF THE SEARCH FIELD
   $("#result_filter>label>input").val("");
+}
+
+// Adds a drag handle on the right edge of every header cell so the user can
+// resize individual columns. When the first column is resized the table is
+// switched to `table-layout: fixed` so further column widths are stable.
+function attachColumnResizers($table) {
+  if (!$table || !$table.length) return;
+
+  $table.find("thead th").each(function () {
+    let $th = $(this);
+    if ($th.find(".col-resizer").length) return;
+
+    let $grip = $("<span class='col-resizer' title='Drag to resize column'></span>");
+    $th.append($grip);
+
+    $grip.on("mousedown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      let startX = e.pageX;
+      let startWidth = $th.outerWidth();
+
+      // Freeze every column at its current width so only the resized one moves.
+      if (!$table.hasClass("col-resized")) {
+        $table.find("thead th").each(function () {
+          let $c = $(this);
+          let w = $c.outerWidth();
+          $c.css({ width: w + "px", "min-width": w + "px" });
+        });
+        $table.css("table-layout", "fixed").addClass("col-resized");
+      }
+
+      $grip.addClass("resizing");
+      $("body").addClass("col-resizing");
+
+      $(document).on("mousemove.colresize", function (ev) {
+        let delta = ev.pageX - startX;
+        let newW = Math.max(40, startWidth + delta);
+        $th.css({ width: newW + "px", "min-width": newW + "px" });
+      });
+
+      $(document).on("mouseup.colresize", function () {
+        $(document).off("mousemove.colresize mouseup.colresize");
+        $grip.removeClass("resizing");
+        $("body").removeClass("col-resizing");
+      });
+    });
+
+    // Prevent the click from triggering DataTables column sort.
+    $grip.on("click", function (e) {
+      e.stopPropagation();
+    });
+  });
 }
 
 function toggleExportMenu(btn) {

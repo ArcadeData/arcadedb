@@ -766,17 +766,33 @@ div.dt-search {
   margin-left: auto;
 }
 
-/* Allow export dropdown to overflow; dataTables wrapper handles scrolling */
+/* Allow export dropdown to overflow (it uses position:fixed so it is safe);
+   the horizontal scroll lives on the DataTables container / table-responsive. */
 #tab-table .table-responsive {
-  overflow: visible;
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
-#tab-table .dataTables_wrapper {
+/* Force the tab-pane and its containers to honour parent width so a wide
+   table scrolls horizontally inside its container instead of pushing the
+   whole page wider. Without `min-width: 0`, the BS5 flex column grows to
+   fit the table (intrinsic min-width) and the page itself scrolls. */
+#tab-table,
+#tab-table .table-responsive,
+#tab-table .dataTables_wrapper,
+#tab-table .dt-container {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#tab-table .dataTables_wrapper,
+#tab-table .dt-container {
   overflow-x: auto;
 }
 
 /* Ensure footer stretches to table width when table overflows */
-#tab-table .dataTables_wrapper > .dt-layout-row:last-child {
+#tab-table .dataTables_wrapper > .dt-layout-row:last-child,
+#tab-table .dt-container > .dt-layout-row:last-child {
   width: 100%;
   min-width: fit-content;
 }
@@ -788,12 +804,45 @@ div.dt-search {
   color: var(--text-muted);
   padding: 8px 10px;
   border-bottom: 2px solid var(--border-table);
+  position: relative;
 }
 
 #tab-table .table tbody td {
   font-size: 0.84rem;
   padding: 6px 10px;
   vertical-align: top;
+}
+
+/* Column resize grip on the right edge of each header cell */
+#tab-table .table thead th .col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 2;
+  background: transparent;
+}
+
+#tab-table .table thead th .col-resizer:hover,
+#tab-table .table thead th .col-resizer.resizing {
+  background: var(--accent, #0d6efd);
+  opacity: 0.35;
+}
+
+body.col-resizing,
+body.col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* When columns have explicit widths, ensure cells don't overflow horizontally */
+#tab-table .table.col-resized tbody td,
+#tab-table .table.col-resized thead th {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #tab-table .table tbody tr:hover {
