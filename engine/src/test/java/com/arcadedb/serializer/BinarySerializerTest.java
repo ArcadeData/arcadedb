@@ -693,4 +693,52 @@ class BinarySerializerTest extends TestHelper {
       assertThat(roundtrippedList).containsExactly("a", null, "b", 99);
     });
   }
+
+  /**
+   * Regression: a corrupted value byte for one property must not discard the whole record.
+   * Per-property recovery keeps the other properties readable; the bad one is logged and skipped.
+   */
+  @Test
+  void deserializeSkipsCorruptedPropertyAndReturnsRest() throws Exception {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Corruptible");
+
+      final MutableDocument doc = database.newDocument("Corruptible");
+      doc.set("a", "alpha");
+      doc.set("b", "beta");
+      doc.set("c", "gamma");
+
+      final Binary original = serializer.serialize((DatabaseInternal) database, doc);
+
+      // Parse the header to find the absolute offset of property "b"'s type byte, then overwrite it
+      // with an undefined type (101) to simulate corruption of that single property's value.
+      original.position(1); // SKIP RECORD TYPE
+      final int headerEndOffset = original.getInt();
+      final int count = (int) original.getUnsignedNumber();
+
+      int contentPosForB = -1;
+      for (int i = 0; i < count; i++) {
+        final int nameId = (int) original.getUnsignedNumber();
+        final int contentPos = (int) original.getUnsignedNumber();
+        if ("b".equals(database.getSchema().getDictionary().getNameById(nameId)))
+          contentPosForB = contentPos;
+      }
+      assertThat(contentPosForB).isGreaterThanOrEqualTo(0);
+
+      original.putByte(headerEndOffset + contentPosForB, (byte) 101);
+
+      final ByteBuffer dest = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
+      dest.put(original.toByteArray());
+      dest.flip();
+      final Binary corrupted = new Binary(dest);
+      corrupted.getByte(); // SKIP RECORD TYPE
+
+      final Map<String, Object> result = serializer.deserializeProperties(database, corrupted, null, null);
+
+      assertThat(result).doesNotContainKey("b");
+      assertThat(result).containsEntry("a", "alpha");
+      assertThat(result).containsEntry("c", "gamma");
+    });
+  }
 }

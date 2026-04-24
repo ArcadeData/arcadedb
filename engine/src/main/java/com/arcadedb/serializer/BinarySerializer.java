@@ -193,10 +193,10 @@ public class BinarySerializer {
   }
 
   public Set<String> getPropertyNames(final Database database, final Binary buffer, final RID rid) {
+    final Set<String> result = new LinkedHashSet<>();
     try {
       buffer.getInt(); // HEADER-SIZE
       final int properties = (int) buffer.getUnsignedNumber();
-      final Set<String> result = new LinkedHashSet<>(properties);
 
       for (int i = 0; i < properties; ++i) {
         final int nameId = (int) buffer.getUnsignedNumber();
@@ -204,16 +204,16 @@ public class BinarySerializer {
         final String name = database.getSchema().getDictionary().getNameById(nameId);
         result.add(name);
       }
-
-      return result;
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
+      LogManager.instance().log(this, Level.WARNING, "Possible corrupted record %s, returning %d names read so far", e, rid,
+          result.size());
     }
-    return Collections.emptySet();
+    return result;
   }
 
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
       final EmbeddedModifier embeddedModifier, final RID rid, final String... fieldNames) {
+    final Map<String, Object> values = new LinkedHashMap<>();
     try {
       final int initialPosition = buffer.position();
       final int headerEndOffset = buffer.getInt();
@@ -228,11 +228,7 @@ public class BinarySerializer {
         throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
       else if (properties == 0)
         // EMPTY: NOT FOUND
-        return new LinkedHashMap<>();
-
-      final Map<String, Object> values = new LinkedHashMap<>(properties);
-
-      int lastHeaderPosition;
+        return values;
 
       final int[] fieldIds = new int[fieldNames.length];
 
@@ -244,7 +240,7 @@ public class BinarySerializer {
         final int nameId = (int) buffer.getUnsignedNumber();
         final int contentPosition = (int) buffer.getUnsignedNumber();
 
-        lastHeaderPosition = buffer.position();
+        final int lastHeaderPosition = buffer.position();
 
         if (fieldIds.length > 0) {
           boolean found = false;
@@ -261,16 +257,23 @@ public class BinarySerializer {
 
         final String propertyName = dictionary.getNameById(nameId);
 
-        buffer.position(headerEndOffset + contentPosition);
+        // Per-property recovery: if one property's value is corrupted, skip it and keep the rest.
+        // The header has been read already, so we can safely jump back and continue.
+        try {
+          buffer.position(headerEndOffset + contentPosition);
 
-        final byte type = buffer.getByte();
+          final byte type = buffer.getByte();
 
-        final EmbeddedModifierProperty propertyModifier =
-            embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
+          final EmbeddedModifierProperty propertyModifier =
+              embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
 
-        final Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+          final Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
 
-        values.put(propertyName, propertyValue);
+          values.put(propertyName, propertyValue);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Skipping corrupted property '%s' in record %s: %s", propertyName, rid, e.getMessage());
+        }
 
         buffer.position(lastHeaderPosition);
 
@@ -278,12 +281,11 @@ public class BinarySerializer {
           // ALL REQUESTED PROPERTIES ALREADY FOUND
           break;
       }
-
-      return values;
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s, returning %d properties read so far", e, rid,
+          values.size());
     }
-    return new LinkedHashMap<>();
+    return values;
   }
 
   public boolean hasProperty(final Database database, final Binary buffer, final String fieldName, final RID rid) {
