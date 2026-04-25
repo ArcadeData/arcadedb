@@ -88,6 +88,8 @@ public class CypherPointFunction implements StatelessFunction {
       result.put("x", x);
       result.put("y", y);
       addOptionalZ(result, map);
+      if (result.containsKey("z"))
+        result.put("height", result.get("z"));
       result.put("crs", result.containsKey("z") ? "WGS-84-3D" : "WGS-84");
       result.put("srid", result.containsKey("z") ? 4979 : 4326);
     } else if (map.containsKey("x") || map.containsKey("y")) {

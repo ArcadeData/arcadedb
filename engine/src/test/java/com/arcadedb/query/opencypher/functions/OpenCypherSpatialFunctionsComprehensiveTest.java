@@ -376,4 +376,56 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
     final Double distance = (Double) result.next().getProperty("distance");
     assertThat(distance).isCloseTo(5.0, within(0.001));
   }
+
+  // ==================== point() Property Accessor Tests (Issue #3992) ====================
+
+  @Test
+  void pointWGS84_3D_HeightAccessorWithHeightInput() {
+    // Regression test for Issue #3992: p.height should return the height value, not null
+    final ResultSet result = database.command("opencypher",
+        "WITH point({longitude: 56.7, latitude: 12.78, height: 8}) AS p " +
+            "RETURN p.longitude AS lon, p.latitude AS lat, p.z AS z, p.height AS height, p.crs AS crs");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    final Result row = result.next();
+    final Number lon = row.getProperty("lon");
+    final Number lat = row.getProperty("lat");
+    final Number z = row.getProperty("z");
+    final Number height = row.getProperty("height");
+    final String crs = row.getProperty("crs");
+    assertThat(lon.doubleValue()).isCloseTo(56.7, within(0.001));
+    assertThat(lat.doubleValue()).isCloseTo(12.78, within(0.001));
+    assertThat(z.doubleValue()).isCloseTo(8.0, within(0.001));
+    assertThat(height).isNotNull();
+    assertThat(height.doubleValue()).isCloseTo(8.0, within(0.001));
+    assertThat(crs).isEqualTo("WGS-84-3D");
+  }
+
+  @Test
+  void pointWGS84_3D_HeightAccessorWithZInput() {
+    // When using z= for WGS-84-3D, p.height should also be accessible as an alias
+    final ResultSet result = database.command("opencypher",
+        "WITH point({longitude: 56.7, latitude: 12.78, z: 8}) AS p " +
+            "RETURN p.z AS z, p.height AS height");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    final Result row = result.next();
+    final Number z = row.getProperty("z");
+    final Number height = row.getProperty("height");
+    assertThat(z.doubleValue()).isCloseTo(8.0, within(0.001));
+    assertThat(height).isNotNull();
+    assertThat(height.doubleValue()).isCloseTo(8.0, within(0.001));
+  }
+
+  @Test
+  void pointCartesian3D_NoHeightAccessor() {
+    // Cartesian 3D points should NOT expose .height - only .z
+    final ResultSet result = database.command("opencypher",
+        "WITH point({x: 1.0, y: 2.0, z: 3.0}) AS p " +
+            "RETURN p.z AS z, p.height AS height");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    final Result row = result.next();
+    final Number z = row.getProperty("z");
+    final Object height = row.getProperty("height");
+    assertThat(z.doubleValue()).isCloseTo(3.0, within(0.001));
+    Assertions.assertThat(height == null).isTrue();
+  }
 }
