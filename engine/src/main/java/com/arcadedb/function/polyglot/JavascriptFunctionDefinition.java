@@ -304,6 +304,24 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     } else if (result.isNull())
       return null;
     else if (result.hasMembers()) {
+      // GraalVM exposes Java Map/List interface methods (get, put, remove, clear, entrySet, …)
+      // as JS members of a Value that wraps a host collection but for which isHostObject()
+      // returns false — typically after JS code has mutated the collection (e.g.
+      // `m.id = 'x'; delete m.notes`) or after the collection passes through a JS Array.
+      // Without this guard, getMemberKeys() returns BOTH the data keys AND every Map method
+      // name; downstream serialization writes them as garbage properties on the parent record,
+      // surfacing later as "Skipping corrupted property 'remove'/'get'/'values'/…" warnings
+      // from BinarySerializer. Try to peel off the underlying Java collection identity first;
+      // if it is a Map or List, route through jsAnyToJava which iterates entrySet() / size()
+      // instead of member keys.
+      try {
+        final Object hosted = result.as(Object.class);
+        if (hosted instanceof Map<?, ?> || hosted instanceof List<?>)
+          return jsAnyToJava(hosted);
+      } catch (final Exception ignored) {
+        // Not a hosted Java collection — fall through to the JS-object member enumeration below.
+      }
+
       final Map<String, Object> map = new HashMap<>();
       final Set<String> keys = result.getMemberKeys();
       for (final String key : keys) {
