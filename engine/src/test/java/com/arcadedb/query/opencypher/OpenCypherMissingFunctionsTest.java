@@ -373,7 +373,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   void valueTypeInteger() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType(42) AS val")) {
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<String>getProperty("val")).isEqualTo("INTEGER");
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("INTEGER NOT NULL");
     }
   }
 
@@ -381,7 +381,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   void valueTypeFloat() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType(3.14) AS val")) {
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<String>getProperty("val")).isEqualTo("FLOAT");
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("FLOAT NOT NULL");
     }
   }
 
@@ -389,7 +389,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   void valueTypeString() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType('hello') AS val")) {
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<String>getProperty("val")).isEqualTo("STRING");
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("STRING NOT NULL");
     }
   }
 
@@ -397,7 +397,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   void valueTypeBoolean() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType(true) AS val")) {
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<String>getProperty("val")).isEqualTo("BOOLEAN");
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("BOOLEAN NOT NULL");
     }
   }
 
@@ -413,7 +413,20 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   void valueTypeList() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType([1,2,3]) AS val")) {
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<String>getProperty("val")).isEqualTo("LIST<ANY>");
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("LIST<ANY> NOT NULL");
+    }
+  }
+
+  @Test
+  void valueTypeNotNullSuffixForAllLiterals() {
+    // Regression test for https://github.com/ArcadeData/arcadedb/issues/3991
+    try (final ResultSet rs = database.command("opencypher",
+        "RETURN valueType('abc') as t1, valueType(1) as t2, valueType(true) as t3")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("t1")).isEqualTo("STRING NOT NULL");
+      assertThat(row.<String>getProperty("t2")).isEqualTo("INTEGER NOT NULL");
+      assertThat(row.<String>getProperty("t3")).isEqualTo("BOOLEAN NOT NULL");
     }
   }
 
