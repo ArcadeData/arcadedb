@@ -56,7 +56,7 @@
     "webpack-cli": "^7.0.2"
   },
   "overrides": {
-    "ajv": "^8.18.0"
+    "ajv": "^8.20.0"
   },
   "engines": {
     "node": ">=18.12.0",
