@@ -99,6 +99,14 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Adds a new peer to the cluster at runtime with an optional human-readable name used for logs
+   * and Studio. Default implementation ignores the name and delegates to {@link #addPeer(String, String)}.
+   */
+  default void addPeer(final String peerId, final String address, final String name) {
+    addPeer(peerId, address);
+  }
+
+  /**
    * Removes a peer from the cluster at runtime.
    */
   default void removePeer(final String peerId) {

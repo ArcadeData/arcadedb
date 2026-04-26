@@ -51,11 +51,12 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
 
     final String peerId = payload.getString("peerId", "");
     final String address = payload.getString("address", "");
+    final String name = payload.getString("name", "").trim();
     if (peerId.isEmpty() || address.isEmpty())
       return new ExecutionResponse(400,
           new JSONObject().put("error", "Missing required fields: peerId, address").toString());
 
-    raftHAServer.addPeer(peerId, address);
+    raftHAServer.addPeer(peerId, address, name.isEmpty() ? null : name);
 
     // Seed the newly-joined peer with the current users file. Snapshot install does not cover
     // server-users.jsonl (it lives under <server-root>/config/, outside the database directory),

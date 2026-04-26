@@ -53,6 +53,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -91,7 +92,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final RaftGroup               raftGroup;
   private final RaftPeerId              localPeerId;
   private final Map<RaftPeerId, String> httpAddresses = new HashMap<>();
-  private final Map<RaftPeerId, String> peerDisplayNames;
+  private final Map<RaftPeerId, String> peerDisplayNames = new ConcurrentHashMap<>();
   private final String                  clusterName;
 
   private          RaftServer                raftServer;
@@ -122,10 +123,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList(serverList, raftPort);
     List<RaftPeer> peers = parsed.peers();
+    final Map<RaftPeerId, String> configuredPeerNames = parsed.peerNames();
     final String serverName = arcadeServer.getServerName();
 
     this.httpAddresses.putAll(parsed.httpAddresses());
-    this.localPeerId = RaftPeerAddressResolver.findLocalPeerId(peers, serverName, arcadeServer);
+    this.localPeerId = RaftPeerAddressResolver.findLocalPeerId(peers, configuredPeerNames, serverName, arcadeServer);
 
     // If this node is configured as a replica, override its Raft peer priority to 0
     // so Ratis never elects it as leader (useful for read-scale or witness nodes).
@@ -147,18 +149,35 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         RaftGroupId.valueOf(UUID.nameUUIDFromBytes(clusterName.getBytes(StandardCharsets.UTF_8))),
         peers);
 
-    // Build human-readable display names: "ServerName-N (host:httpPort)"
-    final int separatorIdx = RaftPeerAddressResolver.findLastSeparatorIndex(serverName);
-    final String prefix = serverName.substring(0, separatorIdx);
-    final char separator = serverName.charAt(separatorIdx);
-    final Map<RaftPeerId, String> displayNames = new HashMap<>(peers.size());
+    // Build human-readable display names. When a peer was given an explicit name via the
+    // "name@host:port" syntax in HA_SERVER_LIST, that name is used directly; otherwise the
+    // legacy synthesis "<localPrefix><sep><index>" is applied so unnamed clusters keep
+    // showing names like "ArcadeDB_0", "ArcadeDB_1", etc.
+    String prefix = null;
+    Character separator = null;
+    if (!configuredPeerNames.keySet().containsAll(peers.stream().map(RaftPeer::getId).toList())) {
+      try {
+        final int separatorIdx = RaftPeerAddressResolver.findLastSeparatorIndex(serverName);
+        prefix = serverName.substring(0, separatorIdx);
+        separator = serverName.charAt(separatorIdx);
+      } catch (final IllegalArgumentException ignored) {
+        // Server name has no _N/-N suffix; only named peers get a display name, others fall
+        // back to their raw peer ID at render time.
+      }
+    }
     for (int i = 0; i < peers.size(); i++) {
       final RaftPeerId peerId = peers.get(i).getId();
-      final String nodeName = prefix + separator + i;
+      final String configured = configuredPeerNames.get(peerId);
+      final String nodeName;
+      if (configured != null)
+        nodeName = configured;
+      else if (prefix != null)
+        nodeName = prefix + separator + i;
+      else
+        nodeName = peerId.toString();
       final String httpAddr = this.httpAddresses.get(peerId);
-      displayNames.put(peerId, httpAddr != null ? nodeName + " (" + httpAddr + ")" : nodeName);
+      this.peerDisplayNames.put(peerId, httpAddr != null ? nodeName + " (" + httpAddr + ")" : nodeName);
     }
-    this.peerDisplayNames = Collections.unmodifiableMap(displayNames);
 
     this.stateMachine = new ArcadeStateMachine();
     this.stateMachine.setServer(arcadeServer);
@@ -669,11 +688,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   public void addPeer(final String peerId, final String address) {
-    clusterManager.addPeer(peerId, address);
+    addPeer(peerId, address, null);
+  }
+
+  public void addPeer(final String peerId, final String address, final String name) {
+    clusterManager.addPeer(peerId, address, name);
   }
 
   public void removePeer(final String peerId) {
     clusterManager.removePeer(peerId);
+  }
+
+  /**
+   * Registers or updates the display name for a peer. The stored value is
+   * formatted as {@code name (httpAddress)} when the peer's HTTP address is known.
+   */
+  void registerPeerDisplayName(final RaftPeerId peerId, final String name) {
+    if (name == null || name.isEmpty())
+      return;
+    final String httpAddr = httpAddresses.get(peerId);
+    peerDisplayNames.put(peerId, httpAddr != null ? name + " (" + httpAddr + ")" : name);
   }
 
   /**

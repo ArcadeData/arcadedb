@@ -39,8 +39,11 @@ final class RaftPeerAddressResolver {
    * Result of parsing the HA server list. Contains the Raft peers (with raft addresses) and
    * a map from peer ID to HTTP address for replica-to-leader HTTP command forwarding.
    * The {@code httpAddresses} map is empty when no httpPort is specified in the server list.
+   * The {@code peerNames} map contains user-provided peer names from the optional {@code name@}
+   * prefix and is empty when no entry uses that syntax.
    */
-  public record ParsedPeerList(List<RaftPeer> peers, Map<RaftPeerId, String> httpAddresses) {
+  public record ParsedPeerList(List<RaftPeer> peers, Map<RaftPeerId, String> httpAddresses,
+                               Map<RaftPeerId, String> peerNames) {
   }
 
   private RaftPeerAddressResolver() {
@@ -56,6 +59,11 @@ final class RaftPeerAddressResolver {
    *   <li>{@code host:raftPort} - explicit Raft port, no HTTP address stored, priority defaults to 0</li>
    *   <li>{@code host} - Raft port defaults to {@code defaultPort}, no HTTP address, priority defaults to 0</li>
    * </ul>
+   * Any of the formats above may be prefixed with an optional human-readable peer name using the
+   * {@code name@} syntax (e.g. {@code frankfurt@host:2434:2480}). Names must be unique within the
+   * cluster but are otherwise free-form. Names allow operators to identify nodes in logs and Studio
+   * without relying on the {@code prefix_N} server-name convention required for positional resolution.
+   * <p>
    * The {@code httpAddresses} map in the result is populated only for entries with 3 or 4 parts;
    * it is keyed by the {@link RaftPeerId} of each peer.
    * <p>
@@ -66,14 +74,32 @@ final class RaftPeerAddressResolver {
     final String[] entries = serverList.split(",");
     final List<RaftPeer> peers = new ArrayList<>(entries.length);
     final Map<RaftPeerId, String> httpAddresses = new HashMap<>(entries.length);
+    final Map<RaftPeerId, String> peerNames = new HashMap<>(entries.length);
+    final Map<String, String> nameToEntry = new HashMap<>(entries.length);
 
     for (int i = 0; i < entries.length; i++) {
-      final String entry = entries[i].trim();
+      String entry = entries[i].trim();
+
+      String peerName = null;
+      final int atIdx = entry.indexOf('@');
+      if (atIdx >= 0) {
+        if (entry.indexOf('@', atIdx + 1) >= 0)
+          throw new ServerException("Invalid peer address '" + entry + "': only one '@' allowed");
+        peerName = entry.substring(0, atIdx).trim();
+        if (peerName.isEmpty())
+          throw new ServerException("Invalid peer address '" + entry + "': peer name before '@' is blank");
+        final String previous = nameToEntry.put(peerName, entry);
+        if (previous != null)
+          throw new ServerException(
+              "Duplicate peer name '" + peerName + "' in entries '" + previous + "' and '" + entry + "'");
+        entry = entry.substring(atIdx + 1).trim();
+      }
+
       final String[] parts = entry.split(":");
 
       if (parts.length > 4 || parts.length == 0 || parts[0].isBlank())
         throw new ServerException(
-            "Invalid peer address format '" + entry + "'. Expected host[:raftPort[:httpPort[:priority]]]");
+            "Invalid peer address format '" + entry + "'. Expected [name@]host[:raftPort[:httpPort[:priority]]]");
 
       final String raftAddress;
       String httpAddress = null;
@@ -111,6 +137,8 @@ final class RaftPeerAddressResolver {
 
       if (httpAddress != null)
         httpAddresses.put(peer.getId(), httpAddress);
+      if (peerName != null)
+        peerNames.put(peer.getId(), peerName);
     }
 
     // Validate: mixing localhost/127.0.0.1 with non-localhost addresses is a misconfiguration
@@ -128,16 +156,34 @@ final class RaftPeerAddressResolver {
           "Found a localhost (127.0.0.1) in the server list among non-localhost servers. "
               + "Please fix the server list configuration.");
 
-    return new ParsedPeerList(Collections.unmodifiableList(peers), Collections.unmodifiableMap(httpAddresses));
+    return new ParsedPeerList(
+        Collections.unmodifiableList(peers),
+        Collections.unmodifiableMap(httpAddresses),
+        Collections.unmodifiableMap(peerNames));
   }
 
   /**
-   * Determines the local peer ID by parsing the numeric suffix from the server name.
-   * For example, "arcadedb-0" or "ArcadeDB_0" maps to index 0 in the peer list.
+   * Determines the local peer ID. If {@code peerNames} contains an entry whose value equals the
+   * {@code serverName}, the corresponding peer is returned. Otherwise the server name is parsed
+   * for the numeric suffix convention {@code prefix_N} or {@code prefix-N} and used as the index
+   * into {@code peers} (e.g. {@code arcadedb-0} or {@code ArcadeDB_0} maps to index 0).
    */
-  static RaftPeerId findLocalPeerId(final List<RaftPeer> peers, final String serverName,
-      final ArcadeDBServer server) {
-    final int separatorIdx = findLastSeparatorIndex(serverName);
+  static RaftPeerId findLocalPeerId(final List<RaftPeer> peers, final Map<RaftPeerId, String> peerNames,
+      final String serverName, final ArcadeDBServer server) {
+    if (peerNames != null) {
+      for (final Map.Entry<RaftPeerId, String> entry : peerNames.entrySet())
+        if (entry.getValue().equals(serverName))
+          return entry.getKey();
+    }
+
+    final int separatorIdx;
+    try {
+      separatorIdx = findLastSeparatorIndex(serverName);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Server name '" + serverName + "' did not match any configured peer name and has no '_N' or '-N' suffix",
+          e);
+    }
     final int index = Integer.parseInt(serverName.substring(separatorIdx + 1));
     if (index < 0 || index >= peers.size())
       throw new IllegalArgumentException(

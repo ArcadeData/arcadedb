@@ -51,6 +51,10 @@ class RaftClusterManager {
   }
 
   void addPeer(final String peerId, final String address) {
+    addPeer(peerId, address, null);
+  }
+
+  void addPeer(final String peerId, final String address, final String name) {
     final RaftPeer newPeer = RaftPeer.newBuilder()
         .setId(RaftPeerId.valueOf(peerId))
         .setAddress(address)
@@ -71,6 +75,9 @@ class RaftClusterManager {
       } catch (final NumberFormatException ignored) {
       }
     }
+
+    if (name != null && !name.isEmpty())
+      raftHAServer.registerPeerDisplayName(RaftPeerId.valueOf(peerId), name);
 
     LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster at %s", peerId, address);
   }

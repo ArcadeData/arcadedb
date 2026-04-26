@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import org.apache.ratis.protocol.RaftPeer;
+import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
@@ -66,5 +67,31 @@ class DynamicMembershipTest extends BaseRaftHATest {
     final RaftHAServer raftServer = getRaftPlugin(leaderIndex).getRaftHAServer();
     org.assertj.core.api.Assertions.assertThatThrownBy(() -> raftServer.removePeer("nonexistent"))
         .isInstanceOf(com.arcadedb.exception.ConfigurationException.class);
+  }
+
+  @Test
+  void registerPeerDisplayNameUpdatesExistingPeer() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer raftServer = getRaftPlugin(leaderIndex).getRaftHAServer();
+    final RaftPeerId localId = raftServer.getLocalPeerId();
+
+    raftServer.registerPeerDisplayName(localId, "frankfurt");
+    assertThat(raftServer.getPeerDisplayName(localId)).startsWith("frankfurt");
+  }
+
+  @Test
+  void registerPeerDisplayNameIgnoresBlankName() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer raftServer = getRaftPlugin(leaderIndex).getRaftHAServer();
+    final RaftPeerId localId = raftServer.getLocalPeerId();
+    final String before = raftServer.getPeerDisplayName(localId);
+
+    raftServer.registerPeerDisplayName(localId, null);
+    raftServer.registerPeerDisplayName(localId, "");
+    assertThat(raftServer.getPeerDisplayName(localId)).isEqualTo(before);
   }
 }

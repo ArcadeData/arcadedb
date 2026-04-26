@@ -230,9 +230,14 @@ public class RaftHAPlugin implements HAServerPlugin {
 
   @Override
   public void addPeer(final String peerId, final String address) {
+    addPeer(peerId, address, null);
+  }
+
+  @Override
+  public void addPeer(final String peerId, final String address, final String name) {
     if (raftHAServer == null)
       throw new RuntimeException("Raft HA server not started");
-    raftHAServer.addPeer(peerId, address);
+    raftHAServer.addPeer(peerId, address, name);
   }
 
   @Override

@@ -83,4 +83,88 @@ class RaftHAServerAddressParsingTest {
     assertThat(parsed.peers().get(0).getAddress()).isEqualTo("host1:2434");
     assertThat(parsed.peers().get(1).getAddress()).isEqualTo("host2:2435");
   }
+
+  @Test
+  void noNamesYieldsEmptyPeerNamesMap() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("host1:2434,host2:2435", 2434);
+    assertThat(parsed.peerNames()).isEmpty();
+  }
+
+  @Test
+  void namedSinglePart() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("alpha@myhost", 2434);
+    assertThat(parsed.peers()).hasSize(1);
+    assertThat(parsed.peers().get(0).getAddress()).isEqualTo("myhost:2434");
+    assertThat(parsed.peerNames()).containsEntry(parsed.peers().get(0).getId(), "alpha");
+  }
+
+  @Test
+  void namedTwoParts() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("alpha@myhost:2434", 2434);
+    assertThat(parsed.peers().get(0).getAddress()).isEqualTo("myhost:2434");
+    assertThat(parsed.peerNames()).containsEntry(parsed.peers().get(0).getId(), "alpha");
+  }
+
+  @Test
+  void namedThreeParts() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("alpha@myhost:2434:2480", 2434);
+    final var peerId = parsed.peers().get(0).getId();
+    assertThat(parsed.peers().get(0).getAddress()).isEqualTo("myhost:2434");
+    assertThat(parsed.httpAddresses()).containsEntry(peerId, "myhost:2480");
+    assertThat(parsed.peerNames()).containsEntry(peerId, "alpha");
+  }
+
+  @Test
+  void namedFourParts() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("alpha@myhost:2434:2480:5", 2434);
+    final var peerId = parsed.peers().get(0).getId();
+    assertThat(parsed.peers().get(0).getAddress()).isEqualTo("myhost:2434");
+    assertThat(parsed.peers().get(0).getPriority()).isEqualTo(5);
+    assertThat(parsed.httpAddresses()).containsEntry(peerId, "myhost:2480");
+    assertThat(parsed.peerNames()).containsEntry(peerId, "alpha");
+  }
+
+  @Test
+  void mixedNamedAndUnnamedPeers() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "alpha@host1:2434,host2:2435,gamma@host3:2436", 2434);
+    final var peers = parsed.peers();
+    assertThat(peers).hasSize(3);
+    assertThat(parsed.peerNames()).containsEntry(peers.get(0).getId(), "alpha");
+    assertThat(parsed.peerNames()).doesNotContainKey(peers.get(1).getId());
+    assertThat(parsed.peerNames()).containsEntry(peers.get(2).getId(), "gamma");
+  }
+
+  @Test
+  void duplicatePeerNamesThrows() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList(
+        "alpha@host1:2434,alpha@host2:2435", 2434))
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("alpha");
+  }
+
+  @Test
+  void blankPeerNameThrows() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("@host:2434", 2434))
+        .isInstanceOf(ServerException.class);
+  }
+
+  @Test
+  void whitespaceAroundPeerNameTrimmed() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList(" alpha @host:2434", 2434);
+    assertThat(parsed.peerNames()).containsEntry(parsed.peers().get(0).getId(), "alpha");
+  }
+
+  @Test
+  void multipleAtSignsThrows() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("alpha@beta@host:2434", 2434))
+        .isInstanceOf(ServerException.class);
+  }
+
+  @Test
+  void namedPeerIdStillUsesAddressFormat() {
+    // Peer ID is derived from the address, NOT the name - this preserves Ratis identity stability
+    final var parsed = RaftPeerAddressResolver.parsePeerList("alpha@myhost:9999", 2434);
+    assertThat(parsed.peers().get(0).getId().toString()).isEqualTo("myhost_9999");
+  }
 }

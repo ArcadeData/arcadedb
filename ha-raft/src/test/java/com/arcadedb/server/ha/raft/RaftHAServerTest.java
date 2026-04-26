@@ -270,4 +270,67 @@ class RaftHAServerTest {
     assertThatThrownBy(() -> RaftPeerAddressResolver.findLastSeparatorIndex("arcadedb-"))
         .isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void findLocalPeerIdBySuffixIndex() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("host1:2434,host2:2435,host3:2436", 2434);
+    final RaftPeerId id = RaftPeerAddressResolver.findLocalPeerId(
+        parsed.peers(), parsed.peerNames(), "ArcadeDB_1", null);
+    assertThat(id).isEqualTo(parsed.peers().get(1).getId());
+  }
+
+  @Test
+  void findLocalPeerIdByName() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "alpha@host1:2434,beta@host2:2435,gamma@host3:2436", 2434);
+    final RaftPeerId id = RaftPeerAddressResolver.findLocalPeerId(
+        parsed.peers(), parsed.peerNames(), "beta", null);
+    assertThat(id).isEqualTo(parsed.peers().get(1).getId());
+  }
+
+  @Test
+  void findLocalPeerIdByNameWorksWithoutNumericSuffix() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "frankfurt@host1:2434,london@host2:2435", 2434);
+    final RaftPeerId id = RaftPeerAddressResolver.findLocalPeerId(
+        parsed.peers(), parsed.peerNames(), "frankfurt", null);
+    assertThat(id).isEqualTo(parsed.peers().get(0).getId());
+  }
+
+  @Test
+  void findLocalPeerIdNamePrefersOverSuffix() {
+    // serverName "alpha" matches name on peer 0; even though "alpha" has no _N suffix,
+    // the name match takes precedence and should not throw on suffix parsing
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "alpha@host1:2434,beta@host2:2435", 2434);
+    final RaftPeerId id = RaftPeerAddressResolver.findLocalPeerId(
+        parsed.peers(), parsed.peerNames(), "alpha", null);
+    assertThat(id).isEqualTo(parsed.peers().get(0).getId());
+  }
+
+  @Test
+  void findLocalPeerIdFallsBackToSuffixWhenNameNotConfigured() {
+    // Mixed cluster: peer 1 is named, but local node uses suffix-based name
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "host1:2434,beta@host2:2435,host3:2436", 2434);
+    final RaftPeerId id = RaftPeerAddressResolver.findLocalPeerId(
+        parsed.peers(), parsed.peerNames(), "ArcadeDB_2", null);
+    assertThat(id).isEqualTo(parsed.peers().get(2).getId());
+  }
+
+  @Test
+  void findLocalPeerIdThrowsWhenNeitherNameNorSuffixMatches() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("alpha@host1:2434,beta@host2:2435", 2434);
+    assertThatThrownBy(() -> RaftPeerAddressResolver.findLocalPeerId(
+        parsed.peers(), parsed.peerNames(), "gamma", null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void findLocalPeerIdThrowsWhenSuffixOutOfRange() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("host1:2434,host2:2435", 2434);
+    assertThatThrownBy(() -> RaftPeerAddressResolver.findLocalPeerId(
+        parsed.peers(), parsed.peerNames(), "ArcadeDB_5", null))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
 }
