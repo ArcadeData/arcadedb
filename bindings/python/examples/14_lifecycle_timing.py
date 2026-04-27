@@ -49,20 +49,13 @@ def create_schema(db, vector_dimensions: int) -> None:
     db.command("sql", "CREATE PROPERTY Node.group_name STRING")
     db.command("sql", "CREATE INDEX ON Node (node_id) UNIQUE_HASH")
 
-    db.command("sql", "CREATE EDGE TYPE CONNECTED_TO UNIDIRECTIONAL")
+    db.command("sql", "CREATE EDGE TYPE CONNECTED_TO")
     db.command("sql", "CREATE PROPERTY CONNECTED_TO.weight INTEGER")
 
     db.command("sql", "CREATE VERTEX TYPE VectorDoc")
     db.command("sql", "CREATE PROPERTY VectorDoc.doc_id STRING")
     db.command("sql", "CREATE PROPERTY VectorDoc.embedding ARRAY_OF_FLOATS")
     db.command("sql", "CREATE INDEX ON VectorDoc (doc_id) UNIQUE_HASH")
-
-    db.create_vector_index(
-        vertex_type="VectorDoc",
-        vector_property="embedding",
-        dimensions=vector_dimensions,
-        distance_function="cosine",
-    )
 
 
 def run_single_iteration(
@@ -131,6 +124,18 @@ def run_single_iteration(
                 ),
             )
     transaction_time_s = time.perf_counter() - transaction_start
+
+    db.command(
+        "sql",
+        f"""
+        CREATE INDEX ON VectorDoc (embedding)
+        LSM_VECTOR
+        METADATA {{
+            "dimensions": {int(vector_dimensions)},
+            "similarity": "COSINE"
+        }}
+        """,
+    )
     load_time_s = time.perf_counter() - transaction_breakdown_start
 
     query_start = time.perf_counter()

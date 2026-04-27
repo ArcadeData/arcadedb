@@ -6,7 +6,12 @@ import pytest
 
 def _write_people_csv(csv_path: Path) -> None:
     csv_path.write_text(
-        "name,age,city\n" "Alice,30,New York\n" "Bob,25,London\n" "Charlie,35,Paris\n",
+        (
+            "name,age,city\n"
+            "Alice,30,New York\n"
+            "Bob,25,London\n"
+            "Charlie,35,Paris\n"
+        ),
         encoding="utf-8",
     )
 
@@ -84,3 +89,31 @@ def test_import_documents_missing_file_raises_arcadedb_error(temp_db_path, tmp_p
     with arcadedb.create_database(temp_db_path) as db:
         with pytest.raises(arcadedb.ArcadeDBError):
             db.import_documents(missing_path, document_type="Person")
+
+
+def test_import_documents_restores_runtime_settings_after_failure(
+    temp_db_path, tmp_path
+):
+    missing_path = tmp_path / "missing.csv"
+
+    with arcadedb.create_database(temp_db_path) as db:
+        db.set_read_your_writes(True)
+        async_exec = db.async_executor()
+        async_exec.set_parallel_level(1)
+        async_exec.set_commit_every(0)
+        async_exec.set_transaction_use_wal(True)
+
+        with pytest.raises(arcadedb.ArcadeDBError):
+            db.import_documents(
+                missing_path,
+                document_type="Person",
+                file_type="csv",
+                commit_every=2,
+                parallel=4,
+                wal=False,
+            )
+
+        assert db.is_read_your_writes() is True
+        assert async_exec.get_parallel_level() == 1
+        assert async_exec.get_commit_every() == 0
+        assert async_exec.is_transaction_use_wal() is True

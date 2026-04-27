@@ -140,7 +140,7 @@ def _seed_social_network_setup() -> str:
         db.command("sql", "CREATE PROPERTY Person.phone STRING")
         db.command("sql", "CREATE PROPERTY Person.verified BOOLEAN")
         db.command("sql", "CREATE PROPERTY Person.reputation FLOAT")
-        db.command("sql", "CREATE EDGE TYPE FRIEND_OF UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE FRIEND_OF")
         with db.transaction():
             for person in [
                 ("Alice Johnson", 30, "Seattle", "alice@example.com", None, True, 9.5),
@@ -218,7 +218,7 @@ def _seed_person_task_setup() -> str:
 def _seed_knows_graph_setup() -> str:
     return textwrap.dedent("""
         db.command("sql", "CREATE VERTEX TYPE Person")
-        db.command("sql", "CREATE EDGE TYPE Knows UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE Knows")
         db.command("sql", "CREATE PROPERTY Person.name STRING")
         db.command("sql", "CREATE PROPERTY Person.age INTEGER")
         db.command("sql", "CREATE PROPERTY Person.email STRING")
@@ -419,7 +419,7 @@ def test_docs_transaction_examples(temp_dir_factory):
     )
     _run_doc_block(
         "guide/core/transactions.md",
-        'db.command("sql", "CREATE EDGE TYPE Knows UNIDIRECTIONAL")',
+        'db.command("sql", "CREATE EDGE TYPE Knows")',
         base_dir / "edge_creation",
     )
     _run_doc_block(
@@ -464,7 +464,7 @@ def test_docs_example_pages(temp_dir_factory):
             db.command("sql", "CREATE PROPERTY Person.phone STRING")
             db.command("sql", "CREATE PROPERTY Person.verified BOOLEAN")
             db.command("sql", "CREATE PROPERTY Person.reputation FLOAT")
-            db.command("sql", "CREATE EDGE TYPE FRIEND_OF UNIDIRECTIONAL")
+            db.command("sql", "CREATE EDGE TYPE FRIEND_OF")
             db.command("sql", "CREATE PROPERTY FRIEND_OF.since DATE")
             db.command("sql", "CREATE PROPERTY FRIEND_OF.closeness STRING")
             db.command("sql", "CREATE INDEX ON Person (name) NOTUNIQUE_HASH")
@@ -683,7 +683,7 @@ def test_docs_graph_guide_examples(temp_dir_factory):
         base_dir / "cypher_create_edge",
         setup=textwrap.dedent("""
             db.command("sql", "CREATE VERTEX TYPE Person")
-            db.command("sql", "CREATE EDGE TYPE Knows UNIDIRECTIONAL")
+            db.command("sql", "CREATE EDGE TYPE Knows")
             """),
     )
     _run_doc_block_with_open_db(
@@ -703,7 +703,7 @@ def test_docs_graph_guide_examples(temp_dir_factory):
         base_dir / "vertex_delete_cascade",
         setup=textwrap.dedent("""
             db.command("sql", "CREATE VERTEX TYPE Person")
-            db.command("sql", "CREATE EDGE TYPE Knows UNIDIRECTIONAL")
+            db.command("sql", "CREATE EDGE TYPE Knows")
             """),
     )
     _run_doc_block_with_open_db(
@@ -712,7 +712,7 @@ def test_docs_graph_guide_examples(temp_dir_factory):
         base_dir / "edge_delete",
         setup=textwrap.dedent("""
             db.command("sql", "CREATE VERTEX TYPE Person")
-            db.command("sql", "CREATE EDGE TYPE Knows UNIDIRECTIONAL")
+            db.command("sql", "CREATE EDGE TYPE Knows")
             """),
     )
     _run_doc_block(

@@ -24,6 +24,7 @@ class Database:
     def __init__(self, java_database):
         self._java_db = java_database
         self._closed = False
+        self._async_executors = []
 
     def __enter__(self):
         return self
@@ -31,21 +32,35 @@ class Database:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def get_java_database(self):
+        """Expose the wrapped Java database for internal integrations."""
+        return self._java_db
+
+    @staticmethod
+    def _convert_args(args):
+        if not args:
+            return []
+
+        try:
+            import numpy as np
+        except ImportError:
+            np = None
+
+        converted_args = []
+        for arg in args:
+            if np is not None and isinstance(arg, np.ndarray):
+                converted_args.append(to_java_float_array(arg))
+            else:
+                converted_args.append(arg)
+
+        return converted_args
+
     def query(self, language: str, command: str, *args) -> ResultSet:
         """Execute a query and return results."""
         self._check_not_closed()
         try:
             if args:
-                # Convert NumPy arrays to Java float arrays
-                converted_args = []
-                for arg in args:
-                    if (
-                        hasattr(arg, "__class__")
-                        and arg.__class__.__name__ == "ndarray"
-                    ):
-                        converted_args.append(to_java_float_array(arg))
-                    else:
-                        converted_args.append(arg)
+                converted_args = self._convert_args(args)
                 java_result = self._java_db.query(language, command, *converted_args)
             else:
                 java_result = self._java_db.query(language, command)
@@ -58,16 +73,7 @@ class Database:
         self._check_not_closed()
         try:
             if args:
-                # Convert NumPy arrays to Java float arrays
-                converted_args = []
-                for arg in args:
-                    if (
-                        hasattr(arg, "__class__")
-                        and arg.__class__.__name__ == "ndarray"
-                    ):
-                        converted_args.append(to_java_float_array(arg))
-                    else:
-                        converted_args.append(arg)
+                converted_args = self._convert_args(args)
                 java_result = self._java_db.command(language, command, *converted_args)
             else:
                 java_result = self._java_db.command(language, command)
@@ -129,7 +135,9 @@ class Database:
     def close(self):
         """Close the database."""
         if not self._closed and self._java_db is not None:
+            async_close_error = None
             try:
+                async_close_error = self._close_async_executors()
                 self._java_db.close()
             except Exception as e:
                 # Server-managed databases cannot be closed directly
@@ -138,10 +146,15 @@ class Database:
                 if "cannot be closed" in error_msg.lower():
                     # Silently ignore - this is expected for server databases
                     self._closed = True
+                    if async_close_error is not None:
+                        raise async_close_error
                     return
                 raise ArcadeDBError(f"Failed to close database: {e}") from e
             finally:
                 self._closed = True
+
+            if async_close_error is not None:
+                raise async_close_error
 
     def is_open(self) -> bool:
         """Check if database is open."""
@@ -216,9 +229,8 @@ class Database:
         self._check_not_closed()
         try:
             import jpype
-            from com.arcadedb.database import RID
 
-            java_rid = RID(self._java_db, rid)
+            java_rid = self.to_java_rid(rid)
             java_record = self._java_db.lookupByRID(java_rid, True)
 
             if java_record is None:
@@ -238,11 +250,30 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to lookup RID '{rid}': {e}") from e
 
+    def to_java_rid(self, value):
+        self._check_not_closed()
+
+        import jpype
+
+        value = getattr(value, "_java_record", value)
+        if hasattr(value, "getIdentity"):
+            return value.getIdentity()
+        if isinstance(value, str):
+            RID = jpype.JClass("com.arcadedb.database.RID")
+            return RID(value)
+        if hasattr(value, "get_identity"):
+            return value.get_identity()
+        return value
+
+    def _to_java_rid(self, value):
+        return self.to_java_rid(value)
+
     def create_vector_index(
         self,
         vertex_type: str,
         vector_property: str,
         dimensions: int,
+        id_property: Optional[str] = None,
         distance_function: str = "cosine",
         max_connections: int = 16,
         beam_width: int = 100,
@@ -272,6 +303,8 @@ class Database:
             vertex_type: Name of the vertex type
             vector_property: Name of the property containing vectors
             dimensions: Vector dimensionality (e.g., 768 for BERT)
+            id_property: Optional property used for key-based vector lookup.
+                Defaults to the engine default (usually "id") when omitted.
             distance_function: "cosine", "euclidean", or "inner_product"
             max_connections: Max connections per node (default: 16).
                 Maps to `maxConnections` in JVector.
@@ -328,7 +361,6 @@ class Database:
             VectorIndex object
         """
         self._check_not_closed()
-        from .schema import IndexType
 
         # Create the index using the Java Builder API directly to pass configuration
         try:
@@ -363,6 +395,9 @@ class Database:
             builder.withSimilarity(distance_function)
             builder.withMaxConnections(max_connections)
             builder.withBeamWidth(beam_width)
+
+            if id_property:
+                builder.withIdProperty(id_property)
 
             if quantization:
                 builder.withQuantization(quantization)
@@ -598,7 +633,9 @@ class Database:
         from .async_executor import AsyncExecutor
 
         # JPype converts 'async' to 'async_' to avoid Python keyword collision
-        return AsyncExecutor(self._java_db.async_())
+        executor = AsyncExecutor(self._java_db.async_(), owner=self)
+        self._async_executors.append(executor)
+        return executor
 
     def graph_batch(
         self,
@@ -844,10 +881,30 @@ class Database:
         if self._closed:
             raise ArcadeDBError("Database is closed")
 
+    def _discard_async_executor(self, executor) -> None:
+        try:
+            self._async_executors.remove(executor)
+        except ValueError:
+            pass
+
+    def _close_async_executors(self):
+        first_error = None
+
+        while self._async_executors:
+            executor = self._async_executors.pop()
+            try:
+                executor.close()
+            except Exception as e:
+                if first_error is None:
+                    first_error = ArcadeDBError(f"Failed to close async executor: {e}")
+
+        return first_error
+
     def __del__(self):
         """Finalizer - ensure database is closed when object is garbage collected."""
         try:
             if not self._closed and self._java_db is not None:
+                self._close_async_executors()
                 self._java_db.close()
                 self._closed = True
         except Exception:
@@ -869,7 +926,9 @@ class DatabaseFactory:
                 Example: {"heap_size": "8g"}
         """
         start_jvm(**(jvm_kwargs or {}))
-        from com.arcadedb.database import DatabaseFactory as JavaDatabaseFactory
+        import jpype
+
+        JavaDatabaseFactory = jpype.JClass("com.arcadedb.database.DatabaseFactory")
 
         self._java_factory = JavaDatabaseFactory(path)
 

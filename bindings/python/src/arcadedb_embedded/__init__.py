@@ -5,8 +5,12 @@ A native Python bindings for ArcadeDB that embeds the Java database engine
 directly in the Python process using JPype.
 """
 
-# Import version from generated _version.py file (created during build)
-from ._version import __version__
+# Import version from generated _version.py file (created during build).
+# Source checkouts may not have the generated file yet.
+try:
+    from ._version import __version__
+except ModuleNotFoundError:
+    __version__ = "0.0.0"
 
 # Import async execution
 from .async_executor import AsyncExecutor

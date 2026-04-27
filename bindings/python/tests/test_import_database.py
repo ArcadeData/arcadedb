@@ -100,6 +100,26 @@ def test_import_database_csv_documents(temp_db_path, sample_csv_path):
         assert count == 3
 
 
+def test_import_database_csv_documents_with_quoted_parallel_setting(
+    temp_db_path, sample_csv_path
+):
+    with arcadedb.create_database(temp_db_path) as db:
+        result = db.command(
+            "sql",
+            (
+                "IMPORT DATABASE WITH "
+                f"documents = '{_file_url(sample_csv_path)}', "
+                "documentsFileType = 'csv', "
+                "documentType = 'Document', "
+                "`parallel` = 1"
+            ),
+        )
+        _import_result_ok(result)
+
+        count = db.query("sql", "SELECT count(*) as c FROM `Document`").one().get("c")
+        assert count == 3
+
+
 def test_import_database_csv_graph_vertices_and_edges(temp_db_path):
     vertices_csv = _resource_path("importer-vertices.csv")
     edges_csv = _resource_path("importer-edges.csv")
@@ -133,6 +153,43 @@ def test_import_database_csv_graph_vertices_and_edges(temp_db_path):
             ),
         )
         _import_result_ok(e_res)
+
+        vertices_count = (
+            db.query("sql", "SELECT count(*) as c FROM Node").one().get("c")
+        )
+        edges_count = (
+            db.query("sql", "SELECT count(*) as c FROM Relationship").one().get("c")
+        )
+        assert vertices_count >= 6
+        assert edges_count >= 3
+
+
+def test_import_database_csv_graph_vertices_and_edges_with_quoted_parallel(
+    temp_db_path,
+):
+    vertices_csv = _resource_path("importer-vertices.csv")
+    edges_csv = _resource_path("importer-edges.csv")
+    if not vertices_csv.exists() or not edges_csv.exists():
+        pytest.skip("Graph CSV fixtures not available")
+
+    with arcadedb.create_database(temp_db_path) as db:
+        result = db.command(
+            "sql",
+            (
+                "IMPORT DATABASE WITH "
+                f"vertices = '{_file_url(str(vertices_csv))}', "
+                f"edges = '{_file_url(str(edges_csv))}', "
+                "vertexType = 'Node', "
+                "edgeType = 'Relationship', "
+                "typeIdProperty = 'Id', "
+                "typeIdType = 'Long', "
+                "typeIdUnique = true, "
+                "edgeFromField = 'From', "
+                "edgeToField = 'To', "
+                "`parallel` = 1"
+            ),
+        )
+        _import_result_ok(result)
 
         vertices_count = (
             db.query("sql", "SELECT count(*) as c FROM Node").one().get("c")

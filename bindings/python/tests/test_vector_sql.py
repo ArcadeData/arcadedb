@@ -22,6 +22,16 @@ def test_db(tmp_path):
 class TestVectorSQL:
     """Test SQL Vector Functions."""
 
+    @staticmethod
+    def _get_primary_sql_vector_index(test_db, index_name):
+        java_index = test_db.schema.get_index_by_name(index_name)
+        if java_index is None:
+            pytest.fail(f"Index {index_name!r} was not found")
+
+        if "TypeIndex" in java_index.getClass().getName():
+            return java_index.getSubIndexes().get(0)
+        return java_index
+
     def test_vector_math_functions(self, test_db):
         """Test basic vector math functions."""
         # vectorAdd
@@ -90,6 +100,51 @@ class TestVectorSQL:
         res = next(rs).get("res")
         assert abs(res[0] - 0.6) < 0.001
         assert abs(res[1] - 0.8) < 0.001
+
+    def test_sql_create_index_builds_vector_graph_immediately_by_default(self, test_db):
+        """SQL LSM_VECTOR creation should be queryable immediately."""
+
+        test_db.command("sql", "CREATE VERTEX TYPE Movie")
+        test_db.command("sql", "CREATE PROPERTY Movie.title STRING")
+        test_db.command("sql", "CREATE PROPERTY Movie.embedding ARRAY_OF_FLOATS")
+
+        with test_db.transaction():
+            test_db.command(
+                "sql",
+                "INSERT INTO Movie SET title = 'A', embedding = [1.0, 0.0, 0.0, 0.0]",
+            )
+            test_db.command(
+                "sql",
+                "INSERT INTO Movie SET title = 'B', embedding = [0.9, 0.1, 0.0, 0.0]",
+            )
+            test_db.command(
+                "sql",
+                "INSERT INTO Movie SET title = 'C', embedding = [0.0, 1.0, 0.0, 0.0]",
+            )
+
+        test_db.command(
+            "sql",
+            """
+            CREATE INDEX ON Movie (embedding)
+            LSM_VECTOR
+            METADATA {
+                "dimensions": 4,
+                "similarity": "COSINE"
+            }
+            """,
+        )
+
+        rows = test_db.query(
+            "sql",
+            """
+            SELECT expand(
+                vectorNeighbors('Movie[embedding]', [1.0, 0.0, 0.0, 0.0], 2)
+            )
+            """,
+        ).to_list()
+
+        assert len(rows) == 2
+        assert rows[0].get("title") == "A"
 
     def test_vector_quantization_functions(self, test_db):
         """Test vector quantization functions."""
@@ -282,6 +337,145 @@ class TestVectorSQL:
         vertex = neighbors[0]
         # Just ensure we found something
         assert vertex is not None
+
+    def test_create_index_with_rich_metadata_sql(self, test_db):
+        """SQL vector index creation should support high-value build metadata."""
+
+        test_db.command("sql", "CREATE VERTEX TYPE SqlMetaDoc")
+        test_db.command("sql", "CREATE PROPERTY SqlMetaDoc.slug STRING")
+        test_db.command("sql", "CREATE PROPERTY SqlMetaDoc.vec ARRAY_OF_FLOATS")
+
+        test_db.command(
+            "sql",
+            """
+            CREATE INDEX ON SqlMetaDoc (vec)
+            LSM_VECTOR
+            METADATA {
+                "dimensions": 4,
+                "similarity": "COSINE",
+                "quantization": "INT8",
+                "idPropertyName": "slug",
+                "storeVectorsInGraph": true,
+                "addHierarchy": true,
+                "locationCacheSize": 123,
+                "graphBuildCacheSize": 456,
+                "mutationsBeforeRebuild": 789
+            }
+            """,
+        )
+
+        java_index = self._get_primary_sql_vector_index(test_db, "SqlMetaDoc[vec]")
+        metadata = java_index.getMetadata()
+
+        assert metadata.dimensions == 4
+        assert str(metadata.similarityFunction) == "COSINE"
+        assert str(metadata.quantizationType) == "INT8"
+        assert metadata.idPropertyName == "slug"
+        assert metadata.storeVectorsInGraph is True
+        assert metadata.addHierarchy is True
+        assert metadata.locationCacheSize == 123
+        assert metadata.graphBuildCacheSize == 456
+        assert metadata.mutationsBeforeRebuild == 789
+
+    def test_vector_neighbors_by_key_sql(self, test_db):
+        """SQL vector.neighbors should search from an existing record key."""
+
+        test_db.command("sql", "CREATE VERTEX TYPE Word")
+        test_db.command("sql", "CREATE PROPERTY Word.name STRING")
+        test_db.command("sql", "CREATE PROPERTY Word.vector ARRAY_OF_FLOATS")
+
+        test_db.command(
+            "sql",
+            """
+            CREATE INDEX ON Word (vector)
+            LSM_VECTOR
+            METADATA {
+                "dimensions": 3,
+                "similarity": "COSINE",
+                "idPropertyName": "name"
+            }
+            """,
+        )
+
+        with test_db.transaction():
+            test_db.command(
+                "sql",
+                "INSERT INTO Word SET name = 'docA', vector = [1.0, 0.0, 0.0]",
+            )
+            test_db.command(
+                "sql",
+                "INSERT INTO Word SET name = 'docB', vector = [0.9, 0.1, 0.0]",
+            )
+            test_db.command(
+                "sql",
+                "INSERT INTO Word SET name = 'docC', vector = [0.0, 1.0, 0.0]",
+            )
+
+        rows = test_db.query(
+            "sql",
+            """
+            SELECT name, distance
+            FROM (SELECT expand(vectorNeighbors('Word[vector]', 'docA', 3)))
+            ORDER BY distance
+            """,
+        ).to_list()
+
+        assert len(rows) == 3
+        assert rows[0].get("name") == "docA"
+        assert "docB" in [row.get("name") for row in rows]
+
+    def test_vector_neighbors_by_key_opencypher(self, test_db):
+        """OpenCypher should expose vector.neighbors with key-based lookup."""
+
+        try:
+            _ = list(test_db.query("opencypher", "RETURN 1 AS one"))
+        except Exception as exc:
+            if "Query engine 'opencypher' was not found" in str(exc):
+                pytest.skip("OpenCypher not available")
+            raise
+
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.name STRING")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+        test_db.command(
+            "sql",
+            """
+            CREATE INDEX ON Doc (embedding)
+            LSM_VECTOR
+            METADATA {
+                "dimensions": 3,
+                "similarity": "COSINE",
+                "idPropertyName": "name"
+            }
+            """,
+        )
+
+        with test_db.transaction():
+            test_db.command(
+                "sql",
+                "INSERT INTO Doc SET name = 'docA', embedding = [1.0, 0.0, 0.0]",
+            )
+            test_db.command(
+                "sql",
+                "INSERT INTO Doc SET name = 'docB', embedding = [0.9, 0.1, 0.0]",
+            )
+            test_db.command(
+                "sql",
+                "INSERT INTO Doc SET name = 'docC', embedding = [0.0, 1.0, 0.0]",
+            )
+
+        rows = test_db.query(
+            "opencypher",
+            (
+                "CALL vector.neighbors('Doc[embedding]', 'docA', 3) "
+                "YIELD name, distance RETURN name, (1 - distance) AS score "
+                "ORDER BY score DESC"
+            ),
+        ).to_list()
+
+        assert len(rows) == 3
+        assert rows[0].get("name") == "docA"
+        assert rows[0].get("score") > 0.9
 
     def test_vector_neighbors(self, test_db):
         """Test vectorNeighbors function."""

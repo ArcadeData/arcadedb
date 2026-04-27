@@ -106,12 +106,10 @@ def temp_dir_factory():
 def has_server_support():
     """Check if server support is available (available in our base package)."""
     try:
-        import os
-
-        import arcadedb_embedded
+        from arcadedb_embedded.jvm import get_jar_path
 
         # Check if studio JAR exists (indicates server support)
-        jar_dir = os.path.join(os.path.dirname(arcadedb_embedded.__file__), "jars")
+        jar_dir = get_jar_path()
         if not os.path.exists(jar_dir):
             return False
         jar_files = os.listdir(jar_dir)
@@ -124,11 +122,9 @@ def has_graph_export_support():
     """Check if GraphML/GraphSON export support is available."""
     try:
         # Detect graph export-related modules in bundled JARs
-        import os
+        from arcadedb_embedded.jvm import get_jar_path
 
-        import arcadedb_embedded
-
-        jar_dir = os.path.join(os.path.dirname(arcadedb_embedded.__file__), "jars")
+        jar_dir = get_jar_path()
         jar_files = os.listdir(jar_dir) if os.path.exists(jar_dir) else []
         return any(
             "graphson" in jar.lower() or "graphml" in jar.lower() for jar in jar_files
@@ -152,28 +148,27 @@ def pytest_configure(config):
 
 def pytest_unconfigure(config):
     """
-    Force exit after pytest completes to avoid JVM thread hang.
+    Prefer graceful JVM shutdown after pytest completes.
 
-    The issue: JPype's shutdownJVM() itself hangs waiting for JVM threads.
-    Even though we properly close AsyncExecutors, some JVM background threads
-    (from ArcadeDB's async executor thread pool) don't terminate cleanly.
+    The old test suite used `os._exit(0)` unconditionally because JVM shutdown
+    used to hang. The suite now exits cleanly after explicit async-executor
+    ownership cleanup, so graceful shutdown is the default behavior.
 
-    Solution: Force exit with os._exit(0) after flushing output. This is safe
-    because all tests have completed and we just need to terminate the process.
-
-    Note: This only affects the test suite. Production code is fine - when the
-    Python process exits naturally, the OS terminates all threads including JVM.
+    `ARCADEDB_PYTEST_FORCE_EXIT=1` is retained only as an emergency override
+    for debugging future shutdown regressions.
     """
-    import os
     import sys
+
+    from arcadedb_embedded.jvm import shutdown_jvm
 
     # Flush all output to ensure we see test results
     sys.stdout.flush()
     sys.stderr.flush()
 
-    # Force exit - bypass Python cleanup and JVM shutdown
-    # This is the only reliable way to exit pytest with JVM threads active
-    os._exit(0)
+    if os.environ.get("ARCADEDB_PYTEST_FORCE_EXIT", "0") == "1":
+        os._exit(0)
+
+    shutdown_jvm()
 
 
 def pytest_sessionfinish(session, exitstatus):

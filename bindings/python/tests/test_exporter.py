@@ -53,16 +53,16 @@ def sample_db(temp_db_path):
     db.command("sql", "CREATE PROPERTY Actor.name STRING")
     db.command("sql", "CREATE PROPERTY Actor.birthYear INTEGER")
 
-    db.command("sql", "CREATE EDGE TYPE Rated UNIDIRECTIONAL")
+    db.command("sql", "CREATE EDGE TYPE Rated")
     db.command("sql", "CREATE PROPERTY Rated.rating DOUBLE")
     db.command("sql", "CREATE PROPERTY Rated.timestamp LONG")
     db.command("sql", "CREATE PROPERTY Rated.review STRING")
 
-    db.command("sql", "CREATE EDGE TYPE ActedIn UNIDIRECTIONAL")
+    db.command("sql", "CREATE EDGE TYPE ActedIn")
     db.command("sql", "CREATE PROPERTY ActedIn.role STRING")
     db.command("sql", "CREATE PROPERTY ActedIn.year INTEGER")
 
-    db.command("sql", "CREATE EDGE TYPE Follows UNIDIRECTIONAL")
+    db.command("sql", "CREATE EDGE TYPE Follows")
 
     db.command("sql", "CREATE DOCUMENT TYPE LogEntry")
     db.command("sql", "CREATE PROPERTY LogEntry.level STRING")

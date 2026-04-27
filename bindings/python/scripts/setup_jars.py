@@ -48,7 +48,7 @@ def find_jar_files():
 
 def copy_jars_to_package():
     """Copy JAR files to the Python package."""
-    package_dir = Path(__file__).parent
+    package_dir = Path(__file__).parent.parent
     jar_dir = package_dir / "src" / "arcadedb_embedded" / "jars"
 
     # Remove any previous jars so the wheel reflects the current build inputs exactly.
@@ -93,7 +93,7 @@ def copy_jre():
     print("\n🔧 Copying bundled JRE...")
     print("=" * 40)
 
-    package_dir = Path(__file__).parent
+    package_dir = Path(__file__).parent.parent
     jre_source = Path("/build/jre")
     jre_dest = package_dir / "src" / "arcadedb_embedded" / "jre"
 
@@ -140,9 +140,9 @@ def main():
     # Copy JAR files
     if not copy_jars_to_package():
         print("\n❌ Setup failed!")
-        print("💡 Make sure to run this via build.sh:")
+        print("💡 Make sure to run this via scripts/build.sh:")
         print("   cd bindings/python")
-        print("   ./build.sh")
+        print("   ./scripts/build.sh")
         return 1
 
     # Copy bundled JRE (always included)

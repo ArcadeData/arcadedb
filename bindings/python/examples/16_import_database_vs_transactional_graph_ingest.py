@@ -385,7 +385,7 @@ def run_transactional_graph_load(
 
     db.command("sql", f"CREATE VERTEX TYPE {vertex_type}")
     db.command("sql", f"CREATE PROPERTY {vertex_type}.Id LONG")
-    db.command("sql", f"CREATE EDGE TYPE {edge_type} UNIDIRECTIONAL")
+    db.command("sql", f"CREATE EDGE TYPE {edge_type}")
 
     vertex_setters = ", ".join(["Id = ?"] + [f"{name} = ?" for name, _ in vertex_props])
     vertex_insert_sql = f"INSERT INTO {vertex_type} SET {vertex_setters}"
@@ -502,7 +502,7 @@ def run_async_sql_graph_load(
     try:
         db.command("sql", f"CREATE VERTEX TYPE {vertex_type}")
         db.command("sql", f"CREATE PROPERTY {vertex_type}.Id LONG")
-        db.command("sql", f"CREATE EDGE TYPE {edge_type} UNIDIRECTIONAL")
+        db.command("sql", f"CREATE EDGE TYPE {edge_type}")
 
         vertex_setters = ", ".join(
             ["Id = ?"] + [f"{name} = ?" for name, _ in vertex_props]
@@ -620,7 +620,7 @@ def run_graph_batch_graph_load(
     try:
         db.command("sql", f"CREATE VERTEX TYPE {vertex_type}")
         db.command("sql", f"CREATE PROPERTY {vertex_type}.Id LONG")
-        db.command("sql", f"CREATE EDGE TYPE {edge_type} UNIDIRECTIONAL")
+        db.command("sql", f"CREATE EDGE TYPE {edge_type}")
 
         rid_lookup: Dict[int, str] = {}
 
@@ -750,9 +750,8 @@ def run_import_database_graph_load(
                 "typeIdUnique = true, "
                 "edgeFromField = 'From', "
                 "edgeToField = 'To', "
-                "edgeBidirectional = false, "
                 f"commitEvery = {batch_size}, "
-                f"parallel = {parallel}"
+                f"`parallel` = {parallel}"
             ),
         ).one()
 

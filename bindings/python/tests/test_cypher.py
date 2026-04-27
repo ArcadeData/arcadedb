@@ -16,8 +16,8 @@ def _ensure_opencypher(db) -> None:
 def _seed_graph(db) -> None:
     db.command("sql", "CREATE VERTEX TYPE Person")
     db.command("sql", "CREATE VERTEX TYPE Company")
-    db.command("sql", "CREATE EDGE TYPE KNOWS UNIDIRECTIONAL")
-    db.command("sql", "CREATE EDGE TYPE WORKS_FOR UNIDIRECTIONAL")
+    db.command("sql", "CREATE EDGE TYPE KNOWS")
+    db.command("sql", "CREATE EDGE TYPE WORKS_FOR")
 
     with db.transaction():
         db.command(
@@ -387,6 +387,155 @@ def test_opencypher_count_non_existing_label_returns_zero(temp_db_path):
         row = result.one()
 
         assert row.get("c") == 0
+
+
+def test_opencypher_create_index_command(temp_db_path):
+    """Test CREATE INDEX DDL passes through to the OpenCypher engine."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+
+        db.command("opencypher", "CREATE INDEX FOR (n:Event) ON (n.code)")
+
+        with db.transaction():
+            db.command("opencypher", "CREATE (:Event {code: 'evt-1', name: 'Launch'})")
+
+        row = db.query(
+            "opencypher",
+            "MATCH (n:Event {code: 'evt-1'}) RETURN n.name AS name",
+        ).one()
+
+        assert row.get("name") == "Launch"
+
+
+def test_opencypher_typed_constraint_command(temp_db_path):
+    """Test typed Cypher constraints are accepted through the Python bindings."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+
+        db.command(
+            "opencypher",
+            "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.email IS TYPED STRING",
+        )
+
+        with db.transaction():
+            db.command(
+                "opencypher",
+                "CREATE (:Person {email: 'alice@example.com', name: 'Alice'})",
+            )
+
+        row = db.query(
+            "opencypher",
+            "MATCH (p:Person {email: 'alice@example.com'}) RETURN p.name AS name",
+        ).one()
+
+        assert row.get("name") == "Alice"
+
+
+def test_opencypher_create_index_if_not_exists_command(temp_db_path):
+    """Test CREATE INDEX IF NOT EXISTS is idempotent through the Python bindings."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+
+        db.command(
+            "opencypher",
+            "CREATE INDEX IF NOT EXISTS FOR (n:Metric) ON (n.code)",
+        )
+        db.command(
+            "opencypher",
+            "CREATE INDEX IF NOT EXISTS FOR (n:Metric) ON (n.code)",
+        )
+
+        with db.transaction():
+            db.command("opencypher", "CREATE (:Metric {code: 'm-1', value: 42})")
+
+        row = db.query(
+            "opencypher",
+            "MATCH (n:Metric {code: 'm-1'}) RETURN n.value AS value",
+        ).one()
+
+        assert row.get("value") == 42
+
+
+def test_opencypher_ddl_auto_creates_vertex_and_edge_types(temp_db_path):
+    """Test Cypher DDL auto-creates missing vertex and edge types via Python."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+
+        assert db.schema.exists_type("AutoEvent") is False
+        assert db.schema.exists_type("RELATES_TO") is False
+
+        db.command("opencypher", "CREATE INDEX FOR (n:AutoEvent) ON (n.code)")
+        db.command(
+            "opencypher",
+            "CREATE CONSTRAINT FOR ()-[r:RELATES_TO]-() REQUIRE r.since IS NOT NULL",
+        )
+
+        assert db.schema.exists_type("AutoEvent") is True
+        assert db.schema.exists_type("RELATES_TO") is True
+
+        with db.transaction():
+            db.command("opencypher", "CREATE (:AutoEvent {code: 'a'})")
+            db.command("opencypher", "CREATE (:AutoEvent {code: 'b'})")
+
+        source = db.query(
+            "sql",
+            "SELECT @rid AS rid FROM AutoEvent WHERE code = 'a'",
+        ).one()
+        target = db.query(
+            "sql",
+            "SELECT @rid AS rid FROM AutoEvent WHERE code = 'b'",
+        ).one()
+
+        with db.transaction():
+            db.command(
+                "sql",
+                f"CREATE EDGE RELATES_TO FROM {source.get('rid')} TO {target.get('rid')} "
+                "SET since = '2026-04-07'",
+            )
+
+        row = db.query(
+            "opencypher",
+            "MATCH (:AutoEvent {code: 'a'})-[r:RELATES_TO]->(:AutoEvent {code: 'b'}) "
+            "RETURN r.since AS since",
+        ).one()
+
+        assert row.get("since") == "2026-04-07"
+
+
+def test_opencypher_edge_typed_constraint_command(temp_db_path):
+    """Test typed edge constraints are accepted through the Python bindings."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+
+        db.command("sql", "CREATE VERTEX TYPE Person")
+        db.command(
+            "opencypher",
+            "CREATE CONSTRAINT FOR ()-[r:KNOWS]-() REQUIRE r.since IS TYPED DATE",
+        )
+
+        with db.transaction():
+            db.command("sql", "INSERT INTO Person SET name = 'Alice'")
+            db.command("sql", "INSERT INTO Person SET name = 'Bob'")
+
+        alice = db.query(
+            "sql",
+            "SELECT @rid AS rid FROM Person WHERE name = 'Alice'",
+        ).one()
+        bob = db.query(
+            "sql",
+            "SELECT @rid AS rid FROM Person WHERE name = 'Bob'",
+        ).one()
+
+        with db.transaction():
+            db.command(
+                "sql",
+                f"CREATE EDGE KNOWS FROM {alice.get('rid')} TO {bob.get('rid')} "
+                "SET since = date('2026-04-07')",
+            )
+
+        row = db.query("sql", "SELECT since FROM KNOWS").one()
+
+        assert row.get("since") is not None
 
 
 def test_opencypher_projection_property_order_is_preserved(temp_db_path):

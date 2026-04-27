@@ -117,3 +117,53 @@ def test_error_file_env():
             jvm_args=None,
         )
         assert "-XX:ErrorFile=/tmp/crash.log" in args
+
+
+def test_common_pool_parallelism_arg_injected():
+    """Explicit common_pool_parallelism should inject the JVM thread cap flag."""
+    with patch.dict(os.environ, {}, clear=True):
+        args = _build_jvm_args(
+            heap_size="4g",
+            disable_xml_limits=True,
+            jvm_args=None,
+            common_pool_parallelism=8,
+        )
+
+        assert "-Djava.util.concurrent.ForkJoinPool.common.parallelism=8" in args
+
+
+def test_common_pool_parallelism_overrides_env_jvm_args():
+    """Explicit common_pool_parallelism should override any env-provided value."""
+    with patch.dict(
+        os.environ,
+        {
+            "ARCADEDB_JVM_ARGS": (
+                "-Xmx4g " "-Djava.util.concurrent.ForkJoinPool.common.parallelism=2"
+            )
+        },
+        clear=True,
+    ):
+        args = _build_jvm_args(
+            heap_size="4g",
+            disable_xml_limits=True,
+            jvm_args=None,
+            common_pool_parallelism=6,
+        )
+
+        assert "-Djava.util.concurrent.ForkJoinPool.common.parallelism=6" in args
+        assert "-Djava.util.concurrent.ForkJoinPool.common.parallelism=2" not in args
+
+
+def test_common_pool_parallelism_must_be_positive():
+    """common_pool_parallelism must be >= 1 when provided."""
+    with patch.dict(os.environ, {}, clear=True):
+        try:
+            _build_jvm_args(
+                heap_size="4g",
+                disable_xml_limits=True,
+                jvm_args=None,
+                common_pool_parallelism=0,
+            )
+            assert False, "Expected ArcadeDBError for common_pool_parallelism=0"
+        except Exception as exc:
+            assert "common_pool_parallelism must be >= 1" in str(exc)

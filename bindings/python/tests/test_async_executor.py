@@ -60,6 +60,30 @@ def test_async_executor_query_callback_collects_rows(temp_db):
     assert seen == list(range(20))
 
 
+def test_database_close_closes_owned_async_executor(temp_db_path):
+    db = arcadedb.create_database(temp_db_path)
+    db.command("sql", "CREATE DOCUMENT TYPE Msg")
+
+    async_exec = db.async_executor().set_commit_every(1)
+    async_exec.command("sql", "INSERT INTO Msg SET id = :id", id=1)
+    async_exec.wait_completion()
+
+    db.close()
+
+    assert async_exec.is_closed() is True
+
+    async_exec.close()
+
+
+def test_async_executor_close_is_idempotent(temp_db):
+    async_exec = temp_db.async_executor()
+
+    async_exec.close()
+    async_exec.close()
+
+    assert async_exec.is_closed() is True
+
+
 def test_async_executor_pending_and_processing_flags(temp_db):
     db = temp_db
     db.command("sql", "CREATE DOCUMENT TYPE Msg")

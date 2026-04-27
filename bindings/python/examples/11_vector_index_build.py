@@ -542,17 +542,28 @@ def create_index_arcadedb(
     add_hierarchy: bool,
 ):
     quant = None if quantization.upper() == "NONE" else quantization.upper()
-    return db.create_vector_index(
-        vertex_type="VectorData",
-        vector_property="vector",
-        dimensions=dim,
-        distance_function="cosine",
-        max_connections=max_connections,
-        beam_width=beam_width,
-        quantization=quant,
-        store_vectors_in_graph=store_vectors_in_graph,
-        add_hierarchy=add_hierarchy,
-        build_graph_now=True,
+    metadata_lines = [
+        f'"dimensions": {int(dim)}',
+        '"similarity": "COSINE"',
+        f'"maxConnections": {int(max_connections)}',
+        f'"beamWidth": {int(beam_width)}',
+        f'"storeVectorsInGraph": {str(store_vectors_in_graph).lower()}',
+        f'"addHierarchy": {str(add_hierarchy).lower()}',
+    ]
+    if quant is not None:
+        metadata_lines.insert(4, f'"quantization": "{quant}"')
+
+    metadata_body = ",\n            ".join(metadata_lines)
+
+    db.command(
+        "sql",
+        f"""
+        CREATE INDEX ON VectorData (vector)
+        LSM_VECTOR
+        METADATA {{
+            {metadata_body}
+        }}
+        """,
     )
 
 
@@ -2066,7 +2077,7 @@ def main() -> None:
             )
             record("ingest", {"ingested": int(ingested)}, dur, r0, r1)
 
-            _index, dur, r0, r1 = timed_section(
+            _, dur, r0, r1 = timed_section(
                 "create_index",
                 lambda: create_index_arcadedb(
                     db,

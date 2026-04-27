@@ -87,6 +87,119 @@ def mem_limit_tag(mem_limit: str) -> str:
     return f"mem{normalized}" if normalized else "memdefault"
 
 
+def format_mib_as_docker_limit(mib: int) -> str:
+    return f"{max(1, int(mib))}m"
+
+
+def split_total_memory_budget(
+    total_mem_limit: str, server_fraction: float
+) -> tuple[str, str]:
+    total_mib = parse_size_to_mib(total_mem_limit)
+    server_mib = int(round(total_mib * server_fraction))
+    server_mib = max(1, min(total_mib - 1 if total_mib > 1 else 1, server_mib))
+    client_mib = max(1, total_mib - server_mib)
+    return format_mib_as_docker_limit(client_mib), format_mib_as_docker_limit(
+        server_mib
+    )
+
+
+def split_total_cpu_budget(
+    total_cpus: float, server_fraction: float
+) -> tuple[float, float]:
+    total = max(0.1, float(total_cpus))
+    if total <= 0.2:
+        half = total / 2.0
+        return half, total - half
+
+    server = total * server_fraction
+    min_share = min(0.5, total / 2.0)
+    server = max(min_share, min(total - min_share, server))
+    client = max(0.1, total - server)
+    return client, server
+
+
+def format_cpu_quota(cpus: float) -> str:
+    value = max(0.01, float(cpus))
+    text = f"{value:.3f}".rstrip("0").rstrip(".")
+    return text if text else "0.01"
+
+
+def resolve_server_fraction(args) -> float:
+    fraction = float(getattr(args, "server_fraction", 0.8))
+    if not 0.0 < fraction < 1.0:
+        raise SystemExit("--server-fraction must be > 0 and < 1")
+    return fraction
+
+
+def backend_server_budget(args) -> tuple[str, float]:
+    if args.db != "neo4j":
+        return args.mem_limit, float(args.threads)
+
+    if not is_running_in_docker():
+        return args.mem_limit, float(args.threads)
+
+    server_fraction = resolve_server_fraction(args)
+    _client_mem, server_mem = split_total_memory_budget(args.mem_limit, server_fraction)
+    _client_cpu, server_cpu = split_total_cpu_budget(
+        float(args.threads), server_fraction
+    )
+    return server_mem, server_cpu
+
+
+def backend_client_budget(args) -> tuple[str, float]:
+    if args.db != "neo4j":
+        return args.mem_limit, float(args.threads)
+
+    server_fraction = resolve_server_fraction(args)
+    client_mem, _server_mem = split_total_memory_budget(args.mem_limit, server_fraction)
+    client_cpu, _server_cpu = split_total_cpu_budget(
+        float(args.threads), server_fraction
+    )
+    return client_mem, client_cpu
+
+
+def budget_allocation_report(args) -> dict:
+    total_mem = args.mem_limit
+    total_cpus = float(args.threads)
+    report = {
+        "model": "single_global_budget",
+        "db": args.db,
+        "total": {
+            "memory_limit": total_mem,
+            "cpus": format_cpu_quota(total_cpus),
+            "threads_input": args.threads,
+        },
+    }
+
+    if args.db == "neo4j" and is_running_in_docker():
+        server_fraction = resolve_server_fraction(args)
+        client_mem, server_mem = split_total_memory_budget(total_mem, server_fraction)
+        client_cpu, server_cpu = split_total_cpu_budget(total_cpus, server_fraction)
+        report["split"] = {
+            "client_fraction": round(1.0 - server_fraction, 2),
+            "server_fraction": round(server_fraction, 2),
+            "wrapper_client_allocation": {
+                "memory_limit": client_mem,
+                "cpus": format_cpu_quota(client_cpu),
+            },
+            "server_allocation": {
+                "memory_limit": server_mem,
+                "cpus": format_cpu_quota(server_cpu),
+            },
+        }
+    else:
+        report["split"] = {
+            "client_fraction": 1.0,
+            "server_fraction": 0.0,
+            "single_runtime_allocation": {
+                "memory_limit": total_mem,
+                "cpus": format_cpu_quota(total_cpus),
+            },
+        }
+
+    return report
+
+
 READ_TARGET_KINDS = [
     "user",
     "question",
@@ -164,6 +277,14 @@ LADYBUG_EDGE_TYPES = [
     "LINKED_TO",
 ]
 
+NEO4J_COMMUNITY_IMAGE = os.environ.get(
+    "ARCADEDB_BENCH_NEO4J_IMAGE",
+    "neo4j:community",
+)
+NEO4J_USERNAME = "neo4j"
+NEO4J_PASSWORD = "arcadedb-bench"
+NEO4J_DATABASE = "neo4j"
+
 
 def get_arcadedb_module():
     try:
@@ -196,6 +317,14 @@ def get_duckdb_module():
     except ImportError:
         return None
     return duckdb
+
+
+def get_neo4j_module():
+    try:
+        import neo4j
+    except ImportError:
+        return None
+    return neo4j
 
 
 def parse_int(value: Optional[str]) -> Optional[int]:
@@ -242,6 +371,97 @@ def get_dir_size_bytes(path: Path) -> int:
     return total
 
 
+DOCKER_MEM_USAGE_RE = re.compile(
+    r"^\s*([0-9]*\.?[0-9]+)\s*([kmgt]?i?b|b)\s*$",
+    re.IGNORECASE,
+)
+
+
+def current_process_rss_kb() -> int:
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1])
+                    break
+    except FileNotFoundError:
+        pass
+    return 0
+
+
+def parse_memory_usage_to_kb(value: str) -> int:
+    match = DOCKER_MEM_USAGE_RE.match(value.strip())
+    if not match:
+        return 0
+    amount = float(match.group(1))
+    unit = match.group(2).lower()
+    scale = {
+        "b": 1 / 1024,
+        "kib": 1,
+        "kb": 1,
+        "mib": 1024,
+        "mb": 1024,
+        "gib": 1024 * 1024,
+        "gb": 1024 * 1024,
+        "tib": 1024 * 1024 * 1024,
+        "tb": 1024 * 1024 * 1024,
+    }.get(unit)
+    if scale is None:
+        return 0
+    return int(amount * scale)
+
+
+def docker_container_rss_kb(container_name: str) -> int:
+    docker = shutil.which("docker")
+    if not docker or not container_name:
+        return 0
+
+    result = subprocess.run(
+        [docker, "stats", "--no-stream", "--format", "{{.MemUsage}}", container_name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return 0
+
+    output = result.stdout.strip()
+    if not output:
+        return 0
+    usage = output.split("/", 1)[0].strip()
+    return parse_memory_usage_to_kb(usage)
+
+
+def start_combined_rss_sampler(
+    extra_kb_sampler: Optional[Callable[[], int]] = None,
+    interval_sec: float = 1.0,
+) -> Tuple[threading.Event, dict, threading.Thread]:
+    stop_event = threading.Event()
+    state = {
+        "client_max_kb": 0,
+        "server_max_kb": 0,
+        "combined_max_kb": 0,
+    }
+
+    def run():
+        while not stop_event.is_set():
+            client_kb = current_process_rss_kb()
+            server_kb = extra_kb_sampler() if extra_kb_sampler is not None else 0
+            state["client_max_kb"] = max(state["client_max_kb"], client_kb)
+            state["server_max_kb"] = max(state["server_max_kb"], server_kb)
+            state["combined_max_kb"] = max(
+                state["combined_max_kb"],
+                client_kb + server_kb,
+            )
+            time.sleep(interval_sec)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return stop_event, state, thread
+
+
 def start_rss_sampler(
     interval_sec: float = 0.2,
 ) -> Tuple[threading.Event, dict, threading.Thread]:
@@ -250,17 +470,7 @@ def start_rss_sampler(
 
     def run():
         while not stop_event.is_set():
-            try:
-                with open("/proc/self/status", "r", encoding="utf-8") as handle:
-                    for line in handle:
-                        if line.startswith("VmRSS:"):
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                rss_kb = int(parts[1])
-                                state["max_kb"] = max(state["max_kb"], rss_kb)
-                            break
-            except FileNotFoundError:
-                pass
+            state["max_kb"] = max(state["max_kb"], current_process_rss_kb())
             time.sleep(interval_sec)
 
     thread = threading.Thread(target=run, daemon=True)
@@ -403,7 +613,7 @@ def create_arcadedb_schema(db):
         "EARNED",
         "LINKED_TO",
     ):
-        db.command("sql", f"CREATE EDGE TYPE {edge_type} UNIDIRECTIONAL")
+        db.command("sql", f"CREATE EDGE TYPE {edge_type}")
 
     db.async_executor().wait_completion()
 
@@ -660,6 +870,253 @@ def count_ladybug_by_type(
     return node_counts, edge_counts
 
 
+def neo4j_container_name(db_path: Path) -> str:
+    raw = re.sub(r"[^a-z0-9]+", "-", db_path.name.lower()).strip("-")
+    return f"arcadedb-bench-{raw[:40]}-{os.getpid()}"
+
+
+def neo4j_fix_dir_ownership(path: Path) -> None:
+    if not path.exists() or not hasattr(os, "getuid") or not hasattr(os, "getgid"):
+        return
+
+    docker = shutil.which("docker")
+    if not docker:
+        return
+
+    host_uid = os.getuid()
+    host_gid = os.getgid()
+    command = [
+        docker,
+        "run",
+        "--rm",
+        "--user",
+        "0:0",
+        "-v",
+        f"{path.resolve()}:/target",
+        "--entrypoint",
+        "sh",
+        NEO4J_COMMUNITY_IMAGE,
+        "-lc",
+        f"chown -R {host_uid}:{host_gid} /target",
+    ]
+    subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def neo4j_prepare_dirs(db_path: Path) -> Dict[str, Path]:
+    root = db_path / "neo4j_ce"
+    if root.exists():
+        neo4j_fix_dir_ownership(root)
+        shutil.rmtree(root)
+
+    paths = {
+        "root": root,
+        "data": root / "data",
+        "logs": root / "logs",
+        "import": root / "import",
+        "plugins": root / "plugins",
+    }
+    for path in paths.values():
+        path.mkdir(parents=True, exist_ok=True)
+    return paths
+
+
+def neo4j_run_command(command: List[str], *, capture: bool = False) -> str:
+    result = subprocess.run(
+        command,
+        check=True,
+        capture_output=capture,
+        text=True,
+    )
+    return result.stdout.strip() if capture else ""
+
+
+def start_neo4j_service(db_path: Path, mem_limit: str, cpus: float) -> Dict[str, Any]:
+    neo4j = get_neo4j_module()
+    if neo4j is None:
+        raise RuntimeError("neo4j Python driver is not installed")
+
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("docker is required for the Neo4j backend")
+
+    service_paths = neo4j_prepare_dirs(db_path)
+    container_name = neo4j_container_name(db_path)
+    total_mib = parse_size_to_mib(mem_limit)
+    heap_mib = max(256, int(total_mib * 0.50))
+    pagecache_mib = max(128, int(total_mib * 0.25))
+    connect_host = "host.docker.internal" if is_running_in_docker() else "127.0.0.1"
+    port_binding = "7687" if is_running_in_docker() else "127.0.0.1::7687"
+
+    subprocess.run(
+        [docker, "rm", "-f", container_name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    neo4j_run_command(
+        [
+            docker,
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name,
+            "--user",
+            "0:0",
+            "--memory",
+            mem_limit,
+            "--cpus",
+            format_cpu_quota(cpus),
+            "-p",
+            port_binding,
+            "-e",
+            f"NEO4J_AUTH={NEO4J_USERNAME}/{NEO4J_PASSWORD}",
+            "-e",
+            f"NEO4J_server_memory_heap_initial__size={heap_mib}m",
+            "-e",
+            f"NEO4J_server_memory_heap_max__size={heap_mib}m",
+            "-e",
+            f"NEO4J_server_memory_pagecache_size={pagecache_mib}m",
+            "-e",
+            "NEO4J_server_default__listen__address=0.0.0.0",
+            "-v",
+            f"{service_paths['data'].resolve()}:/data",
+            "-v",
+            f"{service_paths['logs'].resolve()}:/logs",
+            "-v",
+            f"{service_paths['import'].resolve()}:/import",
+            "-v",
+            f"{service_paths['plugins'].resolve()}:/plugins",
+            NEO4J_COMMUNITY_IMAGE,
+        ]
+    )
+
+    bolt_port = neo4j_run_command(
+        [
+            docker,
+            "inspect",
+            "--format",
+            '{{(index (index .NetworkSettings.Ports "7687/tcp") 0).HostPort}}',
+            container_name,
+        ],
+        capture=True,
+    )
+    if not bolt_port:
+        raise RuntimeError("Could not determine mapped Neo4j bolt port")
+
+    driver = neo4j.GraphDatabase.driver(
+        f"bolt://{connect_host}:{bolt_port}",
+        auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
+    )
+
+    last_error: Optional[Exception] = None
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        try:
+            with driver.session(database=NEO4J_DATABASE) as session:
+                session.run("RETURN 1 AS ready").single()
+            break
+        except Exception as exc:
+            last_error = exc
+            time.sleep(1)
+    else:
+        driver.close()
+        subprocess.run(
+            [docker, "rm", "-f", container_name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        raise RuntimeError(f"Timed out waiting for Neo4j to become ready: {last_error}")
+
+    return {
+        "driver": driver,
+        "container_name": container_name,
+        "paths": service_paths,
+        "bolt_port": int(bolt_port),
+        "host": connect_host,
+        "server_version": get_neo4j_server_version(driver),
+    }
+
+
+def stop_neo4j_service(service: Optional[Dict[str, Any]]) -> None:
+    if not service:
+        return
+
+    driver = service.get("driver")
+    if driver is not None:
+        driver.close()
+
+    container_name = service.get("container_name")
+    if container_name and shutil.which("docker"):
+        subprocess.run(
+            ["docker", "rm", "-f", str(container_name)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    service_paths = service.get("paths") or {}
+    root_path = service_paths.get("root")
+    if root_path is not None:
+        neo4j_fix_dir_ownership(Path(root_path))
+
+
+def neo4j_execute_write(
+    driver,
+    query: str,
+    parameters: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    with driver.session(database=NEO4J_DATABASE) as session:
+        return session.execute_write(
+            lambda tx: list(tx.run(query, parameters or {}).data())
+        )
+
+
+def neo4j_execute_read(
+    driver,
+    query: str,
+    parameters: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    with driver.session(database=NEO4J_DATABASE) as session:
+        return session.execute_read(
+            lambda tx: list(tx.run(query, parameters or {}).data())
+        )
+
+
+def get_neo4j_server_version(driver) -> Optional[str]:
+    rows = neo4j_execute_read(
+        driver,
+        "CALL dbms.components() YIELD versions RETURN versions[0] AS version LIMIT 1",
+    )
+    if not rows:
+        return None
+    return str(rows[0].get("version")) if rows[0].get("version") is not None else None
+
+
+def count_neo4j_by_type(
+    driver, vertex_types: List[str], edge_types: List[str]
+) -> Tuple[Dict[str, int], Dict[str, int]]:
+    node_counts: Dict[str, int] = {}
+    edge_counts: Dict[str, int] = {}
+    for label in vertex_types:
+        rows = neo4j_execute_read(driver, f"MATCH (n:{label}) RETURN count(n) AS count")
+        node_counts[label] = int(rows[0].get("count", 0)) if rows else 0
+    for label in edge_types:
+        rows = neo4j_execute_read(
+            driver,
+            f"MATCH ()-[r:{label}]->() RETURN count(r) AS count",
+        )
+        edge_counts[label] = int(rows[0].get("count", 0)) if rows else 0
+    return node_counts, edge_counts
+
+
 def ladybug_insert_vertices(conn, label: str, rows: List[Dict[str, Any]]):
     if not rows:
         return
@@ -741,6 +1198,59 @@ def ladybug_insert_edges(
             f"CREATE (a)-[:{edge_type}{prop_sql}]->(b)"
         )
     conn.execute(";".join(statements))
+
+
+def create_neo4j_schema(driver) -> None:
+    for label in ARCADE_VERTEX_TYPES:
+        neo4j_execute_write(
+            driver,
+            (
+                f"CREATE CONSTRAINT {label.lower()}_id_unique IF NOT EXISTS "
+                f"FOR (n:{label}) REQUIRE n.Id IS UNIQUE"
+            ),
+        )
+
+
+def neo4j_insert_vertices(driver, label: str, rows: List[Dict[str, Any]]):
+    if not rows:
+        return
+    neo4j_execute_write(
+        driver,
+        f"UNWIND $rows AS row CREATE (n:{label}) SET n += row",
+        {"rows": rows},
+    )
+
+
+def neo4j_insert_edges(
+    driver,
+    edge_type: str,
+    from_label: str,
+    to_label: str,
+    rows: List[Dict[str, Any]],
+    prop_keys: List[str],
+):
+    if not rows:
+        return
+    payload_rows = []
+    for row in rows:
+        payload_rows.append(
+            {
+                "from_id": row.get("from_id"),
+                "to_id": row.get("to_id"),
+                "props": {
+                    key: row.get(key) for key in prop_keys if row.get(key) is not None
+                },
+            }
+        )
+    neo4j_execute_write(
+        driver,
+        (
+            f"UNWIND $rows AS row "
+            f"MATCH (a:{from_label} {{Id: row.from_id}}), (b:{to_label} {{Id: row.to_id}}) "
+            f"CREATE (a)-[r:{edge_type}]->(b) SET r += row.props"
+        ),
+        {"rows": payload_rows},
+    )
 
 
 def load_graph_arcadedb(
@@ -2397,6 +2907,1228 @@ def create_edges_ladybug_linked_to(
             ["LinkTypeId", "CreationDate"],
         )
     return time.time() - start
+
+
+def load_graph_neo4j(
+    driver,
+    data_dir: Path,
+    batch_size: int,
+) -> Tuple[dict, dict]:
+    stats = {"nodes": {}, "edges": {}}
+    ids = {
+        "users": [],
+        "questions": [],
+        "answers": [],
+        "tags": [],
+        "badges": [],
+        "comments": [],
+    }
+    max_ids = {
+        "user": 0,
+        "question": 0,
+        "answer": 0,
+        "badge": 0,
+        "comment": 0,
+    }
+    tag_map: Dict[str, int] = {}
+    question_ids: set[int] = set()
+    answer_ids: set[int] = set()
+    user_ids: set[int] = set()
+    badge_ids: set[int] = set()
+    comment_ids: set[int] = set()
+
+    def flush_nodes(label: str, batch: List[Dict[str, Any]]) -> float:
+        if not batch:
+            return 0.0
+        start = time.time()
+        neo4j_insert_vertices(driver, label, batch)
+        return time.time() - start
+
+    batch: List[Dict[str, Any]] = []
+    stats["nodes"]["Tag"] = 0.0
+    for attrs in iter_xml_rows(data_dir / "Tags.xml"):
+        tag_id = parse_int(attrs.get("Id"))
+        tag_name = attrs.get("TagName")
+        if tag_id is None or tag_name is None:
+            continue
+        tag_map[tag_name] = tag_id
+        ids["tags"].append(tag_id)
+        batch.append(
+            {"Id": tag_id, "TagName": tag_name, "Count": parse_int(attrs.get("Count"))}
+        )
+        if len(batch) >= batch_size:
+            stats["nodes"]["Tag"] += flush_nodes("Tag", batch)
+            batch = []
+    if batch:
+        stats["nodes"]["Tag"] += flush_nodes("Tag", batch)
+
+    batch = []
+    stats["nodes"]["User"] = 0.0
+    for attrs in iter_xml_rows(data_dir / "Users.xml"):
+        user_id = parse_int(attrs.get("Id"))
+        if user_id is None:
+            continue
+        max_ids["user"] = max(max_ids["user"], user_id)
+        ids["users"].append(user_id)
+        user_ids.add(user_id)
+        batch.append(
+            {
+                "Id": user_id,
+                "DisplayName": attrs.get("DisplayName"),
+                "Reputation": parse_int(attrs.get("Reputation")),
+                "CreationDate": to_epoch_millis(
+                    parse_datetime(attrs.get("CreationDate"))
+                ),
+                "Views": parse_int(attrs.get("Views")),
+                "UpVotes": parse_int(attrs.get("UpVotes")),
+                "DownVotes": parse_int(attrs.get("DownVotes")),
+            }
+        )
+        if len(batch) >= batch_size:
+            stats["nodes"]["User"] += flush_nodes("User", batch)
+            batch = []
+    if batch:
+        stats["nodes"]["User"] += flush_nodes("User", batch)
+
+    batch_questions: List[Dict[str, Any]] = []
+    batch_answers: List[Dict[str, Any]] = []
+    stats["nodes"]["Question"] = 0.0
+    stats["nodes"]["Answer"] = 0.0
+    for attrs in iter_xml_rows(data_dir / "Posts.xml"):
+        post_id = parse_int(attrs.get("Id"))
+        post_type = parse_int(attrs.get("PostTypeId"))
+        if post_id is None or post_type is None:
+            continue
+        if post_type == 1:
+            max_ids["question"] = max(max_ids["question"], post_id)
+            ids["questions"].append(post_id)
+            question_ids.add(post_id)
+            batch_questions.append(
+                {
+                    "Id": post_id,
+                    "Title": attrs.get("Title"),
+                    "Body": attrs.get("Body"),
+                    "Score": parse_int(attrs.get("Score")),
+                    "ViewCount": parse_int(attrs.get("ViewCount")),
+                    "CreationDate": to_epoch_millis(
+                        parse_datetime(attrs.get("CreationDate"))
+                    ),
+                    "AnswerCount": parse_int(attrs.get("AnswerCount")),
+                    "CommentCount": parse_int(attrs.get("CommentCount")),
+                    "FavoriteCount": parse_int(attrs.get("FavoriteCount")),
+                }
+            )
+        elif post_type == 2:
+            max_ids["answer"] = max(max_ids["answer"], post_id)
+            ids["answers"].append(post_id)
+            answer_ids.add(post_id)
+            batch_answers.append(
+                {
+                    "Id": post_id,
+                    "Body": attrs.get("Body"),
+                    "Score": parse_int(attrs.get("Score")),
+                    "CreationDate": to_epoch_millis(
+                        parse_datetime(attrs.get("CreationDate"))
+                    ),
+                    "CommentCount": parse_int(attrs.get("CommentCount")),
+                }
+            )
+        if len(batch_questions) >= batch_size:
+            stats["nodes"]["Question"] += flush_nodes("Question", batch_questions)
+            batch_questions = []
+        if len(batch_answers) >= batch_size:
+            stats["nodes"]["Answer"] += flush_nodes("Answer", batch_answers)
+            batch_answers = []
+    if batch_questions:
+        stats["nodes"]["Question"] += flush_nodes("Question", batch_questions)
+    if batch_answers:
+        stats["nodes"]["Answer"] += flush_nodes("Answer", batch_answers)
+
+    batch = []
+    stats["nodes"]["Badge"] = 0.0
+    for attrs in iter_xml_rows(data_dir / "Badges.xml"):
+        badge_id = parse_int(attrs.get("Id"))
+        if badge_id is None:
+            continue
+        max_ids["badge"] = max(max_ids["badge"], badge_id)
+        ids["badges"].append(badge_id)
+        badge_ids.add(badge_id)
+        batch.append(
+            {
+                "Id": badge_id,
+                "Name": attrs.get("Name"),
+                "Date": to_epoch_millis(parse_datetime(attrs.get("Date"))),
+                "Class": parse_int(attrs.get("Class")),
+            }
+        )
+        if len(batch) >= batch_size:
+            stats["nodes"]["Badge"] += flush_nodes("Badge", batch)
+            batch = []
+    if batch:
+        stats["nodes"]["Badge"] += flush_nodes("Badge", batch)
+
+    batch = []
+    stats["nodes"]["Comment"] = 0.0
+    for attrs in iter_xml_rows(data_dir / "Comments.xml"):
+        comment_id = parse_int(attrs.get("Id"))
+        if comment_id is None:
+            continue
+        max_ids["comment"] = max(max_ids["comment"], comment_id)
+        ids["comments"].append(comment_id)
+        comment_ids.add(comment_id)
+        batch.append(
+            {
+                "Id": comment_id,
+                "Text": attrs.get("Text"),
+                "Score": parse_int(attrs.get("Score")),
+                "CreationDate": to_epoch_millis(
+                    parse_datetime(attrs.get("CreationDate"))
+                ),
+            }
+        )
+        if len(batch) >= batch_size:
+            stats["nodes"]["Comment"] += flush_nodes("Comment", batch)
+            batch = []
+    if batch:
+        stats["nodes"]["Comment"] += flush_nodes("Comment", batch)
+
+    stats["edges"]["ASKED"] = create_edges_neo4j_asked(
+        driver, data_dir, user_ids, question_ids, batch_size
+    )
+    stats["edges"]["ANSWERED"] = create_edges_neo4j_answered(
+        driver, data_dir, user_ids, answer_ids, batch_size
+    )
+    stats["edges"]["HAS_ANSWER"] = create_edges_neo4j_has_answer(
+        driver, data_dir, question_ids, answer_ids, batch_size
+    )
+    stats["edges"]["ACCEPTED_ANSWER"] = create_edges_neo4j_accepted_answer(
+        driver, data_dir, question_ids, answer_ids, batch_size
+    )
+    stats["edges"]["TAGGED_WITH"] = create_edges_neo4j_tagged_with(
+        driver, data_dir, tag_map, question_ids, batch_size
+    )
+    stats["edges"].update(
+        create_edges_neo4j_commented_on(
+            driver, data_dir, comment_ids, question_ids, answer_ids, batch_size
+        )
+    )
+    stats["edges"]["EARNED"] = create_edges_neo4j_earned(
+        driver, data_dir, user_ids, badge_ids, batch_size
+    )
+    stats["edges"]["LINKED_TO"] = create_edges_neo4j_linked_to(
+        driver, data_dir, question_ids, batch_size
+    )
+
+    return stats, {"ids": ids, "max_ids": max_ids}
+
+
+def create_edges_neo4j_asked(
+    driver, data_dir: Path, user_ids: set[int], question_ids: set[int], batch_size: int
+) -> float:
+    start = time.time()
+    batch: List[Dict[str, Any]] = []
+    for attrs in iter_xml_rows(data_dir / "Posts.xml"):
+        if parse_int(attrs.get("PostTypeId")) != 1:
+            continue
+        user_id = parse_int(attrs.get("OwnerUserId"))
+        post_id = parse_int(attrs.get("Id"))
+        if (
+            user_id is None
+            or post_id is None
+            or user_id not in user_ids
+            or post_id not in question_ids
+        ):
+            continue
+        batch.append(
+            {
+                "from_id": user_id,
+                "to_id": post_id,
+                "CreationDate": to_epoch_millis(
+                    parse_datetime(attrs.get("CreationDate"))
+                ),
+            }
+        )
+        if len(batch) >= batch_size:
+            neo4j_insert_edges(
+                driver, "ASKED", "User", "Question", batch, ["CreationDate"]
+            )
+            batch = []
+    if batch:
+        neo4j_insert_edges(driver, "ASKED", "User", "Question", batch, ["CreationDate"])
+    return time.time() - start
+
+
+def create_edges_neo4j_answered(
+    driver, data_dir: Path, user_ids: set[int], answer_ids: set[int], batch_size: int
+) -> float:
+    start = time.time()
+    batch: List[Dict[str, Any]] = []
+    for attrs in iter_xml_rows(data_dir / "Posts.xml"):
+        if parse_int(attrs.get("PostTypeId")) != 2:
+            continue
+        user_id = parse_int(attrs.get("OwnerUserId"))
+        post_id = parse_int(attrs.get("Id"))
+        if (
+            user_id is None
+            or post_id is None
+            or user_id not in user_ids
+            or post_id not in answer_ids
+        ):
+            continue
+        batch.append(
+            {
+                "from_id": user_id,
+                "to_id": post_id,
+                "CreationDate": to_epoch_millis(
+                    parse_datetime(attrs.get("CreationDate"))
+                ),
+            }
+        )
+        if len(batch) >= batch_size:
+            neo4j_insert_edges(
+                driver, "ANSWERED", "User", "Answer", batch, ["CreationDate"]
+            )
+            batch = []
+    if batch:
+        neo4j_insert_edges(
+            driver, "ANSWERED", "User", "Answer", batch, ["CreationDate"]
+        )
+    return time.time() - start
+
+
+def create_edges_neo4j_has_answer(
+    driver,
+    data_dir: Path,
+    question_ids: set[int],
+    answer_ids: set[int],
+    batch_size: int,
+) -> float:
+    start = time.time()
+    batch: List[Dict[str, Any]] = []
+    for attrs in iter_xml_rows(data_dir / "Posts.xml"):
+        if parse_int(attrs.get("PostTypeId")) != 2:
+            continue
+        parent_id = parse_int(attrs.get("ParentId"))
+        answer_id = parse_int(attrs.get("Id"))
+        if (
+            parent_id is None
+            or answer_id is None
+            or parent_id not in question_ids
+            or answer_id not in answer_ids
+        ):
+            continue
+        batch.append({"from_id": parent_id, "to_id": answer_id})
+        if len(batch) >= batch_size:
+            neo4j_insert_edges(driver, "HAS_ANSWER", "Question", "Answer", batch, [])
+            batch = []
+    if batch:
+        neo4j_insert_edges(driver, "HAS_ANSWER", "Question", "Answer", batch, [])
+    return time.time() - start
+
+
+def create_edges_neo4j_accepted_answer(
+    driver,
+    data_dir: Path,
+    question_ids: set[int],
+    answer_ids: set[int],
+    batch_size: int,
+) -> float:
+    start = time.time()
+    batch: List[Dict[str, Any]] = []
+    for attrs in iter_xml_rows(data_dir / "Posts.xml"):
+        if parse_int(attrs.get("PostTypeId")) != 1:
+            continue
+        question_id = parse_int(attrs.get("Id"))
+        answer_id = parse_int(attrs.get("AcceptedAnswerId"))
+        if (
+            question_id is None
+            or answer_id is None
+            or question_id not in question_ids
+            or answer_id not in answer_ids
+        ):
+            continue
+        batch.append({"from_id": question_id, "to_id": answer_id})
+        if len(batch) >= batch_size:
+            neo4j_insert_edges(
+                driver, "ACCEPTED_ANSWER", "Question", "Answer", batch, []
+            )
+            batch = []
+    if batch:
+        neo4j_insert_edges(driver, "ACCEPTED_ANSWER", "Question", "Answer", batch, [])
+    return time.time() - start
+
+
+def create_edges_neo4j_tagged_with(
+    driver,
+    data_dir: Path,
+    tag_map: Dict[str, int],
+    question_ids: set[int],
+    batch_size: int,
+) -> float:
+    start = time.time()
+    batch: List[Dict[str, Any]] = []
+    for attrs in iter_xml_rows(data_dir / "Posts.xml"):
+        if parse_int(attrs.get("PostTypeId")) != 1:
+            continue
+        question_id = parse_int(attrs.get("Id"))
+        if question_id is None or question_id not in question_ids:
+            continue
+        for tag in parse_tags(attrs.get("Tags")):
+            tag_id = tag_map.get(tag)
+            if tag_id is None:
+                continue
+            batch.append({"from_id": question_id, "to_id": tag_id})
+            if len(batch) >= batch_size:
+                neo4j_insert_edges(driver, "TAGGED_WITH", "Question", "Tag", batch, [])
+                batch = []
+    if batch:
+        neo4j_insert_edges(driver, "TAGGED_WITH", "Question", "Tag", batch, [])
+    return time.time() - start
+
+
+def create_edges_neo4j_commented_on(
+    driver,
+    data_dir: Path,
+    comment_ids: set[int],
+    question_ids: set[int],
+    answer_ids: set[int],
+    batch_size: int,
+) -> Dict[str, float]:
+    start = time.time()
+    batch_question: List[Dict[str, Any]] = []
+    batch_answer: List[Dict[str, Any]] = []
+    for attrs in iter_xml_rows(data_dir / "Comments.xml"):
+        comment_id = parse_int(attrs.get("Id"))
+        post_id = parse_int(attrs.get("PostId"))
+        if comment_id is None or post_id is None or comment_id not in comment_ids:
+            continue
+        payload = {
+            "from_id": comment_id,
+            "to_id": post_id,
+            "CreationDate": to_epoch_millis(parse_datetime(attrs.get("CreationDate"))),
+            "Score": parse_int(attrs.get("Score")),
+        }
+        if post_id in question_ids:
+            batch_question.append(payload)
+        elif post_id in answer_ids:
+            batch_answer.append(payload)
+        else:
+            continue
+        if len(batch_question) >= batch_size:
+            neo4j_insert_edges(
+                driver,
+                "COMMENTED_ON",
+                "Comment",
+                "Question",
+                batch_question,
+                ["CreationDate", "Score"],
+            )
+            batch_question = []
+        if len(batch_answer) >= batch_size:
+            neo4j_insert_edges(
+                driver,
+                "COMMENTED_ON_ANSWER",
+                "Comment",
+                "Answer",
+                batch_answer,
+                ["CreationDate", "Score"],
+            )
+            batch_answer = []
+    if batch_question:
+        neo4j_insert_edges(
+            driver,
+            "COMMENTED_ON",
+            "Comment",
+            "Question",
+            batch_question,
+            ["CreationDate", "Score"],
+        )
+    if batch_answer:
+        neo4j_insert_edges(
+            driver,
+            "COMMENTED_ON_ANSWER",
+            "Comment",
+            "Answer",
+            batch_answer,
+            ["CreationDate", "Score"],
+        )
+    elapsed = time.time() - start
+    return {"COMMENTED_ON": elapsed, "COMMENTED_ON_ANSWER": elapsed}
+
+
+def create_edges_neo4j_earned(
+    driver, data_dir: Path, user_ids: set[int], badge_ids: set[int], batch_size: int
+) -> float:
+    start = time.time()
+    batch: List[Dict[str, Any]] = []
+    for attrs in iter_xml_rows(data_dir / "Badges.xml"):
+        user_id = parse_int(attrs.get("UserId"))
+        badge_id = parse_int(attrs.get("Id"))
+        if (
+            user_id is None
+            or badge_id is None
+            or user_id not in user_ids
+            or badge_id not in badge_ids
+        ):
+            continue
+        batch.append(
+            {
+                "from_id": user_id,
+                "to_id": badge_id,
+                "Date": to_epoch_millis(parse_datetime(attrs.get("Date"))),
+                "Class": parse_int(attrs.get("Class")),
+            }
+        )
+        if len(batch) >= batch_size:
+            neo4j_insert_edges(
+                driver, "EARNED", "User", "Badge", batch, ["Date", "Class"]
+            )
+            batch = []
+    if batch:
+        neo4j_insert_edges(driver, "EARNED", "User", "Badge", batch, ["Date", "Class"])
+    return time.time() - start
+
+
+def create_edges_neo4j_linked_to(
+    driver, data_dir: Path, question_ids: set[int], batch_size: int
+) -> float:
+    start = time.time()
+    batch: List[Dict[str, Any]] = []
+    for attrs in iter_xml_rows(data_dir / "PostLinks.xml"):
+        post_id = parse_int(attrs.get("PostId"))
+        related_id = parse_int(attrs.get("RelatedPostId"))
+        if (
+            post_id is None
+            or related_id is None
+            or post_id not in question_ids
+            or related_id not in question_ids
+        ):
+            continue
+        batch.append(
+            {
+                "from_id": post_id,
+                "to_id": related_id,
+                "LinkTypeId": parse_int(attrs.get("LinkTypeId")),
+                "CreationDate": to_epoch_millis(
+                    parse_datetime(attrs.get("CreationDate"))
+                ),
+            }
+        )
+        if len(batch) >= batch_size:
+            neo4j_insert_edges(
+                driver,
+                "LINKED_TO",
+                "Question",
+                "Question",
+                batch,
+                ["LinkTypeId", "CreationDate"],
+            )
+            batch = []
+    if batch:
+        neo4j_insert_edges(
+            driver,
+            "LINKED_TO",
+            "Question",
+            "Question",
+            batch,
+            ["LinkTypeId", "CreationDate"],
+        )
+    return time.time() - start
+
+
+def _neo4j_count_total(driver, query: str) -> int:
+    rows = neo4j_execute_read(driver, query)
+    if not rows:
+        return 0
+    row = rows[0] or {}
+    if "count" in row:
+        return int(row["count"] or 0)
+    first_value = next(iter(row.values()), 0)
+    return int(first_value or 0)
+
+
+def run_graph_oltp_neo4j(
+    db_path: Path,
+    data_dir: Path,
+    batch_size: int,
+    transactions: int,
+    threads: int,
+    seed: int,
+    mem_limit: str,
+    server_cpus: float,
+) -> dict:
+    if get_neo4j_module() is None:
+        raise RuntimeError("neo4j Python driver is not installed")
+
+    if db_path.exists():
+        shutil.rmtree(db_path)
+    db_path.mkdir(parents=True, exist_ok=True)
+
+    service = start_neo4j_service(db_path, mem_limit, server_cpus)
+    driver = service["driver"]
+    memory_stop_event, memory_state, memory_thread = start_combined_rss_sampler(
+        lambda: docker_container_rss_kb(service.get("container_name", "")),
+    )
+    try:
+        print("Creating schema...")
+        schema_start = time.time()
+        create_neo4j_schema(driver)
+        neo4j_constraint_time = time.time() - schema_start
+        schema_time = 0.0
+
+        print("Loading graph...")
+        load_start = time.time()
+        load_stats, load_info = load_graph_neo4j(driver, data_dir, batch_size)
+        load_time = time.time() - load_start
+        load_stats.setdefault("indexes", {})["id_unique"] = neo4j_constraint_time
+
+        disk_after_load = get_dir_size_bytes(db_path)
+
+        load_counts_start = time.time()
+        load_node_counts_by_type, load_edge_counts_by_type = count_neo4j_by_type(
+            driver,
+            ARCADE_VERTEX_TYPES,
+            ARCADE_EDGE_TYPES,
+        )
+        load_counts_time = time.time() - load_counts_start
+        load_node_count = sum(load_node_counts_by_type.values())
+        load_edge_count = sum(load_edge_counts_by_type.values())
+        print(
+            "Load counts: "
+            f"nodes={load_node_count:,}, "
+            f"edges={load_edge_count:,} "
+            f"(time={load_counts_time:.2f}s)"
+        )
+        print(format_counts_by_type("Load nodes by type", load_node_counts_by_type))
+        print(format_counts_by_type("Load edges by type", load_edge_counts_by_type))
+
+        id_lock = threading.Lock()
+        write_lock = contextlib.nullcontext()
+        user_ids = load_info["ids"]["users"]
+        question_ids = load_info["ids"]["questions"]
+        answer_ids = load_info["ids"]["answers"]
+        tag_ids = load_info["ids"]["tags"]
+        badge_ids = load_info["ids"]["badges"]
+        comment_ids = load_info["ids"]["comments"]
+        next_user_id = load_info["max_ids"]["user"] + 1
+        next_question_id = load_info["max_ids"]["question"] + 1
+        next_answer_id = load_info["max_ids"]["answer"] + 1
+        next_badge_id = load_info["max_ids"]["badge"] + 1
+        next_comment_id = load_info["max_ids"]["comment"] + 1
+
+        def worker(ops: List[str], worker_id: int) -> Dict[str, List[float]]:
+            rng = random.Random(seed + worker_id)
+            latencies = {"read": [], "update": [], "insert": [], "delete": []}
+            nonlocal next_user_id
+            nonlocal next_question_id
+            nonlocal next_answer_id
+            nonlocal next_badge_id
+            nonlocal next_comment_id
+
+            for op in ops:
+                start_time = time.perf_counter()
+                if op == "read":
+                    read_kind = rng.choice(READ_TARGET_KINDS)
+                    if read_kind == "user":
+                        with id_lock:
+                            target_id = rng.choice(user_ids) if user_ids else None
+                        if target_id is not None:
+                            neo4j_execute_read(
+                                driver,
+                                "MATCH (u:User {Id: $id})-[:ASKED|ANSWERED]->(p) RETURN p.Id LIMIT 1",
+                                {"id": target_id},
+                            )
+                    elif read_kind == "question":
+                        with id_lock:
+                            target_id = (
+                                rng.choice(question_ids) if question_ids else None
+                            )
+                        if target_id is not None:
+                            neo4j_execute_read(
+                                driver,
+                                "MATCH (q:Question {Id: $id})-[:TAGGED_WITH]->(t:Tag) RETURN t.Id LIMIT 1",
+                                {"id": target_id},
+                            )
+                    elif read_kind == "answer":
+                        with id_lock:
+                            target_id = rng.choice(answer_ids) if answer_ids else None
+                        if target_id is not None:
+                            neo4j_execute_read(
+                                driver,
+                                "MATCH (a:Answer {Id: $id})<-[:COMMENTED_ON_ANSWER]-(c:Comment) RETURN c.Id LIMIT 1",
+                                {"id": target_id},
+                            )
+                    elif read_kind == "tag":
+                        with id_lock:
+                            target_id = rng.choice(tag_ids) if tag_ids else None
+                        if target_id is not None:
+                            neo4j_execute_read(
+                                driver,
+                                "MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag {Id: $id}) RETURN q.Id LIMIT 1",
+                                {"id": target_id},
+                            )
+                    elif read_kind == "comment":
+                        with id_lock:
+                            target_id = rng.choice(comment_ids) if comment_ids else None
+                        if target_id is not None:
+                            neo4j_execute_read(
+                                driver,
+                                "MATCH (c:Comment {Id: $id})-[r:COMMENTED_ON|COMMENTED_ON_ANSWER]->(p) RETURN p.Id LIMIT 1",
+                                {"id": target_id},
+                            )
+                    elif read_kind == "edge_sample":
+                        neo4j_execute_read(
+                            driver,
+                            "MATCH ()-[r:ASKED|ANSWERED|HAS_ANSWER|ACCEPTED_ANSWER|TAGGED_WITH|COMMENTED_ON|COMMENTED_ON_ANSWER|EARNED|LINKED_TO]->() RETURN r LIMIT 1",
+                        )
+                    else:
+                        with id_lock:
+                            target_id = rng.choice(badge_ids) if badge_ids else None
+                        if target_id is not None:
+                            neo4j_execute_read(
+                                driver,
+                                "MATCH (u:User)-[:EARNED]->(b:Badge {Id: $id}) RETURN u.Id LIMIT 1",
+                                {"id": target_id},
+                            )
+                elif op == "update":
+                    with write_lock:
+                        update_kind = rng.choice(UPDATE_TARGET_KINDS)
+                        target_id = None
+                        if update_kind in {
+                            "question",
+                            "answer",
+                            "comment",
+                            "tag",
+                            "user",
+                        }:
+                            with id_lock:
+                                if update_kind == "question":
+                                    target_id = (
+                                        rng.choice(question_ids)
+                                        if question_ids
+                                        else None
+                                    )
+                                elif update_kind == "answer":
+                                    target_id = (
+                                        rng.choice(answer_ids) if answer_ids else None
+                                    )
+                                elif update_kind == "comment":
+                                    target_id = (
+                                        rng.choice(comment_ids) if comment_ids else None
+                                    )
+                                elif update_kind == "tag":
+                                    target_id = rng.choice(tag_ids) if tag_ids else None
+                                else:
+                                    target_id = (
+                                        rng.choice(user_ids) if user_ids else None
+                                    )
+                        if target_id is not None:
+                            query_map = {
+                                "question": "MATCH (q:Question {Id: $id}) SET q.Score = coalesce(q.Score, 0) + 1",
+                                "answer": "MATCH (a:Answer {Id: $id}) SET a.Score = coalesce(a.Score, 0) + 1",
+                                "comment": "MATCH (c:Comment {Id: $id}) SET c.Score = coalesce(c.Score, 0) + 1",
+                                "tag": "MATCH (t:Tag {Id: $id}) SET t.Count = coalesce(t.Count, 0) + 1",
+                                "user": "MATCH (u:User {Id: $id}) SET u.Reputation = coalesce(u.Reputation, 0) + 1",
+                            }
+                            neo4j_execute_write(
+                                driver, query_map[update_kind], {"id": target_id}
+                            )
+                        elif update_kind == "asked_edge":
+                            with id_lock:
+                                user_id = rng.choice(user_ids) if user_ids else None
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                            if user_id is not None and question_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (u:User {Id: $uid})-[r:ASKED]->(q:Question {Id: $qid}) SET r.CreationDate = coalesce(r.CreationDate, 0) + 1",
+                                    {"uid": user_id, "qid": question_id},
+                                )
+                        elif update_kind == "answered_edge":
+                            with id_lock:
+                                user_id = rng.choice(user_ids) if user_ids else None
+                                answer_id = (
+                                    rng.choice(answer_ids) if answer_ids else None
+                                )
+                            if user_id is not None and answer_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (u:User {Id: $uid})-[r:ANSWERED]->(a:Answer {Id: $aid}) SET r.CreationDate = coalesce(r.CreationDate, 0) + 1",
+                                    {"uid": user_id, "aid": answer_id},
+                                )
+                        elif update_kind == "commented_on_edge":
+                            with id_lock:
+                                comment_id = (
+                                    rng.choice(comment_ids) if comment_ids else None
+                                )
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                            if comment_id is not None and question_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (c:Comment {Id: $cid})-[r:COMMENTED_ON]->(q:Question {Id: $qid}) SET r.Score = coalesce(r.Score, 0) + 1",
+                                    {"cid": comment_id, "qid": question_id},
+                                )
+                        elif update_kind == "commented_on_answer_edge":
+                            with id_lock:
+                                comment_id = (
+                                    rng.choice(comment_ids) if comment_ids else None
+                                )
+                                answer_id = (
+                                    rng.choice(answer_ids) if answer_ids else None
+                                )
+                            if comment_id is not None and answer_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (c:Comment {Id: $cid})-[r:COMMENTED_ON_ANSWER]->(a:Answer {Id: $aid}) SET r.Score = coalesce(r.Score, 0) + 1",
+                                    {"cid": comment_id, "aid": answer_id},
+                                )
+                        elif update_kind == "earned_edge":
+                            with id_lock:
+                                user_id = rng.choice(user_ids) if user_ids else None
+                                badge_id = rng.choice(badge_ids) if badge_ids else None
+                            if user_id is not None and badge_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (u:User {Id: $uid})-[r:EARNED]->(b:Badge {Id: $bid}) SET r.Class = coalesce(r.Class, 0) + 1",
+                                    {"uid": user_id, "bid": badge_id},
+                                )
+                        elif update_kind == "linked_to_edge":
+                            with id_lock:
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                                related_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                            if question_id is not None and related_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (q1:Question {Id: $qid})-[r:LINKED_TO]->(q2:Question {Id: $rid}) SET r.LinkTypeId = coalesce(r.LinkTypeId, 0) + 1",
+                                    {"qid": question_id, "rid": related_id},
+                                )
+                elif op == "insert":
+                    with write_lock:
+                        insert_kind = rng.choice(INSERT_TARGET_KINDS)
+                        now_ms = int(time.time() * 1000)
+                        new_user_id: Optional[int] = None
+                        new_question_id: Optional[int] = None
+                        new_answer_id: Optional[int] = None
+                        new_comment_id: Optional[int] = None
+                        new_badge_id: Optional[int] = None
+                        user_id: Optional[int] = None
+                        question_id: Optional[int] = None
+                        tag_id: Optional[int] = None
+                        second_question_id: Optional[int] = None
+                        answer_id: Optional[int] = None
+                        target_kind: Optional[str] = None
+                        target_id: Optional[int] = None
+
+                        with id_lock:
+                            if insert_kind == "user_question":
+                                new_user_id = next_user_id
+                                next_user_id += 1
+                                new_question_id = next_question_id
+                                next_question_id += 1
+                            elif insert_kind == "answer":
+                                new_answer_id = next_answer_id
+                                next_answer_id += 1
+                                user_id = rng.choice(user_ids) if user_ids else None
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                            elif insert_kind == "comment":
+                                new_comment_id = next_comment_id
+                                next_comment_id += 1
+                                if question_ids and (
+                                    not answer_ids or rng.random() < 0.6
+                                ):
+                                    target_kind = "question"
+                                    target_id = rng.choice(question_ids)
+                                elif answer_ids:
+                                    target_kind = "answer"
+                                    target_id = rng.choice(answer_ids)
+                            elif insert_kind == "tag_link":
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                                tag_id = rng.choice(tag_ids) if tag_ids else None
+                            elif insert_kind == "post_link":
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                                second_question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                            elif insert_kind == "accepted_answer":
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                                answer_id = (
+                                    rng.choice(answer_ids) if answer_ids else None
+                                )
+                            else:
+                                new_badge_id = next_badge_id
+                                next_badge_id += 1
+                                user_id = rng.choice(user_ids) if user_ids else None
+
+                        if (
+                            insert_kind == "user_question"
+                            and new_user_id is not None
+                            and new_question_id is not None
+                        ):
+                            neo4j_execute_write(
+                                driver,
+                                "CREATE (u:User {Id: $uid, DisplayName: 'Synthetic', Reputation: 0, CreationDate: $ts}) CREATE (q:Question {Id: $qid, Title: 'Synthetic', Body: 'Synthetic body', Score: 0, CreationDate: $ts}) CREATE (u)-[:ASKED {CreationDate: $ts}]->(q)",
+                                {
+                                    "uid": new_user_id,
+                                    "qid": new_question_id,
+                                    "ts": now_ms,
+                                },
+                            )
+                        elif (
+                            insert_kind == "answer"
+                            and new_answer_id is not None
+                            and user_id is not None
+                            and question_id is not None
+                        ):
+                            neo4j_execute_write(
+                                driver,
+                                "MATCH (u:User {Id: $uid}), (q:Question {Id: $qid}) CREATE (a:Answer {Id: $aid, Body: 'Synthetic answer', Score: 0, CreationDate: $ts, CommentCount: 0}) CREATE (u)-[:ANSWERED {CreationDate: $ts}]->(a) CREATE (q)-[:HAS_ANSWER]->(a)",
+                                {
+                                    "uid": user_id,
+                                    "qid": question_id,
+                                    "aid": new_answer_id,
+                                    "ts": now_ms,
+                                },
+                            )
+                        elif (
+                            insert_kind == "comment"
+                            and new_comment_id is not None
+                            and target_kind is not None
+                            and target_id is not None
+                        ):
+                            if target_kind == "question":
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (q:Question {Id: $target_id}) CREATE (c:Comment {Id: $cid, Text: 'Synthetic comment', Score: 0, CreationDate: $ts}) CREATE (c)-[:COMMENTED_ON {CreationDate: $ts, Score: 0}]->(q)",
+                                    {
+                                        "target_id": target_id,
+                                        "cid": new_comment_id,
+                                        "ts": now_ms,
+                                    },
+                                )
+                            else:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (a:Answer {Id: $target_id}) CREATE (c:Comment {Id: $cid, Text: 'Synthetic comment', Score: 0, CreationDate: $ts}) CREATE (c)-[:COMMENTED_ON_ANSWER {CreationDate: $ts, Score: 0}]->(a)",
+                                    {
+                                        "target_id": target_id,
+                                        "cid": new_comment_id,
+                                        "ts": now_ms,
+                                    },
+                                )
+                        elif (
+                            insert_kind == "tag_link"
+                            and question_id is not None
+                            and tag_id is not None
+                        ):
+                            neo4j_execute_write(
+                                driver,
+                                "MATCH (q:Question {Id: $qid}), (t:Tag {Id: $tid}) CREATE (q)-[:TAGGED_WITH]->(t)",
+                                {"qid": question_id, "tid": tag_id},
+                            )
+                        elif (
+                            insert_kind == "post_link"
+                            and question_id is not None
+                            and second_question_id is not None
+                        ):
+                            neo4j_execute_write(
+                                driver,
+                                "MATCH (q1:Question {Id: $qid}), (q2:Question {Id: $rid}) CREATE (q1)-[:LINKED_TO {LinkTypeId: 1, CreationDate: $ts}]->(q2)",
+                                {
+                                    "qid": question_id,
+                                    "rid": second_question_id,
+                                    "ts": now_ms,
+                                },
+                            )
+                        elif (
+                            insert_kind == "accepted_answer"
+                            and question_id is not None
+                            and answer_id is not None
+                        ):
+                            neo4j_execute_write(
+                                driver,
+                                "MATCH (q:Question {Id: $qid}), (a:Answer {Id: $aid}) CREATE (q)-[:ACCEPTED_ANSWER]->(a)",
+                                {"qid": question_id, "aid": answer_id},
+                            )
+                        elif (
+                            insert_kind == "badge"
+                            and new_badge_id is not None
+                            and user_id is not None
+                        ):
+                            neo4j_execute_write(
+                                driver,
+                                "MATCH (u:User {Id: $uid}) CREATE (b:Badge {Id: $bid, Name: 'SyntheticBadge', Date: $ts, Class: 1}) CREATE (u)-[:EARNED {Date: $ts, Class: 1}]->(b)",
+                                {"uid": user_id, "bid": new_badge_id, "ts": now_ms},
+                            )
+
+                        with id_lock:
+                            if new_user_id is not None:
+                                user_ids.append(new_user_id)
+                            if new_question_id is not None:
+                                question_ids.append(new_question_id)
+                            if new_answer_id is not None:
+                                answer_ids.append(new_answer_id)
+                            if new_comment_id is not None:
+                                comment_ids.append(new_comment_id)
+                            if new_badge_id is not None:
+                                badge_ids.append(new_badge_id)
+                else:
+                    with write_lock:
+                        delete_kind = rng.choice(DELETE_TARGET_KINDS)
+                        node_delete_labels = {
+                            "question": "Question",
+                            "answer": "Answer",
+                            "comment": "Comment",
+                            "badge": "Badge",
+                            "user": "User",
+                            "tag": "Tag",
+                        }
+                        node_id_lists = {
+                            "question": question_ids,
+                            "answer": answer_ids,
+                            "comment": comment_ids,
+                            "badge": badge_ids,
+                            "user": user_ids,
+                            "tag": tag_ids,
+                        }
+                        if delete_kind in node_delete_labels:
+                            with id_lock:
+                                target_list = node_id_lists[delete_kind]
+                                target_id = (
+                                    rng.choice(target_list) if target_list else None
+                                )
+                            if target_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    f"MATCH (n:{node_delete_labels[delete_kind]} {{Id: $id}}) DETACH DELETE n",
+                                    {"id": target_id},
+                                )
+                                with id_lock:
+                                    try:
+                                        target_list.remove(target_id)
+                                    except ValueError:
+                                        pass
+                        elif delete_kind == "asked_edge":
+                            with id_lock:
+                                user_id = rng.choice(user_ids) if user_ids else None
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                            if user_id is not None and question_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (u:User {Id: $uid})-[r:ASKED]->(q:Question {Id: $qid}) DELETE r",
+                                    {"uid": user_id, "qid": question_id},
+                                )
+                        elif delete_kind == "answered_edge":
+                            with id_lock:
+                                user_id = rng.choice(user_ids) if user_ids else None
+                                answer_id = (
+                                    rng.choice(answer_ids) if answer_ids else None
+                                )
+                            if user_id is not None and answer_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (u:User {Id: $uid})-[r:ANSWERED]->(a:Answer {Id: $aid}) DELETE r",
+                                    {"uid": user_id, "aid": answer_id},
+                                )
+                        elif delete_kind == "has_answer_edge":
+                            with id_lock:
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                                answer_id = (
+                                    rng.choice(answer_ids) if answer_ids else None
+                                )
+                            if question_id is not None and answer_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (q:Question {Id: $qid})-[r:HAS_ANSWER]->(a:Answer {Id: $aid}) DELETE r",
+                                    {"qid": question_id, "aid": answer_id},
+                                )
+                        elif delete_kind == "accepted_answer_edge":
+                            with id_lock:
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                                answer_id = (
+                                    rng.choice(answer_ids) if answer_ids else None
+                                )
+                            if question_id is not None and answer_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (q:Question {Id: $qid})-[r:ACCEPTED_ANSWER]->(a:Answer {Id: $aid}) DELETE r",
+                                    {"qid": question_id, "aid": answer_id},
+                                )
+                        elif delete_kind == "tagged_with_edge":
+                            with id_lock:
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                                tag_id = rng.choice(tag_ids) if tag_ids else None
+                            if question_id is not None and tag_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (q:Question {Id: $qid})-[r:TAGGED_WITH]->(t:Tag {Id: $tid}) DELETE r",
+                                    {"qid": question_id, "tid": tag_id},
+                                )
+                        elif delete_kind == "commented_on_edge":
+                            with id_lock:
+                                comment_id = (
+                                    rng.choice(comment_ids) if comment_ids else None
+                                )
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                            if comment_id is not None and question_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (c:Comment {Id: $cid})-[r:COMMENTED_ON]->(q:Question {Id: $qid}) DELETE r",
+                                    {"cid": comment_id, "qid": question_id},
+                                )
+                        elif delete_kind == "commented_on_answer_edge":
+                            with id_lock:
+                                comment_id = (
+                                    rng.choice(comment_ids) if comment_ids else None
+                                )
+                                answer_id = (
+                                    rng.choice(answer_ids) if answer_ids else None
+                                )
+                            if comment_id is not None and answer_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (c:Comment {Id: $cid})-[r:COMMENTED_ON_ANSWER]->(a:Answer {Id: $aid}) DELETE r",
+                                    {"cid": comment_id, "aid": answer_id},
+                                )
+                        elif delete_kind == "earned_edge":
+                            with id_lock:
+                                user_id = rng.choice(user_ids) if user_ids else None
+                                badge_id = rng.choice(badge_ids) if badge_ids else None
+                            if user_id is not None and badge_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (u:User {Id: $uid})-[r:EARNED]->(b:Badge {Id: $bid}) DELETE r",
+                                    {"uid": user_id, "bid": badge_id},
+                                )
+                        elif delete_kind == "linked_to_edge":
+                            with id_lock:
+                                question_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                                related_id = (
+                                    rng.choice(question_ids) if question_ids else None
+                                )
+                            if question_id is not None and related_id is not None:
+                                neo4j_execute_write(
+                                    driver,
+                                    "MATCH (q1:Question {Id: $qid})-[r:LINKED_TO]->(q2:Question {Id: $rid}) DELETE r",
+                                    {"qid": question_id, "rid": related_id},
+                                )
+
+                elapsed = time.perf_counter() - start_time
+                latencies[op].append(elapsed)
+
+            return latencies
+
+        ops = choose_ops(transactions, DEFAULT_OLTP_MIX, seed)
+        chunks = [ops[i::threads] for i in range(threads)]
+
+        print(f"Running OLTP workload ({transactions:,} ops, {threads} threads)...")
+
+        stop_event, rss_state, rss_thread = start_rss_sampler()
+        start_time = time.perf_counter()
+
+        results: Dict[str, List[float]] = {
+            "read": [],
+            "update": [],
+            "insert": [],
+            "delete": [],
+        }
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = [
+                executor.submit(worker, chunk, i) for i, chunk in enumerate(chunks)
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                thread_latencies = future.result()
+                for op_name, vals in thread_latencies.items():
+                    results[op_name].extend(vals)
+
+        total_time = time.perf_counter() - start_time
+        stop_event.set()
+        rss_thread.join()
+
+        disk_after_oltp = get_dir_size_bytes(db_path)
+
+        counts_start = time.time()
+        node_count = _neo4j_count_total(driver, "MATCH (n) RETURN count(n) AS count")
+        edge_count = _neo4j_count_total(
+            driver, "MATCH ()-[r]->() RETURN count(r) AS count"
+        )
+        node_counts_by_type, edge_counts_by_type = count_neo4j_by_type(
+            driver,
+            ARCADE_VERTEX_TYPES,
+            ARCADE_EDGE_TYPES,
+        )
+        counts_time = time.time() - counts_start
+
+        op_counts = {op_name: len(vals) for op_name, vals in results.items()}
+        total_ops = sum(op_counts.values())
+        throughput = total_ops / total_time if total_time > 0 else 0
+
+        memory_stop_event.set()
+        memory_thread.join()
+
+        return {
+            "total_ops": total_ops,
+            "total_time_s": total_time,
+            "throughput_ops_s": throughput,
+            "load_time_s": load_time,
+            "schema_time_s": schema_time,
+            "index_time_s": neo4j_constraint_time,
+            "disk_after_load_bytes": disk_after_load,
+            "disk_after_oltp_bytes": disk_after_oltp,
+            "client_rss_peak_kb": memory_state["client_max_kb"],
+            "server_rss_peak_kb": memory_state["server_max_kb"],
+            "rss_peak_kb": memory_state["combined_max_kb"],
+            "latencies": results,
+            "op_counts": op_counts,
+            "load_stats": load_stats,
+            "load_counts_time_s": load_counts_time,
+            "load_node_count": load_node_count,
+            "load_edge_count": load_edge_count,
+            "load_node_counts_by_type": load_node_counts_by_type,
+            "load_edge_counts_by_type": load_edge_counts_by_type,
+            "counts_time_s": counts_time,
+            "node_count": node_count,
+            "edge_count": edge_count,
+            "node_counts_by_type": node_counts_by_type,
+            "edge_counts_by_type": edge_counts_by_type,
+            "neo4j_version": service.get("server_version"),
+            "neo4j_driver_version": getattr(get_neo4j_module(), "__version__", None),
+            "neo4j_constraint_time_s": neo4j_constraint_time,
+            "neo4j_server_memory_limit": mem_limit,
+            "neo4j_server_cpus": format_cpu_quota(server_cpus),
+        }
+    finally:
+        if not memory_stop_event.is_set():
+            memory_stop_event.set()
+            memory_thread.join()
+        stop_neo4j_service(service)
 
 
 def run_graph_oltp_arcadedb(
@@ -7732,6 +9464,7 @@ def write_results(db_path: Path, args: argparse.Namespace, summary: dict):
     ladybug_module = get_ladybug_module()
     graphqlite_module = get_graphqlite_module()
     duckdb_module = get_duckdb_module()
+    neo4j_module = get_neo4j_module()
     payload = {
         "dataset": args.dataset,
         "db": args.db,
@@ -7739,7 +9472,9 @@ def write_results(db_path: Path, args: argparse.Namespace, summary: dict):
         "transactions": args.transactions,
         "batch_size": args.batch_size,
         "mem_limit": args.mem_limit,
+        "server_fraction": args.server_fraction,
         "heap_size": args.heap_size_effective,
+        "resource_budget": summary.get("resource_budget"),
         "arcadedb_version": (
             getattr(arcadedb_module, "__version__", None)
             if arcadedb_module is not None
@@ -7774,12 +9509,27 @@ def write_results(db_path: Path, args: argparse.Namespace, summary: dict):
                 else None
             ),
         ),
+        "neo4j_version": summary.get(
+            "neo4j_version",
+            None,
+        ),
+        "neo4j_driver_version": summary.get(
+            "neo4j_driver_version",
+            (
+                getattr(neo4j_module, "__version__", None)
+                if neo4j_module is not None
+                else None
+            ),
+        ),
+        "neo4j_server_memory_limit": summary.get("neo4j_server_memory_limit"),
+        "neo4j_server_cpus": summary.get("neo4j_server_cpus"),
         "docker_image": args.docker_image,
         "seed": args.seed,
         "run_label": args.run_label,
         "throughput_ops_s": summary["throughput_ops_s"],
         "total_time_s": summary["total_time_s"],
         "schema_time_s": summary["schema_time_s"],
+        "index_time_s": summary.get("index_time_s"),
         "load_time_s": summary["load_time_s"],
         "load_counts_time_s": summary.get("load_counts_time_s", 0.0),
         "load_node_count": summary.get("load_node_count"),
@@ -7797,9 +9547,22 @@ def write_results(db_path: Path, args: argparse.Namespace, summary: dict):
         "disk_after_oltp_human": format_bytes_binary(summary["disk_after_oltp_bytes"]),
         "rss_peak_kb": summary["rss_peak_kb"],
         "rss_peak_human": format_bytes_binary(summary["rss_peak_kb"] * 1024),
+        "client_rss_peak_kb": summary.get("client_rss_peak_kb"),
+        "client_rss_peak_human": (
+            format_bytes_binary(summary["client_rss_peak_kb"] * 1024)
+            if summary.get("client_rss_peak_kb") is not None
+            else None
+        ),
+        "server_rss_peak_kb": summary.get("server_rss_peak_kb"),
+        "server_rss_peak_human": (
+            format_bytes_binary(summary["server_rss_peak_kb"] * 1024)
+            if summary.get("server_rss_peak_kb") is not None
+            else None
+        ),
         "latency_summary": build_latency_summary(summary["latencies"]),
         "op_counts": summary.get("op_counts"),
         "load_stats": summary.get("load_stats"),
+        "neo4j_constraint_time_s": summary.get("neo4j_constraint_time_s"),
         "run_status": summary.get("run_status", "success"),
         "error_type": summary.get("error_type"),
         "error_message": summary.get("error_message"),
@@ -7879,6 +9642,25 @@ def run_in_docker(args) -> bool:
         if host_uid is not None and host_gid is not None
         else None
     )
+    workspace_mount_src = str(repo_root)
+    workspace_mount_dst = "/workspace"
+    work_dir = "/workspace/bindings/python/examples"
+    extra_run_args: List[str] = []
+
+    if args.db == "neo4j":
+        workspace_mount_dst = str(repo_root)
+        work_dir = str(repo_root / "bindings/python/examples")
+        extra_run_args.extend(
+            [
+                "-v",
+                "/var/run/docker.sock:/var/run/docker.sock",
+                "--pid=host",
+                "--add-host",
+                "host.docker.internal:host-gateway",
+            ]
+        )
+
+    wrapper_mem_limit, wrapper_cpus = backend_client_budget(args)
     filtered_args = []
     skip_next = False
     for arg in sys.argv[1:]:
@@ -7909,30 +9691,55 @@ def run_in_docker(args) -> bool:
             f"/workspace/bindings/python/dist/{wheel_candidates[0].name}"
         )
 
-    packages = ["lxml"]
-    if args.db in ("ladybug", "ladybugdb"):
-        packages.append("real_ladybug")
-    if args.db == "graphqlite":
-        packages.append("graphqlite")
-    if args.db == "duckdb":
-        packages.append("duckdb")
+    if args.db == "neo4j":
+        inner_cmd_parts = [
+            "set -e",
+            "apt-get update",
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-cli",
+            "rm -rf /var/lib/apt/lists/*",
+            "python -m venv /tmp/bench-venv",
+            ". /tmp/bench-venv/bin/activate",
+            *uv_bootstrap_commands("python"),
+            "uv pip install lxml neo4j",
+            "echo 'Starting benchmark...'",
+            f"python -u 09_stackoverflow_graph_oltp.py {' '.join(filtered_args)}",
+        ]
+        if host_uid is not None and host_gid is not None:
+            inner_cmd_parts.insert(
+                1,
+                (
+                    "trap '"
+                    f"chown -R {host_uid}:{host_gid} {work_dir}/my_test_databases || true; "
+                    f"chown -R {host_uid}:{host_gid} {work_dir}/benchmark_results || true"
+                    "' EXIT"
+                ),
+            )
+        inner_cmd = " && ".join(inner_cmd_parts)
+    else:
+        packages = ["lxml"]
+        if args.db in ("ladybug", "ladybugdb"):
+            packages.append("real_ladybug")
+        if args.db == "graphqlite":
+            packages.append("graphqlite")
+        if args.db == "duckdb":
+            packages.append("duckdb")
 
-    packages_str = " ".join(packages)
+        packages_str = " ".join(packages)
 
-    inner_cmd_parts = []
-    python_cmd = "python"
-    inner_cmd_parts.append(f"{python_cmd} -m venv /tmp/bench-venv")
-    inner_cmd_parts.append(". /tmp/bench-venv/bin/activate")
-    inner_cmd_parts.extend(uv_bootstrap_commands(python_cmd))
-    inner_cmd_parts.append(f"uv pip install {packages_str}")
-    if arcadedb_wheel_mount_path is not None:
-        inner_cmd_parts.append(f'uv pip install "{arcadedb_wheel_mount_path}"')
-    inner_cmd_parts.append("echo 'Starting benchmark...'")
-    inner_cmd_parts.append(
-        f"{python_cmd} -u 09_stackoverflow_graph_oltp.py {' '.join(filtered_args)}"
-    )
+        inner_cmd_parts = []
+        python_cmd = "python"
+        inner_cmd_parts.append(f"{python_cmd} -m venv /tmp/bench-venv")
+        inner_cmd_parts.append(". /tmp/bench-venv/bin/activate")
+        inner_cmd_parts.extend(uv_bootstrap_commands(python_cmd))
+        inner_cmd_parts.append(f"uv pip install {packages_str}")
+        if arcadedb_wheel_mount_path is not None:
+            inner_cmd_parts.append(f'uv pip install "{arcadedb_wheel_mount_path}"')
+        inner_cmd_parts.append("echo 'Starting benchmark...'")
+        inner_cmd_parts.append(
+            f"{python_cmd} -u 09_stackoverflow_graph_oltp.py {' '.join(filtered_args)}"
+        )
 
-    inner_cmd = " && ".join(inner_cmd_parts)
+        inner_cmd = " && ".join(inner_cmd_parts)
 
     docker_image = args.docker_image
     if arcadedb_wheel_mount_path is not None and docker_image == "python:3.12-slim":
@@ -7942,25 +9749,26 @@ def run_in_docker(args) -> bool:
         docker,
         "run",
         "--rm",
+        *extra_run_args,
         "--memory",
-        args.mem_limit,
+        wrapper_mem_limit,
         "--cpus",
-        str(args.threads),
+        format_cpu_quota(wrapper_cpus),
         "-e",
         "UV_CACHE_DIR=/tmp/uv-cache",
         "-e",
         "XDG_CACHE_HOME=/tmp",
         "-v",
-        f"{repo_root}:/workspace",
+        f"{workspace_mount_src}:{workspace_mount_dst}",
         "-w",
-        "/workspace/bindings/python/examples",
+        work_dir,
         docker_image,
         "sh",
         "-lc",
         inner_cmd,
     ]
 
-    if user_spec is not None:
+    if user_spec is not None and args.db != "neo4j":
         cmd[3:3] = ["-u", user_spec]
 
     print("Launching Docker container...")
@@ -7985,6 +9793,7 @@ def main():
             "arcadedb_cypher",
             "ladybug",
             "ladybugdb",
+            "neo4j",
             "graphqlite",
             "duckdb",
             "sqlite",
@@ -8024,6 +9833,12 @@ def main():
         help="JVM heap fraction of --mem-limit (default: 0.80)",
     )
     parser.add_argument(
+        "--server-fraction",
+        type=float,
+        default=0.80,
+        help="Server share of total memory/CPU budget for Neo4j (default: 0.80)",
+    )
+    parser.add_argument(
         "--docker-image",
         type=str,
         default="python:3.12-slim",
@@ -8058,6 +9873,8 @@ def main():
         args.run_label = args.run_label.strip().replace("/", "-").replace(" ", "_")
     if args.jvm_heap_fraction <= 0 or args.jvm_heap_fraction > 1:
         parser.error("--jvm-heap-fraction must be > 0 and <= 1")
+    if args.server_fraction <= 0 or args.server_fraction >= 1:
+        parser.error("--server-fraction must be > 0 and < 1")
     if args.verify_single_thread_series and args.threads != 1:
         parser.error("--verify-single-thread-series requires --threads 1")
 
@@ -8075,6 +9892,7 @@ def main():
     )
     args.heap_size_effective = heap_size
     jvm_kwargs = {"heap_size": heap_size}
+    args.resource_budget = budget_allocation_report(args)
 
     data_dir = Path(__file__).parent / "data" / args.dataset
     if not data_dir.exists():
@@ -8097,9 +9915,29 @@ def main():
     print(f"DB: {args.db}")
     if args.db in ("sqlite", "graphqlite"):
         print(f"SQLite profile: {args.sqlite_profile}")
+    if args.db == "neo4j":
+        print(f"Neo4j image: {NEO4J_COMMUNITY_IMAGE}")
     print(f"Threads: {args.threads}")
     print(f"Operations: {args.transactions:,}")
     print(f"Batch size: {args.batch_size}")
+    if args.db == "neo4j":
+        split = args.resource_budget["split"]
+        if "wrapper_client_allocation" in split:
+            print(
+                "Resource split: "
+                f"client={(1.0 - args.server_fraction):.2f}, "
+                f"server={args.server_fraction:.2f}"
+            )
+            print(
+                "Wrapper client allocation: "
+                f"mem={split['wrapper_client_allocation']['memory_limit']}, "
+                f"cpus={split['wrapper_client_allocation']['cpus']}"
+            )
+            print(
+                "Neo4j server allocation: "
+                f"mem={split['server_allocation']['memory_limit']}, "
+                f"cpus={split['server_allocation']['cpus']}"
+            )
     if args.db.startswith("arcadedb_"):
         print(f"JVM heap size: {heap_size}")
         print(f"ArcadeDB OLTP language: {args.db.removeprefix('arcadedb_')}")
@@ -8126,6 +9964,18 @@ def main():
             transactions=args.transactions,
             threads=args.threads,
             seed=args.seed,
+        )
+    elif args.db == "neo4j":
+        neo4j_server_mem_limit, neo4j_server_cpus = backend_server_budget(args)
+        summary = run_graph_oltp_neo4j(
+            db_path=db_path,
+            data_dir=data_dir,
+            batch_size=args.batch_size,
+            transactions=args.transactions,
+            threads=args.threads,
+            seed=args.seed,
+            mem_limit=neo4j_server_mem_limit,
+            server_cpus=neo4j_server_cpus,
         )
     elif args.db == "graphqlite":
         summary = run_graph_oltp_sqlite_layer(
@@ -8168,7 +10018,7 @@ def main():
         )
     else:
         raise NotImplementedError(
-            "Only arcadedb, ladybugdb, graphqlite, duckdb, sqlite, and python_memory are supported"
+            "Only arcadedb, ladybugdb, neo4j, graphqlite, duckdb, sqlite, and python_memory are supported"
         )
 
     print("\nResults")
@@ -8176,6 +10026,8 @@ def main():
     print(f"Throughput: {summary['throughput_ops_s']:.1f} ops/s")
     print(f"Total time: {summary['total_time_s']:.2f}s")
     print(f"Schema time: {summary['schema_time_s']:.2f}s")
+    if summary.get("index_time_s") is not None:
+        print(f"Index time: {summary['index_time_s']:.2f}s")
     print(f"Load time: {summary['load_time_s']:.2f}s")
     if summary.get("load_node_count") is not None:
         print(
@@ -8226,12 +10078,16 @@ def main():
     print(f"Disk after load: {format_bytes_binary(summary['disk_after_load_bytes'])}")
     print(f"Disk after OLTP: {format_bytes_binary(summary['disk_after_oltp_bytes'])}")
     print(f"Peak RSS: {summary['rss_peak_kb'] / 1024:.1f} MB")
+    if summary.get("server_rss_peak_kb") is not None:
+        print(f"Peak client RSS: {summary['client_rss_peak_kb'] / 1024:.1f} MB")
+        print(f"Peak server RSS: {summary['server_rss_peak_kb'] / 1024:.1f} MB")
     print(summary.get("benchmark_scope_note") or BENCHMARK_SCOPE_NOTE)
     print()
 
     summary["benchmark_scope_note"] = (
         summary.get("benchmark_scope_note") or BENCHMARK_SCOPE_NOTE
     )
+    summary["resource_budget"] = args.resource_budget
 
     write_results(db_path, args, summary)
 

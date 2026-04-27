@@ -3,7 +3,7 @@ requires = ["build>=0.7.0", "setuptools>=61.0", "wheel", "jpype1"]
 build-backend = "setuptools.build_meta"
 
 # This file defines the package metadata for arcadedb-embedded.
-# During build, the version is overwritten from parent pom.xml via extract_version.py
+# During build, the version is overwritten from parent pom.xml via scripts/extract_version.py
 
 [project]
 name = "arcadedb-embedded"

@@ -12,5 +12,6 @@ js-language-*.jar
 icu4j-*.jar
 truffle-*.jar
 regex-*.jar
+arcadedb-ha-raft-*.jar
 arcadedb-metrics-*.jar
 arcadedb-mongodbw-*.jar

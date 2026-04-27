@@ -45,3 +45,7 @@ notebooks/
 
 # local built jars
 local-jars/
+.runtime-cache/
+
+# test databases
+my_test_databases/

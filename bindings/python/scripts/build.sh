@@ -9,9 +9,14 @@
 #        docker run --rm -v "$PWD":/src -w /src maven:3.9-amazoncorretto-25 \
 #          sh -c "git config --global --add safe.directory /src && ./mvnw -DskipTests -pl package -am package"
 #   2) Point the build at your JAR directory:
-#        cd bindings/python && ./build.sh linux/amd64 3.12 package/target/arcadedb-*/lib
+#        cd bindings/python && ./scripts/build.sh linux/amd64 3.12 package/target/arcadedb-*/lib
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY_BINDINGS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+cd "$PY_BINDINGS_DIR"
 
 # Colors for output
 RED='\033[0;31m'
@@ -67,7 +72,7 @@ print_usage() {
     echo ""
     echo "Package features:"
     echo "  ✅ Bundled platform-specific JRE (no Java required)"
-    echo "  ✅ Optimized JAR selection (see jar_exclusions.txt)"
+    echo "  ✅ Optimized JAR selection (see scripts/jar_exclusions.txt)"
     echo "  ✅ Multi-platform support (4 platforms)"
     echo "  📦 Size: ~215MB (compressed), ~289MB (installed)"
     echo ""
@@ -123,14 +128,13 @@ if [[ -z "$PLATFORM" ]]; then
 fi
 
 # Auto-detect Docker tag from pom.xml
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo -e "${CYAN}🔍 Detecting version from pom.xml...${NC}"
 DOCKER_TAG=$(python3 "$SCRIPT_DIR/extract_version.py" --format=docker)
 echo -e "${CYAN}📌 Docker tag: ${YELLOW}${DOCKER_TAG}${NC}"
 echo ""
 
 # Select jar source: explicit directory when provided; otherwise pull from ArcadeDB image
-LOCAL_JARS_DIR="$SCRIPT_DIR/local-jars/lib"
+LOCAL_JARS_DIR="$PY_BINDINGS_DIR/local-jars/lib"
 USE_LOCAL_JARS_ARG=""
 LOCAL_JARS_HASH_ARG=""
 JAR_SOURCE_DESC="ArcadeDB image"
@@ -277,7 +281,7 @@ else
         $BUILD_VERSION_ARG \
         --target export \
         -t arcadedb-python-package-export \
-        -f Dockerfile.build \
+        -f "$SCRIPT_DIR/Dockerfile.build" \
         ../..
 
     # Run tests
@@ -294,7 +298,7 @@ else
         $BUILD_VERSION_ARG \
         --target tester \
         -t arcadedb-python-package \
-        -f Dockerfile.build \
+        -f "$SCRIPT_DIR/Dockerfile.build" \
         ../..
 
     # Create dist directory if it doesn't exist

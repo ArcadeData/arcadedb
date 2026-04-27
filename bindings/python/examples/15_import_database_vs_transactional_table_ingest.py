@@ -566,7 +566,7 @@ def run_import_database_load(
                     "documentsFileType = 'csv', "
                     f"documentType = '{table_name}', "
                     f"commitEvery = {batch_size}, "
-                    f"parallel = {parallel}"
+                    f"`parallel` = {parallel}"
                 ),
             ).one()
 

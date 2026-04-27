@@ -7,7 +7,122 @@ developer experience and integration with Python ecosystem (pandas, numpy, etc.)
 
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, NamedTuple
+
+
+class _JavaCoreTypes(NamedTuple):
+    boolean: Any
+    byte: Any
+    character: Any
+    double: Any
+    float_type: Any
+    integer: Any
+    long_type: Any
+    short: Any
+    string: Any
+    big_decimal: Any
+    big_integer: Any
+    java_date: Any
+
+
+class _JavaCollectionTypes(NamedTuple):
+    collection: Any
+    list_type: Any
+    map_type: Any
+    set_type: Any
+
+
+class _PythonToJavaTypes(NamedTuple):
+    array_list: Any
+    big_decimal: Any
+    hash_map: Any
+    hash_set: Any
+    java_date: Any
+    local_date: Any
+
+
+_UNSET = object()
+
+_TYPE_CACHE = {
+    "java_core": None,
+    "java_collections": None,
+    "python_to_java": None,
+}
+
+
+def _get_java_core_types():
+    if (
+        _TYPE_CACHE["java_core"] is not None
+        and _TYPE_CACHE["java_collections"] is not None
+    ):
+        return _TYPE_CACHE["java_core"], _TYPE_CACHE["java_collections"]
+
+    try:
+        from java.lang import (
+            Boolean,
+            Byte,
+            Character,
+            Double,
+            Float,
+            Integer,
+            Long,
+            Short,
+            String,
+        )
+        from java.math import BigDecimal, BigInteger
+        from java.util import Collection as JavaCollection
+        from java.util import Date as JavaDate
+        from java.util import List as JavaList
+        from java.util import Map as JavaMap
+        from java.util import Set as JavaSet
+    except ImportError:
+        return None, None
+
+    _TYPE_CACHE["java_core"] = _JavaCoreTypes(
+        boolean=Boolean,
+        byte=Byte,
+        character=Character,
+        double=Double,
+        float_type=Float,
+        integer=Integer,
+        long_type=Long,
+        short=Short,
+        string=String,
+        big_decimal=BigDecimal,
+        big_integer=BigInteger,
+        java_date=JavaDate,
+    )
+    _TYPE_CACHE["java_collections"] = _JavaCollectionTypes(
+        collection=JavaCollection,
+        list_type=JavaList,
+        map_type=JavaMap,
+        set_type=JavaSet,
+    )
+    return _TYPE_CACHE["java_core"], _TYPE_CACHE["java_collections"]
+
+
+def _get_java_python_types():
+    if _TYPE_CACHE["python_to_java"] is not None:
+        return _TYPE_CACHE["python_to_java"]
+
+    try:
+        from java.math import BigDecimal
+        from java.time import LocalDate
+        from java.util import ArrayList
+        from java.util import Date as JavaDate
+        from java.util import HashMap, HashSet
+    except ImportError:
+        return None
+
+    _TYPE_CACHE["python_to_java"] = _PythonToJavaTypes(
+        array_list=ArrayList,
+        big_decimal=BigDecimal,
+        hash_map=HashMap,
+        hash_set=HashSet,
+        java_date=JavaDate,
+        local_date=LocalDate,
+    )
+    return _TYPE_CACHE["python_to_java"]
 
 
 def convert_java_to_python(value: Any) -> Any:
@@ -39,50 +154,35 @@ def convert_java_to_python(value: Any) -> Any:
     if value is None:
         return None
 
-    try:
-        # Import Java types only when needed (after JVM is started)
-        from java.lang import (
-            Boolean,
-            Byte,
-            Character,
-            Double,
-            Float,
-            Integer,
-            Long,
-            Short,
-            String,
-        )
-        from java.math import BigDecimal, BigInteger
-        from java.util import Collection as JavaCollection
-        from java.util import Date as JavaDate
-        from java.util import List as JavaList
-        from java.util import Map as JavaMap
-        from java.util import Set as JavaSet
-
-        # Primitives and wrappers
-        if isinstance(value, Boolean):
+    java_core_types, java_collection_types = _get_java_core_types()
+    if java_core_types is not None and java_collection_types is not None:
+        if isinstance(value, java_core_types.boolean):
             return bool(value)
-        if isinstance(value, String):
+        if isinstance(value, java_core_types.string):
             return str(value)
-        if isinstance(value, (Integer, Long, Short, Byte)):
+        if isinstance(
+            value,
+            (
+                java_core_types.integer,
+                java_core_types.long_type,
+                java_core_types.short,
+                java_core_types.byte,
+            ),
+        ):
             return int(value)
-        if isinstance(value, (Float, Double)):
+        if isinstance(value, (java_core_types.float_type, java_core_types.double)):
             return float(value)
-        if isinstance(value, Character):
+        if isinstance(value, java_core_types.character):
             return str(value)
 
-        # Numeric types
-        if isinstance(value, BigDecimal):
+        if isinstance(value, java_core_types.big_decimal):
             return Decimal(str(value))
-        if isinstance(value, BigInteger):
+        if isinstance(value, java_core_types.big_integer):
             return int(str(value))
 
-        # Temporal types
-        if isinstance(value, JavaDate):
-            # Java Date uses milliseconds since epoch
+        if isinstance(value, java_core_types.java_date):
             return datetime.fromtimestamp(value.getTime() / 1000.0)
 
-        # Try to import java.time classes (may not be available in all JVMs)
         try:
             from java.time import Instant, LocalDate, LocalDateTime, ZonedDateTime
 
@@ -99,7 +199,7 @@ def convert_java_to_python(value: Any) -> Any:
                     value.getHour(),
                     value.getMinute(),
                     value.getSecond(),
-                    value.getNano() // 1000,  # Convert nanoseconds to microseconds
+                    value.getNano() // 1000,
                 )
 
             if isinstance(value, Instant):
@@ -115,40 +215,32 @@ def convert_java_to_python(value: Any) -> Any:
                     tz=timezone.utc,
                 )
         except ImportError:
-            pass  # java.time not available
+            pass
 
-        # Collections - process recursively
-        if isinstance(value, JavaMap):
+        if isinstance(value, java_collection_types.map_type):
             return {
                 convert_java_to_python(k): convert_java_to_python(v)
                 for k, v in value.items()
             }
 
-        if isinstance(value, JavaSet):
+        if isinstance(value, java_collection_types.set_type):
             return {convert_java_to_python(item) for item in value}
 
-        if isinstance(value, JavaList):
+        if isinstance(value, java_collection_types.list_type):
             return [convert_java_to_python(item) for item in value]
 
-        # Generic collection fallback
-        if isinstance(value, JavaCollection):
+        if isinstance(value, java_collection_types.collection):
             return [convert_java_to_python(item) for item in value]
 
-        # Arrays (JPype converts these to Python sequences)
-        # Check if it looks like a sequence but isn't a string
-        if (
-            hasattr(value, "__len__")
-            and hasattr(value, "__getitem__")
-            and not isinstance(value, (str, bytes))
-        ):
-            try:
-                return [convert_java_to_python(item) for item in value]
-            except (TypeError, AttributeError):
-                pass  # Not iterable after all
-
-    except ImportError:
-        # JVM not started yet or Java classes not available
-        pass
+    if (
+        hasattr(value, "__len__")
+        and hasattr(value, "__getitem__")
+        and not isinstance(value, (str, bytes))
+    ):
+        try:
+            return [convert_java_to_python(item) for item in value]
+        except (TypeError, AttributeError):
+            pass
 
     # Return as-is if no conversion available
     # This could be a Java object like Vertex, Edge, Document, etc.
@@ -172,74 +264,48 @@ def convert_python_to_java(value: Any) -> Any:
     if value is None:
         return None
 
-    # Most basic types are auto-converted by JPype
-    # Special cases that need handling:
+    java_python_types = _get_java_python_types()
 
     if isinstance(value, Decimal):
-        try:
-            from java.math import BigDecimal
-
-            return BigDecimal(str(value))
-        except ImportError:
+        if java_python_types is None:
             return str(value)
+        return java_python_types.big_decimal(str(value))
 
     if isinstance(value, set):
-        # Convert set to list (Java doesn't have a direct set literal)
-        try:
-            from java.util import HashSet
-
-            java_set = HashSet()
-            for item in value:
-                java_set.add(convert_python_to_java(item))
-            return java_set
-        except ImportError:
+        if java_python_types is None:
             return list(value)
+        java_set = java_python_types.hash_set()
+        for item in value:
+            java_set.add(convert_python_to_java(item))
+        return java_set
 
     if isinstance(value, dict):
-        # Convert dict to Java HashMap
-        try:
-            from java.util import HashMap
-
-            java_map = HashMap()
-            for k, v in value.items():
-                java_map.put(convert_python_to_java(k), convert_python_to_java(v))
-            return java_map
-        except ImportError:
+        if java_python_types is None:
             return value
+        java_map = java_python_types.hash_map()
+        for key, item in value.items():
+            java_map.put(convert_python_to_java(key), convert_python_to_java(item))
+        return java_map
 
     if isinstance(value, (list, tuple)):
-        # Convert to Java ArrayList
-        try:
-            from java.util import ArrayList
-
-            java_list = ArrayList()
-            for item in value:
-                java_list.add(convert_python_to_java(item))
-            return java_list
-        except ImportError:
+        if java_python_types is None:
             return value
+        java_list = java_python_types.array_list()
+        for item in value:
+            java_list.add(convert_python_to_java(item))
+        return java_list
 
     if isinstance(value, datetime):
-        # Convert to Java Date
-        try:
-            from java.util import Date as JavaDate
-
-            # Convert to milliseconds since epoch
-            timestamp_ms = int(value.timestamp() * 1000)
-            return JavaDate(timestamp_ms)
-        except ImportError:
+        if java_python_types is None:
             return value
+        timestamp_ms = int(value.timestamp() * 1000)
+        return java_python_types.java_date(timestamp_ms)
 
     if isinstance(value, date):
-        # Convert to LocalDate if available
-        try:
-            from java.time import LocalDate
-
-            return LocalDate.of(value.year, value.month, value.day)
-        except ImportError:
-            # Fallback: convert to datetime then to Java Date
-            dt = datetime.combine(value, time.min)
-            return convert_python_to_java(dt)
+        if java_python_types is not None:
+            return java_python_types.local_date.of(value.year, value.month, value.day)
+        dt = datetime.combine(value, time.min)
+        return convert_python_to_java(dt)
 
     # Return as-is for other types (JPype will handle them)
     return value
