@@ -43,25 +43,22 @@ public class ValueTypeFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
       throw new CommandExecutionException("valueType() requires exactly one argument");
-    if (args[0] == null)
-      return "NULL";
     final Object value = args[0];
-    if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
-      return "INTEGER";
-    if (value instanceof Double || value instanceof Float)
-      return "FLOAT";
-    if (value instanceof String)
-      return "STRING";
-    if (value instanceof Boolean)
-      return "BOOLEAN";
-    if (value instanceof Vertex)
-      return "NODE";
-    if (value instanceof Edge)
-      return "RELATIONSHIP";
-    if (value instanceof List)
-      return "LIST<ANY>";
-    if (value instanceof Map)
-      return "MAP";
-    return value.getClass().getSimpleName().toUpperCase();
+    return switch (value) {
+      case null -> "NULL";
+      case Long l -> "INTEGER NOT NULL";
+      case Integer i -> "INTEGER NOT NULL";
+      case Short s -> "INTEGER NOT NULL";
+      case Byte b -> "INTEGER NOT NULL";
+      case Double d -> "FLOAT NOT NULL";
+      case Float f -> "FLOAT NOT NULL";
+      case String s -> "STRING NOT NULL";
+      case Boolean b -> "BOOLEAN NOT NULL";
+      case Vertex vertex -> "NODE NOT NULL";
+      case Edge edge -> "RELATIONSHIP NOT NULL";
+      case List list -> "LIST<ANY> NOT NULL";
+      case Map map -> "MAP NOT NULL";
+      default -> value.getClass().getSimpleName().toUpperCase() + " NOT NULL";
+    };
   }
 }
