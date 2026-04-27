@@ -425,6 +425,59 @@ public class OpenCypherMergeTest {
     }
   }
 
+  /** Undirected MERGE must find edges regardless of storage direction */
+  @Nested
+  class MergeUndirectedPatternRegression {
+    @Test
+    void undirectedMergeFindsExistingEdgeInReverseOrientation() {
+      // Create alice->bob directed edge
+      database.transaction(() -> {
+        database.command("opencypher",
+            "CREATE (:Person {name: 'Alice'})-[:KNOWS]->(:Person {name: 'Bob'})");
+      });
+
+      // Undirected MERGE with Bob on the left — must match the stored alice->bob edge
+      database.transaction(() -> {
+        database.command("opencypher",
+            "MERGE (x:Person {name: 'Bob'})-[:KNOWS]-(y:Person {name: 'Alice'})");
+      });
+
+      // No new nodes or edges should have been created
+      final ResultSet personCount = database.query("opencypher", "MATCH (p:Person) RETURN count(p) AS cnt");
+      assertThat(((Number) personCount.next().getProperty("cnt")).longValue()).isEqualTo(2L);
+
+      // Directed count to avoid double-counting from undirected match
+      final ResultSet edgeCount = database.query("opencypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS cnt");
+      assertThat(((Number) edgeCount.next().getProperty("cnt")).longValue()).isEqualTo(1L);
+    }
+  }
+
+  /** Pre-bound intermediate node in a multi-hop MERGE must not be bypassed */
+  @Nested
+  class MergeIntermediateBoundNodeRegression {
+    @Test
+    void preBoundIntermediateNodeIsRespectedDuringPathTraversal() {
+      // Setup: alice->dave->carol exists; no alice->bob->carol path yet
+      database.transaction(() -> {
+        database.command("opencypher",
+            "CREATE (alice:Person {name: 'Alice'})-[:KNOWS]->(dave:Person {name: 'Dave'})-[:KNOWS]->(carol:Person {name: 'Carol'}),"
+                + " (bob:Person {name: 'Bob'})");
+      });
+
+      // MATCH binds alice and bob; MERGE the path through bob specifically
+      database.transaction(() -> {
+        database.command("opencypher",
+            "MATCH (alice:Person {name: 'Alice'}), (bob:Person {name: 'Bob'}) "
+                + "MERGE (alice)-[:KNOWS]->(bob)-[:KNOWS]->(carol:Person {name: 'Carol'})");
+      });
+
+      // alice->bob edge must have been created (the dave path must NOT be accepted as a match for bob)
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (:Person {name: 'Alice'})-[r:KNOWS]->(:Person {name: 'Bob'}) RETURN r");
+      assertThat(rs.hasNext()).isTrue();
+    }
+  }
+
   /** See issue #3131 */
   @Nested
   class MatchIdThenMergeRelationshipRegression {

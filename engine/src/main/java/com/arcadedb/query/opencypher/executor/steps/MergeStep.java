@@ -309,10 +309,13 @@ public class MergeStep extends AbstractExecutionStep {
 
     // Determine the vertex at this position
     Vertex vertex = forcedVertex;
-    if (vertex == null && nodePattern.getVariable() != null) {
+    if (nodePattern.getVariable() != null) {
       final Object bound = currentResult.getProperty(nodePattern.getVariable());
-      if (bound instanceof Vertex v)
+      if (bound instanceof Vertex v) {
+        if (vertex != null && !vertex.equals(v))
+          return;
         vertex = v;
+      }
     }
 
     if (nodeIndex == pathPattern.getRelationshipCount()) {
@@ -372,26 +375,33 @@ public class MergeStep extends AbstractExecutionStep {
         if (relProps != null && !matchesProperties(edge, relProps))
           continue;
 
-        final boolean inbound = relPattern.getDirection() == Direction.IN;
-        final Vertex sourceV = inbound
-            ? edge.getVertex(Vertex.DIRECTION.IN) : edge.getVertex(Vertex.DIRECTION.OUT);
-        final Vertex targetV = inbound
-            ? edge.getVertex(Vertex.DIRECTION.OUT) : edge.getVertex(Vertex.DIRECTION.IN);
-
-        if (!matchesNodePattern(sourceV, nodePattern, currentResult))
-          continue;
-
+        final Direction dir = relPattern.getDirection();
         final NodePattern nextPattern = pathPattern.getNode(nodeIndex + 1);
-        if (!matchesNodePattern(targetV, nextPattern, currentResult))
-          continue;
 
-        final ResultInternal stepResult = copyResult(currentResult);
-        if (nodePattern.getVariable() != null)
-          stepResult.setProperty(nodePattern.getVariable(), sourceV);
-        if (relPattern.getVariable() != null)
-          stepResult.setProperty(relPattern.getVariable(), edge);
-
-        traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+        if (dir == Direction.OUT || dir == Direction.BOTH) {
+          final Vertex sourceV = edge.getVertex(Vertex.DIRECTION.OUT);
+          final Vertex targetV = edge.getVertex(Vertex.DIRECTION.IN);
+          if (matchesNodePattern(sourceV, nodePattern, currentResult) && matchesNodePattern(targetV, nextPattern, currentResult)) {
+            final ResultInternal stepResult = copyResult(currentResult);
+            if (nodePattern.getVariable() != null)
+              stepResult.setProperty(nodePattern.getVariable(), sourceV);
+            if (relPattern.getVariable() != null)
+              stepResult.setProperty(relPattern.getVariable(), edge);
+            traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+          }
+        }
+        if (dir == Direction.IN || dir == Direction.BOTH) {
+          final Vertex sourceV = edge.getVertex(Vertex.DIRECTION.IN);
+          final Vertex targetV = edge.getVertex(Vertex.DIRECTION.OUT);
+          if (matchesNodePattern(sourceV, nodePattern, currentResult) && matchesNodePattern(targetV, nextPattern, currentResult)) {
+            final ResultInternal stepResult = copyResult(currentResult);
+            if (nodePattern.getVariable() != null)
+              stepResult.setProperty(nodePattern.getVariable(), sourceV);
+            if (relPattern.getVariable() != null)
+              stepResult.setProperty(relPattern.getVariable(), edge);
+            traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+          }
+        }
       }
     }
   }
@@ -493,10 +503,10 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private boolean matchesNodePattern(final Vertex vertex, final NodePattern nodePattern, final Result result) {
     if (nodePattern.hasLabels()) {
-      final List<String> required = nodePattern.getLabels();
-      final List<String> actual = Labels.getLabels(vertex);
-      if (!actual.containsAll(required))
-        return false;
+      for (final String label : nodePattern.getLabels()) {
+        if (!Labels.hasLabel(vertex, label))
+          return false;
+      }
     }
     if (nodePattern.hasProperties()) {
       final Map<String, Object> props = evaluateProperties(nodePattern.getProperties(), result);
