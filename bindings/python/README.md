@@ -2,7 +2,7 @@
 
 Native Python bindings for ArcadeDB - the multi-model database that supports Graph, Document, Key/Value, Search Engine, Time Series, and Vector models.
 
-**Status**: ✅ Production Ready | **Tests**: 282 Passed | **Platforms**: 4 Supported
+**Status**: ✅ Production Ready | **Tests**: 290 Passed | **Platforms**: 4 Supported
 
 ---
 
@@ -84,7 +84,7 @@ The `arcadedb-embedded` package is platform-specific and self-contained:
 The compressed wheel size is measured from `dist/*.whl`, and the installed package size
 is measured from the extracted `site-packages/arcadedb_embedded/` directory.
 
-**Note**: Some JARs are excluded to optimize package size (e.g., gRPC wire protocol). See [`jar_exclusions.txt`](https://github.com/humemai/arcadedb-embedded-python/blob/main/bindings/python/jar_exclusions.txt) for details.
+**Note**: Some JARs are excluded to optimize package size (e.g., gRPC wire protocol). See [`scripts/jar_exclusions.txt`](https://github.com/humemai/arcadedb-embedded-python/blob/main/bindings/python/scripts/jar_exclusions.txt) for details.
 
 Import: `import arcadedb_embedded as arcadedb`
 
@@ -92,7 +92,7 @@ Import: `import arcadedb_embedded as arcadedb`
 
 ## 🧪 Testing
 
-**Status**: 282 passed
+**Status**: 290 passed
 
 ```bash
 # Run all tests
@@ -125,7 +125,7 @@ uv pip install build
 uv pip install -e ".[test]"
 
 # Build for your current platform (auto-detected)
-./build.sh
+./scripts/build.sh
 ```
 
 Built wheels will be in `dist/`.

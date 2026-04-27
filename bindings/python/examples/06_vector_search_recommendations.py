@@ -232,7 +232,7 @@ def generate_embeddings(
     return total
 
 
-def create_vector_index(db, property_suffix=""):
+def create_sql_vector_index(db, property_suffix=""):
     """Create vector index on Movie embeddings and populate it.
 
     Args:
@@ -240,7 +240,7 @@ def create_vector_index(db, property_suffix=""):
         property_suffix: Suffix for property names (e.g., "_v1", "_v2")
 
     Returns:
-        VectorIndex object
+        None
     """
     embedding_prop = f"embedding{property_suffix}"
 
@@ -254,21 +254,20 @@ def create_vector_index(db, property_suffix=""):
 
     start_time = time.time()
 
-    # Using new defaults: max_connections=32, beam_width=256
-    # New options available:
-    # - quantization="INT8" or "BINARY"
-    # - store_vectors_in_graph=True
-    index = db.create_vector_index(
-        vertex_type="Movie",
-        vector_property=embedding_prop,
-        dimensions=384,
-        distance_function="cosine",
+    db.command(
+        "sql",
+        f"""
+        CREATE INDEX ON Movie ({embedding_prop})
+        LSM_VECTOR
+        METADATA {{
+            "dimensions": 384,
+            "similarity": "COSINE"
+        }}
+        """,
     )
 
     elapsed = time.time() - start_time
     print(f"✓ Created and indexed {num_movies:,} movies in {elapsed:.1f}s")
-
-    return index
 
 
 def graph_based_recommendations(db, movie_title, limit=5, mode="full"):
@@ -364,14 +363,11 @@ def graph_based_recommendations(db, movie_title, limit=5, mode="full"):
     return elapsed
 
 
-def vector_based_recommendations(
-    db, index, model, movie_title, property_suffix="", limit=5
-):
+def vector_based_recommendations(db, model, movie_title, property_suffix="", limit=5):
     """Vector-based semantic similarity search.
 
     Args:
         db: Database instance
-        index: VectorIndex object
         model: SentenceTransformer model
         movie_title: Title of query movie
         property_suffix: Suffix for property names
@@ -380,6 +376,9 @@ def vector_based_recommendations(
     Returns:
         Query time in seconds
     """
+    embedding_prop = f"embedding{property_suffix}"
+    index_name = f"Movie[{embedding_prop}]"
+
     # Find the movie to get its genres
     movies = list(
         db.query(
@@ -404,21 +403,25 @@ def vector_based_recommendations(
     )
 
     start_time = time.time()
-    # Search index
-    results = index.find_nearest(query_embedding, k=limit + 1)  # +1 to exclude self
+    rows = db.query(
+        "sql",
+        (
+            "SELECT title, distance, (1 - distance) AS score "
+            "FROM (SELECT expand(vectorNeighbors(?, ?, ?))) WHERE title <> ? "
+            "ORDER BY distance LIMIT ?"
+        ),
+        index_name,
+        query_embedding,
+        int(limit + 5),
+        movie_title,
+        limit,
+    ).to_list()
     elapsed = time.time() - start_time
 
     print("   Results:")
-    count = 0
-    for vertex, score in results:
-        res_title = vertex.get("title")
-        if res_title == movie_title:
-            continue  # Skip self
-
-        count += 1
-        if count > limit:
-            break
-
+    for count, row in enumerate(rows, 1):
+        res_title = row.get("title")
+        score = row.get("score")
         print(f"   {count}. {res_title} (Score: {score:.4f})")
 
     return elapsed
@@ -555,7 +558,7 @@ def main():
             force_embed=args.force_embed,
         )
         print(f"✓ Embedded {num_embedded:,} movies")
-        index_v1 = create_vector_index(db, property_suffix="_v1")
+        create_sql_vector_index(db, property_suffix="_v1")
 
         # Model 2: paraphrase-MiniLM-L6-v2
         model_2_name = "paraphrase-MiniLM-L6-v2"
@@ -570,7 +573,7 @@ def main():
             force_embed=args.force_embed,
         )
         print(f"✓ Embedded {num_embedded:,} movies")
-        index_v2 = create_vector_index(db, property_suffix="_v2")
+        create_sql_vector_index(db, property_suffix="_v2")
 
         # Run searches for 5 diverse movies
         test_movies = [
@@ -607,14 +610,14 @@ def main():
             # Method 3: Vector with model 1
             print(f"\n3. Vector ({model_1_name}):")
             vector1_time = vector_based_recommendations(
-                db, index_v1, model_1, movie_title, "_v1", limit=5
+                db, model_1, movie_title, "_v1", limit=5
             )
             print(f"   ⏱️  {vector1_time:.3f}s")
 
             # Method 4: Vector with model 2
             print(f"\n4. Vector ({model_2_name}):")
             vector2_time = vector_based_recommendations(
-                db, index_v2, model_2, movie_title, "_v2", limit=5
+                db, model_2, movie_title, "_v2", limit=5
             )
             print(f"   ⏱️  {vector2_time:.3f}s")
 

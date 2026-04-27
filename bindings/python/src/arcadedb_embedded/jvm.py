@@ -8,6 +8,7 @@ import glob
 import os
 import platform
 import shlex
+import zipfile
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
@@ -19,10 +20,43 @@ from .exceptions import ArcadeDBError
 _JVM_CONFIG = None
 
 
+def _project_dir() -> Path:
+    return Path(__file__).resolve().parent.parents[1]
+
+
+def _extract_runtime_resource(resource_name: str) -> Path:
+    package_dir = Path(__file__).resolve().parent
+    resource_dir = package_dir / resource_name
+    if resource_dir.exists():
+        return resource_dir
+
+    project_dir = _project_dir()
+    dist_dir = project_dir / "dist"
+    wheels = sorted(dist_dir.glob("arcadedb_embedded-*.whl"), reverse=True)
+    if not wheels:
+        return resource_dir
+
+    cache_root = project_dir / ".runtime-cache"
+    extracted_root = cache_root / "arcadedb_embedded"
+    extracted_resource_dir = extracted_root / resource_name
+    if extracted_resource_dir.exists():
+        return extracted_resource_dir
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    prefix = f"arcadedb_embedded/{resource_name}/"
+
+    with zipfile.ZipFile(wheels[0]) as wheel_zip:
+        members = [name for name in wheel_zip.namelist() if name.startswith(prefix)]
+        if not members:
+            return resource_dir
+        wheel_zip.extractall(cache_root, members)
+
+    return extracted_resource_dir
+
+
 def get_jar_path() -> str:
     """Get the path to bundled JAR files."""
-    package_dir = Path(__file__).parent
-    jar_dir = package_dir / "jars"
+    jar_dir = _extract_runtime_resource("jars")
     return str(jar_dir)
 
 
@@ -37,8 +71,7 @@ def get_bundled_jre_lib_path() -> str:
     Raises:
         ArcadeDBError: If the bundled JRE or JVM library is not found.
     """
-    package_dir = Path(__file__).parent
-    jre_dir = package_dir / "jre"
+    jre_dir = _extract_runtime_resource("jre")
 
     # Check if JRE directory exists
     if not jre_dir.exists():
@@ -72,6 +105,7 @@ def start_jvm(
     heap_size: Optional[str] = "4g",
     disable_xml_limits: bool = True,
     jvm_args: Optional[Union[Iterable[str], str]] = None,
+    common_pool_parallelism: Optional[int] = None,
 ):
     """
     Start the JVM with ArcadeDB JARs if not already started.
@@ -91,6 +125,14 @@ def start_jvm(
         Additional JVM flags to pass through (e.g. "-XX:MaxDirectMemorySize=8g",
         "-Dfoo=bar"). Can be a space-separated string or an iterable of strings.
         Note: -Xmx is managed by heap_size when provided.
+
+    common_pool_parallelism (optional)
+        Sets `-Djava.util.concurrent.ForkJoinPool.common.parallelism=<count>`.
+        Use this to make thread-cap settings explicit and reproducible from the
+        calling Python code.
+
+        Example:
+            start_jvm(heap_size="8g", common_pool_parallelism=8)
 
     JVM Configuration (environment fallback):
     -----------------------------------------
@@ -118,6 +160,9 @@ def start_jvm(
             # Development/testing (smaller memory)
             start_jvm(heap_size="2g")
 
+            # Explicit thread cap for reproducible benchmarks
+            start_jvm(heap_size="8g", common_pool_parallelism=8)
+
     ARCADEDB_JVM_ERROR_FILE (optional)
         Path for JVM crash logs (default: ./log/hs_err_pid%p.log)
 
@@ -131,6 +176,7 @@ def start_jvm(
                 heap_size=heap_size,
                 disable_xml_limits=disable_xml_limits,
                 jvm_args=jvm_args,
+                common_pool_parallelism=common_pool_parallelism,
             )
         )
         if _JVM_CONFIG is not None:
@@ -145,6 +191,7 @@ def start_jvm(
             jvm_args is not None
             or (heap_size not in (None, "4g"))
             or (disable_xml_limits is not True)
+            or (common_pool_parallelism is not None)
         )
         if has_overrides:
             raise ArcadeDBError(
@@ -170,7 +217,10 @@ def start_jvm(
     jvm_path = get_bundled_jre_lib_path()
 
     jvm_args = _build_jvm_args(
-        heap_size=heap_size, disable_xml_limits=disable_xml_limits, jvm_args=jvm_args
+        heap_size=heap_size,
+        disable_xml_limits=disable_xml_limits,
+        jvm_args=jvm_args,
+        common_pool_parallelism=common_pool_parallelism,
     )
 
     try:
@@ -237,8 +287,12 @@ def _build_jvm_args(
     heap_size: Optional[str],
     disable_xml_limits: bool,
     jvm_args: Optional[Union[Iterable[str], str]],
+    common_pool_parallelism: Optional[int] = None,
 ) -> list[str]:
     """Helper to construct JVM arguments from params, env vars, and defaults."""
+    if common_pool_parallelism is not None and common_pool_parallelism < 1:
+        raise ArcadeDBError("common_pool_parallelism must be >= 1")
+
     # JVM arguments: start from env, then merge explicit args
     jvm_args_str = os.environ.get("ARCADEDB_JVM_ARGS")
     if jvm_args_str:
@@ -247,6 +301,19 @@ def _build_jvm_args(
         merged_args = []
 
     merged_args.extend(_normalize_jvm_args(jvm_args))
+
+    if common_pool_parallelism is not None:
+        merged_args = [
+            arg
+            for arg in merged_args
+            if not arg.startswith(
+                "-Djava.util.concurrent.ForkJoinPool.common.parallelism="
+            )
+        ]
+        merged_args.append(
+            "-Djava.util.concurrent.ForkJoinPool.common.parallelism="
+            f"{common_pool_parallelism}"
+        )
 
     # Optional XML import limits
     if disable_xml_limits:

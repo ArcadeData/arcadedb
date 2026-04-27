@@ -553,6 +553,10 @@ def normalize_rows(vectors: np.ndarray) -> np.ndarray:
     return vectors / norms
 
 
+def vector_to_arcadedb_literal(vec: np.ndarray) -> str:
+    return "[" + ", ".join(f"{float(x):.7g}" for x in vec.tolist()) + "]"
+
+
 def search_arcadedb(
     index,
     queries: np.ndarray,
@@ -560,7 +564,6 @@ def search_arcadedb(
     gt_full: dict[int, List[int]],
     k: int,
     ef_search: int,
-    quantization: str,
 ) -> dict:
     latencies_ms: List[float] = []
     recalls: List[float] = []
@@ -585,36 +588,26 @@ def search_arcadedb(
 
         return None
 
+    db = index["db"]
+    index_name = index["name"]
+
     for q_idx, qid in enumerate(qids):
-        qvec = queries[q_idx]
         start = time.perf_counter()
-
-        if isinstance(index, dict):
-            db = index["db"]
-            index_name = index["name"]
-            qvec_literal = "[" + ", ".join(str(float(x)) for x in qvec.tolist()) + "]"
-            rs = db.query(
-                "sql",
-                f"SELECT vectorNeighbors('{index_name}', {qvec_literal}, {int(k)}, {int(ef_search)}) as res",
-            ).to_list()
-            neighbors = rs[0].get("res") if rs else []
-            results = [(rec, 0.0) for rec in neighbors]
-        elif quantization.upper() == "PRODUCT":
-            results = index.find_nearest_approximate(qvec, k=k)
-        else:
-            results = index.find_nearest(
-                qvec,
-                k=k,
-                ef_search=ef_search,
-            )
-
-        latencies_ms.append((time.perf_counter() - start) * 1000)
-
+        row = db.query(
+            "sql",
+            "SELECT vectorNeighbors(?, ?, ?, ?) as res",
+            index_name,
+            queries[q_idx],
+            int(k),
+            int(ef_search),
+        ).first()
+        neighbors = row.get("res") if row else []
         result_ids: List[int] = []
-        for rec, _score in results:
+        for rec in neighbors:
             rid = _extract_result_id(rec)
             if rid is not None:
                 result_ids.append(rid)
+        latencies_ms.append((time.perf_counter() - start) * 1000)
 
         gt_list = gt_full.get(qid)
         if not gt_list:
@@ -659,16 +652,14 @@ def search_faiss(
         hnsw.efSearch = int(ef_search)
 
     for q_idx, qid in enumerate(qids):
+        start = time.perf_counter()
         qvec = np.ascontiguousarray(
             queries[q_idx : q_idx + 1].astype("float32", copy=True)
         )
         faiss.normalize_L2(qvec)
-
-        start = time.perf_counter()
         _dist, ids = index.search(qvec, int(k))
-        latencies_ms.append((time.perf_counter() - start) * 1000)
-
         result_ids = [int(doc_id) for doc_id in ids[0].tolist() if int(doc_id) >= 0]
+        latencies_ms.append((time.perf_counter() - start) * 1000)
 
         gt_list = gt_full.get(qid)
         if not gt_list:
@@ -735,13 +726,13 @@ def search_lancedb(
             except Exception:
                 pass
         rows = search.to_list()
-        latencies_ms.append((time.perf_counter() - start) * 1000)
 
         result_ids: List[int] = []
         for row in rows:
             rid = row.get("id") if isinstance(row, dict) else None
             if rid is not None:
                 result_ids.append(int(rid))
+        latencies_ms.append((time.perf_counter() - start) * 1000)
 
         gt_list = gt_full.get(qid)
         if not gt_list:
@@ -790,9 +781,8 @@ def search_bruteforce(
         else:
             candidate_idx = np.argpartition(scores, -topk)[-topk:]
             ranked_idx = candidate_idx[np.argsort(scores[candidate_idx])[::-1]]
-        latencies_ms.append((time.perf_counter() - start) * 1000)
-
         result_ids = [int(doc_id) for doc_id in ranked_idx.tolist()]
+        latencies_ms.append((time.perf_counter() - start) * 1000)
 
         gt_list = gt_full.get(qid)
         if not gt_list:
@@ -844,9 +834,8 @@ def search_pgvector(
                 (vector_to_pg_literal(queries[q_idx]), int(k)),
             )
             rows = cur.fetchall()
-            latencies_ms.append((time.perf_counter() - start) * 1000)
-
             result_ids = [int(row[0]) for row in rows]
+            latencies_ms.append((time.perf_counter() - start) * 1000)
             gt_list = gt_full.get(qid)
             if not gt_list:
                 continue
@@ -889,14 +878,13 @@ def search_qdrant(
             with_payload=False,
             with_vectors=False,
         )
-        latencies_ms.append((time.perf_counter() - start) * 1000)
-
         points = getattr(response, "points", response)
         result_ids: List[int] = []
         for point in points:
             point_id = getattr(point, "id", None)
             if point_id is not None:
                 result_ids.append(int(point_id))
+        latencies_ms.append((time.perf_counter() - start) * 1000)
 
         gt_list = gt_full.get(qid)
         if not gt_list:
@@ -1080,10 +1068,10 @@ def search_milvus(
 
         if rows is None:
             raise RuntimeError("Milvus search returned no result rows")
-        latencies_ms.append((time.perf_counter() - start) * 1000)
 
         hits = rows[0] if rows else []
         result_ids = [int(getattr(hit, "id", -1)) for hit in hits]
+        latencies_ms.append((time.perf_counter() - start) * 1000)
 
         gt_list = gt_full.get(qid)
         if not gt_list:
@@ -2318,7 +2306,6 @@ def main() -> None:
                             gt_full,
                             k=args.k,
                             ef_search=ef_search,
-                            quantization=quantization,
                         ),
                         queries=queries,
                         qids=qids,

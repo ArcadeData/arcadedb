@@ -340,6 +340,66 @@ def test_truncate_bucket(temp_db_path):
         assert db.count_type("BucketDoc") == 0
 
 
+def test_update_batch_clause(temp_db_path):
+    """UPDATE ... BATCH executes successfully through the Python SQL pass-through."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE BatchUpdateDoc")
+
+        with db.transaction():
+            for idx in range(25):
+                db.command(
+                    "sql",
+                    "INSERT INTO BatchUpdateDoc SET idx = ?, processed = false",
+                    idx,
+                )
+
+        with db.transaction():
+            db.command(
+                "sql",
+                "UPDATE BatchUpdateDoc SET processed = true WHERE idx >= 10 BATCH 5",
+            )
+
+        processed = db.query(
+            "sql",
+            "SELECT count(*) AS c FROM BatchUpdateDoc WHERE processed = true",
+        ).one()
+        untouched = db.query(
+            "sql",
+            "SELECT count(*) AS c FROM BatchUpdateDoc WHERE processed = false",
+        ).one()
+
+        assert processed.get("c") == 15
+        assert untouched.get("c") == 10
+
+
+def test_delete_batch_clause(temp_db_path):
+    """DELETE ... BATCH executes successfully through the Python SQL pass-through."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE BatchDeleteDoc")
+
+        with db.transaction():
+            for idx in range(30):
+                db.command("sql", "INSERT INTO BatchDeleteDoc SET idx = ?", idx)
+
+        with db.transaction():
+            db.command(
+                "sql",
+                "DELETE FROM BatchDeleteDoc WHERE idx % 2 = 0 BATCH 4",
+            )
+
+        remaining = db.query(
+            "sql",
+            "SELECT count(*) AS c FROM BatchDeleteDoc",
+        ).one()
+        odd_count = db.query(
+            "sql",
+            "SELECT count(*) AS c FROM BatchDeleteDoc WHERE idx % 2 = 1",
+        ).one()
+
+        assert remaining.get("c") == 15
+        assert odd_count.get("c") == 15
+
+
 def test_transactions(temp_db_path):
     """Test transaction support."""
     with arcadedb.create_database(temp_db_path) as db:
@@ -374,7 +434,7 @@ def test_graph_operations(temp_db_path):
     with arcadedb.create_database(temp_db_path) as db:
         # Create graph schema
         db.command("sql", "CREATE VERTEX TYPE Person")
-        db.command("sql", "CREATE EDGE TYPE Knows UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE Knows")
 
         # Create vertices using SQL
         with db.transaction():
@@ -457,7 +517,7 @@ def test_opencypher_queries(temp_db_path):
     with arcadedb.create_database(temp_db_path) as db:
         # Create graph schema
         db.command("sql", "CREATE VERTEX TYPE Person")
-        db.command("sql", "CREATE EDGE TYPE FRIEND_OF UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE FRIEND_OF")
 
         # Insert data using OpenCypher (if available)
         try:
@@ -552,7 +612,7 @@ def test_schema_queries(temp_db_path):
         db.command("sql", "CREATE VERTEX TYPE Company")
         db.command("sql", "CREATE PROPERTY Company.name STRING")
 
-        db.command("sql", "CREATE EDGE TYPE WorksFor UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE WorksFor")
 
         # Query schema:types to get type information
         result = db.query("sql", "SELECT FROM schema:types WHERE name = 'Person'")
@@ -688,8 +748,8 @@ def test_complex_graph_traversal(temp_db_path):
     with arcadedb.create_database(temp_db_path) as db:
         # Create social network graph
         db.command("sql", "CREATE VERTEX TYPE Person")
-        db.command("sql", "CREATE EDGE TYPE Follows UNIDIRECTIONAL")
-        db.command("sql", "CREATE EDGE TYPE Likes UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE Follows")
+        db.command("sql", "CREATE EDGE TYPE Likes")
 
         # Create vertices using SQL
         with db.transaction():

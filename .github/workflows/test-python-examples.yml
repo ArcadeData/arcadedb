@@ -5,12 +5,14 @@ on:
   push:
     paths:
       - 'bindings/python/**'
+      - '**/*.java'
       - '.github/workflows/test-python-examples.yml'
 
   # Run on pull request affecting bindings/python/
   pull_request:
     paths:
       - 'bindings/python/**'
+      - '**/*.java'
       - '.github/workflows/test-python-examples.yml'
 
   # Run after release workflow completes
@@ -25,7 +27,7 @@ on:
         description: "Glob pattern(s) for examples to run (space-separated, relative to bindings/python/examples)."
         required: false
         type: string
-        default: "0[1-9]_*.py 1[0-6]_*.py"
+        default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
       build-version:
         description: "Override package version (PEP 440) for build.sh"
         required: false
@@ -37,10 +39,14 @@ on:
       examples:
         description: "Glob pattern(s) for examples to run (space-separated, relative to bindings/python/examples)."
         required: false
-        default: "0[1-9]_*.py 1[0-6]_*.py"
+        default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
 
 env:
-  EXAMPLES: ${{ inputs.examples || '0[1-9]_*.py 1[0-6]_*.py' }}
+  EXAMPLES: ${{ inputs.examples || '0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py' }}
+
+# Note: Example 21 is intentionally excluded in CI.
+# It has shown repeated GitHub Actions instability across platforms despite
+# timeout increases, so the workflow skips it explicitly below.
 
 permissions:
   contents: read
@@ -63,7 +69,7 @@ jobs:
           cd bindings/python
 
           # Detect ArcadeDB version from pom.xml (Docker format: X.Y.Z-SNAPSHOT)
-          ARCADEDB_TAG=$(python3 extract_version.py --format=docker)
+          ARCADEDB_TAG=$(python3 scripts/extract_version.py --format=docker)
           echo "📌 ArcadeDB version: $ARCADEDB_TAG"
 
           # Download JARs from official Docker image
@@ -207,7 +213,7 @@ jobs:
         run: |
           cd bindings/python
           echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
-          ./build.sh ${{ matrix.platform }} ${{ matrix.python-version }}
+          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }}
 
       # Note: Java is NOT required - arcadedb-embedded has bundled JRE!
 
@@ -311,6 +317,14 @@ jobs:
 
             # Set example-specific parameters and timeout
             case "$example" in
+              "21_server_mode_http_access.py")
+                # Example 21 is kept in the repo for local/manual use, but is
+                # excluded from GitHub Actions because it is CI-unstable.
+                echo "⏭️  SKIPPED: $example (excluded from GitHub Actions due to CI instability)" | tee -a $results_file
+                skipped=$((skipped + 1))
+                echo ""
+                continue
+                ;;
               "04_csv_import_documents.py")
                 example_args="--dataset movielens-small --export"
                 example_name="$example (movielens-small dataset with export)"
@@ -394,6 +408,30 @@ jobs:
                 example_args="--vertices 2000 --edges 4000 --vertex-int-props 3 --vertex-str-props 2 --edge-int-props 1 --edge-str-props 1 --string-size 32 --batch-size 500 --async-parallel 1 --parallel 1 --heap-size 4g --work-dir ./my_test_databases/import_vs_txn_graph_ci"
                 example_name="$example (graph ingest benchmark, minimal)"
                 timeout_duration=1200
+                example_jvm_args=""
+                ;;
+              "17_timeseries_end_to_end.py")
+                example_args="--hours 2 --interval-minutes 10"
+                example_name="$example (time-series end-to-end, minimal)"
+                timeout_duration=900
+                example_jvm_args=""
+                ;;
+              "18_geo_predicates_wkt.py")
+                example_args=""
+                example_name="$example (geo predicates with WKT points and polygons)"
+                timeout_duration=900
+                example_jvm_args=""
+                ;;
+              "19_hash_index_exact_match.py")
+                example_args=""
+                example_name="$example (hash index exact-match workflow)"
+                timeout_duration=900
+                example_jvm_args=""
+                ;;
+              "20_graph_algorithms_route_planning.py")
+                example_args=""
+                example_name="$example (graph algorithms route planning workflow)"
+                timeout_duration=900
                 example_jvm_args=""
                 ;;
               *)

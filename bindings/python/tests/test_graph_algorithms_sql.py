@@ -12,7 +12,7 @@ _GRAPH_ALGO_UNAVAILABLE_TOKENS = (
 
 def _setup_weighted_graph(db):
     db.command("sql", "CREATE VERTEX TYPE Node")
-    db.command("sql", "CREATE EDGE TYPE Road UNIDIRECTIONAL")
+    db.command("sql", "CREATE EDGE TYPE Road")
     db.command("sql", "CREATE PROPERTY Road.distance LONG")
 
     with db.transaction():
@@ -126,7 +126,7 @@ def test_graph_shortest_path_sql_no_path_returns_empty_or_null(temp_db_path):
     """`shortestPath` on disconnected vertices should not produce a valid multi-hop path."""
     with arcadedb.create_database(temp_db_path) as db:
         db.command("sql", "CREATE VERTEX TYPE Node")
-        db.command("sql", "CREATE EDGE TYPE Road UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE Road")
 
         with db.transaction():
             db.new_vertex("Node").set("name", "X").save()

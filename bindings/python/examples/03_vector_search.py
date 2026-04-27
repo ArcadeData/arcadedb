@@ -221,19 +221,20 @@ with arcadedb.create_database(db_path) as db:
     print("      • beam_width: 256 (search quality, higher = more accurate)")
     print()
 
-    # Create vector index (JVector implementation - recommended)
-    # Using new defaults: max_connections=32, beam_width=256
-    # New options available:
-    # - quantization: "INT8" or "BINARY" (reduces memory usage)
-    # - store_vectors_in_graph: True (faster search, higher disk usage)
-    index = db.create_vector_index(
-        vertex_type="Article",
-        vector_property="embedding",
-        dimensions=EMBEDDING_DIM,
-        distance_function="cosine",
+    db.command(
+        "sql",
+        f"""
+        CREATE INDEX ON Article (embedding)
+        LSM_VECTOR
+        METADATA {{
+            "dimensions": {EMBEDDING_DIM},
+            "similarity": "COSINE"
+        }}
+        """,
     )
 
     print("   ✅ Created JVector vector index")
+    print("   ✅ Built vector index graph immediately via SQL")
     print("   💡 LSM index automatically indexes existing records upon creation.")
     print("   ✅ Indexing handled by ArcadeDB engine.")
     print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
@@ -256,35 +257,56 @@ with arcadedb.create_database(db_path) as db:
 
     for query_num, cat_num in enumerate(sampled_categories, 1):
         category = f"category_{cat_num}"
+        index_name = "Article[embedding]"
 
         print(f"   🔍 Query {query_num}: Find documents similar to Category {cat_num}")
         print()
 
         query_embedding = create_mock_embedding(category, f"query{query_num}")
-
-        # Get top 5 most similar (smallest distances)
-        most_similar = index.find_nearest(query_embedding, k=5)
+        most_similar = db.query(
+            "sql",
+            (
+                "SELECT title, category, distance, (1 - distance) AS score "
+                "FROM (SELECT expand(vectorNeighbors(?, ?, ?))) ORDER BY distance"
+            ),
+            index_name,
+            query_embedding,
+            5,
+        ).to_list()
 
         print("      Top 5 MOST similar documents (smallest distance):")
-        for i, (vertex, distance) in enumerate(most_similar, 1):
-            title = vertex.get("title")
-            doc_category = vertex.get("category")
+        for i, hit in enumerate(most_similar, 1):
+            title = hit.get("title")
+            doc_category = hit.get("category")
+            distance = hit.get("distance")
             print(f"      {i}. {title}")
             print(f"         Category: {doc_category}, Distance: {distance:.4f}")
         print()
 
-        # Get all documents to find least similar
-        # Note: For LSM, getting ALL documents might be slow or limited by k
-        k_limit = min(NUM_DOCUMENTS, 1000)
-        all_results = index.find_nearest(query_embedding, k=k_limit)
-        least_similar = list(all_results)[-5:]  # Last 5 = farthest
+        filtered_hits = db.query(
+            "sql",
+            (
+                "SELECT title, category, distance, (1 - distance) AS score "
+                "FROM (SELECT expand(vectorNeighbors(?, ?, ?))) "
+                "WHERE category = ? ORDER BY distance LIMIT 5"
+            ),
+            index_name,
+            query_embedding,
+            50,
+            category,
+        ).to_list()
 
-        print("      Top 5 LEAST similar documents (largest distance):")
-        for i, (vertex, distance) in enumerate(least_similar, 1):
-            title = vertex.get("title")
-            doc_category = vertex.get("category")
+        print("      Top 5 filtered documents in the same category:")
+        for i, hit in enumerate(filtered_hits, 1):
+            title = hit.get("title")
+            doc_category = hit.get("category")
+            distance = hit.get("distance")
+            score = hit.get("score")
             print(f"      {i}. {title}")
-            print(f"         Category: {doc_category}, Distance: {distance:.4f}")
+            print(
+                f"         Category: {doc_category}, Distance: {distance:.4f}, "
+                f"Score: {score:.4f}"
+            )
         print()
 
     print(f"   ⏱️  All queries time: {time.time() - step_start:.3f}s")

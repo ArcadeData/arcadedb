@@ -23,11 +23,14 @@ Example:
     >>> async_exec.wait_completion()
 """
 
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Union
 
 import jpype
 
 from .type_conversion import convert_python_to_java
+
+if TYPE_CHECKING:
+    from .core import Database
 
 
 class AsyncExecutor:
@@ -60,7 +63,7 @@ class AsyncExecutor:
         >>> async_exec.wait_completion()
     """
 
-    def __init__(self, java_async_executor):
+    def __init__(self, java_async_executor, owner: Optional["Database"] = None):
         """
         Initialize AsyncExecutor wrapper.
 
@@ -68,6 +71,18 @@ class AsyncExecutor:
             java_async_executor: Java DatabaseAsyncExecutor instance
         """
         self._java_async = java_async_executor
+        self._owner = owner
+        self._closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def is_closed(self) -> bool:
+        """Return True once the executor has been closed."""
+        return self._closed
 
     # Configuration methods (fluent interface)
 
@@ -361,7 +376,7 @@ class AsyncExecutor:
         Execute async query with callback for each result.
 
         Args:
-            language: Query language ("sql", "cypher", etc.)
+            language: Query language ("sql", "opencypher", etc.)
             query_text: Query string
             callback: Result callback, receives each ResultSet row
             **params: Query parameters
@@ -410,7 +425,7 @@ class AsyncExecutor:
         Execute async command with optional callback.
 
         Args:
-            language: Command language ("sql", "cypher", etc.)
+            language: Command language ("sql", "opencypher", etc.)
             command_text: Command string
             callback: Optional result callback
             **params: Command parameters
@@ -563,7 +578,19 @@ class AsyncExecutor:
             >>> async_exec.wait_completion()
             >>> async_exec.close()  # Shutdown threads
         """
-        self._java_async.close()
+        if self._closed:
+            return
+
+        try:
+            self._java_async.close()
+        finally:
+            self._closed = True
+
+            if self._owner is not None:
+                try:
+                    self._owner._discard_async_executor(self)
+                finally:
+                    self._owner = None
 
     # Global callbacks
 

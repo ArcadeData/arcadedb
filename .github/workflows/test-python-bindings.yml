@@ -5,12 +5,14 @@ on:
   push:
     paths:
       - 'bindings/python/**'
+      - '**/*.java'
       - '.github/workflows/test-python-bindings.yml'
 
   # Run on pull request affecting bindings/python/
   pull_request:
     paths:
       - 'bindings/python/**'
+      - '**/*.java'
       - '.github/workflows/test-python-bindings.yml'
 
   # Run after release workflow completes
@@ -50,7 +52,7 @@ jobs:
           cd bindings/python
 
           # Detect ArcadeDB version from pom.xml (Docker format: X.Y.Z-SNAPSHOT)
-          ARCADEDB_TAG=$(python3 extract_version.py --format=docker)
+          ARCADEDB_TAG=$(python3 scripts/extract_version.py --format=docker)
           echo "📌 ArcadeDB version: $ARCADEDB_TAG"
 
           # Download JARs from official Docker image
@@ -208,7 +210,7 @@ jobs:
         run: |
           cd bindings/python
           echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
-          ./build.sh ${{ matrix.platform }} ${{ matrix.python-version }}
+          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }}
 
       - name: Extract wheel for additional testing
         shell: bash

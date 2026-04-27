@@ -1,6 +1,6 @@
 # Docker build for ArcadeDB Python package
 # Builds arcadedb-embedded package with bundled JRE (no external Java required)
-# Excludes JARs listed in jar_exclusions.txt to optimize size
+# Excludes JARs listed in scripts/jar_exclusions.txt to optimize size
 #
 # REQUIRED BUILD ARGS (passed from build.sh):
 #   PYTHON_VERSION - Python version for wheel (e.g., 3.11, 3.12, 3.13, 3.14)
@@ -19,7 +19,7 @@ ARG USE_LOCAL_JARS=0
 ARG LOCAL_JARS_HASH=none
 
 # Stage 1: Use prebuilt ArcadeDB image to obtain compiled JARs
-# JARs are filtered based on jar_exclusions.txt in later stages
+# JARs are filtered based on scripts/jar_exclusions.txt in later stages
 FROM arcadedata/arcadedb:${ARCADEDB_TAG} AS java-builder
 
 # nothing to do here; jars will be copied from /home/arcadedb/lib in the python-builder stage
@@ -58,7 +58,7 @@ RUN if [ "$USE_LOCAL_JARS" = "1" ]; then \
         fi
 
 # Copy JAR exclusion list
-COPY bindings/python/jar_exclusions.txt /build/jar_exclusions.txt
+COPY bindings/python/scripts/jar_exclusions.txt /build/jar_exclusions.txt
 
 # Remove excluded JARs based on jar_exclusions.txt
 RUN echo "🗑️  Removing excluded JARs..." && \
@@ -166,14 +166,14 @@ COPY --from=jre-builder /build/jre /build/jre/
 COPY bindings/python/src ./src
 COPY bindings/python/tests ./tests
 COPY bindings/python/setup.py .
-COPY bindings/python/setup_jars.py .
-COPY bindings/python/extract_version.py .
-COPY bindings/python/write_version.py .
-COPY bindings/python/jar_exclusions.txt .
+COPY bindings/python/scripts/setup_jars.py ./scripts/
+COPY bindings/python/scripts/extract_version.py ./scripts/
+COPY bindings/python/scripts/write_version.py ./scripts/
+COPY bindings/python/scripts/jar_exclusions.txt .
 COPY bindings/python/pyproject.toml ./
 COPY bindings/python/README.md ./
 
-# Also copy repository pom.xml so extract_version.py can read it
+# Also copy repository pom.xml so scripts/extract_version.py can read it
 COPY ../../pom.xml /arcadedb/pom.xml
 
 # Install Python build dependencies
@@ -190,8 +190,8 @@ ARG TARGET_PLATFORM
 RUN echo "📌 Package name: ${PACKAGE_NAME}" && \
     echo "📌 Docker tag used: ${ARCADEDB_TAG}" && \
     echo "📌 Target platform: ${TARGET_PLATFORM}" && \
-    python3 write_version.py /arcadedb/pom.xml && \
-    python3 setup_jars.py && \
+    python3 scripts/write_version.py /arcadedb/pom.xml && \
+    python3 scripts/setup_jars.py && \
     echo "📦 JAR files and JRE copied"
 
 # Build the wheel
@@ -201,7 +201,7 @@ RUN if [ -n "${BUILD_VERSION}" ]; then \
         export ARCADEDB_VERSION="${BUILD_VERSION}"; \
         echo "📌 Using provided version: ${ARCADEDB_VERSION}"; \
     else \
-        export ARCADEDB_VERSION=$(python3 extract_version.py --format=pep440 /arcadedb/pom.xml); \
+        export ARCADEDB_VERSION=$(python3 scripts/extract_version.py --format=pep440 /arcadedb/pom.xml); \
         echo "📦 Extracted version from pom.xml: ${ARCADEDB_VERSION}"; \
     fi && \
     echo "📦 Python package version: ${ARCADEDB_VERSION}" && \

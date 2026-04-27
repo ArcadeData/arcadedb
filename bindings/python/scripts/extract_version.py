@@ -237,9 +237,9 @@ def extract_version_from_pom(
 
 
 if __name__ == "__main__":
-    # Default to parent pom.xml (two levels up from bindings/python)
+    # Default to parent pom.xml from bindings/python/scripts
     script_dir = Path(__file__).parent
-    pom_path = script_dir / "../../pom.xml"
+    pom_path = script_dir / "../../../pom.xml"
     output_format = "pep440"
     python_patch = 0
     increment_dev = False

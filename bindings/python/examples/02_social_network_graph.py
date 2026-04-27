@@ -131,7 +131,7 @@ def create_schema(db):
         print("  ✓ Created Person properties (including optional fields)")
 
         # Create FRIEND_OF edge type
-        db.command("sql", "CREATE EDGE TYPE FRIEND_OF UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE FRIEND_OF")
         print("  ✓ Created FRIEND_OF edge type")
 
         # Create properties for FRIEND_OF edge

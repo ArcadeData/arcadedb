@@ -4,12 +4,14 @@ ArcadeDB Python Bindings - Result Set Wrappers
 ResultSet and Result classes for wrapping query results.
 """
 
-from typing import Any, Dict, Iterator, List, Optional
-
-import jpype
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .graph import Document, Edge, Vertex
 from .type_conversion import convert_java_to_python
+
+
+def _java_class_name(value: Any) -> str:
+    return str(value.getClass().getName())
 
 
 class ResultSet:
@@ -44,7 +46,20 @@ class ResultSet:
             >>> print(users[0])
             {'name': 'Alice', 'age': 30, 'email': 'alice@example.com'}
         """
-        return [r.to_dict(convert_types=convert_types) for r in self]
+        return list(self.iter_dicts(convert_types=convert_types))
+
+    def iter_dicts(self, convert_types: bool = True) -> Iterator[Dict[str, Any]]:
+        """
+        Iterate results as dictionaries.
+
+        Args:
+            convert_types: Convert Java types to Python (default: True)
+
+        Yields:
+            Result rows as dictionaries
+        """
+        for result in self:
+            yield result.to_dict(convert_types=convert_types)
 
     def to_dataframe(self, convert_types: bool = True):
         """
@@ -68,11 +83,11 @@ class ResultSet:
         """
         try:
             import pandas as pd
-        except ImportError:
+        except ImportError as exc:
             raise ImportError(
                 "pandas is required for to_dataframe(). "
                 "Install with: uv pip install pandas"
-            )
+            ) from exc
 
         return pd.DataFrame(self.to_list(convert_types=convert_types))
 
@@ -98,8 +113,8 @@ class ResultSet:
             ...     process_batch(chunk)  # chunk is list of dicts
         """
         chunk = []
-        for result in self:
-            chunk.append(result.to_dict(convert_types=convert_types))
+        for row in self.iter_dicts(convert_types=convert_types):
+            chunk.append(row)
             if len(chunk) >= size:
                 yield chunk
                 chunk = []
@@ -109,10 +124,14 @@ class ResultSet:
 
     def count(self) -> int:
         """
-        Count results without loading all into memory.
+        Count the remaining results without building a list.
+
+        Note:
+            This consumes the remaining rows from the current result set.
+            After calling `count()`, the iterator is exhausted.
 
         Returns:
-            Number of results
+            Number of remaining results
 
         Example:
             >>> count = db.query("sql", "SELECT FROM User").count()
@@ -158,8 +177,8 @@ class ResultSet:
         iterator = iter(self)
         try:
             result = next(iterator)
-        except StopIteration:
-            raise ValueError("Query returned no results")
+        except StopIteration as exc:
+            raise ValueError("Query returned no results") from exc
 
         try:
             next(iterator)
@@ -173,6 +192,14 @@ class Result:
 
     def __init__(self, java_result):
         self._java_result = java_result
+        self._property_names_cache: Optional[Tuple[str, ...]] = None
+
+    def _property_names_tuple(self) -> Tuple[str, ...]:
+        if self._property_names_cache is None:
+            self._property_names_cache = tuple(
+                str(name) for name in self._java_result.getPropertyNames()
+            )
+        return self._property_names_cache
 
     def has_property(self, name: str) -> bool:
         """
@@ -191,7 +218,7 @@ class Result:
         """
         return self._java_result.hasProperty(name)
 
-    def get(self, name: str) -> Any:
+    def get(self, name: str, convert_types: bool = True) -> Any:
         """
         Get a property value from the result with automatic type conversion.
 
@@ -199,7 +226,7 @@ class Result:
             name: Property name
 
         Returns:
-            Property value as Python type (int, str, Decimal, datetime, etc.), or None if not found
+            Property value as a Python type, or None if not found
 
         Example:
             >>> result = db.query("sql", "SELECT FROM User WHERE id = 1").first()
@@ -208,10 +235,24 @@ class Result:
             >>> phone = result.get("phone")  # Returns None if not found
             >>> phone = result.get("phone") or "unknown"  # Use default pattern
         """
+        value = self.get_raw(name)
+        if convert_types:
+            return convert_java_to_python(value)
+        return value
+
+    def get_raw(self, name: str) -> Any:
+        """
+        Get a property value without Java-to-Python conversion.
+
+        Args:
+            name: Property name
+
+        Returns:
+            Raw Java-backed property value or None if not found
+        """
         if not self.has_property(name):
             return None
-        value = self._java_result.getProperty(name)
-        return convert_java_to_python(value)
+        return self._java_result.getProperty(name)
 
     def get_rid(self) -> Optional[str]:
         """
@@ -263,13 +304,7 @@ class Result:
         """
         element = self._java_result.getElement()
         if element.isPresent():
-            java_element = element.get()
-            # Determine specific type
-            if isinstance(java_element, jpype.JClass("com.arcadedb.graph.Vertex")):
-                return Vertex(java_element)
-            elif isinstance(java_element, jpype.JClass("com.arcadedb.graph.Edge")):
-                return Edge(java_element)
-            return Document(java_element)
+            return Document.wrap(element.get())
         return None
 
     def get_property_names(self) -> List[str]:
@@ -285,7 +320,7 @@ class Result:
             >>> print(names)
             ['name', 'email', 'age', 'created_at']
         """
-        return list(self._java_result.getPropertyNames())
+        return list(self._property_names_tuple())
 
     @property
     def property_names(self) -> List[str]:
@@ -300,7 +335,7 @@ class Result:
             >>> print(result.property_names)
             ['name', 'email', 'age', 'created_at']
         """
-        return list(self._java_result.getPropertyNames())
+        return list(self._property_names_tuple())
 
     def to_dict(self, convert_types: bool = True) -> Dict[str, Any]:
         """
@@ -318,13 +353,16 @@ class Result:
             >>> print(user_dict)
             {'name': 'Alice', 'age': 30, 'email': 'alice@example.com'}
         """
+        property_names = self._property_names_tuple()
         if not convert_types:
             return {
-                name: self._java_result.getProperty(name)
-                for name in self.property_names
+                name: self._java_result.getProperty(name) for name in property_names
             }
 
-        return {name: self.get(name) for name in self.property_names}
+        return {
+            name: convert_java_to_python(self._java_result.getProperty(name))
+            for name in property_names
+        }
 
     def to_json(self) -> str:
         """
@@ -343,10 +381,13 @@ class Result:
     def __repr__(self) -> str:
         """String representation of the result."""
         try:
-            props = self.to_dict()
-            props_str = ", ".join(f"{k}={v!r}" for k, v in list(props.items())[:3])
-            if len(props) > 3:
-                props_str += ", ..."
-            return f"Result({props_str})"
-        except Exception:
+            rid = self.get_rid()
+            property_names = self._property_names_tuple()
+            names_preview = ", ".join(repr(name) for name in property_names[:3])
+            if len(property_names) > 3:
+                names_preview += ", ..."
+            if rid is not None:
+                return f"Result(rid={rid!r}, properties=[{names_preview}])"
+            return f"Result(properties=[{names_preview}])"
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return f"Result({self._java_result})"

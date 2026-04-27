@@ -72,7 +72,7 @@ def test_database_methods_integration(temp_db_path):
     """Test using multiple database methods together."""
     with arcadedb.create_database(temp_db_path) as db:
         db.command("sql", "CREATE VERTEX TYPE Person")
-        db.command("sql", "CREATE EDGE TYPE Knows UNIDIRECTIONAL")
+        db.command("sql", "CREATE EDGE TYPE Knows")
 
         # Insert data
         with db.transaction():

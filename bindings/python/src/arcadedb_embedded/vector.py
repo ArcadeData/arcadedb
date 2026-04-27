@@ -4,9 +4,17 @@ ArcadeDB Python Bindings - Vector Search
 Vector index and array conversion utilities for similarity search.
 """
 
+import jpype
 import jpype.types as jtypes
 
 from .exceptions import ArcadeDBError
+
+
+def _quote_identifier(identifier: str) -> str:
+    if not identifier:
+        raise ArcadeDBError("SQL identifier cannot be empty")
+
+    return "`" + identifier.replace("`", "``") + "`"
 
 
 def to_java_float_array(vector):
@@ -181,6 +189,186 @@ class VectorIndex:
 
         return normalized
 
+    def _get_primary_metadata(self):
+        index = self._get_primary_lsm_index()
+        if index is None:
+            raise ArcadeDBError("Underlying index does not expose vector metadata")
+        return index.getMetadata()
+
+    def _get_type_name(self):
+        index = self._get_primary_lsm_index()
+        if index is None:
+            raise ArcadeDBError("Underlying index does not expose vector type metadata")
+        return str(index.getTypeName())
+
+    def _get_vector_property_name(self):
+        index = self._get_primary_lsm_index()
+        if index is None:
+            raise ArcadeDBError(
+                "Underlying index does not expose vector property metadata"
+            )
+
+        property_names = index.getPropertyNames()
+        if hasattr(property_names, "get"):
+            return str(property_names.get(0))
+        return str(property_names[0])
+
+    def _get_id_property_name(self):
+        index = self._get_primary_lsm_index()
+        if index is None:
+            raise ArcadeDBError("Underlying index does not expose id-property metadata")
+        return str(index.getIdPropertyName())
+
+    def _lookup_query_vector_by_key(self, key):
+        vector_property = self._get_vector_property_name()
+        type_name = self._get_type_name()
+        id_property = self._get_id_property_name()
+        quoted_vector_property = _quote_identifier(vector_property)
+        quoted_type_name = _quote_identifier(type_name)
+        quoted_id_property = _quote_identifier(id_property)
+
+        result = None
+        try:
+            result = self._database.lookup_by_key(type_name, [id_property], [key])
+        except ArcadeDBError:
+            result = None
+
+        if result is None:
+            result = self._database.query(
+                "sql",
+                (
+                    f"SELECT {quoted_vector_property} AS `query_vector` FROM {quoted_type_name} "
+                    f"WHERE {quoted_id_property} = ? LIMIT 1"
+                ),
+                key,
+            ).first()
+
+        if result is None:
+            raise ArcadeDBError(
+                f"No record found in type '{type_name}' where {id_property} = {key!r}"
+            )
+
+        query_vector = result.get("query_vector")
+        if query_vector is None:
+            raise ArcadeDBError(
+                f"Record found for {id_property} = {key!r} "
+                f"but property '{vector_property}' is null"
+            )
+
+        return query_vector
+
+    def _build_allowed_rids_set(self, allowed_rids):
+        if not allowed_rids:
+            return None
+
+        HashSet = jpype.JClass("java.util.HashSet")
+
+        allowed_rids_set = HashSet()
+        for rid_value in allowed_rids:
+            allowed_rids_set.add(self._database.to_java_rid(rid_value))
+        return allowed_rids_set
+
+    def _lookup_record_by_rid(self, rid):
+        record = self._database.lookup_by_rid(str(rid))
+        if record is None:
+            raise ArcadeDBError(f"Vector search returned missing RID: {rid}")
+        return record
+
+    def _wrap_pair_results(self, pairs):
+        wrapped_results = []
+        for pair in pairs:
+            rid = pair.getFirst()
+            score = pair.getSecond()
+            wrapped_results.append((self._lookup_record_by_rid(rid), float(score)))
+
+        return wrapped_results
+
+    def _uses_reverse_score_sort(self):
+        try:
+            idx_to_check = self._get_primary_lsm_index()
+            return bool(
+                idx_to_check
+                and str(idx_to_check.getSimilarityFunction()) == "EUCLIDEAN"
+            )
+        except Exception:
+            return False
+
+    def _find_neighbor_pairs(
+        self,
+        idx,
+        *,
+        java_vector,
+        k,
+        allowed_rids_set,
+        approximate,
+        ef_search=None,
+    ):
+        if approximate:
+            if allowed_rids_set is not None:
+                return idx.findNeighborsFromVectorApproximate(
+                    java_vector, k, allowed_rids_set
+                )
+            return idx.findNeighborsFromVectorApproximate(java_vector, k)
+
+        if allowed_rids_set is not None and ef_search is not None:
+            return idx.findNeighborsFromVector(
+                java_vector, k, ef_search, allowed_rids_set
+            )
+        if allowed_rids_set is not None:
+            return idx.findNeighborsFromVector(java_vector, k, allowed_rids_set)
+        if ef_search is not None:
+            return idx.findNeighborsFromVector(java_vector, k, ef_search)
+        return idx.findNeighborsFromVector(java_vector, k)
+
+    def _sort_results(self, results):
+        results.sort(key=lambda item: item[1], reverse=self._uses_reverse_score_sort())
+        return results
+
+    def _collect_search_results(
+        self,
+        *,
+        java_vector,
+        k,
+        allowed_rids_set,
+        approximate,
+        ef_search=None,
+    ):
+        all_results = []
+
+        for idx in self._iter_lsm_indexes():
+            pairs = self._find_neighbor_pairs(
+                idx,
+                java_vector=java_vector,
+                k=k,
+                allowed_rids_set=allowed_rids_set,
+                approximate=approximate,
+                ef_search=ef_search,
+            )
+
+            all_results.extend(self._wrap_pair_results(pairs))
+
+        return self._sort_results(all_results)[:k]
+
+    def _run_search(
+        self,
+        *,
+        query_vector,
+        k,
+        allowed_rids,
+        approximate,
+        ef_search=None,
+    ):
+        java_vector = to_java_float_array(query_vector)
+        allowed_rids_set = self._build_allowed_rids_set(allowed_rids)
+
+        return self._collect_search_results(
+            java_vector=java_vector,
+            k=k,
+            allowed_rids_set=allowed_rids_set,
+            approximate=approximate,
+            ef_search=ef_search,
+        )
+
     def find_nearest(
         self,
         query_vector,
@@ -208,84 +396,18 @@ class VectorIndex:
 
         try:
             self._ensure_product_quantization_ready()
+            return self._run_search(
+                query_vector=query_vector,
+                k=k,
+                allowed_rids=allowed_rids,
+                approximate=False,
+                ef_search=effective_ef_search,
+            )
 
-            # Convert query vector to Java float array
-            java_vector = to_java_float_array(query_vector)
-
-            # Import Document wrapper and Java classes once
-            from com.arcadedb.database import RID
-            from java.util import HashSet
-
-            from .graph import Document
-
-            # Prepare RID filter if provided
-            allowed_rids_set = None
-            if allowed_rids:
-                allowed_rids_set = HashSet()
-                for rid_str in allowed_rids:
-                    allowed_rids_set.add(RID(self._database._java_db, rid_str))
-
-            all_results = []
-
-            def process_index(idx):
-                if "LSMVectorIndex" in idx.getClass().getName():
-                    if allowed_rids_set and effective_ef_search is not None:
-                        pairs = idx.findNeighborsFromVector(
-                            java_vector, k, effective_ef_search, allowed_rids_set
-                        )
-                    elif allowed_rids_set:
-                        pairs = idx.findNeighborsFromVector(
-                            java_vector, k, allowed_rids_set
-                        )
-                    elif effective_ef_search is not None:
-                        pairs = idx.findNeighborsFromVector(
-                            java_vector, k, effective_ef_search
-                        )
-                    else:
-                        pairs = idx.findNeighborsFromVector(java_vector, k)
-
-                    for pair in pairs:
-                        rid = pair.getFirst()
-                        score = pair.getSecond()
-                        record = self._database._java_db.lookupByRID(rid, True)
-                        # Wrap the record in Python wrapper
-                        wrapped_record = Document.wrap(record)
-                        all_results.append((wrapped_record, float(score)))
-
-            # Handle TypeIndex (multiple buckets)
-            if "TypeIndex" in self._java_index.getClass().getName():
-                for sub in self._java_index.getSubIndexes():
-                    process_index(sub)
-            else:
-                process_index(self._java_index)
-
-            # Determine sort order
-            reverse_sort = False
-            try:
-                idx_to_check = None
-                if "LSMVectorIndex" in self._java_index.getClass().getName():
-                    idx_to_check = self._java_index
-                elif "TypeIndex" in self._java_index.getClass().getName():
-                    subs = self._java_index.getSubIndexes()
-                    if not subs.isEmpty():
-                        idx_to_check = subs[0]
-
-                if idx_to_check:
-                    if str(idx_to_check.getSimilarityFunction()) == "EUCLIDEAN":
-                        reverse_sort = True
-            except Exception:
-                pass
-
-            all_results.sort(key=lambda x: x[1], reverse=reverse_sort)
-
-            # Final k truncation
-            return all_results[:k]
-
+        except ArcadeDBError:
+            raise
         except Exception as e:
-            # print(f"Debug VectorIndex: ERROR in find_nearest: {e}")
-            # import traceback
-            # traceback.print_exc()
-            return []
+            raise ArcadeDBError(f"Vector search failed: {e}") from e
 
     def get_size(self):
         """
@@ -299,6 +421,71 @@ class VectorIndex:
             return self._java_index.countEntries()
         except Exception as e:
             raise ArcadeDBError(f"Failed to get index size: {e}") from e
+
+    def get_metadata(self):
+        """
+        Get stable metadata for the vector index.
+
+        Returns:
+            dict: Index metadata including names, dimensions, similarity function,
+            id property, quantization, and selected tuning settings.
+        """
+        try:
+            index = self._get_primary_lsm_index()
+            meta = self._get_primary_metadata()
+
+            return {
+                "index_name": str(self._java_index.getName()),
+                "bucket_index_name": str(index.getName()),
+                "type_name": str(index.getTypeName()),
+                "vector_property": self._get_vector_property_name(),
+                "dimensions": int(meta.dimensions),
+                "similarity_function": str(meta.similarityFunction),
+                "id_property": str(meta.idPropertyName),
+                "quantization": str(meta.quantizationType),
+                "max_connections": int(meta.maxConnections),
+                "beam_width": int(meta.beamWidth),
+                "ef_search": int(meta.efSearch),
+                "location_cache_size": int(meta.locationCacheSize),
+                "graph_build_cache_size": int(meta.graphBuildCacheSize),
+                "mutations_before_rebuild": int(meta.mutationsBeforeRebuild),
+                "store_vectors_in_graph": bool(meta.storeVectorsInGraph),
+                "add_hierarchy": bool(meta.addHierarchy),
+                "build_state": str(meta.buildState),
+                "pq_subspaces": int(meta.pqSubspaces),
+                "pq_clusters": int(meta.pqClusters),
+                "pq_center_globally": bool(meta.pqCenterGlobally),
+                "pq_training_limit": int(meta.pqTrainingLimit),
+            }
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to read vector index metadata: {e}") from e
+
+    def find_nearest_by_key(
+        self,
+        key,
+        k=10,
+        ef_search=None,
+        allowed_rids=None,
+    ):
+        """
+        Find nearest neighbors using the indexed vector from an existing record.
+
+        Args:
+            key: Value of the configured id property for the source record.
+            k: Number of nearest neighbors to return (default: 10).
+            ef_search: Optional search beam width override for exact graph search.
+            allowed_rids: Optional RID whitelist to restrict the final search.
+
+        Returns:
+            List of tuples: [(record, score), ...]
+        """
+        query_vector = self._lookup_query_vector_by_key(key)
+        return self.find_nearest(
+            query_vector,
+            k=k,
+            ef_search=ef_search,
+            allowed_rids=allowed_rids,
+        )
 
     def find_nearest_approximate(
         self,
@@ -326,62 +513,15 @@ class VectorIndex:
 
             self._ensure_product_quantization_ready()
 
-            java_vector = to_java_float_array(query_vector)
+            return self._run_search(
+                query_vector=query_vector,
+                k=k,
+                allowed_rids=allowed_rids,
+                approximate=True,
+            )
 
-            from com.arcadedb.database import RID
-            from java.util import HashSet
-
-            from .graph import Document
-
-            allowed_rids_set = None
-            if allowed_rids:
-                allowed_rids_set = HashSet()
-                for rid_str in allowed_rids:
-                    allowed_rids_set.add(RID(self._database._java_db, rid_str))
-
-            all_results = []
-
-            def process_index(idx):
-                if "LSMVectorIndex" in idx.getClass().getName():
-                    if allowed_rids_set:
-                        pairs = idx.findNeighborsFromVectorApproximate(
-                            java_vector, k, allowed_rids_set
-                        )
-                    else:
-                        pairs = idx.findNeighborsFromVectorApproximate(java_vector, k)
-
-                    for pair in pairs:
-                        rid = pair.getFirst()
-                        score = pair.getSecond()
-                        record = self._database._java_db.lookupByRID(rid, True)
-                        wrapped_record = Document.wrap(record)
-                        all_results.append((wrapped_record, float(score)))
-
-            if "TypeIndex" in self._java_index.getClass().getName():
-                for sub in self._java_index.getSubIndexes():
-                    process_index(sub)
-            else:
-                process_index(self._java_index)
-
-            reverse_sort = False
-            try:
-                idx_to_check = None
-                if "LSMVectorIndex" in self._java_index.getClass().getName():
-                    idx_to_check = self._java_index
-                elif "TypeIndex" in self._java_index.getClass().getName():
-                    subs = self._java_index.getSubIndexes()
-                    if not subs.isEmpty():
-                        idx_to_check = subs[0]
-
-                if idx_to_check:
-                    if str(idx_to_check.getSimilarityFunction()) == "EUCLIDEAN":
-                        reverse_sort = True
-            except Exception:
-                pass
-
-            all_results.sort(key=lambda x: x[1], reverse=reverse_sort)
-            return all_results[:k]
-
+        except ArcadeDBError:
+            raise
         except Exception as e:
             raise ArcadeDBError(f"Approximate search failed: {e}") from e
 
