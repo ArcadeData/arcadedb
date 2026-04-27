@@ -1664,7 +1664,7 @@ public class CypherExecutionPlan {
           AbstractExecutionStep nextStep;
           if (relPattern.isVariableLength()) {
             nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
-                true, effectiveTargetNode, pathPattern.getEffectivePathMode(), new HashSet<>(boundVariables), context);
+                true, effectiveTargetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, boundVariables), context);
           } else {
             // Check if this hop requires IN traversal on a unidirectional edge.
             // Unidirectional edges don't store incoming links, so we must restructure:
@@ -2028,7 +2028,7 @@ public class CypherExecutionPlan {
                   // Variable-length path - pass path variable, relationship variable, and target node for label
                   // filtering. Snapshot previously bound variables for relationship-uniqueness scoping.
                   nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, true,
-                      targetNode, pathPattern.getEffectivePathMode(), new HashSet<>(legacyBoundVariables), context);
+                      targetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, legacyBoundVariables), context);
                 } else {
                   // Fixed-length relationship - pass path variable, target node pattern, and bound variables
                   nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
@@ -3509,6 +3509,29 @@ public class CypherExecutionPlan {
       }
     }
     return needs;
+  }
+
+  /**
+   * Computes the set of "previously bound" variables to pass to {@link ExpandPathStep} for a
+   * variable-length hop at {@code vlpHopIndex} within {@code pathPattern}.
+   * <p>
+   * OpenCypher path isomorphism applies within a single <em>path</em>, not within a MATCH clause.
+   * A relationship variable bound by a prior MATCH that is also explicitly named in the current
+   * path pattern is a same-path co-participant and must be checked for edge conflicts even though
+   * it was introduced before this MATCH. We therefore remove those co-participants from the
+   * exclusion set before handing it to ExpandPathStep.
+   */
+  private static Set<String> computePrevVarsForVlp(final PathPattern pathPattern, final int vlpHopIndex,
+      final Set<String> boundVariables) {
+    final Set<String> prevVars = new HashSet<>(boundVariables);
+    for (int j = 0; j < pathPattern.getRelationshipCount(); j++) {
+      if (j == vlpHopIndex)
+        continue;
+      final RelationshipPattern rel = pathPattern.getRelationship(j);
+      if (rel.getVariable() != null && !rel.getVariable().isEmpty())
+        prevVars.remove(rel.getVariable());
+    }
+    return prevVars;
   }
 
   /**
