@@ -1664,7 +1664,7 @@ public class CypherExecutionPlan {
           AbstractExecutionStep nextStep;
           if (relPattern.isVariableLength()) {
             nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
-                true, effectiveTargetNode, pathPattern.getEffectivePathMode(), context);
+                true, effectiveTargetNode, pathPattern.getEffectivePathMode(), new HashSet<>(boundVariables), context);
           } else {
             // Check if this hop requires IN traversal on a unidirectional edge.
             // Unidirectional edges don't store incoming links, so we must restructure:
@@ -2026,9 +2026,9 @@ public class CypherExecutionPlan {
                 AbstractExecutionStep nextStep;
                 if (relPattern.isVariableLength()) {
                   // Variable-length path - pass path variable, relationship variable, and target node for label
-                  // filtering
+                  // filtering. Snapshot previously bound variables for relationship-uniqueness scoping.
                   nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, true,
-                      targetNode, pathPattern.getEffectivePathMode(), context);
+                      targetNode, pathPattern.getEffectivePathMode(), new HashSet<>(legacyBoundVariables), context);
                 } else {
                   // Fixed-length relationship - pass path variable, target node pattern, and bound variables
                   nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
