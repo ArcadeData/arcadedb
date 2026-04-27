@@ -257,22 +257,21 @@ with arcadedb.create_database(db_path) as db:
 
     for query_num, cat_num in enumerate(sampled_categories, 1):
         category = f"category_{cat_num}"
+        index_name = "Article[embedding]"
 
         print(f"   🔍 Query {query_num}: Find documents similar to Category {cat_num}")
         print()
 
         query_embedding = create_mock_embedding(category, f"query{query_num}")
-
-        qvec_literal = (
-            "[" + ", ".join(str(float(x)) for x in query_embedding.tolist()) + "]"
-        )
         most_similar = db.query(
             "sql",
             (
                 "SELECT title, category, distance, (1 - distance) AS score "
-                "FROM (SELECT expand(vectorNeighbors('Article[embedding]', "
-                f"{qvec_literal}, 5))) ORDER BY distance"
+                "FROM (SELECT expand(vectorNeighbors(?, ?, ?))) ORDER BY distance"
             ),
+            index_name,
+            query_embedding,
+            5,
         ).to_list()
 
         print("      Top 5 MOST similar documents (smallest distance):")
@@ -288,9 +287,12 @@ with arcadedb.create_database(db_path) as db:
             "sql",
             (
                 "SELECT title, category, distance, (1 - distance) AS score "
-                "FROM (SELECT expand(vectorNeighbors('Article[embedding]', "
-                f"{qvec_literal}, 50))) WHERE category = ? ORDER BY distance LIMIT 5"
+                "FROM (SELECT expand(vectorNeighbors(?, ?, ?))) "
+                "WHERE category = ? ORDER BY distance LIMIT 5"
             ),
+            index_name,
+            query_embedding,
+            50,
             category,
         ).to_list()
 

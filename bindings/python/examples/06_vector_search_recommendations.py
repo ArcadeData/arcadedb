@@ -377,6 +377,7 @@ def vector_based_recommendations(db, model, movie_title, property_suffix="", lim
         Query time in seconds
     """
     embedding_prop = f"embedding{property_suffix}"
+    index_name = f"Movie[{embedding_prop}]"
 
     # Find the movie to get its genres
     movies = list(
@@ -402,18 +403,16 @@ def vector_based_recommendations(db, model, movie_title, property_suffix="", lim
     )
 
     start_time = time.time()
-    qvec_literal = (
-        "[" + ", ".join(str(float(x)) for x in query_embedding.tolist()) + "]"
-    )
     rows = db.query(
         "sql",
         (
             "SELECT title, distance, (1 - distance) AS score "
-            "FROM (SELECT expand(vectorNeighbors('Movie["
-            f"{embedding_prop}]', "
-            f"{qvec_literal}, {int(limit + 5)}))) WHERE title <> ? "
+            "FROM (SELECT expand(vectorNeighbors(?, ?, ?))) WHERE title <> ? "
             "ORDER BY distance LIMIT ?"
         ),
+        index_name,
+        query_embedding,
+        int(limit + 5),
         movie_title,
         limit,
     ).to_list()

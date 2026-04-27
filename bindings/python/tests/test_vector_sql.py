@@ -520,6 +520,32 @@ class TestVectorSQL:
             # Maybe it expects type name?
             pass
 
+    def test_vector_neighbors_accepts_parameterized_index_and_vector(self, test_db):
+        """SQL vectorNeighbors should accept bound index and vector parameters."""
+        test_db.command("sql", "CREATE VERTEX TYPE ParamItem")
+        test_db.command("sql", "CREATE PROPERTY ParamItem.vec ARRAY_OF_FLOATS")
+
+        test_db.command(
+            "sql",
+            'CREATE INDEX ON `ParamItem` (vec) LSM_VECTOR METADATA {"dimensions": 2}',
+        )
+
+        with test_db.transaction():
+            test_db.command("sql", "INSERT INTO `ParamItem` SET vec = [1.0, 0.0]")
+            test_db.command("sql", "INSERT INTO `ParamItem` SET vec = [0.0, 1.0]")
+
+        row = test_db.query(
+            "sql",
+            "SELECT vectorNeighbors(?, ?, ?) as res",
+            "ParamItem[vec]",
+            arcadedb.to_java_float_array([0.9, 0.1]),
+            1,
+        ).first()
+
+        res = row.get("res") if row else None
+        assert res is not None
+        assert len(res) == 1
+
     def test_vector_delete_and_search_others_sql(self, test_db):
         """Test deleting vertices in a larger dataset using SQL."""
         import random

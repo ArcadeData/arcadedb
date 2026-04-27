@@ -590,19 +590,16 @@ def search_arcadedb(
 
     db = index["db"]
     index_name = index["name"]
-    query_literals = [vector_to_arcadedb_literal(qvec) for qvec in queries]
 
     for q_idx, qid in enumerate(qids):
-        sql = (
-            "SELECT vectorNeighbors("
-            f"'{index_name}', {query_literals[q_idx]}, {int(k)}, {int(ef_search)}"
-            ") as res"
-        )
-
         start = time.perf_counter()
         row = db.query(
             "sql",
-            sql,
+            "SELECT vectorNeighbors(?, ?, ?, ?) as res",
+            index_name,
+            queries[q_idx],
+            int(k),
+            int(ef_search),
         ).first()
         neighbors = row.get("res") if row else []
         result_ids: List[int] = []

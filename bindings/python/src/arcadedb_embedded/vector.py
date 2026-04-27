@@ -10,6 +10,13 @@ import jpype.types as jtypes
 from .exceptions import ArcadeDBError
 
 
+def _quote_identifier(identifier: str) -> str:
+    if not identifier:
+        raise ArcadeDBError("SQL identifier cannot be empty")
+
+    return "`" + identifier.replace("`", "``") + "`"
+
+
 def to_java_float_array(vector):
     """
     Convert a Python array-like object to a Java float array.
@@ -216,6 +223,9 @@ class VectorIndex:
         vector_property = self._get_vector_property_name()
         type_name = self._get_type_name()
         id_property = self._get_id_property_name()
+        quoted_vector_property = _quote_identifier(vector_property)
+        quoted_type_name = _quote_identifier(type_name)
+        quoted_id_property = _quote_identifier(id_property)
 
         result = None
         try:
@@ -227,8 +237,8 @@ class VectorIndex:
             result = self._database.query(
                 "sql",
                 (
-                    f"SELECT {vector_property} FROM {type_name} "
-                    f"WHERE {id_property} = ? LIMIT 1"
+                    f"SELECT {quoted_vector_property} AS `query_vector` FROM {quoted_type_name} "
+                    f"WHERE {quoted_id_property} = ? LIMIT 1"
                 ),
                 key,
             ).first()
@@ -238,7 +248,7 @@ class VectorIndex:
                 f"No record found in type '{type_name}' where {id_property} = {key!r}"
             )
 
-        query_vector = result.get(vector_property)
+        query_vector = result.get("query_vector")
         if query_vector is None:
             raise ArcadeDBError(
                 f"Record found for {id_property} = {key!r} "
