@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -39,22 +40,20 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   public boolean execute(Object left, Object right) {
-    if (left instanceof Collection) {
-      if (right instanceof Collection<?> collection)
-        return ((Collection<?>) left).containsAll(collection);
-
+    if (left instanceof Collection<?> leftCollection) {
       if (right instanceof Iterable<?> iterable)
         right = iterable.iterator();
+      else if (right != null && right.getClass().isArray())
+        right = MultiValue.getMultiValueIterator(right);
 
       if (right instanceof Iterator<?> iterator) {
         while (iterator.hasNext()) {
-          final Object next = iterator.next();
-          if (!((Collection<?>) left).contains(next))
+          if (!containsItem(leftCollection, iterator.next()))
             return false;
-
         }
+        return true;
       }
-      return ((Collection) left).contains(right);
+      return containsItem(leftCollection, right);
     }
     if (left instanceof Iterable<?> iterable)
       left = iterable.iterator();
@@ -62,26 +61,35 @@ public class ContainsAllCondition extends BooleanExpression {
       left = MultiValue.getMultiValueIterator(left);
 
     if (left instanceof Iterator<?> leftIterator) {
-      if (!(right instanceof Iterable))
-        right = Set.of(right);
+      // collect into a list so we can re-scan it for every right-hand item
+      final List<Object> leftItems = new ArrayList<>();
+      while (leftIterator.hasNext())
+        leftItems.add(leftIterator.next());
 
-      right = ((Iterable<?>) right).iterator();
+      if (right instanceof Iterable<?> iterable)
+        right = iterable.iterator();
+      else if (right != null && right.getClass().isArray())
+        right = MultiValue.getMultiValueIterator(right);
+      else
+        right = Set.of(right).iterator();
 
       final Iterator<?> rightIterator = (Iterator<?>) right;
       while (rightIterator.hasNext()) {
-        final Object leftItem = rightIterator.next();
-        boolean found = false;
-        while (leftIterator.hasNext()) {
-          final Object rightItem = leftIterator.next();
-          if (leftItem != null && leftItem.equals(rightItem)) {
-            found = true;
-            break;
-          }
-        }
-        if (!found)
+        if (!containsItem(leftItems, rightIterator.next()))
           return false;
       }
       return true;
+    }
+    return false;
+  }
+
+  private static boolean containsItem(final Collection<?> collection, final Object item) {
+    for (final Object o : collection) {
+      if (o == null) {
+        if (item == null)
+          return true;
+      } else if (QueryOperatorEquals.equals(o, item))
+        return true;
     }
     return false;
   }

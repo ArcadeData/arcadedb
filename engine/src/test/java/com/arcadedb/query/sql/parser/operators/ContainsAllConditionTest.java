@@ -77,8 +77,20 @@ class ContainsAllConditionTest {
       }
     };
 
+    final Iterable<Object> missing = new Iterable<>() {
+      private final List<Integer> ls = Arrays.asList(2, 99);
+
+      @Override
+      public Iterator iterator() {
+        return ls.iterator();
+      }
+    };
+
     final ContainsAllCondition op = new ContainsAllCondition(-1);
-    assertThat(op.execute(left, right)).isFalse();
+    // [3, 1, 2] contains all of [2, 3]
+    assertThat(op.execute(left, right)).isTrue();
+    // [3, 1, 2] does not contain 99
+    assertThat(op.execute(left, missing)).isFalse();
   }
 
   @Test
