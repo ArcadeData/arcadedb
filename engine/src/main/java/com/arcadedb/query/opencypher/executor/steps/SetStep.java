@@ -253,7 +253,7 @@ public class SetStep extends AbstractExecutionStep {
       return;
     for (final String propName : result.getPropertyNames()) {
       final Object prop = result.getProperty(propName);
-      if (prop instanceof Document other && originalRid.equals(other.getIdentity()))
+      if (prop instanceof Document other && other != updatedDoc && originalRid.equals(other.getIdentity()))
         ((ResultInternal) result).setProperty(propName, updatedDoc);
     }
   }
@@ -293,7 +293,7 @@ public class SetStep extends AbstractExecutionStep {
     // Delete old vertex
     vertex.delete();
 
-    ((ResultInternal) result).setProperty(item.getVariable(), newVertex);
+    propagateUpdateToSameNodeAliases(result, vertex, newVertex);
   }
 
   private void validatePropertyValue(final Object value) {

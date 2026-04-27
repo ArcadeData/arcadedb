@@ -411,6 +411,21 @@ public class OpenCypherSetTest {
   }
 
   @Test
+  void setLabelThroughOneAliasPropagatestoOtherAliasOnSameNode() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30})");
+    });
+
+    final ResultSet result = database.command("opencypher",
+        "MATCH (n:Person {name: 'Alice'}), (m:Person {name: 'Alice'}) SET n:Employee RETURN n.name AS n_name, m.name AS m_name");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat((String) row.getProperty("n_name")).isEqualTo("Alice");
+    assertThat((String) row.getProperty("m_name")).isEqualTo("Alice");
+  }
+
+  @Test
   void setAfterCreate() {
     // CREATE and SET in same query
     database.transaction(() -> {
