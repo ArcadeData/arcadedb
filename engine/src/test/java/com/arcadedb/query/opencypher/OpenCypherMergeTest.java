@@ -302,6 +302,129 @@ public class OpenCypherMergeTest {
     assertThat(labels.get(0)).doesNotContain("`");
   }
 
+  /** See issue #3998 */
+  @Nested
+  class MergeUnboundLabelEndpointRegression {
+    @Test
+    void unboundLabelOnlyEndpointCreatesNewNodeWhenSameLabelExists() {
+      // Setup: Alice + an existing Company
+      database.transaction(() -> {
+        database.command("opencypher",
+            "CREATE (:Person {name: 'Alice'}), (:Company {name: 'TechCorp', industry: 'Technology'})");
+      });
+
+      // c is unbound and label-only — MERGE must create a fresh Company, not reuse TechCorp
+      database.transaction(() -> {
+        database.command("opencypher",
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
+      });
+
+      // Two Company nodes: TechCorp + the new label-only one
+      final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
+      assertThat(countRs.hasNext()).isTrue();
+      assertThat(((Number) countRs.next().getProperty("cnt")).longValue()).isEqualTo(2L);
+
+      // The merged Company was freshly created and has no properties
+      final ResultSet mergedRs = database.query("opencypher",
+          "MATCH (p:Person {name: 'Alice'})-[:WORKS_AT]->(c:Company) RETURN c");
+      assertThat(mergedRs.hasNext()).isTrue();
+      final Vertex mergedCompany = (Vertex) mergedRs.next().toElement();
+      assertThat((Object) mergedCompany.get("name")).isNull();
+    }
+
+    @Test
+    void unboundLabelOnlyEndpointCreatesNodeWhenNoSameLabelExists() {
+      // Control case: no Company exists yet — both old and new code should create one
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (:Person {name: 'Alice'})");
+      });
+
+      database.transaction(() -> {
+        database.command("opencypher",
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
+      });
+
+      final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
+      assertThat(((Number) countRs.next().getProperty("cnt")).longValue()).isEqualTo(1L);
+
+      final ResultSet mergedRs = database.query("opencypher",
+          "MATCH (:Person {name: 'Alice'})-[:WORKS_AT]->(c:Company) RETURN c");
+      assertThat(mergedRs.hasNext()).isTrue();
+      assertThat((Object) ((Vertex) mergedRs.next().toElement()).get("name")).isNull();
+    }
+
+    @Test
+    void explicitlyBoundEndpointStillReusesExistingNode() {
+      // Control case: c is explicitly bound via MATCH — must reuse TechCorp
+      database.transaction(() -> {
+        database.command("opencypher",
+            "CREATE (:Person {name: 'Alice'}), (:Company {name: 'TechCorp', industry: 'Technology'})");
+      });
+
+      database.transaction(() -> {
+        database.command("opencypher",
+            "MATCH (p:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) "
+                + "MERGE (p)-[r:WORKS_AT {since: 2020}]->(c)");
+      });
+
+      final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
+      assertThat(((Number) countRs.next().getProperty("cnt")).longValue()).isEqualTo(1L);
+
+      final ResultSet mergedRs = database.query("opencypher",
+          "MATCH (:Person {name: 'Alice'})-[:WORKS_AT]->(c:Company) RETURN c.name AS name");
+      assertThat(mergedRs.hasNext()).isTrue();
+      assertThat((String) mergedRs.next().getProperty("name")).isEqualTo("TechCorp");
+    }
+
+    @Test
+    void unboundLabelOnlyEndpointCreatesNewNodeWithMultipleExistingSameLabel() {
+      database.transaction(() -> {
+        database.command("opencypher",
+            "CREATE (:Person {name: 'Alice'}), "
+                + "(:Company {name: 'TechCorp', industry: 'Technology'}), "
+                + "(:Company {name: 'DataInc', industry: 'Analytics'})");
+      });
+
+      database.transaction(() -> {
+        database.command("opencypher",
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
+      });
+
+      // TechCorp + DataInc + 1 new = 3 total
+      final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
+      assertThat(((Number) countRs.next().getProperty("cnt")).longValue()).isEqualTo(3L);
+
+      // The freshly created Company has no properties
+      final ResultSet mergedRs = database.query("opencypher",
+          "MATCH (:Person {name: 'Alice'})-[:WORKS_AT]->(c:Company) RETURN c");
+      assertThat(mergedRs.hasNext()).isTrue();
+      assertThat((Object) ((Vertex) mergedRs.next().toElement()).get("name")).isNull();
+    }
+
+    @Test
+    void secondMergeReusesCreatedPathAndDoesNotCreateAnotherNode() {
+      // Idempotency: the second MERGE must find the path created by the first
+      database.transaction(() -> {
+        database.command("opencypher",
+            "CREATE (:Person {name: 'Alice'}), (:Company {name: 'TechCorp', industry: 'Technology'})");
+      });
+
+      database.transaction(() -> {
+        database.command("opencypher",
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
+      });
+
+      database.transaction(() -> {
+        database.command("opencypher",
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
+      });
+
+      // TechCorp + 1 new; the second MERGE must not create a third
+      final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
+      assertThat(((Number) countRs.next().getProperty("cnt")).longValue()).isEqualTo(2L);
+    }
+  }
+
   /** See issue #3131 */
   @Nested
   class MatchIdThenMergeRelationshipRegression {
