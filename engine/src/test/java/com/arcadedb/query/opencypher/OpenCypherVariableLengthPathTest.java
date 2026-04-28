@@ -29,6 +29,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 
@@ -179,5 +182,63 @@ public class OpenCypherVariableLengthPathTest {
     } finally {
       db2.drop();
     }
+  }
+
+  @Test
+  void collectRelThenVlpReturnsRows() {
+    // Issue #3997: collect(r) carried via WITH drops all rows when a later MATCH uses VLP
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person)
+        WITH a, collect(r) AS rels
+        MATCH path = (a)-[:KNOWS*1..2]->(c:Person)
+        RETURN length(path) AS len, size(rels) AS relationCount
+        ORDER BY len""")) {
+      rs.forEachRemaining(rows::add);
+    }
+
+    assertThat(rows).as("collect(r) + VLP should return 2 rows (len=1 and len=2)").hasSize(2);
+    assertThat(rows.get(0).<Long>getProperty("len")).isEqualTo(1L);
+    assertThat(rows.get(0).<Long>getProperty("relationCount")).isEqualTo(1L);
+    assertThat(rows.get(1).<Long>getProperty("len")).isEqualTo(2L);
+    assertThat(rows.get(1).<Long>getProperty("relationCount")).isEqualTo(1L);
+  }
+
+  @Test
+  void collectDistinctRelThenVlpReturnsRows() {
+    // Issue #3997: collect(DISTINCT r) carried via WITH also drops all rows
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:Person {name: 'Alice'})
+        OPTIONAL MATCH (a)-[r:KNOWS]->(b:Person)
+        WITH a, collect(DISTINCT r) AS rels
+        MATCH path = (a)-[:KNOWS*1..2]->(c:Person)
+        RETURN length(path) AS len, size(rels) AS relationCount
+        ORDER BY len""")) {
+      rs.forEachRemaining(rows::add);
+    }
+
+    assertThat(rows).as("collect(DISTINCT r) + VLP should return 2 rows").hasSize(2);
+    assertThat(rows.get(0).<Long>getProperty("len")).isEqualTo(1L);
+    assertThat(rows.get(1).<Long>getProperty("len")).isEqualTo(2L);
+  }
+
+  @Test
+  void collectScalarThenVlpReturnsRows() {
+    // Issue #3997 control case: collect(type(r)) should work (and does)
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person)
+        WITH a, collect(type(r)) AS relTypes
+        MATCH path = (a)-[:KNOWS*1..2]->(c:Person)
+        RETURN length(path) AS len, relTypes
+        ORDER BY len""")) {
+      rs.forEachRemaining(rows::add);
+    }
+
+    assertThat(rows).as("collect(type(r)) + VLP control case should also return 2 rows").hasSize(2);
   }
 }
