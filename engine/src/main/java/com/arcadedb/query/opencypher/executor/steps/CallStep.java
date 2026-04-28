@@ -118,8 +118,12 @@ public class CallStep extends AbstractExecutionStep {
     final boolean hasYield = callClause.hasYield() && !callClause.isYieldAll();
     final boolean yieldHasWhere = hasYield && callClause.getYieldWhere() != null;
 
-    // Collect all results from all input rows
-    final List<Iterator<?>> allIters = new ArrayList<>();
+    // Each entry pairs the originating inputRow with the procedure's result iterator.
+    // Pairing is required so variables carried in from preceding WITH/MATCH clauses
+    // can be merged into every yielded result (issue #3996).
+    // Capacity is bounded by nRecords (the upstream batch limit); capped at 1M to guard
+    // against Integer.MAX_VALUE being passed as a "fetch all" sentinel.
+    final List<Map.Entry<Result, Iterator<?>>> allPairs = new ArrayList<>(nRecords > 0 && nRecords < 1000000 ? nRecords : 10);
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -131,17 +135,24 @@ public class CallStep extends AbstractExecutionStep {
 
         if (callResult == null) {
           if (callClause.isOptional())
-            allIters.add(java.util.Collections.singletonList((Object) mergeWithInputRow(inputRow, null)).iterator());
+            // Use an empty result so YIELD only sees the procedure's outputs (null for every
+            // field). Pre-merging inputRow here would let YIELD incorrectly read outer-scope
+            // variables if they share a name with a YIELD field. The lazy iterator merges
+            // inputRow later, after YIELD filtering.
+            allPairs.add(Map.entry(inputRow,
+                java.util.Collections.singletonList((Object) new ResultInternal()).iterator()));
           continue;
         }
 
+        final Iterator<?> iter;
         if (callResult instanceof Iterator) {
-          allIters.add((Iterator<?>) callResult);
+          iter = (Iterator<?>) callResult;
         } else if (callResult instanceof Collection) {
-          allIters.add(((Collection<?>) callResult).iterator());
+          iter = ((Collection<?>) callResult).iterator();
         } else {
-          allIters.add(java.util.Collections.singletonList(callResult).iterator());
+          iter = java.util.Collections.singletonList(callResult).iterator();
         }
+        allPairs.add(Map.entry(inputRow, iter));
       } finally {
         if (context.isProfiling())
           cost += (System.nanoTime() - begin);
@@ -176,9 +187,12 @@ public class CallStep extends AbstractExecutionStep {
       };
     }
 
-    // Standard path: lazily iterate through all result iterators
-    final Iterator<Iterator<?>> iterOfIters = allIters.iterator();
+    // Standard path: lazily iterate through all (inputRow, resultIterator) pairs.
+    // Each yielded result is merged with its originating inputRow so that variables
+    // from a preceding WITH/MATCH clause remain visible after CALL ... YIELD.
+    final Iterator<Map.Entry<Result, Iterator<?>>> pairIter = allPairs.iterator();
     final Iterator<Result> lazyIter = new Iterator<>() {
+      private Result currentInputRow = null;
       private Iterator<?> currentIter = null;
       private Result next = null;
 
@@ -190,15 +204,17 @@ public class CallStep extends AbstractExecutionStep {
             if (hasYield) {
               final ResultInternal filtered = applyYieldToSingleResult(converted);
               if (filtered != null) {
-                next = filtered;
+                next = mergeWithInputRow(currentInputRow, filtered);
                 return true;
               }
             } else {
-              next = converted;
+              next = mergeWithInputRow(currentInputRow, converted);
               return true;
             }
-          } else if (iterOfIters.hasNext()) {
-            currentIter = iterOfIters.next();
+          } else if (pairIter.hasNext()) {
+            final Map.Entry<Result, Iterator<?>> pair = pairIter.next();
+            currentInputRow = pair.getKey();
+            currentIter = pair.getValue();
           } else {
             return false;
           }
