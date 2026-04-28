@@ -42,6 +42,12 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class NetworkDelayIT extends ContainersTestTemplate {
 
+  @Override
+  protected boolean useToxiproxy() {
+    return true;
+  }
+
+
   // Proxy ports for Raft (consensus) traffic per node
   private static final int RAFT_PROXY_PORT_0 = 8660;
   private static final int RAFT_PROXY_PORT_1 = 8661;

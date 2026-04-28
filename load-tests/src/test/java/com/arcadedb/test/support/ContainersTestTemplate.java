@@ -129,22 +129,35 @@ public abstract class ContainersTestTemplate {
     // NETWORK
     network = Network.newNetwork();
 
-    // Toxiproxy
-    logger.info("Creating a Toxiproxy container");
-    toxiproxy = new ToxiproxyContainer("ghcr.io/shopify/toxiproxy:2.12.0")
-        .withNetwork(network)
-        .withNetworkAliases("proxy");
-    Startables.deepStart(toxiproxy).join();
-    toxiproxyClient = new ToxiproxyClient(toxiproxy.getHost(), toxiproxy.getControlPort());
+    // Toxiproxy — only started when the subclass declares it needs fault injection
+    if (useToxiproxy()) {
+      logger.info("Creating a Toxiproxy container");
+      toxiproxy = new ToxiproxyContainer("ghcr.io/shopify/toxiproxy:2.12.0")
+          .withNetwork(network)
+          .withNetworkAliases("proxy");
+      Startables.deepStart(toxiproxy).join();
+      toxiproxyClient = new ToxiproxyClient(toxiproxy.getHost(), toxiproxy.getControlPort());
+    }
 
+  }
+
+  /**
+   * Override and return {@code true} in subclasses that inject network faults via Toxiproxy.
+   * When {@code false} (the default), no Toxiproxy container is started, reducing resource
+   * usage and eliminating spurious startup failures on resource-constrained CI runners.
+   */
+  protected boolean useToxiproxy() {
+    return false;
   }
 
   @AfterEach
   public void tearDown() {
     stopContainers();
 
-    logger.info("Stopping the Toxiproxy container");
-    toxiproxy.stop();
+    if (toxiproxy != null) {
+      logger.info("Stopping the Toxiproxy container");
+      toxiproxy.stop();
+    }
 
     deleteContainersDirectories();
 
