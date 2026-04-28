@@ -20,12 +20,12 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
-import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
@@ -178,8 +178,9 @@ public class SetStep extends AbstractExecutionStep {
       mutableDoc.set(item.getProperty(), value);
     }
     mutableDoc.save();
-
-    if (variableToUpdate != null)
+    propagateUpdateToSameNodeAliases(result, doc, mutableDoc);
+    // Fallback: ensure the named variable is updated even when doc has no identity yet
+    if (variableToUpdate != null && doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(variableToUpdate, mutableDoc);
   }
 
@@ -210,7 +211,9 @@ public class SetStep extends AbstractExecutionStep {
     }
 
     mutableDoc.save();
-    ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+    propagateUpdateToSameNodeAliases(result, doc, mutableDoc);
+    if (doc.getIdentity() == null)
+      ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
   }
 
   @SuppressWarnings("unchecked")
@@ -235,7 +238,24 @@ public class SetStep extends AbstractExecutionStep {
     }
 
     mutableDoc.save();
-    ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+    propagateUpdateToSameNodeAliases(result, doc, mutableDoc);
+    if (doc.getIdentity() == null)
+      ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+  }
+
+  /**
+   * After mutating a document, update every alias in the result row that points to the same node
+   * (identified by RID) so all aliases observe the new state within the same query.
+   */
+  private void propagateUpdateToSameNodeAliases(final Result result, final Document originalDoc, final Document updatedDoc) {
+    final RID originalRid = originalDoc.getIdentity();
+    if (originalRid == null)
+      return;
+    for (final String propName : result.getPropertyNames()) {
+      final Object prop = result.getProperty(propName);
+      if (prop instanceof Document other && other != updatedDoc && originalRid.equals(other.getIdentity()))
+        ((ResultInternal) result).setProperty(propName, updatedDoc);
+    }
   }
 
   private void applyLabels(final SetClause.SetItem item, final Result result) {
@@ -273,7 +293,7 @@ public class SetStep extends AbstractExecutionStep {
     // Delete old vertex
     vertex.delete();
 
-    ((ResultInternal) result).setProperty(item.getVariable(), newVertex);
+    propagateUpdateToSameNodeAliases(result, vertex, newVertex);
   }
 
   private void validatePropertyValue(final Object value) {

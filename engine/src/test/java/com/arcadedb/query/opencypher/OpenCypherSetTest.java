@@ -374,6 +374,57 @@ public class OpenCypherSetTest {
     assertThat(vb.get("propB")).isNull();
   }
 
+  /**
+   * Issue #4000: SET through one alias must be visible through other aliases bound to the same node in the same row.
+   */
+  @Test
+  void setThroughOneAliasPropagatestoOtherAliasOnSameNode() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25})");
+    });
+
+    final ResultSet result = database.command("opencypher",
+        "MATCH (n:Person {name: 'Alice'}), (m:Person {name: 'Alice'}) SET n.age = 35 RETURN n.age AS n_age, m.age AS m_age");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat(((Number) row.getProperty("n_age")).intValue()).isEqualTo(35);
+    assertThat(((Number) row.getProperty("m_age")).intValue()).isEqualTo(35);
+  }
+
+  /**
+   * Issue #4000: stronger reproducer — full node aliases bound via WITH+MATCH to the same node must reflect a SET on the other alias.
+   */
+  @Test
+  void setThroughOneAliasPropagatestoOtherAliasOnSameNodeFullNode() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30})");
+    });
+
+    final ResultSet result = database.command("opencypher",
+        "MATCH (n:Person {name: 'Alice'}) WITH n MATCH (m:Person {name: 'Alice'}) SET n.age = 35 RETURN n.age AS n_age, m.age AS m_age");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat(((Number) row.getProperty("n_age")).intValue()).isEqualTo(35);
+    assertThat(((Number) row.getProperty("m_age")).intValue()).isEqualTo(35);
+  }
+
+  @Test
+  void setLabelThroughOneAliasPropagatestoOtherAliasOnSameNode() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30})");
+    });
+
+    final ResultSet result = database.command("opencypher",
+        "MATCH (n:Person {name: 'Alice'}), (m:Person {name: 'Alice'}) SET n:Employee RETURN n.name AS n_name, m.name AS m_name");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat((String) row.getProperty("n_name")).isEqualTo("Alice");
+    assertThat((String) row.getProperty("m_name")).isEqualTo("Alice");
+  }
+
   @Test
   void setAfterCreate() {
     // CREATE and SET in same query
