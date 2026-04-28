@@ -118,8 +118,11 @@ public class CallStep extends AbstractExecutionStep {
     final boolean hasYield = callClause.hasYield() && !callClause.isYieldAll();
     final boolean yieldHasWhere = hasYield && callClause.getYieldWhere() != null;
 
-    // Collect (inputRow, resultIterator) pairs so each yielded result can be merged
-    // with the variables carried in from the preceding WITH/MATCH clause (issue #3996)
+    // Each entry pairs the originating inputRow with the procedure's result iterator.
+    // Pairing is required so variables carried in from preceding WITH/MATCH clauses
+    // can be merged into every yielded result (issue #3996).
+    // Capacity is bounded by nRecords (the upstream batch limit); capped at 1M to guard
+    // against Integer.MAX_VALUE being passed as a "fetch all" sentinel.
     final List<Map.Entry<Result, Iterator<?>>> allPairs = new ArrayList<>(nRecords > 0 && nRecords < 1000000 ? nRecords : 10);
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
@@ -132,6 +135,10 @@ public class CallStep extends AbstractExecutionStep {
 
         if (callResult == null) {
           if (callClause.isOptional())
+            // Use an empty result so YIELD only sees the procedure's outputs (null for every
+            // field). Pre-merging inputRow here would let YIELD incorrectly read outer-scope
+            // variables if they share a name with a YIELD field. The lazy iterator merges
+            // inputRow later, after YIELD filtering.
             allPairs.add(Map.entry(inputRow,
                 java.util.Collections.singletonList((Object) new ResultInternal()).iterator()));
           continue;
