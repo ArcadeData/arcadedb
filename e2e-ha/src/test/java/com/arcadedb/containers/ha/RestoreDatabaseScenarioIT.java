@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -118,8 +119,8 @@ class RestoreDatabaseScenarioIT extends ContainersTestTemplate {
       waitForAllNodesKnowLeader(servers, 30);
       final int leaderIdx = waitForRaftLeader(servers, 30);
       if (leaderIdx != 0) {
-        logger.info("Node 0 is not the leader (leader is {}); attempting leadership transfer", leaderIdx);
-        transferLeadershipAndWait(servers, 30);
+        logger.info("Node 0 is not the leader (leader is {}); transferring leadership to node 0", leaderIdx);
+        transferLeadershipToNode(servers, servers.get(0), 30);
         assertThat(waitForRaftLeader(servers, 30)).as("Node 0 must be leader before restore").isEqualTo(0);
       }
 
@@ -177,7 +178,7 @@ class RestoreDatabaseScenarioIT extends ContainersTestTemplate {
           final var errStream = connection.getErrorStream();
           if (errStream != null)
             logger.error("Server command '{}' returned HTTP {}: {}", command, status,
-                new String(errStream.readAllBytes()));
+                new String(errStream.readAllBytes(), StandardCharsets.UTF_8));
         } catch (final Exception ignored) {
         }
       }
