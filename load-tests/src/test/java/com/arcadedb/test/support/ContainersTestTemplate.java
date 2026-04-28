@@ -703,7 +703,9 @@ public abstract class ContainersTestTemplate {
       logger.warn("Leadership transfer to {} failed: {}", targetPeerId, e.getMessage());
     }
 
-    waitForRaftLeader(servers, timeoutSeconds);
+    final int newLeaderIdx = waitForRaftLeader(servers, timeoutSeconds);
+    if (newLeaderIdx >= 0 && newLeaderIdx != servers.indexOf(targetNode))
+      logger.warn("Leadership transfer: expected {} but new leader is node {}", targetPeerId, newLeaderIdx);
   }
 
   /**
@@ -729,14 +731,14 @@ public abstract class ContainersTestTemplate {
           "http://" + leader.host() + ":" + leader.httpPort() + "/api/v1/cluster/leader").toURL().openConnection();
       conn.setRequestMethod("POST");
       conn.setRequestProperty("Authorization",
-          "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes()));
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes(StandardCharsets.UTF_8)));
       conn.setRequestProperty("Content-Type", "application/json");
       conn.setConnectTimeout(5000);
       conn.setReadTimeout(30000);
       conn.setDoOutput(true);
       try {
         // Transfer to any peer (Ratis picks the best candidate)
-        conn.getOutputStream().write("{\"peerId\":\"\",\"timeoutMs\":30000}".getBytes());
+        conn.getOutputStream().write("{\"peerId\":\"\",\"timeoutMs\":30000}".getBytes(StandardCharsets.UTF_8));
         final int status = conn.getResponseCode();
         if (status == 200)
           logger.info("Leadership transfer initiated");
