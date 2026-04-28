@@ -120,7 +120,7 @@ public class CallStep extends AbstractExecutionStep {
 
     // Collect (inputRow, resultIterator) pairs so each yielded result can be merged
     // with the variables carried in from the preceding WITH/MATCH clause (issue #3996)
-    final List<Map.Entry<Result, Iterator<?>>> allPairs = new ArrayList<>();
+    final List<Map.Entry<Result, Iterator<?>>> allPairs = new ArrayList<>(nRecords > 0 && nRecords < 1000000 ? nRecords : 10);
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -133,7 +133,7 @@ public class CallStep extends AbstractExecutionStep {
         if (callResult == null) {
           if (callClause.isOptional())
             allPairs.add(Map.entry(inputRow,
-                java.util.Collections.singletonList((Object) mergeWithInputRow(inputRow, null)).iterator()));
+                java.util.Collections.singletonList((Object) new ResultInternal()).iterator()));
           continue;
         }
 
