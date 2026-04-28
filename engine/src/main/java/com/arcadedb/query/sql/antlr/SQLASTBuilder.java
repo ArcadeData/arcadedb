@@ -1849,6 +1849,41 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Bare function call as a boolean predicate in a WHERE clause
+   * (e.g., {@code WHERE SEARCH_INDEX('idx','x')}).
+   * <p>
+   * The parsed call is wrapped into a synthetic {@code <call> = true} {@link BinaryCondition} so
+   * that the existing indexable-function and per-row evaluation paths continue to work without
+   * any change in the executor (issue #4023).
+   */
+  @Override
+  public BinaryCondition visitFunctionCallCondition(final SQLParser.FunctionCallConditionContext ctx) {
+    final BaseExpression baseExpr = new BaseExpression(-1);
+
+    final FunctionCall funcCall = (FunctionCall) visit(ctx.functionCall());
+
+    final LevelZeroIdentifier levelZero = new LevelZeroIdentifier(-1);
+    levelZero.functionCall = funcCall;
+
+    final BaseIdentifier baseId = new BaseIdentifier(-1);
+    baseId.levelZero = levelZero;
+
+    baseExpr.identifier = baseId;
+
+    final Expression left = new Expression(-1);
+    left.mathExpression = baseExpr;
+
+    final Expression right = new Expression(-1);
+    right.booleanValue = Boolean.TRUE;
+
+    final BinaryCondition condition = new BinaryCondition(-1);
+    condition.left = left;
+    condition.operator = new EqualsCompareOperator(-1);
+    condition.right = right;
+    return condition;
+  }
+
+  /**
    * IS NULL / IS NOT NULL condition.
    * Grammar: expression IS NOT? NULL
    */

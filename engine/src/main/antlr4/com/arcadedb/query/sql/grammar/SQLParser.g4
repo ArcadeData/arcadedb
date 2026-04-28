@@ -1118,6 +1118,7 @@ conditionBlock
     | expression MATCHES expression                                     # matchesCondition
     | expression INSTANCEOF (identifier | STRING_LITERAL)               # instanceofCondition
     | expression comparisonOperator expression                          # comparisonCondition
+    | functionCall                                                      # functionCallCondition
     | LPAREN whereClause RPAREN                                         # parenthesizedCondition
     ;
 
