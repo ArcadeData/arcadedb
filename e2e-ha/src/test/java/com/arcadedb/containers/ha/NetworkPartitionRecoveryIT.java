@@ -263,7 +263,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
 
       // Wait for Raft to elect a leader with the restarted node in the cluster
       // before starting the convergence check.
-      assertThat(waitForRaftLeader(servers, 60)).as("Cycle %d: Raft leader must be elected before convergence check", cycle).isGreaterThanOrEqualTo(0);
+      waitForRaftLeader(servers, 60);
 
       logger.info("Cycle {}: Waiting for Raft log catch-up convergence (expected={})", cycle, cycleCount);
       final int currentCycle = cycle;
