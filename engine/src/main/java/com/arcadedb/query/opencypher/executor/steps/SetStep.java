@@ -149,7 +149,7 @@ public class SetStep extends AbstractExecutionStep {
             applyMergeMap(item, result, writtenDocs);
             break;
           case LABELS:
-            applyLabels(item, result, labelReplacements);
+            applyLabels(item, result, writtenDocs, labelReplacements);
             break;
         }
       }
@@ -315,7 +315,7 @@ public class SetStep extends AbstractExecutionStep {
   }
 
   private void applyLabels(final SetClause.SetItem item, final Result result,
-      final Map<RID, Vertex> labelReplacements) {
+      final Map<RID, MutableDocument> writtenDocs, final Map<RID, Vertex> labelReplacements) {
     final Object obj = result.getProperty(item.getVariable());
     if (!(obj instanceof Vertex vertex))
       return;
@@ -360,6 +360,10 @@ public class SetStep extends AbstractExecutionStep {
     vertex.delete();
     propagateUpdateToSameNodeAliases(result, vertex, newVertex);
     labelReplacements.put(originalRid, newVertex);
+    // Invalidate any property-SET state for the old RID so subsequent rows don't read
+    // stale MutableDocument entries. Combined SET n.prop+n:Label across fanout still has
+    // ordering-dependent behaviour, but this prevents outright stale reads.
+    writtenDocs.remove(originalRid);
   }
 
   private void validatePropertyValue(final Object value) {
