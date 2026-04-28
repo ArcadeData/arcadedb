@@ -84,8 +84,9 @@ public class SQLFunctionDijkstra extends SQLFunctionPathFinder {
   }
 
   public String getSyntax() {
-    return "dijkstra(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>"
-        + " [, <direction> | { direction, edgeTypeNames, maxDepth, emptyIfMaxDepth }])";
+    return """
+        dijkstra(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>\
+         [, <direction> | { direction, edgeTypeNames, maxDepth, emptyIfMaxDepth }])""";
   }
 
   protected float getDistance(final Vertex node, final Vertex target) {

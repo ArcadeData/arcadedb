@@ -353,8 +353,9 @@ class Issue3722VectorTombstoneCorruptionTest extends TestHelper {
     // VectorIds are assigned sequentially: 0-9 for first commit, 10-19 for second commit
     // The tombstone overrides one ID from the first batch with deleted=true
     assertThat(foundRegularIds)
-        .as("Should have 20 regular vectorIds from both batches (0-9 minus tombstone, plus 10-19).\n" +
-            "Found regular IDs: %s", foundRegularIds)
+        .as("""
+            Should have 20 regular vectorIds from both batches (0-9 minus tombstone, plus 10-19).
+            Found regular IDs: %s""", foundRegularIds)
         .hasSize(20);
 
     // All regular IDs should be valid (in range 0-19, no garbage IDs from corrupted parsing)

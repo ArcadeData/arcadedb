@@ -76,8 +76,10 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
 
   @Override
   public String getDescription() {
-    return "Find all simple paths (without repeated nodes) between two nodes up to a maximum depth, "
-        + "optionally excluding relationship types via { skipRelTypes: [...] }";
+    return """
+        Find all simple paths (without repeated nodes) between two nodes up to a maximum depth, \
+        optionally excluding relationship types via { skipRelTypes: [...] }\
+        """;
   }
 
   @Override

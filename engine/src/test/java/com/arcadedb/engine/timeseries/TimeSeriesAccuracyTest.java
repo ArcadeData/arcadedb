@@ -118,9 +118,10 @@ class TimeSeriesAccuracyTest {
     createAndPopulate();
 
     final ResultSet rs = database.query("sql",
-        "SELECT ts.timeBucket('1h', ts) AS hour, count(*) AS cnt, sum(value) AS sum_val, " +
-            "min(value) AS min_val, max(value) AS max_val, avg(value) AS avg_val " +
-            "FROM Sensor GROUP BY hour ORDER BY hour");
+        """
+        SELECT ts.timeBucket('1h', ts) AS hour, count(*) AS cnt, sum(value) AS sum_val, \
+        min(value) AS min_val, max(value) AS max_val, avg(value) AS avg_val \
+        FROM Sensor GROUP BY hour ORDER BY hour""");
 
     final List<Result> results = collectResults(rs);
     assertThat(results).hasSize(3);
@@ -146,8 +147,9 @@ class TimeSeriesAccuracyTest {
     // SUM = 200000 * 200001 / 2 = 20,000,100,000
     // MIN = 1.0, MAX = 200000.0, AVG = 100000.5, COUNT = 200000
     final ResultSet rs = database.query("sql",
-        "SELECT count(*) AS cnt, sum(value) AS sum_val, min(value) AS min_val, " +
-            "max(value) AS max_val, avg(value) AS avg_val FROM Sensor");
+        """
+        SELECT count(*) AS cnt, sum(value) AS sum_val, min(value) AS min_val, \
+        max(value) AS max_val, avg(value) AS avg_val FROM Sensor""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result row = rs.next();
@@ -178,9 +180,10 @@ class TimeSeriesAccuracyTest {
 
     // SQL aggregation per bucket
     final ResultSet rs = database.query("sql",
-        "SELECT ts.timeBucket('1h', ts) AS hour, sum(value) AS sum_val, min(value) AS min_val, " +
-            "max(value) AS max_val, avg(value) AS avg_val, count(*) AS cnt " +
-            "FROM Sensor GROUP BY hour ORDER BY hour");
+        """
+        SELECT ts.timeBucket('1h', ts) AS hour, sum(value) AS sum_val, min(value) AS min_val, \
+        max(value) AS max_val, avg(value) AS avg_val, count(*) AS cnt \
+        FROM Sensor GROUP BY hour ORDER BY hour""");
     final List<Result> sqlResults = collectResults(rs);
     sqlResults.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
 
@@ -244,8 +247,9 @@ class TimeSeriesAccuracyTest {
 
   private TimeSeriesEngine createAndPopulate() throws Exception {
     database.command("sql",
-        "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (sensor STRING) FIELDS (value DOUBLE) " +
-            "SHARDS 1 COMPACTION_INTERVAL 1 HOURS");
+        """
+        CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (sensor STRING) FIELDS (value DOUBLE) \
+        SHARDS 1 COMPACTION_INTERVAL 1 HOURS""");
 
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Sensor")).getEngine();
 

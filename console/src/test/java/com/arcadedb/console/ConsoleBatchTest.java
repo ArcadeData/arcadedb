@@ -58,16 +58,16 @@ class ConsoleBatchTest {
   void okBatchMultiLine() throws Exception {
     Console.execute(new String[] { "-b",
         """
-        create database console;\
-        create vertex type Batchtest;\
-        create vertex Batchtest set id = 1;\
-        create vertex Batchtest set id = 2;\
-        create vertex Batchtest set id = 3;\
-        LET x=SELECT FROM Batchtest;\
-        if($x.size()>0){\s
-          return true;\s
-        }\s
-        return false;\
+        create database console;
+        create vertex type Batchtest;
+        create vertex Batchtest set id = 1;
+        create vertex Batchtest set id = 2;
+        create vertex Batchtest set id = 3;
+        LET x=SELECT FROM Batchtest;
+        if($x.size()>0){
+          return true;
+        }
+        return false;
         """ });
 
     final Database db = new DatabaseFactory("./target/databases/console").open();

@@ -496,14 +496,16 @@ class SQLGrammarRegressionTest {
   @Test
   void systemKeywordInComplexProjection() {
     // Full query from bug report: System as a field among many projections
-    assertParses("SELECT *,@rid, @type, State.Color as _State_Color, State.ID as _State_ID, "
-        + "State.StateType as _State_StateType, ACURules, CanCreateLibrary, DisplayName, "
-        + "EnableACURules, EnableBranching, EnableVersioning, IN_EnableNumbering, "
-        + "IN_NumberingFormat, IN_NumberingFormat.Name as _IN_NumberingFormat_Name, "
-        + "IsEditable, IsNavigatorSchemeObject, LCRules, PropertyGroups, PropertySorting, "
-        + "Searchable, StateSchema, System, _css, _defaultSearchLib, "
-        + "_defaultSearchLib.Name as __defaultSearchLib_Name, "
-        + "IN_NumberingFormat:{*,@rid} as FormatInfo FROM Objects WHERE Name = \"Jobs\"");
+    assertParses("""
+        SELECT *,@rid, @type, State.Color as _State_Color, State.ID as _State_ID, \
+        State.StateType as _State_StateType, ACURules, CanCreateLibrary, DisplayName, \
+        EnableACURules, EnableBranching, EnableVersioning, IN_EnableNumbering, \
+        IN_NumberingFormat, IN_NumberingFormat.Name as _IN_NumberingFormat_Name, \
+        IsEditable, IsNavigatorSchemeObject, LCRules, PropertyGroups, PropertySorting, \
+        Searchable, StateSchema, System, _css, _defaultSearchLib, \
+        _defaultSearchLib.Name as __defaultSearchLib_Name, \
+        IN_NumberingFormat:{*,@rid} as FormatInfo FROM Objects WHERE Name = "Jobs"\
+        """);
   }
 
   @Test

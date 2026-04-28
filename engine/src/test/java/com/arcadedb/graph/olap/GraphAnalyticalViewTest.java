@@ -1142,8 +1142,9 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     // Query similar to user's real use case: property constraint + aggregation
     final ResultSet rs = database.command("cypher",
-        "MATCH (s:Session)-[:ACCESSED]->(r:Resource) WHERE s.duration > 300 " +
-            "RETURN s.sessionId AS sid, collect(r.name) AS resources ORDER BY sid");
+        """
+        MATCH (s:Session)-[:ACCESSED]->(r:Resource) WHERE s.duration > 300 \
+        RETURN s.sessionId AS sid, collect(r.name) AS resources ORDER BY sid""");
 
     final List<String> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -2618,8 +2619,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     database.commit();
 
     // Create GAV with compaction threshold via SQL DDL
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW compThresholdTest " +
-        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500");
+    database.command("sql", """
+        CREATE GRAPH ANALYTICAL VIEW compThresholdTest \
+        VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500""");
 
     // Verify persisted definition contains the threshold
     final JSONObject allGavs = database.getSchema().getExtension("graphAnalyticalViews");
@@ -3068,8 +3070,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     database.commit();
 
     assertThatThrownBy(() ->
-        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW negThresh " +
-            "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) COMPACTION THRESHOLD -5"))
+        database.command("sql", """
+            CREATE GRAPH ANALYTICAL VIEW negThresh \
+            VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) COMPACTION THRESHOLD -5"""))
         .hasMessageContaining("COMPACTION THRESHOLD");
   }
 
@@ -3082,8 +3085,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     database.commit();
 
     assertThatThrownBy(() ->
-        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW oneThresh " +
-            "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) COMPACTION THRESHOLD 1"))
+        database.command("sql", """
+            CREATE GRAPH ANALYTICAL VIEW oneThresh \
+            VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) COMPACTION THRESHOLD 1"""))
         .hasMessageContaining("COMPACTION THRESHOLD");
   }
 
@@ -3095,8 +3099,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     database.newVertex("Person").set("name", "Alice").save();
     database.commit();
 
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW zeroThresh " +
-        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 0");
+    database.command("sql", """
+        CREATE GRAPH ANALYTICAL VIEW zeroThresh \
+        VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 0""");
 
     final JSONObject allGavs = database.getSchema().getExtension("graphAnalyticalViews");
     assertThat(allGavs).isNotNull();
@@ -3118,8 +3123,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     database.newVertex("Person").set("name", "Alice").save();
     database.commit();
 
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW alterZero " +
-        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500");
+    database.command("sql", """
+        CREATE GRAPH ANALYTICAL VIEW alterZero \
+        VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500""");
 
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "alterZero");
     assertThat(liveView).isNotNull();
@@ -3144,8 +3150,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     database.newVertex("Person").set("name", "Alice").save();
     database.commit();
 
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW alterOneThresh " +
-        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500");
+    database.command("sql", """
+        CREATE GRAPH ANALYTICAL VIEW alterOneThresh \
+        VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE SYNCHRONOUS COMPACTION THRESHOLD 500""");
 
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "alterOneThresh");
     assertThat(liveView).isNotNull();
@@ -3172,8 +3179,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     database.commit();
 
     assertThatThrownBy(() ->
-        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW invalidMode " +
-            "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE BANANA"))
+        database.command("sql", """
+            CREATE GRAPH ANALYTICAL VIEW invalidMode \
+            VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE BANANA"""))
         .hasMessageContaining("Unknown update mode")
         .hasMessageContaining("BANANA");
   }
@@ -3186,8 +3194,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     database.newVertex("Person").set("name", "Alice").save();
     database.commit();
 
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW modeTest " +
-        "VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE OFF");
+    database.command("sql", """
+        CREATE GRAPH ANALYTICAL VIEW modeTest \
+        VERTEX TYPES (Person) EDGE TYPES (FOLLOWS) UPDATE MODE OFF""");
 
     final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, "modeTest");
     assertThat(liveView).isNotNull();
@@ -4023,8 +4032,9 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     // Triangle query: third relationship uses ExpandInto (both a and c already bound)
     final ResultSet rs = database.command("cypher",
-        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) " +
-            "RETURN a.name AS a, b.name AS b, c.name AS c ORDER BY a");
+        """
+        MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) \
+        RETURN a.name AS a, b.name AS b, c.name AS c ORDER BY a""");
 
     final List<String> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -4066,8 +4076,9 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     // Triangle query: Charlie is not in GAV, so OLTP fallback kicks in for connectivity check
     final ResultSet rs = database.command("cypher",
-        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(a) " +
-            "RETURN a.name AS a, b.name AS b ORDER BY a, b");
+        """
+        MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(a) \
+        RETURN a.name AS a, b.name AS b ORDER BY a, b""");
 
     final List<String> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -4105,9 +4116,10 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     // Undirected triangle: (a)-[:KNOWS]-(b)-[:KNOWS]-(c)-[:KNOWS]-(a) — BOTH direction for expand-into
     final ResultSet rs = database.command("cypher",
-        "MATCH (a:Person)-[:KNOWS]-(b:Person)-[:KNOWS]-(c:Person)-[:KNOWS]-(a) " +
-            "WHERE a.name < b.name AND b.name < c.name " +
-            "RETURN a.name AS a, b.name AS b, c.name AS c");
+        """
+        MATCH (a:Person)-[:KNOWS]-(b:Person)-[:KNOWS]-(c:Person)-[:KNOWS]-(a) \
+        WHERE a.name < b.name AND b.name < c.name \
+        RETURN a.name AS a, b.name AS b, c.name AS c""");
 
     final List<String> results = new ArrayList<>();
     while (rs.hasNext()) {

@@ -89,9 +89,10 @@ class AlgoAllSimplePathsTest {
   @Test
   void allSimplePathsFindsAllPathsWithoutSkip() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) " +
-            "CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5) YIELD path " +
-            "RETURN path");
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5) YIELD path \
+        RETURN path""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -106,9 +107,10 @@ class AlgoAllSimplePathsTest {
   void allSimplePathsSkipsRelTypeViaOptions() {
     // With skipRelTypes = ['FRIEND'] the FRIEND-edge path A-[FRIEND]->C-[FRIEND]->D must disappear
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) " +
-            "CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {skipRelTypes: ['FRIEND']}) YIELD path " +
-            "RETURN path");
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {skipRelTypes: ['FRIEND']}) YIELD path \
+        RETURN path""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -131,9 +133,10 @@ class AlgoAllSimplePathsTest {
   void allSimplePathsSkipsMultipleRelTypes() {
     // Skipping both FRIEND and WORKS_WITH must leave only KNOWS paths
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) " +
-            "CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {skipRelTypes: ['FRIEND','WORKS_WITH']}) YIELD path " +
-            "RETURN path");
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {skipRelTypes: ['FRIEND','WORKS_WITH']}) YIELD path \
+        RETURN path""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -155,9 +158,10 @@ class AlgoAllSimplePathsTest {
   void allSimplePathsSkipAcceptsSingleStringValue() {
     // skipRelTypes should accept a single string in addition to a list
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) " +
-            "CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {skipRelTypes: 'FRIEND'}) YIELD path " +
-            "RETURN path");
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {skipRelTypes: 'FRIEND'}) YIELD path \
+        RETURN path""");
 
     int count = 0;
     while (rs.hasNext()) {
@@ -170,9 +174,10 @@ class AlgoAllSimplePathsTest {
   @Test
   void allSimplePathsEmptyOptionsBehavesAsFourArgCall() {
     final ResultSet rsNoOpts = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) " +
-            "CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5) YIELD path " +
-            "RETURN path");
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5) YIELD path \
+        RETURN path""");
     int countNoOpts = 0;
     while (rsNoOpts.hasNext()) {
       rsNoOpts.next();
@@ -180,9 +185,10 @@ class AlgoAllSimplePathsTest {
     }
 
     final ResultSet rsEmptyOpts = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) " +
-            "CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {}) YIELD path " +
-            "RETURN path");
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {}) YIELD path \
+        RETURN path""");
     int countEmptyOpts = 0;
     while (rsEmptyOpts.hasNext()) {
       rsEmptyOpts.next();
@@ -196,9 +202,10 @@ class AlgoAllSimplePathsTest {
   void allSimplePathsRejectsNonMapFifthArg() {
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("opencypher",
-          "MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) " +
-              "CALL algo.allSimplePaths(a, d, ['KNOWS'], 5, 'not-a-map') YIELD path " +
-              "RETURN path");
+          """
+          MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+          CALL algo.allSimplePaths(a, d, ['KNOWS'], 5, 'not-a-map') YIELD path \
+          RETURN path""");
       while (rs.hasNext())
         rs.next();
     }).hasStackTraceContaining("options must be a map");

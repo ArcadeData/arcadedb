@@ -126,8 +126,9 @@ class CypherExistsTest {
   void existsWithMatchInSubquery() {
     // EXISTS with full MATCH clause
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:WORKS_AT]->(c:Company) WHERE c.name = 'Acme Corp' } RETURN p" +
-            ".name ORDER BY p.name");
+        """
+        MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:WORKS_AT]->(c:Company) WHERE c.name = 'Acme Corp' } RETURN p\
+        .name ORDER BY p.name""");
 
     int count = 0;
     while (results.hasNext()) {

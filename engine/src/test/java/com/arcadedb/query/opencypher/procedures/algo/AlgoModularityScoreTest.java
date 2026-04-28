@@ -70,8 +70,9 @@ class AlgoModularityScoreTest {
   @Test
   void modularityScoreReturnsSingleRow() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.modularityScore('community') YIELD modularity, communities, edgeCount "
-            + "RETURN modularity, communities, edgeCount");
+        """
+        CALL algo.modularityScore('community') YIELD modularity, communities, edgeCount \
+        RETURN modularity, communities, edgeCount""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -123,8 +124,9 @@ class AlgoModularityScoreTest {
   @Test
   void modularityScoreWithRelType() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.modularityScore('community', 'EDGE') YIELD modularity, communities "
-            + "RETURN modularity, communities");
+        """
+        CALL algo.modularityScore('community', 'EDGE') YIELD modularity, communities \
+        RETURN modularity, communities""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();

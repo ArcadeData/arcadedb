@@ -36,9 +36,10 @@ class ContinuousAggregateSQLTest extends TestHelper {
     insertInitialData();
 
     database.command("sql",
-        "CREATE CONTINUOUS AGGREGATE hourly_temps AS " +
-            "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp " +
-            "FROM SensorReading GROUP BY sensor_id, hour");
+        """
+        CREATE CONTINUOUS AGGREGATE hourly_temps AS \
+        SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp \
+        FROM SensorReading GROUP BY sensor_id, hour""");
 
     assertThat(database.getSchema().existsContinuousAggregate("hourly_temps")).isTrue();
     assertThat(database.getSchema().existsType("hourly_temps")).isTrue();
@@ -50,15 +51,17 @@ class ContinuousAggregateSQLTest extends TestHelper {
     insertInitialData();
 
     database.command("sql",
-        "CREATE CONTINUOUS AGGREGATE IF NOT EXISTS hourly_temps AS " +
-            "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp " +
-            "FROM SensorReading GROUP BY sensor_id, hour");
+        """
+        CREATE CONTINUOUS AGGREGATE IF NOT EXISTS hourly_temps AS \
+        SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp \
+        FROM SensorReading GROUP BY sensor_id, hour""");
 
     // Should not throw
     database.command("sql",
-        "CREATE CONTINUOUS AGGREGATE IF NOT EXISTS hourly_temps AS " +
-            "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp " +
-            "FROM SensorReading GROUP BY sensor_id, hour");
+        """
+        CREATE CONTINUOUS AGGREGATE IF NOT EXISTS hourly_temps AS \
+        SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp \
+        FROM SensorReading GROUP BY sensor_id, hour""");
 
     assertThat(database.getSchema().existsContinuousAggregate("hourly_temps")).isTrue();
   }
@@ -69,9 +72,10 @@ class ContinuousAggregateSQLTest extends TestHelper {
     insertInitialData();
 
     database.command("sql",
-        "CREATE CONTINUOUS AGGREGATE hourly_temps AS " +
-            "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp " +
-            "FROM SensorReading GROUP BY sensor_id, hour");
+        """
+        CREATE CONTINUOUS AGGREGATE hourly_temps AS \
+        SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp \
+        FROM SensorReading GROUP BY sensor_id, hour""");
 
     database.command("sql", "DROP CONTINUOUS AGGREGATE hourly_temps");
 
@@ -90,9 +94,10 @@ class ContinuousAggregateSQLTest extends TestHelper {
     insertInitialData();
 
     database.command("sql",
-        "CREATE CONTINUOUS AGGREGATE hourly_temps AS " +
-            "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp " +
-            "FROM SensorReading GROUP BY sensor_id, hour");
+        """
+        CREATE CONTINUOUS AGGREGATE hourly_temps AS \
+        SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp \
+        FROM SensorReading GROUP BY sensor_id, hour""");
 
     database.command("sql", "REFRESH CONTINUOUS AGGREGATE hourly_temps");
 
@@ -105,9 +110,10 @@ class ContinuousAggregateSQLTest extends TestHelper {
     insertInitialData();
 
     database.command("sql",
-        "CREATE CONTINUOUS AGGREGATE hourly_temps AS " +
-            "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp " +
-            "FROM SensorReading GROUP BY sensor_id, hour");
+        """
+        CREATE CONTINUOUS AGGREGATE hourly_temps AS \
+        SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp \
+        FROM SensorReading GROUP BY sensor_id, hour""");
 
     final ResultSet rs = database.query("sql", "SELECT FROM schema:continuousAggregates");
     final List<Result> results = collectResults(rs);
@@ -134,9 +140,10 @@ class ContinuousAggregateSQLTest extends TestHelper {
     });
 
     database.command("sql",
-        "CREATE CONTINUOUS AGGREGATE hourly_temps AS " +
-            "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp " +
-            "FROM SensorReading GROUP BY sensor_id, hour");
+        """
+        CREATE CONTINUOUS AGGREGATE hourly_temps AS \
+        SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp \
+        FROM SensorReading GROUP BY sensor_id, hour""");
 
     // Verify initial aggregate
     List<Result> results = collectResults(database.query("sql", "SELECT FROM hourly_temps"));

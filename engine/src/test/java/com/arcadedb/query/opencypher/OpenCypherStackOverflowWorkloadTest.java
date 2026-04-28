@@ -137,9 +137,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query1_topAskers() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (u:User)-[:ASKED]->(q:Question) " +
-            "RETURN u.Id AS user_id, u.DisplayName AS name, count(q) AS questions " +
-            "ORDER BY questions DESC, user_id ASC")) {
+        """
+        MATCH (u:User)-[:ASKED]->(q:Question) \
+        RETURN u.Id AS user_id, u.DisplayName AS name, count(q) AS questions \
+        ORDER BY questions DESC, user_id ASC""")) {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).hasSize(2);
       // Alice asked 2, Bob asked 1
@@ -154,9 +155,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query2_topAnswerers() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (u:User)-[:ANSWERED]->(a:Answer) " +
-            "RETURN u.Id AS user_id, u.DisplayName AS name, count(a) AS answers " +
-            "ORDER BY answers DESC, user_id ASC")) {
+        """
+        MATCH (u:User)-[:ANSWERED]->(a:Answer) \
+        RETURN u.Id AS user_id, u.DisplayName AS name, count(a) AS answers \
+        ORDER BY answers DESC, user_id ASC""")) {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).hasSize(2);
       // Bob answered 2, Charlie answered 2
@@ -169,11 +171,12 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query3_topAcceptedAnswerers() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question)-[:ACCEPTED_ANSWER]->(a:Answer) " +
-            "MATCH (u:User)-[:ANSWERED]->(a) " +
-            "WITH u, count(*) AS accepted " +
-            "RETURN u.Id AS user_id, u.DisplayName AS name, accepted " +
-            "ORDER BY accepted DESC, user_id ASC")) {
+        """
+        MATCH (q:Question)-[:ACCEPTED_ANSWER]->(a:Answer) \
+        MATCH (u:User)-[:ANSWERED]->(a) \
+        WITH u, count(*) AS accepted \
+        RETURN u.Id AS user_id, u.DisplayName AS name, accepted \
+        ORDER BY accepted DESC, user_id ASC""")) {
       final List<Result> rows = collectResults(rs);
       // Bob answered a1 (accepted by q1) and a2 (accepted by q2) => accepted=2
       assertThat(rows).isNotEmpty();
@@ -188,9 +191,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query4_topTagsByQuestions() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag) " +
-            "RETURN t.Id AS tag_id, t.TagName AS tag, count(q) AS questions " +
-            "ORDER BY questions DESC, tag_id ASC")) {
+        """
+        MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag) \
+        RETURN t.Id AS tag_id, t.TagName AS tag, count(q) AS questions \
+        ORDER BY questions DESC, tag_id ASC""")) {
       final List<Result> rows = collectResults(rs);
       // java: q1, q2 => 2; database: q1, q3 => 2
       assertThat(rows).hasSize(2);
@@ -203,11 +207,12 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query5_tagCooccurrence() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question)-[:TAGGED_WITH]->(t1:Tag) " +
-            "MATCH (q)-[:TAGGED_WITH]->(t2:Tag) " +
-            "WHERE t1.Id < t2.Id " +
-            "RETURN t1.TagName AS tag1, t2.TagName AS tag2, count(*) AS cooccurs " +
-            "ORDER BY cooccurs DESC, tag1 ASC, tag2 ASC")) {
+        """
+        MATCH (q:Question)-[:TAGGED_WITH]->(t1:Tag) \
+        MATCH (q)-[:TAGGED_WITH]->(t2:Tag) \
+        WHERE t1.Id < t2.Id \
+        RETURN t1.TagName AS tag1, t2.TagName AS tag2, count(*) AS cooccurs \
+        ORDER BY cooccurs DESC, tag1 ASC, tag2 ASC""")) {
       final List<Result> rows = collectResults(rs);
       // q1 is tagged with java(10) and database(11), so t1=java, t2=database
       assertThat(rows).hasSize(1);
@@ -219,9 +224,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query6_topQuestionsByScore() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question) " +
-            "RETURN q.Id AS question_id, q.Score AS score " +
-            "ORDER BY score DESC, question_id ASC")) {
+        """
+        MATCH (q:Question) \
+        RETURN q.Id AS question_id, q.Score AS score \
+        ORDER BY score DESC, question_id ASC""")) {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).hasSize(3);
       assertThat(((Number) rows.get(0).getProperty("score")).intValue()).isEqualTo(50);
@@ -234,9 +240,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query7_questionsWithMostAnswers() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer) " +
-            "RETURN q.Id AS question_id, count(a) AS answers " +
-            "ORDER BY answers DESC, question_id ASC")) {
+        """
+        MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer) \
+        RETURN q.Id AS question_id, count(a) AS answers \
+        ORDER BY answers DESC, question_id ASC""")) {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).hasSize(3);
       // q1 has 2 answers, q2 has 1, q3 has 1
@@ -249,11 +256,12 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query8_askerAnswererPairs() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) " +
-            "WHERE asker.Id <> answerer.Id " +
-            "WITH asker, answerer, count(*) AS interactions " +
-            "RETURN asker.Id AS asker_id, answerer.Id AS answerer_id, interactions " +
-            "ORDER BY interactions DESC, asker_id ASC, answerer_id ASC")) {
+        """
+        MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) \
+        WHERE asker.Id <> answerer.Id \
+        WITH asker, answerer, count(*) AS interactions \
+        RETURN asker.Id AS asker_id, answerer.Id AS answerer_id, interactions \
+        ORDER BY interactions DESC, asker_id ASC, answerer_id ASC""")) {
       final List<Result> rows = collectResults(rs);
       // Alice asked q1 -> a1 (Bob), a3 (Charlie); Alice asked q2 -> a2 (Bob)
       // Bob asked q3 -> a4 (Charlie)
@@ -270,9 +278,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query9_topBadges() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (:User)-[:EARNED]->(b:Badge) " +
-            "RETURN b.Name AS badge, count(*) AS earned " +
-            "ORDER BY earned DESC, badge ASC")) {
+        """
+        MATCH (:User)-[:EARNED]->(b:Badge) \
+        RETURN b.Name AS badge, count(*) AS earned \
+        ORDER BY earned DESC, badge ASC""")) {
       final List<Result> rows = collectResults(rs);
       // Student: 3 (Alice, Bob, Charlie); Teacher: 1 (Alice)
       assertThat(rows).hasSize(2);
@@ -287,14 +296,15 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
   @Test
   void query10_topQuestionsByTotalComments() {
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question) " +
-            "OPTIONAL MATCH (c1:Comment)-[:COMMENTED_ON]->(q) " +
-            "WITH q, count(c1) AS direct_comments " +
-            "OPTIONAL MATCH (q)-[:HAS_ANSWER]->(a:Answer) " +
-            "OPTIONAL MATCH (c2:Comment)-[:COMMENTED_ON_ANSWER]->(a) " +
-            "WITH q, direct_comments, count(c2) AS answer_comments " +
-            "RETURN q.Id AS question_id, direct_comments + answer_comments AS total_comments " +
-            "ORDER BY total_comments DESC, question_id ASC")) {
+        """
+        MATCH (q:Question) \
+        OPTIONAL MATCH (c1:Comment)-[:COMMENTED_ON]->(q) \
+        WITH q, count(c1) AS direct_comments \
+        OPTIONAL MATCH (q)-[:HAS_ANSWER]->(a:Answer) \
+        OPTIONAL MATCH (c2:Comment)-[:COMMENTED_ON_ANSWER]->(a) \
+        WITH q, direct_comments, count(c2) AS answer_comments \
+        RETURN q.Id AS question_id, direct_comments + answer_comments AS total_comments \
+        ORDER BY total_comments DESC, question_id ASC""")) {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).isNotEmpty();
       // q1 has 2 direct comments + 1 answer comment = 3
@@ -323,9 +333,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavQuery4_topTagsByQuestions() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag) " +
-              "RETURN t.Id AS tag_id, t.TagName AS tag, count(q) AS questions " +
-              "ORDER BY questions DESC, tag_id ASC")) {
+          """
+          MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag) \
+          RETURN t.Id AS tag_id, t.TagName AS tag, count(q) AS questions \
+          ORDER BY questions DESC, tag_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(2);
         assertThat(((Number) rows.get(0).getProperty("questions")).longValue()).isEqualTo(2L);
@@ -336,9 +347,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavQuery9_topBadges() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (:User)-[:EARNED]->(b:Badge) " +
-              "RETURN b.Name AS badge, count(*) AS earned " +
-              "ORDER BY earned DESC, badge ASC")) {
+          """
+          MATCH (:User)-[:EARNED]->(b:Badge) \
+          RETURN b.Name AS badge, count(*) AS earned \
+          ORDER BY earned DESC, badge ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(2);
         assertThat((String) rows.get(0).getProperty("badge")).isEqualTo("Student");
@@ -351,11 +363,12 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavQuery3_topAcceptedAnswerers() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (q:Question)-[:ACCEPTED_ANSWER]->(a:Answer) " +
-              "MATCH (u:User)-[:ANSWERED]->(a) " +
-              "WITH u, count(*) AS accepted " +
-              "RETURN u.Id AS user_id, u.DisplayName AS name, accepted " +
-              "ORDER BY accepted DESC, user_id ASC")) {
+          """
+          MATCH (q:Question)-[:ACCEPTED_ANSWER]->(a:Answer) \
+          MATCH (u:User)-[:ANSWERED]->(a) \
+          WITH u, count(*) AS accepted \
+          RETURN u.Id AS user_id, u.DisplayName AS name, accepted \
+          ORDER BY accepted DESC, user_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).isNotEmpty();
         assertThat(((Number) rows.get(0).getProperty("accepted")).longValue()).isEqualTo(2L);
@@ -366,11 +379,12 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavQuery8_askerAnswererPairs() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) " +
-              "WHERE asker.Id <> answerer.Id " +
-              "WITH asker, answerer, count(*) AS interactions " +
-              "RETURN asker.Id AS asker_id, answerer.Id AS answerer_id, interactions " +
-              "ORDER BY interactions DESC, asker_id ASC, answerer_id ASC")) {
+          """
+          MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) \
+          WHERE asker.Id <> answerer.Id \
+          WITH asker, answerer, count(*) AS interactions \
+          RETURN asker.Id AS asker_id, answerer.Id AS answerer_id, interactions \
+          ORDER BY interactions DESC, asker_id ASC, answerer_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).isNotEmpty();
         assertThat(((Number) rows.get(0).getProperty("interactions")).longValue()).isEqualTo(2L);
@@ -382,14 +396,15 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavQuery10_topQuestionsByTotalComments() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (q:Question) " +
-              "OPTIONAL MATCH (c1:Comment)-[:COMMENTED_ON]->(q) " +
-              "WITH q, count(c1) AS direct_comments " +
-              "OPTIONAL MATCH (q)-[:HAS_ANSWER]->(a:Answer) " +
-              "OPTIONAL MATCH (c2:Comment)-[:COMMENTED_ON_ANSWER]->(a) " +
-              "WITH q, direct_comments, count(c2) AS answer_comments " +
-              "RETURN q.Id AS question_id, direct_comments + answer_comments AS total_comments " +
-              "ORDER BY total_comments DESC, question_id ASC")) {
+          """
+          MATCH (q:Question) \
+          OPTIONAL MATCH (c1:Comment)-[:COMMENTED_ON]->(q) \
+          WITH q, count(c1) AS direct_comments \
+          OPTIONAL MATCH (q)-[:HAS_ANSWER]->(a:Answer) \
+          OPTIONAL MATCH (c2:Comment)-[:COMMENTED_ON_ANSWER]->(a) \
+          WITH q, direct_comments, count(c2) AS answer_comments \
+          RETURN q.Id AS question_id, direct_comments + answer_comments AS total_comments \
+          ORDER BY total_comments DESC, question_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).isNotEmpty();
         assertThat(((Number) rows.get(0).getProperty("question_id")).intValue()).isEqualTo(100);
@@ -401,8 +416,9 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavSingleHopInDirection() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (a:Answer)<-[:ANSWERED]-(u:User) " +
-              "RETURN a.Id AS answer_id, u.Id AS user_id")) {
+          """
+          MATCH (a:Answer)<-[:ANSWERED]-(u:User) \
+          RETURN a.Id AS answer_id, u.Id AS user_id""")) {
         final List<Result> rows = collectResults(rs);
         // Bob answered a1(200), a2(201); Charlie answered a3(202), a4(203)
         assertThat(rows).hasSize(4);
@@ -413,8 +429,9 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavTwoHopChainWithReverseDirection() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(u:User) " +
-              "RETURN q.Id AS question_id, u.Id AS user_id")) {
+          """
+          MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(u:User) \
+          RETURN q.Id AS question_id, u.Id AS user_id""")) {
         final List<Result> rows = collectResults(rs);
         // q1(100)->a1<-Bob(2), q1(100)->a3<-Charlie(3), q2(101)->a2<-Bob(2), q3(102)->a4<-Charlie(3)
         assertThat(rows).hasSize(4);
@@ -425,8 +442,9 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavThreeHopChainNoFilter() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) " +
-              "RETURN asker.Id AS asker_id, answerer.Id AS answerer_id")) {
+          """
+          MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) \
+          RETURN asker.Id AS asker_id, answerer.Id AS answerer_id""")) {
         final List<Result> rows = collectResults(rs);
         // Alice asked q1->a1(Bob),a3(Charlie), q2->a2(Bob); Bob asked q3->a4(Charlie)
         // Including self-answers: Alice-Bob(a1), Alice-Charlie(a3), Alice-Bob(a2), Bob-Charlie(a4) = 4 rows
@@ -438,10 +456,11 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavThreeHopChainWithAggregation() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) " +
-              "WITH asker, answerer, count(*) AS interactions " +
-              "RETURN asker.Id AS asker_id, answerer.Id AS answerer_id, interactions " +
-              "ORDER BY interactions DESC, asker_id ASC, answerer_id ASC")) {
+          """
+          MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) \
+          WITH asker, answerer, count(*) AS interactions \
+          RETURN asker.Id AS asker_id, answerer.Id AS answerer_id, interactions \
+          ORDER BY interactions DESC, asker_id ASC, answerer_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).isNotEmpty();
       }
@@ -451,9 +470,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavThreeHopChainWithFilterNoAgg() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) " +
-              "WHERE asker.Id <> answerer.Id " +
-              "RETURN asker.Id AS asker_id, answerer.Id AS answerer_id")) {
+          """
+          MATCH (asker:User)-[:ASKED]->(q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(answerer:User) \
+          WHERE asker.Id <> answerer.Id \
+          RETURN asker.Id AS asker_id, answerer.Id AS answerer_id""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).isNotEmpty();
       }
@@ -463,9 +483,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavQuery1_topAskers() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (u:User)-[:ASKED]->(q:Question) " +
-              "RETURN u.Id AS user_id, u.DisplayName AS name, count(q) AS questions " +
-              "ORDER BY questions DESC, user_id ASC")) {
+          """
+          MATCH (u:User)-[:ASKED]->(q:Question) \
+          RETURN u.Id AS user_id, u.DisplayName AS name, count(q) AS questions \
+          ORDER BY questions DESC, user_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(2);
         assertThat(((Number) rows.get(0).getProperty("questions")).longValue()).isEqualTo(2L);
@@ -475,11 +496,12 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavQuery5_tagCooccurrence() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (q:Question)-[:TAGGED_WITH]->(t1:Tag) " +
-              "MATCH (q)-[:TAGGED_WITH]->(t2:Tag) " +
-              "WHERE t1.Id < t2.Id " +
-              "RETURN t1.TagName AS tag1, t2.TagName AS tag2, count(*) AS cooccurs " +
-              "ORDER BY cooccurs DESC, tag1 ASC, tag2 ASC")) {
+          """
+          MATCH (q:Question)-[:TAGGED_WITH]->(t1:Tag) \
+          MATCH (q)-[:TAGGED_WITH]->(t2:Tag) \
+          WHERE t1.Id < t2.Id \
+          RETURN t1.TagName AS tag1, t2.TagName AS tag2, count(*) AS cooccurs \
+          ORDER BY cooccurs DESC, tag1 ASC, tag2 ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(1);
         assertThat(((Number) rows.get(0).getProperty("cooccurs")).longValue()).isEqualTo(1L);
@@ -489,9 +511,10 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
     @Test
     void gavQuery7_questionsWithMostAnswers() {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer) " +
-              "RETURN q.Id AS question_id, count(a) AS answers " +
-              "ORDER BY answers DESC, question_id ASC")) {
+          """
+          MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer) \
+          RETURN q.Id AS question_id, count(a) AS answers \
+          ORDER BY answers DESC, question_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(3);
         assertThat(((Number) rows.get(0).getProperty("answers")).longValue()).isEqualTo(2L);

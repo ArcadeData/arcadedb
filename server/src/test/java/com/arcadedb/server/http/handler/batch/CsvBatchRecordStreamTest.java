@@ -76,8 +76,10 @@ class CsvBatchRecordStreamTest {
 
   @Test
   void quotedFields() throws Exception {
-    final String input = "@type,@class,@id,name,description\n"
-        + "vertex,Person,t1,\"Alice, Jr.\",\"She said \"\"hello\"\"\"\n";
+    final String input = """
+        @type,@class,@id,name,description
+        vertex,Person,t1,"Alice, Jr.","She said ""hello""\"
+        """;
 
     try (final CsvBatchRecordStream stream = new CsvBatchRecordStream(toStream(input))) {
       assertThat(stream.hasNext()).isTrue();

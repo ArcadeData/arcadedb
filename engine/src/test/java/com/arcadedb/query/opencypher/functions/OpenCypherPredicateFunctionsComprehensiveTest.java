@@ -49,22 +49,23 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
     database.getSchema().createEdgeType("ACTED_IN");
 
     database.command("opencypher",
-        "CREATE " +
-            "(keanu:Person {name:'Keanu Reeves', age:58, nationality:'Canadian'}), " +
-            "(carrie:Person {name:'Carrie Anne Moss', age:55, nationality:'American'}), " +
-            "(liam:Person {name:'Liam Neeson', age:70, nationality:'Northern Irish'}), " +
-            "(guy:Person {name:'Guy Pearce', age:55, nationality:'Australian'}), " +
-            "(kathryn:Person {name:'Kathryn Bigelow', age:71, nationality:'American'}), " +
-            "(jessica:Person {name:'Jessica Chastain', age:45, address:''}), " +
-            "(theMatrix:Movie {title:'The Matrix'}), " +
-            "(keanu)-[:KNOWS {since: 1999}]->(carrie), " +
-            "(keanu)-[:KNOWS {since: 2005}]->(liam), " +
-            "(keanu)-[:KNOWS {since: 2010}]->(kathryn), " +
-            "(kathryn)-[:KNOWS {since: 2012}]->(jessica), " +
-            "(carrie)-[:KNOWS {since: 2008}]->(guy), " +
-            "(liam)-[:KNOWS {since: 2009}]->(guy), " +
-            "(keanu)-[:ACTED_IN]->(theMatrix), " +
-            "(carrie)-[:ACTED_IN]->(theMatrix)");
+        """
+        CREATE \
+        (keanu:Person {name:'Keanu Reeves', age:58, nationality:'Canadian'}), \
+        (carrie:Person {name:'Carrie Anne Moss', age:55, nationality:'American'}), \
+        (liam:Person {name:'Liam Neeson', age:70, nationality:'Northern Irish'}), \
+        (guy:Person {name:'Guy Pearce', age:55, nationality:'Australian'}), \
+        (kathryn:Person {name:'Kathryn Bigelow', age:71, nationality:'American'}), \
+        (jessica:Person {name:'Jessica Chastain', age:45, address:''}), \
+        (theMatrix:Movie {title:'The Matrix'}), \
+        (keanu)-[:KNOWS {since: 1999}]->(carrie), \
+        (keanu)-[:KNOWS {since: 2005}]->(liam), \
+        (keanu)-[:KNOWS {since: 2010}]->(kathryn), \
+        (kathryn)-[:KNOWS {since: 2012}]->(jessica), \
+        (carrie)-[:KNOWS {since: 2008}]->(guy), \
+        (liam)-[:KNOWS {since: 2009}]->(guy), \
+        (keanu)-[:ACTED_IN]->(theMatrix), \
+        (carrie)-[:ACTED_IN]->(theMatrix)""");
   }
 
   @AfterEach
@@ -104,9 +105,10 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
   @Test
   void allWithPath() {
     final ResultSet result = database.command("opencypher",
-        "MATCH p = (a:Person {name: 'Keanu Reeves'})-[]-{2}() " +
-            "WHERE all(x IN nodes(p) WHERE x.age < 60) " +
-            "RETURN count(p) AS pathCount");
+        """
+        MATCH p = (a:Person {name: 'Keanu Reeves'})-[]-{2}() \
+        WHERE all(x IN nodes(p) WHERE x.age < 60) \
+        RETURN count(p) AS pathCount""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     assertThat(((Number) result.next().getProperty("pathCount")).intValue()).isGreaterThan(0);
   }
@@ -148,8 +150,9 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
   @Test
   void allReduceWithMap() {
     final ResultSet result = database.command("opencypher",
-        "RETURN allReduce(span = {}, x IN [1, 2, 3] | {previous: span.current, current: x}, " +
-            "span.previous IS NULL OR span.previous < span.current) AS result");
+        """
+        RETURN allReduce(span = {}, x IN [1, 2, 3] | {previous: span.current, current: x}, \
+        span.previous IS NULL OR span.previous < span.current) AS result""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     assertThat((Boolean) result.next().getProperty("result")).isTrue();
   }
@@ -185,9 +188,10 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
   @Test
   void anyWithPath() {
     final ResultSet result = database.command("opencypher",
-        "MATCH p = (n:Person {name: 'Keanu Reeves'})-[:KNOWS]-{3}() " +
-            "WHERE any(rel IN relationships(p) WHERE rel.since < 2000) " +
-            "RETURN count(p) AS pathCount");
+        """
+        MATCH p = (n:Person {name: 'Keanu Reeves'})-[:KNOWS]-{3}() \
+        WHERE any(rel IN relationships(p) WHERE rel.since < 2000) \
+        RETURN count(p) AS pathCount""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     assertThat(((Number) result.next().getProperty("pathCount")).intValue()).isGreaterThanOrEqualTo(0);
   }
@@ -205,9 +209,10 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
   @Test
   void existsWithPattern() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person) " +
-            "RETURN p.name AS name, EXISTS { (p)-[:ACTED_IN]->() } AS hasActedIn " +
-            "ORDER BY name");
+        """
+        MATCH (p:Person) \
+        RETURN p.name AS name, EXISTS { (p)-[:ACTED_IN]->() } AS hasActedIn \
+        ORDER BY name""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     // Keanu and Carrie acted in The Matrix
     int actorsFound = 0;
@@ -309,9 +314,10 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
   @Test
   void noneWithPath() {
     final ResultSet result = database.command("opencypher",
-        "MATCH p = (n:Person {name: 'Keanu Reeves'})-[]-{2}() " +
-            "WHERE none(x IN nodes(p) WHERE x.age > 60) " +
-            "RETURN count(p) AS pathCount");
+        """
+        MATCH p = (n:Person {name: 'Keanu Reeves'})-[]-{2}() \
+        WHERE none(x IN nodes(p) WHERE x.age > 60) \
+        RETURN count(p) AS pathCount""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     assertThat(((Number) result.next().getProperty("pathCount")).intValue()).isGreaterThanOrEqualTo(0);
   }
@@ -373,11 +379,12 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
   @Test
   void predicatesCombined() {
     final ResultSet result = database.command("opencypher",
-        "WITH [1, 2, 3, 4, 5] AS nums " +
-            "RETURN all(x IN nums WHERE x > 0) AS allPositive, " +
-            "       any(x IN nums WHERE x > 3) AS anyAbove3, " +
-            "       none(x IN nums WHERE x < 0) AS noneNegative, " +
-            "       single(x IN nums WHERE x = 3) AS singleThree");
+        """
+        WITH [1, 2, 3, 4, 5] AS nums \
+        RETURN all(x IN nums WHERE x > 0) AS allPositive, \
+               any(x IN nums WHERE x > 3) AS anyAbove3, \
+               none(x IN nums WHERE x < 0) AS noneNegative, \
+               single(x IN nums WHERE x = 3) AS singleThree""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     assertThat((Boolean) row.getProperty("allPositive")).isTrue();
@@ -389,9 +396,10 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
   @Test
   void predicatesWithIsEmpty() {
     final ResultSet result = database.command("opencypher",
-        "WITH ['', 'hello', 'world'] AS strings " +
-            "RETURN any(s IN strings WHERE isEmpty(s)) AS anyEmpty, " +
-            "       all(s IN strings WHERE NOT isEmpty(s)) AS allNonEmpty");
+        """
+        WITH ['', 'hello', 'world'] AS strings \
+        RETURN any(s IN strings WHERE isEmpty(s)) AS anyEmpty, \
+               all(s IN strings WHERE NOT isEmpty(s)) AS allNonEmpty""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     assertThat((Boolean) row.getProperty("anyEmpty")).isTrue();

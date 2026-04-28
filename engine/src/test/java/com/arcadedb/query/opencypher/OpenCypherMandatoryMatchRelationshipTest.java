@@ -46,19 +46,21 @@ class OpenCypherMandatoryMatchRelationshipTest extends TestHelper {
 
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (a:Person {name: 'Alice', age: 30})" +
-              "-[:KNOWS {since: 2020}]->" +
-              "(b:Person {name: 'Bob', age: 35})" +
-              "-[:KNOWS {since: 2021}]->" +
-              "(c:Person {name: 'Charlie', age: 25})" +
-              "-[:KNOWS {since: 2022}]->" +
-              "(d:Person {name: 'David', age: 28})");
+          """
+          CREATE (a:Person {name: 'Alice', age: 30})\
+          -[:KNOWS {since: 2020}]->\
+          (b:Person {name: 'Bob', age: 35})\
+          -[:KNOWS {since: 2021}]->\
+          (c:Person {name: 'Charlie', age: 25})\
+          -[:KNOWS {since: 2022}]->\
+          (d:Person {name: 'David', age: 28})""");
 
       database.command("opencypher", "CREATE (:Company {name: 'Acme'})");
 
       database.command("opencypher",
-          "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), (c:Company {name: 'Acme'}) " +
-              "CREATE (a)-[:WORKS_FOR]->(c), (b)-[:WORKS_FOR]->(c)");
+          """
+          MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), (c:Company {name: 'Acme'}) \
+          CREATE (a)-[:WORKS_FOR]->(c), (b)-[:WORKS_FOR]->(c)""");
     });
   }
 
@@ -66,8 +68,9 @@ class OpenCypherMandatoryMatchRelationshipTest extends TestHelper {
   void mandatoryMatchRelationshipShouldReturnResults() {
     // Issue #3711: mandatory MATCH with relationship should return results when edges exist
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (p:Person)-[:WORKS_FOR]->(c:Company) " +
-            "RETURN p.name as person, c.name as company ORDER BY person")) {
+        """
+        MATCH (p:Person)-[:WORKS_FOR]->(c:Company) \
+        RETURN p.name as person, c.name as company ORDER BY person""")) {
       final List<Result> results = new ArrayList<>();
       while (rs.hasNext())
         results.add(rs.next());
@@ -93,9 +96,10 @@ class OpenCypherMandatoryMatchRelationshipTest extends TestHelper {
   void optionalMatchCanSeeEdges() {
     // Verify OPTIONAL MATCH can see the WORKS_FOR edges
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (p:Person) " +
-            "OPTIONAL MATCH (p)-[:WORKS_FOR]->(c:Company) " +
-            "RETURN p.name as name, c.name as company ORDER BY name")) {
+        """
+        MATCH (p:Person) \
+        OPTIONAL MATCH (p)-[:WORKS_FOR]->(c:Company) \
+        RETURN p.name as name, c.name as company ORDER BY name""")) {
       final List<Result> results = new ArrayList<>();
       while (rs.hasNext())
         results.add(rs.next());

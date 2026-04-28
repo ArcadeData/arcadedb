@@ -277,8 +277,9 @@ public class CSRBuilder {
     // Warn if schema sampling stopped while still discovering new property types
     if (!schemaComplete && propertySampleCount >= propertySampleSize && newTypesInLastSample && nodeCount > propertySampleSize)
       LogManager.instance().log(this, Level.WARNING,
-          "Property type sampling stopped after %d records (of %d total). Properties appearing only beyond this point will be "
-              + "excluded from the columnar store. Use withPropertySampleSize() to increase the sample size or define properties in the schema.",
+          """
+          Property type sampling stopped after %d records (of %d total). Properties appearing only beyond this point will be \
+          excluded from the columnar store. Use withPropertySampleSize() to increase the sample size or define properties in the schema.""",
           propertySampleSize, nodeCount);
 
     // --- Phase C: Build CSR arrays + remap edge properties to forward CSR order ---

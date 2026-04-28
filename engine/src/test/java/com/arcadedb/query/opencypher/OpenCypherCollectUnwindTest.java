@@ -1350,9 +1350,10 @@ class OpenCypherCollectUnwindTest {
       );
 
       database.command("opencypher",
-          "UNWIND $batch AS e " +
-              "MATCH (a:Person {id: e.src_id}), (b:Person {id: e.dst_id}) " +
-              "CREATE (a)-[:KNOWS {weight: e.weight}]->(b)",
+          """
+          UNWIND $batch AS e \
+          MATCH (a:Person {id: e.src_id}), (b:Person {id: e.dst_id}) \
+          CREATE (a)-[:KNOWS {weight: e.weight}]->(b)""",
           Map.of("batch", batch));
 
       try (final ResultSet rs = database.query("opencypher",
@@ -1374,10 +1375,11 @@ class OpenCypherCollectUnwindTest {
       );
 
       database.command("opencypher",
-          "UNWIND $batch AS e " +
-              "MATCH (a:Person) WHERE a.id = e.src_id " +
-              "MATCH (b:Person) WHERE b.id = e.dst_id " +
-              "CREATE (a)-[:KNOWS {weight: e.weight}]->(b)",
+          """
+          UNWIND $batch AS e \
+          MATCH (a:Person) WHERE a.id = e.src_id \
+          MATCH (b:Person) WHERE b.id = e.dst_id \
+          CREATE (a)-[:KNOWS {weight: e.weight}]->(b)""",
           Map.of("batch", batch));
 
       try (final ResultSet rs = database.query("opencypher",
@@ -1397,9 +1399,10 @@ class OpenCypherCollectUnwindTest {
       );
 
       try (final ResultSet rs = database.query("opencypher",
-          "UNWIND $batch AS e " +
-              "MATCH (a:Person {id: e.id}) " +
-              "RETURN a.name AS name ORDER BY name",
+          """
+          UNWIND $batch AS e \
+          MATCH (a:Person {id: e.id}) \
+          RETURN a.name AS name ORDER BY name""",
           Map.of("batch", batch))) {
         final List<String> names = new ArrayList<>();
         while (rs.hasNext())
@@ -1436,10 +1439,11 @@ class OpenCypherCollectUnwindTest {
         batch.add(Map.of("src_id", i, "dst_id", i + 1, "weight", 0.5, "since", "2024"));
 
       database.command("opencypher",
-          "UNWIND $batch AS e " +
-              "MATCH (a:Person) WHERE a.id = e.src_id " +
-              "MATCH (b:Person) WHERE b.id = e.dst_id " +
-              "CREATE (a)-[:KNOWS {weight: e.weight, since: e.since}]->(b)",
+          """
+          UNWIND $batch AS e \
+          MATCH (a:Person) WHERE a.id = e.src_id \
+          MATCH (b:Person) WHERE b.id = e.dst_id \
+          CREATE (a)-[:KNOWS {weight: e.weight, since: e.since}]->(b)""",
           Map.of("batch", batch));
 
       try (final ResultSet rs = database.query("opencypher",
@@ -1452,9 +1456,10 @@ class OpenCypherCollectUnwindTest {
     @Test
     void unwindSimpleListWithInlineFilter() {
       try (final ResultSet rs = database.query("opencypher",
-          "UNWIND [0, 1, 2] AS id " +
-              "MATCH (a:Person {id: id}) " +
-              "RETURN a.name AS name ORDER BY name")) {
+          """
+          UNWIND [0, 1, 2] AS id \
+          MATCH (a:Person {id: id}) \
+          RETURN a.name AS name ORDER BY name""")) {
         final List<String> names = new ArrayList<>();
         while (rs.hasNext())
           names.add(rs.next().getProperty("name"));

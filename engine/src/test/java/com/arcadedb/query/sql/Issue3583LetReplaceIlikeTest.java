@@ -58,15 +58,16 @@ class Issue3583LetReplaceIlikeTest extends TestHelper {
       params.put("keyWordIdentifier_1", "world");
 
       final ResultSet rs = database.query("sql",
-          "SELECT expand($c) " +
-              "LET " +
-              "  $a = (SELECT identity, @rid as id FROM NER " +
-              "    WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') " +
-              "      AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), " +
-              "  $b = (SELECT identity, @rid as id FROM THEME " +
-              "    WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') " +
-              "      AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), " +
-              "  $c = UNIONALL($a, $b)",
+          """
+          SELECT expand($c) \
+          LET \
+            $a = (SELECT identity, @rid as id FROM NER \
+              WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') \
+                AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), \
+            $b = (SELECT identity, @rid as id FROM THEME \
+              WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') \
+                AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), \
+            $c = UNIONALL($a, $b)""",
           params);
 
       final List<Result> results = new ArrayList<>();
@@ -111,8 +112,9 @@ class Issue3583LetReplaceIlikeTest extends TestHelper {
 
       // This query might use the index, leading to FilterStep instead of ScanWithFilterStep
       final ResultSet rs = database.query("sql",
-          "SELECT identity FROM IndexedType " +
-              "WHERE identity.replace('\\n', ' ').replace('\\t', ' ') ILIKE '%hello world%'");
+          """
+          SELECT identity FROM IndexedType \
+          WHERE identity.replace('\\n', ' ').replace('\\t', ' ') ILIKE '%hello world%'""");
 
       final List<Result> results = new ArrayList<>();
       while (rs.hasNext())
@@ -143,15 +145,16 @@ class Issue3583LetReplaceIlikeTest extends TestHelper {
       params.put("keyWordIdentifier_1", "world");
 
       final ResultSet rs = database.query("sql",
-          "SELECT expand($c) " +
-              "LET " +
-              "  $a = (SELECT identity, @rid as id FROM NER2 " +
-              "    WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') " +
-              "      AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), " +
-              "  $b = (SELECT identity, @rid as id FROM THEME2 " +
-              "    WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') " +
-              "      AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), " +
-              "  $c = UNIONALL($a, $b)",
+          """
+          SELECT expand($c) \
+          LET \
+            $a = (SELECT identity, @rid as id FROM NER2 \
+              WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') \
+                AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), \
+            $b = (SELECT identity, @rid as id FROM THEME2 \
+              WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') \
+                AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), \
+            $c = UNIONALL($a, $b)""",
           params);
 
       final List<Result> results = new ArrayList<>();

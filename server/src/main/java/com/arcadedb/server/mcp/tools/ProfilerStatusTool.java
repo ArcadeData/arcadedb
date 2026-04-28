@@ -31,9 +31,10 @@ public class ProfilerStatusTool {
     return new JSONObject()
         .put("name", "profiler_status")
         .put("description",
-            "Get the current status of the query profiler. " +
-            "Returns whether the profiler is recording, and if available, the current or last profiling results " +
-            "including captured queries, timing statistics, and server metric snapshots.")
+            """
+            Get the current status of the query profiler. \
+            Returns whether the profiler is recording, and if available, the current or last profiling results \
+            including captured queries, timing statistics, and server metric snapshots.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject())

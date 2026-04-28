@@ -74,10 +74,11 @@ class AlgoAdamicAdarTest {
   @Test
   void adamicAdarResultHasCorrectFields() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.adamicAdar(a, null, 'BOTH', 0.0) " +
-            "YIELD node1, node2, score " +
-            "RETURN node1, node2, score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.adamicAdar(a, null, 'BOTH', 0.0) \
+        YIELD node1, node2, score \
+        RETURN node1, node2, score""");
 
     while (rs.hasNext()) {
       final Result result = rs.next();
@@ -93,10 +94,11 @@ class AlgoAdamicAdarTest {
   @Test
   void adamicAdarFindsSimilarNode() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.adamicAdar(a, null, 'BOTH', 0.0) " +
-            "YIELD node1, node2, score " +
-            "RETURN node2.name AS name, score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.adamicAdar(a, null, 'BOTH', 0.0) \
+        YIELD node1, node2, score \
+        RETURN node2.name AS name, score""");
 
     boolean foundE = false;
     while (rs.hasNext()) {
@@ -116,10 +118,11 @@ class AlgoAdamicAdarTest {
   void adamicAdarCutoffFilters() {
     // With a very high cutoff, no results should be returned
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.adamicAdar(a, null, 'BOTH', 100.0) " +
-            "YIELD node1, node2, score " +
-            "RETURN node1, node2, score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.adamicAdar(a, null, 'BOTH', 100.0) \
+        YIELD node1, node2, score \
+        RETURN node1, node2, score""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())

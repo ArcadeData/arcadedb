@@ -78,8 +78,10 @@ public class GitHubIssue3813Test extends TestHelper {
   @Test
   void sqlScriptLetUpdateWhereRid() {
     final ResultSet result = database.command("sqlscript",
-        "LET $x = INSERT INTO Doc RETURN @rid;\n" +
-            "UPDATE Doc SET b = 3 WHERE @rid = $x.@rid[0];");
+        """
+        LET $x = INSERT INTO Doc RETURN @rid;
+        UPDATE Doc SET b = 3 WHERE @rid = $x.@rid[0];\
+        """);
     assertThat(result.hasNext()).isTrue();
     assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
 
@@ -96,8 +98,10 @@ public class GitHubIssue3813Test extends TestHelper {
   @Test
   void sqlScriptLetUpdateTarget() {
     final ResultSet result = database.command("sqlscript",
-        "LET $x = INSERT INTO Doc RETURN @rid;\n" +
-            "UPDATE $x.@rid[0] SET b = 3;");
+        """
+        LET $x = INSERT INTO Doc RETURN @rid;
+        UPDATE $x.@rid[0] SET b = 3;\
+        """);
     assertThat(result.hasNext()).isTrue();
     assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
 

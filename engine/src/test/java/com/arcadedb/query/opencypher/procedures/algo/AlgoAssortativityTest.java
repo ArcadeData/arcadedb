@@ -68,8 +68,9 @@ class AlgoAssortativityTest {
   @Test
   void assortativityReturnsSingleRow() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.assortativity() YIELD assortativity, edgeCount "
-            + "RETURN assortativity, edgeCount");
+        """
+        CALL algo.assortativity() YIELD assortativity, edgeCount \
+        RETURN assortativity, edgeCount""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -108,8 +109,9 @@ class AlgoAssortativityTest {
   @Test
   void assortativityWithRelType() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.assortativity('EDGE') YIELD assortativity, edgeCount "
-            + "RETURN assortativity, edgeCount");
+        """
+        CALL algo.assortativity('EDGE') YIELD assortativity, edgeCount \
+        RETURN assortativity, edgeCount""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();

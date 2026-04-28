@@ -59,9 +59,10 @@ class MatchGAVExpandIntoTest extends TestHelper {
       // should benefit from expand-into (isConnectedTo)
       database.begin();
       final ResultSet rs = database.query("sql",
-          "MATCH {type: Person, as: a, where: (name = 'Alice')} -KNOWS-> {as: b}," +
-          " {as: a} -KNOWS-> {as: c, where: (name = 'Charlie')} " +
-          "RETURN a.name as aName, b.name as bName, c.name as cName");
+          """
+          MATCH {type: Person, as: a, where: (name = 'Alice')} -KNOWS-> {as: b},\
+           {as: a} -KNOWS-> {as: c, where: (name = 'Charlie')} \
+          RETURN a.name as aName, b.name as bName, c.name as cName""");
 
       final List<String> bNames = new ArrayList<>();
       while (rs.hasNext()) {
@@ -97,8 +98,9 @@ class MatchGAVExpandIntoTest extends TestHelper {
       // MATCH where Alice -KNOWS-> Charlie should return nothing (not connected)
       database.begin();
       final ResultSet rs = database.query("sql",
-          "MATCH {type: Person, as: a, where: (name = 'Alice')} -KNOWS-> {as: b, where: (name = 'Charlie')} " +
-          "RETURN a.name as aName, b.name as bName");
+          """
+          MATCH {type: Person, as: a, where: (name = 'Alice')} -KNOWS-> {as: b, where: (name = 'Charlie')} \
+          RETURN a.name as aName, b.name as bName""");
       assertThat(rs.hasNext()).isFalse();
       database.commit();
     } finally {
@@ -120,8 +122,9 @@ class MatchGAVExpandIntoTest extends TestHelper {
     b.newEdge("KNOWS", c);
     database.commit();
 
-    final String query = "MATCH {type: Person, as: a, where: (name = 'Alice')} -KNOWS-> {as: b} -KNOWS-> {as: c} " +
-        "RETURN a.name as aName, b.name as bName, c.name as cName";
+    final String query = """
+        MATCH {type: Person, as: a, where: (name = 'Alice')} -KNOWS-> {as: b} -KNOWS-> {as: c} \
+        RETURN a.name as aName, b.name as bName, c.name as cName""";
 
     // Query without GAV
     database.begin();

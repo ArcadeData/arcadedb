@@ -205,9 +205,11 @@ class LineProtocolParserTest {
   @Test
   void unsignedIntegerMaxValueIsAccepted() {
     // 18446744073709551615u = max uint64; stored as the signed bit-pattern -1L (correct per InfluxDB spec)
-    final String text = "metric value=1.0 1000\n" +
-        "metric overflow=18446744073709551615u 2000\n" +
-        "metric value=3.0 3000\n";
+    final String text = """
+        metric value=1.0 1000
+        metric overflow=18446744073709551615u 2000
+        metric value=3.0 3000
+        """;
     final List<Sample> samples = LineProtocolParser.parse(text, Precision.MILLISECONDS);
     assertThat(samples).hasSize(3);
     assertThat(samples.get(0).getTimestampMs()).isEqualTo(1000L);

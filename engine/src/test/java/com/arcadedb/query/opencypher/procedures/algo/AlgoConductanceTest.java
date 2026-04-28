@@ -75,8 +75,9 @@ class AlgoConductanceTest {
   @Test
   void conductanceReturnsOneRowPerCommunity() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.conductance('comm') YIELD community, conductance, internalEdges, boundaryEdges, nodeCount "
-            + "RETURN community, conductance, internalEdges, boundaryEdges, nodeCount");
+        """
+        CALL algo.conductance('comm') YIELD community, conductance, internalEdges, boundaryEdges, nodeCount \
+        RETURN community, conductance, internalEdges, boundaryEdges, nodeCount""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -89,8 +90,9 @@ class AlgoConductanceTest {
   @Test
   void conductanceCommunityValuePresent() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.conductance('comm') YIELD community, conductance "
-            + "RETURN community, conductance");
+        """
+        CALL algo.conductance('comm') YIELD community, conductance \
+        RETURN community, conductance""");
 
     while (rs.hasNext()) {
       final Result r = rs.next();
@@ -146,8 +148,9 @@ class AlgoConductanceTest {
   @Test
   void conductanceWithRelType() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.conductance('comm', 'EDGE') YIELD community, conductance "
-            + "RETURN community, conductance");
+        """
+        CALL algo.conductance('comm', 'EDGE') YIELD community, conductance \
+        RETURN community, conductance""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -178,8 +181,9 @@ class AlgoConductanceTest {
     });
 
     final ResultSet rs = separatedDb.query("opencypher",
-        "CALL algo.conductance('grp') YIELD community, conductance, boundaryEdges "
-            + "RETURN community, conductance, boundaryEdges");
+        """
+        CALL algo.conductance('grp') YIELD community, conductance, boundaryEdges \
+        RETURN community, conductance, boundaryEdges""");
 
     while (rs.hasNext()) {
       final Result r = rs.next();

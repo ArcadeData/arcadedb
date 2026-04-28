@@ -85,11 +85,12 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
   @Test
   void unwindMatchMergeWithNestedPropertyAccessViaHttp() throws Exception {
     testEachServer((serverIndex) -> {
-      final String query = "UNWIND $batch as row " +
-          "MATCH (a) WHERE ID(a) = row.source_id " +
-          "MATCH (b) WHERE ID(b) = row.target_id " +
-          "MERGE (a)-[r:`causal_action`{chunk: row.features.chunk}]->(b) " +
-          "RETURN a, b, r";
+      final String query = """
+          UNWIND $batch as row \
+          MATCH (a) WHERE ID(a) = row.source_id \
+          MATCH (b) WHERE ID(b) = row.target_id \
+          MERGE (a)-[r:`causal_action`{chunk: row.features.chunk}]->(b) \
+          RETURN a, b, r""";
 
       // Build the nested batch parameter as JSON, matching exactly what a Python client sends
       final JSONObject featuresMap = new JSONObject().put("chunk", chunkId);
@@ -147,11 +148,12 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
   @Test
   void unwindMatchMergeIdempotentViaHttp() throws Exception {
     testEachServer((serverIndex) -> {
-      final String query = "UNWIND $batch as row " +
-          "MATCH (a) WHERE ID(a) = row.source_id " +
-          "MATCH (b) WHERE ID(b) = row.target_id " +
-          "MERGE (a)-[r:`causal_action`{chunk: row.features.chunk}]->(b) " +
-          "RETURN a, b, r";
+      final String query = """
+          UNWIND $batch as row \
+          MATCH (a) WHERE ID(a) = row.source_id \
+          MATCH (b) WHERE ID(b) = row.target_id \
+          MERGE (a)-[r:`causal_action`{chunk: row.features.chunk}]->(b) \
+          RETURN a, b, r""";
 
       final JSONObject featuresMap = new JSONObject().put("chunk", chunkId);
       final JSONObject rowObj = new JSONObject()
@@ -226,11 +228,12 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
   @Test
   void unwindMatchMergeAutoCreatesEdgeTypeViaHttp() throws Exception {
     testEachServer((serverIndex) -> {
-      final String query = "UNWIND $batch as row " +
-          "MATCH (a) WHERE ID(a) = row.source_id " +
-          "MATCH (b) WHERE ID(b) = row.target_id " +
-          "MERGE (a)-[r:`new_relation_type`{chunk: row.features.chunk}]->(b) " +
-          "RETURN a, b, r";
+      final String query = """
+          UNWIND $batch as row \
+          MATCH (a) WHERE ID(a) = row.source_id \
+          MATCH (b) WHERE ID(b) = row.target_id \
+          MERGE (a)-[r:`new_relation_type`{chunk: row.features.chunk}]->(b) \
+          RETURN a, b, r""";
 
       final JSONObject featuresMap = new JSONObject().put("chunk", chunkId);
       final JSONObject rowObj = new JSONObject()
@@ -286,11 +289,12 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
   @Test
   void mergeEdgeTypeNamedAccessDoesNotCrashSecurity() throws Exception {
     testEachServer((serverIndex) -> {
-      final String query = "UNWIND $batch as row " +
-          "MATCH (a) WHERE ID(a) = row.source_id " +
-          "MATCH (b) WHERE ID(b) = row.target_id " +
-          "MERGE (a)-[r:`access`{chunk: row.features.chunk}]->(b) " +
-          "RETURN a, b, r";
+      final String query = """
+          UNWIND $batch as row \
+          MATCH (a) WHERE ID(a) = row.source_id \
+          MATCH (b) WHERE ID(b) = row.target_id \
+          MERGE (a)-[r:`access`{chunk: row.features.chunk}]->(b) \
+          RETURN a, b, r""";
 
       final JSONObject featuresMap = new JSONObject().put("chunk", chunkId);
       final JSONObject rowObj = new JSONObject()
@@ -395,11 +399,12 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
   @Test
   void unwindMatchMergeNestedPropertyValueIsStoredOnEdge() throws Exception {
     testEachServer((serverIndex) -> {
-      final String query = "UNWIND $batch as row " +
-          "MATCH (a) WHERE ID(a) = row.source_id " +
-          "MATCH (b) WHERE ID(b) = row.target_id " +
-          "MERGE (a)-[r:`risk_area`{chunk: row.features.chunk}]->(b) " +
-          "RETURN r.chunk as edgeChunk";
+      final String query = """
+          UNWIND $batch as row \
+          MATCH (a) WHERE ID(a) = row.source_id \
+          MATCH (b) WHERE ID(b) = row.target_id \
+          MERGE (a)-[r:`risk_area`{chunk: row.features.chunk}]->(b) \
+          RETURN r.chunk as edgeChunk""";
 
       final JSONObject featuresMap = new JSONObject().put("chunk", chunkId);
       final JSONObject rowObj = new JSONObject()

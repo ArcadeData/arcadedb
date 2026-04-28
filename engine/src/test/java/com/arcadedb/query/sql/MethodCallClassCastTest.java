@@ -65,19 +65,20 @@ class MethodCallClassCastTest extends TestHelper {
     // method calls (.size(), .toLowerCase()), and ORDER BY with method call
     database.transaction(() -> {
       final String query =
-          "SELECT ( $c ) LET " +
-              "$a = (SELECT count(ID) FROM Product WHERE " +
-              "inE('HasChild')[_isDeleted <> true].size() = 0 " +
-              "AND (inE('Branch')[_isDeleted <> true] is NULL or inE('Branch')[_isDeleted <> true].size() = 0) " +
-              "AND @type = \"Product\" AND _isDeleted <> true AND _isDisabled <> true LIMIT -1), " +
-              "$b = (SELECT *, @rid, @type, " +
-              "out('HasChild')[_isDeleted <> true].size() as CSize " +
-              "FROM Product WHERE " +
-              "inE('HasChild')[_isDeleted <> true].size() = 0 " +
-              "AND (inE('Branch')[_isDeleted <> true] is NULL or inE('Branch')[_isDeleted <> true].size() = 0) " +
-              "AND @type = \"Product\" AND _isDeleted <> true AND _isDisabled <> true " +
-              "ORDER BY Name.toLowerCase() asc, CreatedOn desc LIMIT -1), " +
-              "$c = UNIONALL( $a, $b ) limit -1";
+          """
+          SELECT ( $c ) LET \
+          $a = (SELECT count(ID) FROM Product WHERE \
+          inE('HasChild')[_isDeleted <> true].size() = 0 \
+          AND (inE('Branch')[_isDeleted <> true] is NULL or inE('Branch')[_isDeleted <> true].size() = 0) \
+          AND @type = "Product" AND _isDeleted <> true AND _isDisabled <> true LIMIT -1), \
+          $b = (SELECT *, @rid, @type, \
+          out('HasChild')[_isDeleted <> true].size() as CSize \
+          FROM Product WHERE \
+          inE('HasChild')[_isDeleted <> true].size() = 0 \
+          AND (inE('Branch')[_isDeleted <> true] is NULL or inE('Branch')[_isDeleted <> true].size() = 0) \
+          AND @type = "Product" AND _isDeleted <> true AND _isDisabled <> true \
+          ORDER BY Name.toLowerCase() asc, CreatedOn desc LIMIT -1), \
+          $c = UNIONALL( $a, $b ) limit -1""";
 
       final ResultSet rs = database.command("sql", query);
       final List<Result> results = new ArrayList<>();
@@ -103,10 +104,11 @@ class MethodCallClassCastTest extends TestHelper {
     database.transaction(() -> {
       // Method calls (.toLowerCase()) in ORDER BY within LET subquery + UNIONALL
       final ResultSet rs = database.query("sql",
-          "SELECT expand($c) LET " +
-              "$a = (SELECT name FROM DocA ORDER BY name.toLowerCase() asc), " +
-              "$b = (SELECT name FROM DocB ORDER BY name.toLowerCase() asc), " +
-              "$c = UNIONALL($a, $b)");
+          """
+          SELECT expand($c) LET \
+          $a = (SELECT name FROM DocA ORDER BY name.toLowerCase() asc), \
+          $b = (SELECT name FROM DocB ORDER BY name.toLowerCase() asc), \
+          $c = UNIONALL($a, $b)""");
 
       final List<Result> results = new ArrayList<>();
       while (rs.hasNext())
@@ -134,10 +136,11 @@ class MethodCallClassCastTest extends TestHelper {
     database.transaction(() -> {
       // .size() on edge traversals within LET + UNIONALL
       final ResultSet rs = database.query("sql",
-          "SELECT expand($c) LET " +
-              "$a = (SELECT count(*) FROM Node WHERE out('Link').size() > 0), " +
-              "$b = (SELECT name, out('Link').size() as linkCount FROM Node WHERE out('Link').size() = 0), " +
-              "$c = UNIONALL($a, $b)");
+          """
+          SELECT expand($c) LET \
+          $a = (SELECT count(*) FROM Node WHERE out('Link').size() > 0), \
+          $b = (SELECT name, out('Link').size() as linkCount FROM Node WHERE out('Link').size() = 0), \
+          $c = UNIONALL($a, $b)""");
 
       final List<Result> results = new ArrayList<>();
       while (rs.hasNext())

@@ -251,9 +251,10 @@ public class BoltNetworkExecutor extends Thread {
     if (!Arrays.equals(magic, BOLT_MAGIC)) {
       if (magic[0] == 0x16 && magic[1] == 0x03)
         LogManager.instance().log(this, Level.WARNING,
-            "TLS/SSL connection attempted on BOLT port but TLS is disabled. "
-                + "Configure arcadedb.bolt.ssl=OPTIONAL or REQUIRED to enable TLS, "
-                + "or use bolt:// (unencrypted) on the client");
+            """
+            TLS/SSL connection attempted on BOLT port but TLS is disabled. \
+            Configure arcadedb.bolt.ssl=OPTIONAL or REQUIRED to enable TLS, \
+            or use bolt:// (unencrypted) on the client""");
       else
         LogManager.instance().log(this, Level.WARNING,
             "Invalid BOLT magic bytes: [%d, %d, %d, %d]", magic[0], magic[1], magic[2], magic[3]);

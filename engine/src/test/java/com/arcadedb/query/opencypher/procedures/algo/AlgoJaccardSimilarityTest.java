@@ -78,10 +78,11 @@ class AlgoJaccardSimilarityTest {
   void jaccardFindsSimilarNode() {
     // Source=A, direction=OUT, cutoff=0.0 → should find E with similarity≈0.667
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.jaccard(a, null, 'OUT', 0.0) " +
-            "YIELD node1, node2, similarity " +
-            "RETURN node1, node2, similarity");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.jaccard(a, null, 'OUT', 0.0) \
+        YIELD node1, node2, similarity \
+        RETURN node1, node2, similarity""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -106,10 +107,11 @@ class AlgoJaccardSimilarityTest {
   void jaccardCutoffFiltersResults() {
     // cutoff=0.7: jaccard(A,E)=0.667 ≤ 0.7 → no results returned
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.jaccard(a, null, 'OUT', 0.7) " +
-            "YIELD node1, node2, similarity " +
-            "RETURN node1, node2, similarity");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.jaccard(a, null, 'OUT', 0.7) \
+        YIELD node1, node2, similarity \
+        RETURN node1, node2, similarity""");
 
     assertThat(rs.hasNext()).isFalse();
   }

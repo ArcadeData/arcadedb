@@ -59,9 +59,10 @@ class FullTextPolymorphicScoreTest extends TestHelper {
 
     database.transaction(() -> {
       final ResultSet result = database.query("sql",
-          "SELECT @type, searchable_text, $score AS score FROM Searchable"
-              + " WHERE SEARCH_INDEX('Searchable[searchable_text]', 'dispatch pipeline hivemind scheduler agent') = true"
-              + " LIMIT 10");
+          """
+          SELECT @type, searchable_text, $score AS score FROM Searchable\
+           WHERE SEARCH_INDEX('Searchable[searchable_text]', 'dispatch pipeline hivemind scheduler agent') = true\
+           LIMIT 10""");
 
       final List<Float> scores = new ArrayList<>();
       while (result.hasNext()) {
@@ -104,9 +105,10 @@ class FullTextPolymorphicScoreTest extends TestHelper {
     database.transaction(() -> {
       // ORDER BY $score DESC must complete without hanging and return correct order
       final ResultSet result = database.query("sql",
-          "SELECT @type, searchable_text, $score AS score FROM Searchable"
-              + " WHERE SEARCH_INDEX('Searchable[searchable_text]', 'dispatch pipeline hivemind scheduler agent') = true"
-              + " ORDER BY $score DESC LIMIT 5");
+          """
+          SELECT @type, searchable_text, $score AS score FROM Searchable\
+           WHERE SEARCH_INDEX('Searchable[searchable_text]', 'dispatch pipeline hivemind scheduler agent') = true\
+           ORDER BY $score DESC LIMIT 5""");
 
       final List<Float> scores = new ArrayList<>();
       final List<String> texts = new ArrayList<>();
@@ -154,10 +156,11 @@ class FullTextPolymorphicScoreTest extends TestHelper {
     database.transaction(() -> {
       // Combines SEARCH_INDEX with an additional equality filter and ORDER BY
       final ResultSet result = database.query("sql",
-          "SELECT @type, searchable_text, $score AS score FROM Searchable"
-              + " WHERE SEARCH_INDEX('Searchable[searchable_text]', 'dispatch pipeline hivemind scheduler agent') = true"
-              + "   AND project_id = 1"
-              + " ORDER BY $score DESC LIMIT 5");
+          """
+          SELECT @type, searchable_text, $score AS score FROM Searchable\
+           WHERE SEARCH_INDEX('Searchable[searchable_text]', 'dispatch pipeline hivemind scheduler agent') = true\
+             AND project_id = 1\
+           ORDER BY $score DESC LIMIT 5""");
 
       final List<Float> scores = new ArrayList<>();
       while (result.hasNext()) {
@@ -188,9 +191,10 @@ class FullTextPolymorphicScoreTest extends TestHelper {
 
     database.transaction(() -> {
       final ResultSet rs = database.command("sql",
-          "EXPLAIN SELECT searchable_text, $score AS score FROM Searchable"
-              + " WHERE SEARCH_INDEX('Searchable[searchable_text]', 'dispatch') = true"
-              + " ORDER BY $score DESC LIMIT 5");
+          """
+          EXPLAIN SELECT searchable_text, $score AS score FROM Searchable\
+           WHERE SEARCH_INDEX('Searchable[searchable_text]', 'dispatch') = true\
+           ORDER BY $score DESC LIMIT 5""");
 
       assertThat(rs.hasNext()).isTrue();
       final Result plan = rs.next();

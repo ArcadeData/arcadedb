@@ -196,8 +196,9 @@ class CypherCaseTest {
     // Both count(loc) and sum(CASE...) are aggregations — no grouping keys exist.
     // Expected: single row {total: 3, pa: 2}
     final ResultSet results = database.query("opencypher",
-        "UNWIND [{state: 'NY'}, {state: 'PA'}, {state: 'PA'}] AS loc " +
-        "RETURN count(loc) AS total, sum(CASE WHEN loc.state = 'PA' THEN 1 ELSE 0 END) AS pa");
+        """
+        UNWIND [{state: 'NY'}, {state: 'PA'}, {state: 'PA'}] AS loc \
+        RETURN count(loc) AS total, sum(CASE WHEN loc.state = 'PA' THEN 1 ELSE 0 END) AS pa""");
 
     assertThat((boolean) results.hasNext()).isTrue();
     final Result result = results.next();
@@ -215,9 +216,10 @@ class CypherCaseTest {
   void aggregationWithCaseAndGroupByKey() {
     // category is the real grouping key; sum(CASE...) must aggregate per category, not per loc.state
     final ResultSet results = database.query("opencypher",
-        "UNWIND [{state: 'NY', cat: 'A'}, {state: 'PA', cat: 'A'}, {state: 'PA', cat: 'B'}] AS loc " +
-        "RETURN loc.cat AS category, sum(CASE WHEN loc.state = 'PA' THEN 1 ELSE 0 END) AS pa " +
-        "ORDER BY category");
+        """
+        UNWIND [{state: 'NY', cat: 'A'}, {state: 'PA', cat: 'A'}, {state: 'PA', cat: 'B'}] AS loc \
+        RETURN loc.cat AS category, sum(CASE WHEN loc.state = 'PA' THEN 1 ELSE 0 END) AS pa \
+        ORDER BY category""");
 
     assertThat((boolean) results.hasNext()).isTrue();
     final Result rowA = results.next();

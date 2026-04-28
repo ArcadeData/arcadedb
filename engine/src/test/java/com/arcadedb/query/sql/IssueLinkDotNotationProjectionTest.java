@@ -53,10 +53,11 @@ class IssueLinkDotNotationProjectionTest extends TestHelper {
 
       // Create product with all three link properties
       database.command("sql",
-          "INSERT INTO Product SET Name = 'TestProduct', "
-              + "CreatedBy = (SELECT FROM AppUser WHERE Email = 'alice@example.com'), "
-              + "Owner = (SELECT FROM AppUser WHERE Email = 'bob@example.com'), "
-              + "ModifiedBy = (SELECT FROM AppUser WHERE Email = 'charlie@example.com')");
+          """
+          INSERT INTO Product SET Name = 'TestProduct', \
+          CreatedBy = (SELECT FROM AppUser WHERE Email = 'alice@example.com'), \
+          Owner = (SELECT FROM AppUser WHERE Email = 'bob@example.com'), \
+          ModifiedBy = (SELECT FROM AppUser WHERE Email = 'charlie@example.com')""");
 
       // Test single dot-notation projection
       try (final ResultSet rs = database.query("sql",
@@ -68,9 +69,10 @@ class IssueLinkDotNotationProjectionTest extends TestHelper {
 
       // Test multiple dot-notation projections (the pattern from the client's query)
       try (final ResultSet rs = database.query("sql",
-          "SELECT CreatedBy.Email as _CreatedBy_Email, "
-              + "ModifiedBy.Email as _ModifiedBy_Email, "
-              + "Owner.Email as _Owner_Email FROM Product")) {
+          """
+          SELECT CreatedBy.Email as _CreatedBy_Email, \
+          ModifiedBy.Email as _ModifiedBy_Email, \
+          Owner.Email as _Owner_Email FROM Product""")) {
         assertThat(rs.hasNext()).isTrue();
         final Result row = rs.next();
         assertThat(row.<String>getProperty("_CreatedBy_Email")).isEqualTo("alice@example.com");
@@ -118,14 +120,16 @@ class IssueLinkDotNotationProjectionTest extends TestHelper {
 
       // Create product with vertex links
       database.command("sql",
-          "INSERT INTO ProductVertex SET Name = 'TestProduct', "
-              + "CreatedBy = (SELECT FROM UserVertex WHERE Email = 'alice@test.com'), "
-              + "Owner = (SELECT FROM UserVertex WHERE Email = 'bob@test.com')");
+          """
+          INSERT INTO ProductVertex SET Name = 'TestProduct', \
+          CreatedBy = (SELECT FROM UserVertex WHERE Email = 'alice@test.com'), \
+          Owner = (SELECT FROM UserVertex WHERE Email = 'bob@test.com')""");
 
       // Test dot-notation projection with vertex links
       try (final ResultSet rs = database.query("sql",
-          "SELECT CreatedBy.Email as _CreatedBy_Email, "
-              + "Owner.Email as _Owner_Email FROM ProductVertex")) {
+          """
+          SELECT CreatedBy.Email as _CreatedBy_Email, \
+          Owner.Email as _Owner_Email FROM ProductVertex""")) {
         assertThat(rs.hasNext()).isTrue();
         final Result row = rs.next();
         assertThat(row.<String>getProperty("_CreatedBy_Email")).isEqualTo("alice@test.com");
@@ -151,19 +155,21 @@ class IssueLinkDotNotationProjectionTest extends TestHelper {
 
       // Create product
       database.command("sql",
-          "INSERT INTO Product3 SET Name = 'TestProduct', "
-              + "CreatedBy = (SELECT FROM AppUser3 WHERE Email = 'alice@example.com'), "
-              + "Owner = (SELECT FROM AppUser3 WHERE Email = 'bob@example.com'), "
-              + "ModifiedBy = (SELECT FROM AppUser3 WHERE Email = 'alice@example.com')");
+          """
+          INSERT INTO Product3 SET Name = 'TestProduct', \
+          CreatedBy = (SELECT FROM AppUser3 WHERE Email = 'alice@example.com'), \
+          Owner = (SELECT FROM AppUser3 WHERE Email = 'bob@example.com'), \
+          ModifiedBy = (SELECT FROM AppUser3 WHERE Email = 'alice@example.com')""");
 
       // Test with LET + UNIONALL pattern (mirrors client's actual query)
       try (final ResultSet rs = database.query("sql",
-          "SELECT ($c) LET "
-              + "$a = (SELECT count(Name) FROM Product3), "
-              + "$b = (SELECT *, CreatedBy.Email as _CreatedBy_Email, "
-              + "  ModifiedBy.Email as _ModifiedBy_Email, "
-              + "  Owner.Email as _Owner_Email FROM Product3), "
-              + "$c = UNIONALL($a, $b) LIMIT -1")) {
+          """
+          SELECT ($c) LET \
+          $a = (SELECT count(Name) FROM Product3), \
+          $b = (SELECT *, CreatedBy.Email as _CreatedBy_Email, \
+            ModifiedBy.Email as _ModifiedBy_Email, \
+            Owner.Email as _Owner_Email FROM Product3), \
+          $c = UNIONALL($a, $b) LIMIT -1""")) {
         assertThat(rs.hasNext()).isTrue();
       }
     });
@@ -184,13 +190,15 @@ class IssueLinkDotNotationProjectionTest extends TestHelper {
 
       // Create product with CreatedBy set but Owner null
       database.command("sql",
-          "INSERT INTO Product4 SET Name = 'TestProduct', "
-              + "CreatedBy = (SELECT FROM AppUser4 WHERE Email = 'alice@example.com')");
+          """
+          INSERT INTO Product4 SET Name = 'TestProduct', \
+          CreatedBy = (SELECT FROM AppUser4 WHERE Email = 'alice@example.com')""");
 
       // Test mixed null/non-null links in same query - should NOT throw ClassCastException
       try (final ResultSet rs = database.query("sql",
-          "SELECT CreatedBy.Email as _CreatedBy_Email, "
-              + "Owner.Email as _Owner_Email FROM Product4")) {
+          """
+          SELECT CreatedBy.Email as _CreatedBy_Email, \
+          Owner.Email as _Owner_Email FROM Product4""")) {
         assertThat(rs.hasNext()).isTrue();
         final Result row = rs.next();
         assertThat(row.<String>getProperty("_CreatedBy_Email")).isEqualTo("alice@example.com");

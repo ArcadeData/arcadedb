@@ -73,10 +73,11 @@ class AlgoCommonNeighborsTest {
   @Test
   void commonNeighborsResultHasCorrectFields() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.commonNeighbors(a, null, 'BOTH', 1) " +
-            "YIELD node1, node2, commonNeighbors " +
-            "RETURN node1, node2, commonNeighbors");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.commonNeighbors(a, null, 'BOTH', 1) \
+        YIELD node1, node2, commonNeighbors \
+        RETURN node1, node2, commonNeighbors""");
 
     while (rs.hasNext()) {
       final Result result = rs.next();
@@ -92,10 +93,11 @@ class AlgoCommonNeighborsTest {
   @Test
   void commonNeighborsFindsBestMatch() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.commonNeighbors(a, null, 'BOTH', 1) " +
-            "YIELD node1, node2, commonNeighbors " +
-            "RETURN node2.name AS name, commonNeighbors");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.commonNeighbors(a, null, 'BOTH', 1) \
+        YIELD node1, node2, commonNeighbors \
+        RETURN node2.name AS name, commonNeighbors""");
 
     boolean foundE = false;
     int countE = 0;
@@ -117,10 +119,11 @@ class AlgoCommonNeighborsTest {
   void commonNeighborsCutoffFilters() {
     // With cutoff=2, only E should appear (2 common neighbors with A)
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.commonNeighbors(a, null, 'BOTH', 2) " +
-            "YIELD node1, node2, commonNeighbors " +
-            "RETURN node2.name AS name, commonNeighbors");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.commonNeighbors(a, null, 'BOTH', 2) \
+        YIELD node1, node2, commonNeighbors \
+        RETURN node2.name AS name, commonNeighbors""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -134,10 +137,11 @@ class AlgoCommonNeighborsTest {
   @Test
   void commonNeighborsCountIsPositive() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.commonNeighbors(a, null, 'BOTH', 1) " +
-            "YIELD node1, node2, commonNeighbors " +
-            "RETURN commonNeighbors");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.commonNeighbors(a, null, 'BOTH', 1) \
+        YIELD node1, node2, commonNeighbors \
+        RETURN commonNeighbors""");
 
     while (rs.hasNext()) {
       final Object countObj = rs.next().getProperty("commonNeighbors");

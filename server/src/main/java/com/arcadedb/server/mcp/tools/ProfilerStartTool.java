@@ -31,10 +31,11 @@ public class ProfilerStartTool {
     return new JSONObject()
         .put("name", "profiler_start")
         .put("description",
-            "Start the query profiler to capture query execution data. " +
-            "The profiler records all queries with their execution times and plans. " +
-            "It auto-stops after the specified timeout (default 60 seconds). " +
-            "Use profiler_stop to stop early and get results, or profiler_status to check progress.")
+            """
+            Start the query profiler to capture query execution data. \
+            The profiler records all queries with their execution times and plans. \
+            It auto-stops after the specified timeout (default 60 seconds). \
+            Use profiler_stop to stop early and get results, or profiler_status to check progress.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject()

@@ -98,7 +98,8 @@ public class SQLFunctionGeoBuffer extends SQLFunctionAbstract {
 
   @Override
   public String getSyntax() {
-    return "geo.buffer(<geometry>, <distance>"
-        + " [, { quadrantSegments: <int>, endCapStyle: 'ROUND|FLAT|SQUARE', joinStyle: 'ROUND|MITRE|BEVEL' }])";
+    return """
+        geo.buffer(<geometry>, <distance>\
+         [, { quadrantSegments: <int>, endCapStyle: 'ROUND|FLAT|SQUARE', joinStyle: 'ROUND|MITRE|BEVEL' }])""";
   }
 }

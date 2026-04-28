@@ -324,9 +324,10 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
   }
 
   public String getSyntax() {
-    return "shortestPath(<sourceVertex>, <destinationVertex>"
-        + " [, <direction> [, <edgeType> [, { maxDepth, edge } ]]]"
-        + " | { direction, edgeType | edgeTypeNames, maxDepth, edge })";
+    return """
+        shortestPath(<sourceVertex>, <destinationVertex>\
+         [, <direction> [, <edgeType> [, { maxDepth, edge } ]]]\
+         | { direction, edgeType | edgeTypeNames, maxDepth, edge })""";
   }
 
   protected List<RID> walkLeft(final ShortestPathContext context) {

@@ -75,10 +75,11 @@ class CypherCountSubqueryTest {
   @Test
   void countPatternWithFreshInnerVariable() {
     final ResultSet results = database.query("opencypher",
-        "MATCH (person:Person) "
-            + "RETURN person.name AS name, "
-            + "       COUNT { (p:Person {name: person.name})-[:OWNS]->(:Dog) } AS dogCount "
-            + "ORDER BY name");
+        """
+        MATCH (person:Person) \
+        RETURN person.name AS name, \
+               COUNT { (p:Person {name: person.name})-[:OWNS]->(:Dog) } AS dogCount \
+        ORDER BY name""");
 
     final List<Result> rows = collect(results);
 
@@ -98,10 +99,11 @@ class CypherCountSubqueryTest {
   @Test
   void countPatternReusingOuterVariable() {
     final ResultSet results = database.query("opencypher",
-        "MATCH (person:Person) "
-            + "RETURN person.name AS name, "
-            + "       COUNT { (person)-[:OWNS]->(:Dog) } AS dogCount "
-            + "ORDER BY name");
+        """
+        MATCH (person:Person) \
+        RETURN person.name AS name, \
+               COUNT { (person)-[:OWNS]->(:Dog) } AS dogCount \
+        ORDER BY name""");
 
     final List<Result> rows = collect(results);
 
@@ -124,11 +126,12 @@ class CypherCountSubqueryTest {
     });
 
     final ResultSet results = database.query("opencypher",
-        "MATCH (person:Person) "
-            + "OPTIONAL MATCH (person)-[:OWNS]->(:Dog) "
-            + "RETURN person.name AS name, "
-            + "       COUNT { (person)-[:OWNS]->(dog:Dog) WHERE dog.name = 'Rex' } AS rexCount "
-            + "ORDER BY name");
+        """
+        MATCH (person:Person) \
+        OPTIONAL MATCH (person)-[:OWNS]->(:Dog) \
+        RETURN person.name AS name, \
+               COUNT { (person)-[:OWNS]->(dog:Dog) WHERE dog.name = 'Rex' } AS rexCount \
+        ORDER BY name""");
 
     final List<Result> rows = collect(results);
 
@@ -147,10 +150,11 @@ class CypherCountSubqueryTest {
   @Test
   void countFullMatchSubquery() {
     final ResultSet results = database.query("opencypher",
-        "MATCH (person:Person) "
-            + "RETURN person.name AS name, "
-            + "       COUNT { MATCH (person)-[:OWNS]->(d:Dog) WHERE d.name = 'Rex' } AS rexCount "
-            + "ORDER BY name");
+        """
+        MATCH (person:Person) \
+        RETURN person.name AS name, \
+               COUNT { MATCH (person)-[:OWNS]->(d:Dog) WHERE d.name = 'Rex' } AS rexCount \
+        ORDER BY name""");
 
     final List<Result> rows = collect(results);
 

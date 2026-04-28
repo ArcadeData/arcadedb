@@ -230,8 +230,9 @@ class WindowFunctionTest extends TestHelper {
     });
 
     final ResultSet rs = database.query("sql",
-        "SELECT ts.timeBucket('60s', ts) AS tb, ts.lag(temperature, 1, ts) AS prev " +
-            "FROM LagBucket GROUP BY tb ORDER BY tb");
+        """
+        SELECT ts.timeBucket('60s', ts) AS tb, ts.lag(temperature, 1, ts) AS prev \
+        FROM LagBucket GROUP BY tb ORDER BY tb""");
 
     int count = 0;
     while (rs.hasNext()) {

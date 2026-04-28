@@ -330,9 +330,10 @@ public class OpenCypherSetTest {
     // propA is not null, so it should be set; propB is not present, so it should be skipped
     database.transaction(() -> {
       database.command("opencypher",
-          "MATCH (t:Thing {id: 'thing1'}) " +
-          "SET (CASE WHEN t.propA IS NOT NULL THEN t END).propA = 'updatedA' " +
-          "SET (CASE WHEN t.propB IS NOT NULL THEN t END).propB = 'updatedB'");
+          """
+          MATCH (t:Thing {id: 'thing1'}) \
+          SET (CASE WHEN t.propA IS NOT NULL THEN t END).propA = 'updatedA' \
+          SET (CASE WHEN t.propB IS NOT NULL THEN t END).propB = 'updatedB'""");
     });
 
     // Verify: propA should be updated, propB should not exist
@@ -353,10 +354,11 @@ public class OpenCypherSetTest {
     // Use UNWIND with CASE subclause SET pattern
     database.transaction(() -> {
       database.command("opencypher",
-          "UNWIND [{id: 'a', propA: 'A1', propB: 'B1'}, {id: 'b', propA: 'A2'}] AS thing " +
-          "MERGE (t:Thing {id: thing.id}) " +
-          "SET (CASE WHEN thing.propA IS NOT NULL THEN t END).propA = thing.propA " +
-          "SET (CASE WHEN thing.propB IS NOT NULL THEN t END).propB = thing.propB");
+          """
+          UNWIND [{id: 'a', propA: 'A1', propB: 'B1'}, {id: 'b', propA: 'A2'}] AS thing \
+          MERGE (t:Thing {id: thing.id}) \
+          SET (CASE WHEN thing.propA IS NOT NULL THEN t END).propA = thing.propA \
+          SET (CASE WHEN thing.propB IS NOT NULL THEN t END).propB = thing.propB""");
     });
 
     // Verify thing 'a': both propA and propB set

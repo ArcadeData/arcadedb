@@ -31,9 +31,10 @@ public class ProfilerStopTool {
     return new JSONObject()
         .put("name", "profiler_stop")
         .put("description",
-            "Stop the query profiler and return the captured profiling data. " +
-            "Returns aggregated query statistics including execution counts, timing (min/max/avg/p99), " +
-            "and execution plan step costs. Results are also saved to disk for later retrieval.")
+            """
+            Stop the query profiler and return the captured profiling data. \
+            Returns aggregated query statistics including execution counts, timing (min/max/avg/p99), \
+            and execution plan step costs. Results are also saved to disk for later retrieval.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject())

@@ -69,9 +69,10 @@ class Issue4006BoundRelVarPathIsomorphismTest {
   @Test
   void vlpSegmentsDoNotReuseExplicitlyNamedBoundRelationship() {
     final ResultSet result = database.query("opencypher",
-        "MATCH ()-[r:EDGE4006]-()"
-            + " MATCH p = (n)-[*0..1]-()-[r]-()-[*0..1]-(m)"
-            + " RETURN count(p) AS c");
+        """
+        MATCH ()-[r:EDGE4006]-()\
+         MATCH p = (n)-[*0..1]-()-[r]-()-[*0..1]-(m)\
+         RETURN count(p) AS c""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -85,10 +86,11 @@ class Issue4006BoundRelVarPathIsomorphismTest {
   @Test
   void unboundedVlpIsNotBlockedByUnrelatedPreviouslyBoundRel() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Node4006)-[r:EDGE4006]->(b:Node4006)"
-            + " WITH a, b, r"
-            + " MATCH path = (a)-[:EDGE4006*1..2]->(b)"
-            + " RETURN count(r) AS rc");
+        """
+        MATCH (a:Node4006)-[r:EDGE4006]->(b:Node4006)\
+         WITH a, b, r\
+         MATCH path = (a)-[:EDGE4006*1..2]->(b)\
+         RETURN count(r) AS rc""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);

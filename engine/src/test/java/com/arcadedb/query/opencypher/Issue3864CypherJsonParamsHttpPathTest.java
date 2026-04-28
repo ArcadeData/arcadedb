@@ -98,10 +98,11 @@ class Issue3864CypherJsonParamsHttpPathTest extends TestHelper {
 
     final long start = System.currentTimeMillis();
     database.transaction(() -> database.command("opencypher",
-        "UNWIND $batch AS BatchEntry "
-            + "MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID "
-            + "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) "
-            + "CREATE (p)-[:embb]->(b)",
+        """
+        UNWIND $batch AS BatchEntry \
+        MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+        CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+        CREATE (p)-[:embb]->(b)""",
         params));
     final long elapsed = System.currentTimeMillis() - start;
 
@@ -147,10 +148,11 @@ class Issue3864CypherJsonParamsHttpPathTest extends TestHelper {
     final JSONObject root = new JSONObject();
     root.put("language", "opencypher");
     root.put("command",
-        "UNWIND $batch AS BatchEntry "
-            + "MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID "
-            + "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) "
-            + "CREATE (p)-[:embb]->(b)");
+        """
+        UNWIND $batch AS BatchEntry \
+        MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+        CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+        CREATE (p)-[:embb]->(b)""");
 
     final JSONArray batch = new JSONArray();
     for (int i = 0; i < BATCH_SIZE; i++) {

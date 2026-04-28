@@ -148,10 +148,11 @@ class Issue3864CypherFullScenarioPerformanceTest extends TestHelper {
 
     final long start = System.currentTimeMillis();
     database.transaction(() -> database.command("opencypher",
-        "UNWIND $batch AS BatchEntry "
-            + "MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID "
-            + "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) "
-            + "CREATE (p)-[:embb]->(b)",
+        """
+        UNWIND $batch AS BatchEntry \
+        MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+        CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+        CREATE (p)-[:embb]->(b)""",
         params));
     return System.currentTimeMillis() - start;
   }

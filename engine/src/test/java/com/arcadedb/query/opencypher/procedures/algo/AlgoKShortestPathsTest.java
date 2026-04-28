@@ -73,9 +73,10 @@ class AlgoKShortestPathsTest {
   @Test
   void kShortestPathsReturnsKPaths() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name:'A'}), (d:City {name:'D'}) "
-            + "CALL algo.kShortestPaths(a, d, 2, 'ROAD', 'dist') YIELD path, weight, rank "
-            + "RETURN path, weight, rank ORDER BY rank ASC");
+        """
+        MATCH (a:City {name:'A'}), (d:City {name:'D'}) \
+        CALL algo.kShortestPaths(a, d, 2, 'ROAD', 'dist') YIELD path, weight, rank \
+        RETURN path, weight, rank ORDER BY rank ASC""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -88,9 +89,10 @@ class AlgoKShortestPathsTest {
   @Test
   void kShortestPathsRankedInOrder() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name:'A'}), (d:City {name:'D'}) "
-            + "CALL algo.kShortestPaths(a, d, 3, 'ROAD', 'dist') YIELD path, weight, rank "
-            + "RETURN path, weight, rank ORDER BY rank ASC");
+        """
+        MATCH (a:City {name:'A'}), (d:City {name:'D'}) \
+        CALL algo.kShortestPaths(a, d, 3, 'ROAD', 'dist') YIELD path, weight, rank \
+        RETURN path, weight, rank ORDER BY rank ASC""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -108,9 +110,10 @@ class AlgoKShortestPathsTest {
   @Test
   void kShortestPathsFirstPathIsOptimal() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name:'A'}), (d:City {name:'D'}) "
-            + "CALL algo.kShortestPaths(a, d, 1, 'ROAD', 'dist') YIELD weight, rank "
-            + "RETURN weight, rank");
+        """
+        MATCH (a:City {name:'A'}), (d:City {name:'D'}) \
+        CALL algo.kShortestPaths(a, d, 1, 'ROAD', 'dist') YIELD weight, rank \
+        RETURN weight, rank""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -122,9 +125,10 @@ class AlgoKShortestPathsTest {
   @Test
   void kShortestPathsRankStartsAtOne() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name:'A'}), (d:City {name:'D'}) "
-            + "CALL algo.kShortestPaths(a, d, 2, 'ROAD', 'dist') YIELD weight, rank "
-            + "RETURN weight, rank ORDER BY rank ASC");
+        """
+        MATCH (a:City {name:'A'}), (d:City {name:'D'}) \
+        CALL algo.kShortestPaths(a, d, 2, 'ROAD', 'dist') YIELD weight, rank \
+        RETURN weight, rank ORDER BY rank ASC""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();

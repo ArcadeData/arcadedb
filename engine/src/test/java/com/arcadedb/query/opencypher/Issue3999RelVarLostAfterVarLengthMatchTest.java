@@ -51,9 +51,10 @@ class Issue3999RelVarLostAfterVarLengthMatchTest {
     database.getSchema().createVertexType("Person3999");
     database.getSchema().createEdgeType("KNOWS3999");
     database.transaction(() -> database.command("opencypher",
-        "CREATE (a:Person3999 {name:'Alice'}),"
-            + "       (b:Person3999 {name:'Bob'}),"
-            + "       (a)-[:KNOWS3999]->(b)"));
+        """
+        CREATE (a:Person3999 {name:'Alice'}),\
+               (b:Person3999 {name:'Bob'}),\
+               (a)-[:KNOWS3999]->(b)"""));
   }
 
   @AfterEach
@@ -67,10 +68,11 @@ class Issue3999RelVarLostAfterVarLengthMatchTest {
   @Test
   void countRelationshipBoundBeforeUnboundedVarLengthMatch() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person3999 {name:'Alice'})-[r:KNOWS3999]->(b:Person3999 {name:'Bob'}) "
-            + "WITH a, b, r "
-            + "MATCH path = (a)-[:KNOWS3999*]->(b) "
-            + "RETURN count(r) AS rc");
+        """
+        MATCH (a:Person3999 {name:'Alice'})-[r:KNOWS3999]->(b:Person3999 {name:'Bob'}) \
+        WITH a, b, r \
+        MATCH path = (a)-[:KNOWS3999*]->(b) \
+        RETURN count(r) AS rc""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -80,10 +82,11 @@ class Issue3999RelVarLostAfterVarLengthMatchTest {
   @Test
   void countRelationshipBoundBeforeBoundedVarLengthMatch() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person3999 {name:'Alice'})-[r:KNOWS3999]->(b:Person3999 {name:'Bob'}) "
-            + "WITH a, b, r "
-            + "MATCH path = (a)-[:KNOWS3999*1..1]->(b) "
-            + "RETURN count(r) AS rc");
+        """
+        MATCH (a:Person3999 {name:'Alice'})-[r:KNOWS3999]->(b:Person3999 {name:'Bob'}) \
+        WITH a, b, r \
+        MATCH path = (a)-[:KNOWS3999*1..1]->(b) \
+        RETURN count(r) AS rc""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -93,10 +96,11 @@ class Issue3999RelVarLostAfterVarLengthMatchTest {
   @Test
   void collectTypeOfRelationshipBoundBeforeVarLengthMatch() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person3999 {name:'Alice'})-[r:KNOWS3999]->(b:Person3999 {name:'Bob'}) "
-            + "WITH a, b, r "
-            + "MATCH path = (a)-[:KNOWS3999*]->(b) "
-            + "RETURN count(r) AS rc, collect(type(r)) AS rts");
+        """
+        MATCH (a:Person3999 {name:'Alice'})-[r:KNOWS3999]->(b:Person3999 {name:'Bob'}) \
+        WITH a, b, r \
+        MATCH path = (a)-[:KNOWS3999*]->(b) \
+        RETURN count(r) AS rc, collect(type(r)) AS rts""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -112,13 +116,14 @@ class Issue3999RelVarLostAfterVarLengthMatchTest {
 
     final ResultSet[] resultRef = new ResultSet[1];
     database.transaction(() -> resultRef[0] = database.command("opencypher",
-        "MATCH (a:Person3999), (b:Person3999) "
-            + "WHERE a.name = 'Alice' AND b.name = 'Bob' "
-            + "CREATE (a)-[r:KNOWS3999 {label:'second'}]->(b) "
-            + "WITH a, b, r "
-            + "MATCH path = (a)-[:KNOWS3999*]->(b) "
-            + "WITH count(r) AS rc "
-            + "RETURN rc"));
+        """
+        MATCH (a:Person3999), (b:Person3999) \
+        WHERE a.name = 'Alice' AND b.name = 'Bob' \
+        CREATE (a)-[r:KNOWS3999 {label:'second'}]->(b) \
+        WITH a, b, r \
+        MATCH path = (a)-[:KNOWS3999*]->(b) \
+        WITH count(r) AS rc \
+        RETURN rc"""));
 
     final List<Result> rows = collect(resultRef[0]);
     assertThat(rows).hasSize(1);
@@ -132,14 +137,15 @@ class Issue3999RelVarLostAfterVarLengthMatchTest {
 
     final ResultSet[] resultRef = new ResultSet[1];
     database.transaction(() -> resultRef[0] = database.command("opencypher",
-        "MATCH (p1:Person3999), (p2:Person3999) "
-            + "WHERE p1.name = 'Alice' AND p2.name = 'Bob' "
-            + "MERGE (p1)-[r:KNOWS3999 {since: 2020}]->(p2) "
-            + "WITH p1, p2, r "
-            + "MATCH path = (p1)-[:KNOWS3999*]->(p2) "
-            + "RETURN p1.name AS startName, "
-            + "       p2.name AS endName, "
-            + "       count(r) AS relationshipCount"));
+        """
+        MATCH (p1:Person3999), (p2:Person3999) \
+        WHERE p1.name = 'Alice' AND p2.name = 'Bob' \
+        MERGE (p1)-[r:KNOWS3999 {since: 2020}]->(p2) \
+        WITH p1, p2, r \
+        MATCH path = (p1)-[:KNOWS3999*]->(p2) \
+        RETURN p1.name AS startName, \
+               p2.name AS endName, \
+               count(r) AS relationshipCount"""));
 
     final List<Result> rows = collect(resultRef[0]);
     assertThat(rows).hasSize(1);
@@ -151,10 +157,11 @@ class Issue3999RelVarLostAfterVarLengthMatchTest {
   @Test
   void fixedLengthControlCaseAlreadyWorks() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person3999 {name:'Alice'})-[r:KNOWS3999]->(b:Person3999 {name:'Bob'}) "
-            + "WITH a, b, r "
-            + "MATCH path = (a)-[:KNOWS3999]->(b) "
-            + "RETURN count(r) AS rc");
+        """
+        MATCH (a:Person3999 {name:'Alice'})-[r:KNOWS3999]->(b:Person3999 {name:'Bob'}) \
+        WITH a, b, r \
+        MATCH path = (a)-[:KNOWS3999]->(b) \
+        RETURN count(r) AS rc""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);

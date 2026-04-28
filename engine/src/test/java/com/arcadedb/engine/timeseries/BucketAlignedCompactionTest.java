@@ -62,8 +62,9 @@ class BucketAlignedCompactionTest {
   void bucketAlignedCompactionProducesSingleBucketBlocks() throws Exception {
     // Create type with 1-second compaction bucket interval
     database.command("sql",
-        "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) " +
-            "SHARDS 1 COMPACTION_INTERVAL 1 HOURS");
+        """
+        CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) \
+        SHARDS 1 COMPACTION_INTERVAL 1 HOURS""");
 
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Sensor")).getEngine();
 
@@ -112,8 +113,9 @@ class BucketAlignedCompactionTest {
   @Test
   void bucketAlignedAggregationUses100PercentFastPath() throws Exception {
     database.command("sql",
-        "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) " +
-            "SHARDS 1 COMPACTION_INTERVAL 1 HOURS");
+        """
+        CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) \
+        SHARDS 1 COMPACTION_INTERVAL 1 HOURS""");
 
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Sensor")).getEngine();
 
@@ -202,8 +204,9 @@ class BucketAlignedCompactionTest {
   void sqlDdlWithCompactionInterval() {
     // Test that COMPACTION_INTERVAL is properly parsed and persisted
     database.command("sql",
-        "CREATE TIMESERIES TYPE SensorHourly TIMESTAMP ts TAGS (id STRING) FIELDS (temp DOUBLE) " +
-            "SHARDS 2 COMPACTION_INTERVAL 1 HOURS");
+        """
+        CREATE TIMESERIES TYPE SensorHourly TIMESTAMP ts TAGS (id STRING) FIELDS (temp DOUBLE) \
+        SHARDS 2 COMPACTION_INTERVAL 1 HOURS""");
 
     final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("SensorHourly");
     assertThat(type).isNotNull();
@@ -213,8 +216,9 @@ class BucketAlignedCompactionTest {
   @Test
   void sqlDdlWithCompactionIntervalMinutes() {
     database.command("sql",
-        "CREATE TIMESERIES TYPE SensorMinute TIMESTAMP ts TAGS (id STRING) FIELDS (temp DOUBLE) " +
-            "SHARDS 1 COMPACTION_INTERVAL 15 MINUTES");
+        """
+        CREATE TIMESERIES TYPE SensorMinute TIMESTAMP ts TAGS (id STRING) FIELDS (temp DOUBLE) \
+        SHARDS 1 COMPACTION_INTERVAL 15 MINUTES""");
 
     final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("SensorMinute");
     assertThat(type).isNotNull();
@@ -224,8 +228,9 @@ class BucketAlignedCompactionTest {
   @Test
   void compactionBucketIntervalPersistedAndReloaded() throws Exception {
     database.command("sql",
-        "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) " +
-            "SHARDS 1 COMPACTION_INTERVAL 1 HOURS");
+        """
+        CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) \
+        SHARDS 1 COMPACTION_INTERVAL 1 HOURS""");
 
     // Insert some data and compact
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Sensor")).getEngine();

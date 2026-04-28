@@ -56,8 +56,9 @@ class TimeSeriesPhase2SQLTest extends TestHelper {
   @Test
   void tsFirstTsLastGroupBySensor() {
     final ResultSet rs = database.query("sql",
-        "SELECT sensor, ts.first(value, ts) AS first_val, ts.last(value, ts) AS last_val " +
-            "FROM SensorData GROUP BY sensor ORDER BY sensor");
+        """
+        SELECT sensor, ts.first(value, ts) AS first_val, ts.last(value, ts) AS last_val \
+        FROM SensorData GROUP BY sensor ORDER BY sensor""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -138,8 +139,9 @@ class TimeSeriesPhase2SQLTest extends TestHelper {
   @Test
   void rateWithTimeBucket() {
     final ResultSet rs = database.query("sql",
-        "SELECT ts.timeBucket('5s', ts) AS tb, ts.rate(value, ts) AS r " +
-            "FROM SensorData WHERE sensor = 'A' GROUP BY tb ORDER BY tb");
+        """
+        SELECT ts.timeBucket('5s', ts) AS tb, ts.rate(value, ts) AS r \
+        FROM SensorData WHERE sensor = 'A' GROUP BY tb ORDER BY tb""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -155,9 +157,10 @@ class TimeSeriesPhase2SQLTest extends TestHelper {
   void allFunctionsTogether() {
     // Single query using ts_first, ts_last, rate, and delta
     final ResultSet rs = database.query("sql",
-        "SELECT sensor, ts.first(value, ts) AS first_val, ts.last(value, ts) AS last_val, " +
-            "ts.rate(value, ts) AS r, ts.delta(value, ts) AS d " +
-            "FROM SensorData GROUP BY sensor ORDER BY sensor");
+        """
+        SELECT sensor, ts.first(value, ts) AS first_val, ts.last(value, ts) AS last_val, \
+        ts.rate(value, ts) AS r, ts.delta(value, ts) AS d \
+        FROM SensorData GROUP BY sensor ORDER BY sensor""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())

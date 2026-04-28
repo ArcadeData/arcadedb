@@ -74,9 +74,10 @@ class AlgoTotalNeighborsTest {
   @Test
   void totalNeighborsReturnsCorrectUnionSize() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name: 'A'}), (e:Person {name: 'E'}) " +
-            "CALL algo.totalNeighbors(a, e, 'KNOWS', 'BOTH') " +
-            "YIELD node1, node2, coefficient RETURN coefficient");
+        """
+        MATCH (a:Person {name: 'A'}), (e:Person {name: 'E'}) \
+        CALL algo.totalNeighbors(a, e, 'KNOWS', 'BOTH') \
+        YIELD node1, node2, coefficient RETURN coefficient""");
 
     assertThat(rs.hasNext()).isTrue();
     final long total = ((Number) rs.next().getProperty("coefficient")).longValue();
@@ -87,9 +88,10 @@ class AlgoTotalNeighborsTest {
   @Test
   void totalNeighborsYieldsNodes() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name: 'A'}), (e:Person {name: 'E'}) " +
-            "CALL algo.totalNeighbors(a, e) " +
-            "YIELD node1, node2, coefficient RETURN node1, node2, coefficient");
+        """
+        MATCH (a:Person {name: 'A'}), (e:Person {name: 'E'}) \
+        CALL algo.totalNeighbors(a, e) \
+        YIELD node1, node2, coefficient RETURN node1, node2, coefficient""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result r = rs.next();

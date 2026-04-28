@@ -222,8 +222,9 @@ class Issue3722OldFormatTombstoneParserTest extends TestHelper {
       // Note: due to the 1-byte shift, the last entry might not parse correctly (data truncated).
       // The key assertion is: we must find SIGNIFICANTLY more than 66 entries (the pre-tombstone count).
       assertThat(regularCount)
-          .as("After fix: most regular entries should be parsed despite old-format tombstone. " +
-              "Before fix, only ~65 entries would be found due to page corruption.")
+          .as("""
+              After fix: most regular entries should be parsed despite old-format tombstone. \
+              Before fix, only ~65 entries would be found due to page corruption.""")
           .isGreaterThan(500);
 
       // Also verify vectorNeighbors returns most results
@@ -239,8 +240,9 @@ class Issue3722OldFormatTombstoneParserTest extends TestHelper {
       assertThat(neighbors).isNotNull();
 
       assertThat(neighbors.size())
-          .as("After fix: should find close to 500 results. " +
-              "Before fix: would only find ~65 (entries before the old-format tombstone).")
+          .as("""
+              After fix: should find close to 500 results. \
+              Before fix: would only find ~65 (entries before the old-format tombstone).""")
           .isGreaterThan(400);
 
       rs.close();

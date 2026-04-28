@@ -72,8 +72,9 @@ class AlgoMinSpanningArborescenceTest {
   @Test
   void msaReturnsNMinusOneEdges() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (r:City {name: 'A'}) CALL algo.msa(r, 'ROAD', 'dist') " +
-            "YIELD source, target, weight, totalWeight RETURN source, target, weight, totalWeight");
+        """
+        MATCH (r:City {name: 'A'}) CALL algo.msa(r, 'ROAD', 'dist') \
+        YIELD source, target, weight, totalWeight RETURN source, target, weight, totalWeight""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -86,8 +87,9 @@ class AlgoMinSpanningArborescenceTest {
   @Test
   void msaTotalWeightIsCorrect() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (r:City {name: 'A'}) CALL algo.msa(r, 'ROAD', 'dist') " +
-            "YIELD totalWeight RETURN totalWeight");
+        """
+        MATCH (r:City {name: 'A'}) CALL algo.msa(r, 'ROAD', 'dist') \
+        YIELD totalWeight RETURN totalWeight""");
 
     assertThat(rs.hasNext()).isTrue();
     final double total = ((Number) rs.next().getProperty("totalWeight")).doubleValue();
@@ -98,8 +100,9 @@ class AlgoMinSpanningArborescenceTest {
   @Test
   void msaEdgeWeightsArePositive() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (r:City {name: 'A'}) CALL algo.msa(r, 'ROAD', 'dist') " +
-            "YIELD weight RETURN weight");
+        """
+        MATCH (r:City {name: 'A'}) CALL algo.msa(r, 'ROAD', 'dist') \
+        YIELD weight RETURN weight""");
 
     while (rs.hasNext()) {
       final double w = ((Number) rs.next().getProperty("weight")).doubleValue();

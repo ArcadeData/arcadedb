@@ -290,8 +290,9 @@ class OpenCypherPredicatePushdownTest {
   void predicatePushdownWithAggregation() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
-          "MATCH (p:Product) WHERE p.status = 'active' RETURN p.category AS cat, count(p) AS cnt " +
-              "ORDER BY cat");
+          """
+          MATCH (p:Product) WHERE p.status = 'active' RETURN p.category AS cat, count(p) AS cnt \
+          ORDER BY cat""");
 
       int groupCount = 0;
       while (rs.hasNext()) {

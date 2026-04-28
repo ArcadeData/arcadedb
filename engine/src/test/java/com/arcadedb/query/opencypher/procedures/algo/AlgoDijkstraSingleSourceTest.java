@@ -72,9 +72,10 @@ class AlgoDijkstraSingleSourceTest {
   @Test
   void singleSourceReturnsAllReachableNodes() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (start:City {name: 'A'}) " +
-            "CALL algo.dijkstra.singleSource(start, 'ROAD', 'dist') " +
-            "YIELD node, cost RETURN node.name AS name, cost ORDER BY cost");
+        """
+        MATCH (start:City {name: 'A'}) \
+        CALL algo.dijkstra.singleSource(start, 'ROAD', 'dist') \
+        YIELD node, cost RETURN node.name AS name, cost ORDER BY cost""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -87,9 +88,10 @@ class AlgoDijkstraSingleSourceTest {
   @Test
   void singleSourceCorrectCosts() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (start:City {name: 'A'}) " +
-            "CALL algo.dijkstra.singleSource(start, 'ROAD', 'dist') " +
-            "YIELD node, cost RETURN node.name AS name, cost ORDER BY name");
+        """
+        MATCH (start:City {name: 'A'}) \
+        CALL algo.dijkstra.singleSource(start, 'ROAD', 'dist') \
+        YIELD node, cost RETURN node.name AS name, cost ORDER BY name""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -106,9 +108,10 @@ class AlgoDijkstraSingleSourceTest {
   @Test
   void singleSourceAllCostsPositive() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (start:City {name: 'A'}) " +
-            "CALL algo.dijkstra.singleSource(start, 'ROAD', 'dist') " +
-            "YIELD node, cost RETURN cost");
+        """
+        MATCH (start:City {name: 'A'}) \
+        CALL algo.dijkstra.singleSource(start, 'ROAD', 'dist') \
+        YIELD node, cost RETURN cost""");
 
     while (rs.hasNext())
       assertThat(((Number) rs.next().getProperty("cost")).doubleValue()).isGreaterThan(0.0);

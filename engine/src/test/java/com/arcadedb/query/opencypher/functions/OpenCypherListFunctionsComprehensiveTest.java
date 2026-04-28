@@ -53,17 +53,18 @@ class OpenCypherListFunctionsComprehensiveTest {
     database.getSchema().createEdgeType("MARRIED");
 
     database.command("opencypher",
-        "CREATE " +
-            "(alice:Developer {name:'Alice', age: 38, eyes: 'Brown'}), " +
-            "(bob:Administrator {name: 'Bob', age: 25, eyes: 'Blue'}), " +
-            "(charlie:Administrator {name: 'Charlie', age: 53, eyes: 'Green'}), " +
-            "(daniel:Administrator {name: 'Daniel', age: 54, eyes: 'Brown'}), " +
-            "(eskil:Designer {name: 'Eskil', age: 41, eyes: 'blue', likedColors: ['Pink', 'Yellow', 'Black']}), " +
-            "(alice)-[:KNOWS]->(bob), " +
-            "(alice)-[:KNOWS]->(charlie), " +
-            "(bob)-[:KNOWS]->(daniel), " +
-            "(charlie)-[:KNOWS]->(daniel), " +
-            "(bob)-[:MARRIED]->(eskil)");
+        """
+        CREATE \
+        (alice:Developer {name:'Alice', age: 38, eyes: 'Brown'}), \
+        (bob:Administrator {name: 'Bob', age: 25, eyes: 'Blue'}), \
+        (charlie:Administrator {name: 'Charlie', age: 53, eyes: 'Green'}), \
+        (daniel:Administrator {name: 'Daniel', age: 54, eyes: 'Brown'}), \
+        (eskil:Designer {name: 'Eskil', age: 41, eyes: 'blue', likedColors: ['Pink', 'Yellow', 'Black']}), \
+        (alice)-[:KNOWS]->(bob), \
+        (alice)-[:KNOWS]->(charlie), \
+        (bob)-[:KNOWS]->(daniel), \
+        (charlie)-[:KNOWS]->(daniel), \
+        (bob)-[:MARRIED]->(eskil)""");
   }
 
   @AfterEach
@@ -475,8 +476,9 @@ class OpenCypherListFunctionsComprehensiveTest {
   @Test
   void nodesFromPath() {
     final ResultSet result = database.command("opencypher",
-        "MATCH p = (a)-->(b)-->(c) WHERE a.name = 'Alice' AND c.name = 'Eskil' " +
-            "RETURN size(nodes(p)) AS nodeCount");
+        """
+        MATCH p = (a)-->(b)-->(c) WHERE a.name = 'Alice' AND c.name = 'Eskil' \
+        RETURN size(nodes(p)) AS nodeCount""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     assertThat(((Number) result.next().getProperty("nodeCount")).intValue()).isEqualTo(3);
   }
@@ -543,9 +545,10 @@ class OpenCypherListFunctionsComprehensiveTest {
   @Test
   void reduceBasic() {
     final ResultSet result = database.command("opencypher",
-        "MATCH p = (a)-->(b)-->(c) " +
-            "WHERE a.name = 'Alice' AND b.name = 'Bob' AND c.name = 'Daniel' " +
-            "RETURN reduce(totalAge = 0, n IN nodes(p) | totalAge + n.age) AS result");
+        """
+        MATCH p = (a)-->(b)-->(c) \
+        WHERE a.name = 'Alice' AND b.name = 'Bob' AND c.name = 'Daniel' \
+        RETURN reduce(totalAge = 0, n IN nodes(p) | totalAge + n.age) AS result""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     assertThat(((Number) result.next().getProperty("result")).intValue()).isEqualTo(117); // 38 + 25 + 54
   }
@@ -571,8 +574,9 @@ class OpenCypherListFunctionsComprehensiveTest {
   @Test
   void relationshipsFromPath() {
     final ResultSet result = database.command("opencypher",
-        "MATCH p = (a)-->(b)-->(c) WHERE a.name = 'Alice' AND c.name = 'Eskil' " +
-            "RETURN size(relationships(p)) AS relCount");
+        """
+        MATCH p = (a)-->(b)-->(c) WHERE a.name = 'Alice' AND c.name = 'Eskil' \
+        RETURN size(relationships(p)) AS relCount""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     assertThat(((Number) result.next().getProperty("relCount")).intValue()).isEqualTo(2);
   }

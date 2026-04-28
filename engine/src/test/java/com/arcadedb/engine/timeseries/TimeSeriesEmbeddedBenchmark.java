@@ -117,8 +117,9 @@ public class TimeSeriesEmbeddedBenchmark {
           final double avgRate = currentCount / elapsedSec;
           final double progress = (currentCount * 100.0) / TOTAL_POINTS;
 
-          System.out.printf("[%6.1fs] Inserted: %,12d (%5.1f%%) | Instant: %,12.0f pts/s | Avg: %,12.0f pts/s | " +
-                  "Errors: %d%n",
+          System.out.printf("""
+                  [%6.1fs] Inserted: %,12d (%5.1f%%) | Instant: %,12.0f pts/s | Avg: %,12.0f pts/s | \
+                  Errors: %d%n""",
               elapsedSec, currentCount, progress, instantRate, avgRate, errors.get());
 
           lastCount = currentCount;
@@ -227,8 +228,9 @@ public class TimeSeriesEmbeddedBenchmark {
           queryStart = System.nanoTime();
           long aggRows = 0;
           try (final ResultSet rs = coldDb.query("sql",
-              "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp " +
-                  "FROM SensorData GROUP BY hour")) {
+              """
+              SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp \
+              FROM SensorData GROUP BY hour""")) {
             while (rs.hasNext()) {
               rs.next();
               aggRows++;
@@ -282,9 +284,10 @@ public class TimeSeriesEmbeddedBenchmark {
         // Profiled hourly aggregation — shows execution plan with push-down
         System.out.println("\n--- PROFILE: Hourly aggregation ---");
         try (final ResultSet profileRs = coldDb.command("sql",
-            "PROFILE SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS " +
-                "max_temp " +
-                "FROM SensorData GROUP BY hour")) {
+            """
+            PROFILE SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS \
+            max_temp \
+            FROM SensorData GROUP BY hour""")) {
           if (profileRs.hasNext()) {
             final Result profile = profileRs.next();
             System.out.println((String) profile.getProperty("executionPlanAsString"));
