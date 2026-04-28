@@ -74,6 +74,10 @@ public class SetStep extends AbstractExecutionStep {
       // clears the dirty flag but not the map), so subsequent rows can read through the
       // stored instance without reloading from storage.
       private final Map<RID, MutableDocument> writtenDocs = new HashMap<>();
+      // Tracks old-RID → new-Vertex replacements made by SET n:Label so that when the
+      // same node appears on a later row (row fanout), the operation is redirected to
+      // the already-replaced vertex and the idempotency check returns early.
+      private final Map<RID, Vertex> labelReplacements = new HashMap<>();
 
       @Override
       public boolean hasNext() {
@@ -104,7 +108,7 @@ public class SetStep extends AbstractExecutionStep {
             if (context.isProfiling())
               rowCount++;
 
-            applySetOperations(inputResult, writtenDocs);
+            applySetOperations(inputResult, writtenDocs, labelReplacements);
             buffer.add(inputResult);
           } finally {
             if (context.isProfiling())
@@ -122,7 +126,8 @@ public class SetStep extends AbstractExecutionStep {
     };
   }
 
-  private void applySetOperations(final Result result, final Map<RID, MutableDocument> writtenDocs) {
+  private void applySetOperations(final Result result, final Map<RID, MutableDocument> writtenDocs,
+      final Map<RID, Vertex> labelReplacements) {
     if (setClause == null || setClause.isEmpty())
       return;
 
@@ -144,7 +149,7 @@ public class SetStep extends AbstractExecutionStep {
             applyMergeMap(item, result, writtenDocs);
             break;
           case LABELS:
-            applyLabels(item, result);
+            applyLabels(item, result, labelReplacements);
             break;
         }
       }
@@ -309,13 +314,20 @@ public class SetStep extends AbstractExecutionStep {
     }
   }
 
-  private void applyLabels(final SetClause.SetItem item, final Result result) {
-    // Label SET is intentionally not covered by the writtenDocs pattern: it replaces
-    // the vertex entirely (delete + create with new RID), so the old RID is invalid
-    // after the first row and cross-row accumulation via writtenDocs is not applicable.
+  private void applyLabels(final SetClause.SetItem item, final Result result,
+      final Map<RID, Vertex> labelReplacements) {
     final Object obj = result.getProperty(item.getVariable());
     if (!(obj instanceof Vertex vertex))
       return;
+
+    // If this vertex was already replaced on a prior row (row fanout hitting the same node),
+    // redirect to the replacement so the idempotency check below can use the current type.
+    final RID originalRid = vertex.getIdentity();
+    final Vertex prior = labelReplacements.get(originalRid);
+    if (prior != null) {
+      propagateUpdateToSameNodeAliases(result, vertex, prior);
+      vertex = prior;
+    }
 
     // Get existing labels and add new ones
     final List<String> existingLabels = Labels.getLabels(vertex);
@@ -328,7 +340,7 @@ public class SetStep extends AbstractExecutionStep {
     final String newTypeName = Labels.ensureCompositeType(
         context.getDatabase().getSchema(), allLabels);
 
-    // If the type hasn't changed, nothing to do
+    // If the type hasn't changed, nothing to do (all labels already present)
     if (vertex.getTypeName().equals(newTypeName))
       return;
 
@@ -344,10 +356,10 @@ public class SetStep extends AbstractExecutionStep {
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
       edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex);
 
-    // Delete old vertex
+    // Delete old vertex and record the replacement for subsequent rows
     vertex.delete();
-
     propagateUpdateToSameNodeAliases(result, vertex, newVertex);
+    labelReplacements.put(originalRid, newVertex);
   }
 
   private void validatePropertyValue(final Object value) {

@@ -28,6 +28,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 ;
@@ -425,6 +428,46 @@ public class OpenCypherSetTest {
     final Result row = result.next();
     assertThat((String) row.getProperty("n_name")).isEqualTo("Alice");
     assertThat((String) row.getProperty("m_name")).isEqualTo("Alice");
+  }
+
+  /**
+   * Repeated SET n:Label on the same node across row fanout must be idempotent.
+   * The cartesian MATCH produces Alice twice and Charlie twice (age > peer), so
+   * each node is visited on multiple rows. Expected rows: Alice, Charlie, Charlie.
+   */
+  @Test
+  void setLabelIdempotentOnSameNodeAcrossRowFanout() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25}), (:Person {name: 'Charlie', age: 35})");
+    });
+
+    final List<String> names = new ArrayList<>();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (n:Person) MATCH (m:Person) WHERE n.age > m.age SET n:Employee RETURN n.name AS name ORDER BY name");
+    while (rs.hasNext())
+      names.add((String) rs.next().getProperty("name"));
+
+    assertThat(names).containsExactly("Alice", "Charlie", "Charlie");
+  }
+
+  /**
+   * Repeated SET n:Label1:Label2 on the same node across row fanout must be idempotent.
+   */
+  @Test
+  void setMultipleLabelsIdempotentOnSameNodeAcrossRowFanout() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25}), (:Person {name: 'Charlie', age: 35})");
+    });
+
+    final List<String> names = new ArrayList<>();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (n:Person) MATCH (m:Person) WHERE n.age > m.age SET n:Employee:Checked RETURN n.name AS name ORDER BY name");
+    while (rs.hasNext())
+      names.add((String) rs.next().getProperty("name"));
+
+    assertThat(names).containsExactly("Alice", "Charlie", "Charlie");
   }
 
   @Test
