@@ -32,17 +32,17 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for issue #4015: correlated COUNT { ... } subqueries reading an outer
+ * Regression test for issue #4014: correlated COLLECT { ... } subqueries reading an outer
  * variable's property (e.g. {@code WHERE p2.age > p.age}) must evaluate per outer row.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class CypherCountSubqueryCorrelatedTest {
+class CypherCollectSubqueryCorrelatedTest {
   private Database database;
 
   @BeforeEach
   void setup() {
-    database = new DatabaseFactory("./target/databases/cyphercountcorrelated").create();
+    database = new DatabaseFactory("./target/databases/cyphercollectcorrelated").create();
     database.transaction(() -> {
       database.getSchema().createVertexType("Person");
       database.newVertex("Person").set("name", "Alice").set("age", 30).save();
@@ -59,105 +59,83 @@ class CypherCountSubqueryCorrelatedTest {
   }
 
   /**
-   * Issue #4015: correlated COUNT subquery reading outer p.age should count properly per row.
-   * Neo4j returns Alice=2, Charlie=1, Diana=0.
+   * Issue #4014: correlated COLLECT subquery reading outer p.age should collect per row.
+   * Neo4j returns Alice=[Charlie,Diana], Charlie=[Diana], Diana=[].
    */
   @Test
-  void correlatedCountOuterPropertyInWhere() {
+  void correlatedCollectOuterPropertyInWhere() {
     final ResultSet results = database.query("opencypher",
         """
         MATCH (p:Person)
         WHERE p.age > 25
         RETURN p.name AS name,
-               COUNT {
+               COLLECT {
                  MATCH (p2:Person)
                  WHERE p2.age > p.age
-                 RETURN p2
-               } AS older_count
+                 RETURN p2.name
+               } AS xs
         ORDER BY name""");
 
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
     assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
-    assertThat(((Number) rows.get(0).getProperty("older_count")).longValue()).isEqualTo(2L);
+    assertThat((List<Object>) rows.get(0).getProperty("xs")).containsExactlyInAnyOrder("Charlie", "Diana");
     assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Charlie");
-    assertThat(((Number) rows.get(1).getProperty("older_count")).longValue()).isEqualTo(1L);
+    assertThat((List<Object>) rows.get(1).getProperty("xs")).containsExactly("Diana");
     assertThat((String) rows.get(2).getProperty("name")).isEqualTo("Diana");
-    assertThat(((Number) rows.get(2).getProperty("older_count")).longValue()).isEqualTo(0L);
+    assertThat((List<Object>) rows.get(2).getProperty("xs")).isEmpty();
   }
 
   /**
-   * Control: the equivalent OPTIONAL MATCH + count() form must also produce the same result.
+   * Issue #4014 alias variant: aliasing p.age via WITH should also work.
    */
   @Test
-  void correlatedCountControlOptionalMatch() {
-    final ResultSet results = database.query("opencypher",
-        """
-        MATCH (p:Person)
-        WHERE p.age > 25
-        OPTIONAL MATCH (p2:Person)
-        WHERE p2.age > p.age
-        RETURN p.name AS name, count(p2) AS older_count
-        ORDER BY name""");
-
-    final List<Result> rows = collect(results);
-
-    assertThat(rows).hasSize(3);
-    assertThat(((Number) rows.get(0).getProperty("older_count")).longValue()).isEqualTo(2L);
-    assertThat(((Number) rows.get(1).getProperty("older_count")).longValue()).isEqualTo(1L);
-    assertThat(((Number) rows.get(2).getProperty("older_count")).longValue()).isEqualTo(0L);
-  }
-
-  /**
-   * Aliasing the outer scalar value via WITH must also propagate into the COUNT subquery.
-   */
-  @Test
-  void correlatedCountAliasedOuterValue() {
+  void correlatedCollectAliasedOuterValue() {
     final ResultSet results = database.query("opencypher",
         """
         MATCH (p:Person)
         WHERE p.age > 25
         WITH p, p.age AS age
         RETURN p.name AS name,
-               COUNT {
+               COLLECT {
                  MATCH (p2:Person)
                  WHERE p2.age > age
-                 RETURN p2
-               } AS older_count
+                 RETURN p2.name
+               } AS xs
         ORDER BY name""");
 
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat(((Number) rows.get(0).getProperty("older_count")).longValue()).isEqualTo(2L);
-    assertThat(((Number) rows.get(1).getProperty("older_count")).longValue()).isEqualTo(1L);
-    assertThat(((Number) rows.get(2).getProperty("older_count")).longValue()).isEqualTo(0L);
+    assertThat((List<Object>) rows.get(0).getProperty("xs")).containsExactlyInAnyOrder("Charlie", "Diana");
+    assertThat((List<Object>) rows.get(1).getProperty("xs")).containsExactly("Diana");
+    assertThat((List<Object>) rows.get(2).getProperty("xs")).isEmpty();
   }
 
   /**
-   * Control: an uncorrelated COUNT subquery with a constant comparison should also work.
+   * Control: uncorrelated COLLECT must still work.
    */
   @Test
-  void uncorrelatedCount() {
+  void uncorrelatedCollect() {
     final ResultSet results = database.query("opencypher",
         """
         MATCH (p:Person)
         WHERE p.age > 25
         RETURN p.name AS name,
-               COUNT {
+               COLLECT {
                  MATCH (p2:Person)
                  WHERE p2.age > 30
-                 RETURN p2
-               } AS older_count
+                 RETURN p2.name
+               } AS xs
         ORDER BY name""");
 
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat(((Number) rows.get(0).getProperty("older_count")).longValue()).isEqualTo(2L);
-    assertThat(((Number) rows.get(1).getProperty("older_count")).longValue()).isEqualTo(2L);
-    assertThat(((Number) rows.get(2).getProperty("older_count")).longValue()).isEqualTo(2L);
+    for (final Result row : rows) {
+      assertThat((List<Object>) row.getProperty("xs")).containsExactlyInAnyOrder("Charlie", "Diana");
+    }
   }
 
   private static List<Result> collect(final ResultSet rs) {

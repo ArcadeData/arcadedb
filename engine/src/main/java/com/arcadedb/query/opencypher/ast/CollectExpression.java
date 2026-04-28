@@ -59,6 +59,7 @@ public class CollectExpression implements Expression {
       if (result != null) {
         final List<String> whereConditions = new ArrayList<>();
         final List<String> matchPatterns = new ArrayList<>();
+        final List<String> withItems = new ArrayList<>();
 
         for (final String propertyName : result.getPropertyNames()) {
           // Skip internal variables (space-prefixed)
@@ -76,6 +77,10 @@ public class CollectExpression implements Expression {
               whereConditions.add("id(" + propertyName + ") = $" + paramName);
               matchPatterns.add("(" + propertyName + ")");
             }
+          } else if (value != null && variableUsedInSubquery(modifiedSubquery, propertyName)) {
+            final String paramName = "__collect_" + propertyName;
+            params.put(paramName, value);
+            withItems.add("$" + paramName + " AS " + propertyName);
           }
         }
 
@@ -85,6 +90,8 @@ public class CollectExpression implements Expression {
           final String conditionsStr = String.join(" AND ", whereConditions);
           modifiedSubquery = injectWhereConditions(modifiedSubquery, conditionsStr);
         }
+        if (!withItems.isEmpty())
+          modifiedSubquery = "WITH " + String.join(", ", withItems) + " " + modifiedSubquery;
       }
 
       final List<Object> collected = new ArrayList<>();

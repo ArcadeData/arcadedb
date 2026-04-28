@@ -53,6 +53,7 @@ public class ExistsExpression implements Expression {
       if (result != null) {
         final List<String> whereConditions = new ArrayList<>();
         final List<String> matchPatterns = new ArrayList<>();
+        final List<String> withItems = new ArrayList<>();
 
         for (final String propertyName : result.getPropertyNames()) {
           // Skip internal variables (space-prefixed)
@@ -72,6 +73,11 @@ public class ExistsExpression implements Expression {
               // Add as extra MATCH pattern so the variable is in scope
               matchPatterns.add("(" + propertyName + ")");
             }
+          } else if (value != null && variableUsedInSubquery(modifiedSubquery, propertyName)) {
+            // Scalar outer variable referenced in subquery: bring into scope via WITH.
+            final String paramName = "__exists_" + propertyName;
+            params.put(paramName, value);
+            withItems.add("$" + paramName + " AS " + propertyName);
           }
         }
 
@@ -81,6 +87,8 @@ public class ExistsExpression implements Expression {
           final String conditionsStr = String.join(" AND ", whereConditions);
           modifiedSubquery = injectWhereConditions(modifiedSubquery, conditionsStr);
         }
+        if (!withItems.isEmpty())
+          modifiedSubquery = "WITH " + String.join(", ", withItems) + " " + modifiedSubquery;
       }
 
       final var resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params);
