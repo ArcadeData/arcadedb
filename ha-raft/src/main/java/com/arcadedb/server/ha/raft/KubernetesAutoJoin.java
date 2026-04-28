@@ -168,8 +168,9 @@ public class KubernetesAutoJoin {
     }
 
     LogManager.instance().log(this, Level.INFO,
-        "K8s auto-join: no existing cluster found. This node will participate in "
-            + "Raft leader election with the configured peer group once peers are reachable");
+        """
+        K8s auto-join: no existing cluster found. This node will participate in \
+        Raft leader election with the configured peer group once peers are reachable""");
   }
 
   /**

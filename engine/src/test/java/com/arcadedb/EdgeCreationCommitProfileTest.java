@@ -147,9 +147,10 @@ class EdgeCreationCommitProfileTest extends TestHelper {
       final int dst = (i + 1) % VERTEX_COUNT;
       final long start = System.nanoTime();
       database.command("opencypher",
-          "MATCH (a:ProfPerson) WHERE a.id = $src " +
-              "MATCH (b:ProfPerson) WHERE b.id = $dst " +
-              "CREATE (a)-[:PROF_KNOWS {weight: $w}]->(b)",
+          """
+          MATCH (a:ProfPerson) WHERE a.id = $src \
+          MATCH (b:ProfPerson) WHERE b.id = $dst \
+          CREATE (a)-[:PROF_KNOWS {weight: $w}]->(b)""",
           Map.of("src", src, "dst", dst, "w", 0.5));
       cypherTimes[i] = System.nanoTime() - start;
     }
@@ -177,21 +178,25 @@ class EdgeCreationCommitProfileTest extends TestHelper {
     Arrays.sort(sqlTimes);
 
     final String report = String.format(
-        "\n=== Edge Creation Commit Path Profile (Issue #3613) ===" +
-            "\n%-35s %10s %10s %10s %10s" +
-            "\n%-35s %10.3f %10.3f %10.3f %10.3f" +
-            "\n%-35s %10.3f %10.3f %10.3f %10.3f" +
-            "\n%-35s %10.3f %10.3f %10.3f %10.3f" +
-            "\n%-35s %10.3f %10.3f %10.3f %10.3f" +
-            "\n%-35s %10.3f %10.3f %10.3f %10.3f" +
-            "\n%-35s %10.3f %10.3f %10.3f %10.3f" +
-            "\n\nBreakdown of full tx median:" +
-            "\n  Lookup:   %10.3f ms (%.1f%%)" +
-            "\n  Mutation: %10.3f ms (%.1f%%)" +
-            "\n  Commit:   %10.3f ms (%.1f%%)" +
-            "\n  Overhead: %10.3f ms (%.1f%%)" +
-            "\n\nCypher (2 MATCH) vs API ratio: %.2fx" +
-            "\n  SQL vs API ratio:            %.2fx",
+        """
+
+        === Edge Creation Commit Path Profile (Issue #3613) ===
+        %-35s %10s %10s %10s %10s
+        %-35s %10.3f %10.3f %10.3f %10.3f
+        %-35s %10.3f %10.3f %10.3f %10.3f
+        %-35s %10.3f %10.3f %10.3f %10.3f
+        %-35s %10.3f %10.3f %10.3f %10.3f
+        %-35s %10.3f %10.3f %10.3f %10.3f
+        %-35s %10.3f %10.3f %10.3f %10.3f
+
+        Breakdown of full tx median:
+          Lookup:   %10.3f ms (%.1f%%)
+          Mutation: %10.3f ms (%.1f%%)
+          Commit:   %10.3f ms (%.1f%%)
+          Overhead: %10.3f ms (%.1f%%)
+
+        Cypher (2 MATCH) vs API ratio: %.2fx
+          SQL vs API ratio:            %.2fx""",
         "Operation", "Median(ms)", "Min(ms)", "P95(ms)", "P99(ms)",
         "1. Vertex lookup (2x index)", medianMs(lookupTimes), minMs(lookupTimes), p95Ms(lookupTimes), p99Ms(lookupTimes),
         "2. Edge mutation (no commit)", medianMs(mutationTimes), minMs(mutationTimes), p95Ms(mutationTimes), p99Ms(mutationTimes),
@@ -254,17 +259,19 @@ class EdgeCreationCommitProfileTest extends TestHelper {
 
       // Warm up
       database.command("opencypher",
-          "UNWIND $batch AS e MATCH (a:ProfPerson) WHERE a.id = e.src_id " +
-              "MATCH (b:ProfPerson) WHERE b.id = e.dst_id " +
-              "CREATE (a)-[:PROF_KNOWS {weight: e.weight}]->(b)",
+          """
+          UNWIND $batch AS e MATCH (a:ProfPerson) WHERE a.id = e.src_id \
+          MATCH (b:ProfPerson) WHERE b.id = e.dst_id \
+          CREATE (a)-[:PROF_KNOWS {weight: e.weight}]->(b)""",
           Map.of("batch", batch));
 
       // Measure
       final long start = System.nanoTime();
       database.command("opencypher",
-          "UNWIND $batch AS e MATCH (a:ProfPerson) WHERE a.id = e.src_id " +
-              "MATCH (b:ProfPerson) WHERE b.id = e.dst_id " +
-              "CREATE (a)-[:PROF_KNOWS {weight: e.weight}]->(b)",
+          """
+          UNWIND $batch AS e MATCH (a:ProfPerson) WHERE a.id = e.src_id \
+          MATCH (b:ProfPerson) WHERE b.id = e.dst_id \
+          CREATE (a)-[:PROF_KNOWS {weight: e.weight}]->(b)""",
           Map.of("batch", batch));
       final double totalMs = (System.nanoTime() - start) / 1_000_000.0;
       final double perEdgeMs = totalMs / batchSize;

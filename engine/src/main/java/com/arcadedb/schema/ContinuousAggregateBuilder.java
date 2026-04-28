@@ -99,8 +99,9 @@ public class ContinuousAggregateBuilder {
     // Extract ts.timeBucket parameters
     final Matcher bucketMatcher = TIME_BUCKET_PATTERN.matcher(query);
     if (!bucketMatcher.find())
-      throw new SchemaException("Continuous aggregate query must include ts.timeBucket(interval, timestamp) " +
-          "in the projection. Example: SELECT ts.timeBucket('1h', ts) AS hour, ...");
+      throw new SchemaException("""
+          Continuous aggregate query must include ts.timeBucket(interval, timestamp) \
+          in the projection. Example: SELECT ts.timeBucket('1h', ts) AS hour, ...""");
 
     final String intervalStr = bucketMatcher.group(1);
     final String tsColumnInQuery = bucketMatcher.group(2);
@@ -116,8 +117,9 @@ public class ContinuousAggregateBuilder {
     if (aliasMatcher.find())
       bucketAlias = aliasMatcher.group(1);
     if (bucketAlias == null)
-      throw new SchemaException("The ts.timeBucket() projection must have an alias. " +
-          "Example: ts.timeBucket('1h', ts) AS hour");
+      throw new SchemaException("""
+          The ts.timeBucket() projection must have an alias. \
+          Example: ts.timeBucket('1h', ts) AS hour""");
     if (bucketAlias.contains("`"))
       throw new SchemaException("Bucket alias must not contain backtick characters: '" + bucketAlias + "'");
 
@@ -168,12 +170,14 @@ public class ContinuousAggregateBuilder {
     final String upper = query.toUpperCase().trim();
     // Reject CTEs (WITH ... AS)
     if (upper.startsWith("WITH "))
-      throw new SchemaException("Continuous aggregate queries must not use CTEs (WITH ... AS). " +
-          "Use a simple SELECT ... FROM ... GROUP BY query.");
+      throw new SchemaException("""
+          Continuous aggregate queries must not use CTEs (WITH ... AS). \
+          Use a simple SELECT ... FROM ... GROUP BY query.""");
     // Reject subqueries in FROM clause
     if (upper.contains("(SELECT ") || upper.contains("( SELECT "))
-      throw new SchemaException("Continuous aggregate queries must not contain subqueries. " +
-          "Use a simple SELECT ... FROM ... GROUP BY query.");
+      throw new SchemaException("""
+          Continuous aggregate queries must not contain subqueries. \
+          Use a simple SELECT ... FROM ... GROUP BY query.""");
     // Reject UNION/INTERSECT/EXCEPT
     for (final String keyword : new String[] { " UNION ", " INTERSECT ", " EXCEPT " })
       if (upper.contains(keyword))

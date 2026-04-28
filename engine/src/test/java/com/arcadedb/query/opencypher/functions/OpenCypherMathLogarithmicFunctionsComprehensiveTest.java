@@ -389,8 +389,9 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
   void exponentialGrowth() {
     // Test exponential growth formula
     final ResultSet result = database.command("opencypher",
-        "WITH 100.0 AS initial, 0.05 AS rate, 10.0 AS time " +
-            "RETURN initial * exp(rate * time) AS result");
+        """
+        WITH 100.0 AS initial, 0.05 AS rate, 10.0 AS time \
+        RETURN initial * exp(rate * time) AS result""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Number growth = (Number) result.next().getProperty("result");
     assertThat(growth.doubleValue()).isGreaterThan(100.0);

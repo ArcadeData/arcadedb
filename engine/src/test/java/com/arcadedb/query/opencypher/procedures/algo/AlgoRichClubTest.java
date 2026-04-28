@@ -77,8 +77,9 @@ class AlgoRichClubTest {
   @Test
   void richClubReturnsRows() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.richClub('EDGE', 1) YIELD degree, richClubCoefficient, nodeCount, edgeCount "
-            + "RETURN degree, richClubCoefficient, nodeCount, edgeCount");
+        """
+        CALL algo.richClub('EDGE', 1) YIELD degree, richClubCoefficient, nodeCount, edgeCount \
+        RETURN degree, richClubCoefficient, nodeCount, edgeCount""");
 
     assertThat(rs.hasNext()).isTrue();
   }
@@ -86,8 +87,9 @@ class AlgoRichClubTest {
   @Test
   void richClubCoefficientRangeValid() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.richClub('EDGE', 1) YIELD degree, richClubCoefficient, nodeCount, edgeCount "
-            + "RETURN degree, richClubCoefficient, nodeCount, edgeCount");
+        """
+        CALL algo.richClub('EDGE', 1) YIELD degree, richClubCoefficient, nodeCount, edgeCount \
+        RETURN degree, richClubCoefficient, nodeCount, edgeCount""");
 
     while (rs.hasNext()) {
       final Result r = rs.next();
@@ -101,8 +103,9 @@ class AlgoRichClubTest {
   @Test
   void richClubNodeCountDecreases() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.richClub('EDGE', 1) YIELD degree, richClubCoefficient, nodeCount, edgeCount "
-            + "RETURN degree, richClubCoefficient, nodeCount, edgeCount ORDER BY degree ASC");
+        """
+        CALL algo.richClub('EDGE', 1) YIELD degree, richClubCoefficient, nodeCount, edgeCount \
+        RETURN degree, richClubCoefficient, nodeCount, edgeCount ORDER BY degree ASC""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -121,8 +124,9 @@ class AlgoRichClubTest {
   @Test
   void richClubDegreeFieldPresent() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.richClub() YIELD degree, richClubCoefficient, nodeCount, edgeCount "
-            + "RETURN degree, richClubCoefficient, nodeCount, edgeCount");
+        """
+        CALL algo.richClub() YIELD degree, richClubCoefficient, nodeCount, edgeCount \
+        RETURN degree, richClubCoefficient, nodeCount, edgeCount""");
 
     while (rs.hasNext()) {
       final Result r = rs.next();
@@ -138,8 +142,9 @@ class AlgoRichClubTest {
     // For threshold 2 (degree > 2), A,B,C,D qualify (4 nodes forming K4)
     // K4 has 6 edges, phi = 2*6 / (4*3) = 1.0
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.richClub('EDGE', 2) YIELD degree, richClubCoefficient, nodeCount, edgeCount "
-            + "RETURN degree, richClubCoefficient, nodeCount, edgeCount");
+        """
+        CALL algo.richClub('EDGE', 2) YIELD degree, richClubCoefficient, nodeCount, edgeCount \
+        RETURN degree, richClubCoefficient, nodeCount, edgeCount""");
 
     boolean foundGoodCoeff = false;
     while (rs.hasNext()) {

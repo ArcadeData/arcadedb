@@ -38,9 +38,10 @@ public class GetServerSettingsTool {
     return new JSONObject()
         .put("name", "get_server_settings")
         .put("description",
-            "Retrieve ArcadeDB server configuration settings. " +
-            "Returns all server-level settings with their current values, defaults, and descriptions. " +
-            "Sensitive values (passwords) are masked. Use this to understand and diagnose server configuration.")
+            """
+            Retrieve ArcadeDB server configuration settings. \
+            Returns all server-level settings with their current values, defaults, and descriptions. \
+            Sensitive values (passwords) are masked. Use this to understand and diagnose server configuration.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject())

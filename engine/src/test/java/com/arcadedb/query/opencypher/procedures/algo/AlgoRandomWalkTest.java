@@ -72,10 +72,11 @@ class AlgoRandomWalkTest {
   void randomWalkFiveSteps() {
     // Walk 5 steps from A in a cycle; the walk never hits a dead-end so steps=5
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.randomWalk(a, 5) " +
-            "YIELD path, steps " +
-            "RETURN path, steps");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.randomWalk(a, 5) \
+        YIELD path, steps \
+        RETURN path, steps""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -97,10 +98,11 @@ class AlgoRandomWalkTest {
   void randomWalkPathNotNull() {
     // Walk 3 steps with a fixed seed for reproducibility
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.randomWalk(a, 3, null, 'OUT', 42) " +
-            "YIELD path, steps " +
-            "RETURN path, steps");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.randomWalk(a, 3, null, 'OUT', 42) \
+        YIELD path, steps \
+        RETURN path, steps""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();

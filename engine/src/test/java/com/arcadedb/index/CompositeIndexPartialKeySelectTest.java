@@ -112,9 +112,10 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
     // Client's exact query pattern (simplified)
     database.transaction(() -> {
       final ResultSet result = database.query("sql",
-          "SELECT *, @rid, @type, Name, ModifiedOn FROM Study " +
-              "WHERE Name = 'Study0' or Name = '2025R2 Low ArcadeDB' " +
-              "AND @type = 'Study' AND _isDeleted <> true AND _isDisabled <> true LIMIT -1");
+          """
+          SELECT *, @rid, @type, Name, ModifiedOn FROM Study \
+          WHERE Name = 'Study0' or Name = '2025R2 Low ArcadeDB' \
+          AND @type = 'Study' AND _isDeleted <> true AND _isDisabled <> true LIMIT -1""");
 
       int count = 0;
       while (result.hasNext()) {
@@ -171,9 +172,10 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
     // Simulate what happens via POST /command - command() instead of query()
     database.transaction(() -> {
       final ResultSet result = database.command("sql",
-          "SELECT *, @rid, @type, Name, ModifiedOn FROM Study " +
-              "WHERE Name = 'Study0' or Name = '2025R2 Low ArcadeDB' " +
-              "AND @type = 'Study' AND _isDeleted <> true AND _isDisabled <> true LIMIT -1");
+          """
+          SELECT *, @rid, @type, Name, ModifiedOn FROM Study \
+          WHERE Name = 'Study0' or Name = '2025R2 Low ArcadeDB' \
+          AND @type = 'Study' AND _isDeleted <> true AND _isDisabled <> true LIMIT -1""");
 
       int count = 0;
       while (result.hasNext()) {

@@ -172,22 +172,25 @@ public class ArcadeDBServer {
       if (!GlobalConfiguration.TX_WAL_FLUSH.isChanged()) {
         GlobalConfiguration.TX_WAL_FLUSH.setValue(1);
         LogManager.instance().log(this, Level.INFO,
-            "Production mode: WAL flush automatically set to 1 (flush without metadata) for durability. "
-                + "Set arcadedb.txWalFlush=0 explicitly to disable or =2 for full fsync");
+            """
+            Production mode: WAL flush automatically set to 1 (flush without metadata) for durability. \
+            Set arcadedb.txWalFlush=0 explicitly to disable or =2 for full fsync""");
       } else if (GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger() == 0) {
         LogManager.instance().log(this, Level.WARNING,
-            "WAL flush is explicitly disabled (arcadedb.txWalFlush=0) in production mode. "
-                + "Committed transactions may be lost on power failure or OS crash "
-                + "unless your storage has battery-backed write cache or power-loss protection. "
-                + "Set arcadedb.txWalFlush=1 or =2 for durability on standard hardware");
+            """
+            WAL flush is explicitly disabled (arcadedb.txWalFlush=0) in production mode. \
+            Committed transactions may be lost on power failure or OS crash \
+            unless your storage has battery-backed write cache or power-loss protection. \
+            Set arcadedb.txWalFlush=1 or =2 for durability on standard hardware""");
       }
 
       // LOAD CSV: DISABLE LOCAL FILE ACCESS FOR SECURITY
       if (!GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.isChanged()) {
         GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.setValue(false);
         LogManager.instance().log(this, Level.INFO,
-            "Production mode: LOAD CSV file access automatically disabled for security. "
-                + "Set arcadedb.opencypher.loadCsv.allowFileUrls=true explicitly to enable");
+            """
+            Production mode: LOAD CSV file access automatically disabled for security. \
+            Set arcadedb.opencypher.loadCsv.allowFileUrls=true explicitly to enable""");
       }
     }
 

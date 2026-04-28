@@ -512,8 +512,9 @@ class WithAndUnwindTest {
             "CREATE (:Person {name: 'Alice'}), (:Person {name: 'Bob'}), (:Person {name: 'Charlie'})");
       });
 
-      final String cypher = "MATCH (p:Person) WITH p.name AS personName WHERE personName <> 'Bob' "
-          + "UNWIND range(1, 3) AS i RETURN personName, i ORDER BY personName, i";
+      final String cypher = """
+          MATCH (p:Person) WITH p.name AS personName WHERE personName <> 'Bob' \
+          UNWIND range(1, 3) AS i RETURN personName, i ORDER BY personName, i""";
 
       // Test via query() (read-only path)
       final ResultSet result = db.query("opencypher", cypher);
@@ -549,8 +550,9 @@ class WithAndUnwindTest {
 
       // Control: single upstream row, range(1,3) = 1 * 3 = 3
       final ResultSet singleResult = db.query("opencypher",
-          "MATCH (p:Person {name: 'Alice'}) WITH p.name AS personName "
-              + "UNWIND range(1, 3) AS i RETURN personName, i");
+          """
+          MATCH (p:Person {name: 'Alice'}) WITH p.name AS personName \
+          UNWIND range(1, 3) AS i RETURN personName, i""");
       int singleCount = 0;
       while (singleResult.hasNext()) { singleResult.next(); singleCount++; }
       singleResult.close();
@@ -570,9 +572,10 @@ class WithAndUnwindTest {
   @Order(60)
   void withMultiColumnOrderBySkipLimit_Issue3877() {
     // Exact reproduction from issue report
-    final String cypher = "UNWIND [3,2,1] AS x "
-        + "WITH x, x + 10 AS y ORDER BY x DESC SKIP 1 LIMIT 2 "
-        + "RETURN x, y ORDER BY x";
+    final String cypher = """
+        UNWIND [3,2,1] AS x \
+        WITH x, x + 10 AS y ORDER BY x DESC SKIP 1 LIMIT 2 \
+        RETURN x, y ORDER BY x""";
 
     // Test via query()
     final ResultSet result = database.query("opencypher", cypher);
@@ -636,15 +639,17 @@ class WithAndUnwindTest {
         db.getSchema().createVertexType("Movie").createProperty("title", String.class);
         db.getSchema().createEdgeType("ACTED_IN");
         db.command("opencypher",
-            "CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Carol'}), "
-                + "(m:Movie {title:'M1'}), (a)-[:ACTED_IN]->(m), (b)-[:ACTED_IN]->(m)");
+            """
+            CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Carol'}), \
+            (m:Movie {title:'M1'}), (a)-[:ACTED_IN]->(m), (b)-[:ACTED_IN]->(m)""");
       });
 
       // Exact query from the bug report
       final ResultSet result = db.query("opencypher",
-          "MATCH (p:Person) OPTIONAL MATCH (p)-[:ACTED_IN]->(m:Movie) "
-              + "WITH p, COUNT(m) AS c ORDER BY p.name SKIP 1 LIMIT 2 "
-              + "RETURN p.name AS name, c ORDER BY name");
+          """
+          MATCH (p:Person) OPTIONAL MATCH (p)-[:ACTED_IN]->(m:Movie) \
+          WITH p, COUNT(m) AS c ORDER BY p.name SKIP 1 LIMIT 2 \
+          RETURN p.name AS name, c ORDER BY name""");
 
       final List<Map<String, Object>> rows = new ArrayList<>();
       while (result.hasNext()) {
@@ -679,8 +684,9 @@ class WithAndUnwindTest {
         db.getSchema().createVertexType("Person").createProperty("name", String.class);
         db.getSchema().createEdgeType("KNOWS");
         db.command("opencypher",
-            "CREATE (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), (c:Person {name: 'Carol'}), "
-                + "(a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)");
+            """
+            CREATE (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), (c:Person {name: 'Carol'}), \
+            (a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)""");
       });
 
       // Exact query from bug report: COUNT(path) should be 1
@@ -736,9 +742,10 @@ class WithAndUnwindTest {
       // Exact query from bug report
       db.transaction(() -> {
         final ResultSet result = db.command("opencypher",
-            "MATCH (n:Country {name: 'Belgium'}), (m:Country {name: 'Netherlands'}) "
-                + "CREATE p = (n)-[r:BORDERS_WITH {length: '30KM'}]->(m) "
-                + "RETURN COUNT(p) AS path_count, COUNT(r) AS rel_count");
+            """
+            MATCH (n:Country {name: 'Belgium'}), (m:Country {name: 'Netherlands'}) \
+            CREATE p = (n)-[r:BORDERS_WITH {length: '30KM'}]->(m) \
+            RETURN COUNT(p) AS path_count, COUNT(r) AS rel_count""");
 
         assertThat(result.hasNext()).as("Should return a result row").isTrue();
         final var row = result.next();

@@ -42,8 +42,9 @@ public class QueryTool {
     return new JSONObject()
         .put("name", "query")
         .put("description",
-            "Execute a read-only (idempotent) query against an ArcadeDB database. Use this for SELECT, MATCH, and other read operations. "
-                + "Prefer OpenCypher (language: 'cypher') unless SQL is explicitly requested.")
+            """
+            Execute a read-only (idempotent) query against an ArcadeDB database. Use this for SELECT, MATCH, and other read operations. \
+            Prefer OpenCypher (language: 'cypher') unless SQL is explicitly requested.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject()

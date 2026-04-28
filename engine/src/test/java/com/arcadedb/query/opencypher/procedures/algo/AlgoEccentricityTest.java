@@ -102,8 +102,9 @@ class AlgoEccentricityTest {
   @Test
   void eccentricityMiddleNodesAreCenters() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.eccentricity() YIELD node, eccentricity, isCenter, isPeripheral " +
-            "RETURN node.name AS name, eccentricity, isCenter, isPeripheral");
+        """
+        CALL algo.eccentricity() YIELD node, eccentricity, isCenter, isPeripheral \
+        RETURN node.name AS name, eccentricity, isCenter, isPeripheral""");
 
     int eccA = 0, eccB = 0, eccC = 0, eccD = 0;
     boolean centerA = false, centerB = false, centerC = false, centerD = false;
@@ -134,8 +135,9 @@ class AlgoEccentricityTest {
   @Test
   void eccentricityEndpointsArePeripheral() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.eccentricity() YIELD node, eccentricity, isCenter, isPeripheral " +
-            "RETURN node.name AS name, isPeripheral");
+        """
+        CALL algo.eccentricity() YIELD node, eccentricity, isCenter, isPeripheral \
+        RETURN node.name AS name, isPeripheral""");
 
     boolean peripheralA = false, peripheralB = false, peripheralC = false, peripheralD = false;
 

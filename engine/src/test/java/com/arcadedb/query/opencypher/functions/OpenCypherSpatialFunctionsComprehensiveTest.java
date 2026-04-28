@@ -224,9 +224,10 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   void pointDistanceWGS84() {
     // Geodesic distance between two geographic points
     final ResultSet result = database.command("opencypher",
-        "RETURN point.distance(" +
-            "point({longitude: 12.564590, latitude: 55.672874}), " +
-            "point({longitude: 12.994341, latitude: 55.611784})) AS distance");
+        """
+        RETURN point.distance(\
+        point({longitude: 12.564590, latitude: 55.672874}), \
+        point({longitude: 12.994341, latitude: 55.611784})) AS distance""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Double distance = (Double) result.next().getProperty("distance");
     // Distance should be approximately 28 km (in meters)
@@ -270,10 +271,11 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   @Test
   void pointWithinBBoxInside() {
     final ResultSet result = database.command("opencypher",
-        "RETURN point.withinBBox(" +
-            "point({x: 5.0, y: 5.0}), " +
-            "point({x: 0.0, y: 0.0}), " +
-            "point({x: 10.0, y: 10.0})) AS inside");
+        """
+        RETURN point.withinBBox(\
+        point({x: 5.0, y: 5.0}), \
+        point({x: 0.0, y: 0.0}), \
+        point({x: 10.0, y: 10.0})) AS inside""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Boolean inside = (Boolean) result.next().getProperty("inside");
     assertThat(inside).isTrue();
@@ -282,10 +284,11 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   @Test
   void pointWithinBBoxOutside() {
     final ResultSet result = database.command("opencypher",
-        "RETURN point.withinBBox(" +
-            "point({x: 15.0, y: 15.0}), " +
-            "point({x: 0.0, y: 0.0}), " +
-            "point({x: 10.0, y: 10.0})) AS inside");
+        """
+        RETURN point.withinBBox(\
+        point({x: 15.0, y: 15.0}), \
+        point({x: 0.0, y: 0.0}), \
+        point({x: 10.0, y: 10.0})) AS inside""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Boolean inside = (Boolean) result.next().getProperty("inside");
     assertThat(inside).isFalse();
@@ -294,10 +297,11 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   @Test
   void pointWithinBBoxOnEdge() {
     final ResultSet result = database.command("opencypher",
-        "RETURN point.withinBBox(" +
-            "point({x: 0.0, y: 5.0}), " +
-            "point({x: 0.0, y: 0.0}), " +
-            "point({x: 10.0, y: 10.0})) AS inside");
+        """
+        RETURN point.withinBBox(\
+        point({x: 0.0, y: 5.0}), \
+        point({x: 0.0, y: 0.0}), \
+        point({x: 10.0, y: 10.0})) AS inside""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Boolean inside = (Boolean) result.next().getProperty("inside");
     assertThat(inside).isTrue();
@@ -307,10 +311,11 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   void pointWithinBBoxWGS84() {
     // Test with geographic coordinates
     final ResultSet result = database.command("opencypher",
-        "RETURN point.withinBBox(" +
-            "point({longitude: 12.8, latitude: 55.6}), " +
-            "point({longitude: 12.5, latitude: 55.5}), " +
-            "point({longitude: 13.0, latitude: 55.7})) AS inside");
+        """
+        RETURN point.withinBBox(\
+        point({longitude: 12.8, latitude: 55.6}), \
+        point({longitude: 12.5, latitude: 55.5}), \
+        point({longitude: 13.0, latitude: 55.7})) AS inside""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Boolean inside = (Boolean) result.next().getProperty("inside");
     assertThat(inside).isTrue();
@@ -340,9 +345,10 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   void pointFunctionsCombined() {
     // Create two points and verify they're at a specific distance
     final ResultSet result = database.command("opencypher",
-        "WITH point({x: 0.0, y: 0.0}) AS p1, point({x: 3.0, y: 4.0}) AS p2 " +
-            "RETURN point.distance(p1, p2) AS dist, " +
-            "point.withinBBox(p2, point({x: 0.0, y: 0.0}), point({x: 10.0, y: 10.0})) AS inBox");
+        """
+        WITH point({x: 0.0, y: 0.0}) AS p1, point({x: 3.0, y: 4.0}) AS p2 \
+        RETURN point.distance(p1, p2) AS dist, \
+        point.withinBBox(p2, point({x: 0.0, y: 0.0}), point({x: 10.0, y: 10.0})) AS inBox""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Result row = result.next();
     assertThat((Double) row.getProperty("dist")).isCloseTo(5.0, within(0.001));
@@ -366,12 +372,14 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   void pointDistanceBetweenNodes() {
     database.getSchema().createVertexType("Location");
     database.command("opencypher",
-        "CREATE (a:Location {name: 'A', pos: point({x: 0.0, y: 0.0})}), " +
-            "(b:Location {name: 'B', pos: point({x: 3.0, y: 4.0})})");
+        """
+        CREATE (a:Location {name: 'A', pos: point({x: 0.0, y: 0.0})}), \
+        (b:Location {name: 'B', pos: point({x: 3.0, y: 4.0})})""");
 
     final ResultSet result = database.command("opencypher",
-        "MATCH (a:Location {name: 'A'}), (b:Location {name: 'B'}) " +
-            "RETURN point.distance(a.pos, b.pos) AS distance");
+        """
+        MATCH (a:Location {name: 'A'}), (b:Location {name: 'B'}) \
+        RETURN point.distance(a.pos, b.pos) AS distance""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Double distance = (Double) result.next().getProperty("distance");
     assertThat(distance).isCloseTo(5.0, within(0.001));
@@ -383,8 +391,9 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   void pointWGS84_3D_HeightAccessorWithHeightInput() {
     // Regression test for Issue #3992: p.height should return the height value, not null
     final ResultSet result = database.command("opencypher",
-        "WITH point({longitude: 56.7, latitude: 12.78, height: 8}) AS p " +
-            "RETURN p.longitude AS lon, p.latitude AS lat, p.z AS z, p.height AS height, p.crs AS crs");
+        """
+        WITH point({longitude: 56.7, latitude: 12.78, height: 8}) AS p \
+        RETURN p.longitude AS lon, p.latitude AS lat, p.z AS z, p.height AS height, p.crs AS crs""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Result row = result.next();
     final Number lon = row.getProperty("lon");
@@ -404,8 +413,9 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   void pointWGS84_3D_HeightAccessorWithZInput() {
     // When using z= for WGS-84-3D, p.height should also be accessible as an alias
     final ResultSet result = database.command("opencypher",
-        "WITH point({longitude: 56.7, latitude: 12.78, z: 8}) AS p " +
-            "RETURN p.z AS z, p.height AS height");
+        """
+        WITH point({longitude: 56.7, latitude: 12.78, z: 8}) AS p \
+        RETURN p.z AS z, p.height AS height""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Result row = result.next();
     final Number z = row.getProperty("z");
@@ -419,8 +429,9 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
   void pointCartesian3D_NoHeightAccessor() {
     // Cartesian 3D points should NOT expose .height - only .z
     final ResultSet result = database.command("opencypher",
-        "WITH point({x: 1.0, y: 2.0, z: 3.0}) AS p " +
-            "RETURN p.z AS z, p.height AS height");
+        """
+        WITH point({x: 1.0, y: 2.0, z: 3.0}) AS p \
+        RETURN p.z AS z, p.height AS height""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final Result row = result.next();
     final Number z = row.getProperty("z");

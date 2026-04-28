@@ -254,7 +254,8 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
 
   @Override
   public String getSyntax() {
-    return "bellmanFord(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>"
-        + " [, <direction> | { direction }])";
+    return """
+        bellmanFord(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>\
+         [, <direction> | { direction }])""";
   }
 }

@@ -179,10 +179,11 @@ class OpenCypherSubqueryTest {
 
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
-          "MERGE (t1:Thing1 {username: \"bob\"}) WITH coalesce(t1.aList, []) AS aList " +
-              "CALL { WITH aList WITH aList " +
-              "WHERE NOT any(element IN aList WHERE element = \"92dc13ff-50d1-4879-b2fd-b0dedf7ec019\") " +
-              "RETURN true AS success1 } RETURN success1");
+          """
+          MERGE (t1:Thing1 {username: "bob"}) WITH coalesce(t1.aList, []) AS aList \
+          CALL { WITH aList WITH aList \
+          WHERE NOT any(element IN aList WHERE element = "92dc13ff-50d1-4879-b2fd-b0dedf7ec019") \
+          RETURN true AS success1 } RETURN success1""");
 
       final List<Result> rows = new ArrayList<>();
       while (result.hasNext())
@@ -200,10 +201,11 @@ class OpenCypherSubqueryTest {
   @Test
   void callSubqueryWhereWithEmptyList() {
     final ResultSet result = database.query("opencypher",
-        "WITH [] AS aList " +
-            "CALL { WITH aList WITH aList " +
-            "WHERE NOT any(element IN aList WHERE element = \"x\") " +
-            "RETURN true AS success1 } RETURN success1");
+        """
+        WITH [] AS aList \
+        CALL { WITH aList WITH aList \
+        WHERE NOT any(element IN aList WHERE element = "x") \
+        RETURN true AS success1 } RETURN success1""");
 
     final List<Result> rows = new ArrayList<>();
     while (result.hasNext())
@@ -219,10 +221,11 @@ class OpenCypherSubqueryTest {
   @Test
   void callSubqueryWhereFiltersTrueCondition() {
     final ResultSet result = database.query("opencypher",
-        "WITH [\"x\"] AS aList " +
-            "CALL { WITH aList WITH aList " +
-            "WHERE NOT any(element IN aList WHERE element = \"x\") " +
-            "RETURN true AS success1 } RETURN success1");
+        """
+        WITH ["x"] AS aList \
+        CALL { WITH aList WITH aList \
+        WHERE NOT any(element IN aList WHERE element = "x") \
+        RETURN true AS success1 } RETURN success1""");
 
     final List<Result> rows = new ArrayList<>();
     while (result.hasNext())
@@ -265,17 +268,18 @@ class OpenCypherSubqueryTest {
   void callSubqueryWithUnionFallsThrough() {
     // First query: empty list, so SIZE > 0 is false, but SIZE = 0 is true -> should return success2 = 1
     final ResultSet result1 = database.query("opencypher",
-        "WITH [] as toRemove " +
-        "CALL { " +
-        "  WITH toRemove WITH toRemove " +
-        "  WHERE SIZE(toRemove) > 0 " +
-        "  RETURN 2 AS success2 " +
-        "  UNION " +
-        "  WITH toRemove WITH toRemove " +
-        "  WHERE SIZE(toRemove) = 0 " +
-        "  RETURN 1 AS success2 " +
-        "} " +
-        "RETURN success2");
+        """
+        WITH [] as toRemove \
+        CALL { \
+          WITH toRemove WITH toRemove \
+          WHERE SIZE(toRemove) > 0 \
+          RETURN 2 AS success2 \
+          UNION \
+          WITH toRemove WITH toRemove \
+          WHERE SIZE(toRemove) = 0 \
+          RETURN 1 AS success2 \
+        } \
+        RETURN success2""");
 
     assertThat(result1.hasNext()).isTrue();
     final Result row1 = result1.next();
@@ -284,17 +288,18 @@ class OpenCypherSubqueryTest {
 
     // Second query: non-empty list, so SIZE > 0 is true -> should return success2 = 2
     final ResultSet result2 = database.query("opencypher",
-        "WITH ['a'] as toRemove " +
-        "CALL { " +
-        "  WITH toRemove WITH toRemove " +
-        "  WHERE SIZE(toRemove) > 0 " +
-        "  RETURN 2 AS success2 " +
-        "  UNION " +
-        "  WITH toRemove WITH toRemove " +
-        "  WHERE SIZE(toRemove) = 0 " +
-        "  RETURN 1 AS success2 " +
-        "} " +
-        "RETURN success2");
+        """
+        WITH ['a'] as toRemove \
+        CALL { \
+          WITH toRemove WITH toRemove \
+          WHERE SIZE(toRemove) > 0 \
+          RETURN 2 AS success2 \
+          UNION \
+          WITH toRemove WITH toRemove \
+          WHERE SIZE(toRemove) = 0 \
+          RETURN 1 AS success2 \
+        } \
+        RETURN success2""");
 
     assertThat(result2.hasNext()).isTrue();
     final Result row2 = result2.next();
@@ -319,14 +324,15 @@ class OpenCypherSubqueryTest {
 
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
-          "MATCH (p:Person3944) " +
-          "CALL { " +
-          "  WITH p " +
-          "  UNWIND range(1, 2) AS i " +
-          "  CREATE (:Clone3944 {name: p.name, id: i}) " +
-          "} " +
-          "RETURN p.name AS person " +
-          "ORDER BY person");
+          """
+          MATCH (p:Person3944) \
+          CALL { \
+            WITH p \
+            UNWIND range(1, 2) AS i \
+            CREATE (:Clone3944 {name: p.name, id: i}) \
+          } \
+          RETURN p.name AS person \
+          ORDER BY person""");
 
       final List<Result> rows = new ArrayList<>();
       while (result.hasNext())
@@ -354,13 +360,14 @@ class OpenCypherSubqueryTest {
 
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
-          "MATCH (p:Person3944b) " +
-          "CALL { " +
-          "  WITH p " +
-          "  CREATE (:Clone3944b {name: p.name}) " +
-          "} " +
-          "RETURN p.name AS person " +
-          "ORDER BY person");
+          """
+          MATCH (p:Person3944b) \
+          CALL { \
+            WITH p \
+            CREATE (:Clone3944b {name: p.name}) \
+          } \
+          RETURN p.name AS person \
+          ORDER BY person""");
 
       final List<Result> rows = new ArrayList<>();
       while (result.hasNext())
@@ -392,14 +399,15 @@ class OpenCypherSubqueryTest {
     });
 
     final ResultSet result = database.query("opencypher",
-        "MATCH (p:Person3959 {name: 'Bob'}) " +
-            "CALL { " +
-            "  MATCH (p:Person3959) " +
-            "  WHERE p.city IS NOT NULL " +
-            "  RETURN p.city AS location " +
-            "} " +
-            "RETURN p.name AS outerName, location " +
-            "ORDER BY location");
+        """
+        MATCH (p:Person3959 {name: 'Bob'}) \
+        CALL { \
+          MATCH (p:Person3959) \
+          WHERE p.city IS NOT NULL \
+          RETURN p.city AS location \
+        } \
+        RETURN p.name AS outerName, location \
+        ORDER BY location""");
 
     final List<Result> rows = new ArrayList<>();
     while (result.hasNext())
@@ -430,14 +438,15 @@ class OpenCypherSubqueryTest {
     });
 
     final ResultSet result = database.query("opencypher",
-        "MATCH (p:Person3959b {name: 'Bob'}) " +
-            "CALL { " +
-            "  MATCH (q:Person3959b) " +
-            "  WHERE q.city IS NOT NULL " +
-            "  RETURN q.city AS location " +
-            "} " +
-            "RETURN p.name AS outerName, location " +
-            "ORDER BY location");
+        """
+        MATCH (p:Person3959b {name: 'Bob'}) \
+        CALL { \
+          MATCH (q:Person3959b) \
+          WHERE q.city IS NOT NULL \
+          RETURN q.city AS location \
+        } \
+        RETURN p.name AS outerName, location \
+        ORDER BY location""");
 
     final List<Result> rows = new ArrayList<>();
     while (result.hasNext())

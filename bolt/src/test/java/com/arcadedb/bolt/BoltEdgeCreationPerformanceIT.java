@@ -122,9 +122,10 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
       try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         for (int i = 0; i < 5; i++) {
           try (final Transaction tx = session.beginTransaction()) {
-            tx.run("MATCH (a:PerfPerson) WHERE a.id = $src " +
-                    "MATCH (b:PerfPerson) WHERE b.id = $dst " +
-                    "CREATE (a)-[:PERF_KNOWS {weight: $w}]->(b)",
+            tx.run("""
+                    MATCH (a:PerfPerson) WHERE a.id = $src \
+                    MATCH (b:PerfPerson) WHERE b.id = $dst \
+                    CREATE (a)-[:PERF_KNOWS {weight: $w}]->(b)""",
                 Map.of("src", i, "dst", i + 1, "w", 0.5)).consume();
             tx.commit();
           }
@@ -139,9 +140,10 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
           final int dst = (i + 1) % PERSON_COUNT;
           final long start = System.nanoTime();
           try (final Transaction tx = session.beginTransaction()) {
-            tx.run("MATCH (a:PerfPerson) WHERE a.id = $src " +
-                    "MATCH (b:PerfPerson) WHERE b.id = $dst " +
-                    "CREATE (a)-[:PERF_KNOWS {weight: $w}]->(b)",
+            tx.run("""
+                    MATCH (a:PerfPerson) WHERE a.id = $src \
+                    MATCH (b:PerfPerson) WHERE b.id = $dst \
+                    CREATE (a)-[:PERF_KNOWS {weight: $w}]->(b)""",
                 Map.of("src", src, "dst", dst, "w", 0.5)).consume();
             tx.commit();
           }
@@ -156,9 +158,10 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
           final int src = i % PERSON_COUNT;
           final int dst = (i + 1) % PERSON_COUNT;
           final long start = System.nanoTime();
-          session.run("MATCH (a:PerfPerson) WHERE a.id = $src " +
-                  "MATCH (b:PerfPerson) WHERE b.id = $dst " +
-                  "CREATE (a)-[:PERF_KNOWS {weight: $w}]->(b)",
+          session.run("""
+                  MATCH (a:PerfPerson) WHERE a.id = $src \
+                  MATCH (b:PerfPerson) WHERE b.id = $dst \
+                  CREATE (a)-[:PERF_KNOWS {weight: $w}]->(b)""",
               Map.of("src", src, "dst", dst, "w", 0.5)).consume();
           autoCommitTimes[i] = System.nanoTime() - start;
         }
@@ -171,9 +174,10 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
         final int dst = (i + 1) % PERSON_COUNT;
         final long start = System.nanoTime();
         db.command("opencypher",
-            "MATCH (a:PerfPerson) WHERE a.id = $src " +
-                "MATCH (b:PerfPerson) WHERE b.id = $dst " +
-                "CREATE (a)-[:PERF_KNOWS {weight: $w}]->(b)",
+            """
+            MATCH (a:PerfPerson) WHERE a.id = $src \
+            MATCH (b:PerfPerson) WHERE b.id = $dst \
+            CREATE (a)-[:PERF_KNOWS {weight: $w}]->(b)""",
             Map.of("src", src, "dst", dst, "w", 0.5));
         directCypherTimes[i] = System.nanoTime() - start;
       }
@@ -221,17 +225,20 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
 
       // Report results
       final String report = String.format(
-          "\n=== Edge Creation Performance (Issue #3613) ===" +
-              "\n%-30s %10s %10s %10s" +
-              "\n%-30s %10.2f %10.2f %10.2f" +
-              "\n%-30s %10.2f %10.2f %10.2f" +
-              "\n%-30s %10.2f %10.2f %10.2f" +
-              "\n%-30s %10.2f %10.2f %10.2f" +
-              "\n%-30s %10.2f %10.2f %10.2f" +
-              "\n\nEdge/Lookup ratio (Bolt):     %.1fx" +
-              "\nEdge/Lookup ratio (AutoCommit):%.1fx" +
-              "\nEdge/Lookup ratio (Cypher):    %.1fx" +
-              "\nEdge/Lookup ratio (DirectAPI): %.1fx",
+          """
+
+          === Edge Creation Performance (Issue #3613) ===
+          %-30s %10s %10s %10s
+          %-30s %10.2f %10.2f %10.2f
+          %-30s %10.2f %10.2f %10.2f
+          %-30s %10.2f %10.2f %10.2f
+          %-30s %10.2f %10.2f %10.2f
+          %-30s %10.2f %10.2f %10.2f
+
+          Edge/Lookup ratio (Bolt):     %.1fx
+          Edge/Lookup ratio (AutoCommit):%.1fx
+          Edge/Lookup ratio (Cypher):    %.1fx
+          Edge/Lookup ratio (DirectAPI): %.1fx""",
           "Operation", "Median(ms)", "Min(ms)", "P95(ms)",
           "Bolt Lookup", lookupMedianMs, lookupMinMs, lookupP95Ms,
           "Bolt Edge (explicit tx)", edgeMedianMs, edgeMinMs, edgeP95Ms,
@@ -251,8 +258,9 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
       // (Neo4j shows ~1.3x ratio, we aim for <10x as a reasonable target)
       final double ratio = edgeMedianMs / lookupMedianMs;
       assertThat(ratio)
-          .as("Edge creation via Bolt should not be more than 15x slower than lookup. " +
-              "Actual ratio: %.1fx. Lookup median: %.2fms, Edge median: %.2fms", ratio, lookupMedianMs, edgeMedianMs)
+          .as("""
+              Edge creation via Bolt should not be more than 15x slower than lookup. \
+              Actual ratio: %.1fx. Lookup median: %.2fms, Edge median: %.2fms""", ratio, lookupMedianMs, edgeMedianMs)
           .isLessThan(15.0);
     }
   }

@@ -85,8 +85,9 @@ class AlgoLongestPathDAGTest {
   @Test
   void longestPathDistanceIsCorrect() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.longestPath('DEPENDS_ON') YIELD node, distance, source " +
-            "RETURN node.name AS name, distance ORDER BY distance DESC");
+        """
+        CALL algo.longestPath('DEPENDS_ON') YIELD node, distance, source \
+        RETURN node.name AS name, distance ORDER BY distance DESC""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())

@@ -68,9 +68,10 @@ class AlgoPersonalizedPageRankTest {
   @Test
   void pprReturnsOneRowPerVertex() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}) "
-            + "CALL algo.personalizedPageRank(a) YIELD nodeId, score "
-            + "RETURN nodeId, score");
+        """
+        MATCH (a:Person {name:'A'}) \
+        CALL algo.personalizedPageRank(a) YIELD nodeId, score \
+        RETURN nodeId, score""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -82,9 +83,10 @@ class AlgoPersonalizedPageRankTest {
   @Test
   void pprScoresAreNonNegative() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}) "
-            + "CALL algo.personalizedPageRank(a) YIELD nodeId, score "
-            + "RETURN nodeId, score");
+        """
+        MATCH (a:Person {name:'A'}) \
+        CALL algo.personalizedPageRank(a) YIELD nodeId, score \
+        RETURN nodeId, score""");
 
     while (rs.hasNext()) {
       final Result r = rs.next();
@@ -96,9 +98,10 @@ class AlgoPersonalizedPageRankTest {
   @Test
   void pprSourceHasHighestScore() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}) "
-            + "CALL algo.personalizedPageRank(a) YIELD nodeId, score "
-            + "RETURN nodeId, score ORDER BY score DESC");
+        """
+        MATCH (a:Person {name:'A'}) \
+        CALL algo.personalizedPageRank(a) YIELD nodeId, score \
+        RETURN nodeId, score ORDER BY score DESC""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result topResult = rs.next();
@@ -110,9 +113,10 @@ class AlgoPersonalizedPageRankTest {
   @Test
   void pprWithCustomDampingFactor() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}) "
-            + "CALL algo.personalizedPageRank(a, 'FOLLOWS', 0.9) YIELD nodeId, score "
-            + "RETURN nodeId, score");
+        """
+        MATCH (a:Person {name:'A'}) \
+        CALL algo.personalizedPageRank(a, 'FOLLOWS', 0.9) YIELD nodeId, score \
+        RETURN nodeId, score""");
 
     int count = 0;
     while (rs.hasNext()) {
@@ -125,9 +129,10 @@ class AlgoPersonalizedPageRankTest {
   @Test
   void pprScoresSumToApproximatelyOne() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name:'A'}) "
-            + "CALL algo.personalizedPageRank(a) YIELD nodeId, score "
-            + "RETURN nodeId, score");
+        """
+        MATCH (a:Person {name:'A'}) \
+        CALL algo.personalizedPageRank(a) YIELD nodeId, score \
+        RETURN nodeId, score""");
 
     double totalScore = 0.0;
     while (rs.hasNext()) {

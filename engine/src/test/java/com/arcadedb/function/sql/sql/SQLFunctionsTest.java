@@ -623,14 +623,15 @@ class SQLFunctionsTest {
     params.put("keyWordIdentifier_1", "World");
 
     final ResultSet result = database.query("sql",
-        "SELECT expand($c) LET "
-            + "$a = (SELECT identity, @rid as id FROM NER "
-            + "WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') "
-            + "AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), "
-            + "$b = (SELECT identity, @rid as id FROM THEME "
-            + "WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') "
-            + "AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), "
-            + "$c = UNIONALL($a, $b)",
+        """
+        SELECT expand($c) LET \
+        $a = (SELECT identity, @rid as id FROM NER \
+        WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') \
+        AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), \
+        $b = (SELECT identity, @rid as id FROM THEME \
+        WHERE identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_0 + '%') \
+        AND identity.replace('\\n', ' ').replace('\\t', ' ').replace('  ', ' ') ILIKE ('%' + :keyWordIdentifier_1 + '%')), \
+        $c = UNIONALL($a, $b)""",
         params);
 
     final List<Result> results = result.stream().collect(Collectors.toList());

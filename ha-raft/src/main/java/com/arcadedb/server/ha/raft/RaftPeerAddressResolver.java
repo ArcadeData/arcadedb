@@ -153,8 +153,9 @@ final class RaftPeerAddressResolver {
     }
     if (hasLocalhost && hasNonLocalhost)
       throw new ServerException(
-          "Found a localhost (127.0.0.1) in the server list among non-localhost servers. "
-              + "Please fix the server list configuration.");
+          """
+          Found a localhost (127.0.0.1) in the server list among non-localhost servers. \
+          Please fix the server list configuration.""");
 
     return new ParsedPeerList(
         Collections.unmodifiableList(peers),

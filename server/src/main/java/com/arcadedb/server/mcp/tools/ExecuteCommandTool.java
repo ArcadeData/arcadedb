@@ -44,8 +44,9 @@ public class ExecuteCommandTool {
     return new JSONObject()
         .put("name", "execute_command")
         .put("description",
-            "Execute a non-idempotent command against an ArcadeDB database. Use this for INSERT, UPDATE, DELETE, CREATE TYPE, and other write operations. "
-                + "Prefer OpenCypher (language: 'cypher') unless SQL is explicitly requested.")
+            """
+            Execute a non-idempotent command against an ArcadeDB database. Use this for INSERT, UPDATE, DELETE, CREATE TYPE, and other write operations. \
+            Prefer OpenCypher (language: 'cypher') unless SQL is explicitly requested.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject()

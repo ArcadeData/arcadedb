@@ -68,8 +68,9 @@ class AlgoGraphSummaryTest {
   @Test
   void graphSummaryReturnsSingleRow() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.graphSummary() YIELD nodeCount, edgeCount, avgDegree, maxDegree, minDegree, density, isolatedNodes, selfLoops "
-            + "RETURN nodeCount, edgeCount, avgDegree, maxDegree, minDegree, density, isolatedNodes, selfLoops");
+        """
+        CALL algo.graphSummary() YIELD nodeCount, edgeCount, avgDegree, maxDegree, minDegree, density, isolatedNodes, selfLoops \
+        RETURN nodeCount, edgeCount, avgDegree, maxDegree, minDegree, density, isolatedNodes, selfLoops""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();

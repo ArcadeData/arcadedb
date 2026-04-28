@@ -154,8 +154,9 @@ public class PluginManager {
         }
         if (!found)
           LogManager.instance().log(this, Level.WARNING,
-              "Configured plugin '%s' was not found. Check that the plugin JAR is in the plugins directory or "
-                  + "the correct class name is specified in the configuration", name);
+              """
+              Configured plugin '%s' was not found. Check that the plugin JAR is in the plugins directory or \
+              the correct class name is specified in the configuration""", name);
       }
     }
   }

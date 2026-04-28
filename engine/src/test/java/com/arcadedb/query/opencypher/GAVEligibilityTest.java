@@ -820,8 +820,9 @@ class GAVEligibilityTest {
     // RETURN source.prop, count(target) ORDER BY ... LIMIT ...
     // The target label filter must work when pushed into GAVExpandAll
     final ResultSet result = database.query("opencypher",
-        "MATCH (p:Person)-[:HAS_CREATOR]-(m:Comment) " +
-        "RETURN p.name AS name, count(m) AS msgs ORDER BY msgs DESC LIMIT 10");
+        """
+        MATCH (p:Person)-[:HAS_CREATOR]-(m:Comment) \
+        RETURN p.name AS name, count(m) AS msgs ORDER BY msgs DESC LIMIT 10""");
 
     assertThat(result.hasNext()).isTrue();
     final var first = result.next();

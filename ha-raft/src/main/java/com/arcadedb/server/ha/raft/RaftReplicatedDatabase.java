@@ -330,16 +330,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       } catch (final Exception e) {
         if (e instanceof java.util.ConcurrentModificationException)
           LogManager.instance().log(this, Level.SEVERE,
-              "Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). "
-                  + "A page was concurrently modified under file lock - this may indicate a locking bug. "
-                  + "Followers have applied this transaction but the leader has not. "
-                  + "Stepping down to prevent stale reads. Error: %s",
+              """
+              Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). \
+              A page was concurrently modified under file lock - this may indicate a locking bug. \
+              Followers have applied this transaction but the leader has not. \
+              Stepping down to prevent stale reads. Error: %s""",
               getName(), payload.tx(), e.getMessage());
         else
           LogManager.instance().log(this, Level.SEVERE,
-              "Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). "
-                  + "Followers have applied this transaction but the leader has not. "
-                  + "Stepping down to prevent stale reads. Error: %s",
+              """
+              Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). \
+              Followers have applied this transaction but the leader has not. \
+              Stepping down to prevent stale reads. Error: %s""",
               getName(), payload.tx(), e.getMessage());
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
         throw e;
@@ -364,8 +366,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
-            "Phase 2 commit failed during ALL-quorum recovery (db=%s, txId=%s). "
-                + "Leader database may be inconsistent. Stepping down so a node with correct state takes over. Error: %s",
+            """
+            Phase 2 commit failed during ALL-quorum recovery (db=%s, txId=%s). \
+            Leader database may be inconsistent. Stepping down so a node with correct state takes over. Error: %s""",
             getName(), payload.tx(), e.getMessage());
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
       } finally {
@@ -408,8 +411,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         .getValueAsBoolean(GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE);
     if (stopServer) {
       LogManager.instance().log(this, Level.SEVERE,
-          "CRITICAL: All %d step-down attempts failed (db=%s, tx=%s). "
-              + "Forcing server stop to prevent leader-follower divergence.",
+          """
+          CRITICAL: All %d step-down attempts failed (db=%s, tx=%s). \
+          Forcing server stop to prevent leader-follower divergence.""",
           STEP_DOWN_MAX_RETRIES, getName(), txDescription);
       final Thread stopThread = new Thread(() -> {
         try {
@@ -424,8 +428,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       stopThread.start();
     } else {
       LogManager.instance().log(this, Level.SEVERE,
-          "CRITICAL: All %d step-down attempts failed (db=%s, tx=%s). "
-              + "HA_STOP_SERVER_ON_REPLICATION_FAILURE=false, server continues in degraded state.",
+          """
+          CRITICAL: All %d step-down attempts failed (db=%s, tx=%s). \
+          HA_STOP_SERVER_ON_REPLICATION_FAILURE=false, server continues in degraded state.""",
           STEP_DOWN_MAX_RETRIES, getName(), txDescription);
     }
   }

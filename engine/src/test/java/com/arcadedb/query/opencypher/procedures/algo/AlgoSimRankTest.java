@@ -65,9 +65,10 @@ class AlgoSimRankTest {
   @Test
   void simRankSameNodeReturnsSimilarityOne() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Item {name:'A'}), (b:Item {name:'A'}) "
-            + "CALL algo.simRank(a, b) YIELD similarity "
-            + "RETURN similarity");
+        """
+        MATCH (a:Item {name:'A'}), (b:Item {name:'A'}) \
+        CALL algo.simRank(a, b) YIELD similarity \
+        RETURN similarity""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -78,9 +79,10 @@ class AlgoSimRankTest {
   @Test
   void simRankReturnsSingleRow() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (b:Item {name:'B'}), (c:Item {name:'C'}) "
-            + "CALL algo.simRank(b, c) YIELD similarity, nodeAId, nodeBId "
-            + "RETURN similarity, nodeAId, nodeBId");
+        """
+        MATCH (b:Item {name:'B'}), (c:Item {name:'C'}) \
+        CALL algo.simRank(b, c) YIELD similarity, nodeAId, nodeBId \
+        RETURN similarity, nodeAId, nodeBId""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -95,9 +97,10 @@ class AlgoSimRankTest {
   @Test
   void simRankSimilarityBetweenZeroAndOne() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (b:Item {name:'B'}), (c:Item {name:'C'}) "
-            + "CALL algo.simRank(b, c, 'LINK', 0.8, 5) YIELD similarity "
-            + "RETURN similarity");
+        """
+        MATCH (b:Item {name:'B'}), (c:Item {name:'C'}) \
+        CALL algo.simRank(b, c, 'LINK', 0.8, 5) YIELD similarity \
+        RETURN similarity""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -111,9 +114,10 @@ class AlgoSimRankTest {
   void simRankNodesWithSharedPredecessorAreSimilar() {
     // B and C both pointed to by A — after iterations they should have sim > 0
     final ResultSet rs = database.query("opencypher",
-        "MATCH (b:Item {name:'B'}), (c:Item {name:'C'}) "
-            + "CALL algo.simRank(b, c, 'LINK', 0.8, 5) YIELD similarity "
-            + "RETURN similarity");
+        """
+        MATCH (b:Item {name:'B'}), (c:Item {name:'C'}) \
+        CALL algo.simRank(b, c, 'LINK', 0.8, 5) YIELD similarity \
+        RETURN similarity""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();

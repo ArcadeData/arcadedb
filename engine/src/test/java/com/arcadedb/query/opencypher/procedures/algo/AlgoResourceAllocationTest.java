@@ -72,10 +72,11 @@ class AlgoResourceAllocationTest {
   @Test
   void resourceAllocationResultHasCorrectFields() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.resourceAllocation(a, null, 'BOTH', 0.0) " +
-            "YIELD node1, node2, score " +
-            "RETURN node1, node2, score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.resourceAllocation(a, null, 'BOTH', 0.0) \
+        YIELD node1, node2, score \
+        RETURN node1, node2, score""");
 
     while (rs.hasNext()) {
       final Result result = rs.next();
@@ -91,10 +92,11 @@ class AlgoResourceAllocationTest {
   @Test
   void resourceAllocationFindsSimilarNode() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.resourceAllocation(a, null, 'BOTH', 0.0) " +
-            "YIELD node1, node2, score " +
-            "RETURN node2.name AS name, score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.resourceAllocation(a, null, 'BOTH', 0.0) \
+        YIELD node1, node2, score \
+        RETURN node2.name AS name, score""");
 
     boolean foundE = false;
     while (rs.hasNext()) {
@@ -114,10 +116,11 @@ class AlgoResourceAllocationTest {
   void resourceAllocationCutoffFilters() {
     // With a very high cutoff, no results should be returned
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.resourceAllocation(a, null, 'BOTH', 100.0) " +
-            "YIELD node1, node2, score " +
-            "RETURN node1, node2, score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.resourceAllocation(a, null, 'BOTH', 100.0) \
+        YIELD node1, node2, score \
+        RETURN node1, node2, score""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -129,10 +132,11 @@ class AlgoResourceAllocationTest {
   @Test
   void resourceAllocationScoreIsPositive() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.resourceAllocation(a, null, 'BOTH', 0.0) " +
-            "YIELD node1, node2, score " +
-            "RETURN score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.resourceAllocation(a, null, 'BOTH', 0.0) \
+        YIELD node1, node2, score \
+        RETURN score""");
 
     while (rs.hasNext()) {
       final Object scoreObj = rs.next().getProperty("score");

@@ -363,8 +363,9 @@ public class OpenCypherMergeTest {
 
       database.transaction(() -> {
         database.command("opencypher",
-            "MATCH (p:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) "
-                + "MERGE (p)-[r:WORKS_AT {since: 2020}]->(c)");
+            """
+            MATCH (p:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) \
+            MERGE (p)-[r:WORKS_AT {since: 2020}]->(c)""");
       });
 
       final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
@@ -380,9 +381,10 @@ public class OpenCypherMergeTest {
     void unboundLabelOnlyEndpointCreatesNewNodeWithMultipleExistingSameLabel() {
       database.transaction(() -> {
         database.command("opencypher",
-            "CREATE (:Person {name: 'Alice'}), "
-                + "(:Company {name: 'TechCorp', industry: 'Technology'}), "
-                + "(:Company {name: 'DataInc', industry: 'Analytics'})");
+            """
+            CREATE (:Person {name: 'Alice'}), \
+            (:Company {name: 'TechCorp', industry: 'Technology'}), \
+            (:Company {name: 'DataInc', industry: 'Analytics'})""");
       });
 
       database.transaction(() -> {
@@ -460,15 +462,17 @@ public class OpenCypherMergeTest {
       // Setup: alice->dave->carol exists; no alice->bob->carol path yet
       database.transaction(() -> {
         database.command("opencypher",
-            "CREATE (alice:Person {name: 'Alice'})-[:KNOWS]->(dave:Person {name: 'Dave'})-[:KNOWS]->(carol:Person {name: 'Carol'}),"
-                + " (bob:Person {name: 'Bob'})");
+            """
+            CREATE (alice:Person {name: 'Alice'})-[:KNOWS]->(dave:Person {name: 'Dave'})-[:KNOWS]->(carol:Person {name: 'Carol'}),\
+             (bob:Person {name: 'Bob'})""");
       });
 
       // MATCH binds alice and bob; MERGE the path through bob specifically
       database.transaction(() -> {
         database.command("opencypher",
-            "MATCH (alice:Person {name: 'Alice'}), (bob:Person {name: 'Bob'}) "
-                + "MERGE (alice)-[:KNOWS]->(bob)-[:KNOWS]->(carol:Person {name: 'Carol'})");
+            """
+            MATCH (alice:Person {name: 'Alice'}), (bob:Person {name: 'Bob'}) \
+            MERGE (alice)-[:KNOWS]->(bob)-[:KNOWS]->(carol:Person {name: 'Carol'})""");
       });
 
       // alice->bob edge must have been created (the dave path must NOT be accepted as a match for bob)

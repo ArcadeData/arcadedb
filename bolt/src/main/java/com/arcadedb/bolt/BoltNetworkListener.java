@@ -114,8 +114,9 @@ public class BoltNetworkListener extends Thread {
               connectionSocket = sslHelper.wrapWithTls(socket, header);
             } else if (sslHelper.getTlsMode() == BoltSslHelper.TlsMode.REQUIRED) {
               LogManager.instance().log(this, Level.WARNING,
-                  "BOLT rejecting non-TLS connection from %s (TLS is REQUIRED). "
-                      + "Configure the client to use bolt+s:// or bolt+ssc://",
+                  """
+                  BOLT rejecting non-TLS connection from %s (TLS is REQUIRED). \
+                  Configure the client to use bolt+s:// or bolt+ssc://""",
                   socket.getRemoteSocketAddress());
               socket.close();
               continue;

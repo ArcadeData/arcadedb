@@ -76,10 +76,11 @@ class AlgoPreferentialAttachmentTest {
   @Test
   void preferentialAttachmentResultHasCorrectFields() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.preferentialAttachment(a, null, 'BOTH') " +
-            "YIELD node1, node2, score " +
-            "RETURN node1, node2, score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.preferentialAttachment(a, null, 'BOTH') \
+        YIELD node1, node2, score \
+        RETURN node1, node2, score""");
 
     while (rs.hasNext()) {
       final Result result = rs.next();
@@ -95,10 +96,11 @@ class AlgoPreferentialAttachmentTest {
   @Test
   void preferentialAttachmentScoresArePositive() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.preferentialAttachment(a, null, 'BOTH') " +
-            "YIELD node1, node2, score " +
-            "RETURN score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.preferentialAttachment(a, null, 'BOTH') \
+        YIELD node1, node2, score \
+        RETURN score""");
 
     while (rs.hasNext()) {
       final Object scoreObj = rs.next().getProperty("score");
@@ -110,10 +112,11 @@ class AlgoPreferentialAttachmentTest {
   void preferentialAttachmentHighDegreeNodeScoresHigher() {
     // E has higher degree than F, so PA(A,E) > PA(A,F)
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.preferentialAttachment(a, null, 'BOTH') " +
-            "YIELD node1, node2, score " +
-            "RETURN node2.name AS name, score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.preferentialAttachment(a, null, 'BOTH') \
+        YIELD node1, node2, score \
+        RETURN node2.name AS name, score""");
 
     long scoreE = 0, scoreF = 0;
     while (rs.hasNext()) {
@@ -135,10 +138,11 @@ class AlgoPreferentialAttachmentTest {
     database.transaction(() -> database.newVertex("Node").set("name", "G").save());
 
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Node {name: 'A'}) " +
-            "CALL algo.preferentialAttachment(a, null, 'BOTH') " +
-            "YIELD node1, node2, score " +
-            "RETURN node2.name AS name, score");
+        """
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.preferentialAttachment(a, null, 'BOTH') \
+        YIELD node1, node2, score \
+        RETURN node2.name AS name, score""");
 
     final List<String> names = new ArrayList<>();
     while (rs.hasNext()) {

@@ -331,10 +331,11 @@ class OpenCypherVectorFunctionsComprehensiveTest {
   void vectorSimilarityAndDistanceComparison() {
     // For identical vectors, similarity should be 1 and distance should be 0
     final ResultSet result = database.command("opencypher",
-        "WITH vector([1, 2, 3], 3, FLOAT32) AS v " +
-            "RETURN vector.similarity.cosine(v, v) AS cosSim, " +
-            "       vector.similarity.euclidean(v, v) AS eucSim, " +
-            "       vector_distance(v, v, EUCLIDEAN) AS eucDist");
+        """
+        WITH vector([1, 2, 3], 3, FLOAT32) AS v \
+        RETURN vector.similarity.cosine(v, v) AS cosSim, \
+               vector.similarity.euclidean(v, v) AS eucSim, \
+               vector_distance(v, v, EUCLIDEAN) AS eucDist""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     final Number cosSim = (Number) row.getProperty("cosSim");
@@ -348,8 +349,9 @@ class OpenCypherVectorFunctionsComprehensiveTest {
   @Test
   void vectorDimensionAndSizeConsistency() {
     final ResultSet result = database.command("opencypher",
-        "WITH vector([1, 2, 3, 4, 5], 5, INTEGER) AS v " +
-            "RETURN vector_dimension_count(v) AS dimCount, size(v) AS sizeResult");
+        """
+        WITH vector([1, 2, 3, 4, 5], 5, INTEGER) AS v \
+        RETURN vector_dimension_count(v) AS dimCount, size(v) AS sizeResult""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     assertThat(((Number) row.getProperty("dimCount")).intValue()).isEqualTo(5);
@@ -360,9 +362,10 @@ class OpenCypherVectorFunctionsComprehensiveTest {
   void vectorNormAndDistanceRelationship() {
     // For a vector, its norm should equal the distance from origin
     final ResultSet result = database.command("opencypher",
-        "WITH vector([3, 4], 2, FLOAT32) AS v " +
-            "RETURN vector_norm(v, EUCLIDEAN) AS norm, " +
-            "       vector_distance(v, vector([0, 0], 2, FLOAT32), EUCLIDEAN) AS distFromOrigin");
+        """
+        WITH vector([3, 4], 2, FLOAT32) AS v \
+        RETURN vector_norm(v, EUCLIDEAN) AS norm, \
+               vector_distance(v, vector([0, 0], 2, FLOAT32), EUCLIDEAN) AS distFromOrigin""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     final Number norm = (Number) row.getProperty("norm");
@@ -381,11 +384,12 @@ class OpenCypherVectorFunctionsComprehensiveTest {
         "CREATE (:Node {id: 3, vector: vector([2.0, 8.0, 3.0], 3, FLOAT32)})");
 
     final ResultSet result = database.command("opencypher",
-        "MATCH (node:Node) " +
-            "WITH node, vector.similarity.euclidean([4.0, 5.0, 6.0], node.vector) AS score " +
-            "RETURN node.id AS id, score " +
-            "ORDER BY score DESC " +
-            "LIMIT 2");
+        """
+        MATCH (node:Node) \
+        WITH node, vector.similarity.euclidean([4.0, 5.0, 6.0], node.vector) AS score \
+        RETURN node.id AS id, score \
+        ORDER BY score DESC \
+        LIMIT 2""");
 
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row1 = result.next();
@@ -402,10 +406,11 @@ class OpenCypherVectorFunctionsComprehensiveTest {
   @Test
   void vectorMultipleDistanceMetrics() {
     final ResultSet result = database.command("opencypher",
-        "WITH vector([1, 2, 3], 3, FLOAT32) AS v1, vector([4, 5, 6], 3, FLOAT32) AS v2 " +
-            "RETURN vector_distance(v1, v2, EUCLIDEAN) AS euclidean, " +
-            "       vector_distance(v1, v2, MANHATTAN) AS manhattan, " +
-            "       vector_distance(v1, v2, COSINE) AS cosine");
+        """
+        WITH vector([1, 2, 3], 3, FLOAT32) AS v1, vector([4, 5, 6], 3, FLOAT32) AS v2 \
+        RETURN vector_distance(v1, v2, EUCLIDEAN) AS euclidean, \
+               vector_distance(v1, v2, MANHATTAN) AS manhattan, \
+               vector_distance(v1, v2, COSINE) AS cosine""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     Assertions.assertThat(row.getProperty("euclidean") != null).isTrue();

@@ -70,8 +70,9 @@ class AlgoNode2VecTest {
   @Test
   void node2vecReturnsEmbeddingForEachNode() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.node2vec({embeddingDimension: 16, walkLength: 5, walksPerNode: 2, seed: 42}) " +
-            "YIELD node, embedding RETURN node, embedding");
+        """
+        CALL algo.node2vec({embeddingDimension: 16, walkLength: 5, walksPerNode: 2, seed: 42}) \
+        YIELD node, embedding RETURN node, embedding""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -88,8 +89,9 @@ class AlgoNode2VecTest {
   @Test
   void node2vecEmbeddingValuesAreFinite() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.node2vec({embeddingDimension: 8, walkLength: 4, walksPerNode: 2, seed: 1}) " +
-            "YIELD embedding RETURN embedding");
+        """
+        CALL algo.node2vec({embeddingDimension: 8, walkLength: 4, walksPerNode: 2, seed: 1}) \
+        YIELD embedding RETURN embedding""");
 
     while (rs.hasNext()) {
       final List<?> emb = (List<?>) rs.next().getProperty("embedding");

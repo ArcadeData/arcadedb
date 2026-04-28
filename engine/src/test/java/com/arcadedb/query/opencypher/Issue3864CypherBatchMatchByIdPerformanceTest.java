@@ -114,10 +114,11 @@ class Issue3864CypherBatchMatchByIdPerformanceTest extends TestHelper {
     final long start = System.currentTimeMillis();
     database.transaction(() -> {
       database.command("opencypher",
-          "UNWIND $batch AS BatchEntry "
-              + "MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID "
-              + "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) "
-              + "CREATE (p)-[:embb]->(b)",
+          """
+          UNWIND $batch AS BatchEntry \
+          MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+          CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+          CREATE (p)-[:embb]->(b)""",
           params);
     });
     final long elapsed = System.currentTimeMillis() - start;
@@ -172,10 +173,11 @@ class Issue3864CypherBatchMatchByIdPerformanceTest extends TestHelper {
 
     database.transaction(() -> {
       database.command("opencypher",
-          "UNWIND $batch AS BatchEntry "
-              + "MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID "
-              + "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) "
-              + "CREATE (p)-[:embb]->(b)",
+          """
+          UNWIND $batch AS BatchEntry \
+          MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+          CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+          CREATE (p)-[:embb]->(b)""",
           params);
     });
 
@@ -220,10 +222,11 @@ class Issue3864CypherBatchMatchByIdPerformanceTest extends TestHelper {
 
     database.transaction(() -> {
       database.command("opencypher",
-          "UNWIND $batch AS BatchEntry "
-              + "MATCH (b:CHUNK) WHERE elementId(b) = BatchEntry.destRID "
-              + "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) "
-              + "CREATE (p)-[:embb]->(b)",
+          """
+          UNWIND $batch AS BatchEntry \
+          MATCH (b:CHUNK) WHERE elementId(b) = BatchEntry.destRID \
+          CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+          CREATE (p)-[:embb]->(b)""",
           Map.of("batch", batch));
     });
 

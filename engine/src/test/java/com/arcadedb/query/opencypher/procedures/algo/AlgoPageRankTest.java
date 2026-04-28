@@ -141,8 +141,9 @@ class AlgoPageRankTest {
     // Step 1: Run PageRank without GAV → OLTP path
     final Map<String, Double> oltpScores = new HashMap<>();
     try (final ResultSet rs = database.query("opencypher",
-        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0001}) " +
-            "YIELD node, score RETURN node.name AS name, score")) {
+        """
+        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0001}) \
+        YIELD node, score RETURN node.name AS name, score""")) {
       while (rs.hasNext()) {
         final Result r = rs.next();
         oltpScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
@@ -161,8 +162,9 @@ class AlgoPageRankTest {
     // Step 3: Run PageRank with GAV → CSR path
     final Map<String, Double> csrScores = new HashMap<>();
     try (final ResultSet rs = database.query("opencypher",
-        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0001}) " +
-            "YIELD node, score RETURN node.name AS name, score")) {
+        """
+        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0001}) \
+        YIELD node, score RETURN node.name AS name, score""")) {
       while (rs.hasNext()) {
         final Result r = rs.next();
         csrScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
@@ -186,8 +188,9 @@ class AlgoPageRankTest {
     // Step 1: Run PageRank with direction=BOTH without GAV → OLTP path
     final Map<String, Double> oltpScores = new HashMap<>();
     try (final ResultSet rs = database.query("opencypher",
-        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'BOTH'}) " +
-            "YIELD node, score RETURN node.name AS name, score")) {
+        """
+        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'BOTH'}) \
+        YIELD node, score RETURN node.name AS name, score""")) {
       while (rs.hasNext()) {
         final Result r = rs.next();
         oltpScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
@@ -206,8 +209,9 @@ class AlgoPageRankTest {
     // Step 3: Run PageRank with direction=BOTH with GAV → CSR path
     final Map<String, Double> csrScores = new HashMap<>();
     try (final ResultSet rs = database.query("opencypher",
-        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'BOTH'}) " +
-            "YIELD node, score RETURN node.name AS name, score")) {
+        """
+        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'BOTH'}) \
+        YIELD node, score RETURN node.name AS name, score""")) {
       while (rs.hasNext()) {
         final Result r = rs.next();
         csrScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());

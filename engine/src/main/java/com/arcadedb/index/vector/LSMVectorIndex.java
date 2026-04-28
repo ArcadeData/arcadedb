@@ -920,8 +920,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // so rebuildGraphBeforeSearch() never triggers. Search can only find nodes in the stale graph.
           if (graphSize < rebuiltOrdinalToVectorId.length) {
             LogManager.instance().log(this, Level.INFO,
-                "Persisted graph is stale for index %s: graph has %d nodes but %d active vectors exist - "
-                    + "rebuilding from scratch (fixes issue #3722: missing vectors after database restart)",
+                """
+                Persisted graph is stale for index %s: graph has %d nodes but %d active vectors exist - \
+                rebuilding from scratch (fixes issue #3722: missing vectors after database restart)""",
                 indexName, graphSize, rebuiltOrdinalToVectorId.length);
             // Don't use the stale graph — fall through to buildGraphFromScratch() below
           } else {
@@ -1150,8 +1151,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final long docCount = database.countBucket(bucket.getName());
         if (ridToLatestVector.size() < docCount * 8 / 10) {
           LogManager.instance().log(this, Level.WARNING,
-              "Page-parsed vectors (%d) significantly less than document count (%d) for index %s. "
-                  + "Falling back to document scan to recover missing vectors.",
+              """
+              Page-parsed vectors (%d) significantly less than document count (%d) for index %s. \
+              Falling back to document scan to recover missing vectors.""",
               ridToLatestVector.size(), docCount, indexName);
 
           // Scan all documents in the associated bucket to find vectors missing from the page-parsed set
@@ -2949,8 +2951,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (results.size() < expectedResults && results.size() < availableVectors * 8 / 10) {
           LogManager.instance()
               .log(this, Level.WARNING,
-                  "Graph search returned only %d results (expected %d, available %d) for index %s - "
-                      + "falling back to brute-force scan (graph may need rebuilding)",
+                  """
+                  Graph search returned only %d results (expected %d, available %d) for index %s - \
+                  falling back to brute-force scan (graph may need rebuilding)""",
                   results.size(), expectedResults, availableVectors, indexName);
           bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors);
         }

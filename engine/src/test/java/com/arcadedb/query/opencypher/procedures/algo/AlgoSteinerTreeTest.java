@@ -74,9 +74,10 @@ class AlgoSteinerTreeTest {
   @Test
   void steinerTreeConnectsTerminals() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name:'A'}), (c:City {name:'C'}), (e:City {name:'E'}) " +
-            "CALL algo.steinerTree([a, c, e]) " +
-            "YIELD source, target, weight RETURN source, target, weight");
+        """
+        MATCH (a:City {name:'A'}), (c:City {name:'C'}), (e:City {name:'E'}) \
+        CALL algo.steinerTree([a, c, e]) \
+        YIELD source, target, weight RETURN source, target, weight""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -93,9 +94,10 @@ class AlgoSteinerTreeTest {
   @Test
   void steinerTreeTotalWeightIsPositive() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name:'A'}), (e:City {name:'E'}) " +
-            "CALL algo.steinerTree([a, e]) " +
-            "YIELD totalWeight RETURN totalWeight");
+        """
+        MATCH (a:City {name:'A'}), (e:City {name:'E'}) \
+        CALL algo.steinerTree([a, e]) \
+        YIELD totalWeight RETURN totalWeight""");
 
     assertThat(rs.hasNext()).isTrue();
     final double tw = ((Number) rs.next().getProperty("totalWeight")).doubleValue();
@@ -106,9 +108,10 @@ class AlgoSteinerTreeTest {
   void steinerTreeWithTwoTerminals() {
     // Two terminals: A and C — should find path A-B-C (2 edges)
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name:'A'}), (c:City {name:'C'}) " +
-            "CALL algo.steinerTree([a, c]) " +
-            "YIELD source, target RETURN source, target");
+        """
+        MATCH (a:City {name:'A'}), (c:City {name:'C'}) \
+        CALL algo.steinerTree([a, c]) \
+        YIELD source, target RETURN source, target""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())

@@ -61,9 +61,10 @@ class AlgoSameCommunityTest {
   @Test
   void sameCommunityReturnsOneForSameCommunity() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) " +
-            "CALL algo.sameCommunity(a, b, 'community') " +
-            "YIELD node1, node2, coefficient RETURN coefficient");
+        """
+        MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) \
+        CALL algo.sameCommunity(a, b, 'community') \
+        YIELD node1, node2, coefficient RETURN coefficient""");
 
     assertThat(rs.hasNext()).isTrue();
     final double coeff = ((Number) rs.next().getProperty("coefficient")).doubleValue();
@@ -73,9 +74,10 @@ class AlgoSameCommunityTest {
   @Test
   void sameCommunityReturnsZeroForDifferentCommunity() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}), (c:Person {name: 'Carol'}) " +
-            "CALL algo.sameCommunity(a, c, 'community') " +
-            "YIELD node1, node2, coefficient RETURN coefficient");
+        """
+        MATCH (a:Person {name: 'Alice'}), (c:Person {name: 'Carol'}) \
+        CALL algo.sameCommunity(a, c, 'community') \
+        YIELD node1, node2, coefficient RETURN coefficient""");
 
     assertThat(rs.hasNext()).isTrue();
     final double coeff = ((Number) rs.next().getProperty("coefficient")).doubleValue();
@@ -85,9 +87,10 @@ class AlgoSameCommunityTest {
   @Test
   void sameCommunityReturnsBothNodes() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) " +
-            "CALL algo.sameCommunity(a, b, 'community') " +
-            "YIELD node1, node2, coefficient RETURN node1, node2");
+        """
+        MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) \
+        CALL algo.sameCommunity(a, b, 'community') \
+        YIELD node1, node2, coefficient RETURN node1, node2""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result r = rs.next();

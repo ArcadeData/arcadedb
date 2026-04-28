@@ -276,8 +276,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Unexpected errors (NPE, ClassCastException, OOM, etc.) indicate a bug that could cause
       // state divergence if silently swallowed. Crash the server so the node recovers via snapshot.
       LogManager.instance().log(this, Level.SEVERE,
-          "CRITICAL: Unexpected error applying Raft log entry at index %d. "
-              + "Shutting down to prevent state divergence.", e, index);
+          """
+          CRITICAL: Unexpected error applying Raft log entry at index %d. \
+          Shutting down to prevent state divergence.""", e, index);
       final Thread stopThread = new Thread(() -> {
         try {
           if (server != null)

@@ -95,8 +95,9 @@ class AlgoLocalClusteringCoefficientTest {
   @Test
   void lccForTriangleIsOne() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.localClusteringCoefficient() YIELD node, localClusteringCoefficient " +
-            "RETURN node.name AS name, localClusteringCoefficient ORDER BY name");
+        """
+        CALL algo.localClusteringCoefficient() YIELD node, localClusteringCoefficient \
+        RETURN node.name AS name, localClusteringCoefficient ORDER BY name""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())

@@ -945,7 +945,7 @@ public class OpenCypherWhereClauseTest {
     }
 
     @Test
-    void testAnyPredicateInWhere() {
+    void anyPredicateInWhere() {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Person) WHERE any(x IN ['Alice'] WHERE x = p.name) RETURN p.name AS name ORDER BY name");
       final List<String> names = new ArrayList<>();
@@ -955,7 +955,7 @@ public class OpenCypherWhereClauseTest {
     }
 
     @Test
-    void testNotAnyPredicateInWhere() {
+    void notAnyPredicateInWhere() {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Person) WHERE NOT any(x IN ['Alice'] WHERE x = p.name) RETURN p.name AS name ORDER BY name");
       final List<String> names = new ArrayList<>();
@@ -965,7 +965,7 @@ public class OpenCypherWhereClauseTest {
     }
 
     @Test
-    void testAllPredicateInWhere() {
+    void allPredicateInWhere() {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Person) WHERE all(x IN ['Alice', 'Bob'] WHERE x <> p.name) RETURN p.name AS name ORDER BY name");
       final List<String> names = new ArrayList<>();
@@ -975,7 +975,7 @@ public class OpenCypherWhereClauseTest {
     }
 
     @Test
-    void testNonePredicateInWhere() {
+    void nonePredicateInWhere() {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Person) WHERE none(x IN ['Alice'] WHERE x = p.name) RETURN p.name AS name ORDER BY name");
       final List<String> names = new ArrayList<>();
@@ -985,7 +985,7 @@ public class OpenCypherWhereClauseTest {
     }
 
     @Test
-    void testSinglePredicateInWhere() {
+    void singlePredicateInWhere() {
       final ResultSet rs = database.query("opencypher",
           "MATCH (p:Person) WHERE single(x IN ['Alice'] WHERE x = p.name) RETURN p.name AS name ORDER BY name");
       final List<String> names = new ArrayList<>();

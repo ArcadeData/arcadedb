@@ -67,10 +67,11 @@ class CypherCollectSubqueryTest {
   @Test
   void collectCorrelatedFriendNames() {
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person) "
-            + "RETURN p.name AS person, "
-            + "       COLLECT { MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name } AS friendNames "
-            + "ORDER BY person");
+        """
+        MATCH (p:Person) \
+        RETURN p.name AS person, \
+               COLLECT { MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name } AS friendNames \
+        ORDER BY person""");
 
     final List<String> names = new ArrayList<>();
     while (results.hasNext()) {
@@ -99,8 +100,9 @@ class CypherCollectSubqueryTest {
   @Test
   void collectAliceFriends() {
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person {name:'Alice'}) "
-            + "RETURN COLLECT { MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name } AS names");
+        """
+        MATCH (p:Person {name:'Alice'}) \
+        RETURN COLLECT { MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name } AS names""");
 
     assertThat(results.hasNext()).isTrue();
     final Result r = results.next();
@@ -114,8 +116,9 @@ class CypherCollectSubqueryTest {
   @Test
   void collectEmptyResult() {
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person {name:'Charlie'}) "
-            + "RETURN COLLECT { MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name } AS names");
+        """
+        MATCH (p:Person {name:'Charlie'}) \
+        RETURN COLLECT { MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name } AS names""");
 
     assertThat(results.hasNext()).isTrue();
     final Result r = results.next();
@@ -138,8 +141,9 @@ class CypherCollectSubqueryTest {
     });
 
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person {name:'Alice'}) "
-            + "RETURN COLLECT { MATCH (p)-[:KNOWS]->(f:Person) WHERE f.name <> 'Bob' RETURN f.name } AS names");
+        """
+        MATCH (p:Person {name:'Alice'}) \
+        RETURN COLLECT { MATCH (p)-[:KNOWS]->(f:Person) WHERE f.name <> 'Bob' RETURN f.name } AS names""");
 
     assertThat(results.hasNext()).isTrue();
     final Result r = results.next();

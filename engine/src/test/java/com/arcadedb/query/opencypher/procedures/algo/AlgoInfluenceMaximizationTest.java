@@ -73,8 +73,9 @@ class AlgoInfluenceMaximizationTest {
   @Test
   void influenceMaximizationReturnsKSeeds() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.influenceMaximization(2) YIELD nodeId, rank, marginalGain "
-            + "RETURN nodeId, rank, marginalGain ORDER BY rank ASC");
+        """
+        CALL algo.influenceMaximization(2) YIELD nodeId, rank, marginalGain \
+        RETURN nodeId, rank, marginalGain ORDER BY rank ASC""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -86,8 +87,9 @@ class AlgoInfluenceMaximizationTest {
   @Test
   void influenceMaximizationRankStartsAtOne() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.influenceMaximization(1) YIELD nodeId, rank, marginalGain "
-            + "RETURN nodeId, rank, marginalGain");
+        """
+        CALL algo.influenceMaximization(1) YIELD nodeId, rank, marginalGain \
+        RETURN nodeId, rank, marginalGain""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result r = rs.next();
@@ -98,8 +100,9 @@ class AlgoInfluenceMaximizationTest {
   @Test
   void influenceMaximizationRanksAreOrdered() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.influenceMaximization(3) YIELD nodeId, rank, marginalGain "
-            + "RETURN nodeId, rank, marginalGain ORDER BY rank ASC");
+        """
+        CALL algo.influenceMaximization(3) YIELD nodeId, rank, marginalGain \
+        RETURN nodeId, rank, marginalGain ORDER BY rank ASC""");
 
     int prevRank = 0;
     while (rs.hasNext()) {
@@ -114,8 +117,9 @@ class AlgoInfluenceMaximizationTest {
   @Test
   void influenceMaximizationMarginalGainPositive() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.influenceMaximization(1) YIELD nodeId, rank, marginalGain "
-            + "RETURN nodeId, rank, marginalGain");
+        """
+        CALL algo.influenceMaximization(1) YIELD nodeId, rank, marginalGain \
+        RETURN nodeId, rank, marginalGain""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result r = rs.next();
@@ -127,8 +131,9 @@ class AlgoInfluenceMaximizationTest {
   @Test
   void influenceMaximizationWithRelType() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.influenceMaximization(2, 'FOLLOWS', 50, 0.2) YIELD nodeId, rank, marginalGain "
-            + "RETURN nodeId, rank, marginalGain");
+        """
+        CALL algo.influenceMaximization(2, 'FOLLOWS', 50, 0.2) YIELD nodeId, rank, marginalGain \
+        RETURN nodeId, rank, marginalGain""");
 
     int count = 0;
     while (rs.hasNext()) {
@@ -141,8 +146,9 @@ class AlgoInfluenceMaximizationTest {
   @Test
   void influenceMaximizationKGreaterThanNodesReturnsAllNodes() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.influenceMaximization(10) YIELD nodeId, rank, marginalGain "
-            + "RETURN nodeId, rank, marginalGain");
+        """
+        CALL algo.influenceMaximization(10) YIELD nodeId, rank, marginalGain \
+        RETURN nodeId, rank, marginalGain""");
 
     int count = 0;
     while (rs.hasNext()) {

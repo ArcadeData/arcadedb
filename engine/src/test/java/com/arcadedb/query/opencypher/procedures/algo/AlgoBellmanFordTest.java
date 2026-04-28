@@ -86,10 +86,11 @@ class AlgoBellmanFordTest {
   @Test
   void bellmanFordFindsShortestPath() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name: 'A'}), (d:City {name: 'D'}) " +
-            "CALL algo.bellmanford(a, d, 'ROAD', 'distance') " +
-            "YIELD path, weight, negativeCycle " +
-            "RETURN path, weight, negativeCycle");
+        """
+        MATCH (a:City {name: 'A'}), (d:City {name: 'D'}) \
+        CALL algo.bellmanford(a, d, 'ROAD', 'distance') \
+        YIELD path, weight, negativeCycle \
+        RETURN path, weight, negativeCycle""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -114,10 +115,11 @@ class AlgoBellmanFordTest {
     });
 
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name: 'A'}), (d:City {name: 'D'}) " +
-            "CALL algo.bellmanford(a, d, 'ROAD', 'distance') " +
-            "YIELD path, weight, negativeCycle " +
-            "RETURN path, weight, negativeCycle");
+        """
+        MATCH (a:City {name: 'A'}), (d:City {name: 'D'}) \
+        CALL algo.bellmanford(a, d, 'ROAD', 'distance') \
+        YIELD path, weight, negativeCycle \
+        RETURN path, weight, negativeCycle""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -131,10 +133,11 @@ class AlgoBellmanFordTest {
   @Test
   void bellmanFordNoPathReturnsEmpty() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (d:City {name: 'D'}), (a:City {name: 'A'}) " +
-            "CALL algo.bellmanford(d, a, 'ROAD', 'distance') " +
-            "YIELD path, weight, negativeCycle " +
-            "RETURN path, weight, negativeCycle");
+        """
+        MATCH (d:City {name: 'D'}), (a:City {name: 'A'}) \
+        CALL algo.bellmanford(d, a, 'ROAD', 'distance') \
+        YIELD path, weight, negativeCycle \
+        RETURN path, weight, negativeCycle""");
 
     // D has no outgoing edges so no path from D to A
     assertThat(rs.hasNext()).isFalse();
@@ -143,10 +146,11 @@ class AlgoBellmanFordTest {
   @Test
   void bellmanFordSameSourceAndDestination() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name: 'A'}) " +
-            "CALL algo.bellmanford(a, a, 'ROAD', 'distance') " +
-            "YIELD path, weight, negativeCycle " +
-            "RETURN path, weight, negativeCycle");
+        """
+        MATCH (a:City {name: 'A'}) \
+        CALL algo.bellmanford(a, a, 'ROAD', 'distance') \
+        YIELD path, weight, negativeCycle \
+        RETURN path, weight, negativeCycle""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -164,10 +168,11 @@ class AlgoBellmanFordTest {
     });
 
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name: 'A'}), (d:City {name: 'D'}) " +
-            "CALL algo.bellmanford(a, d, 'ROAD', 'distance') " +
-            "YIELD path, weight, negativeCycle " +
-            "RETURN path, weight, negativeCycle");
+        """
+        MATCH (a:City {name: 'A'}), (d:City {name: 'D'}) \
+        CALL algo.bellmanford(a, d, 'ROAD', 'distance') \
+        YIELD path, weight, negativeCycle \
+        RETURN path, weight, negativeCycle""");
 
     if (rs.hasNext()) {
       final Result result = rs.next();
@@ -181,10 +186,11 @@ class AlgoBellmanFordTest {
   @Test
   void bellmanFordWithRelTypeFilter() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:City {name: 'A'}), (d:City {name: 'D'}) " +
-            "CALL algo.bellmanford(a, d, 'ROAD', 'distance') " +
-            "YIELD path, weight " +
-            "RETURN weight");
+        """
+        MATCH (a:City {name: 'A'}), (d:City {name: 'D'}) \
+        CALL algo.bellmanford(a, d, 'ROAD', 'distance') \
+        YIELD path, weight \
+        RETURN weight""");
 
     assertThat(rs.hasNext()).isTrue();
     final double weight = ((Number) rs.next().getProperty("weight")).doubleValue();

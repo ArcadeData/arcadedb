@@ -52,19 +52,20 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
     database.getSchema().createEdgeType("KNOWS");
 
     database.command("opencypher",
-        "CREATE " +
-            "(keanu:Person {name: 'Keanu Reeves', age: 58}), " +
-            "(liam:Person {name: 'Liam Neeson', age: 70}), " +
-            "(carrie:Person {name: 'Carrie Anne Moss', age: 55}), " +
-            "(guy:Person {name: 'Guy Pearce', age: 55}), " +
-            "(kathryn:Person {name: 'Kathryn Bigelow', age: 71}), " +
-            "(speed:Movie {title: 'Speed'}), " +
-            "(keanu)-[:ACTED_IN]->(speed), " +
-            "(keanu)-[:KNOWS]->(carrie), " +
-            "(keanu)-[:KNOWS]->(liam), " +
-            "(keanu)-[:KNOWS]->(kathryn), " +
-            "(carrie)-[:KNOWS]->(guy), " +
-            "(liam)-[:KNOWS]->(guy)");
+        """
+        CREATE \
+        (keanu:Person {name: 'Keanu Reeves', age: 58}), \
+        (liam:Person {name: 'Liam Neeson', age: 70}), \
+        (carrie:Person {name: 'Carrie Anne Moss', age: 55}), \
+        (guy:Person {name: 'Guy Pearce', age: 55}), \
+        (kathryn:Person {name: 'Kathryn Bigelow', age: 71}), \
+        (speed:Movie {title: 'Speed'}), \
+        (keanu)-[:ACTED_IN]->(speed), \
+        (keanu)-[:KNOWS]->(carrie), \
+        (keanu)-[:KNOWS]->(liam), \
+        (keanu)-[:KNOWS]->(kathryn), \
+        (carrie)-[:KNOWS]->(guy), \
+        (liam)-[:KNOWS]->(guy)""");
   }
 
   @AfterEach
@@ -331,8 +332,9 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
   @Test
   void stDevBasic() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] " +
-            "RETURN stDev(p.age) AS result");
+        """
+        MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] \
+        RETURN stDev(p.age) AS result""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     // Sample standard deviation for ages 58, 70, 55
     assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(7.937, within(0.01));
@@ -351,8 +353,9 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
   @Test
   void stDevPBasic() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] " +
-            "RETURN stDevP(p.age) AS result");
+        """
+        MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] \
+        RETURN stDevP(p.age) AS result""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     // Population standard deviation for ages 58, 70, 55
     assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(6.481, within(0.01));
@@ -397,8 +400,9 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
   @Test
   void aggregationsCombined() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person) " +
-            "RETURN count(p) AS count, avg(p.age) AS avgAge, min(p.age) AS minAge, max(p.age) AS maxAge, sum(p.age) AS sumAge");
+        """
+        MATCH (p:Person) \
+        RETURN count(p) AS count, avg(p.age) AS avgAge, min(p.age) AS minAge, max(p.age) AS maxAge, sum(p.age) AS sumAge""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     assertThat(((Number) row.getProperty("count")).intValue()).isEqualTo(5);
@@ -411,8 +415,9 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
   @Test
   void aggregationWithGrouping() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person {name: 'Keanu Reeves'})-[:KNOWS]-(f:Person) " +
-            "RETURN p.name AS person, count(f) AS friendCount, avg(f.age) AS avgFriendAge");
+        """
+        MATCH (p:Person {name: 'Keanu Reeves'})-[:KNOWS]-(f:Person) \
+        RETURN p.name AS person, count(f) AS friendCount, avg(f.age) AS avgFriendAge""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     assertThat((String) row.getProperty("person")).isEqualTo("Keanu Reeves");
@@ -423,8 +428,9 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
   @Test
   void collectAndCount() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person) " +
-            "RETURN collect(p.name) AS names, count(p.name) AS nameCount");
+        """
+        MATCH (p:Person) \
+        RETURN collect(p.name) AS names, count(p.name) AS nameCount""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     @SuppressWarnings("unchecked")
@@ -527,8 +533,9 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
   @Test
   void stdevSampBasic() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] " +
-            "RETURN stdev_samp(p.age) AS result");
+        """
+        MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] \
+        RETURN stdev_samp(p.age) AS result""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     // Sample standard deviation for ages 58, 70, 55
     assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(7.937, within(0.01));
@@ -547,8 +554,9 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
   @Test
   void stdevPopBasic() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] " +
-            "RETURN stdev_pop(p.age) AS result");
+        """
+        MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Liam Neeson', 'Carrie Anne Moss'] \
+        RETURN stdev_pop(p.age) AS result""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     // Population standard deviation for ages 58, 70, 55
     assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(6.481, within(0.01));

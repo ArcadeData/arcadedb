@@ -58,17 +58,18 @@ class OpenCypherScalarFunctionsComprehensiveTest {
     database.getSchema().createEdgeType("MARRIED");
 
     database.command("opencypher",
-        "CREATE " +
-            "(alice:Developer {name:'Alice', age: 38, eyes: 'Brown'}), " +
-            "(bob:Administrator {name: 'Bob', age: 25, eyes: 'Blue'}), " +
-            "(charlie:Administrator {name: 'Charlie', age: 53, eyes: 'Green'}), " +
-            "(daniel:Administrator {name: 'Daniel', age: 54, eyes: 'Brown'}), " +
-            "(eskil:Designer {name: 'Eskil', age: 41, eyes: 'blue', likedColors: ['Pink', 'Yellow', 'Black']}), " +
-            "(alice)-[:KNOWS]->(bob), " +
-            "(alice)-[:KNOWS]->(charlie), " +
-            "(bob)-[:KNOWS]->(daniel), " +
-            "(charlie)-[:KNOWS]->(daniel), " +
-            "(bob)-[:MARRIED]->(eskil)");
+        """
+        CREATE \
+        (alice:Developer {name:'Alice', age: 38, eyes: 'Brown'}), \
+        (bob:Administrator {name: 'Bob', age: 25, eyes: 'Blue'}), \
+        (charlie:Administrator {name: 'Charlie', age: 53, eyes: 'Green'}), \
+        (daniel:Administrator {name: 'Daniel', age: 54, eyes: 'Brown'}), \
+        (eskil:Designer {name: 'Eskil', age: 41, eyes: 'blue', likedColors: ['Pink', 'Yellow', 'Black']}), \
+        (alice)-[:KNOWS]->(bob), \
+        (alice)-[:KNOWS]->(charlie), \
+        (bob)-[:KNOWS]->(daniel), \
+        (charlie)-[:KNOWS]->(daniel), \
+        (bob)-[:MARRIED]->(eskil)""");
   }
 
   @AfterEach
@@ -387,8 +388,9 @@ class OpenCypherScalarFunctionsComprehensiveTest {
   @Test
   void nullIfWithCoalesce() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (a) WHERE a.name = 'Alice' " +
-            "RETURN a.name AS name, coalesce(nullIf(a.eyes, 'Brown'), 'Hazel') AS eyeColor");
+        """
+        MATCH (a) WHERE a.name = 'Alice' \
+        RETURN a.name AS name, coalesce(nullIf(a.eyes, 'Brown'), 'Hazel') AS eyeColor""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     assertThat((String) row.getProperty("name")).isEqualTo("Alice");
@@ -817,8 +819,9 @@ class OpenCypherScalarFunctionsComprehensiveTest {
   @Test
   void sizeAndCharLengthEquivalent() {
     final ResultSet result = database.command("opencypher",
-        "WITH 'Hello World' AS str " +
-            "RETURN size(str) AS sizeResult, char_length(str) AS charLenResult, character_length(str) AS charLenResult2");
+        """
+        WITH 'Hello World' AS str \
+        RETURN size(str) AS sizeResult, char_length(str) AS charLenResult, character_length(str) AS charLenResult2""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     final Integer sizeResult = ((Number) row.getProperty("sizeResult")).intValue();
@@ -831,8 +834,9 @@ class OpenCypherScalarFunctionsComprehensiveTest {
   @Test
   void headAndLastOnSameList() {
     final ResultSet result = database.command("opencypher",
-        "WITH ['first', 'middle', 'last'] AS list " +
-            "RETURN head(list) AS first, last(list) AS last, size(list) AS count");
+        """
+        WITH ['first', 'middle', 'last'] AS list \
+        RETURN head(list) AS first, last(list) AS last, size(list) AS count""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     assertThat((String) row.getProperty("first")).isEqualTo("first");
@@ -843,8 +847,9 @@ class OpenCypherScalarFunctionsComprehensiveTest {
   @Test
   void startAndEndNodeSameRelationship() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (x:Developer)-[r]->(y) " +
-            "RETURN startNode(r).name AS start, endNode(r).name AS end, type(r) AS relType LIMIT 1");
+        """
+        MATCH (x:Developer)-[r]->(y) \
+        RETURN startNode(r).name AS start, endNode(r).name AS end, type(r) AS relType LIMIT 1""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     assertThat((String) row.getProperty("start")).isEqualTo("Alice");
@@ -855,11 +860,12 @@ class OpenCypherScalarFunctionsComprehensiveTest {
   @Test
   void typeConversionChain() {
     final ResultSet result = database.command("opencypher",
-        "WITH '42' AS str " +
-            "RETURN str AS original, " +
-            "       toInteger(str) AS asInt, " +
-            "       toFloat(toInteger(str)) AS asFloat, " +
-            "       toBoolean(toInteger(str)) AS asBool");
+        """
+        WITH '42' AS str \
+        RETURN str AS original, \
+               toInteger(str) AS asInt, \
+               toFloat(toInteger(str)) AS asFloat, \
+               toBoolean(toInteger(str)) AS asBool""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     assertThat((String) row.getProperty("original")).isEqualTo("42");
@@ -871,10 +877,11 @@ class OpenCypherScalarFunctionsComprehensiveTest {
   @Test
   void coalesceWithNullIf() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (a) " +
-            "RETURN a.name AS name, " +
-            "       coalesce(nullIf(a.eyes, 'Brown'), 'Hazel') AS eyeColor " +
-            "ORDER BY name");
+        """
+        MATCH (a) \
+        RETURN a.name AS name, \
+               coalesce(nullIf(a.eyes, 'Brown'), 'Hazel') AS eyeColor \
+        ORDER BY name""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     int brownToHazelCount = 0;
     while (result.hasNext()) {

@@ -569,7 +569,7 @@ class BinarySerializerTest extends TestHelper {
   }
 
   @Test
-  void deserializeUnknownTypeThrows() throws ClassNotFoundException {
+  void deserializeUnknownTypeThrows() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
     final Binary empty = new Binary();
     assertThatThrownBy(() -> serializer.deserializeValue(database, empty, (byte) 101, null))

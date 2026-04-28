@@ -568,8 +568,9 @@ public class PromQLEvaluator {
     if (fieldCount > 1) {
       warnedMultiFieldTypes.add(typeName);
       LogManager.instance().log(this, Level.WARNING,
-          "PromQL evaluation: type '%s' has %d FIELD columns but only the first ('%s') is used. "
-              + "Use explicit column selection or split into separate types",
+          """
+          PromQL evaluation: type '%s' has %d FIELD columns but only the first ('%s') is used. \
+          Use explicit column selection or split into separate types""",
           null, typeName, fieldCount, firstName);
     }
   }
@@ -720,8 +721,9 @@ public class PromQLEvaluator {
     final String sanitized = name.replace('.', '_').replace('-', '_').replace(':', '_');
     if (!sanitized.equals(name))
       LogManager.instance().log(PromQLEvaluator.class, Level.WARNING,
-          "Metric name '%s' was sanitized to '%s'. Distinct Prometheus names that differ only by '.', '-', ':' vs '_' "
-              + "will map to the same ArcadeDB type and may return merged data", null, name, sanitized);
+          """
+          Metric name '%s' was sanitized to '%s'. Distinct Prometheus names that differ only by '.', '-', ':' vs '_' \
+          will map to the same ArcadeDB type and may return merged data""", null, name, sanitized);
     if (sanitized.length() > MAX_TYPE_NAME_LENGTH)
       throw new IllegalArgumentException("Metric name too long: " + sanitized.length() + " chars (max " + MAX_TYPE_NAME_LENGTH + ")");
     if (!VALID_TYPE_NAME_PATTERN.matcher(sanitized).matches())

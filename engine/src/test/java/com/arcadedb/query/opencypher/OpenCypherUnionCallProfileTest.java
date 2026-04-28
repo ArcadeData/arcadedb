@@ -260,14 +260,15 @@ class OpenCypherUnionCallProfileTest {
 
     // Test the exact Neo4j Desktop metadata query
     final ResultSet result = database.query("opencypher",
-        "CALL db.labels() YIELD label " +
-        "RETURN COLLECT(label)[..1000] AS result " +
-        "UNION ALL " +
-        "CALL db.relationshipTypes() YIELD relationshipType " +
-        "RETURN COLLECT(relationshipType)[..1000] AS result " +
-        "UNION ALL " +
-        "CALL db.propertyKeys() YIELD propertyKey " +
-        "RETURN COLLECT(propertyKey)[..1000] AS result");
+        """
+        CALL db.labels() YIELD label \
+        RETURN COLLECT(label)[..1000] AS result \
+        UNION ALL \
+        CALL db.relationshipTypes() YIELD relationshipType \
+        RETURN COLLECT(relationshipType)[..1000] AS result \
+        UNION ALL \
+        CALL db.propertyKeys() YIELD propertyKey \
+        RETURN COLLECT(propertyKey)[..1000] AS result""");
 
     // Should return 3 rows (one per UNION ALL branch)
     assertThat(result.hasNext()).isTrue();

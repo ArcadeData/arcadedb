@@ -80,8 +80,9 @@ class ClusterTokenProvider {
       rootPasswordStr = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
     if (rootPasswordStr == null || rootPasswordStr.isEmpty())
       throw new ConfigurationException(
-          "Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. "
-              + "Set arcadedb.server.rootPassword or provide an explicit arcadedb.ha.clusterToken");
+          """
+          Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. \
+          Set arcadedb.server.rootPassword or provide an explicit arcadedb.ha.clusterToken""");
     if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE))
         && "arcadedb".equalsIgnoreCase(clusterName))
       LogManager.instance().log(this, Level.WARNING,
@@ -92,8 +93,9 @@ class ClusterTokenProvider {
 
     if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE)))
       LogManager.instance().log(this, Level.WARNING,
-          "Using auto-derived cluster token. Changing root password does NOT rotate this token. "
-              + "To explicitly rotate, set arcadedb.ha.clusterToken=<new-value> and restart all nodes");
+          """
+          Using auto-derived cluster token. Changing root password does NOT rotate this token. \
+          To explicitly rotate, set arcadedb.ha.clusterToken=<new-value> and restart all nodes""");
   }
 
   /**

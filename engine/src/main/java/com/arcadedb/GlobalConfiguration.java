@@ -318,13 +318,15 @@ public enum GlobalConfiguration {
       Long.class, 500_000),
 
   QUERY_PARALLEL_SCAN("arcadedb.queryParallelScan", SCOPE.DATABASE,
-      "Enable parallel scanning of multiple buckets during full table scans. " +
-          "When true, each bucket is scanned in a separate thread for improved throughput on multi-core systems",
+      """
+      Enable parallel scanning of multiple buckets during full table scans. \
+      When true, each bucket is scanned in a separate thread for improved throughput on multi-core systems""",
       Boolean.class, true),
 
   QUERY_PARALLEL_SCAN_MIN_BUCKETS("arcadedb.queryParallelScanMinBuckets", SCOPE.DATABASE,
-      "Minimum number of buckets required to trigger parallel scanning. " +
-          "If the type has fewer buckets than this threshold, sequential scanning is used",
+      """
+      Minimum number of buckets required to trigger parallel scanning. \
+      If the type has fewer buckets than this threshold, sequential scanning is used""",
       Integer.class, 2),
 
   // CYPHER
@@ -520,21 +522,24 @@ public enum GlobalConfiguration {
       Constants.PRODUCT.toLowerCase(Locale.ENGLISH)),
 
   HA_SERVER_LIST("arcadedb.ha.serverList", SCOPE.SERVER,
-      "Servers in the cluster as a list of <hostname/ip-address:raftPort:httpPort[:priority]> items separated by comma. " +
-          "The httpPort is required for replica-to-leader HTTP command forwarding. " +
-          "The optional priority (integer, default 0) sets the preferred leader: the node with the highest priority is preferred during elections. " +
-          "Example: localhost:2434:2480:10,192.168.0.1:2434:2480:0",
+      """
+      Servers in the cluster as a list of <hostname/ip-address:raftPort:httpPort[:priority]> items separated by comma. \
+      The httpPort is required for replica-to-leader HTTP command forwarding. \
+      The optional priority (integer, default 0) sets the preferred leader: the node with the highest priority is preferred during elections. \
+      Example: localhost:2434:2480:10,192.168.0.1:2434:2480:0""",
       String.class, ""),
 
   HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
-      "Enforces a role in a cluster. 'any' (default) means this node can be elected leader. "
-          + "'replica' sets the Raft peer priority to 0 so the node is never elected leader "
-          + "(useful for read-scale or witness deployments).",
+      """
+      Enforces a role in a cluster. 'any' (default) means this node can be elected leader. \
+      'replica' sets the Raft peer priority to 0 so the node is never elected leader \
+      (useful for read-scale or witness deployments).""",
       String.class, "any", Set.of("any", "replica")),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
-      "Write quorum: 'majority' (standard Raft, default) or 'all' (every configured peer must acknowledge). "
-          + "Legacy values 'none', 'one', 'two', 'three' are no longer supported.",
+      """
+      Write quorum: 'majority' (standard Raft, default) or 'all' (every configured peer must acknowledge). \
+      Legacy values 'none', 'one', 'two', 'three' are no longer supported.""",
       String.class, "majority", Set.of("majority", "all")),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
@@ -552,18 +557,21 @@ public enum GlobalConfiguration {
       "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),
 
   HA_WRITE_BUFFER_SIZE("arcadedb.ha.writeBufferSize", SCOPE.SERVER,
-      "Raft log write buffer size (e.g. '8MB'). Must be at least appendBufferSize + 8 bytes, "
-          + "otherwise the server fails to start with ConfigurationException.",
+      """
+      Raft log write buffer size (e.g. '8MB'). Must be at least appendBufferSize + 8 bytes, \
+      otherwise the server fails to start with ConfigurationException.""",
       String.class, "8MB"),
 
   HA_LOG_PURGE_GAP("arcadedb.ha.logPurgeGap", SCOPE.SERVER,
-      "Number of Raft log entries retained after a snapshot as a buffer for slightly lagging followers. "
-          + "Lower values free disk faster but raise the chance a slow follower needs a full snapshot resync.",
+      """
+      Number of Raft log entries retained after a snapshot as a buffer for slightly lagging followers. \
+      Lower values free disk faster but raise the chance a slow follower needs a full snapshot resync.""",
       Integer.class, 1024),
 
   HA_LOG_PURGE_UPTO_SNAPSHOT("arcadedb.ha.logPurgeUptoSnapshot", SCOPE.SERVER,
-      "When true (default), deletes old Raft log segments after each snapshot to bound disk growth. "
-          + "Set to false to retain full log history for debugging/auditing.",
+      """
+      When true (default), deletes old Raft log segments after each snapshot to bound disk growth. \
+      Set to false to retain full log history for debugging/auditing.""",
       Boolean.class, true),
 
   HA_REPLICATION_CHUNK_MAXSIZE("arcadedb.ha.replicationChunkMaxSize", SCOPE.SERVER,
@@ -591,14 +599,16 @@ public enum GlobalConfiguration {
       Integer.class, 2434),
 
   HA_RAFT_PERSIST_STORAGE("arcadedb.ha.raftPersistStorage", SCOPE.SERVER,
-      "If true, the Raft storage directory is preserved across server restarts, enabling node rejoin " +
-      "without a full snapshot resync. Defaults to false (ephemeral) for testing convenience; " +
-      "set to true for durable deployments.",
+      """
+      If true, the Raft storage directory is preserved across server restarts, enabling node rejoin \
+      without a full snapshot resync. Defaults to false (ephemeral) for testing convenience; \
+      set to true for durable deployments.""",
       Boolean.class, false),
 
   HA_SNAPSHOT_THRESHOLD("arcadedb.ha.snapshotThreshold", SCOPE.SERVER,
-      "Number of Raft log entries after which the leader automatically takes a snapshot. "
-          + "Lower values cause more frequent snapshots and earlier log compaction.",
+      """
+      Number of Raft log entries after which the leader automatically takes a snapshot. \
+      Lower values cause more frequent snapshots and earlier log compaction.""",
       Long.class, 100_000L),
 
   HA_LOG_VERBOSE("arcadedb.ha.logVerbose", SCOPE.SERVER,
@@ -606,14 +616,16 @@ public enum GlobalConfiguration {
       Integer.class, 0),
 
   HA_GROUP_COMMIT_BATCH_SIZE("arcadedb.ha.groupCommitBatchSize", SCOPE.SERVER,
-      "Maximum number of Raft log entries to batch in a single group commit flush. "
-          + "Higher values improve throughput under concurrent load.",
+      """
+      Maximum number of Raft log entries to batch in a single group commit flush. \
+      Higher values improve throughput under concurrent load.""",
       Integer.class, 500),
 
   HA_GROUP_COMMIT_QUEUE_SIZE("arcadedb.ha.groupCommitQueueSize", SCOPE.SERVER,
-      "Maximum pending transactions allowed in the Raft group-commit queue. "
-          + "When the queue is full, the server applies backpressure by throwing ReplicationQueueFullException "
-          + "(a NeedRetryException that clients can retry).",
+      """
+      Maximum pending transactions allowed in the Raft group-commit queue. \
+      When the queue is full, the server applies backpressure by throwing ReplicationQueueFullException \
+      (a NeedRetryException that clients can retry).""",
       Integer.class, 10_000),
 
   HA_GROUP_COMMIT_OFFER_TIMEOUT("arcadedb.ha.groupCommitOfferTimeout", SCOPE.SERVER,
@@ -621,9 +633,10 @@ public enum GlobalConfiguration {
       Integer.class, 100),
 
   HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
-      "Shared secret for inter-node request forwarding authentication. " +
-      "Must be identical on all cluster nodes. " +
-      "If empty, a random token is auto-generated and stored in raft-storage at startup.",
+      """
+      Shared secret for inter-node request forwarding authentication. \
+      Must be identical on all cluster nodes. \
+      If empty, a random token is auto-generated and stored in raft-storage at startup.""",
       String.class, ""),
 
   HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
@@ -671,25 +684,29 @@ public enum GlobalConfiguration {
       Long.class, 2000L),
 
   HA_RATIS_RESTART_MAX_RETRIES("arcadedb.ha.ratisRestartMaxRetries", SCOPE.SERVER,
-      "Maximum consecutive Ratis restart attempts by the health monitor before the server shuts down "
-          + "for cluster-level recovery. Raise when partition-recovery scenarios cause legitimate rapid restarts.",
+      """
+      Maximum consecutive Ratis restart attempts by the health monitor before the server shuts down \
+      for cluster-level recovery. Raise when partition-recovery scenarios cause legitimate rapid restarts.""",
       Integer.class, 10),
 
   HA_STOP_SERVER_ON_REPLICATION_FAILURE("arcadedb.ha.stopServerOnReplicationFailure", SCOPE.SERVER,
-      "After a phase-2 local commit fails on the leader while followers have applied the entry, step-down "
-          + "is attempted first. If every step-down fails and this flag is true, the JVM exits so an "
-          + "orchestrator can restart and let Raft log replay correct the state. "
-          + "Default is false: the server keeps running and logs CRITICAL, useful for debugging without an orchestrator.",
+      """
+      After a phase-2 local commit fails on the leader while followers have applied the entry, step-down \
+      is attempted first. If every step-down fails and this flag is true, the JVM exits so an \
+      orchestrator can restart and let Raft log replay correct the state. \
+      Default is false: the server keeps running and logs CRITICAL, useful for debugging without an orchestrator.""",
       Boolean.class, false),
 
   HA_SNAPSHOT_WRITE_TIMEOUT("arcadedb.ha.snapshotWriteTimeout", SCOPE.SERVER,
-      "Timeout in milliseconds for writing a snapshot to a follower. "
-          + "If the transfer stalls beyond this duration, the connection is force-closed to free the semaphore slot.",
+      """
+      Timeout in milliseconds for writing a snapshot to a follower. \
+      If the transfer stalls beyond this duration, the connection is force-closed to free the semaphore slot.""",
       Long.class, 300_000L),
 
   HA_SNAPSHOT_WATCHDOG_TIMEOUT("arcadedb.ha.snapshotWatchdogTimeout", SCOPE.SERVER,
-      "Delay in milliseconds before the snapshot-gap watchdog triggers a download. "
-          + "Floored at 4x HA_ELECTION_TIMEOUT_MAX to avoid premature firing on WAN clusters.",
+      """
+      Delay in milliseconds before the snapshot-gap watchdog triggers a download. \
+      Floored at 4x HA_ELECTION_TIMEOUT_MAX to avoid premature firing on WAN clusters.""",
       Long.class, 30_000L),
 
   HA_SNAPSHOT_GAP_TOLERANCE("arcadedb.ha.snapshotGapTolerance", SCOPE.SERVER,
@@ -709,9 +726,10 @@ public enum GlobalConfiguration {
       Integer.class, 10_000),
 
   HA_PEER_ALLOWLIST_ENABLED("arcadedb.ha.peerAllowlist.enabled", SCOPE.SERVER,
-      "Reject inbound Raft gRPC connections whose remote address does not resolve to a host in "
-          + "arcadedb.ha.serverList. Loopback is always allowed. Does not provide peer identity or encryption: "
-          + "use mTLS on untrusted networks.",
+      """
+      Reject inbound Raft gRPC connections whose remote address does not resolve to a host in \
+      arcadedb.ha.serverList. Loopback is always allowed. Does not provide peer identity or encryption: \
+      use mTLS on untrusted networks.""",
       Boolean.class, true),
 
   HA_GRPC_ALLOWLIST_REFRESH_MS("arcadedb.ha.grpcAllowlistRefreshMs", SCOPE.SERVER,
@@ -769,8 +787,9 @@ public enum GlobalConfiguration {
       "TCP/IP host name used for incoming connections for Mongo plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
 
   GAV_USE_WHEN_STALE("arcadedb.gavUseWhenStale", SCOPE.DATABASE,
-      "When true, the query planner uses stale Graph Analytical Views (GAV/CSR) for traversals instead of falling back to OLTP. "
-          + "Stale data is faster but may not reflect the latest committed changes", Boolean.class, false),
+      """
+      When true, the query planner uses stale Graph Analytical Views (GAV/CSR) for traversals instead of falling back to OLTP. \
+      Stale data is faster but may not reflect the latest committed changes""", Boolean.class, false),
   ;
 
   /**

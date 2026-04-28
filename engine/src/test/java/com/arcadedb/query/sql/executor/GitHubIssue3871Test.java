@@ -51,8 +51,10 @@ public class GitHubIssue3871Test extends TestHelper {
     assertThat(database.countType("Doc", true)).isEqualTo(2);
 
     database.command("sqlscript",
-        "LET $x = SELECT @rid FROM Doc;\n" +
-            "DELETE FROM $x;");
+        """
+        LET $x = SELECT @rid FROM Doc;
+        DELETE FROM $x;\
+        """);
 
     assertThat(database.countType("Doc", true)).isEqualTo(0);
   }

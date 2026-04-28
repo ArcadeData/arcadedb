@@ -72,9 +72,10 @@ class AlgoMaxFlowTest {
   @Test
   void maxFlowReturnsOneRow() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (s:Node {name:'S'}), (t:Node {name:'T'}) "
-            + "CALL algo.maxFlow(s, t, 'PIPE', 'capacity') YIELD maxFlow, sourceId, sinkId "
-            + "RETURN maxFlow, sourceId, sinkId");
+        """
+        MATCH (s:Node {name:'S'}), (t:Node {name:'T'}) \
+        CALL algo.maxFlow(s, t, 'PIPE', 'capacity') YIELD maxFlow, sourceId, sinkId \
+        RETURN maxFlow, sourceId, sinkId""");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -86,9 +87,10 @@ class AlgoMaxFlowTest {
   @Test
   void maxFlowValue() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (s:Node {name:'S'}), (t:Node {name:'T'}) "
-            + "CALL algo.maxFlow(s, t, 'PIPE', 'capacity') YIELD maxFlow "
-            + "RETURN maxFlow");
+        """
+        MATCH (s:Node {name:'S'}), (t:Node {name:'T'}) \
+        CALL algo.maxFlow(s, t, 'PIPE', 'capacity') YIELD maxFlow \
+        RETURN maxFlow""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -102,9 +104,10 @@ class AlgoMaxFlowTest {
   @Test
   void maxFlowSourceAndSinkIds() {
     final ResultSet rs = database.query("opencypher",
-        "MATCH (s:Node {name:'S'}), (t:Node {name:'T'}) "
-            + "CALL algo.maxFlow(s, t, 'PIPE', 'capacity') YIELD maxFlow, sourceId, sinkId "
-            + "RETURN maxFlow, sourceId, sinkId");
+        """
+        MATCH (s:Node {name:'S'}), (t:Node {name:'T'}) \
+        CALL algo.maxFlow(s, t, 'PIPE', 'capacity') YIELD maxFlow, sourceId, sinkId \
+        RETURN maxFlow, sourceId, sinkId""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
@@ -118,9 +121,10 @@ class AlgoMaxFlowTest {
   void maxFlowNoCapacityProperty() {
     // Without capacity property: all edges have capacity 1
     final ResultSet rs = database.query("opencypher",
-        "MATCH (s:Node {name:'S'}), (t:Node {name:'T'}) "
-            + "CALL algo.maxFlow(s, t) YIELD maxFlow "
-            + "RETURN maxFlow");
+        """
+        MATCH (s:Node {name:'S'}), (t:Node {name:'T'}) \
+        CALL algo.maxFlow(s, t) YIELD maxFlow \
+        RETURN maxFlow""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();

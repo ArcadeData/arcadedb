@@ -74,11 +74,12 @@ class Issue3950Test {
   @Test
   void standaloneOrderByDescLimitBeforeFollowingMatch() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (o:Order3950) " +
-            "ORDER BY o.orderDate DESC " +
-            "LIMIT 1 " +
-            "MATCH (o)-[:CONTAINS3950]->(i:Item3950) " +
-            "RETURN o.id AS orderId, collect(i.name) AS items");
+        """
+        MATCH (o:Order3950) \
+        ORDER BY o.orderDate DESC \
+        LIMIT 1 \
+        MATCH (o)-[:CONTAINS3950]->(i:Item3950) \
+        RETURN o.id AS orderId, collect(i.name) AS items""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -89,11 +90,12 @@ class Issue3950Test {
   @Test
   void standaloneOrderByAscLimitBeforeFollowingMatch() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (o:Order3950) " +
-            "ORDER BY o.orderDate ASC " +
-            "LIMIT 1 " +
-            "MATCH (o)-[:CONTAINS3950]->(i:Item3950) " +
-            "RETURN o.id AS orderId, collect(i.name) AS items");
+        """
+        MATCH (o:Order3950) \
+        ORDER BY o.orderDate ASC \
+        LIMIT 1 \
+        MATCH (o)-[:CONTAINS3950]->(i:Item3950) \
+        RETURN o.id AS orderId, collect(i.name) AS items""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -104,12 +106,13 @@ class Issue3950Test {
   @Test
   void standaloneLimitOnlyBeforeFollowingMatch() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (o:Order3950) " +
-            "ORDER BY o.orderDate ASC " +
-            "SKIP 1 " +
-            "LIMIT 1 " +
-            "MATCH (o)-[:CONTAINS3950]->(i:Item3950) " +
-            "RETURN o.id AS orderId, collect(i.name) AS items");
+        """
+        MATCH (o:Order3950) \
+        ORDER BY o.orderDate ASC \
+        SKIP 1 \
+        LIMIT 1 \
+        MATCH (o)-[:CONTAINS3950]->(i:Item3950) \
+        RETURN o.id AS orderId, collect(i.name) AS items""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -119,10 +122,11 @@ class Issue3950Test {
   @Test
   void standaloneOrderByLimitBeforeReturnStillWorks() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (o:Order3950) " +
-            "ORDER BY o.orderDate DESC " +
-            "LIMIT 1 " +
-            "RETURN o.id AS orderId");
+        """
+        MATCH (o:Order3950) \
+        ORDER BY o.orderDate DESC \
+        LIMIT 1 \
+        RETURN o.id AS orderId""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -132,12 +136,13 @@ class Issue3950Test {
   @Test
   void explicitWithOrderByLimitStillWorks() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (o:Order3950) " +
-            "WITH o " +
-            "ORDER BY o.orderDate DESC " +
-            "LIMIT 1 " +
-            "MATCH (o)-[:CONTAINS3950]->(i:Item3950) " +
-            "RETURN o.id AS orderId, collect(i.name) AS items");
+        """
+        MATCH (o:Order3950) \
+        WITH o \
+        ORDER BY o.orderDate DESC \
+        LIMIT 1 \
+        MATCH (o)-[:CONTAINS3950]->(i:Item3950) \
+        RETURN o.id AS orderId, collect(i.name) AS items""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);

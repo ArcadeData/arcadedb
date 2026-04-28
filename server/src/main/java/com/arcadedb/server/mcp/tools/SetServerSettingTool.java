@@ -34,9 +34,10 @@ public class SetServerSettingTool {
     return new JSONObject()
         .put("name", "set_server_setting")
         .put("description",
-            "Update a server configuration setting at runtime. " +
-            "Changes take effect immediately but may not persist across server restarts (depends on the setting). " +
-            "Use get_server_settings first to see available settings and their current values.")
+            """
+            Update a server configuration setting at runtime. \
+            Changes take effect immediately but may not persist across server restarts (depends on the setting). \
+            Use get_server_settings first to see available settings and their current values.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject()

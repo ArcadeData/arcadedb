@@ -50,12 +50,13 @@ class Issue3931VarLengthPatternComprehensionTest {
     database.getSchema().createEdgeType("KNOWS");
 
     database.transaction(() -> database.command("opencypher",
-        "CREATE (alice:VarLengthTest3 {name:'Alice'}), " +
-            "(bob:VarLengthTest3 {name:'Bob'}), " +
-            "(charlie:VarLengthTest3 {name:'Charlie'}), " +
-            "(alice)-[:KNOWS]->(bob), " +
-            "(bob)-[:KNOWS]->(charlie), " +
-            "(alice)-[:KNOWS]->(charlie)"));
+        """
+        CREATE (alice:VarLengthTest3 {name:'Alice'}), \
+        (bob:VarLengthTest3 {name:'Bob'}), \
+        (charlie:VarLengthTest3 {name:'Charlie'}), \
+        (alice)-[:KNOWS]->(bob), \
+        (bob)-[:KNOWS]->(charlie), \
+        (alice)-[:KNOWS]->(charlie)"""));
   }
 
   @AfterEach
@@ -71,8 +72,9 @@ class Issue3931VarLengthPatternComprehensionTest {
   void variableLengthPatternComprehensionTwoLength() {
     // Only the path alice->bob->charlie has exact length 2, so f = Charlie
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (a:VarLengthTest3 {name:'Alice'}) "
-            + "RETURN [(a)-[:KNOWS*2..2]->(f:VarLengthTest3) | f.name] AS result");
+        """
+        MATCH (a:VarLengthTest3 {name:'Alice'}) \
+        RETURN [(a)-[:KNOWS*2..2]->(f:VarLengthTest3) | f.name] AS result""");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result r = resultSet.next();
@@ -91,8 +93,9 @@ class Issue3931VarLengthPatternComprehensionTest {
     // (there is only one here), not the elements inside the list. Both orders are
     // valid Cypher results - we only assert the set membership is correct.
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (a:VarLengthTest3 {name:'Alice'}) "
-            + "RETURN [(a)-[:KNOWS*1..1]->(f:VarLengthTest3) | f.name] AS result ORDER BY result");
+        """
+        MATCH (a:VarLengthTest3 {name:'Alice'}) \
+        RETURN [(a)-[:KNOWS*1..1]->(f:VarLengthTest3) | f.name] AS result ORDER BY result""");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result r = resultSet.next();
@@ -106,8 +109,9 @@ class Issue3931VarLengthPatternComprehensionTest {
   void variableLengthPatternComprehensionZeroLength() {
     // GitHub issue #3929: zero-length path returns the anchor node itself.
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (a:VarLengthTest3 {name:'Alice'}) "
-            + "RETURN [(a)-[:KNOWS*0..0]->(f:VarLengthTest3) | f.name] AS result");
+        """
+        MATCH (a:VarLengthTest3 {name:'Alice'}) \
+        RETURN [(a)-[:KNOWS*0..0]->(f:VarLengthTest3) | f.name] AS result""");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result r = resultSet.next();
@@ -121,8 +125,9 @@ class Issue3931VarLengthPatternComprehensionTest {
   void variableLengthPatternComprehensionNonExistentLength() {
     // GitHub issue #3932: no path of length 10 exists, must return empty list.
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (a:VarLengthTest3 {name:'Alice'}) "
-            + "RETURN [(a)-[:KNOWS*10..10]->(f:VarLengthTest3) | f.name] AS result");
+        """
+        MATCH (a:VarLengthTest3 {name:'Alice'}) \
+        RETURN [(a)-[:KNOWS*10..10]->(f:VarLengthTest3) | f.name] AS result""");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result r = resultSet.next();
@@ -136,8 +141,9 @@ class Issue3931VarLengthPatternComprehensionTest {
   void variableLengthPatternComprehensionRange() {
     // Length 1: alice->bob, alice->charlie. Length 2: alice->bob->charlie.
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (a:VarLengthTest3 {name:'Alice'}) "
-            + "RETURN [(a)-[:KNOWS*1..2]->(f:VarLengthTest3) | f.name] AS result");
+        """
+        MATCH (a:VarLengthTest3 {name:'Alice'}) \
+        RETURN [(a)-[:KNOWS*1..2]->(f:VarLengthTest3) | f.name] AS result""");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result r = resultSet.next();

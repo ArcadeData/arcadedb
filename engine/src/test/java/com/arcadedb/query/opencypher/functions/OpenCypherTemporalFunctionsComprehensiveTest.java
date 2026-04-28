@@ -1058,8 +1058,9 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
   @Test
   void temporalTypeConversion() {
     final ResultSet result = database.command("opencypher",
-        "WITH datetime('2015-07-21T21:40:32.142+0100') AS dt " +
-            "RETURN date(dt) AS dateOnly, localtime(dt) AS timeOnly, localdatetime(dt) AS localDt");
+        """
+        WITH datetime('2015-07-21T21:40:32.142+0100') AS dt \
+        RETURN date(dt) AS dateOnly, localtime(dt) AS timeOnly, localdatetime(dt) AS localDt""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     Assertions.assertThat(row.getProperty("dateOnly") != null).isTrue();
@@ -1070,8 +1071,9 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
   @Test
   void durationArithmetic() {
     final ResultSet result = database.command("opencypher",
-        "WITH duration({days: 10}) AS dur1, duration({hours: 24}) AS dur2 " +
-            "RETURN dur1 AS d1, dur2 AS d2");
+        """
+        WITH duration({days: 10}) AS dur1, duration({hours: 24}) AS dur2 \
+        RETURN dur1 AS d1, dur2 AS d2""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     Assertions.assertThat(row.getProperty("d1") != null).isTrue();
@@ -1081,8 +1083,9 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
   @Test
   void clockConsistencyComparison() {
     final ResultSet result = database.command("opencypher",
-        "RETURN date.statement() AS s1, date.statement() AS s2, " +
-            "date.transaction() AS t1, date.transaction() AS t2");
+        """
+        RETURN date.statement() AS s1, date.statement() AS s2, \
+        date.transaction() AS t1, date.transaction() AS t2""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
     Assertions.assertThat(row.getProperty("s1").equals(row.getProperty("s2"))).isTrue();
@@ -1092,8 +1095,9 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
   @Test
   void truncateAndFormat() {
     final ResultSet result = database.command("opencypher",
-        "WITH datetime('2015-07-21T21:40:32.142+0100') AS dt " +
-            "RETURN format(datetime.truncate('day', dt), 'yyyy-MM-dd') AS result");
+        """
+        WITH datetime('2015-07-21T21:40:32.142+0100') AS dt \
+        RETURN format(datetime.truncate('day', dt), 'yyyy-MM-dd') AS result""");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final String formatted = (String) result.next().getProperty("result");
     assertThat(formatted).isEqualTo("2015-07-21");
