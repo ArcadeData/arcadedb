@@ -157,6 +157,17 @@ public abstract class ContainersTestTemplate {
     if (toxiproxy != null) {
       logger.info("Stopping the Toxiproxy container");
       toxiproxy.stop();
+      toxiproxy = null;
+    }
+
+    if (network != null) {
+      logger.info("Closing Docker network");
+      try {
+        network.close();
+      } catch (final Exception e) {
+        logger.warn("Failed to close Docker network: {}", e.getMessage());
+      }
+      network = null;
     }
 
     deleteContainersDirectories();

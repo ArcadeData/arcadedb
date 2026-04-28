@@ -109,7 +109,21 @@ class RestoreDatabaseScenarioIT extends ContainersTestTemplate {
               && !databaseExistsOnServer(servers.get(1), DATABASE)
               && !databaseExistsOnServer(servers.get(2), DATABASE));
 
-      // Restore from the backup on the leader
+      // Ensure the cluster is stable and find the current leader before restoring.
+      // The backup file lives inside the container that ran the backup (node 0), so the
+      // restore must run on node 0. If node 0 is no longer the leader after the drop,
+      // transfer leadership back to it; otherwise replicateRestoredDatabase() would fail
+      // trying to submit a Raft entry from a follower.
+      logger.info("Waiting for cluster to stabilize before restore");
+      waitForAllNodesKnowLeader(servers, 30);
+      final int leaderIdx = waitForRaftLeader(servers, 30);
+      if (leaderIdx != 0) {
+        logger.info("Node 0 is not the leader (leader is {}); attempting leadership transfer", leaderIdx);
+        transferLeadershipAndWait(servers, 30);
+        assertThat(waitForRaftLeader(servers, 30)).as("Node 0 must be leader before restore").isEqualTo(0);
+      }
+
+      // Restore from the backup on node 0 (the node that holds the backup file)
       logger.info("Restoring from backup: {}", backupUrl);
       final int restoreStatus = postServerCommand(servers.get(0), "restore database " + DATABASE + " " + backupUrl);
       assertThat(restoreStatus).as("restore database HTTP status").isEqualTo(200);
@@ -157,7 +171,17 @@ class RestoreDatabaseScenarioIT extends ContainersTestTemplate {
     try {
       connection.getOutputStream().write(
           new JSONObject().put("command", command).toString().getBytes());
-      return connection.getResponseCode();
+      final int status = connection.getResponseCode();
+      if (status >= 400) {
+        try {
+          final var errStream = connection.getErrorStream();
+          if (errStream != null)
+            logger.error("Server command '{}' returned HTTP {}: {}", command, status,
+                new String(errStream.readAllBytes()));
+        } catch (final Exception ignored) {
+        }
+      }
+      return status;
     } finally {
       connection.disconnect();
     }
