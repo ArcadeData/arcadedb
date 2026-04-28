@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -66,6 +67,13 @@ public class SetStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      // Tracks the latest written MutableDocument per RID so that self-referential
+      // expressions (e.g. SET p.age = p.age + i) accumulate correctly when the same
+      // node is hit across multiple rows (e.g. via UNWIND). For the per-row-tx path,
+      // MutableDocument retains its in-memory property state after commit (unsetDirty()
+      // clears the dirty flag but not the map), so subsequent rows can read through the
+      // stored instance without reloading from storage.
+      private final Map<RID, MutableDocument> writtenDocs = new HashMap<>();
 
       @Override
       public boolean hasNext() {
@@ -96,7 +104,7 @@ public class SetStep extends AbstractExecutionStep {
             if (context.isProfiling())
               rowCount++;
 
-            applySetOperations(inputResult);
+            applySetOperations(inputResult, writtenDocs);
             buffer.add(inputResult);
           } finally {
             if (context.isProfiling())
@@ -114,7 +122,7 @@ public class SetStep extends AbstractExecutionStep {
     };
   }
 
-  private void applySetOperations(final Result result) {
+  private void applySetOperations(final Result result, final Map<RID, MutableDocument> writtenDocs) {
     if (setClause == null || setClause.isEmpty())
       return;
 
@@ -127,13 +135,13 @@ public class SetStep extends AbstractExecutionStep {
       for (final SetClause.SetItem item : setClause.getItems()) {
         switch (item.getType()) {
           case PROPERTY:
-            applyPropertySet(item, result);
+            applyPropertySet(item, result, writtenDocs);
             break;
           case REPLACE_MAP:
-            applyReplaceMap(item, result);
+            applyReplaceMap(item, result, writtenDocs);
             break;
           case MERGE_MAP:
-            applyMergeMap(item, result);
+            applyMergeMap(item, result, writtenDocs);
             break;
           case LABELS:
             applyLabels(item, result);
@@ -150,7 +158,8 @@ public class SetStep extends AbstractExecutionStep {
     }
   }
 
-  private void applyPropertySet(final SetClause.SetItem item, final Result result) {
+  private void applyPropertySet(final SetClause.SetItem item, final Result result,
+      final Map<RID, MutableDocument> writtenDocs) {
     final Object obj;
     final String variableToUpdate;
 
@@ -162,14 +171,22 @@ public class SetStep extends AbstractExecutionStep {
         return; // CASE returned null — no-op (conditional SET pattern)
       variableToUpdate = null;
     } else {
-      obj = result.getProperty(item.getVariable());
       variableToUpdate = item.getVariable();
+      obj = resolveLatestDoc(variableToUpdate, result, writtenDocs);
+      if (obj == null)
+        return;
     }
 
     if (!(obj instanceof Document doc))
       return;
 
     final MutableDocument mutableDoc = doc.modify();
+    // When doc.modify() returns a fresher MutableDocument (e.g. from the tx cache in an
+    // outer transaction), update the result row before evaluating the RHS so that
+    // self-referential expressions read the latest state, not the original snapshot.
+    if (mutableDoc != doc && variableToUpdate != null)
+      ((ResultInternal) result).setProperty(variableToUpdate, mutableDoc);
+
     final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
     if (value == null)
       mutableDoc.remove(item.getProperty());
@@ -178,6 +195,12 @@ public class SetStep extends AbstractExecutionStep {
       mutableDoc.set(item.getProperty(), value);
     }
     mutableDoc.save();
+
+    // Record the latest written state so subsequent rows can read through it.
+    final RID savedRid = mutableDoc.getIdentity();
+    if (savedRid != null)
+      writtenDocs.put(savedRid, mutableDoc);
+
     propagateUpdateToSameNodeAliases(result, doc, mutableDoc);
     // Fallback: ensure the named variable is updated even when doc has no identity yet
     if (variableToUpdate != null && doc.getIdentity() == null)
@@ -185,9 +208,10 @@ public class SetStep extends AbstractExecutionStep {
   }
 
   @SuppressWarnings("unchecked")
-  private void applyReplaceMap(final SetClause.SetItem item, final Result result) {
-    final Object obj = result.getProperty(item.getVariable());
-    if (!(obj instanceof Document doc))
+  private void applyReplaceMap(final SetClause.SetItem item, final Result result,
+      final Map<RID, MutableDocument> writtenDocs) {
+    final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
+    if (doc == null)
       return;
 
     final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
@@ -196,6 +220,8 @@ public class SetStep extends AbstractExecutionStep {
 
     final Map<String, Object> map = (Map<String, Object>) mapValue;
     final MutableDocument mutableDoc = doc.modify();
+    if (mutableDoc != doc)
+      ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
 
     // Remove all existing properties except internal ones
     final Set<String> existingProps = new HashSet<>(mutableDoc.getPropertyNames());
@@ -211,15 +237,19 @@ public class SetStep extends AbstractExecutionStep {
     }
 
     mutableDoc.save();
+    final RID savedRid = mutableDoc.getIdentity();
+    if (savedRid != null)
+      writtenDocs.put(savedRid, mutableDoc);
     propagateUpdateToSameNodeAliases(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
   }
 
   @SuppressWarnings("unchecked")
-  private void applyMergeMap(final SetClause.SetItem item, final Result result) {
-    final Object obj = result.getProperty(item.getVariable());
-    if (!(obj instanceof Document doc))
+  private void applyMergeMap(final SetClause.SetItem item, final Result result,
+      final Map<RID, MutableDocument> writtenDocs) {
+    final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
+    if (doc == null)
       return;
 
     final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
@@ -228,6 +258,8 @@ public class SetStep extends AbstractExecutionStep {
 
     final Map<String, Object> map = (Map<String, Object>) mapValue;
     final MutableDocument mutableDoc = doc.modify();
+    if (mutableDoc != doc)
+      ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
 
     // Merge: add/update properties from map, null removes
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
@@ -238,9 +270,28 @@ public class SetStep extends AbstractExecutionStep {
     }
 
     mutableDoc.save();
+    final RID savedRid = mutableDoc.getIdentity();
+    if (savedRid != null)
+      writtenDocs.put(savedRid, mutableDoc);
     propagateUpdateToSameNodeAliases(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+  }
+
+  private Document resolveLatestDoc(final String variable, final Result result,
+      final Map<RID, MutableDocument> writtenDocs) {
+    final Object raw = result.getProperty(variable);
+    if (!(raw instanceof Document rawDoc))
+      return null;
+    final RID rid = rawDoc.getIdentity();
+    if (rid != null) {
+      final MutableDocument latest = writtenDocs.get(rid);
+      if (latest != null && latest != raw) {
+        ((ResultInternal) result).setProperty(variable, latest);
+        return latest;
+      }
+    }
+    return rawDoc;
   }
 
   /**
@@ -259,6 +310,9 @@ public class SetStep extends AbstractExecutionStep {
   }
 
   private void applyLabels(final SetClause.SetItem item, final Result result) {
+    // Label SET is intentionally not covered by the writtenDocs pattern: it replaces
+    // the vertex entirely (delete + create with new RID), so the old RID is invalid
+    // after the first row and cross-row accumulation via writtenDocs is not applicable.
     final Object obj = result.getProperty(item.getVariable());
     if (!(obj instanceof Vertex vertex))
       return;
