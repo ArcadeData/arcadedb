@@ -222,6 +222,26 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
       logger.info("Cycle {}: Writing to majority partition via leader node {}", cycle, currentLeader);
       dbs[currentLeader].addUserAndPhotos(5, 10);
 
+      // Wait for the other majority node to see the writes before restarting.
+      // This ensures cycleCount is read from a stable state, not during Raft transition.
+      final int capturedLeader = currentLeader;
+      final int capturedOther = (currentLeader + 2) % 3;
+      Awaitility.await()
+          .atMost(60, TimeUnit.SECONDS)
+          .pollInterval(2, TimeUnit.SECONDS)
+          .until(() -> {
+            try {
+              return dbs[capturedLeader].countUsers() == dbs[capturedOther].countUsers();
+            } catch (final Exception e) {
+              return false;
+            }
+          });
+
+      // Capture the stable count BEFORE restarting the isolated node.
+      // Reading after restart risks a stale value during Raft re-election.
+      final long cycleCount = dbs[currentLeader].countUsers();
+      logger.info("Cycle {}: Majority stable at {} users", cycle, cycleCount);
+
       // After a Docker network partition, gRPC channels between peers are stuck in
       // exponential backoff. Restart the isolated node to force fresh connections.
       logger.info("Cycle {}: Healing partition - reconnecting and restarting isolated node {}", cycle, isolatedIdx);
@@ -239,14 +259,13 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
           isolatedIdx == 1 ? restartedServer : servers.get(1),
           isolatedIdx == 2 ? restartedServer : servers.get(2));
 
-      // Measure actual count from leader - some writes may fail during transition
-      final long cycleCount = dbs[currentLeader].countUsers();
+      // Wait for Raft to elect a leader with the restarted node in the cluster
+      // before starting the convergence check.
+      waitForRaftLeader(servers, 60);
 
       logger.info("Cycle {}: Waiting for Raft log catch-up convergence (expected={})", cycle, cycleCount);
       final int currentCycle = cycle;
       final int capturedIsolatedIdx = isolatedIdx;
-      final int capturedLeader = currentLeader;
-      final int capturedOther = (currentLeader + 2) % 3;
       Awaitility.await()
           .atMost(180, TimeUnit.SECONDS)
           .pollInterval(3, TimeUnit.SECONDS)
