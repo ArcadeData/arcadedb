@@ -48,6 +48,7 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -626,6 +627,88 @@ public abstract class ContainersTestTemplate {
   }
 
   /**
+   * Returns the Raft peer ID of the given server by querying {@code GET /api/v1/cluster}.
+   * The peer ID has the format {@code host_raftPort} (e.g., {@code arcadedb-0_2434}).
+   * Returns an empty string if the server is unreachable or does not report a peer ID.
+   */
+  protected String getRaftPeerId(final ServerWrapper server) {
+    try {
+      final HttpURLConnection conn = (HttpURLConnection) URI.create(
+          "http://" + server.host() + ":" + server.httpPort() + "/api/v1/cluster").toURL().openConnection();
+      conn.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes(StandardCharsets.UTF_8)));
+      conn.setConnectTimeout(5000);
+      conn.setReadTimeout(5000);
+      try {
+        if (conn.getResponseCode() == 200) {
+          final String body = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+          return new JSONObject(body).getString("localPeerId", "");
+        }
+      } finally {
+        conn.disconnect();
+      }
+    } catch (final Exception e) {
+      logger.warn("Could not retrieve Raft peer ID from {}: {}", server.host(), e.getMessage());
+    }
+    return "";
+  }
+
+  /**
+   * Transfers Raft leadership to a specific target node and waits for it to become leader.
+   * Use this when a particular node must hold leadership (e.g., because a backup file resides only there).
+   *
+   * @param servers the server wrappers returned by {@link #startContainers()}
+   * @param targetNode the server that should become leader
+   * @param timeoutSeconds maximum time to wait for each sub-step
+   */
+  protected void transferLeadershipToNode(final List<ServerWrapper> servers, final ServerWrapper targetNode,
+      final int timeoutSeconds) {
+    final int leaderIdx = waitForRaftLeader(servers, timeoutSeconds);
+    if (leaderIdx < 0) {
+      logger.warn("No leader found, skipping targeted leadership transfer");
+      return;
+    }
+
+    final String targetPeerId = getRaftPeerId(targetNode);
+    if (targetPeerId.isEmpty()) {
+      logger.warn("Cannot resolve peer ID for target node {}, falling back to untargeted transfer", targetNode.host());
+      transferLeadershipAndWait(servers, timeoutSeconds);
+      return;
+    }
+
+    final ServerWrapper leader = servers.get(leaderIdx);
+    logger.info("Transferring leadership to peer {} ({})", targetPeerId, targetNode.host());
+    try {
+      final HttpURLConnection conn = (HttpURLConnection) URI.create(
+          "http://" + leader.host() + ":" + leader.httpPort() + "/api/v1/cluster/leader").toURL().openConnection();
+      conn.setRequestMethod("POST");
+      conn.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes(StandardCharsets.UTF_8)));
+      conn.setRequestProperty("Content-Type", "application/json");
+      conn.setConnectTimeout(5000);
+      conn.setReadTimeout(30000);
+      conn.setDoOutput(true);
+      try {
+        conn.getOutputStream().write(
+            new JSONObject().put("peerId", targetPeerId).put("timeoutMs", 30000).toString().getBytes(StandardCharsets.UTF_8));
+        final int status = conn.getResponseCode();
+        if (status == 200)
+          logger.info("Leadership transfer to {} initiated", targetPeerId);
+        else
+          logger.warn("Leadership transfer to {} returned HTTP {}", targetPeerId, status);
+      } finally {
+        conn.disconnect();
+      }
+    } catch (final Exception e) {
+      logger.warn("Leadership transfer to {} failed: {}", targetPeerId, e.getMessage());
+    }
+
+    final int newLeaderIdx = waitForRaftLeader(servers, timeoutSeconds);
+    if (newLeaderIdx >= 0 && newLeaderIdx != servers.indexOf(targetNode))
+      logger.warn("Leadership transfer: expected {} but new leader is node {}", targetPeerId, newLeaderIdx);
+  }
+
+  /**
    * Triggers a Raft leadership transfer on the current leader, forcing all nodes to recreate
    * their gRPC channels. This resolves stale gRPC connections stuck in exponential backoff
    * after network partitions. Waits for a new leader to be elected before returning.
@@ -648,14 +731,14 @@ public abstract class ContainersTestTemplate {
           "http://" + leader.host() + ":" + leader.httpPort() + "/api/v1/cluster/leader").toURL().openConnection();
       conn.setRequestMethod("POST");
       conn.setRequestProperty("Authorization",
-          "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes()));
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes(StandardCharsets.UTF_8)));
       conn.setRequestProperty("Content-Type", "application/json");
       conn.setConnectTimeout(5000);
       conn.setReadTimeout(30000);
       conn.setDoOutput(true);
       try {
         // Transfer to any peer (Ratis picks the best candidate)
-        conn.getOutputStream().write("{\"peerId\":\"\",\"timeoutMs\":30000}".getBytes());
+        conn.getOutputStream().write("{\"peerId\":\"\",\"timeoutMs\":30000}".getBytes(StandardCharsets.UTF_8));
         final int status = conn.getResponseCode();
         if (status == 200)
           logger.info("Leadership transfer initiated");
