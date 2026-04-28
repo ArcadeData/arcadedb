@@ -36,6 +36,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /**
  * Network partition recovery and data convergence tests for Raft HA cluster resilience.
  * Tests partition healing and Raft log catch-up after network failures.
@@ -261,7 +263,7 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
 
       // Wait for Raft to elect a leader with the restarted node in the cluster
       // before starting the convergence check.
-      waitForRaftLeader(servers, 60);
+      assertThat(waitForRaftLeader(servers, 60)).as("Cycle %d: Raft leader must be elected before convergence check", cycle).isGreaterThanOrEqualTo(0);
 
       logger.info("Cycle {}: Waiting for Raft log catch-up convergence (expected={})", cycle, cycleCount);
       final int currentCycle = cycle;
