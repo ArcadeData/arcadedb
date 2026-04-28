@@ -271,38 +271,208 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * Merges a path with relationships.
-   * For now, this is a simplified implementation that creates if any part doesn't exist.
-   *
-   * @param pathPattern path pattern to merge
-   * @param result result to store merged elements in
-   * @return true if any element was created, false if all were matched
-   */
-  /**
    * Merges a path, returning ALL matching paths or creating one.
-   * When vertices are bound, finds all matching edges; creates if none match.
+   * Unbound endpoint variables are resolved via edge traversal only — never by
+   * independent node lookup — so an unbound label-only endpoint is not silently
+   * mapped to an unrelated existing node (fix for issue #3998).
    */
   private List<Result> mergePathAll(final PathPattern pathPattern, final ResultInternal baseResult) {
-    final List<Vertex> vertices = new ArrayList<>();
-    boolean anyNodeCreated = false;
+    final List<Result> found = findAllMatchingPaths(pathPattern, baseResult);
+    if (!found.isEmpty())
+      return found;
+    return createNewPath(pathPattern, baseResult);
+  }
 
-    // Resolve all vertices in the path
+  /**
+   * Finds all complete existing paths that match {@code pathPattern}.
+   * Traversal starts from any already-bound anchor node and follows edges to
+   * discover the remaining pattern; unbound intermediate and endpoint nodes are
+   * matched by label/property only after being reached via a qualifying edge.
+   */
+  private List<Result> findAllMatchingPaths(final PathPattern pathPattern, final ResultInternal baseResult) {
+    final List<Result> results = new ArrayList<>();
+    traverseFromNode(pathPattern, 0, null, copyResult(baseResult), results);
+    return results;
+  }
+
+  /**
+   * Recursive DFS walker.  {@code nodeIndex} is the current position in the
+   * path (0 = start node, {@code pathPattern.getRelationshipCount()} = terminal
+   * node).  {@code forcedVertex} is non-null when the node was reached via a
+   * preceding edge traversal; otherwise the node is resolved from
+   * {@code currentResult} or left as "unbound" for a full-scan.
+   */
+  private void traverseFromNode(final PathPattern pathPattern, final int nodeIndex,
+      final Vertex forcedVertex, final ResultInternal currentResult, final List<Result> results) {
+
+    final NodePattern nodePattern = pathPattern.getNode(nodeIndex);
+
+    // Determine the vertex at this position
+    Vertex vertex = forcedVertex;
+    if (nodePattern.getVariable() != null) {
+      final Object bound = currentResult.getProperty(nodePattern.getVariable());
+      if (bound instanceof Vertex v) {
+        if (vertex != null && !vertex.equals(v))
+          return;
+        vertex = v;
+      }
+    }
+
+    if (nodeIndex == pathPattern.getRelationshipCount()) {
+      // Terminal node: the full path has been matched up to here
+      if (vertex == null)
+        return;
+
+      // If the node variable was pre-bound (from MATCH), the reached vertex must be identical
+      if (nodePattern.getVariable() != null) {
+        final Object preBound = currentResult.getProperty(nodePattern.getVariable());
+        if (preBound instanceof Vertex bv && !bv.equals(vertex))
+          return;
+      }
+
+      if (!matchesNodePattern(vertex, nodePattern, currentResult))
+        return;
+
+      final ResultInternal r = copyResult(currentResult);
+      if (nodePattern.getVariable() != null)
+        r.setProperty(nodePattern.getVariable(), vertex);
+      r.setProperty("  wasCreated", false);
+      addPathBinding(r, pathPattern);
+      results.add(r);
+      return;
+    }
+
+    final RelationshipPattern relPattern = pathPattern.getRelationship(nodeIndex);
+
+    if (vertex != null) {
+      // Anchor is known — verify it matches its own pattern, then traverse edges
+      if (!matchesNodePattern(vertex, nodePattern, currentResult))
+        return;
+
+      final ResultInternal stepResult = copyResult(currentResult);
+      if (nodePattern.getVariable() != null)
+        stepResult.setProperty(nodePattern.getVariable(), vertex);
+
+      traverseEdgesFromVertex(pathPattern, nodeIndex, vertex, relPattern, stepResult, results);
+    } else {
+      // Anchor is unbound — scan all edges of the required type; both endpoints
+      // of each edge must satisfy their respective node patterns
+      if (!relPattern.hasTypes())
+        return;
+      final String relType = relPattern.getFirstType();
+      if (!context.getDatabase().getSchema().existsType(relType))
+        return;
+
+      final Map<String, Object> relProps = relPattern.hasProperties()
+          ? evaluateProperties(relPattern.getProperties(), currentResult) : null;
+
+      @SuppressWarnings("unchecked")
+      final Iterator<Identifiable> it = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(relType, true);
+      while (it.hasNext()) {
+        final Identifiable id = it.next();
+        if (!(id instanceof Edge edge))
+          continue;
+        if (relProps != null && !matchesProperties(edge, relProps))
+          continue;
+
+        final Direction dir = relPattern.getDirection();
+        final NodePattern nextPattern = pathPattern.getNode(nodeIndex + 1);
+
+        if (dir == Direction.OUT || dir == Direction.BOTH) {
+          final Vertex sourceV = edge.getVertex(Vertex.DIRECTION.OUT);
+          final Vertex targetV = edge.getVertex(Vertex.DIRECTION.IN);
+          if (matchesNodePattern(sourceV, nodePattern, currentResult) && matchesNodePattern(targetV, nextPattern, currentResult)) {
+            final ResultInternal stepResult = copyResult(currentResult);
+            if (nodePattern.getVariable() != null)
+              stepResult.setProperty(nodePattern.getVariable(), sourceV);
+            if (relPattern.getVariable() != null)
+              stepResult.setProperty(relPattern.getVariable(), edge);
+            traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+          }
+        }
+        if (dir == Direction.IN || dir == Direction.BOTH) {
+          final Vertex sourceV = edge.getVertex(Vertex.DIRECTION.IN);
+          final Vertex targetV = edge.getVertex(Vertex.DIRECTION.OUT);
+          if (matchesNodePattern(sourceV, nodePattern, currentResult) && matchesNodePattern(targetV, nextPattern, currentResult)) {
+            final ResultInternal stepResult = copyResult(currentResult);
+            if (nodePattern.getVariable() != null)
+              stepResult.setProperty(nodePattern.getVariable(), sourceV);
+            if (relPattern.getVariable() != null)
+              stepResult.setProperty(relPattern.getVariable(), edge);
+            traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Traverses the edges of {@code vertex} that match {@code relPattern} and
+   * recurses into each reachable next node.
+   */
+  private void traverseEdgesFromVertex(final PathPattern pathPattern, final int nodeIndex,
+      final Vertex vertex, final RelationshipPattern relPattern,
+      final ResultInternal currentResult, final List<Result> results) {
+
+    if (!relPattern.hasTypes())
+      return;
+
+    final String relType = relPattern.getFirstType();
+    final Map<String, Object> relProps = relPattern.hasProperties()
+        ? evaluateProperties(relPattern.getProperties(), currentResult) : null;
+
+    final boolean inbound = relPattern.getDirection() == Direction.IN;
+    final Vertex.DIRECTION edgeDir = inbound ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+    final Vertex.DIRECTION otherEnd = inbound ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
+
+    for (final Edge edge : vertex.getEdges(edgeDir, relType)) {
+      if (relProps != null && !matchesProperties(edge, relProps))
+        continue;
+
+      final Vertex nextV = edge.getVertex(otherEnd);
+      final ResultInternal stepResult = copyResult(currentResult);
+      if (relPattern.getVariable() != null)
+        stepResult.setProperty(relPattern.getVariable(), edge);
+
+      traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, results);
+    }
+
+    // For undirected patterns also traverse the reverse direction
+    if (relPattern.getDirection() == Direction.BOTH) {
+      for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN, relType)) {
+        if (relProps != null && !matchesProperties(edge, relProps))
+          continue;
+
+        final Vertex nextV = edge.getVertex(Vertex.DIRECTION.OUT);
+        final ResultInternal stepResult = copyResult(currentResult);
+        if (relPattern.getVariable() != null)
+          stepResult.setProperty(relPattern.getVariable(), edge);
+
+        traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, results);
+      }
+    }
+  }
+
+  /**
+   * Creates all nodes and edges in the path that are not already bound from a
+   * preceding MATCH.  Never calls {@code findNode()} — every missing node is
+   * created fresh.
+   */
+  private List<Result> createNewPath(final PathPattern pathPattern, final ResultInternal baseResult) {
+    final List<Vertex> vertices = new ArrayList<>();
+
     for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
       final NodePattern nodePattern = pathPattern.getNode(i);
       Vertex vertex = null;
 
       if (nodePattern.getVariable() != null) {
         final Object existing = baseResult.getProperty(nodePattern.getVariable());
-        if (existing instanceof Vertex)
-          vertex = (Vertex) existing;
+        if (existing instanceof Vertex v)
+          vertex = v;
       }
 
       if (vertex == null) {
-        vertex = findNode(nodePattern, baseResult);
-        if (vertex == null) {
-          vertex = createVertex(nodePattern, baseResult);
-          anyNodeCreated = true;
-        }
+        vertex = createVertex(nodePattern, baseResult);
         if (nodePattern.getVariable() != null)
           baseResult.setProperty(nodePattern.getVariable(), vertex);
       }
@@ -310,45 +480,40 @@ public class MergeStep extends AbstractExecutionStep {
       vertices.add(vertex);
     }
 
-    // Merge relationships — find ALL matching edges or create
     for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
       final RelationshipPattern relPattern = pathPattern.getRelationship(i);
-      final Vertex fromVertex;
-      final Vertex toVertex;
+      final Vertex fromVertex = relPattern.getDirection() == Direction.IN
+          ? vertices.get(i + 1) : vertices.get(i);
+      final Vertex toVertex = relPattern.getDirection() == Direction.IN
+          ? vertices.get(i) : vertices.get(i + 1);
 
-      if (relPattern.getDirection() == Direction.IN) {
-        fromVertex = vertices.get(i + 1);
-        toVertex = vertices.get(i);
-      } else {
-        fromVertex = vertices.get(i);
-        toVertex = vertices.get(i + 1);
-      }
-
-      final List<Edge> matchingEdges = findAllEdges(fromVertex, toVertex, relPattern, baseResult);
-
-      if (!matchingEdges.isEmpty()) {
-        // Return one result per matching edge
-        final List<Result> results = new ArrayList<>();
-        for (final Edge edge : matchingEdges) {
-          final ResultInternal r = copyResult(baseResult);
-          if (relPattern.getVariable() != null)
-            r.setProperty(relPattern.getVariable(), edge);
-          r.setProperty("  wasCreated", false);
-          addPathBinding(r, pathPattern);
-          results.add(r);
-        }
-        return results;
-      }
-
-      // No matching edge - create one
       final Edge edge = createEdge(fromVertex, toVertex, relPattern, baseResult);
       if (relPattern.getVariable() != null)
         baseResult.setProperty(relPattern.getVariable(), edge);
     }
 
     addPathBinding(baseResult, pathPattern);
-    baseResult.setProperty("  wasCreated", anyNodeCreated || true);
+    baseResult.setProperty("  wasCreated", true);
     return List.of(baseResult);
+  }
+
+  /**
+   * Returns true if {@code vertex} satisfies {@code nodePattern}'s label and
+   * property constraints.
+   */
+  private boolean matchesNodePattern(final Vertex vertex, final NodePattern nodePattern, final Result result) {
+    if (nodePattern.hasLabels()) {
+      for (final String label : nodePattern.getLabels()) {
+        if (!Labels.hasLabel(vertex, label))
+          return false;
+      }
+    }
+    if (nodePattern.hasProperties()) {
+      final Map<String, Object> props = evaluateProperties(nodePattern.getProperties(), result);
+      if (!matchesProperties(vertex, props))
+        return false;
+    }
+    return true;
   }
 
   private void addPathBinding(final ResultInternal result, final PathPattern pathPattern) {
@@ -427,109 +592,6 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * Finds a node matching the pattern.
-   *
-   * @param nodePattern node pattern to find
-   * @param result current result context for evaluating property expressions
-   * @return matching vertex or null
-   */
-  private Vertex findNode(final NodePattern nodePattern, final Result result) {
-    // Evaluate property expressions against current result context (may be empty)
-    final Map<String, Object> evaluatedProperties = nodePattern.hasProperties()
-        ? evaluateProperties(nodePattern.getProperties(), result)
-        : null;
-
-    if (!nodePattern.hasLabels()) {
-      // No labels specified: MERGE (a) or MERGE (a {prop: val})
-      // Match any vertex (optionally with matching properties)
-      for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-        if (type instanceof VertexType) {
-          @SuppressWarnings("unchecked")
-          final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
-          while (iter.hasNext()) {
-            final Identifiable id = iter.next();
-            if (id instanceof Vertex vertex) {
-              if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
-                return vertex;
-            }
-          }
-        }
-      }
-      return null;
-    }
-
-    final List<String> labels = nodePattern.getLabels();
-
-    // For multi-label MERGE, use composite type if available, otherwise check all labels
-    if (labels.size() > 1) {
-      // Try to find a vertex that has ALL specified labels
-      final String firstLabel = labels.get(0);
-      if (!context.getDatabase().getSchema().existsType(firstLabel))
-        return null;
-
-      @SuppressWarnings("unchecked")
-      final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(firstLabel, true);
-      while (iterator.hasNext()) {
-        final Identifiable identifiable = iterator.next();
-        if (identifiable instanceof Vertex vertex) {
-          // Check that the vertex has ALL required labels
-          final List<String> vertexLabels = Labels.getLabels(vertex);
-          if (vertexLabels.containsAll(labels)) {
-            if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
-              return vertex;
-          }
-        }
-      }
-      return null;
-    }
-
-    final String label = labels.get(0);
-
-    // Check if the type exists in the schema before iterating
-    if (!context.getDatabase().getSchema().existsType(label))
-      return null;
-
-    // OPTIMIZATION: try index before full scan
-    if (evaluatedProperties != null && !evaluatedProperties.isEmpty()) {
-      final DocumentType type = context.getDatabase().getSchema().getType(label);
-      if (type != null) {
-        final Iterator<Identifiable> indexIter = tryFindByIndex(type, label, evaluatedProperties);
-        if (indexIter != null) {
-          while (indexIter.hasNext()) {
-            final Identifiable identifiable = indexIter.next();
-            if (identifiable instanceof Vertex vertex && matchesProperties(vertex, evaluatedProperties))
-              return vertex;
-          }
-          return null;
-        }
-      }
-    }
-
-    @SuppressWarnings("unchecked")
-    final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-
-    // Find first vertex matching all properties (or any vertex if no properties specified)
-    while (iterator.hasNext()) {
-      final Identifiable identifiable = iterator.next();
-      if (identifiable instanceof Vertex vertex) {
-        if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
-          return vertex;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Finds an edge matching the pattern between two vertices.
-   *
-   * @param from source vertex
-   * @param to   target vertex
-   * @param relPattern relationship pattern
-   * @param result current result context for evaluating property expressions
-   * @return matching edge or null
-   */
-  /**
    * Finds ALL nodes matching the pattern.
    */
   private List<Vertex> findAllNodes(final NodePattern nodePattern, final Result result) {
@@ -603,79 +665,6 @@ public class MergeStep extends AbstractExecutionStep {
           matches.add(vertex);
     }
     return matches;
-  }
-
-  /**
-   * Finds ALL edges matching the pattern between two vertices.
-   */
-  private List<Edge> findAllEdges(final Vertex from, final Vertex to, final RelationshipPattern relPattern, final Result result) {
-    final List<Edge> matches = new ArrayList<>();
-    if (!relPattern.hasTypes())
-      return matches;
-
-    final String type = relPattern.getFirstType();
-    final Map<String, Object> evaluatedProperties = relPattern.hasProperties()
-        ? evaluateProperties(relPattern.getProperties(), result)
-        : null;
-
-    // Check outgoing edges from 'from' to 'to'
-    final Iterator<Edge> outEdges = from.getEdges(Vertex.DIRECTION.OUT, type).iterator();
-    while (outEdges.hasNext()) {
-      final Edge edge = outEdges.next();
-      if (edge.getIn().equals(to))
-        if (evaluatedProperties == null || matchesProperties(edge, evaluatedProperties))
-          matches.add(edge);
-    }
-
-    // For undirected (BOTH) patterns, also check reverse direction
-    if (relPattern.getDirection() == Direction.BOTH) {
-      final Iterator<Edge> reverseEdges = to.getEdges(Vertex.DIRECTION.OUT, type).iterator();
-      while (reverseEdges.hasNext()) {
-        final Edge edge = reverseEdges.next();
-        if (edge.getIn().equals(from))
-          if (evaluatedProperties == null || matchesProperties(edge, evaluatedProperties))
-            matches.add(edge);
-      }
-    }
-
-    return matches;
-  }
-
-  private Edge findEdge(final Vertex from, final Vertex to, final RelationshipPattern relPattern, final Result result) {
-    if (!relPattern.hasTypes()) {
-      return null;
-    }
-
-    final String type = relPattern.getFirstType();
-
-    // Evaluate property expressions against current result context
-    final Map<String, Object> evaluatedProperties = relPattern.hasProperties()
-        ? evaluateProperties(relPattern.getProperties(), result)
-        : null;
-
-    // Check outgoing edges from 'from' to 'to'
-    final Iterator<Edge> outEdges = from.getEdges(Vertex.DIRECTION.OUT, type).iterator();
-    while (outEdges.hasNext()) {
-      final Edge edge = outEdges.next();
-      if (edge.getIn().equals(to)) {
-        if (evaluatedProperties == null || matchesProperties(edge, evaluatedProperties))
-          return edge;
-      }
-    }
-
-    // For undirected (BOTH) patterns, also check reverse: edges from 'to' to 'from'
-    if (relPattern.getDirection() == Direction.BOTH) {
-      final Iterator<Edge> reverseEdges = to.getEdges(Vertex.DIRECTION.OUT, type).iterator();
-      while (reverseEdges.hasNext()) {
-        final Edge edge = reverseEdges.next();
-        if (edge.getIn().equals(from)) {
-          if (evaluatedProperties == null || matchesProperties(edge, evaluatedProperties))
-            return edge;
-        }
-      }
-    }
-
-    return null;
   }
 
   /**
