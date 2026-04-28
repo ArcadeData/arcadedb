@@ -5,14 +5,12 @@ on:
   push:
     paths:
       - 'bindings/python/**'
-      - '**/*.java'
       - '.github/workflows/test-python-examples.yml'
 
   # Run on pull request affecting bindings/python/
   pull_request:
     paths:
       - 'bindings/python/**'
-      - '**/*.java'
       - '.github/workflows/test-python-examples.yml'
 
   # Run after release workflow completes
