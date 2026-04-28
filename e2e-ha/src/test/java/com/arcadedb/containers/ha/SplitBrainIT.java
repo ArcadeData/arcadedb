@@ -379,6 +379,8 @@ class   SplitBrainIT extends ContainersTestTemplate {
 
       // Wait for the other majority node to replicate writes before sampling the count.
       // This ensures cycleLeaderCount is captured from stable state, not during Raft transition.
+      // Alias required: servers is reassigned later in this loop body (after restart), making
+      // it not effectively final and therefore not capturable in the lambda below.
       final List<ServerWrapper> majorityServers = servers;
       Awaitility.await()
           .atMost(60, TimeUnit.SECONDS)
