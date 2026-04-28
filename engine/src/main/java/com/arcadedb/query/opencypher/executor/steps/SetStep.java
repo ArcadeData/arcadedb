@@ -131,6 +131,25 @@ public class SetStep extends AbstractExecutionStep {
     if (setClause == null || setClause.isEmpty())
       return;
 
+    // Pre-resolve any vertex aliases that were replaced by a label change on a prior row so
+    // that property-SET operations (which go through resolveLatestDoc) observe the live vertex
+    // rather than the deleted original. Chain-traverse to the head in case a vertex was
+    // replaced more than once.
+    if (!labelReplacements.isEmpty()) {
+      for (final String propName : result.getPropertyNames()) {
+        final Object propValue = result.getProperty(propName);
+        if (propValue instanceof Vertex v) {
+          Vertex replacement = labelReplacements.get(v.getIdentity());
+          if (replacement != null) {
+            Vertex next;
+            while ((next = labelReplacements.get(replacement.getIdentity())) != null)
+              replacement = next;
+            ((ResultInternal) result).setProperty(propName, replacement);
+          }
+        }
+      }
+    }
+
     final boolean wasInTransaction = context.getDatabase().isTransactionActive();
 
     try {
@@ -323,8 +342,11 @@ public class SetStep extends AbstractExecutionStep {
     // If this vertex was already replaced on a prior row (row fanout hitting the same node),
     // redirect to the replacement so the idempotency check below can use the current type.
     final RID originalRid = vertex.getIdentity();
-    final Vertex prior = labelReplacements.get(originalRid);
+    Vertex prior = labelReplacements.get(originalRid);
     if (prior != null) {
+      Vertex next;
+      while ((next = labelReplacements.get(prior.getIdentity())) != null)
+        prior = next;
       propagateUpdateToSameNodeAliases(result, vertex, prior);
       vertex = prior;
     }
