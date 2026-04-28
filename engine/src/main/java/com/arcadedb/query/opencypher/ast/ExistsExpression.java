@@ -93,19 +93,24 @@ public class ExistsExpression implements Expression {
   }
 
   /**
-   * Checks if a variable name is used anywhere in the subquery text.
+   * Checks if a variable name is used anywhere in the subquery text. Scans every occurrence and
+   * accepts the variable as long as at least one is a whole-word match, so e.g. {@code p} is
+   * detected in {@code WHERE p2.age > p.age} (where {@code p} appears first inside {@code p2}).
    */
   private static boolean variableUsedInSubquery(final String subquery, final String varName) {
-    final int idx = subquery.indexOf(varName);
-    if (idx < 0)
-      return false;
-    // Verify it's a word boundary (not part of a longer identifier)
-    if (idx > 0 && isCypherIdentifierChar(subquery.charAt(idx - 1)))
-      return false;
-    final int end = idx + varName.length();
-    if (end < subquery.length() && isCypherIdentifierChar(subquery.charAt(end)))
-      return false;
-    return true;
+    int fromIndex = 0;
+    final int len = varName.length();
+    while (true) {
+      final int idx = subquery.indexOf(varName, fromIndex);
+      if (idx < 0)
+        return false;
+      final boolean leftOk = idx == 0 || !isCypherIdentifierChar(subquery.charAt(idx - 1));
+      final int end = idx + len;
+      final boolean rightOk = end >= subquery.length() || !isCypherIdentifierChar(subquery.charAt(end));
+      if (leftOk && rightOk)
+        return true;
+      fromIndex = idx + 1;
+    }
   }
 
   /**

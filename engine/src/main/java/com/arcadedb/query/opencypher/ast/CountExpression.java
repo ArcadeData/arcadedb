@@ -100,15 +100,23 @@ public class CountExpression implements Expression {
   }
 
   private static boolean variableUsedInSubquery(final String subquery, final String varName) {
-    final int idx = subquery.indexOf(varName);
-    if (idx < 0)
-      return false;
-    if (idx > 0 && Character.isLetterOrDigit(subquery.charAt(idx - 1)))
-      return false;
-    final int end = idx + varName.length();
-    if (end < subquery.length() && Character.isLetterOrDigit(subquery.charAt(end)))
-      return false;
-    return true;
+    int fromIndex = 0;
+    final int len = varName.length();
+    while (true) {
+      final int idx = subquery.indexOf(varName, fromIndex);
+      if (idx < 0)
+        return false;
+      final boolean leftOk = idx == 0 || !isCypherIdentifierChar(subquery.charAt(idx - 1));
+      final int end = idx + len;
+      final boolean rightOk = end >= subquery.length() || !isCypherIdentifierChar(subquery.charAt(end));
+      if (leftOk && rightOk)
+        return true;
+      fromIndex = idx + 1;
+    }
+  }
+
+  private static boolean isCypherIdentifierChar(final char c) {
+    return Character.isLetterOrDigit(c) || c == '_';
   }
 
   private static String injectMatchPatterns(final String subquery, final List<String> patterns) {
