@@ -223,9 +223,20 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
         if (pageCursors[i] != null) {
           final RID[] rids = pageCursors[i].getValue();
-          if (rids != null) {
-            final RID r = rids[rids.length - 1];
-            if (r.getBucketId() < 0)
+          if (rids != null && rids.length > 0) {
+            // For non-unique indexes a key may have a mix of valid RIDs and per-RID tombstones
+            // (encoded as RID(-(bucketId+2), position)). The page still contributes to iteration
+            // as long as it holds anything other than pure REMOVED_ENTRY_RID full-key tombstones;
+            // per-RID filtering happens in next(). validIterators must stay in sync with the
+            // --validIterators decrement done by next() when each pageCursor is advanced.
+            boolean allFullKeyTomb = true;
+            for (final RID r : rids) {
+              if (r.getBucketId() != -1 || r.getPosition() != -1) {
+                allFullKeyTomb = false;
+                break;
+              }
+            }
+            if (allFullKeyTomb)
               removedKeys.add(keys);
             else
               validIterators++;
@@ -360,66 +371,82 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       currentKeys = minorKey;
 
-      // FILTER DELETED ITEMS
-      final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
+      // FILTER DELETED ITEMS.
+      //
+      // For non-unique LSM-Tree indexes a key may have a mixture of valid RIDs and tombstones:
+      //   - REMOVED_ENTRY_RID = (-1, -1): a key-wide deletion (remove(keys) without rid).
+      //   - getRemovedRID(rid) = ((bucketId+2) * -1, position): a per-RID deletion targeting a
+      //     specific record that shared this key.
+      //
+      // The previous implementation collapsed any negative-bucketId entry into "the whole key
+      // is removed", which was correct only for unique indexes; for non-unique indexes a single
+      // per-RID tombstone caused every other RID at that key to be suppressed. Worse, the
+      // constructor would refuse to iterate any page whose last value happened to be a per-RID
+      // tombstone, so the cursor returned nothing as soon as deletions reached every page.
+      //
+      // We now process each page in temporal order (oldest to newest, i.e. minorKeyIndexes is
+      // [newest, ..., oldest], so iterate it in reverse) and within each page in insertion
+      // order. We track per-RID validity and only mark the whole key as deleted when we
+      // encounter a REMOVED_ENTRY_RID tombstone; a later insert at the same key resurrects it.
+      final HashMap<RID, Boolean> ridState = new HashMap<>();
 
-      final Set<RID> validRIDs = new HashSet<>();
-
-      for (int i = 0; i < minorKeyIndexes.size(); ++i) {
+      for (int i = minorKeyIndexes.size() - 1; i >= 0; --i) {
         final int minorKeyIndex = minorKeyIndexes.get(i);
-
         final LSMTreeIndexUnderlyingAbstractCursor currentCursor = pageCursors[minorKeyIndex];
         currentKeys = currentCursor.getKeys();
 
-        final RID[] tempCurrentValues = currentCursor.getValue();
-
-        if (i == 0 || currentValues == null)
-          currentValues = tempCurrentValues;
-        else if (tempCurrentValues.length > 0) {
-          // MERGE VALUES
-          final RID[] newArray = Arrays.copyOf(currentValues, currentValues.length + tempCurrentValues.length);
-          System.arraycopy(tempCurrentValues, 0, newArray, currentValues.length, newArray.length - currentValues.length);
-          currentValues = newArray;
-        }
-
-        // START FROM THE LAST ENTRY
-        final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(currentKeys);
-        for (int k = currentValues.length - 1; k > -1; --k) {
-          final RID rid = currentValues[k];
-
-          if (rid.getBucketId() < 0) {
-            removedKeys.add(keys);
-            continue;
+        final RID[] pageValues = currentCursor.getValue();
+        for (final RID rid : pageValues) {
+          if (rid.getBucketId() == -1 && rid.getPosition() == -1) {
+            // KEY-WIDE TOMBSTONE: invalidate every RID seen so far for this key. Any insert
+            // that follows in the temporal stream remains valid.
+            ridState.clear();
+          } else if (rid.getBucketId() < 0) {
+            // PER-RID TOMBSTONE: decode and mark only the original RID as deleted.
+            ridState.put(new RID(-rid.getBucketId() - 2, rid.getPosition()), Boolean.TRUE);
+          } else {
+            // INSERT: most recent operation on this RID wins.
+            ridState.put(rid, Boolean.FALSE);
           }
+        }
+      }
 
-          if (removedKeys.contains(keys))
-            // HAS BEEN DELETED
-            continue;
-
-          validRIDs.add(rid);
+      // ADVANCE EACH PAGE CURSOR PAST THIS KEY AND, if any page contributed, refresh
+      // currentValues with the per-RID-filtered set. When the minor key came only from
+      // the in-transaction cursor (minorKeyIndexes empty), leave the currentValues that
+      // was already set by the txCursor branch above.
+      if (!minorKeyIndexes.isEmpty()) {
+        final Set<RID> validRIDs = new HashSet<>();
+        for (final var entry : ridState.entrySet()) {
+          if (Boolean.FALSE.equals(entry.getValue()))
+            validRIDs.add(entry.getKey());
         }
 
-        // PREPARE THE NEXT ENTRY
-        if (currentCursor.hasNext()) {
-          currentCursor.next();
-          cursorKeys[minorKeyIndex] = currentCursor.getKeys();
+        for (int i = 0; i < minorKeyIndexes.size(); ++i) {
+          final int minorKeyIndex = minorKeyIndexes.get(i);
+          final LSMTreeIndexUnderlyingAbstractCursor currentCursor = pageCursors[minorKeyIndex];
 
-          if (serializedToKeys != null) {
-            final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[minorKeyIndex], toKeys);
+          if (currentCursor.hasNext()) {
+            currentCursor.next();
+            cursorKeys[minorKeyIndex] = currentCursor.getKeys();
 
-            if ((ascendingOrder && ((toKeysInclusive && compare > 0) || (!toKeysInclusive && compare >= 0))) || (!ascendingOrder
-                && ((toKeysInclusive && compare < 0) || (!toKeysInclusive && compare <= 0)))) {
-              currentCursor.close();
-              pageCursors[minorKeyIndex] = null;
-              cursorKeys[minorKeyIndex] = null;
-              --validIterators;
+            if (serializedToKeys != null) {
+              final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[minorKeyIndex], toKeys);
+
+              if ((ascendingOrder && ((toKeysInclusive && compare > 0) || (!toKeysInclusive && compare >= 0))) || (!ascendingOrder
+                  && ((toKeysInclusive && compare < 0) || (!toKeysInclusive && compare <= 0)))) {
+                currentCursor.close();
+                pageCursors[minorKeyIndex] = null;
+                cursorKeys[minorKeyIndex] = null;
+                --validIterators;
+              }
             }
+          } else {
+            currentCursor.close();
+            pageCursors[minorKeyIndex] = null;
+            cursorKeys[minorKeyIndex] = null;
+            --validIterators;
           }
-        } else {
-          currentCursor.close();
-          pageCursors[minorKeyIndex] = null;
-          cursorKeys[minorKeyIndex] = null;
-          --validIterators;
         }
 
         if (validRIDs.isEmpty())
