@@ -118,8 +118,9 @@ class RestoreDatabaseScenarioIT extends ContainersTestTemplate {
       waitForAllNodesKnowLeader(servers, 30);
       final int leaderIdx = waitForRaftLeader(servers, 30);
       if (leaderIdx != 0) {
-        logger.info("Node 0 is not the leader (leader is {}); transferring leadership back to node 0", leaderIdx);
+        logger.info("Node 0 is not the leader (leader is {}); attempting leadership transfer", leaderIdx);
         transferLeadershipAndWait(servers, 30);
+        assertThat(waitForRaftLeader(servers, 30)).as("Node 0 must be leader before restore").isEqualTo(0);
       }
 
       // Restore from the backup on node 0 (the node that holds the backup file)
