@@ -88,7 +88,10 @@ public interface Property {
    *       speed regardless of tier. Best default when writes are frequent.</li>
    *   <li>{@code max} - LZ4 HC encoder. ~10pp smaller output than {@code fast}, 8-20x slower compress;
    *       decompression speed is the same as {@code fast}. Best for write-once / read-many payloads.</li>
-   *   <li>{@code auto} - try {@code fast}; keep compressed only when it saves more than 10% of bytes.</li>
+   *   <li>{@code auto} - try {@code fast}; keep compressed only when it saves more than 10% of bytes.
+   *       <b>Cost:</b> on no-win records (e.g. dense float32 embeddings) the work is "compress, measure, throw
+   *       it away, fall back to raw". You pay one wasted LZ4 compress + one extra byte-array copy per record
+   *       compared to {@code none}. Use {@code none} explicitly when the workload tips no-win consistently.</li>
    * </ul>
    * The legacy alias {@code lz4} is accepted and stored as {@code fast}. Ignored for non-EXTERNAL properties.
    */

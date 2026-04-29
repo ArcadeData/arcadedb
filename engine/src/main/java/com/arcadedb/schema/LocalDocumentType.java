@@ -1068,10 +1068,20 @@ public class LocalDocumentType implements DocumentType {
    * for the duration of the count-then-drop sequence.
    */
   public void reclaimEmptyExternalBuckets() {
+    // Fail-fast on precondition #1 from the javadoc. A no-op return would silently mask the bug; throwing
+    // surfaces it during development AND production. The cost is one O(1) atomic read on a hot path that
+    // only runs after schema mutations and REBUILD TYPE, so it is negligible.
     if (hasExternalProperties())
-      // Guard against accidental misuse from future callers; better to no-op than to silently drop a bucket
-      // that the schema still expects writes to flow into.
-      return;
+      throw new IllegalStateException(
+          "reclaimEmptyExternalBuckets() requires !hasExternalProperties() but type '" + name + "' still has at"
+              + " least one EXTERNAL property. Calling this with EXTERNAL properties present would race with"
+              + " concurrent inserts that legitimately write into the bucket between the count() check and"
+              + " dropBucket(). Drop the EXTERNAL flag on every property of the type before reclaiming.");
+    // The TOCTOU window between count() == 0 and dropBucket() is closed when the caller honours the second
+    // precondition (no active transaction). With the EXTERNAL flag off, no new code path will write into
+    // these buckets; with no in-flight tx, no queued update can have a record waiting to flush either.
+    assert !((LocalDatabase) schema.getDatabase()).isTransactionActive() :
+        "reclaimEmptyExternalBuckets() must run with no active transaction; see javadoc precondition #2";
     final List<Integer> toDrop = new ArrayList<>();
     for (final Map.Entry<Integer, Integer> entry : externalBucketIdByPrimaryBucketId.entrySet()) {
       final LocalBucket extBucket = schema.getBucketById(entry.getValue(), false);
@@ -1239,6 +1249,10 @@ public class LocalDocumentType implements DocumentType {
       // user rename a bucket, the rename code MUST update both sides of this mapping (or it will go stale on
       // restart, and restoreExternalBuckets() will log SEVERE for the missing entry). Same constraint applies
       // to the external bucket itself: its file name carries the primary's name + "_ext" suffix.
+      // TODO(rename-bucket): when a user-level RENAME BUCKET is introduced (see LocalSchema), it MUST also
+      // (a) re-key this map's primary entry, (b) rename the paired '<oldName>_ext' bucket file to
+      // '<newName>_ext' to keep the naming convention consistent, and (c) re-save the schema so the JSON
+      // mirrors the new state. A grep for "TODO(rename-bucket)" surfaces every site that needs updating.
       final JSONObject extBuckets = new JSONObject();
       for (final Map.Entry<Integer, Integer> e : externalBucketIdByPrimaryBucketId.entrySet()) {
         final LocalBucket primary = schema.getBucketById(e.getKey(), false);

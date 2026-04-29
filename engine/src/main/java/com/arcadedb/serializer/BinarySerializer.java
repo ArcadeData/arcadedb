@@ -972,12 +972,15 @@ public class BinarySerializer {
     return header;
   }
 
-  /** Holder for {@link #writeExternalPropertyValue}: the bytes written and the type byte to put in the main record. */
-  public static final class ExternalWriteResult {
-    public final byte typeByte;
-    public final RID  rid;
+  /**
+   * Holder for {@link #writeExternalPropertyValue}: the bytes written and the type byte to put in the main
+   * record. Package-private along with the writer; tests reach it via {@code BinarySerializerTestHelper}.
+   */
+  static final class ExternalWriteResult {
+    final byte typeByte;
+    final RID  rid;
 
-    public ExternalWriteResult(final byte typeByte, final RID rid) {
+    ExternalWriteResult(final byte typeByte, final RID rid) {
       this.typeByte = typeByte;
       this.rid = rid;
     }
@@ -1021,12 +1024,6 @@ public class BinarySerializer {
           "Existing external RID " + existingExternalRid + " does not match the paired external bucket id "
               + externalBucketId + " for this record. The schema's external bucket mapping is inconsistent.");
 
-    // Step 1: serialise the raw value bytes. We do this even when compressing, because we need both the raw size
-    // (uncompressed-size header) and the option to fall back to raw on auto-mode no-win.
-    final Binary rawValueBytes = new Binary();
-    serializeValue(database, rawValueBytes, valueType, value);
-    rawValueBytes.flip();
-
     // The "lz4" legacy alias is normalised to "fast" by LocalProperty.setCompression(), so by the time the
     // policy reaches us it's already one of: null, "none", "fast", "max", "auto". No second alias check.
     final boolean fastMode = "fast".equalsIgnoreCase(compressionPolicy);
@@ -1034,11 +1031,41 @@ public class BinarySerializer {
     final boolean autoMode = "auto".equalsIgnoreCase(compressionPolicy);
     final boolean tryCompress = fastMode || maxMode || autoMode;
 
+    final Binary blob = new Binary();
+
+    if (!tryCompress) {
+      // Fast path (no compression policy): serialise straight into the blob. Avoids the extra Binary buffer +
+      // toByteArray() roundtrip the compressed path needs. This is the dense-vector default (compression is a
+      // loss for embeddings) and the throughput-critical case for write-heavy workloads.
+      blob.putByte(ExternalValueRecord.RECORD_TYPE);
+      blob.putByte(valueType);
+      serializeValue(database, blob, valueType, value);
+      blob.flip();
+      return finalizeExternalWrite(database, externalBucketId, existingExternalRid, blob, BinaryTypes.TYPE_EXTERNAL);
+    }
+
+    // Compressed path: we need the raw bytes both to compress and to fall back on auto-mode no-win, so this is
+    // the one case where the intermediate Binary is unavoidable.
+    //
+    // AUTO-MODE OVERHEAD (accepted, not optimised). When auto-mode picks the no-win branch the work done is:
+    //   1. serializeValue once into rawValueBytes      (always paid)
+    //   2. rawValueBytes.toByteArray() byte[] copy     (paid even when we end up not keeping the compressed form)
+    //   3. lz4.compress() call                          (CPU spent for nothing)
+    //   4. blob.append(rawValueBytes) byte copy         (effectively a third copy of the raw bytes)
+    // versus the non-compress fast path's single serialise-straight-into-blob. The serialise itself runs once,
+    // not twice; the cost is the extra byte[] copy + the discarded compress call. For workloads that actually
+    // tip into the no-win branch routinely (e.g. dense float32 embeddings), use {@code none} explicitly. Auto
+    // is correct for mixed workloads where most records benefit and the throughput hit on the minority is
+    // acceptable. We do not memoise the compressor output across calls because it is per-record state.
+    final Binary rawValueBytes = new Binary();
+    serializeValue(database, rawValueBytes, valueType, value);
+    rawValueBytes.flip();
+
     byte typeByte = BinaryTypes.TYPE_EXTERNAL;
     byte[] compressedPayload = null;
     int uncompressedSize = 0;
 
-    if (tryCompress && rawValueBytes.size() > 0) {
+    if (rawValueBytes.size() > 0) {
       final byte[] raw = rawValueBytes.toByteArray();
       final LZ4Compression lz4 = CompressionFactory.getLZ4();
       final byte[] compressed = maxMode ? lz4.compressMax(raw) : lz4.compress(raw);
@@ -1051,8 +1078,6 @@ public class BinarySerializer {
       }
     }
 
-    // Step 2: build the blob the bucket will store.
-    final Binary blob = new Binary();
     blob.putByte(ExternalValueRecord.RECORD_TYPE);
     blob.putByte(valueType);
     if (isExternalCompressedType(typeByte)) {
@@ -1063,8 +1088,16 @@ public class BinarySerializer {
       blob.append(rawValueBytes);
     }
     blob.flip();
+    return finalizeExternalWrite(database, externalBucketId, existingExternalRid, blob, typeByte);
+  }
 
-    // Step 3: insert or update in the paired bucket, with delta accounting consistent with cascade-delete.
+  /**
+   * Inserts or updates the given blob in the paired external bucket and returns the type byte + RID for the
+   * caller to embed in the main record. Extracted from {@link #writeExternalPropertyValue} to keep the two
+   * write paths (raw / compressed) short and to avoid duplicating the bucket-side accounting.
+   */
+  private ExternalWriteResult finalizeExternalWrite(final DatabaseInternal database, final int externalBucketId,
+      final RID existingExternalRid, final Binary blob, final byte typeByte) {
     final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
     final RID rid;
     if (existingExternalRid == null) {
@@ -1077,7 +1110,6 @@ public class BinarySerializer {
       externalBucket.updateRecord(rec, true);
       rid = existingExternalRid;
     }
-
     return new ExternalWriteResult(typeByte, rid);
   }
 
@@ -1135,12 +1167,17 @@ public class BinarySerializer {
       return Collections.emptyMap();
     if (!(record instanceof BaseDocument))
       return Collections.emptyMap();
-    final Binary oldBuffer = ((BaseRecord) record).getBuffer();
-    if (oldBuffer == null)
+    final Binary buf = ((BaseRecord) record).getBuffer();
+    if (buf == null)
       return Collections.emptyMap();
 
+    // Scan the record's own buffer in place (no copy). The buffer is the read-side of the record's content,
+    // which by the time serializeProperties reaches us has finished its own reads (it pulls the property map
+    // first via propertiesAsMap, which deserialises and caches into a Map, then calls us). Cascade-delete and
+    // CHECK DATABASE both call us outside any other buffer iteration. We still save/restore the position so
+    // a future caller mid-iteration would not be disturbed - cheap insurance for a hot update path.
+    final int savedPosition = buf.position();
     try {
-      final Binary buf = oldBuffer.copyOfContent();
       buf.position(((DocumentInternal) record).getPropertiesStartingPosition());
 
       final int headerEndOffset = buf.getInt();
@@ -1177,6 +1214,8 @@ public class BinarySerializer {
               + "record may be orphaned in the paired bucket.",
           e, identity, e.getMessage());
       return Collections.emptyMap();
+    } finally {
+      buf.position(savedPosition);
     }
   }
 

@@ -97,17 +97,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   protected final        int                       contentHeaderSize;
   private final          int                       maxRecordsInPage;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
-  // Buckets are PRIMARY by default (they hold the primary records of a type and are user-targetable via DML).
-  // Internal kinds (e.g. EXTERNAL_PROPERTY) hold serializer infrastructure that user-facing DML must not target.
-  // The purpose is persisted in schema.json (per-type) and restored at load time, see LocalDocumentType.
-  private                Purpose                   purpose                          = Purpose.PRIMARY;
 
+  /**
+   * Bucket purpose tag. Declared up here (next to the {@link #purpose} field that uses it) so the enum is the
+   * first thing a reader sees alongside the other bucket-level constants - the alternative was burying it
+   * mid-file between unrelated state, which made the EXTERNAL property contract hard to discover.
+   */
   public enum Purpose {
     /** Bucket holding the primary records of a type (vertex/edge/document). Targetable by user DML. */
     PRIMARY,
     /** Paired infrastructure bucket holding externalised property values. NOT targetable by user DML. */
     EXTERNAL_PROPERTY
   }
+
+  // Buckets are PRIMARY by default (they hold the primary records of a type and are user-targetable via DML).
+  // Internal kinds (e.g. EXTERNAL_PROPERTY) hold serializer infrastructure that user-facing DML must not target.
+  // The purpose is persisted in schema.json (per-type) and restored at load time, see LocalDocumentType.
+  private                Purpose                   purpose                          = Purpose.PRIMARY;
   // pageId → free-space-bytes. TreeMap ordering is unused (verified by grep), so a primitive
   // open-addressing map saves memory and avoids Integer boxing on every read/write/remove on
   // the page-allocation hot path. Bounded by MAX_PAGES_GATHER_STATS (100). Single-threaded
