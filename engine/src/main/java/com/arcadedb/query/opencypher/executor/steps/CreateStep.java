@@ -288,8 +288,8 @@ public class CreateStep extends AbstractExecutionStep {
       // Simple node creation: CREATE (n:Person {name: 'Alice'})
       final NodePattern nodePattern = pathPattern.getFirstNode();
       final Vertex vertex = createVertex(nodePattern, result);
-      final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : "n";
-      result.setProperty(variable, vertex);
+      if (nodePattern.getVariable() != null)
+        result.setProperty(nodePattern.getVariable(), vertex);
     } else {
       // Path with relationships: CREATE (a)-[r:KNOWS]->(b)
       final List<Vertex> vertices = new ArrayList<>();
