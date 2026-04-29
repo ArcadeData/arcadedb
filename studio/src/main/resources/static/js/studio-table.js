@@ -162,6 +162,17 @@ function renderTable() {
             searchBox.after(exportEl);
           else
             wrapper.prepend(exportEl);
+
+          // Fullscreen toggle: insert before search so that with float:right it lands on the rightmost edge
+          let fullscreenHtml = "<div class='dt-fullscreen-wrapper'>";
+          fullscreenHtml += "<button id='toggleTableFullscreenBtn' type='button' class='dt-fullscreen-btn fullscreen-toggle-btn' onclick='toggleWorkareaFullscreen()' title='Maximize'>";
+          fullscreenHtml += "<i class='fa fa-expand'></i><i class='fa fa-compress'></i>";
+          fullscreenHtml += "</button></div>";
+          let fullscreenEl = $(fullscreenHtml);
+          if (searchBox.length)
+            searchBox.before(fullscreenEl);
+          else
+            wrapper.prepend(fullscreenEl);
         }, 50);
 
         attachColumnResizers($("#result"));

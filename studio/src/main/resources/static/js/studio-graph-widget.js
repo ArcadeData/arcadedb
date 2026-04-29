@@ -522,24 +522,25 @@ function setGraphStyles() {
   globalCy.nodeHtmlLabel(nodeHtmlStyles);
 }
 
-function toggleGraphFullscreen() {
+function toggleWorkareaFullscreen() {
   let root = document.getElementById("tab-query");
   if (root == null) return;
 
-  let active = root.classList.toggle("graph-fullscreen");
+  let active = root.classList.toggle("workarea-fullscreen");
 
-  let btn = document.getElementById("toggleGraphFullscreenBtn");
-  if (btn != null) {
-    btn.innerHTML = active ? '<i class="fa fa-compress"></i>' : '<i class="fa fa-expand"></i>';
-    btn.title = active ? "Exit graph fullscreen" : "Maximize graph";
-  }
+  document.querySelectorAll(".fullscreen-toggle-btn").forEach(function (btn) {
+    btn.title = active ? "Exit fullscreen" : "Maximize";
+  });
 
-  if (globalCy != null) {
-    setTimeout(function () {
+  setTimeout(function () {
+    if (globalCy != null) {
       globalCy.resize();
       globalCy.fit(undefined, 30);
-    }, 50);
-  }
+    }
+    if (window.jQuery && $.fn.dataTable && $.fn.dataTable.isDataTable("#result")) {
+      try { $("#result").DataTable().columns.adjust(); } catch (e) { /* ignore */ }
+    }
+  }, 50);
 }
 
 function removeGraphElement(ele) {
