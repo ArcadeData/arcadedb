@@ -502,6 +502,52 @@ class ExternalPropertyTest extends TestHelper {
   }
 
   @Test
+  void externalBucketPathOverridePlacesFileOnSecondaryDirectory() throws java.io.IOException {
+    // Use a tier directory outside the database path to simulate cheaper-storage placement.
+    final java.nio.file.Path overrideDir = java.nio.file.Files.createTempDirectory("arcadedb-ext-tier-");
+    final Object previous = com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.getValue();
+    try {
+      // Apply the override on the open database. ensureExternalBucketFor reads it lazily when the first paired
+      // bucket is allocated, so the new path takes effect immediately for the type we are about to create.
+      database.getConfiguration().setValue(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH, overrideDir.toString());
+
+      final DocumentType type = database.getSchema().createDocumentType("Doc");
+      type.createProperty("blob", Type.STRING).setExternal(true);
+
+      final RID[] saved = new RID[1];
+      database.transaction(() -> {
+        final MutableDocument d = database.newDocument("Doc").set("blob", "tiered-payload");
+        d.save();
+        saved[0] = d.getIdentity();
+      });
+
+      // External bucket file lives in the override directory, not the database directory.
+      final var primary = type.getBuckets(false).getFirst();
+      final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
+      final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+
+      final java.io.File extFile = new java.io.File(database.getDatabasePath(), external.getName() + ".0.262144.v0.bucket");
+      assertThat(extFile.exists()).as("external bucket should NOT be in the database directory").isFalse();
+
+      final java.io.File[] tieredFiles = overrideDir.toFile().listFiles((dir, name) -> name.startsWith(external.getName()));
+      assertThat(tieredFiles).as("external bucket should be in the override directory").isNotNull().isNotEmpty();
+
+      // Reopen: FileManager must rediscover the tiered file via the secondary scan path so the record stays readable.
+      // The override is applied at open() via the global config, so set it there too before reopening.
+      com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.setValue(overrideDir.toString());
+      database.close();
+      database = factory.open();
+      database.getConfiguration().setValue(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH, overrideDir.toString());
+
+      final var loaded = database.lookupByRID(saved[0], true).asDocument();
+      assertThat(loaded.getString("blob")).isEqualTo("tiered-payload");
+    } finally {
+      com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.setValue(previous != null ? previous.toString() : "");
+      com.arcadedb.utility.FileUtils.deleteRecursively(overrideDir.toFile());
+    }
+  }
+
+  @Test
   void rollbackDiscardsBothPrimaryAndExternal() {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("blob", Type.STRING).setExternal(true);

@@ -2060,7 +2060,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       DatabaseContext.INSTANCE.init(this);
       setLockingEnabled(configuration.getValueAsBoolean(GlobalConfiguration.BACKUP_ENABLED));
 
-      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT);
+      // Optional second scan directory for paired external-property buckets that were tiered to cheaper storage
+      // via arcadedb.externalPropertyBucketPath. Empty by default; if set, FileManager opens .bucket files there too.
+      final String externalBucketPath = configuration.getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH);
+      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, externalBucketPath);
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
 
       open = true;

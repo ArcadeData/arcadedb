@@ -372,14 +372,29 @@ public class LocalSchema implements Schema {
   }
 
   public LocalBucket createBucket(final String bucketName, final int pageSize) {
+    return createBucket(bucketName, pageSize, databasePath);
+  }
+
+  /**
+   * Creates a bucket whose underlying file lives at {@code parentDirectory + File.separator + bucketName} instead of
+   * the default database directory. Used by paired external-property buckets when
+   * {@code arcadedb.externalPropertyBucketPath} is configured, so the heavy payload files can sit on cheaper storage.
+   * Falls back to the database directory when {@code parentDirectory} is null or empty.
+   */
+  public LocalBucket createBucket(final String bucketName, final int pageSize, final String parentDirectory) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucketMap.containsKey(bucketName))
       throw new SchemaException("Cannot create bucket '" + bucketName + "' because already exists");
 
+    final String dir = (parentDirectory == null || parentDirectory.isEmpty()) ? databasePath : parentDirectory;
+
     return recordFileChanges(() -> {
       try {
-        final LocalBucket bucket = new LocalBucket(database, bucketName, databasePath + File.separator + bucketName,
+        final File parent = new File(dir);
+        if (!parent.exists() && !parent.mkdirs())
+          throw new SchemaException("Cannot create directory '" + dir + "' for bucket '" + bucketName + "'");
+        final LocalBucket bucket = new LocalBucket(database, bucketName, dir + File.separator + bucketName,
             ComponentFile.MODE.READ_WRITE, pageSize, LocalBucket.CURRENT_VERSION);
         registerFile((Component) bucket);
         bucketMap.put(bucketName, bucket);
