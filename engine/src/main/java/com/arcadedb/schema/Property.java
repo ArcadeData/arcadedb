@@ -81,8 +81,16 @@ public interface Property {
   boolean isExternal();
 
   /**
-   * Compression policy for an EXTERNAL property's value: "none" (default), "auto" (try LZ4, keep compressed only
-   * if it saves >10%), or an explicit algorithm like "lz4". Ignored for non-EXTERNAL properties.
+   * Compression policy for an EXTERNAL property's value:
+   * <ul>
+   *   <li>{@code none} (default) - store raw.</li>
+   *   <li>{@code fast} - LZ4 fast encoder. ~1.2-1.5x faster compress than Snappy on text, identical decompress
+   *       speed regardless of tier. Best default when writes are frequent.</li>
+   *   <li>{@code max} - LZ4 HC encoder. ~10pp smaller output than {@code fast}, 8-20x slower compress;
+   *       decompression speed is the same as {@code fast}. Best for write-once / read-many payloads.</li>
+   *   <li>{@code auto} - try {@code fast}; keep compressed only when it saves more than 10% of bytes.</li>
+   * </ul>
+   * The legacy alias {@code lz4} is accepted and stored as {@code fast}. Ignored for non-EXTERNAL properties.
    */
   Property setCompression(String compression);
 

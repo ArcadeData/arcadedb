@@ -274,11 +274,11 @@ public class BinarySerializer {
               embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
 
           final Object propertyValue;
-          if (type == BinaryTypes.TYPE_EXTERNAL || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4) {
+          if (isExternalType(type)) {
             final int extBucketId = (int) buffer.getNumber();
             final long extPosition = buffer.getNumber();
             propertyValue = readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
-                type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4);
+                isExternalCompressedType(type));
           } else {
             propertyValue = deserializeValue(database, buffer, type, propertyModifier);
           }
@@ -355,11 +355,11 @@ public class BinarySerializer {
         final EmbeddedModifierProperty propertyModifier =
             embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
 
-        if (type == BinaryTypes.TYPE_EXTERNAL || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4) {
+        if (isExternalType(type)) {
           final int extBucketId = (int) buffer.getNumber();
           final long extPosition = buffer.getNumber();
           return readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
-              type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4);
+              isExternalCompressedType(type));
         }
 
         return deserializeValue(database, buffer, type, propertyModifier);
@@ -996,17 +996,36 @@ public class BinarySerializer {
     return local;
   }
 
+  /** True for any of TYPE_EXTERNAL, TYPE_EXTERNAL_COMPRESSED_FAST, TYPE_EXTERNAL_COMPRESSED_MAX. */
+  private static boolean isExternalType(final byte type) {
+    return type == BinaryTypes.TYPE_EXTERNAL
+        || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_FAST
+        || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_MAX;
+  }
+
   /**
-   * Serialises an EXTERNAL property value, optionally compressing per the property's policy
-   * ("none"|"auto"|"lz4"), writes the resulting blob to the paired external bucket, and returns the type byte
-   * the caller should put in the main record (TYPE_EXTERNAL or TYPE_EXTERNAL_COMPRESSED_LZ4).
-   * In "auto" mode compression is kept only when it saves more than 10% of bytes; otherwise the record is written
-   * raw. The decision is per-record so a single property can mix compressed and uncompressed records freely.
+   * True only for the compressed external types. LZ4 fast and LZ4 HC share the same byte format, so the read
+   * path needs only the compressed/raw distinction; both compressed types decode through the same
+   * {@code LZ4Compression.decompress} call.
    */
+  private static boolean isExternalCompressedType(final byte type) {
+    return type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_FAST
+        || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_MAX;
+  }
+
   /**
-   * Internal serializer plumbing. Made package-private; the test-only entry point
-   * {@code BinarySerializerTestHelper#injectOrphanExternalRecord} forwards into this method without exposing
-   * it to library consumers.
+   * Serialises an EXTERNAL property value per the property's compression policy, writes the resulting blob to
+   * the paired external bucket, and returns the type byte the caller should put in the main record.
+   * <p>
+   * Policy values:
+   * <ul>
+   *   <li>{@code none} (or null/empty) - store raw, type byte = TYPE_EXTERNAL.</li>
+   *   <li>{@code fast} - LZ4 fast encoder, type byte = TYPE_EXTERNAL_COMPRESSED_FAST.</li>
+   *   <li>{@code max}  - LZ4 HC encoder (slower compress, ~10pp smaller), type byte = TYPE_EXTERNAL_COMPRESSED_MAX.</li>
+   *   <li>{@code auto} - try LZ4 fast; keep only when it saves more than 10% of bytes, otherwise store raw.</li>
+   * </ul>
+   * The decision is per-record, so a single property may mix compressed and uncompressed records freely.
+   * Made package-private; tests reach it through {@code BinarySerializerTestHelper}.
    */
   ExternalWriteResult writeExternalPropertyValue(final DatabaseInternal database, final int externalBucketId,
       final RID existingExternalRid, final byte valueType, final Object value, final String compressionPolicy) {
@@ -1021,20 +1040,22 @@ public class BinarySerializer {
     serializeValue(database, rawValueBytes, valueType, value);
     rawValueBytes.flip();
 
-    final boolean tryLz4 = compressionPolicy != null
-        && ("auto".equalsIgnoreCase(compressionPolicy) || "lz4".equalsIgnoreCase(compressionPolicy));
+    final boolean fastMode = "fast".equalsIgnoreCase(compressionPolicy) || "lz4".equalsIgnoreCase(compressionPolicy);
+    final boolean maxMode = "max".equalsIgnoreCase(compressionPolicy);
     final boolean autoMode = "auto".equalsIgnoreCase(compressionPolicy);
+    final boolean tryCompress = fastMode || maxMode || autoMode;
 
     byte typeByte = BinaryTypes.TYPE_EXTERNAL;
     byte[] compressedPayload = null;
     int uncompressedSize = 0;
 
-    if (tryLz4 && rawValueBytes.size() > 0) {
+    if (tryCompress && rawValueBytes.size() > 0) {
       final byte[] raw = rawValueBytes.toByteArray();
-      final byte[] compressed = lz4().compress(raw);
-      // In auto mode skip compression unless it saves >10%. Outside auto mode (explicit "lz4") always keep it.
+      final byte[] compressed = maxMode ? lz4().compressMax(raw) : lz4().compress(raw);
+      // In auto mode skip compression unless it saves >10%. In fast/max mode always keep the compressed form
+      // (the user explicitly asked to compress, even if a particular record happens not to gain much).
       if (!autoMode || compressed.length < raw.length * 0.9) {
-        typeByte = BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4;
+        typeByte = maxMode ? BinaryTypes.TYPE_EXTERNAL_COMPRESSED_MAX : BinaryTypes.TYPE_EXTERNAL_COMPRESSED_FAST;
         compressedPayload = compressed;
         uncompressedSize = raw.length;
       }
@@ -1044,7 +1065,7 @@ public class BinarySerializer {
     final Binary blob = new Binary();
     blob.putByte(ExternalValueRecord.RECORD_TYPE);
     blob.putByte(valueType);
-    if (typeByte == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4) {
+    if (isExternalCompressedType(typeByte)) {
       blob.putUnsignedNumber(uncompressedSize);
       // putByteArray writes the raw bytes without a length prefix; the compressed payload runs to end-of-record.
       blob.putByteArray(compressedPayload);
@@ -1078,7 +1099,8 @@ public class BinarySerializer {
   /**
    * Reads the value blob at the given external RID. When {@code compressed} is true, the blob's value-bytes are
    * LZ4-compressed and prefixed by an uncompressed-size varint. The compression flag is supplied by the caller -
-   * usually derived from the main record's type byte (TYPE_EXTERNAL vs TYPE_EXTERNAL_COMPRESSED_LZ4).
+   * usually derived from the main record's type byte. LZ4 fast and LZ4 HC share the same byte format, so this
+   * method does not need to know which encoder produced the bytes.
    */
   public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
       final EmbeddedModifier embeddedModifier, final boolean compressed) {
@@ -1128,10 +1150,9 @@ public class BinarySerializer {
 
         buf.position(headerEndOffset + contentPosition);
         final byte type = buf.getByte();
-        // Both raw and LZ4-compressed external pointers carry the same [bucketIdVarint][positionVarint] RID;
-        // the type byte differs only in how the blob is decoded - it doesn't change cascade-delete or orphan
-        // cleanup, both of which only need the RID.
-        if (type == BinaryTypes.TYPE_EXTERNAL || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4) {
+        // All three external type bytes carry the same [bucketIdVarint][positionVarint] RID; only the blob
+        // decoder differs (raw / LZ4 fast / LZ4 HC). Cascade-delete and orphan cleanup only need the RID.
+        if (isExternalType(type)) {
           final int extBucketId = (int) buf.getNumber();
           final long extPosition = buf.getNumber();
           if (result == null)

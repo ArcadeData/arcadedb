@@ -154,11 +154,16 @@ public class LocalProperty extends AbstractProperty {
     final String normalized;
     if (compression == null || compression.isEmpty() || "none".equalsIgnoreCase(compression))
       normalized = null;
-    else if ("auto".equalsIgnoreCase(compression) || "lz4".equalsIgnoreCase(compression))
+    else if ("fast".equalsIgnoreCase(compression) || "max".equalsIgnoreCase(compression)
+        || "auto".equalsIgnoreCase(compression))
       normalized = compression.toLowerCase(Locale.ENGLISH);
+    else if ("lz4".equalsIgnoreCase(compression))
+      // Backwards alias: "lz4" was the original name for the fast tier; map it to "fast" so existing schema
+      // configs keep working without touching the schema.json on disk.
+      normalized = "fast";
     else
       throw new IllegalArgumentException(
-          "Unsupported compression '" + compression + "' (supported: none, auto, lz4)");
+          "Unsupported compression '" + compression + "' (supported: none, fast, max, auto)");
     if (!Objects.equals(this.compression, normalized)) {
       this.compression = normalized;
       owner.getSchema().getEmbedded().saveConfiguration();

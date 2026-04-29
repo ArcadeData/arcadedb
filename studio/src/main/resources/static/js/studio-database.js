@@ -1072,10 +1072,11 @@ function createProperty(typeName) {
   html += "<div class='row mb-3 mt-2' id='createPropCompressionRow' style='display:none;'>";
   html += "<div class='col-6'>";
   html += "<label for='inputCreatePropCompression'>External compression</label>";
-  html += "<select class='form-select mt-1' id='inputCreatePropCompression' title='auto: try LZ4 and keep compressed only if it saves more than 10% of bytes. lz4: always compress. none: store raw.'>";
+  html += "<select class='form-select mt-1' id='inputCreatePropCompression' title='fast: LZ4 fast encoder (default win-rate). max: LZ4 HC (~10pp smaller, slower writes; same read speed). auto: try fast, skip if no win. none: store raw.'>";
   html += "<option value='none' selected>none (default)</option>";
-  html += "<option value='auto'>auto (try LZ4, skip if no win)</option>";
-  html += "<option value='lz4'>lz4</option>";
+  html += "<option value='auto'>auto (try fast, skip if no win)</option>";
+  html += "<option value='fast'>fast (LZ4)</option>";
+  html += "<option value='max'>max (LZ4 HC)</option>";
   html += "</select>";
   html += "</div></div>";
 
@@ -2693,47 +2694,19 @@ function browseType(typeName) {
   let limit = parseInt($("#inputLimit").val()) || 100;
   let query = "select from `" + typeName + "`";
 
-  // If a graph already exists, append results to it
-  if (globalCy != null && globalResultset != null) {
-    $("#inputLanguage").val("sql");
-    editor.setValue(query);
-    globalActivateTab("tab-query");
-    globalActivateTab("tab-graph");
-
-    $("#executeSpinner").show();
-
-    jQuery.ajax({
-      type: "POST",
-      url: "api/v1/command/" + database,
-      data: JSON.stringify({ language: "sql", command: escapeHtml(query), limit: limit, serializer: "studio" }),
-      beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
-    }).done(function(data) {
-      $("#executeSpinner").hide();
-      appendToGraph(data.result);
-      $("#result-num").html(globalResultset.vertices.length + " vertices, " + globalTotalEdges + " edges");
-      $("#resultJson").val(JSON.stringify({ result: globalResultset }, null, 2));
-    }).fail(function(jqXHR) {
-      $("#executeSpinner").hide();
-      globalNotifyError(jqXHR.responseText);
-    });
-    return;
-  }
-
-  // No existing graph - use normal executeCommand flow
-  executeCommand("sql", query);
-}
-
-function browseType(typeName) {
-  let database = getCurrentDatabase();
-  if (!database) return;
-
-  let limit = parseInt($("#inputLimit").val()) || 100;
-  let query = "select from `" + typeName + "`";
-
   $("#inputLanguage").val("sql");
   editor.setValue(query);
   globalActivateTab("tab-query");
-  globalActivateTab("tab-graph");
+
+  let activeTab = $("#tabs-command .active").attr("id");
+  let onGraph = (activeTab == "tab-graph-sel");
+
+  // Honor the user's currently active result tab. Only on the graph tab
+  // do we keep the append-to-existing-graph behavior.
+  if (!onGraph) {
+    executeCommand("sql", query);
+    return;
+  }
 
   $("#executeSpinner").show();
 
@@ -2747,11 +2720,9 @@ function browseType(typeName) {
     $("#resultJson").val(JSON.stringify(data, null, 2));
 
     if (globalCy != null && globalResultset != null && data.result.vertices.length > 0) {
-      // Append to existing graph
       appendToGraph(data.result);
       $("#result-num").html(globalResultset.vertices.length + " vertices, " + globalTotalEdges + " edges");
     } else {
-      // First click or no vertices - create fresh graph
       globalResultset = data.result;
       globalCy = null;
       $("#result-num").html(data.result.records.length);

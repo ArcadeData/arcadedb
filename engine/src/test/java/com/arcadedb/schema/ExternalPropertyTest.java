@@ -19,12 +19,21 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -691,8 +700,12 @@ class ExternalPropertyTest extends TestHelper {
     });
     assertThat(database.getSchema().getType("Doc").getProperty("body").getCompression()).isEqualToIgnoringCase("auto");
 
+    // Legacy alias: "lz4" must still be accepted and is normalised to the new "fast" tier name.
     database.transaction(() -> database.command("sql", "ALTER PROPERTY Doc.body COMPRESSION 'lz4'"));
-    assertThat(database.getSchema().getType("Doc").getProperty("body").getCompression()).isEqualToIgnoringCase("lz4");
+    assertThat(database.getSchema().getType("Doc").getProperty("body").getCompression()).isEqualToIgnoringCase("fast");
+
+    database.transaction(() -> database.command("sql", "ALTER PROPERTY Doc.body COMPRESSION 'max'"));
+    assertThat(database.getSchema().getType("Doc").getProperty("body").getCompression()).isEqualToIgnoringCase("max");
 
     database.transaction(() -> database.command("sql", "ALTER PROPERTY Doc.body COMPRESSION 'none'"));
     assertThat(database.getSchema().getType("Doc").getProperty("body").getCompression()).isEqualToIgnoringCase("none");
@@ -719,5 +732,154 @@ class ExternalPropertyTest extends TestHelper {
     assertThat(database.countType("Doc", false)).isEqualTo(primaryCountBefore);
     assertThat(external.count()).as("external bucket count must also be unchanged after rollback")
         .isEqualTo(externalCountBefore);
+  }
+
+  /**
+   * EXTERNAL must work for top-level Type.LIST: writeExternalPropertyValue routes through serializeValue, which
+   * already handles TYPE_LIST. The whole list lands in the paired bucket as one blob; reads materialise it back.
+   */
+  @Test
+  void valueRoundTripListProperty() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("tags", Type.LIST).setExternal(true);
+
+    final List<Object> tags = new ArrayList<>();
+    tags.add("alpha");
+    tags.add(42);
+    tags.add(3.14);
+    tags.add("very-long-string-".repeat(50));
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc").set("name", "doc-with-list").set("tags", tags);
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    // Reopen so we exercise the deserializer, not an in-memory buffer.
+    database.close();
+    database = factory.open();
+
+    final Document loaded = database.lookupByRID(saved[0], true).asDocument();
+    assertThat(loaded.getString("name")).isEqualTo("doc-with-list");
+    final List<Object> readBack = loaded.getList("tags");
+    assertThat(readBack).containsExactlyElementsOf(tags);
+
+    // Update the list in-place: only the external blob changes; the main record's pointer stays valid.
+    final List<Object> updated = new ArrayList<>(tags);
+    updated.add("appended");
+    database.transaction(() -> {
+      final MutableDocument m = database.lookupByRID(saved[0], true).asDocument().modify();
+      m.set("tags", updated);
+      m.save();
+    });
+
+    database.close();
+    database = factory.open();
+
+    final List<Object> readBackUpdated = database.lookupByRID(saved[0], true).asDocument().getList("tags");
+    assertThat(readBackUpdated).containsExactlyElementsOf(updated);
+  }
+
+  /**
+   * EXTERNAL must work for top-level Type.MAP. Same deal: the map serialises through TYPE_MAP into the external
+   * blob. Use a LinkedHashMap so iteration order is deterministic for the assertion.
+   */
+  @Test
+  void valueRoundTripMapProperty() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("attrs", Type.MAP).setExternal(true);
+
+    final Map<String, Object> attrs = new LinkedHashMap<>();
+    attrs.put("city", "Rome");
+    attrs.put("zip", 100);
+    attrs.put("score", 9.81);
+    attrs.put("notes", "lorem ipsum ".repeat(80));
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc").set("name", "doc-with-map").set("attrs", attrs);
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    database.close();
+    database = factory.open();
+
+    final Document loaded = database.lookupByRID(saved[0], true).asDocument();
+    assertThat(loaded.getString("name")).isEqualTo("doc-with-map");
+    final Map<String, Object> readBack = loaded.getMap("attrs");
+    // Use containsAllEntriesOf for order-insensitive equality on the materialised map.
+    assertThat(readBack).containsAllEntriesOf(attrs);
+    assertThat(readBack.size()).isEqualTo(attrs.size());
+
+    // Mutate one entry; verify the external blob is rewritten in place and the change survives reopen.
+    database.transaction(() -> {
+      final MutableDocument m = database.lookupByRID(saved[0], true).asDocument().modify();
+      final Map<String, Object> mutated = new LinkedHashMap<>(m.getMap("attrs"));
+      mutated.put("zip", 200);
+      m.set("attrs", mutated);
+      m.save();
+    });
+
+    database.close();
+    database = factory.open();
+
+    final Map<String, Object> readBackUpdated = database.lookupByRID(saved[0], true).asDocument().getMap("attrs");
+    assertThat(readBackUpdated.get("zip")).isEqualTo(200);
+    assertThat(readBackUpdated.get("city")).isEqualTo("Rome");
+  }
+
+  /**
+   * EXTERNAL must work for top-level Type.EMBEDDED. The embedded document's own header lives in the external blob;
+   * the deserializer wires the EmbeddedModifier (parent + property) on read so the embedded knows its owner.
+   */
+  @Test
+  void valueRoundTripEmbeddedProperty() {
+    database.getSchema().createDocumentType("Address");
+    final DocumentType person = database.getSchema().createDocumentType("Person");
+    person.createProperty("name", Type.STRING);
+    person.createProperty("address", Type.EMBEDDED).setExternal(true);
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument p = database.newDocument("Person").set("name", "alice");
+      final MutableEmbeddedDocument addr = p.newEmbeddedDocument("Address", "address");
+      addr.set("street", "Via Roma");
+      addr.set("number", 7);
+      addr.set("city", "Rome");
+      p.save();
+      saved[0] = p.getIdentity();
+    });
+
+    database.close();
+    database = factory.open();
+
+    final Document loaded = database.lookupByRID(saved[0], true).asDocument();
+    assertThat(loaded.getString("name")).isEqualTo("alice");
+    final EmbeddedDocument readBack = loaded.getEmbedded("address");
+    assertThat(readBack).isNotNull();
+    assertThat(readBack.getString("street")).isEqualTo("Via Roma");
+    assertThat(readBack.getInteger("number")).isEqualTo(7);
+    assertThat(readBack.getString("city")).isEqualTo("Rome");
+
+    // Mutate the embedded by replacing it with a fresh MutableEmbeddedDocument; the rewrite hits the external bucket.
+    database.transaction(() -> {
+      final MutableDocument m = database.lookupByRID(saved[0], true).asDocument().modify();
+      final MutableEmbeddedDocument addr = m.newEmbeddedDocument("Address", "address");
+      addr.set("street", "Piazza Navona");
+      addr.set("number", 99);
+      addr.set("city", "Rome");
+      m.save();
+    });
+
+    database.close();
+    database = factory.open();
+
+    final EmbeddedDocument readBackUpdated = database.lookupByRID(saved[0], true).asDocument().getEmbedded("address");
+    assertThat(readBackUpdated.getString("street")).isEqualTo("Piazza Navona");
+    assertThat(readBackUpdated.getInteger("number")).isEqualTo(99);
   }
 }
