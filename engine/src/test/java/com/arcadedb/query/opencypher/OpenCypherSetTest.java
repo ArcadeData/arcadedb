@@ -28,6 +28,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 ;
@@ -425,6 +428,69 @@ public class OpenCypherSetTest {
     final Result row = result.next();
     assertThat((String) row.getProperty("n_name")).isEqualTo("Alice");
     assertThat((String) row.getProperty("m_name")).isEqualTo("Alice");
+  }
+
+  /**
+   * Repeated SET n:Label on the same node across row fanout must be idempotent.
+   * Alice qualifies for one pair (n=Alice > m=Bob), Charlie for two pairs (n=Charlie > m=Bob
+   * and n=Charlie > m=Alice), so Alice appears once and Charlie twice. Expected rows: Alice, Charlie, Charlie.
+   */
+  @Test
+  void setLabelIdempotentOnSameNodeAcrossRowFanout() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25}), (:Person {name: 'Charlie', age: 35})");
+    });
+
+    final List<String> names = new ArrayList<>();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (n:Person) MATCH (m:Person) WHERE n.age > m.age SET n:Employee RETURN n.name AS name ORDER BY name");
+    while (rs.hasNext())
+      names.add((String) rs.next().getProperty("name"));
+
+    assertThat(names).containsExactly("Alice", "Charlie", "Charlie");
+  }
+
+  /**
+   * Repeated SET n:Label1:Label2 on the same node across row fanout must be idempotent.
+   */
+  @Test
+  void setMultipleLabelsIdempotentOnSameNodeAcrossRowFanout() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25}), (:Person {name: 'Charlie', age: 35})");
+    });
+
+    final List<String> names = new ArrayList<>();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (n:Person) MATCH (m:Person) WHERE n.age > m.age SET n:Employee:Checked RETURN n.name AS name ORDER BY name");
+    while (rs.hasNext())
+      names.add((String) rs.next().getProperty("name"));
+
+    assertThat(names).containsExactly("Alice", "Charlie", "Charlie");
+  }
+
+  /**
+   * Edges must survive label replacement when the same node is hit via row fanout.
+   * The second fanout hit redirects to the already-replaced vertex and skips the
+   * replace-and-copy step, so the edges created on the first hit must still be present.
+   */
+  @Test
+  void setLabelPreservesEdgesAcrossRowFanout() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (a:Person {name: 'Alice'})-[:WORKS_AT]->(c:Company {name: 'ArcadeDB'})");
+      database.command("opencypher", "CREATE (:Person {name: 'Bob'})");
+    });
+
+    // Cartesian MATCH produces Alice twice (Alice×Alice, Alice×Bob); the second hit uses the replacement vertex
+    database.command("opencypher",
+        "MATCH (n:Person) MATCH (m:Person) WHERE n.name = 'Alice' SET n:Employee");
+
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (n:Employee {name: 'Alice'})-[:WORKS_AT]->(c:Company) RETURN c.name AS company");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((String) rs.next().getProperty("company")).isEqualTo("ArcadeDB");
   }
 
   @Test
