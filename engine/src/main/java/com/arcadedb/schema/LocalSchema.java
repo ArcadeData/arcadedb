@@ -382,7 +382,7 @@ public class LocalSchema implements Schema {
 
   /**
    * Full overload: creates a bucket with an explicit file-format version. Paired external-property buckets pass
-   * {@link LocalBucket#EXTERNAL_BUCKET_VERSION} so they get the smaller (128-slot) page-slot table appropriate for
+   * {@link LocalBucket#EXTERNAL_BUCKET_VERSION} so they get the smaller (256-slot) page-slot table appropriate for
    * heavy payloads; everything else uses {@link LocalBucket#CURRENT_VERSION}.
    */
   public LocalBucket createBucket(final String bucketName, final int pageSize, final String parentDirectory, final int version) {

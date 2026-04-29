@@ -40,7 +40,11 @@ public abstract class AbstractProperty implements Property {
   protected              boolean             notNull         = false;
   protected              boolean             hidden          = false;
   protected              boolean             external        = false;
-  // Compression policy for EXTERNAL property values: "none" | "auto" | "lz4". Null means "none".
+  // Compression policy for EXTERNAL property values: "none" | "auto" | "lz4".
+  // STORAGE CONVENTION: null means "none" (the default), so toJSON omits the key. Read access MUST go through
+  // getCompression(), which materialises null as the literal string "none". LocalProperty.setCompression
+  // normalises "none" / null / "" all to null on write. Direct field reads from outside this class would see
+  // null when the user wrote "none"; always use the getter.
   protected              String              compression     = null;
   protected              String              max             = null;
   protected              String              min             = null;

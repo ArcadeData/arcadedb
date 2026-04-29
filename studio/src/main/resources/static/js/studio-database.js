@@ -1068,6 +1068,16 @@ function createProperty(typeName) {
   html += "<div class='form-check' title='Store the value in a paired external bucket instead of inline. Useful for large payloads (vectors, big strings, embedded JSON) so the primary bucket stays cache-dense for traversal.'><input class='form-check-input' type='checkbox' id='inputCreatePropExternal'><label class='form-check-label' for='inputCreatePropExternal'>External</label></div>";
   html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropIfNotExists'><label class='form-check-label' for='inputCreatePropIfNotExists'>If not exists</label></div>";
   html += "</div>";
+  // Compression policy for EXTERNAL properties. Hidden by default; revealed when External is ticked.
+  html += "<div class='row mb-3 mt-2' id='createPropCompressionRow' style='display:none;'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreatePropCompression'>External compression</label>";
+  html += "<select class='form-select mt-1' id='inputCreatePropCompression' title='auto: try LZ4 and keep compressed only if it saves more than 10% of bytes. lz4: always compress. none: store raw.'>";
+  html += "<option value='none' selected>none (default)</option>";
+  html += "<option value='auto'>auto (try LZ4, skip if no win)</option>";
+  html += "<option value='lz4'>lz4</option>";
+  html += "</select>";
+  html += "</div></div>";
 
   globalPrompt("Add Property to " + escapeHtml(typeName), html, "Create", function () {
     let name = $("#inputCreatePropName").val().trim();
@@ -1087,6 +1097,7 @@ function createProperty(typeName) {
     let hidden = $("#inputCreatePropHidden").prop("checked");
     let readOnly = $("#inputCreatePropReadOnly").prop("checked");
     let external = $("#inputCreatePropExternal").prop("checked");
+    let compression = $("#inputCreatePropCompression").val();
     let ifNotExists = $("#inputCreatePropIfNotExists").prop("checked");
 
     let command = "CREATE PROPERTY `" + typeName + "`.`" + name + "`";
@@ -1100,6 +1111,7 @@ function createProperty(typeName) {
     if (hidden) constraints.push("HIDDEN true");
     if (readOnly) constraints.push("READONLY true");
     if (external) constraints.push("EXTERNAL true");
+    if (external && compression && compression !== "none") constraints.push("COMPRESSION '" + compression + "'");
     if (defaultVal != "") constraints.push("DEFAULT " + defaultVal);
     if (min != "") constraints.push("MIN " + min);
     if (max != "") constraints.push("MAX " + max);
@@ -1131,8 +1143,17 @@ function createProperty(typeName) {
       else
         $("#createPropRegexpRow").hide();
     }
+    function updateCompressionVisibility() {
+      // Compression policy is meaningful only for EXTERNAL properties.
+      if ($("#inputCreatePropExternal").prop("checked"))
+        $("#createPropCompressionRow").show();
+      else
+        $("#createPropCompressionRow").hide();
+    }
     $("#inputCreatePropType").on("change", updatePropVisibility);
+    $("#inputCreatePropExternal").on("change", updateCompressionVisibility);
     updatePropVisibility();
+    updateCompressionVisibility();
   }, 100);
 }
 
@@ -3334,7 +3355,13 @@ function renderProperties(row, results) {
       let tooltip = pairs.length > 0
         ? "Value stored in paired external bucket(s): " + pairs.join(", ")
         : "Value stored in a paired external bucket";
-      panelHtml += "<td><span class='badge bg-info' title='" + escapeHtml(tooltip) + "'><i class='fa fa-external-link-alt'></i> External</span></td>";
+      // Compression policy lives on the property; only emitted by schema:types when not 'none'.
+      let cmpLabel = "";
+      if (property.compression) {
+        tooltip += ". Compression: " + property.compression;
+        cmpLabel = " <small class='text-muted'>(" + escapeHtml(property.compression) + ")</small>";
+      }
+      panelHtml += "<td><span class='badge bg-info' title='" + escapeHtml(tooltip) + "'><i class='fa fa-external-link-alt'></i> External</span>" + cmpLabel + "</td>";
     } else {
       panelHtml += "<td><span class='text-muted' style='font-size:0.85rem;' title='Value stored inline in the record'>Inline</span></td>";
     }

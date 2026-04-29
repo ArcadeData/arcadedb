@@ -397,14 +397,13 @@ class ExternalPropertyTest extends TestHelper {
     final var primary = type.getBuckets(false).getFirst();
     final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+    final String externalBucketName = external.getName();
     assertThat(external.count()).isEqualTo((long) n);
 
-    // Flip OFF and rebuild.
+    // Flip OFF and rebuild. REBUILD manages its own transaction; wrapping it in a caller transaction would
+    // defer the deferred-update flush past the in-statement reclaim check.
     type.getProperty("blob").setExternal(false);
-    database.transaction(() -> database.command("sql", "REBUILD TYPE Doc"));
-
-    // After rebuild every external record should have been deleted (orphan cleanup).
-    assertThat(external.count()).isEqualTo(0L);
+    database.command("sql", "REBUILD TYPE Doc");
 
     // Values must still be readable inline.
     final ResultSet rs = database.query("sql", "SELECT blob FROM Doc");
@@ -414,6 +413,16 @@ class ExternalPropertyTest extends TestHelper {
       counted++;
     }
     assertThat(counted).isEqualTo(n);
+
+    // Bucket reclaim: the now-empty paired external bucket is dropped (no accumulation across toggle cycles)
+    // and the type's external-bucket map is cleared so schema.json no longer carries an externalBuckets key.
+    assertThat(((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId()))
+        .as("paired external bucket id should be cleared from the type after REBUILD")
+        .isNull();
+    assertThat(((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId, false))
+        .as("paired external bucket file should be dropped").isNull();
+    assertThat(database.getSchema().existsBucket(externalBucketName))
+        .as("schema should no longer expose the dropped external bucket").isFalse();
   }
 
   @Test
@@ -508,13 +517,19 @@ class ExternalPropertyTest extends TestHelper {
 
   @Test
   void externalBucketPathOverridePlacesFileOnSecondaryDirectory() throws java.io.IOException {
-    // Use a tier directory outside the database path to simulate cheaper-storage placement.
+    // Use a tier directory outside the database path to simulate cheaper-storage placement. We set the override
+    // on the FACTORY's ContextConfiguration (not the global one) so the reopened database inherits it without
+    // mutating JVM-wide state that could leak into concurrent tests.
     final java.nio.file.Path overrideDir = java.nio.file.Files.createTempDirectory("arcadedb-ext-tier-");
-    final Object previous = com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.getValue();
     try {
-      // Apply the override on the open database. ensureExternalBucketFor reads it lazily when the first paired
-      // bucket is allocated, so the new path takes effect immediately for the type we are about to create.
-      database.getConfiguration().setValue(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH, overrideDir.toString());
+      System.out.println("[DEBUG-TEST] factory.cfg=" + System.identityHashCode(factory.getContextConfiguration())
+          + " db.cfg=" + System.identityHashCode(database.getConfiguration()));
+      factory.getContextConfiguration().setValue(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH,
+          overrideDir.toString());
+      database.getConfiguration().setValue(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH,
+          overrideDir.toString());
+      System.out.println("[DEBUG-TEST] after setValue, factory.cfg.val="
+          + factory.getContextConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH));
 
       final DocumentType type = database.getSchema().createDocumentType("Doc");
       type.createProperty("blob", Type.STRING).setExternal(true);
@@ -542,17 +557,19 @@ class ExternalPropertyTest extends TestHelper {
       final java.io.File[] tieredFiles = tieredDbDir.listFiles((dir, name) -> name.startsWith(external.getName() + "."));
       assertThat(tieredFiles).as("external bucket should be in <override>/<dbName>/").isNotNull().isNotEmpty();
 
-      // Reopen: FileManager must rediscover the tiered file via the secondary scan path so the record stays readable.
-      // The override is applied at open() via the global config, so set it there too before reopening.
-      com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.setValue(overrideDir.toString());
+      // Reopen: the factory's per-instance ContextConfiguration carries the override into the new
+      // LocalDatabase, so FileManager rediscovers the tiered file via the secondary scan path. No global
+      // config mutation needed.
+      System.out.println("[DEBUG-TEST] before close, factory.cfg.val="
+          + factory.getContextConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH));
       database.close();
+      System.out.println("[DEBUG-TEST] after close, factory.cfg.val="
+          + factory.getContextConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH));
       database = factory.open();
-      database.getConfiguration().setValue(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH, overrideDir.toString());
 
       final var loaded = database.lookupByRID(saved[0], true).asDocument();
       assertThat(loaded.getString("blob")).isEqualTo("tiered-payload");
     } finally {
-      com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.setValue(previous != null ? previous.toString() : "");
       com.arcadedb.utility.FileUtils.deleteRecursively(overrideDir.toFile());
     }
   }
@@ -570,10 +587,11 @@ class ExternalPropertyTest extends TestHelper {
     final long extCountBefore = externalBucket.count();
 
     // Inject an orphan: write a value blob directly to the external bucket, bypassing the property write path
-    // so no primary record references it.
+    // so no primary record references it. compression="none" keeps the blob raw so cleanup just sees a normal
+    // unreferenced record.
     database.transaction(() -> ((com.arcadedb.database.DatabaseInternal) database).getSerializer()
-        .writeExternalValue((com.arcadedb.database.DatabaseInternal) database, extBucketId, null,
-            com.arcadedb.serializer.BinaryTypes.TYPE_STRING, "orphan-payload"));
+        .writeExternalPropertyValue((com.arcadedb.database.DatabaseInternal) database, extBucketId, null,
+            com.arcadedb.serializer.BinaryTypes.TYPE_STRING, "orphan-payload", "none"));
 
     assertThat(externalBucket.count()).isEqualTo(extCountBefore + 1);
 

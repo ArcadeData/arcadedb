@@ -127,8 +127,13 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.external, external);
     if (changed) {
       this.external = external;
-      if (external)
-        ((LocalDocumentType) owner).ensureExternalBucketsRecursive();
+      final LocalDocumentType localOwner = (LocalDocumentType) owner;
+      if (external) {
+        localOwner.ownExternalPropertyCount.incrementAndGet();
+        localOwner.ensureExternalBucketsRecursive();
+      } else {
+        localOwner.ownExternalPropertyCount.decrementAndGet();
+      }
       owner.getSchema().getEmbedded().saveConfiguration();
     }
     return this;

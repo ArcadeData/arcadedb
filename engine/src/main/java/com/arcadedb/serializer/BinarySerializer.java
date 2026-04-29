@@ -118,7 +118,6 @@ public class BinarySerializer {
       header.position(Binary.BYTE_SERIALIZED_SIZE);
       serializeProperties = false;
     }
-
     if (serializeProperties)
       return serializeProperties(database, document, header, context.getTemporaryBuffer2());
 
@@ -1056,46 +1055,13 @@ public class BinarySerializer {
       rid = externalBucket.createRecord(rec, true);
       database.getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), +1);
     } else {
+      // Identity already passed to the constructor (BaseRecord stores it). No need to call setIdentity again.
       final ExternalValueRecord rec = new ExternalValueRecord(database, existingExternalRid, blob);
-      rec.setIdentity(existingExternalRid);
       externalBucket.updateRecord(rec, true);
       rid = existingExternalRid;
     }
 
     return new ExternalWriteResult(typeByte, rid);
-  }
-
-  /** Insert or in-place update of an EXTERNAL property's value blob. Format: [RECORD_TYPE][type][value bytes]. */
-  public RID writeExternalValue(final DatabaseInternal database, final int externalBucketId, final RID existingExternalRid,
-      final byte type, final Object value) {
-    // Refuse to update an existing external record at a different bucket than the type's currently-paired one.
-    // This would mean the schema's external bucket mapping has shifted under us (e.g. partial migration) and
-    // overwriting blindly could corrupt unrelated data.
-    if (existingExternalRid != null && existingExternalRid.getBucketId() != externalBucketId)
-      throw new SerializationException(
-          "Existing external RID " + existingExternalRid + " does not match the paired external bucket id "
-              + externalBucketId + " for this record. The schema's external bucket mapping is inconsistent.");
-
-    final Binary blob = new Binary();
-    blob.putByte(ExternalValueRecord.RECORD_TYPE);
-    blob.putByte(type);
-    serializeValue(database, blob, type, value);
-    blob.flip();
-
-    final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
-    if (existingExternalRid == null) {
-      final ExternalValueRecord rec = new ExternalValueRecord(database, null, blob);
-      final RID newRid = externalBucket.createRecord(rec, true);
-      // Mirror LocalDatabase.createRecord's accounting: keep the bucket's record-count cache consistent across the
-      // transaction, since this path goes through the bucket directly and bypasses LocalDatabase.
-      database.getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), +1);
-      return newRid;
-    }
-
-    final ExternalValueRecord rec = new ExternalValueRecord(database, existingExternalRid, blob);
-    rec.setIdentity(existingExternalRid);
-    externalBucket.updateRecord(rec, true);
-    return existingExternalRid;
   }
 
   public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,

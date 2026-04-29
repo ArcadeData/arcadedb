@@ -68,6 +68,10 @@ public class LocalDocumentType implements DocumentType {
   // Map: primary bucket id -> external bucket id. Populated lazily when the first EXTERNAL property is
   // set on the type, and persisted in schema.json under the per-type "externalBuckets" key.
   protected final Map<Integer, Integer>             externalBucketIdByPrimaryBucketId = new ConcurrentHashMap<>();
+  // Cached count of OWN properties (not inherited) currently flagged EXTERNAL. Avoids O(N) scans of
+  // getPolymorphicProperties() on hot paths (cascadeDeleteExternalValues, addBucketInternal, addSuperType).
+  // Maintained by LocalProperty.setExternal, dropProperty, and the schema-load path.
+  final java.util.concurrent.atomic.AtomicInteger   ownExternalPropertyCount          = new java.util.concurrent.atomic.AtomicInteger(0);
 
   public LocalDocumentType(final LocalSchema schema, final String name) {
     this.schema = schema;
@@ -508,7 +512,11 @@ public class LocalDocumentType implements DocumentType {
     }
 
     return recordFileChanges(() -> {
-      return properties.remove(propertyName);
+      final Property removed = properties.remove(propertyName);
+      // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
+      if (removed != null && removed.isExternal())
+        ownExternalPropertyCount.decrementAndGet();
+      return removed;
     });
   }
 
@@ -973,10 +981,12 @@ public class LocalDocumentType implements DocumentType {
       ensureExternalBucketFor((LocalBucket) bucket);
   }
 
-  /** Polymorphic: counts inherited EXTERNAL properties too. */
+  /** Polymorphic: counts inherited EXTERNAL properties too. O(1) on own count + O(depth) on supertype walk. */
   public boolean hasExternalProperties() {
-    for (final Property p : getPolymorphicProperties())
-      if (p.isExternal())
+    if (ownExternalPropertyCount.get() > 0)
+      return true;
+    for (final LocalDocumentType st : superTypes)
+      if (st.hasExternalProperties())
         return true;
     return false;
   }
@@ -998,31 +1008,57 @@ public class LocalDocumentType implements DocumentType {
   }
 
   private void ensureExternalBucketFor(final LocalBucket primary) {
-    if (externalBucketIdByPrimaryBucketId.containsKey(primary.getFileId()))
-      return;
-    final String extName = primary.getName() + "_ext";
-    final LocalBucket external;
-    if (schema.bucketMap.containsKey(extName)) {
-      external = schema.bucketMap.get(extName);
-      // Refuse to adopt a bucket that is already registered as the primary bucket of some user type. A bucket
-      // freshly loaded from disk shows purpose=PRIMARY (transient field), so we cannot rely on purpose alone;
-      // bucketId2TypeMap is the authoritative source of "this bucket is a user type's primary bucket".
-      if (schema.getTypeByBucketId(external.getFileId()) != null
-          && external.getPurpose() != LocalBucket.Purpose.EXTERNAL_PROPERTY)
-        throw new SchemaException(
-            "Cannot adopt bucket '" + extName + "' as the external-property bucket for type '" + name
-                + "': it is already a primary bucket of another user type. Rename the conflicting bucket and retry.");
-    } else {
-      // External buckets get larger pages (256KB vs 64KB primary), a smaller slot table (128 vs 2048: file-format
-      // version EXTERNAL_BUCKET_VERSION), and optional placement on cheaper-storage tier via
-      // resolveExternalBucketPath() which returns <override>/<dbName>.
-      final int pageSize = schema.getDatabase().getConfiguration()
-          .getValueAsInteger(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE);
-      final String overridePath = ((LocalDatabase) schema.getDatabase()).resolveExternalBucketPath();
-      external = schema.createBucket(extName, pageSize, overridePath, LocalBucket.EXTERNAL_BUCKET_VERSION);
+    // Atomic check-and-create: two threads racing through ensureExternalBuckets()/addBucketInternal() must not
+    // both attempt to allocate the paired _ext bucket and trip schema.createBucket's "already exists" guard.
+    externalBucketIdByPrimaryBucketId.computeIfAbsent(primary.getFileId(), pid -> {
+      final String extName = primary.getName() + "_ext";
+      final LocalBucket external;
+      if (schema.bucketMap.containsKey(extName)) {
+        external = schema.bucketMap.get(extName);
+        // Refuse to adopt a bucket that is already registered as the primary bucket of some user type. A bucket
+        // freshly loaded from disk shows purpose=PRIMARY (transient field), so we cannot rely on purpose alone;
+        // bucketId2TypeMap is the authoritative source of "this bucket is a user type's primary bucket".
+        if (schema.getTypeByBucketId(external.getFileId()) != null
+            && external.getPurpose() != LocalBucket.Purpose.EXTERNAL_PROPERTY)
+          throw new SchemaException(
+              "Cannot adopt bucket '" + extName + "' as the external-property bucket for type '" + name
+                  + "': it is already a primary bucket of another user type. Rename the conflicting bucket and retry.");
+      } else {
+        // External buckets get larger pages (256KB vs 64KB primary), a smaller slot table (256 vs 2048: file-format
+        // version EXTERNAL_BUCKET_VERSION), and optional placement on cheaper-storage tier via
+        // resolveExternalBucketPath() which returns <override>/<dbName>.
+        final int pageSize = schema.getDatabase().getConfiguration()
+            .getValueAsInteger(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE);
+        final String overridePath = ((LocalDatabase) schema.getDatabase()).resolveExternalBucketPath();
+        external = schema.createBucket(extName, pageSize, overridePath, LocalBucket.EXTERNAL_BUCKET_VERSION);
+      }
+      external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
+      return external.getFileId();
+    });
+  }
+
+  /**
+   * Drops paired external-property buckets that no longer back any record (typical case: a REBUILD TYPE that
+   * moved every value back inline because the EXTERNAL flag was just toggled off). Skips buckets that still
+   * hold records so we never lose data; those point at persistent corruption and need investigation. Caller
+   * is expected to verify {@code !hasExternalProperties()} before calling.
+   */
+  public void reclaimEmptyExternalBuckets() {
+    final List<Integer> toDrop = new ArrayList<>();
+    for (final Map.Entry<Integer, Integer> entry : externalBucketIdByPrimaryBucketId.entrySet()) {
+      final LocalBucket extBucket = schema.getBucketById(entry.getValue(), false);
+      if (extBucket == null || extBucket.count() == 0L)
+        toDrop.add(entry.getKey());
     }
-    external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
-    externalBucketIdByPrimaryBucketId.put(primary.getFileId(), external.getFileId());
+    for (final Integer primaryBucketId : toDrop) {
+      final Integer extBucketId = externalBucketIdByPrimaryBucketId.remove(primaryBucketId);
+      if (extBucketId == null)
+        continue;
+      final LocalBucket extBucket = schema.getBucketById(extBucketId, false);
+      if (extBucket != null)
+        schema.dropBucket(extBucket.getName());
+    }
+    schema.saveConfiguration();
   }
 
   /** Re-applies EXTERNAL_PROPERTY purpose (transient on LocalBucket) and rebuilds the map from JSON at load time. */

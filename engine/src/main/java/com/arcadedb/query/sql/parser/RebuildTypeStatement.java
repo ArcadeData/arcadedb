@@ -67,6 +67,9 @@ public class RebuildTypeStatement extends DDLStatement {
     final int finalBatchSize = batchSize;
 
     final long[] count = { 0L };
+    // Records committed in earlier batches and therefore NOT rolled back by a later failure: needed so we can
+    // tell the caller exactly how many rows are already in the new layout when the rebuild aborts mid-stream.
+    final long[] committedBefore = { 0L };
     final boolean implicitTx = !db.isTransactionActive();
     if (implicitTx)
       db.begin();
@@ -81,6 +84,7 @@ public class RebuildTypeStatement extends DDLStatement {
         // writes prematurely and leave the trailing batch uncommitted.
         if (implicitTx && count[0] % finalBatchSize == 0) {
           db.commit();
+          committedBefore[0] = count[0];
           db.begin();
         }
         return true;
@@ -91,8 +95,28 @@ public class RebuildTypeStatement extends DDLStatement {
     } catch (Exception e) {
       if (implicitTx && db.isTransactionActive())
         db.rollback();
-      throw new CommandExecutionException("Error on rebuilding type '" + typeName.getStringValue() + "'", e);
+      // REBUILD TYPE is NOT atomic across batch boundaries: every db.commit() above already persisted those
+      // records in the new layout. After rollback, only the in-flight batch is reverted; the type is left
+      // half-migrated. Surface the boundary clearly so the operator knows to re-run REBUILD TYPE to finish.
+      final long migratedAndKept = committedBefore[0];
+      final long rolledBack = count[0] - committedBefore[0];
+      throw new CommandExecutionException(
+          "Error on rebuilding type '" + typeName.getStringValue() + "' after " + count[0] + " records ("
+              + migratedAndKept + " committed in earlier batches and remain in the new layout, " + rolledBack
+              + " rolled back from the in-flight batch). REBUILD TYPE is NOT atomic across batches; re-run the"
+              + " command to migrate the remaining records once the underlying issue is fixed.", e);
     }
+
+    // If the rebuild was triggered to revert a property from EXTERNAL to inline (i.e. the type no longer has
+    // any EXTERNAL property), the previously-paired external buckets are now empty (orphan-cleanup in
+    // serializeProperties deleted every external blob during the re-save). Drop them so they don't accumulate
+    // across toggle cycles, and persist the cleared mapping.
+    // Reclaim paired external buckets only if REBUILD owned the transaction. With a caller-supplied tx the
+    // queued record updates haven't flushed yet (LocalDatabase.updateRecord defers serialization to commit),
+    // so the orphan cleanup hasn't run and the buckets are still non-empty. The caller can re-run REBUILD
+    // outside their tx to trigger reclaim, or invoke it explicitly.
+    if (implicitTx && type instanceof com.arcadedb.schema.LocalDocumentType ldt && !ldt.hasExternalProperties())
+      ldt.reclaimEmptyExternalBuckets();
 
     final ResultInternal result = new ResultInternal(db);
     result.setProperty("operation", "rebuild type");
@@ -110,6 +134,18 @@ public class RebuildTypeStatement extends DDLStatement {
     typeName.toString(params, builder);
     if (polymorphic)
       builder.append(" POLYMORPHIC");
+    if (!settings.isEmpty()) {
+      builder.append(" WITH ");
+      boolean first = true;
+      for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
+        if (!first)
+          builder.append(", ");
+        e.getKey().toString(params, builder);
+        builder.append(" = ");
+        e.getValue().toString(params, builder);
+        first = false;
+      }
+    }
   }
 
   @Override
@@ -117,6 +153,8 @@ public class RebuildTypeStatement extends DDLStatement {
     final RebuildTypeStatement result = new RebuildTypeStatement(-1);
     result.typeName = typeName == null ? null : typeName.copy();
     result.polymorphic = polymorphic;
+    for (final Map.Entry<Expression, Expression> e : settings.entrySet())
+      result.settings.put(e.getKey().copy(), e.getValue().copy());
     return result;
   }
 
@@ -127,13 +165,16 @@ public class RebuildTypeStatement extends DDLStatement {
     if (o == null || getClass() != o.getClass())
       return false;
     final RebuildTypeStatement that = (RebuildTypeStatement) o;
-    return polymorphic == that.polymorphic && Objects.equals(typeName, that.typeName);
+    return polymorphic == that.polymorphic
+        && Objects.equals(typeName, that.typeName)
+        && Objects.equals(settings, that.settings);
   }
 
   @Override
   public int hashCode() {
     int result = typeName != null ? typeName.hashCode() : 0;
     result = 31 * result + (polymorphic ? 1 : 0);
+    result = 31 * result + settings.hashCode();
     return result;
   }
 }

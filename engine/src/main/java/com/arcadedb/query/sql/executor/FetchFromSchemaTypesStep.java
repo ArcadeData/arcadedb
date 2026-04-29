@@ -128,6 +128,11 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                   propRes.setProperty("hidden", property.isHidden());
                 if (property.isExternal())
                   propRes.setProperty("external", property.isExternal());
+                // Only emit the compression policy when explicitly set to a non-default value, mirroring the
+                // toJSON convention. Studio renders the badge tooltip and a small label off this field.
+                final String cmp = property.getCompression();
+                if (cmp != null && !"none".equalsIgnoreCase(cmp))
+                  propRes.setProperty("compression", cmp);
                 if (property.getMin() != null)
                   propRes.setProperty("min", property.getMin());
                 if (property.getMax() != null)

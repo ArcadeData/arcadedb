@@ -73,8 +73,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public static final    String                    BUCKET_EXT                       = "bucket";
   public static final    int                       CURRENT_VERSION                  = 0;
   // Bucket file-format version 1 is reserved for paired external-property buckets. They hold heavier records,
-  // so the page-slot table is sized down to 256 (vs 2048 at v0): a 256KB page loses ~1034 bytes of header
-  // overhead versus ~8194 bytes at v0, sized to host typical 1-2KB records (esp. with compression enabled).
+  // so the page-slot table is sized down to 256 (vs 2048 at v0). The bucket-page header (computed by
+  // contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + maxSlots*4) shrinks from 8194 bytes at v0 to 1026 bytes at
+  // v1 - reclaiming ~7KB of header per page that becomes available for value blobs. Sized to host typical
+  // 1-2KB records (especially with compression enabled).
   public static final    int                       EXTERNAL_BUCKET_VERSION          = 1;
   private static final   int                       DEF_MAX_RECORDS_IN_PAGE_V1       = 256;
   public static final    long                      RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
