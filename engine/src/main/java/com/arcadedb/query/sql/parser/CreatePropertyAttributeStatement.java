@@ -71,6 +71,8 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
         internalProp.setNotNull((boolean) attrValue);
       } else if (attrName.equalsIgnoreCase("hidden")) {
         internalProp.setHidden((boolean) attrValue);
+      } else if (attrName.equalsIgnoreCase("external")) {
+        internalProp.setExternal((boolean) attrValue);
       } else if (attrName.equalsIgnoreCase("max")) {
         internalProp.setMax("" + attrValue);
       } else if (attrName.equalsIgnoreCase("min")) {

@@ -123,6 +123,20 @@ public class LocalProperty extends AbstractProperty {
   }
 
   @Override
+  public Property setExternal(final boolean external) {
+    final boolean changed = !Objects.equals(this.external, external);
+    if (changed) {
+      this.external = external;
+      if (external)
+        // ENSURE PAIRED EXTERNAL BUCKETS EXIST FOR EVERY PRIMARY BUCKET OF THIS TYPE AND ALL SUBTYPES (records of a
+        // subtype live in subtype primary buckets, so each subtype needs its own paired external buckets too).
+        ((LocalDocumentType) owner).ensureExternalBucketsRecursive();
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  @Override
   public Property setMax(final String max) {
     final boolean changed = !Objects.equals(this.max, max);
     if (changed) {

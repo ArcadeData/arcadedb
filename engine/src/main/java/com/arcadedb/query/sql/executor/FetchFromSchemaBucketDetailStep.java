@@ -57,6 +57,7 @@ public class FetchFromSchemaBucketDetailStep extends AbstractExecutionStep {
       r.setProperty("fileId", bucket.getFileId());
       r.setProperty("pageSize", bucket.getPageSize());
       r.setProperty("totalPages", bucket.getTotalPages());
+      r.setProperty("purpose", bucket.getPurpose().name());
 
       final Map<String, Object> checkResult = bucket.check(0, false);
       for (final Map.Entry<String, Object> entry : checkResult.entrySet())

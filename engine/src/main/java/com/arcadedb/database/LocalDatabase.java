@@ -962,8 +962,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (bucketName == null && record instanceof Document doc)
         bucket = (LocalBucket) doc.getType().getBucketIdByRecord(doc,
             DatabaseContext.INSTANCE.getContext(databasePath).asyncMode);
-      else
+      else {
         bucket = (LocalBucket) schema.getBucketByName(bucketName);
+        // Reject direct writes to internal buckets (e.g. paired external-property buckets). They are infrastructure
+        // for the serializer, not user data containers; allowing user DML to write here would corrupt the schema's
+        // accounting of which records are real records vs. payload blobs.
+        if (bucket.getPurpose() != LocalBucket.Purpose.PRIMARY)
+          throw new IllegalArgumentException(
+              "Bucket '" + bucketName + "' is internal (purpose=" + bucket.getPurpose() + ") and cannot be written to directly");
+      }
 
       ((RecordInternal) record).setIdentity(bucket.createRecord(record, discardRecordAfter));
 
@@ -1124,8 +1131,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     try {
       final LocalBucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
 
-      if (record instanceof Document document)
+      if (record instanceof Document document) {
         indexer.deleteDocument(document);
+        // Cascade-delete EXTERNAL property values living in paired external buckets. This must run BEFORE the primary
+        // record is deleted, so the buffer is still readable. Both deletes ride the same transaction.
+        cascadeDeleteExternalValues(document);
+      }
 
       if (record instanceof Edge edge) {
         graphEngine.deleteEdge(edge);
@@ -1151,6 +1162,27 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           wrappedDatabaseInstance.commit();
         else
           wrappedDatabaseInstance.rollback();
+      }
+    }
+  }
+
+  /**
+   * Deletes all external-bucket records referenced by the given document's TYPE_EXTERNAL property pointers, in the same
+   * transaction as the primary delete. No-op if the type has no EXTERNAL properties or the document was not loaded with
+   * a buffer.
+   */
+  private void cascadeDeleteExternalValues(final Document document) {
+    if (!(document.getType() instanceof LocalDocumentType localType))
+      return;
+    if (!localType.hasExternalProperties())
+      return;
+    final Map<String, RID> externalRids = serializer.findExistingExternalRids(this, document);
+    for (final RID extRid : externalRids.values()) {
+      final LocalBucket externalBucket = schema.getBucketById(extRid.getBucketId(), false);
+      if (externalBucket != null) {
+        externalBucket.deleteRecord(extRid);
+        // Keep the external bucket's count consistent (mirrors the +1 in BinarySerializer.writeExternalValue).
+        getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), -1);
       }
     }
   }

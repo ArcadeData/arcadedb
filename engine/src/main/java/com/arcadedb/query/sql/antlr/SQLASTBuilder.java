@@ -5727,6 +5727,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
+  /**
+   * Visit REBUILD TYPE statement.
+   * Grammar: REBUILD TYPE typeName [POLYMORPHIC]
+   */
+  @Override
+  public RebuildTypeStatement visitRebuildTypeStmt(final SQLParser.RebuildTypeStmtContext ctx) {
+    final RebuildTypeStatement stmt = new RebuildTypeStatement(-1);
+    final SQLParser.RebuildTypeBodyContext bodyCtx = ctx.rebuildTypeBody();
+    stmt.typeName = (Identifier) visit(bodyCtx.identifier());
+    stmt.polymorphic = bodyCtx.POLYMORPHIC() != null;
+    return stmt;
+  }
+
   // DDL STATEMENTS - ALTER
 
   /**

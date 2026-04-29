@@ -1478,6 +1478,16 @@ public class LocalSchema implements Schema {
           }
         }
 
+        // RESTORE THE primaryBucket -> externalBucket MAP BEFORE PROPERTIES ARE LOADED, SO THAT setExternal(true) ON A
+        // PROPERTY DOES NOT TRY TO LAZY-CREATE BUCKETS THAT ALREADY EXIST.
+        if (schemaType.has("externalBuckets")) {
+          final JSONObject extBuckets = schemaType.getJSONObject("externalBuckets");
+          final Map<String, String> primaryToExternal = new HashMap<>();
+          for (final String primaryName : extBuckets.keySet())
+            primaryToExternal.put(primaryName, extBuckets.getString(primaryName));
+          type.restoreExternalBuckets(primaryToExternal);
+        }
+
         type.custom.clear();
         if (schemaType.has("custom"))
           type.custom.putAll(schemaType.getJSONObject("custom").toMap());

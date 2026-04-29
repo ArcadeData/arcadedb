@@ -63,6 +63,9 @@ public class LocalDocumentType implements DocumentType {
   protected       List<Integer>                     cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
+  // Map: primary bucket id -> external bucket id. Populated lazily when the first EXTERNAL property is
+  // set on the type, and persisted in schema.json under the per-type "externalBuckets" key.
+  protected final Map<Integer, Integer>             externalBucketIdByPrimaryBucketId = new ConcurrentHashMap<>();
 
   public LocalDocumentType(final LocalSchema schema, final String name) {
     this.schema = schema;
@@ -962,6 +965,82 @@ public class LocalDocumentType implements DocumentType {
         }
       });
     }
+
+    // IF THE TYPE ALREADY HAS EXTERNAL PROPERTIES, ENSURE A PAIRED EXTERNAL BUCKET FOR THIS NEW PRIMARY BUCKET
+    if (hasExternalProperties())
+      ensureExternalBucketFor((LocalBucket) bucket);
+  }
+
+  /**
+   * Returns true if this type or any of its supertypes has at least one property flagged EXTERNAL. Polymorphic properties
+   * count: if A has an EXTERNAL property and B extends A, B is considered to have external properties.
+   */
+  public boolean hasExternalProperties() {
+    for (final Property p : getPolymorphicProperties())
+      if (p.isExternal())
+        return true;
+    return false;
+  }
+
+  /**
+   * Returns the external bucket id paired with the given primary bucket id, or null if no external bucket has been
+   * created for that primary bucket.
+   */
+  public Integer getExternalBucketIdFor(final int primaryBucketId) {
+    return externalBucketIdByPrimaryBucketId.get(primaryBucketId);
+  }
+
+  /**
+   * Idempotently ensures that every primary bucket of this type has a paired external bucket. Called when the first
+   * property transitions to EXTERNAL=true and when a new primary bucket is added to a type that already has external
+   * properties.
+   */
+  public void ensureExternalBuckets() {
+    for (final Bucket b : buckets)
+      ensureExternalBucketFor((LocalBucket) b);
+  }
+
+  /**
+   * Like {@link #ensureExternalBuckets()} but also recurses into all subtypes. Used when an EXTERNAL property is set on
+   * a supertype: every concrete subtype must own paired external buckets for its own primary buckets, because records
+   * of that subtype live in the subtype's primary buckets, not the supertype's.
+   */
+  public void ensureExternalBucketsRecursive() {
+    ensureExternalBuckets();
+    for (final LocalDocumentType sub : subTypes)
+      sub.ensureExternalBucketsRecursive();
+  }
+
+  private void ensureExternalBucketFor(final LocalBucket primary) {
+    if (externalBucketIdByPrimaryBucketId.containsKey(primary.getFileId()))
+      return;
+    final String extName = primary.getName() + "_ext";
+    final LocalBucket external = schema.bucketMap.containsKey(extName) ?
+        schema.bucketMap.get(extName) :
+        schema.createBucket(extName);
+    external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
+    externalBucketIdByPrimaryBucketId.put(primary.getFileId(), external.getFileId());
+  }
+
+  /**
+   * Internal hook called by LocalSchema after loading the type's external bucket map from JSON. Restores the
+   * primaryBucketId -> externalBucketId entries and stamps each external bucket with the EXTERNAL_PROPERTY purpose
+   * (which is transient on LocalBucket and must be re-applied on every load).
+   */
+  void restoreExternalBuckets(final Map<String, String> primaryNameToExternalName) {
+    externalBucketIdByPrimaryBucketId.clear();
+    for (final Map.Entry<String, String> entry : primaryNameToExternalName.entrySet()) {
+      final LocalBucket primary = schema.bucketMap.get(entry.getKey());
+      final LocalBucket external = schema.bucketMap.get(entry.getValue());
+      if (primary == null || external == null) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Cannot restore external bucket mapping '%s' -> '%s' for type '%s'", null,
+                entry.getKey(), entry.getValue(), name);
+        continue;
+      }
+      external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
+      externalBucketIdByPrimaryBucketId.put(primary.getFileId(), external.getFileId());
+    }
   }
 
   protected void removeBucketInternal(final Bucket bucket) {
@@ -1078,6 +1157,19 @@ public class LocalDocumentType implements DocumentType {
 
     type.put("buckets", buckets);
 
+    if (!externalBucketIdByPrimaryBucketId.isEmpty()) {
+      // PRIMARY BUCKET NAME -> EXTERNAL BUCKET NAME. NAMES (NOT IDS) ARE PERSISTED FOR HUMAN READABILITY AND
+      // BECAUSE FILE IDS CAN BE REMAPPED ON FILE MIGRATION (LocalSchema.migratedFileIds).
+      final JSONObject extBuckets = new JSONObject();
+      for (final Map.Entry<Integer, Integer> e : externalBucketIdByPrimaryBucketId.entrySet()) {
+        final LocalBucket primary = schema.getBucketById(e.getKey(), false);
+        final LocalBucket external = schema.getBucketById(e.getValue(), false);
+        if (primary != null && external != null)
+          extBuckets.put(primary.getName(), external.getName());
+      }
+      type.put("externalBuckets", extBuckets);
+    }
+
     type.put("aliases", aliases);
 
     final JSONObject properties = new JSONObject();
@@ -1148,6 +1240,11 @@ public class LocalDocumentType implements DocumentType {
 
       // UPDATE THE LIST OF POLYMORPHIC BUCKETS TREE
       embeddedSuperType.updatePolymorphicBucketsCache(true, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
+
+      // IF THE NEWLY-LINKED SUPERTYPE HAS ANY EXTERNAL PROPERTY (OWN OR INHERITED), THIS SUBTYPE MUST OWN PAIRED
+      // EXTERNAL BUCKETS FOR ITS OWN PRIMARY BUCKETS, BECAUSE RECORDS OF THIS SUBTYPE LIVE IN THIS SUBTYPE'S BUCKETS.
+      if (embeddedSuperType.hasExternalProperties())
+        ensureExternalBucketsRecursive();
 
       // CREATE INDEXES AUTOMATICALLY ON PROPERTIES DEFINED IN SUPER TYPES
       final Collection<TypeIndex> indexes = new ArrayList<>(getAllIndexes(true));

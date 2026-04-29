@@ -30,11 +30,14 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.EmbeddedModifier;
 import com.arcadedb.database.EmbeddedModifierProperty;
+import com.arcadedb.database.ExternalValueRecord;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
@@ -45,7 +48,9 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.function.sql.geo.GeoUtils;
+import com.arcadedb.database.BaseDocument;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
@@ -92,6 +97,7 @@ public class BinarySerializer {
       case Vertex.RECORD_TYPE -> serializeVertex(database, (MutableVertex) record);
       case Edge.RECORD_TYPE -> serializeEdge(database, (MutableEdge) record);
       case EdgeSegment.RECORD_TYPE -> serializeEdgeContainer((EdgeSegment) record);
+      case ExternalValueRecord.RECORD_TYPE -> ((ExternalValueRecord) record).getContent();
       default -> throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
     };
   }
@@ -267,7 +273,14 @@ public class BinarySerializer {
           final EmbeddedModifierProperty propertyModifier =
               embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
 
-          final Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+          final Object propertyValue;
+          if (type == BinaryTypes.TYPE_EXTERNAL) {
+            final int extBucketId = buffer.getInt();
+            final long extPosition = buffer.getLong();
+            propertyValue = readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier);
+          } else {
+            propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+          }
 
           values.put(propertyName, propertyValue);
         } catch (Exception e) {
@@ -340,6 +353,13 @@ public class BinarySerializer {
 
         final EmbeddedModifierProperty propertyModifier =
             embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
+
+        if (type == BinaryTypes.TYPE_EXTERNAL) {
+          // VALUE LIVES IN A PAIRED EXTERNAL BUCKET. FOLLOW THE RID.
+          final int extBucketId = buffer.getInt();
+          final long extPosition = buffer.getLong();
+          return readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier);
+        }
 
         return deserializeValue(database, buffer, type, propertyModifier);
       }
@@ -822,6 +842,12 @@ public class BinarySerializer {
     final Map<String, Object> properties = record.propertiesAsMap();
     final Dictionary dictionary = database.getSchema().getDictionary();
     final DocumentType documentType = record.getType();
+    // For records being UPDATED, look up existing external RIDs from the old buffer so we can update the external bucket
+    // record in place rather than allocating a new one. New records (no identity yet) get an empty map.
+    final Map<String, RID> existingExternalRids = findExistingExternalRids(database, record);
+    // Track which existing external RIDs we re-used (kept) so we can delete the rest as orphans below. An entry is
+    // orphaned when the property is no longer EXTERNAL (toggled off via ALTER), was renamed, or was dropped entirely.
+    final Set<String> consumedExternalProperties = existingExternalRids.isEmpty() ? null : new HashSet<>();
 
     // Pre-resolve types so the property count matches what is actually written.
     // Skipping an invalid property after writing its nameId would desync the header on read.
@@ -862,17 +888,51 @@ public class BinarySerializer {
 
       final int startContentPosition = content.position();
 
-      if (value instanceof String stringValue && type == BinaryTypes.TYPE_STRING) {
-        final int id = dictionary.getIdByName(stringValue, false);
-        if (id > -1) {
-          // WRITE THE COMPRESSED STRING
-          type = BinaryTypes.TYPE_COMPRESSED_STRING;
-          value = id;
-        }
-      }
+      final Property propertyDef = documentType.getPropertyIfExists(propertyName);
+      if (propertyDef != null && propertyDef.isExternal()) {
+        // Externalised property: write the value to the paired external bucket and put a TYPE_EXTERNAL marker (with
+        // the external RID) in the main record's content. The main record stays small and traversal-only reads never
+        // hit the external bucket. See LocalDocumentType.getExternalBucketIdFor.
+        final RID identity = record.getIdentity();
+        if (identity == null)
+          throw new SerializationException(
+              "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
+                  + "': record has no target bucket. The bucket layer must set a provisional identity before serialize.");
+        final int primaryBucketId = identity.getBucketId();
+        // Look up the external bucket via the type that ACTUALLY owns the primary bucket. This may differ from
+        // record.getType(): polymorphic scans (scanType POLYMORPHIC, MATCH, etc.) tag every record with the queried
+        // parent type even when the record physically lives in a subtype's bucket. Trusting documentType in that
+        // case would miss the subtype's external bucket map.
+        final LocalDocumentType ownerType = (LocalDocumentType) database.getSchema().getEmbedded().getTypeByBucketId(primaryBucketId);
+        final Integer extBucketId = (ownerType != null ? ownerType : (LocalDocumentType) documentType)
+            .getExternalBucketIdFor(primaryBucketId);
+        if (extBucketId == null)
+          throw new SerializationException(
+              "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
+                  + "': no external bucket is paired with primary bucket " + primaryBucketId);
 
-      content.putByte(type);
-      serializeValue(database, content, type, value);
+        final RID existingExtRid = existingExternalRids.get(propertyName);
+        if (consumedExternalProperties != null && existingExtRid != null)
+          consumedExternalProperties.add(propertyName);
+
+        final RID newExtRid = writeExternalValue((DatabaseInternal) database, extBucketId, existingExtRid, type, value);
+
+        content.putByte(BinaryTypes.TYPE_EXTERNAL);
+        content.putInt(newExtRid.getBucketId());
+        content.putLong(newExtRid.getPosition());
+      } else {
+        if (value instanceof String stringValue && type == BinaryTypes.TYPE_STRING) {
+          final int id = dictionary.getIdByName(stringValue, false);
+          if (id > -1) {
+            // WRITE THE COMPRESSED STRING
+            type = BinaryTypes.TYPE_COMPRESSED_STRING;
+            value = id;
+          }
+        }
+
+        content.putByte(type);
+        serializeValue(database, content, type, value);
+      }
 
       // WRITE PROPERTY CONTENT POSITION
       header.putUnsignedNumber(startContentPosition);
@@ -887,7 +947,121 @@ public class BinarySerializer {
 
     header.append(content);
     header.flip();
+
+    // Orphan cleanup: any existing external RID that was NOT re-used (property no longer EXTERNAL, was renamed, or was
+    // dropped) must be deleted from the external bucket so we don't leak storage. Same transaction as the primary write.
+    if (consumedExternalProperties != null) {
+      for (final Map.Entry<String, RID> entry : existingExternalRids.entrySet()) {
+        if (consumedExternalProperties.contains(entry.getKey()))
+          continue;
+        final RID orphanRid = entry.getValue();
+        final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(orphanRid.getBucketId(), false);
+        if (externalBucket != null) {
+          externalBucket.deleteRecord(orphanRid);
+          ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), -1);
+        }
+      }
+    }
+
     return header;
+  }
+
+  /**
+   * Builds a value-only blob and writes it to the given external bucket. If existingExternalRid is null, appends a new
+   * record (insert). Otherwise updates the record at that RID in place (update). The blob format is:
+   * <pre>
+   * [ExternalValueRecord.RECORD_TYPE : 1B][value type byte : 1B][value bytes : ...]
+   * </pre>
+   * Returns the RID where the blob was written.
+   */
+  public RID writeExternalValue(final DatabaseInternal database, final int externalBucketId, final RID existingExternalRid,
+      final byte type, final Object value) {
+    final Binary blob = new Binary();
+    blob.putByte(ExternalValueRecord.RECORD_TYPE);
+    blob.putByte(type);
+    serializeValue(database, blob, type, value);
+    blob.flip();
+
+    final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
+    if (existingExternalRid == null) {
+      final ExternalValueRecord rec = new ExternalValueRecord(database, null, blob);
+      final RID newRid = externalBucket.createRecord(rec, true);
+      // Mirror LocalDatabase.createRecord's accounting: keep the bucket's record-count cache consistent across the
+      // transaction, since this path goes through the bucket directly and bypasses LocalDatabase.
+      database.getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), +1);
+      return newRid;
+    }
+
+    final ExternalValueRecord rec = new ExternalValueRecord(database, existingExternalRid, blob);
+    rec.setIdentity(existingExternalRid);
+    externalBucket.updateRecord(rec, true);
+    return existingExternalRid;
+  }
+
+  /**
+   * Reads the value blob at the given external RID and returns the deserialised value. The blob format must match
+   * {@link #writeExternalValue}.
+   */
+  public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
+      final EmbeddedModifier embeddedModifier) {
+    final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
+    final RID rid = RID.create(database, externalBucketId, position);
+    final Binary buffer = externalBucket.getRecord(rid).copyOfContent();
+    buffer.position(Binary.BYTE_SERIALIZED_SIZE); // SKIP RECORD TYPE BYTE
+    final byte valueType = buffer.getByte();
+    return deserializeValue(database, buffer, valueType, embeddedModifier);
+  }
+
+  /**
+   * Walks the OLD buffer of a Document being updated and collects the existing external RID for each EXTERNAL property,
+   * keyed by property name. Returns an empty map for new records (no identity, no buffer).
+   * Public so the database delete path can reuse it to cascade-delete external records.
+   */
+  public Map<String, RID> findExistingExternalRids(final Database database, final Document record) {
+    final RID identity = record.getIdentity();
+    if (identity == null)
+      return Collections.emptyMap();
+    if (!(record instanceof BaseDocument))
+      return Collections.emptyMap();
+    final Binary oldBuffer = ((BaseRecord) record).getBuffer();
+    if (oldBuffer == null)
+      return Collections.emptyMap();
+
+    try {
+      final Binary buf = oldBuffer.copyOfContent();
+      buf.position(((BaseDocument) record).getPropertiesStartingPosition());
+
+      final int headerEndOffset = buf.getInt();
+      final int properties = (int) buf.getUnsignedNumber();
+      if (properties <= 0)
+        return Collections.emptyMap();
+
+      final Dictionary dictionary = database.getSchema().getDictionary();
+      Map<String, RID> result = null;
+
+      for (int i = 0; i < properties; i++) {
+        final int nameId = (int) buf.getUnsignedNumber();
+        final int contentPosition = (int) buf.getUnsignedNumber();
+        final int afterHeader = buf.position();
+
+        buf.position(headerEndOffset + contentPosition);
+        final byte type = buf.getByte();
+        if (type == BinaryTypes.TYPE_EXTERNAL) {
+          final int extBucketId = buf.getInt();
+          final long extPosition = buf.getLong();
+          if (result == null)
+            result = new HashMap<>();
+          result.put(dictionary.getNameById(nameId), RID.create(database, extBucketId, extPosition));
+        }
+
+        buf.position(afterHeader);
+      }
+      return result == null ? Collections.emptyMap() : result;
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not parse old buffer to recover external RIDs for record %s: %s", identity, e.getMessage());
+      return Collections.emptyMap();
+    }
   }
 
   public Class<?> getDateImplementation() {

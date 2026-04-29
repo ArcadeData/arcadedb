@@ -39,6 +39,7 @@ public abstract class AbstractProperty implements Property {
   protected              boolean             mandatory       = false;
   protected              boolean             notNull         = false;
   protected              boolean             hidden          = false;
+  protected              boolean             external        = false;
   protected              String              max             = null;
   protected              String              min             = null;
   protected              String              regexp          = null;
@@ -142,6 +143,16 @@ public abstract class AbstractProperty implements Property {
     return hidden;
   }
 
+  /**
+   * Returns true if the property value is stored in a separate paired bucket (the external bucket of the type) instead of inline
+   * in the record. Useful for large payloads (vector embeddings, big strings, embedded JSON) so the primary bucket stays dense and
+   * page-cache friendly for traversal-heavy workloads.
+   */
+  @Override
+  public boolean isExternal() {
+    return external;
+  }
+
   @Override
   public String getMax() {
     return max;
@@ -188,6 +199,8 @@ public abstract class AbstractProperty implements Property {
       json.put("notNull", notNull);
     if (hidden)
       json.put("hidden", hidden);
+    if (external)
+      json.put("external", external);
     if (max != null)
       json.put("max", max);
     if (min != null)

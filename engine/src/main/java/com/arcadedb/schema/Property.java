@@ -76,6 +76,10 @@ public interface Property {
 
   boolean isHidden();
 
+  Property setExternal(boolean external);
+
+  boolean isExternal();
+
   Property setMax(String max);
 
   String getMax();

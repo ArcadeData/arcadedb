@@ -65,6 +65,7 @@ public class BinaryTypes {
   public final static byte TYPE_ARRAY_OF_FLOATS   = 26; // @SINCE 23.6.1
   public final static byte TYPE_ARRAY_OF_DOUBLES  = 27; // @SINCE 23.6.1
   public final static byte TYPE_COMPRESSED_GEOMETRY = 28; // @SINCE 26.2.1 - Binary geometry storage (Point, Circle, Rectangle, etc.)
+  public final static byte TYPE_EXTERNAL          = 29; // @SINCE 26.5.1 - Property value stored in a paired external bucket. Followed by [bucketId:int][position:long].
 
   // Geometry subtypes for TYPE_COMPRESSED_GEOMETRY
   public final static byte GEOMETRY_SUBTYPE_POINT     = 1; // Point: x(double), y(double)

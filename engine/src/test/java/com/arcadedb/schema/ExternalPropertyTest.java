@@ -1,0 +1,455 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.schema;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Verifies the EXTERNAL property storage feature: when a property is flagged EXTERNAL, its value lives in a paired
+ * external bucket keyed by the same record's RID, while the main record only carries a TYPE_EXTERNAL pointer.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class ExternalPropertyTest extends TestHelper {
+
+  @Test
+  void flagPersistsAcrossReopen() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    assertThat(type.getProperty("blob").isExternal()).isTrue();
+    assertThat(type.getProperty("name").isExternal()).isFalse();
+
+    database.close();
+    database = factory.open();
+
+    final DocumentType reloaded = database.getSchema().getType("Doc");
+    assertThat(reloaded.getProperty("blob").isExternal()).isTrue();
+    assertThat(reloaded.getProperty("name").isExternal()).isFalse();
+  }
+
+  @Test
+  void valueRoundTripDocument() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc")
+          .set("name", "alice")
+          .set("blob", "the quick brown fox jumps over the lazy dog");
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    // Re-read from disk to be sure we exercise the deserialization path, not an in-memory cache hit.
+    database.close();
+    database = factory.open();
+
+    final MutableDocument loaded = (MutableDocument) database.lookupByRID(saved[0], true).asDocument().modify();
+    assertThat(loaded.getString("name")).isEqualTo("alice");
+    assertThat(loaded.getString("blob")).isEqualTo("the quick brown fox jumps over the lazy dog");
+  }
+
+  @Test
+  void valueRoundTripVertexLargeArray() {
+    final VertexType type = database.getSchema().createVertexType("V");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("embedding", Type.ARRAY_OF_FLOATS).setExternal(true);
+
+    final float[] embedding = new float[4096];
+    for (int i = 0; i < embedding.length; i++)
+      embedding[i] = (float) Math.sin(i);
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("V")
+          .set("name", "v1")
+          .set("embedding", embedding);
+      v.save();
+      saved[0] = v.getIdentity();
+    });
+
+    database.close();
+    database = factory.open();
+
+    final var loaded = database.lookupByRID(saved[0], true).asVertex();
+    assertThat(loaded.getString("name")).isEqualTo("v1");
+    final Object readBack = loaded.get("embedding");
+    assertThat(readBack).isInstanceOf(float[].class);
+    final float[] readBackArr = (float[]) readBack;
+    assertThat(readBackArr).hasSize(embedding.length);
+    for (int i = 0; i < embedding.length; i++)
+      assertThat(readBackArr[i]).as("position %d", i).isEqualTo(embedding[i]);
+  }
+
+  @Test
+  void pairedExternalBucketIsCreatedAndMarkedSystem() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    // For each primary bucket of the type there must be a paired external bucket marked EXTERNAL_PROPERTY.
+    boolean foundAtLeastOne = false;
+    for (final var primaryBucket : type.getBuckets(false)) {
+      final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primaryBucket.getFileId());
+      assertThat(extId).as("external bucket id for primary %d", primaryBucket.getFileId()).isNotNull();
+      final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+      assertThat(external.getPurpose()).isEqualTo(LocalBucket.Purpose.EXTERNAL_PROPERTY);
+      assertThat(external.getName()).isEqualTo(primaryBucket.getName() + "_ext");
+      foundAtLeastOne = true;
+    }
+    assertThat(foundAtLeastOne).as("type should have at least one primary bucket").isTrue();
+
+    // Type's regular buckets() list must NOT include the external buckets.
+    for (final var b : type.getBuckets(false))
+      assertThat(((LocalBucket) b).getPurpose()).isEqualTo(LocalBucket.Purpose.PRIMARY);
+  }
+
+  @Test
+  void inheritancePropagatesPairedExternalBucketsToSubtype() {
+    final DocumentType parent = database.getSchema().createDocumentType("Parent");
+    parent.createProperty("blob", Type.STRING).setExternal(true);
+
+    final DocumentType child = database.getSchema().createDocumentType("Child");
+    child.addSuperType("Parent");
+
+    // Each of Child's primary buckets must have its own paired external bucket, even though the EXTERNAL property
+    // is inherited (not declared on Child directly). Records of Child live in Child's primary buckets.
+    for (final var primaryBucket : child.getBuckets(false)) {
+      final Integer extId = ((LocalDocumentType) child).getExternalBucketIdFor(primaryBucket.getFileId());
+      assertThat(extId).as("external bucket id for child primary %d", primaryBucket.getFileId()).isNotNull();
+    }
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Child").set("blob", "child blob");
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    database.close();
+    database = factory.open();
+
+    final MutableDocument loaded = (MutableDocument) database.lookupByRID(saved[0], true).asDocument().modify();
+    assertThat(loaded.getString("blob")).isEqualTo("child blob");
+  }
+
+  @Test
+  void updateOfExternalProperty() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc").set("blob", "v1");
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    database.transaction(() -> {
+      final MutableDocument d = (MutableDocument) database.lookupByRID(saved[0], true).asDocument().modify();
+      d.set("blob", "v2-the-second-revision");
+      d.save();
+    });
+
+    database.close();
+    database = factory.open();
+
+    final MutableDocument loaded = (MutableDocument) database.lookupByRID(saved[0], true).asDocument().modify();
+    assertThat(loaded.getString("blob")).isEqualTo("v2-the-second-revision");
+  }
+
+  @Test
+  void deleteCascadesToExternalRecord() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc").set("blob", "to-be-deleted");
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    // Verify the external bucket has at least one record before delete.
+    final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(saved[0].getBucketId());
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
+    final long extCountBefore = externalBucket.count();
+    assertThat(extCountBefore).isGreaterThanOrEqualTo(1L);
+
+    database.transaction(() -> {
+      database.lookupByRID(saved[0], true).asDocument().delete();
+    });
+
+    final long extCountAfter = externalBucket.count();
+    assertThat(extCountAfter).as("external record should be deleted by cascade").isEqualTo(extCountBefore - 1L);
+  }
+
+  @Test
+  void directWriteToExternalBucketIsRejected() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final var primaryBucket = type.getBuckets(false).getFirst();
+    final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(primaryBucket.getFileId());
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
+
+    // The Java path that resolves a bucket by name must reject an external bucket. Build a fresh document and try
+    // to route it to the external bucket via Database.createRecord(record, bucketName).
+    final MutableDocument fresh = database.newDocument("Doc").set("blob", "x");
+    org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+        database.transaction(() ->
+            ((com.arcadedb.database.DatabaseInternal) database).createRecord(fresh, externalBucket.getName())))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("internal");
+
+    // SQL INSERT INTO bucket:<external> is also rejected (by the SQL planner, since the bucket has no associated
+    // type). Different error message but functionally equivalent: the user cannot target the bucket.
+    org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+        database.transaction(() ->
+            database.command("sql", "INSERT INTO bucket:" + externalBucket.getName() + " SET x = 1")))
+        .isInstanceOf(Exception.class);
+  }
+
+  @Test
+  void sqlDdlCreateAndAlterExternal() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.blob STRING (EXTERNAL true)");
+    });
+    assertThat(database.getSchema().getType("Doc").getProperty("blob").isExternal()).isTrue();
+
+    database.transaction(() -> {
+      database.command("sql", "ALTER PROPERTY Doc.blob EXTERNAL false");
+    });
+    assertThat(database.getSchema().getType("Doc").getProperty("blob").isExternal()).isFalse();
+  }
+
+  @Test
+  void alterToExternalRelocatesOnNextWrite() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING); // inline initially
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc").set("blob", "starts-inline");
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    // Flip to EXTERNAL. Existing record's bytes are not rewritten yet.
+    type.getProperty("blob").setExternal(true);
+
+    // Read still returns the inline value: deserializer doesn't see TYPE_EXTERNAL in the OLD bytes.
+    var loaded = database.lookupByRID(saved[0], true).asDocument();
+    assertThat(loaded.getString("blob")).isEqualTo("starts-inline");
+
+    // Update the property. Re-serialize must route through the external bucket now.
+    database.transaction(() -> {
+      final MutableDocument m = (MutableDocument) database.lookupByRID(saved[0], true).asDocument().modify();
+      m.set("blob", "now-external");
+      m.save();
+    });
+
+    database.close();
+    database = factory.open();
+
+    final var reloaded = database.lookupByRID(saved[0], true).asDocument();
+    assertThat(reloaded.getString("blob")).isEqualTo("now-external");
+
+    // The external bucket should hold the new value.
+    final Integer extBucketId = ((LocalDocumentType) database.getSchema().getType("Doc"))
+        .getExternalBucketIdFor(saved[0].getBucketId());
+    assertThat(extBucketId).isNotNull();
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
+    assertThat(externalBucket.count()).isGreaterThanOrEqualTo(1L);
+  }
+
+  @Test
+  void indexLookupOnExternalProperty() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING).setExternal(true);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++)
+        database.newDocument("Doc").set("name", "user-" + i).save();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT FROM Doc WHERE name = 'user-37'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((String) rs.next().getProperty("name")).isEqualTo("user-37");
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void schemaBucketsViewExposesPurposeColumn() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final var primary = type.getBuckets(false).getFirst();
+    final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
+    final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+
+    final ResultSet rs = database.query("sql", "SELECT name, purpose FROM schema:buckets");
+    boolean foundPrimary = false;
+    boolean foundExternal = false;
+    while (rs.hasNext()) {
+      final var row = rs.next();
+      final String name = row.getProperty("name");
+      if (name.equals(primary.getName())) {
+        foundPrimary = true;
+        assertThat((String) row.getProperty("purpose")).isEqualTo("PRIMARY");
+      } else if (name.equals(external.getName())) {
+        foundExternal = true;
+        assertThat((String) row.getProperty("purpose")).isEqualTo("EXTERNAL_PROPERTY");
+      }
+    }
+    assertThat(foundPrimary).as("schema:buckets should list the primary bucket").isTrue();
+    assertThat(foundExternal).as("schema:buckets should list the external bucket").isTrue();
+  }
+
+  @Test
+  void rebuildTypeMovesInlineToExternal() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING); // inline initially
+
+    final int n = 25;
+    database.transaction(() -> {
+      for (int i = 0; i < n; i++)
+        database.newDocument("Doc").set("blob", "payload-" + i).save();
+    });
+
+    // Flip the flag, rebuild.
+    type.getProperty("blob").setExternal(true);
+
+    database.transaction(() -> {
+      final ResultSet rs = database.command("sql", "REBUILD TYPE Doc");
+      assertThat(rs.hasNext()).isTrue();
+      final var row = rs.next();
+      assertThat((Long) row.getProperty("recordsRebuilt")).isEqualTo((long) n);
+    });
+
+    // After rebuild, the external bucket should hold one record per Doc record.
+    final var primary = type.getBuckets(false).getFirst();
+    final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
+    final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+    assertThat(external.count()).isEqualTo((long) n);
+
+    // Values still readable.
+    final ResultSet rs = database.query("sql", "SELECT blob FROM Doc ORDER BY blob");
+    int counted = 0;
+    while (rs.hasNext()) {
+      final String val = rs.next().getProperty("blob");
+      assertThat(val).startsWith("payload-");
+      counted++;
+    }
+    assertThat(counted).isEqualTo(n);
+  }
+
+  @Test
+  void rebuildTypeReversesExternalToInlineAndCleansOrphans() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final int n = 15;
+    database.transaction(() -> {
+      for (int i = 0; i < n; i++)
+        database.newDocument("Doc").set("blob", "ext-" + i).save();
+    });
+
+    final var primary = type.getBuckets(false).getFirst();
+    final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
+    final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+    assertThat(external.count()).isEqualTo((long) n);
+
+    // Flip OFF and rebuild.
+    type.getProperty("blob").setExternal(false);
+    database.transaction(() -> database.command("sql", "REBUILD TYPE Doc"));
+
+    // After rebuild every external record should have been deleted (orphan cleanup).
+    assertThat(external.count()).isEqualTo(0L);
+
+    // Values must still be readable inline.
+    final ResultSet rs = database.query("sql", "SELECT blob FROM Doc");
+    int counted = 0;
+    while (rs.hasNext()) {
+      assertThat((String) rs.next().getProperty("blob")).startsWith("ext-");
+      counted++;
+    }
+    assertThat(counted).isEqualTo(n);
+  }
+
+  @Test
+  void rebuildTypePolymorphicWalksSubtypes() {
+    final DocumentType parent = database.getSchema().createDocumentType("Parent");
+    parent.createProperty("blob", Type.STRING);
+    final DocumentType child = database.getSchema().createDocumentType("Child");
+    child.addSuperType("Parent");
+
+    database.transaction(() -> {
+      database.newDocument("Parent").set("blob", "p1").save();
+      database.newDocument("Child").set("blob", "c1").save();
+      database.newDocument("Child").set("blob", "c2").save();
+    });
+
+    // Toggle EXTERNAL on the inherited property and rebuild polymorphically.
+    parent.getProperty("blob").setExternal(true);
+    database.transaction(() -> {
+      final ResultSet rs = database.command("sql", "REBUILD TYPE Parent POLYMORPHIC");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat((Long) rs.next().getProperty("recordsRebuilt")).isEqualTo(3L);
+    });
+
+    // Both Parent and Child external buckets should now hold their respective records.
+    final var parentBucket = parent.getBuckets(false).getFirst();
+    final Integer parentExtId = ((LocalDocumentType) parent).getExternalBucketIdFor(parentBucket.getFileId());
+    final var childBucket = child.getBuckets(false).getFirst();
+    final Integer childExtId = ((LocalDocumentType) child).getExternalBucketIdFor(childBucket.getFileId());
+    final var localSchema = (LocalSchema) database.getSchema().getEmbedded();
+    assertThat(localSchema.getBucketById(parentExtId).count()).isEqualTo(1L);
+    assertThat(localSchema.getBucketById(childExtId).count()).isEqualTo(2L);
+  }
+
+  @Test
+  void rollbackDiscardsBothPrimaryAndExternal() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final long primaryCountBefore = database.countType("Doc", false);
+
+    database.begin();
+    final MutableDocument d = database.newDocument("Doc").set("blob", "rolled-back");
+    d.save();
+    database.rollback();
+
+    final long primaryCountAfter = database.countType("Doc", false);
+    assertThat(primaryCountAfter).isEqualTo(primaryCountBefore);
+  }
+}

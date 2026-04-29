@@ -89,6 +89,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   protected final        int                       contentHeaderSize;
   private final          int                       maxRecordsInPage                 = DEF_MAX_RECORDS_IN_PAGE;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
+  // Buckets are PRIMARY by default (they hold the primary records of a type and are user-targetable via DML).
+  // Internal kinds (e.g. EXTERNAL_PROPERTY) hold serializer infrastructure that user-facing DML must not target.
+  // The purpose is persisted in schema.json (per-type) and restored at load time, see LocalDocumentType.
+  private                Purpose                   purpose                          = Purpose.PRIMARY;
+
+  public enum Purpose {
+    /** Bucket holding the primary records of a type (vertex/edge/document). Targetable by user DML. */
+    PRIMARY,
+    /** Paired infrastructure bucket holding externalised property values. NOT targetable by user DML. */
+    EXTERNAL_PROPERTY
+  }
   // pageId → free-space-bytes. TreeMap ordering is unused (verified by grep), so a primitive
   // open-addressing map saves memory and avoids Integer boxing on every read/write/remove on
   // the page-allocation hot path. Bounded by MAX_PAGES_GATHER_STATS (100). Single-threaded
@@ -157,9 +168,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return maxRecordsInPage;
   }
 
+  public Purpose getPurpose() {
+    return purpose;
+  }
+
+  public void setPurpose(final Purpose purpose) {
+    this.purpose = purpose;
+  }
+
   @Override
   public RID createRecord(final Record record, final boolean discardRecordAfter) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // Set a provisional identity so the serializer can resolve the target primary bucket id (used by EXTERNAL
+    // property handling to look up the paired external bucket). The actual position is filled in by
+    // createRecordInternal and overwrites this placeholder when the caller stores the returned RID.
+    if (record.getIdentity() == null && record instanceof RecordInternal ri)
+      ri.setIdentity(RID.create(database, fileId, -1L));
     return createRecordInternal(record, false, discardRecordAfter);
   }
 
