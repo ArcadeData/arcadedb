@@ -210,6 +210,10 @@ public enum GlobalConfiguration {
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
 
+  EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
+      "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Matches the LSM-index default (256KB)",
+      Integer.class, 262_144),
+
   BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
       "How to reuse space in pages. 'high' = more space saved, but slower opening and update/delete time. 'medium' to still reuse space without the initial scan at opening time. 'low' for faster performance, but less space reused. Default is 'high'",
       String.class, "high", Set.of("low", "medium", "high")),

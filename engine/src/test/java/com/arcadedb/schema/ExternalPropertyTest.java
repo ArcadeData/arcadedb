@@ -486,6 +486,22 @@ class ExternalPropertyTest extends TestHelper {
   }
 
   @Test
+  void externalBucketUsesLargerDefaultPageSize() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    // Primary bucket uses the standard 64KB page; external bucket uses the heavier 256KB page so multi-KB
+    // payloads (vectors, big strings) fit in a single page rather than overflowing into the chunk-chain path.
+    final LocalBucket primary = (LocalBucket) type.getBuckets(false).getFirst();
+    final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
+    final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+
+    assertThat(primary.getPageSize()).isEqualTo(65_536);
+    assertThat(external.getPageSize()).isEqualTo(262_144);
+    assertThat(external.getPageSize()).isGreaterThan(primary.getPageSize());
+  }
+
+  @Test
   void rollbackDiscardsBothPrimaryAndExternal() {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("blob", Type.STRING).setExternal(true);

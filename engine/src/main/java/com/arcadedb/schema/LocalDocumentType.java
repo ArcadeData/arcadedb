@@ -1015,9 +1015,17 @@ public class LocalDocumentType implements DocumentType {
     if (externalBucketIdByPrimaryBucketId.containsKey(primary.getFileId()))
       return;
     final String extName = primary.getName() + "_ext";
-    final LocalBucket external = schema.bucketMap.containsKey(extName) ?
-        schema.bucketMap.get(extName) :
-        schema.createBucket(extName);
+    final LocalBucket external;
+    if (schema.bucketMap.containsKey(extName))
+      external = schema.bucketMap.get(extName);
+    else {
+      // External buckets carry heavy payloads (vectors, large strings, embedded JSON), so they default to a
+      // larger page size than primary buckets to reduce multi-page chunking. Tunable via
+      // GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE.
+      final int pageSize = schema.getDatabase().getConfiguration()
+          .getValueAsInteger(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE);
+      external = schema.createBucket(extName, pageSize);
+    }
     external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
     externalBucketIdByPrimaryBucketId.put(primary.getFileId(), external.getFileId());
   }
