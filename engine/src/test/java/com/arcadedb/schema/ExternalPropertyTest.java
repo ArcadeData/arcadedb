@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Verifies the EXTERNAL property storage feature: when a property is flagged EXTERNAL, its value lives in a paired
@@ -434,6 +435,39 @@ class ExternalPropertyTest extends TestHelper {
         .as("schema should no longer expose the dropped external bucket").isFalse();
   }
 
+  /**
+   * REBUILD TYPE inside a caller-supplied transaction cannot reclaim now-empty paired buckets (the queued
+   * record updates haven't flushed). The result row must surface a {@code warning} so the operator knows to
+   * re-run REBUILD outside a transaction.
+   */
+  @Test
+  void rebuildTypeWarnsWhenInsideCallerTransactionAndExternalBucketsRemain() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newDocument("Doc").set("blob", "v-" + i).save();
+    });
+    type.getProperty("blob").setExternal(false);
+
+    database.begin();
+    final ResultSet rs = database.command("sql", "REBUILD TYPE Doc");
+    assertThat(rs.hasNext()).isTrue();
+    final var row = rs.next();
+    assertThat((String) row.getProperty("warning"))
+        .as("warning must be set so the operator knows reclaim was deferred")
+        .contains("paired external buckets were NOT reclaimed");
+    database.commit();
+
+    // After committing the caller tx, re-running REBUILD outside any transaction must complete the reclaim.
+    final ResultSet rs2 = database.command("sql", "REBUILD TYPE Doc");
+    assertThat(rs2.hasNext()).isTrue();
+    final var row2 = rs2.next();
+    assertThat((String) row2.getProperty("warning")).as("second run owns the tx and reclaims; no warning").isNull();
+    assertThat(((LocalDocumentType) database.getSchema().getType("Doc")).hasExternalBuckets())
+        .as("paired external buckets should be dropped after the second REBUILD").isFalse();
+  }
+
   @Test
   void rebuildTypePolymorphicWalksSubtypes() {
     final DocumentType parent = database.getSchema().createDocumentType("Parent");
@@ -518,7 +552,7 @@ class ExternalPropertyTest extends TestHelper {
     assertThat(external.getPageSize()).isEqualTo(262_144);
     assertThat(external.getPageSize()).isGreaterThan(primary.getPageSize());
 
-    // External buckets carry few but heavy records, so the slot table is sized down (128 vs 2048): saves about
+    // External buckets carry few but heavy records, so the slot table is sized down (256 vs 2048): saves about
     // 7.5KB of header overhead per page (file-format version EXTERNAL_BUCKET_VERSION encodes this).
     assertThat(primary.getMaxRecordsInPage()).isEqualTo(2048);
     assertThat(external.getMaxRecordsInPage()).isEqualTo(256);
@@ -881,5 +915,102 @@ class ExternalPropertyTest extends TestHelper {
     final EmbeddedDocument readBackUpdated = database.lookupByRID(saved[0], true).asDocument().getEmbedded("address");
     assertThat(readBackUpdated.getString("street")).isEqualTo("Piazza Navona");
     assertThat(readBackUpdated.getInteger("number")).isEqualTo(99);
+  }
+
+  /**
+   * Two write semantics on an EXTERNAL property:
+   * <ul>
+   *   <li>{@code set("field", null)} REUSES the paired external slot as a TYPE_NULL marker. The bucket count
+   *       stays the same; on read the property returns null. This mirrors how a null inline value still
+   *       occupies a property-header slot - the schema still tracks the property as present, just with a
+   *       null value.</li>
+   *   <li>{@code remove("field")} drops the property from the property header entirely; orphan-cleanup in
+   *       BinarySerializer.serializeProperties detects the previously-paired RID is no longer consumed and
+   *       deletes the external record, decrementing the bucket count.</li>
+   * </ul>
+   * Read-back must reflect the difference: null after set-null, "no such property" after remove.
+   */
+  @Test
+  void externalPropertyNullVsRemoveSemantics() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final var primary = type.getBuckets(false).getFirst();
+    final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
+    final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+
+    // Two records, each with an EXTERNAL value.
+    final RID[] saved = new RID[2];
+    database.transaction(() -> {
+      final MutableDocument a = database.newDocument("Doc").set("blob", "value-a");
+      a.save();
+      saved[0] = a.getIdentity();
+      final MutableDocument b = database.newDocument("Doc").set("blob", "value-b");
+      b.save();
+      saved[1] = b.getIdentity();
+    });
+    assertThat(external.count()).as("two external records expected").isEqualTo(2L);
+
+    // set-null: slot is reused as TYPE_NULL, bucket count unchanged.
+    database.transaction(() -> {
+      final MutableDocument m = database.lookupByRID(saved[0], true).asDocument().modify();
+      m.set("blob", (Object) null);
+      m.save();
+    });
+    assertThat(external.count()).as("set-null reuses the paired slot, count unchanged").isEqualTo(2L);
+    assertThat(database.lookupByRID(saved[0], true).asDocument().get("blob"))
+        .as("set-null reads back as null").isNull();
+
+    // remove(): drops the property entirely, orphan-cleanup releases the bucket entry.
+    database.transaction(() -> {
+      final MutableDocument m = database.lookupByRID(saved[1], true).asDocument().modify();
+      m.remove("blob");
+      m.save();
+    });
+    assertThat(external.count()).as("remove() releases the paired slot, count decreases").isEqualTo(1L);
+    assertThat(database.lookupByRID(saved[1], true).asDocument().get("blob"))
+        .as("remove() makes the property absent (and absence reads as null)").isNull();
+
+    // Reopen and confirm the on-disk state is consistent with what the in-memory bucket showed.
+    database.close();
+    database = factory.open();
+    final var primary2 = database.getSchema().getType("Doc").getBuckets(false).getFirst();
+    final Integer extId2 = ((LocalDocumentType) database.getSchema().getType("Doc")).getExternalBucketIdFor(
+        primary2.getFileId());
+    final LocalBucket external2 = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId2);
+    assertThat(external2.count()).as("post-reopen: one slot retained for set-null, one dropped by remove")
+        .isEqualTo(1L);
+  }
+
+  /**
+   * REBUILD TYPE on a database opened READ_ONLY must surface a clean DatabaseIsReadOnlyException (the
+   * implicit {@code db.begin()} cannot start a write transaction). The error must wrap to a
+   * CommandExecutionException that includes the read-only signal so an operator inspecting Studio sees it.
+   */
+  @Test
+  void rebuildTypeOnReadOnlyDatabaseFailsCleanly() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+    database.transaction(() -> database.newDocument("Doc").set("blob", "v").save());
+
+    database.close();
+    database = factory.open(com.arcadedb.engine.ComponentFile.MODE.READ_ONLY);
+    try {
+      assertThatThrownBy(() -> database.command("sql", "REBUILD TYPE Doc"))
+          .isInstanceOfAny(com.arcadedb.exception.DatabaseIsReadOnlyException.class,
+              com.arcadedb.exception.CommandExecutionException.class)
+          .satisfies(t -> {
+            final String msg = (t.getMessage() == null ? "" : t.getMessage())
+                + (t.getCause() == null || t.getCause().getMessage() == null ? "" : " " + t.getCause().getMessage());
+            assertThat(msg.toLowerCase(java.util.Locale.ENGLISH))
+                .as("error must mention read-only state so the operator sees the actual cause")
+                .containsAnyOf("read-only", "read only", "readonly");
+          });
+    } finally {
+      // TestHelper.afterTest runs CHECK DATABASE which requires write access; reopen RW so the harness can
+      // tear down cleanly without inheriting our READ_ONLY mode.
+      database.close();
+      database = factory.open();
+    }
   }
 }

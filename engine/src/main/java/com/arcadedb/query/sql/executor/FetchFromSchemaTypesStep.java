@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -94,10 +95,10 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           // (Studio etc.) tell the user where the externalised values for each primary bucket are stored.
           if (type instanceof LocalDocumentType ldt) {
             final Map<String, String> extMap = new HashMap<>();
-            for (final var b : type.getBuckets(false)) {
+            for (final Bucket b : type.getBuckets(false)) {
               final Integer extId = ldt.getExternalBucketIdFor(b.getFileId());
               if (extId != null) {
-                final var extBucket = context.getDatabase().getSchema().getBucketById(extId);
+                final Bucket extBucket = context.getDatabase().getSchema().getBucketById(extId);
                 if (extBucket != null)
                   extMap.put(b.getName(), extBucket.getName());
               }

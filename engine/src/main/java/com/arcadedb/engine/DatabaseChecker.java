@@ -34,6 +34,7 @@ import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.LongHashSet;
 
 import java.io.*;
 import java.util.*;
@@ -269,8 +270,14 @@ public class DatabaseChecker {
 
     // For every external bucket, build the set of positions actually referenced from primary records of its
     // owning type. Orphan = an external record whose position is NOT in that set.
-    final Map<Integer, Set<Long>> referencedByExtBucketId = new HashMap<>();
-    final Map<Integer, LocalBucket> extBucketsToCheck = new HashMap<>();
+    //
+    // We use LongHashSet (open-addressing primitive long set) instead of HashSet<Long> to skip Long-boxing on
+    // every add/contains and shrink the per-entry footprint from ~48 B (Long box + HashMap.Node + array slot)
+    // to ~8 B + load-factor slack. On a database with 10M referenced positions this is the difference between
+    // ~50 MB and ~10 MB of CHECK DATABASE working set. A future streaming variant could sort both bucket scans
+    // by position and walk them in lockstep, dropping the heap footprint to O(1) at the cost of a sort.
+    final Map<Integer, LongHashSet>   referencedByExtBucketId = new HashMap<>();
+    final Map<Integer, LocalBucket>   extBucketsToCheck       = new HashMap<>();
 
     for (final DocumentType type : database.getSchema().getTypes()) {
       if (!(type instanceof LocalDocumentType ldt) || !ldt.hasExternalProperties())
@@ -284,7 +291,7 @@ public class DatabaseChecker {
           continue;
         final LocalBucket extBucket = (LocalBucket) database.getSchema().getBucketById(extBucketId);
         extBucketsToCheck.put(extBucketId, extBucket);
-        final Set<Long> referenced = referencedByExtBucketId.computeIfAbsent(extBucketId, k -> new HashSet<>());
+        final LongHashSet referenced = referencedByExtBucketId.computeIfAbsent(extBucketId, k -> new LongHashSet());
 
         primaryBucket.scan((rid, view) -> {
           try {
@@ -301,7 +308,7 @@ public class DatabaseChecker {
 
     for (final Map.Entry<Integer, LocalBucket> entry : extBucketsToCheck.entrySet()) {
       final LocalBucket extBucket = entry.getValue();
-      final Set<Long> referenced = referencedByExtBucketId.get(entry.getKey());
+      final LongHashSet referenced = referencedByExtBucketId.get(entry.getKey());
 
       final List<RID> orphans = new ArrayList<>();
       extBucket.scan((rid, view) -> {

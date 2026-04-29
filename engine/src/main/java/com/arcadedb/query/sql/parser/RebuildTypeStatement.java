@@ -22,17 +22,26 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
 
 /**
  * REBUILD TYPE typeName [POLYMORPHIC] [WITH batchSize = N] - re-serialises records to apply schema layout changes.
+ * <p>
+ * <b>Behaviour under Raft HA.</b> This statement extends {@link DDLStatement}, so
+ * {@code Statement.isDDL()} returns {@code true}. {@code RaftReplicatedDatabase.command()} therefore forwards
+ * any REBUILD TYPE issued on a follower to the leader via {@code forwardCommandToLeaderViaRaft}; the leader is
+ * the only node that runs the loop locally. Each in-loop {@code db.commit()} produces one Raft log entry;
+ * followers replay them in order. A follower that crashes mid-replay can resync from the leader's snapshot
+ * (the half-migrated intermediate state is recoverable by re-running REBUILD on the leader).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -58,9 +67,21 @@ public class RebuildTypeStatement extends DDLStatement {
     int batchSize = DEFAULT_BATCH_SIZE;
     for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
       final String key = e.getKey().toString();
-      if (key.equalsIgnoreCase("batchSize"))
-        batchSize = Integer.parseInt(e.getValue().value.toString());
-      else
+      if (key.equalsIgnoreCase("batchSize")) {
+        final Object raw = e.getValue().value;
+        try {
+          batchSize = Integer.parseInt(raw == null ? "null" : raw.toString());
+        } catch (final NumberFormatException nfe) {
+          throw new CommandSQLParsingException(
+              "REBUILD TYPE setting 'batchSize' must be a positive integer, got: " + raw);
+        }
+        // batchSize is the modulus for the in-rebuild commit cadence (count[0] % batchSize == 0). A zero or
+        // negative value would either ArithmeticException (mod-zero) or never trip the commit branch (modulo by
+        // a negative still works but the boundary semantics are nonsensical). Reject up front.
+        if (batchSize <= 0)
+          throw new CommandSQLParsingException(
+              "REBUILD TYPE setting 'batchSize' must be a positive integer, got: " + batchSize);
+      } else
         throw new CommandSQLParsingException(
             "Unrecognized setting '" + key + "' in REBUILD TYPE statement (supported: batchSize)");
     }
@@ -104,7 +125,10 @@ public class RebuildTypeStatement extends DDLStatement {
           "Error on rebuilding type '" + typeName.getStringValue() + "' after " + count[0] + " records ("
               + migratedAndKept + " committed in earlier batches and remain in the new layout, " + rolledBack
               + " rolled back from the in-flight batch). REBUILD TYPE is NOT atomic across batches; re-run the"
-              + " command to migrate the remaining records once the underlying issue is fixed.", e);
+              + " command to migrate the remaining records once the underlying issue is fixed."
+              + " If the failed batch left external-bucket blobs that no primary record references (typical when the"
+              + " rebuild crashes between writing the external value and re-serializing the primary record), run"
+              + " CHECK DATABASE FIX to delete the orphaned external records.", e);
     }
 
     // If the rebuild was triggered to revert a property from EXTERNAL to inline (i.e. the type no longer has
@@ -115,14 +139,30 @@ public class RebuildTypeStatement extends DDLStatement {
     // queued record updates haven't flushed yet (LocalDatabase.updateRecord defers serialization to commit),
     // so the orphan cleanup hasn't run and the buckets are still non-empty. The caller can re-run REBUILD
     // outside their tx to trigger reclaim, or invoke it explicitly.
-    if (implicitTx && type instanceof com.arcadedb.schema.LocalDocumentType ldt && !ldt.hasExternalProperties())
-      ldt.reclaimEmptyExternalBuckets();
+    boolean reclaimSkipped = false;
+    if (type instanceof LocalDocumentType ldt && !ldt.hasExternalProperties()) {
+      if (implicitTx)
+        ldt.reclaimEmptyExternalBuckets();
+      else if (ldt.hasExternalBuckets())
+        // Caller-supplied tx with empty-EXTERNAL state and paired buckets still around: we cannot drop them
+        // here (records haven't flushed), so surface the situation in the result + log so the operator knows
+        // to re-run REBUILD outside a transaction to reclaim the buckets.
+        reclaimSkipped = true;
+    }
 
     final ResultInternal result = new ResultInternal(db);
     result.setProperty("operation", "rebuild type");
     result.setProperty("typeName", typeName.getStringValue());
     result.setProperty("polymorphic", polymorphic);
     result.setProperty("recordsRebuilt", count[0]);
+    if (reclaimSkipped) {
+      final String warning = "REBUILD TYPE " + typeName.getStringValue()
+          + " ran inside a caller-supplied transaction; paired external buckets were NOT reclaimed because "
+          + "queued record updates haven't been flushed yet. Re-run REBUILD TYPE outside a transaction (or "
+          + "commit and re-run) to drop the now-empty paired buckets.";
+      result.setProperty("warning", warning);
+      LogManager.instance().log(this, java.util.logging.Level.WARNING, warning);
+    }
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;

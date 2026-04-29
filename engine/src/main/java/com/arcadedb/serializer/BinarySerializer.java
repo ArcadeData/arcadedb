@@ -20,6 +20,8 @@ package com.arcadedb.serializer;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.compression.CompressionFactory;
+import com.arcadedb.compression.LZ4Compression;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DataEncryption;
@@ -981,21 +983,6 @@ public class BinarySerializer {
     }
   }
 
-  // Lazy-init: LZ4Factory.fastestInstance() does JNI/SIMD probing on first call, so we cache the wrapper.
-  private static volatile com.arcadedb.compression.LZ4Compression lz4Singleton;
-
-  private static com.arcadedb.compression.LZ4Compression lz4() {
-    com.arcadedb.compression.LZ4Compression local = lz4Singleton;
-    if (local == null) {
-      synchronized (BinarySerializer.class) {
-        local = lz4Singleton;
-        if (local == null)
-          lz4Singleton = local = new com.arcadedb.compression.LZ4Compression();
-      }
-    }
-    return local;
-  }
-
   /** True for any of TYPE_EXTERNAL, TYPE_EXTERNAL_COMPRESSED_FAST, TYPE_EXTERNAL_COMPRESSED_MAX. */
   private static boolean isExternalType(final byte type) {
     return type == BinaryTypes.TYPE_EXTERNAL
@@ -1040,7 +1027,9 @@ public class BinarySerializer {
     serializeValue(database, rawValueBytes, valueType, value);
     rawValueBytes.flip();
 
-    final boolean fastMode = "fast".equalsIgnoreCase(compressionPolicy) || "lz4".equalsIgnoreCase(compressionPolicy);
+    // The "lz4" legacy alias is normalised to "fast" by LocalProperty.setCompression(), so by the time the
+    // policy reaches us it's already one of: null, "none", "fast", "max", "auto". No second alias check.
+    final boolean fastMode = "fast".equalsIgnoreCase(compressionPolicy);
     final boolean maxMode = "max".equalsIgnoreCase(compressionPolicy);
     final boolean autoMode = "auto".equalsIgnoreCase(compressionPolicy);
     final boolean tryCompress = fastMode || maxMode || autoMode;
@@ -1051,7 +1040,8 @@ public class BinarySerializer {
 
     if (tryCompress && rawValueBytes.size() > 0) {
       final byte[] raw = rawValueBytes.toByteArray();
-      final byte[] compressed = maxMode ? lz4().compressMax(raw) : lz4().compress(raw);
+      final LZ4Compression lz4 = CompressionFactory.getLZ4();
+      final byte[] compressed = maxMode ? lz4.compressMax(raw) : lz4.compress(raw);
       // In auto mode skip compression unless it saves >10%. In fast/max mode always keep the compressed form
       // (the user explicitly asked to compress, even if a particular record happens not to gain much).
       if (!autoMode || compressed.length < raw.length * 0.9) {
@@ -1105,6 +1095,15 @@ public class BinarySerializer {
   public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
       final EmbeddedModifier embeddedModifier, final boolean compressed) {
     final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
+    if (externalBucket == null)
+      // Typical cause: the paired external bucket was created on a tiered path (configured via
+      // arcadedb.externalPropertyBucketPath) and the database was reopened with that config unset or
+      // pointing elsewhere, so FileManager's secondary scan never picked the file up. The schema still
+      // references the old bucket id, but the file isn't loaded -> we'd otherwise NPE on getRecord.
+      throw new SerializationException(
+          "Cannot read EXTERNAL property: external bucket id=" + externalBucketId + " is not loaded. "
+              + "If the bucket was tiered to a secondary path, set 'arcadedb.externalPropertyBucketPath' "
+              + "to the same value used at creation time and reopen the database.");
     final RID rid = RID.create(database, externalBucketId, position);
     final Binary buffer = externalBucket.getRecord(rid).copyOfContent();
     buffer.position(Binary.BYTE_SERIALIZED_SIZE); // SKIP RECORD TYPE BYTE
@@ -1116,11 +1115,20 @@ public class BinarySerializer {
     final int compressedLen = buffer.size() - buffer.position();
     final byte[] compressedBytes = new byte[compressedLen];
     System.arraycopy(buffer.getContent(), buffer.position(), compressedBytes, 0, compressedLen);
-    final byte[] decompressed = lz4().decompress(compressedBytes, uncompressedSize);
+    final byte[] decompressed = CompressionFactory.getLZ4().decompress(compressedBytes, uncompressedSize);
     return deserializeValue(database, new Binary(decompressed), valueType, embeddedModifier);
   }
 
-  /** Reused by cascade-delete: scans the OLD buffer for TYPE_EXTERNAL pointers, keyed by property name. */
+  /**
+   * Reused by cascade-delete and the orphan-cleanup-on-update path inside {@link #serializeProperties}: scans
+   * the OLD buffer for TYPE_EXTERNAL pointers, keyed by property name.
+   * <p>
+   * <b>Do NOT add a {@code hasExternalProperties()} early-out here.</b> The
+   * {@link #serializeProperties} caller invokes this during the EXTERNAL→inline migration (REBUILD TYPE after
+   * {@code setExternal(false)}), when the type's current schema reports zero EXTERNAL properties but the OLD
+   * record buffer still carries TYPE_EXTERNAL pointers that must be discovered so the paired blobs can be
+   * deleted as orphans. The schema flag and the buffer contents are decoupled; the buffer is ground truth.
+   */
   public Map<String, RID> findExistingExternalRids(final Database database, final Document record) {
     final RID identity = record.getIdentity();
     if (identity == null)

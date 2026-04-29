@@ -26,6 +26,15 @@ import com.arcadedb.serializer.json.JSONObject;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ExternalValueRecord extends BaseRecord implements RecordInternal {
+  // BaseRecord-subclass type tags (first byte of every record buffer):
+  //   Document            = 0  (Document.java)
+  //   Vertex              = 1  (Vertex.java)
+  //   Edge                = 2  (Edge.java)
+  //   EdgeSegment         = 3  (EdgeSegment.java / MutableEdgeSegment.java)
+  //   EmbeddedDocument    = 4  (EmbeddedDocument.java)
+  //   ExternalValueRecord = 5  (this class - paired-bucket payload for EXTERNAL property values)
+  //   LightEdge           = 6  (LightEdge.java)
+  // Add new values at the end and update this list.
   public static final byte RECORD_TYPE = 5;
 
   public ExternalValueRecord(final Database database, final RID rid, final Binary buffer) {

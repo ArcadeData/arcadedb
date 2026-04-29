@@ -46,6 +46,7 @@ import com.arcadedb.utility.FileUtils;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class LocalDocumentType implements DocumentType {
@@ -71,7 +72,7 @@ public class LocalDocumentType implements DocumentType {
   // Cached count of OWN properties (not inherited) currently flagged EXTERNAL. Avoids O(N) scans of
   // getPolymorphicProperties() on hot paths (cascadeDeleteExternalValues, addBucketInternal, addSuperType).
   // Maintained by LocalProperty.setExternal, dropProperty, and the schema-load path.
-  final java.util.concurrent.atomic.AtomicInteger   ownExternalPropertyCount          = new java.util.concurrent.atomic.AtomicInteger(0);
+  final AtomicInteger                               ownExternalPropertyCount          = new AtomicInteger(0);
 
   public LocalDocumentType(final LocalSchema schema, final String name) {
     this.schema = schema;
@@ -995,6 +996,11 @@ public class LocalDocumentType implements DocumentType {
     return externalBucketIdByPrimaryBucketId.get(primaryBucketId);
   }
 
+  /** True when this type still owns at least one paired external-property bucket. */
+  public boolean hasExternalBuckets() {
+    return !externalBucketIdByPrimaryBucketId.isEmpty();
+  }
+
   public void ensureExternalBuckets() {
     for (final Bucket b : buckets)
       ensureExternalBucketFor((LocalBucket) b);
@@ -1022,7 +1028,12 @@ public class LocalDocumentType implements DocumentType {
             && external.getPurpose() != LocalBucket.Purpose.EXTERNAL_PROPERTY)
           throw new SchemaException(
               "Cannot adopt bucket '" + extName + "' as the external-property bucket for type '" + name
-                  + "': it is already a primary bucket of another user type. Rename the conflicting bucket and retry.");
+                  + "': it is already a primary bucket of another user type. The paired external bucket is named"
+                  + " <primaryBucketName>_ext, so a primary bucket called '" + extName + "' (or one whose name"
+                  + " ends in '_ext' that matches another type's primary bucket) collides with this convention."
+                  + " Resolve by renaming the conflicting primary bucket via 'ALTER BUCKET " + extName
+                  + " NAME ...' so its name no longer ends in '_ext' or no longer collides, then retry the EXTERNAL"
+                  + " property change.");
       } else {
         // External buckets get larger pages (256KB vs 64KB primary), a smaller slot table (256 vs 2048: file-format
         // version EXTERNAL_BUCKET_VERSION), and optional placement on cheaper-storage tier via
@@ -1040,10 +1051,27 @@ public class LocalDocumentType implements DocumentType {
   /**
    * Drops paired external-property buckets that no longer back any record (typical case: a REBUILD TYPE that
    * moved every value back inline because the EXTERNAL flag was just toggled off). Skips buckets that still
-   * hold records so we never lose data; those point at persistent corruption and need investigation. Caller
-   * is expected to verify {@code !hasExternalProperties()} before calling.
+   * hold records so we never lose data; those point at persistent corruption and need investigation.
+   * <p>
+   * <b>Preconditions (caller-enforced).</b>
+   * <ol>
+   *   <li>{@code !hasExternalProperties()} - the type no longer has any EXTERNAL property to write into the
+   *       bucket. Without this, a concurrent insert could legitimately write into the bucket between the
+   *       {@code count() == 0} check and {@code dropBucket}.</li>
+   *   <li>No transaction is active (or any active transaction has been committed before this call). The
+   *       {@code count()} read consults pageManager state that has not yet flushed dirty pages from a still-open
+   *       transaction, so an open tx can hide records from this method and lead to a data-losing drop.</li>
+   * </ol>
+   * The current production caller ({@code RebuildTypeStatement}) only invokes this on the
+   * {@code implicitTx == true} path, after committing its own transaction, so both preconditions are met.
+   * Any new caller MUST honour both, or restructure to take a schema-level write lock that blocks inserts
+   * for the duration of the count-then-drop sequence.
    */
   public void reclaimEmptyExternalBuckets() {
+    if (hasExternalProperties())
+      // Guard against accidental misuse from future callers; better to no-op than to silently drop a bucket
+      // that the schema still expects writes to flow into.
+      return;
     final List<Integer> toDrop = new ArrayList<>();
     for (final Map.Entry<Integer, Integer> entry : externalBucketIdByPrimaryBucketId.entrySet()) {
       final LocalBucket extBucket = schema.getBucketById(entry.getValue(), false);
@@ -1206,6 +1234,11 @@ public class LocalDocumentType implements DocumentType {
     if (!externalBucketIdByPrimaryBucketId.isEmpty()) {
       // PRIMARY BUCKET NAME -> EXTERNAL BUCKET NAME. NAMES (NOT IDS) ARE PERSISTED FOR HUMAN READABILITY AND
       // BECAUSE FILE IDS CAN BE REMAPPED ON FILE MIGRATION (LocalSchema.migratedFileIds).
+      // NAME DEPENDENCY: this serialised mapping is keyed by string. ArcadeDB does not currently expose a
+      // user-level RENAME BUCKET command, so the names are stable in practice. If a future feature lets a
+      // user rename a bucket, the rename code MUST update both sides of this mapping (or it will go stale on
+      // restart, and restoreExternalBuckets() will log SEVERE for the missing entry). Same constraint applies
+      // to the external bucket itself: its file name carries the primary's name + "_ext" suffix.
       final JSONObject extBuckets = new JSONObject();
       for (final Map.Entry<Integer, Integer> e : externalBucketIdByPrimaryBucketId.entrySet()) {
         final LocalBucket primary = schema.getBucketById(e.getKey(), false);
