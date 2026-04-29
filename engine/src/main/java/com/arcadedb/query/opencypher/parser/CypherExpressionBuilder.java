@@ -22,9 +22,14 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
+import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 
@@ -1660,6 +1665,17 @@ class CypherExpressionBuilder {
       // Handle Result types
       if (baseValue instanceof Result) {
         return ((Result) baseValue).getProperty(propertyName);
+      }
+
+      // Handle temporal types (e.g., date().year, datetime().hour)
+      if (baseValue instanceof CypherTemporalValue) {
+        return ((CypherTemporalValue) baseValue).getTemporalProperty(propertyName);
+      }
+      if (baseValue instanceof LocalDate) {
+        return new CypherDate((LocalDate) baseValue).getTemporalProperty(propertyName);
+      }
+      if (baseValue instanceof LocalDateTime) {
+        return new CypherLocalDateTime((LocalDateTime) baseValue).getTemporalProperty(propertyName);
       }
 
       return null;
