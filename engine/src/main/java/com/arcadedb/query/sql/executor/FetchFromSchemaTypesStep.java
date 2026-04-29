@@ -89,6 +89,22 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           r.setProperty("buckets", type.getBuckets(false).stream().map((b) -> b.getName()).collect(Collectors.toList()));
           r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
 
+          // Expose the primary->external bucket mapping for types that have any EXTERNAL property. Lets tooling
+          // (Studio etc.) tell the user where the externalised values for each primary bucket are stored.
+          if (type instanceof com.arcadedb.schema.LocalDocumentType ldt) {
+            final Map<String, String> extMap = new HashMap<>();
+            for (final var b : type.getBuckets(false)) {
+              final Integer extId = ldt.getExternalBucketIdFor(b.getFileId());
+              if (extId != null) {
+                final var extBucket = context.getDatabase().getSchema().getBucketById(extId);
+                if (extBucket != null)
+                  extMap.put(b.getName(), extBucket.getName());
+              }
+            }
+            if (!extMap.isEmpty())
+              r.setProperty("externalBuckets", extMap);
+          }
+
           final List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
           r.setProperty("parentTypes", parents);
 
@@ -109,6 +125,8 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                   propRes.setProperty("notNull", property.isNotNull());
                 if (property.isHidden())
                   propRes.setProperty("hidden", property.isHidden());
+                if (property.isExternal())
+                  propRes.setProperty("external", property.isExternal());
                 if (property.getMin() != null)
                   propRes.setProperty("min", property.getMin());
                 if (property.getMax() != null)

@@ -333,6 +333,16 @@ class ExternalPropertyTest extends TestHelper {
     }
     assertThat(foundPrimary).as("schema:buckets should list the primary bucket").isTrue();
     assertThat(foundExternal).as("schema:buckets should list the external bucket").isTrue();
+
+    // The Studio buckets tab uses this exact WHERE filter to hide internal buckets. Verify it works on
+    // schema:buckets and excludes the EXTERNAL_PROPERTY bucket but still includes the primary one.
+    final ResultSet filtered = database.query("sql",
+        "SELECT name, purpose FROM schema:buckets WHERE purpose = 'PRIMARY' OR purpose IS NULL");
+    final java.util.Set<String> names = new java.util.HashSet<>();
+    while (filtered.hasNext())
+      names.add(filtered.next().getProperty("name"));
+    assertThat(names).contains(primary.getName());
+    assertThat(names).doesNotContain(external.getName());
   }
 
   @Test
@@ -435,6 +445,44 @@ class ExternalPropertyTest extends TestHelper {
     final var localSchema = (LocalSchema) database.getSchema().getEmbedded();
     assertThat(localSchema.getBucketById(parentExtId).count()).isEqualTo(1L);
     assertThat(localSchema.getBucketById(childExtId).count()).isEqualTo(2L);
+  }
+
+  @Test
+  void schemaTypesViewExposesExternalFlagAndPairing() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("name", Type.STRING);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    final ResultSet rs = database.query("sql", "SELECT FROM schema:types WHERE name = 'Doc'");
+    assertThat(rs.hasNext()).isTrue();
+    final var row = rs.next();
+
+    // Per-property external flag (only emitted when true).
+    final var properties = (java.util.List<?>) row.getProperty("properties");
+    assertThat(properties).isNotNull();
+    boolean foundBlobAsExternal = false;
+    boolean foundNameWithoutFlag = false;
+    for (final Object propObj : properties) {
+      final var prop = (com.arcadedb.query.sql.executor.Result) propObj;
+      final String name = prop.getProperty("name");
+      if ("blob".equals(name)) {
+        assertThat((Boolean) prop.getProperty("external")).isTrue();
+        foundBlobAsExternal = true;
+      } else if ("name".equals(name)) {
+        assertThat((Boolean) prop.getProperty("external")).isNull();
+        foundNameWithoutFlag = true;
+      }
+    }
+    assertThat(foundBlobAsExternal).isTrue();
+    assertThat(foundNameWithoutFlag).isTrue();
+
+    // Type-level externalBuckets mapping (primaryBucketName -> externalBucketName).
+    @SuppressWarnings("unchecked")
+    final java.util.Map<String, String> extMap = (java.util.Map<String, String>) row.getProperty("externalBuckets");
+    assertThat(extMap).isNotNull().isNotEmpty();
+    final String primaryName = type.getBuckets(false).getFirst().getName();
+    assertThat(extMap).containsKey(primaryName);
+    assertThat(extMap.get(primaryName)).endsWith("_ext");
   }
 
   @Test

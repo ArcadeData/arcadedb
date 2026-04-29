@@ -1065,6 +1065,7 @@ function createProperty(typeName) {
   html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropNotNull'><label class='form-check-label' for='inputCreatePropNotNull'>Not Null</label></div>";
   html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropHidden'><label class='form-check-label' for='inputCreatePropHidden'>Hidden</label></div>";
   html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropReadOnly'><label class='form-check-label' for='inputCreatePropReadOnly'>Read Only</label></div>";
+  html += "<div class='form-check' title='Store the value in a paired external bucket instead of inline. Useful for large payloads (vectors, big strings, embedded JSON) so the primary bucket stays cache-dense for traversal.'><input class='form-check-input' type='checkbox' id='inputCreatePropExternal'><label class='form-check-label' for='inputCreatePropExternal'>External</label></div>";
   html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropIfNotExists'><label class='form-check-label' for='inputCreatePropIfNotExists'>If not exists</label></div>";
   html += "</div>";
 
@@ -1085,6 +1086,7 @@ function createProperty(typeName) {
     let notNull = $("#inputCreatePropNotNull").prop("checked");
     let hidden = $("#inputCreatePropHidden").prop("checked");
     let readOnly = $("#inputCreatePropReadOnly").prop("checked");
+    let external = $("#inputCreatePropExternal").prop("checked");
     let ifNotExists = $("#inputCreatePropIfNotExists").prop("checked");
 
     let command = "CREATE PROPERTY `" + typeName + "`.`" + name + "`";
@@ -1097,6 +1099,7 @@ function createProperty(typeName) {
     if (notNull) constraints.push("NOTNULL true");
     if (hidden) constraints.push("HIDDEN true");
     if (readOnly) constraints.push("READONLY true");
+    if (external) constraints.push("EXTERNAL true");
     if (defaultVal != "") constraints.push("DEFAULT " + defaultVal);
     if (min != "") constraints.push("MIN " + min);
     if (max != "") constraints.push("MAX " + max);
@@ -3113,7 +3116,7 @@ function showTypeDetail(typeName) {
     } else {
       html += "<div class='table-responsive'>";
       html += "<table class='table table-sm db-detail-table'>";
-      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Storage</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
       html += "<tbody>" + propHtml + "</tbody></table></div>";
     }
     html += "</div>";
@@ -3320,6 +3323,22 @@ function renderProperties(row, results) {
     let property = row.properties[k];
     panelHtml += "<tr><td>" + property.name + "</td><td>" + row.name + "</td><td>" + property.type + "</td>";
 
+    // Storage cell: External properties show a purple badge with the paired bucket(s) in the tooltip so the user
+    // immediately sees that the value lives outside the primary record and where to find it on disk.
+    if (property.external) {
+      let pairs = [];
+      if (row.externalBuckets) {
+        for (let primary in row.externalBuckets)
+          pairs.push(escapeHtml(primary) + " \u2192 " + escapeHtml(row.externalBuckets[primary]));
+      }
+      let tooltip = pairs.length > 0
+        ? "Value stored in paired external bucket(s): " + pairs.join(", ")
+        : "Value stored in a paired external bucket";
+      panelHtml += "<td><span class='badge bg-info' title='" + escapeHtml(tooltip) + "'><i class='fa fa-external-link-alt'></i> External</span></td>";
+    } else {
+      panelHtml += "<td><span class='text-muted' style='font-size:0.85rem;' title='Value stored inline in the record'>Inline</span></td>";
+    }
+
     panelHtml += "<td>" + (property.mandatory ? true : false) + "</td>";
     panelHtml += "<td>" + (property.notNull ? true : false) + "</td>";
     panelHtml += "<td>" + (property.hidden ? true : false) + "</td>";
@@ -3346,7 +3365,7 @@ function renderProperties(row, results) {
 
     if (property.custom != null && Object.keys(property.custom).length > 0) {
       panelHtml += "<td></td>";
-      panelHtml += "<td colspan='10'><b>Custom Properties</b><br>";
+      panelHtml += "<td colspan='11'><b>Custom Properties</b><br>";
       panelHtml += "<div class='table-responsive'>";
       panelHtml += "<table style='width: 100%'>";
       for (c in property.custom) panelHtml += "<tr><td width='30%'>" + c + "</td><td width='70%'>" + property.custom[c] + "</td></tr>";
@@ -4566,7 +4585,7 @@ function showMaterializedViewDetail(viewName) {
     else {
       html += "<div class='table-responsive'>";
       html += "<table class='table table-sm db-detail-table'>";
-      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Storage</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
       html += "<tbody>" + propHtml + "</tbody></table></div>";
     }
     html += "</div>";
@@ -5198,7 +5217,9 @@ function loadStorageBuckets() {
   jQuery.ajax({
     type: "POST",
     url: "api/v1/query/" + database,
-    data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:buckets" }),
+    // Hide non-PRIMARY buckets (e.g. paired EXTERNAL_PROPERTY buckets that hold externalised property values).
+    // Power users can still see them by running SELECT FROM schema:buckets directly in the Query tab.
+    data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:buckets WHERE purpose = 'PRIMARY' OR purpose IS NULL" }),
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function (data) {
     if (!data.result || data.result.length === 0) {
