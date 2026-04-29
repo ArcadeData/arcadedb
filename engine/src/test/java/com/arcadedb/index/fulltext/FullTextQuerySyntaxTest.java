@@ -19,13 +19,10 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -135,20 +132,15 @@ class FullTextQuerySyntaxTest extends TestHelper {
 
     database.transaction(() -> {
       // Suffix wildcard: data* should match database, datastore
-      // Note: Current implementation treats prefix as exact term lookup
-      // This is a simplified test that verifies the query parses correctly
       final ResultSet result = database.query("sql",
           "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', 'data*') = true");
 
-      final List<Result> results = new ArrayList<>();
+      final Set<String> titles = new HashSet<>();
       while (result.hasNext()) {
-        results.add(result.next());
+        titles.add(result.next().getProperty("title"));
       }
 
-      // Current impl: data* becomes "data" which won't match
-      // Future enhancement: implement proper prefix iteration
-      // For now, just verify no exception is thrown
-      assertThat(results).isEmpty();
+      assertThat(titles).containsExactlyInAnyOrder("Doc1", "Doc2");
     });
   }
 
@@ -164,19 +156,16 @@ class FullTextQuerySyntaxTest extends TestHelper {
     });
 
     database.transaction(() -> {
-      // Fuzzy query: databse~ should match database (typo tolerance)
-      // Note: Current implementation doesn't support fuzzy matching
+      // Fuzzy query: databse~ should match "database" (typo tolerance)
       final ResultSet result = database.query("sql",
           "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', 'databse~') = true");
 
-      final List<Result> results = new ArrayList<>();
+      final Set<String> titles = new HashSet<>();
       while (result.hasNext()) {
-        results.add(result.next());
+        titles.add(result.next().getProperty("title"));
       }
 
-      // Current impl: fuzzy queries fall through without matches
-      // Future enhancement: implement fuzzy matching
-      assertThat(results).isEmpty();
+      assertThat(titles).containsExactly("Doc1");
     });
   }
 

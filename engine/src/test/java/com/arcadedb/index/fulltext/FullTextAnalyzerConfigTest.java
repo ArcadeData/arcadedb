@@ -127,19 +127,16 @@ class FullTextAnalyzerConfigTest extends TestHelper {
     });
 
     database.transaction(() -> {
-      // Leading wildcard query parses without exception when enabled
-      // Note: Current LSM-Tree implementation strips wildcards, so *base becomes "base"
-      // which won't match "database". Full wildcard iteration is a future enhancement.
+      // Leading wildcard '*base' should match the token "database"
       final ResultSet result = database.query("sql",
           "SELECT FROM Article WHERE SEARCH_INDEX('Article[content]', '*base') = true");
 
-      // Query should execute without throwing (unlike when disabled)
       final List<Result> results = new ArrayList<>();
       while (result.hasNext()) {
         results.add(result.next());
       }
-      // Results may be empty due to LSM-Tree wildcard limitations
-      assertThat(results).isEmpty();
+      assertThat(results).hasSize(1);
+      assertThat(results.getFirst().<String>getProperty("content")).isEqualTo("database management system");
     });
   }
 
