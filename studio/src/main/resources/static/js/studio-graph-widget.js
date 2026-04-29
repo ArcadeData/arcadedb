@@ -144,6 +144,7 @@ function renderGraph() {
     container: $("#graph"),
     elements: elements,
     style: styles,
+    maxZoom: 2.0,
   });
 
   initGraph();
@@ -316,8 +317,8 @@ function createVertex(vertex) {
   let fullLabel = resolveFullLabel(type, vertex["p"]);
 
   let nodeSize = globalGraphSettings.nodeSize || 25;
-  let maxAutoSize = nodeSize * 4;
-  let size = label.length > 0 ? Math.min(nodeSize + 2 * label.length, maxAutoSize) : nodeSize;
+  let maxAutoSize = nodeSize * 8;
+  let size = label.length > 0 ? Math.min(nodeSize + 6 * label.length, maxAutoSize) : nodeSize;
 
   return { id: vertex["r"], label: label, fullLabel: fullLabel, size: size, type: type, weight: vertex["i"] + vertex["o"], properties: vertex["p"] };
 }
@@ -370,7 +371,7 @@ function updateLabelsForType(type) {
   if (globalCy == null) return;
 
   let nodeSize = globalGraphSettings.nodeSize || 25;
-  let maxAutoSize = nodeSize * 4;
+  let maxAutoSize = nodeSize * 8;
   let isEdge = getOrCreateStyleTypeAttrib(type, "element") === "e";
 
   globalCy.elements("." + type).forEach(function (ele) {
@@ -380,7 +381,7 @@ function updateLabelsForType(type) {
     ele.data("label", label);
     ele.data("fullLabel", fullLabel);
     if (!isEdge)
-      ele.data("size", label.length > 0 ? Math.min(nodeSize + 2 * label.length, maxAutoSize) : nodeSize);
+      ele.data("size", label.length > 0 ? Math.min(nodeSize + 6 * label.length, maxAutoSize) : nodeSize);
   });
 }
 
@@ -519,6 +520,26 @@ function setGraphStyles() {
     }
   }
   globalCy.nodeHtmlLabel(nodeHtmlStyles);
+}
+
+function toggleGraphFullscreen() {
+  let root = document.getElementById("tab-query");
+  if (root == null) return;
+
+  let active = root.classList.toggle("graph-fullscreen");
+
+  let btn = document.getElementById("toggleGraphFullscreenBtn");
+  if (btn != null) {
+    btn.innerHTML = active ? '<i class="fa fa-compress"></i>' : '<i class="fa fa-expand"></i>';
+    btn.title = active ? "Exit graph fullscreen" : "Maximize graph";
+  }
+
+  if (globalCy != null) {
+    setTimeout(function () {
+      globalCy.resize();
+      globalCy.fit(undefined, 30);
+    }, 50);
+  }
 }
 
 function removeGraphElement(ele) {

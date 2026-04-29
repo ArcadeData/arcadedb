@@ -54,7 +54,7 @@
     <!-- Query Work Area -->
     <div id="queryWorkArea" style="flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding-left: 12px; padding-right: 12px;">
 
-      <div class="row mb-2">
+      <div class="row mb-2" id="queryControlsRow">
         <div class="col-4">
           <select id="inputLanguage" class="form-select" style="color: var(--color-brand)">
             <option value="sql" selected>SQL</option>
@@ -94,7 +94,7 @@
       </div>
 
       <div class="row">
-        <div class="col-12">
+        <div class="col-12" id="queryEditorWrapper">
           <div class="query-editor-container">
             <div class="query-editor-area">
               <textarea id="inputCommand" name="inputCommand"></textarea>
@@ -266,6 +266,17 @@
                               <a class="nav-link" href="#" onclick="exportSettings()">Settings</a>
                             </li>
                           </ul>
+                        </li>
+                        <li class="nav-item">
+                          <button
+                            id="toggleGraphFullscreenBtn"
+                            type="button"
+                            class="btn btn-secondary"
+                            onclick="toggleGraphFullscreen()"
+                            title="Maximize graph"
+                          >
+                            <i class="fa fa-expand"></i>
+                          </button>
                         </li>
                         <li class="nav-item">
                           <button

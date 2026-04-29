@@ -4031,3 +4031,22 @@ body.col-resizing * {
     padding: 2px 6px !important;
   }
 }
+
+/* ===== Graph Fullscreen Mode ===== */
+.graph-fullscreen #queryPanel,
+.graph-fullscreen #queryIconSidebar,
+.graph-fullscreen #querySidebar,
+.graph-fullscreen #queryControlsRow,
+.graph-fullscreen #queryEditorWrapper,
+.graph-fullscreen #tabs-command {
+  display: none !important;
+}
+
+.graph-fullscreen #queryWorkArea {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.graph-fullscreen #graph {
+  height: calc(100vh - 80px) !important;
+}
