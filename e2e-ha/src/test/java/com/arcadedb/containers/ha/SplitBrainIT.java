@@ -377,6 +377,26 @@ class   SplitBrainIT extends ContainersTestTemplate {
       logger.info("Cycle {}: Writing to majority partition via leader node {}", cycle, currentLeader);
       dbs[currentLeader].addUserAndPhotos(5, 10);
 
+      // Wait for the other majority node to replicate writes before sampling the count.
+      // This ensures cycleLeaderCount is captured from stable state, not during Raft transition.
+      // Alias required: servers is reassigned later in this loop body (after restart), making
+      // it not effectively final and therefore not capturable in the lambda below.
+      final List<ServerWrapper> majorityServers = servers;
+      Awaitility.await()
+          .atMost(60, TimeUnit.SECONDS)
+          .pollInterval(2, TimeUnit.SECONDS)
+          .until(() -> {
+            try {
+              return countUsersViaHttp(majorityServers.get(currentLeader)) == countUsersViaHttp(majorityServers.get(otherFollower));
+            } catch (final Exception e) {
+              return false;
+            }
+          });
+
+      // Capture stable count BEFORE restarting the isolated node to avoid stale reads during re-election.
+      final long cycleLeaderCount = countUsersViaHttp(servers.get(currentLeader));
+      logger.info("Cycle {}: Majority stable at {} users, healing partition", cycle, cycleLeaderCount);
+
       // After a Docker network partition, gRPC channels on the isolated node are stuck in
       // exponential backoff. Reconnect network, then restart the isolated node to force
       // fresh gRPC connections.
@@ -399,11 +419,10 @@ class   SplitBrainIT extends ContainersTestTemplate {
           isolatedIdx == 1 ? restartedServer : prevServers.get(1),
           isolatedIdx == 2 ? restartedServer : prevServers.get(2));
 
-      logger.info("Cycle {}: Waiting for reformation and Raft log catch-up", cycle);
-      TimeUnit.SECONDS.sleep(10);
+      // Wait for Raft to elect a leader with the restarted node in the cluster
+      // before starting the convergence check.
+      assertThat(waitForRaftLeader(servers, 60)).as("Cycle %d: Raft leader must be elected before convergence check", cycle).isGreaterThanOrEqualTo(0);
 
-      // Capture actual leader count - measure rather than assume 5 writes always succeed.
-      final long cycleLeaderCount = countUsersViaHttp(servers.get(currentLeader));
       final int currentCycle = cycle;
       logger.info("Cycle {}: Verifying convergence to {} users", cycle, cycleLeaderCount);
 

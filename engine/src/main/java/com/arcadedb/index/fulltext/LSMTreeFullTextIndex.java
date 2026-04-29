@@ -599,6 +599,22 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return ftMetadata;
   }
 
+  /**
+   * Iterates the underlying LSM-Tree starting at the given key.
+   * Used by full-text query executors to support prefix and wildcard scans.
+   *
+   * @param ascendingOrder true for ascending iteration, false for descending
+   * @param fromKeys       the starting key (single-element String array). May be null for full scan.
+   * @param inclusive      whether the start key is inclusive
+   *
+   * @return cursor over the underlying index entries
+   */
+  public IndexCursor iterateUnderlying(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) {
+    if (fromKeys == null)
+      return underlyingIndex.iterator(ascendingOrder);
+    return underlyingIndex.iterator(ascendingOrder, fromKeys, inclusive);
+  }
+
   @Override
   public boolean isValid() {
     return underlyingIndex.isValid();

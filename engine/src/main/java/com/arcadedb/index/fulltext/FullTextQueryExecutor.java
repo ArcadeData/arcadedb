@@ -19,6 +19,7 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.function.text.TextLevenshteinDistance;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -30,18 +31,23 @@ import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.RegexpQuery;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.WildcardQuery;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Executes Lucene queries against an LSMTreeFullTextIndex.
@@ -208,11 +214,12 @@ public class FullTextQueryExecutor {
       collectPrefixMatches((PrefixQuery) query, scoreMap);
     } else if (query instanceof WildcardQuery) {
       collectWildcardMatches((WildcardQuery) query, scoreMap);
-    } else {
-      // Fallback for unsupported query types (FuzzyQuery, RegexpQuery, etc.)
-      // Log or handle gracefully - return no matches rather than throw
-      // Future enhancement: implement support for additional query types
+    } else if (query instanceof FuzzyQuery) {
+      collectFuzzyMatches((FuzzyQuery) query, scoreMap);
+    } else if (query instanceof RegexpQuery) {
+      collectRegexpMatches((RegexpQuery) query, scoreMap);
     }
+    // Other Lucene query types (e.g., TermRangeQuery) are intentionally ignored.
   }
 
   private void collectTermsForExclusion(final Query query, final Set<RID> excluded) {
@@ -280,24 +287,188 @@ public class FullTextQueryExecutor {
   }
 
   private void collectPrefixMatches(final PrefixQuery query, final Map<RID, AtomicInteger> scoreMap) {
-    // Simplified: treat prefix as exact term for now
-    final String prefix = query.getPrefix().text();
-    final IndexCursor cursor = index.get(new Object[] { prefix });
-    while (cursor.hasNext()) {
-      final RID rid = cursor.next().getIdentity();
-      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
-    }
+    final String field = query.getPrefix().field();
+    final String prefix = normalizeText(query.getPrefix().text());
+    if (prefix.isEmpty())
+      return;
+
+    final String searchPrefix = buildSearchKey(field, prefix);
+    iterateAndMatch(searchPrefix, key -> key.startsWith(searchPrefix), scoreMap);
   }
 
   private void collectWildcardMatches(final WildcardQuery query, final Map<RID, AtomicInteger> scoreMap) {
-    // Simplified: strip wildcards and treat as term
-    final String term = query.getTerm().text().replace("*", "").replace("?", "");
-    if (!term.isEmpty()) {
-      final IndexCursor cursor = index.get(new Object[] { term });
-      while (cursor.hasNext()) {
-        final RID rid = cursor.next().getIdentity();
+    final String field = query.getTerm().field();
+    final String pattern = normalizeText(query.getTerm().text());
+    if (pattern.isEmpty())
+      return;
+
+    // Compute the literal prefix (everything up to the first wildcard char)
+    final String literalPrefix = extractLiteralPrefix(pattern);
+    final String searchPrefix = buildSearchKey(field, literalPrefix);
+    final String fieldPrefix = (field != null && !field.isEmpty() && !"content".equals(field)) ? field + ":" : "";
+    final Pattern regex = wildcardToRegex(pattern);
+
+    if (literalPrefix.isEmpty()) {
+      // Leading wildcard: full scan, then regex match against the unprefixed token portion
+      iterateAndMatch(null, key -> {
+        if (!key.startsWith(fieldPrefix))
+          return false;
+        final String token = key.substring(fieldPrefix.length());
+        // Skip cross-field tokens for unqualified queries on multi-property indexes
+        if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
+          return false;
+        return regex.matcher(token).matches();
+      }, scoreMap);
+    } else {
+      // Range scan starting at the literal prefix and stop when keys no longer share it
+      iterateAndMatch(searchPrefix, key -> {
+        if (!key.startsWith(searchPrefix))
+          return false;
+        final String token = key.substring(fieldPrefix.length());
+        if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
+          return false;
+        return regex.matcher(token).matches();
+      }, scoreMap);
+    }
+  }
+
+  private void collectFuzzyMatches(final FuzzyQuery query, final Map<RID, AtomicInteger> scoreMap) {
+    final String field = query.getTerm().field();
+    final String term = normalizeText(query.getTerm().text());
+    if (term.isEmpty())
+      return;
+
+    final int maxEdits = query.getMaxEdits();
+    final int prefixLen = Math.min(query.getPrefixLength(), term.length());
+    final String requiredPrefix = term.substring(0, prefixLen);
+    final String fieldPrefix = (field != null && !field.isEmpty() && !"content".equals(field)) ? field + ":" : "";
+    final String searchPrefix = fieldPrefix + requiredPrefix;
+
+    iterateAndMatch(searchPrefix.isEmpty() ? null : searchPrefix, key -> {
+      if (!key.startsWith(searchPrefix))
+        return false;
+      final String token = key.substring(fieldPrefix.length());
+      if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
+        return false;
+      return TextLevenshteinDistance.levenshteinDistance(token, term) <= maxEdits;
+    }, scoreMap);
+  }
+
+  private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
+    final String field = query.getRegexp().field();
+    final String regexText = normalizeText(query.getRegexp().text());
+    if (regexText.isEmpty())
+      return;
+
+    final Pattern regex;
+    try {
+      regex = Pattern.compile(regexText);
+    } catch (final PatternSyntaxException e) {
+      return;
+    }
+
+    final String fieldPrefix = (field != null && !field.isEmpty() && !"content".equals(field)) ? field + ":" : "";
+
+    iterateAndMatch(null, key -> {
+      if (!key.startsWith(fieldPrefix))
+        return false;
+      final String token = key.substring(fieldPrefix.length());
+      if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
+        return false;
+      return regex.matcher(token).matches();
+    }, scoreMap);
+  }
+
+  /**
+   * Iterates the underlying index from the given start key and accumulates RIDs whose keys pass the matcher.
+   * Stops as soon as the matcher rejects a key when {@code startKey} is non-null (since keys are sorted
+   * and a non-prefix means we've left the relevant range). When {@code startKey} is null, performs a full
+   * scan and applies the matcher to every key.
+   */
+  private void iterateAndMatch(final String startKey, final KeyMatcher matcher, final Map<RID, AtomicInteger> scoreMap) {
+    final boolean rangeScan = startKey != null;
+    final IndexCursor cursor = index.iterateUnderlying(true,
+        rangeScan ? new String[] { startKey } : null, true);
+    while (cursor.hasNext()) {
+      final RID rid = cursor.next().getIdentity();
+      final Object[] keys = cursor.getKeys();
+      if (keys == null || keys.length == 0 || keys[0] == null)
+        continue;
+      final String key = keys[0].toString();
+      if (matcher.matches(key)) {
         scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
+      } else if (rangeScan && startKey != null && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
+        break;
       }
     }
+  }
+
+  /**
+   * Builds the index search key by prefixing the field name when needed.
+   * Multi-property indexes store entries as {@code fieldName:token}; the default {@code "content"} field
+   * (used by the Lucene QueryParser when no field is specified) targets unqualified tokens.
+   */
+  private static String buildSearchKey(final String field, final String text) {
+    if (field != null && !field.isEmpty() && !"content".equals(field))
+      return field + ":" + text;
+    return text;
+  }
+
+  /**
+   * Normalizes a wildcard / fuzzy / regex term to lowercase to match how the analyzer stored the tokens.
+   * The Lucene QueryParser does not pass these terms through the analyzer; without normalization, queries
+   * like {@code Hell*} would never match the lower-cased indexed tokens.
+   */
+  private static String normalizeText(final String text) {
+    return text == null ? "" : text.toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * Extracts the longest literal prefix of a wildcard pattern (everything before the first
+   * {@code *}, {@code ?}, or escaped char that introduces non-literal matching).
+   */
+  private static String extractLiteralPrefix(final String pattern) {
+    final StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < pattern.length(); i++) {
+      final char c = pattern.charAt(i);
+      if (c == '*' || c == '?')
+        break;
+      if (c == '\\' && i + 1 < pattern.length()) {
+        sb.append(pattern.charAt(i + 1));
+        i++;
+        continue;
+      }
+      sb.append(c);
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Converts a Lucene-style wildcard pattern (using {@code *} and {@code ?}) to a {@link Pattern}.
+   * Other regex metacharacters in the input are escaped so they match literally.
+   */
+  private static Pattern wildcardToRegex(final String wildcard) {
+    final StringBuilder sb = new StringBuilder(wildcard.length() + 8);
+    sb.append('^');
+    for (int i = 0; i < wildcard.length(); i++) {
+      final char c = wildcard.charAt(i);
+      if (c == '*') {
+        sb.append(".*");
+      } else if (c == '?') {
+        sb.append('.');
+      } else if (c == '\\' && i + 1 < wildcard.length()) {
+        sb.append(Pattern.quote(String.valueOf(wildcard.charAt(i + 1))));
+        i++;
+      } else {
+        sb.append(Pattern.quote(String.valueOf(c)));
+      }
+    }
+    sb.append('$');
+    return Pattern.compile(sb.toString());
+  }
+
+  @FunctionalInterface
+  private interface KeyMatcher {
+    boolean matches(String key);
   }
 }

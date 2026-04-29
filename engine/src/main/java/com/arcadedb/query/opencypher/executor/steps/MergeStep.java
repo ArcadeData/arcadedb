@@ -237,11 +237,11 @@ public class MergeStep extends AbstractExecutionStep {
    * MERGE returns one row per matching node, or creates if none match.
    */
   private List<Result> mergeSingleNodeAll(final NodePattern nodePattern, final ResultInternal baseResult) {
-    final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : "n";
+    final String variable = nodePattern.getVariable();
 
     // Only check for already-bound variable when explicitly named by the user.
     // Anonymous MERGE nodes (no variable) should always search for matches.
-    if (nodePattern.getVariable() != null) {
+    if (variable != null) {
       final Object existing = baseResult.getProperty(variable);
       if (existing instanceof Vertex) {
         baseResult.setProperty("  wasCreated", false);
@@ -256,7 +256,8 @@ public class MergeStep extends AbstractExecutionStep {
       final List<Result> results = new ArrayList<>();
       for (final Vertex v : matches) {
         final ResultInternal r = copyResult(baseResult);
-        r.setProperty(variable, v);
+        if (variable != null)
+          r.setProperty(variable, v);
         r.setProperty("  wasCreated", false);
         results.add(r);
       }
@@ -265,7 +266,8 @@ public class MergeStep extends AbstractExecutionStep {
 
     // No match - create one
     final Vertex vertex = createVertex(nodePattern, baseResult);
-    baseResult.setProperty(variable, vertex);
+    if (variable != null)
+      baseResult.setProperty(variable, vertex);
     baseResult.setProperty("  wasCreated", true);
     return List.of(baseResult);
   }

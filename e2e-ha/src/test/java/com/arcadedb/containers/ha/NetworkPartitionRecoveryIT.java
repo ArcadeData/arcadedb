@@ -36,6 +36,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /**
  * Network partition recovery and data convergence tests for Raft HA cluster resilience.
  * Tests partition healing and Raft log catch-up after network failures.
@@ -222,6 +224,26 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
       logger.info("Cycle {}: Writing to majority partition via leader node {}", cycle, currentLeader);
       dbs[currentLeader].addUserAndPhotos(5, 10);
 
+      // Wait for the other majority node to see the writes before restarting.
+      // This ensures cycleCount is read from a stable state, not during Raft transition.
+      final int capturedLeader = currentLeader;
+      final int capturedOther = (currentLeader + 2) % 3;
+      Awaitility.await()
+          .atMost(60, TimeUnit.SECONDS)
+          .pollInterval(2, TimeUnit.SECONDS)
+          .until(() -> {
+            try {
+              return dbs[capturedLeader].countUsers() == dbs[capturedOther].countUsers();
+            } catch (final Exception e) {
+              return false;
+            }
+          });
+
+      // Capture the stable count BEFORE restarting the isolated node.
+      // Reading after restart risks a stale value during Raft re-election.
+      final long cycleCount = dbs[currentLeader].countUsers();
+      logger.info("Cycle {}: Majority stable at {} users", cycle, cycleCount);
+
       // After a Docker network partition, gRPC channels between peers are stuck in
       // exponential backoff. Restart the isolated node to force fresh connections.
       logger.info("Cycle {}: Healing partition - reconnecting and restarting isolated node {}", cycle, isolatedIdx);
@@ -239,14 +261,13 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
           isolatedIdx == 1 ? restartedServer : servers.get(1),
           isolatedIdx == 2 ? restartedServer : servers.get(2));
 
-      // Measure actual count from leader - some writes may fail during transition
-      final long cycleCount = dbs[currentLeader].countUsers();
+      // Wait for Raft to elect a leader with the restarted node in the cluster
+      // before starting the convergence check.
+      assertThat(waitForRaftLeader(servers, 60)).as("Cycle %d: Raft leader must be elected before convergence check", cycle).isGreaterThanOrEqualTo(0);
 
       logger.info("Cycle {}: Waiting for Raft log catch-up convergence (expected={})", cycle, cycleCount);
       final int currentCycle = cycle;
       final int capturedIsolatedIdx = isolatedIdx;
-      final int capturedLeader = currentLeader;
-      final int capturedOther = (currentLeader + 2) % 3;
       Awaitility.await()
           .atMost(180, TimeUnit.SECONDS)
           .pollInterval(3, TimeUnit.SECONDS)
