@@ -4032,21 +4032,59 @@ body.col-resizing * {
   }
 }
 
-/* ===== Graph Fullscreen Mode ===== */
-.graph-fullscreen #queryPanel,
-.graph-fullscreen #queryIconSidebar,
-.graph-fullscreen #querySidebar,
-.graph-fullscreen #queryControlsRow,
-.graph-fullscreen #queryEditorWrapper,
-.graph-fullscreen #tabs-command {
+/* ===== Work Area Fullscreen Mode (Graph / Table) ===== */
+.workarea-fullscreen #queryPanel,
+.workarea-fullscreen #queryIconSidebar,
+.workarea-fullscreen #querySidebar,
+.workarea-fullscreen #queryControlsRow,
+.workarea-fullscreen #queryEditorWrapper,
+.workarea-fullscreen #tabs-command {
   display: none !important;
 }
 
-.graph-fullscreen #queryWorkArea {
+.workarea-fullscreen #queryWorkArea {
   padding-left: 0 !important;
   padding-right: 0 !important;
 }
 
-.graph-fullscreen #graph {
+.workarea-fullscreen #graph {
   height: calc(100vh - 80px) !important;
+}
+
+/* Icon swap so all fullscreen buttons stay in sync via CSS */
+.fullscreen-toggle-btn .fa-compress { display: none; }
+.workarea-fullscreen .fullscreen-toggle-btn .fa-expand { display: none; }
+.workarea-fullscreen .fullscreen-toggle-btn .fa-compress { display: inline; }
+
+/* Fullscreen button hosted inside the DataTable top toolbar */
+.dt-fullscreen-wrapper {
+  float: right;
+  position: relative;
+  margin-left: 8px;
+  padding: 7px 0;
+}
+
+.dt-fullscreen-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border-ddd);
+  border-radius: 6px;
+  background: var(--bg-reference);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.dt-fullscreen-btn:hover {
+  background-color: var(--color-brand-light);
+  border-color: var(--color-brand);
+  color: var(--color-brand);
+}
+
+.dt-fullscreen-btn i {
+  color: inherit !important;
 }
