@@ -1102,4 +1102,91 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
     final String formatted = (String) result.next().getProperty("result");
     assertThat(formatted).isEqualTo("2015-07-21");
   }
+
+  // ==================== Temporal component accessor tests (issue #4018) ====================
+
+  @Test
+  void dateYearComponentFromLiteral() {
+    final ResultSet result = database.command("opencypher", "RETURN date('2020-01-15').year AS y");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    assertThat(((Number) result.next().getProperty("y")).longValue()).isEqualTo(2020L);
+  }
+
+  @Test
+  void dateMonthComponentFromLiteral() {
+    final ResultSet result = database.command("opencypher", "RETURN date('2020-06-30').month AS m");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    assertThat(((Number) result.next().getProperty("m")).longValue()).isEqualTo(6L);
+  }
+
+  @Test
+  void dateDayComponentFromLiteral() {
+    final ResultSet result = database.command("opencypher", "RETURN date('2020-06-30').day AS d");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    assertThat(((Number) result.next().getProperty("d")).longValue()).isEqualTo(30L);
+  }
+
+  @Test
+  void dateComponentsFromCurrentDate() {
+    final java.time.LocalDate today = java.time.LocalDate.now();
+    final ResultSet result = database.command("opencypher", "RETURN date().year AS y, date().month AS m, date().day AS d");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    assertThat(((Number) row.getProperty("y")).longValue()).isEqualTo((long) today.getYear());
+    assertThat(((Number) row.getProperty("m")).longValue()).isEqualTo((long) today.getMonthValue());
+    assertThat(((Number) row.getProperty("d")).longValue()).isEqualTo((long) today.getDayOfMonth());
+  }
+
+  @Test
+  void datetimeYearComponentFromLiteral() {
+    final ResultSet result = database.command("opencypher", "RETURN datetime('2021-03-14T15:09:26Z').year AS y");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    assertThat(((Number) result.next().getProperty("y")).longValue()).isEqualTo(2021L);
+  }
+
+  @Test
+  void datetimeHourComponentFromLiteral() {
+    final ResultSet result = database.command("opencypher", "RETURN datetime('2021-03-14T15:09:26Z').hour AS h");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    assertThat(((Number) result.next().getProperty("h")).longValue()).isEqualTo(15L);
+  }
+
+  @Test
+  void datetimeYearFromCurrentDatetime() {
+    final java.time.ZonedDateTime now = java.time.ZonedDateTime.now();
+    final ResultSet result = database.command("opencypher", "RETURN datetime().year AS y");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    assertThat(((Number) result.next().getProperty("y")).longValue()).isEqualTo((long) now.getYear());
+  }
+
+  @Test
+  void localdatetimeComponentsFromLiteral() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN localdatetime('2022-11-05T08:30:00').year AS y, localdatetime('2022-11-05T08:30:00').month AS m, localdatetime('2022-11-05T08:30:00').hour AS h");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    assertThat(((Number) row.getProperty("y")).longValue()).isEqualTo(2022L);
+    assertThat(((Number) row.getProperty("m")).longValue()).isEqualTo(11L);
+    assertThat(((Number) row.getProperty("h")).longValue()).isEqualTo(8L);
+  }
+
+  @Test
+  void localtimeComponentsFromLiteral() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN localtime('10:35:00').hour AS h, localtime('10:35:00').minute AS m");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    assertThat(((Number) row.getProperty("h")).longValue()).isEqualTo(10L);
+    assertThat(((Number) row.getProperty("m")).longValue()).isEqualTo(35L);
+  }
+
+  @Test
+  void timeComponentsFromLiteral() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN time('12:00:00+01:00').hour AS h, time('12:00:00+01:00').minute AS m");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    assertThat(((Number) row.getProperty("h")).longValue()).isEqualTo(12L);
+    assertThat(((Number) row.getProperty("m")).longValue()).isEqualTo(0L);
+  }
 }
